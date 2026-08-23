@@ -117,7 +117,7 @@ async def second_org(db_session: AsyncSession) -> Organization:
 def _mock_github_client(
     *,
     installation_id: int = 124731131,
-    account_login: str = "sophos-test",
+    account_login: str = "acme-test",
     account_type: str = "Organization",
     account_github_id: int = 98765,
 ) -> MagicMock:
@@ -188,7 +188,7 @@ async def _seed_mapping(
         org_id=org_id,
         install_metadata={
             "installation_id": installation_id,
-            "account_login": "sophos-test",
+            "account_login": "acme-test",
             "account_type": "Organization",
             "repository_selection": "selected",
             "repository_count": 2,

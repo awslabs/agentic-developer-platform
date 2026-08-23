@@ -321,14 +321,14 @@ The switch-tenant endpoint (#2982, ships as #3071) issues gateway JWTs with the 
 ### 5.2 Org Name as Label, Not Mode
 
 Connections and agents display their owning org as a **label/badge** (e.g.,
-`[aws-innovate]` or `[sophos-research]`). This is informational grouping, not a
+`[aws-innovate]` or `[acme-research]`). This is informational grouping, not a
 filtering mode. The user sees everything they have access to in one scroll.
 
 ```
 Connections
 ├── [aws-innovate] aws-innovate/repo-alpha    ✓ Connected    [Disconnect]
 ├── [aws-innovate] aws-innovate/repo-beta     ✓ Connected    [Disconnect]
-├── [sophos-dev]   sophos-dev/platform        ✓ Connected    [Manage]
+├── [acme-dev]     acme-dev/platform          ✓ Connected    [Manage]
 └── [personal]     myuser/side-project        ✓ Connected    [Disconnect]
 ```
 

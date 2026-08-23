@@ -38,7 +38,7 @@ async def seeded_linked_orgs(db_session):
     """Seed: org-parent + org-child (linked via parent_tenant_id)."""
     parent = Organization(
         id="parent-tenant",
-        name="sophos",
+        name="acme",
         aws_accounts=[],
         role_mappings={},
         settings={},
@@ -49,7 +49,7 @@ async def seeded_linked_orgs(db_session):
     )
     child = Organization(
         id="child-org",
-        name="sophos-research",
+        name="acme-research",
         aws_accounts=[],
         role_mappings={},
         settings={},
@@ -79,7 +79,7 @@ async def test_matcher_resolves_linked_org_to_parent_tenant(db_session, seeded_l
     """When a user is a member of a linked org, the matcher resolves to parent_tenant_id."""
     from src.admin.onboarding.handler import _find_matching_tenants_for_user
 
-    # Mock GitHub client to say user is member of sophos-research (install 200)
+    # Mock GitHub client to say user is member of acme-research (install 200)
     mock_client = MagicMock()
     mock_client.check_org_membership = AsyncMock(
         side_effect=lambda installation_id, org_login, username: installation_id == 200,
@@ -101,7 +101,7 @@ async def test_matcher_resolves_linked_org_to_parent_tenant(db_session, seeded_l
     # Should resolve to parent-tenant, not child-org
     assert len(matched) == 1
     assert matched[0].org_id == "parent-tenant"
-    assert matched[0].org_name == "sophos-research"
+    assert matched[0].org_name == "acme-research"
     assert matched[0].install_id == 200
 
 
@@ -148,7 +148,7 @@ async def test_matcher_resolves_unlinked_org_to_itself(db_session, seeded_linked
 
     from src.admin.onboarding.handler import _find_matching_tenants_for_user
 
-    # Mock GitHub client to say user is member of sophos-research (install 200)
+    # Mock GitHub client to say user is member of acme-research (install 200)
     mock_client = MagicMock()
     mock_client.check_org_membership = AsyncMock(
         side_effect=lambda installation_id, org_login, username: installation_id == 200,
@@ -170,7 +170,7 @@ async def test_matcher_resolves_unlinked_org_to_itself(db_session, seeded_linked
     # Should now resolve to child-org (its own id) since unlinked
     assert len(matched) == 1
     assert matched[0].org_id == "child-org"
-    assert matched[0].org_name == "sophos-research"
+    assert matched[0].org_name == "acme-research"
 
 
 @pytest.mark.asyncio

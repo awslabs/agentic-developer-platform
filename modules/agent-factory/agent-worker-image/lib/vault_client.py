@@ -5,7 +5,7 @@ Stub-compatible implementation backed by AWS Secrets Manager.
 Naming convention in AWS: all ADP secrets live under an environment-scoped
 prefix (e.g. `adp/dev/...`) so the runner permissions boundary can scope
 access to a single prefix. Callers pass relative paths like
-`tenants/sophos-test/github-app`; this client prepends `adp/<env>/`.
+`tenants/acme-test/github-app`; this client prepends `adp/<env>/`.
 
 Vault-style relative path:   tenants/<tenant_id>/<secret_name>
 Resolved Secrets Manager id: adp/<env>/tenants/<tenant_id>/<secret_name>

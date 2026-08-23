@@ -96,7 +96,7 @@ async def org_in_db(db_session: AsyncSession) -> Organization:
 def _mock_github_client(
     *,
     installation_id: int = 124731131,
-    account_login: str = "sophos-test",
+    account_login: str = "acme-test",
     account_type: str = "Organization",
     account_github_id: int = 98765,
 ) -> MagicMock:
@@ -187,7 +187,7 @@ class TestInstallCallbackMembership:
         assert membership is not None
         assert membership.role == "org_admin"
         assert membership.joined_via == "app_install"
-        assert membership.github_org_id == "sophos-test"
+        assert membership.github_org_id == "acme-test"
 
     async def test_first_membership_becomes_active(self, db_session: AsyncSession, org_in_db):
         """When the user has no existing memberships, the new one is set active
@@ -421,7 +421,7 @@ class TestCheckOrgMembershipDiagnostic:
         with caplog.at_level("WARNING", logger="src.admin.connections.github_client"):
             result = await client.check_org_membership(
                 installation_id=144637256,
-                org_login="sophos-hackathon",
+                org_login="acme-hackathon",
                 username="testuser",
             )
 

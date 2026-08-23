@@ -1067,7 +1067,7 @@ def handler(event: dict, context) -> dict:
     print(f"DBG handler:resolved resolved={resolved is not None} outcome_reason={outcome_reason!r}")
 
     # 5a. Self-heal unknown installation: if the webhook tells us the repo's
-    # GitHub org (e.g. `sophos-hackathon`) and we don't have an installation
+    # GitHub org (e.g. `acme-hackathon`) and we don't have an installation
     # row yet, auto-register it using the org login as the ADP tenant id.
     # This makes the routing "if the org is registered, it just works" —
     # no operator needs to manually map each App installation.

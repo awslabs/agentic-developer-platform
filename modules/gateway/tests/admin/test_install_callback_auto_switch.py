@@ -362,12 +362,12 @@ class TestRedirectSuccessParams:
 
         response = _redirect_success(
             123,
-            installed="sophos-hackathon",
+            installed="acme-hackathon",
             switched_from="org-previous-001",
         )
         assert response.status_code == 302
         location = response.headers["location"]
-        assert "installed=sophos-hackathon" in location
+        assert "installed=acme-hackathon" in location
         assert "switched_from=org-previous-001" in location
         assert "success=1" in location
 

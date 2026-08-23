@@ -119,7 +119,7 @@ async def org_in_db(db_session: AsyncSession) -> Organization:
 def _mock_github_client(
     *,
     installation_id: int = 124731131,
-    account_login: str = "sophos-test",
+    account_login: str = "acme-test",
     account_type: str = "Organization",
     account_github_id: int = 98765,
 ) -> MagicMock:
@@ -332,7 +332,7 @@ class TestInstallCallback:
         )
 
         assert result["success"] is True
-        assert result["account_login"] == "sophos-test"
+        assert result["account_login"] == "acme-test"
         assert result["account_type"] == "Organization"
 
     async def test_nonce_consumed_after_success(self, db_session: AsyncSession, org_in_db):

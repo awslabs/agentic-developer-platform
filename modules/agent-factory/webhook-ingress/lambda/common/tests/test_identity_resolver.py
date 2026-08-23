@@ -73,7 +73,7 @@ LEGACY_USER_ITEM = {
     "identity_type": "github_user",
     "identity_value": str(SENDER_ID),
     "user_id": ORPHAN_USER_ID,
-    "org_id": "sophos-test",
+    "org_id": "acme-test",
 }
 
 PG_RESULT_CANONICAL = {
@@ -186,7 +186,7 @@ class TestResolveTrustsPostgresOnDrift:
             "provider": "github",
             "provider_user_id": str(SENDER_ID),
             "user_id": ORPHAN_USER_ID,
-            "org_id": "sophos-test",
+            "org_id": "acme-test",
         }
         ddb_items = {
             "adp-dev-identity-index": {

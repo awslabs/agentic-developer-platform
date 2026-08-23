@@ -74,7 +74,7 @@ async def seeded_orgs(db_engine):
     async with factory() as session:
         org_a = Organization(
             id="tenant-a",
-            name="sophos",
+            name="acme",
             aws_accounts=[],
             role_mappings={},
             settings={},
@@ -84,7 +84,7 @@ async def seeded_orgs(db_engine):
         )
         org_b = Organization(
             id="org-b",
-            name="sophos-research",
+            name="acme-research",
             aws_accounts=[],
             role_mappings={},
             settings={},
@@ -212,7 +212,7 @@ async def test_link_org_success(admin_client, seeded_orgs, db_engine):
     assert data["linked"] is True
     assert data["tenant_id"] == "tenant-a"
     assert data["github_org_id"] == "22222"
-    assert data["org_name"] == "sophos-research"
+    assert data["org_name"] == "acme-research"
 
     # Verify in DB
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
@@ -394,7 +394,7 @@ async def test_list_linked_orgs_with_links(admin_client, seeded_orgs):
     assert len(data["linked_orgs"]) == 2
 
     org_names = {o["org_name"] for o in data["linked_orgs"]}
-    assert "sophos-research" in org_names
+    assert "acme-research" in org_names
     assert "other-company" in org_names
 
 

@@ -95,7 +95,7 @@ def _mock_github_client() -> MagicMock:
             "id": 124731131,
             "account": {
                 "type": "Organization",
-                "login": "sophos-test",
+                "login": "acme-test",
                 "id": 98765,
             },
             "repository_selection": "selected",
@@ -199,4 +199,4 @@ class TestMembershipPersistenceAcrossSessions:
             )
             assert membership.role == "org_admin"
             assert membership.joined_via == "app_install"
-            assert membership.github_org_id == "sophos-test"
+            assert membership.github_org_id == "acme-test"

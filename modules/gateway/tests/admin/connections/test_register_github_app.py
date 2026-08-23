@@ -1377,8 +1377,8 @@ class TestDeriveAppName:
         """Without app_name, uses '<owner>-adp-agent-platform'."""
         from src.admin.connections.service import _derive_app_name
 
-        result = _derive_app_name(owner="aws-sophos-test", app_name=None)
-        assert result == "aws-sophos-test-adp-agent-platform"
+        result = _derive_app_name(owner="aws-acme-test", app_name=None)
+        assert result == "aws-acme-test-adp-agent-platform"
 
     def test_falls_back_to_base_when_no_owner(self):
         """Without owner or app_name, falls back to base name."""

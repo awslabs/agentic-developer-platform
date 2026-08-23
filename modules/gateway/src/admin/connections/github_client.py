@@ -74,7 +74,7 @@ class GitHubAppClient:
         Returns the raw GitHub API response dict, e.g.:
           {
             "id": 124731131,
-            "account": {"type": "Organization", "login": "sophos-test", "id": 98765},
+            "account": {"type": "Organization", "login": "acme-test", "id": 98765},
             "repository_selection": "selected",
             "repositories_url": "...",
             "installed_at": "2026-05-01T10:00:00Z",

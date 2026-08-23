@@ -56,7 +56,7 @@ HUMAN_USER_ID = "650f093f-ecd9-4ce1-a5a9-368e02c449cf"
 TENANT_ITEM = {
     "identity_type": "github_installation_id",
     "identity_value": str(INSTALLATION_ID),
-    "org_id": "sophos-test",
+    "org_id": "acme-test",
     "user_provisioning_mode": "strict",
 }
 
@@ -64,7 +64,7 @@ BOT_USER_ITEM = {
     "provider": "github",
     "provider_user_id": str(BOT_SENDER_ID),
     "user_id": BOT_USER_ID,
-    "org_id": "sophos-test",
+    "org_id": "acme-test",
     "user_kind": "bot",
     "bot_kind": "agent-developer",
 }
@@ -73,7 +73,7 @@ HUMAN_USER_ITEM = {
     "provider": "github",
     "provider_user_id": str(HUMAN_SENDER_ID),
     "user_id": HUMAN_USER_ID,
-    "org_id": "sophos-test",
+    "org_id": "acme-test",
 }
 
 # Legacy item without user_kind attribute (pre-migration)
@@ -81,7 +81,7 @@ LEGACY_USER_ITEM_NO_KIND = {
     "provider": "github",
     "provider_user_id": str(HUMAN_SENDER_ID),
     "user_id": HUMAN_USER_ID,
-    "org_id": "sophos-test",
+    "org_id": "acme-test",
     # No user_kind attribute — should default to 'human'
 }
 
@@ -180,7 +180,7 @@ class TestBotActionTriggeredMetricEmitted:
         assert metric["MetricName"] == "BotActionTriggered"
         dimensions = {d["Name"]: d["Value"] for d in metric["Dimensions"]}
         assert dimensions["bot_kind"] == "agent-developer"
-        assert dimensions["org_id"] == "sophos-test"
+        assert dimensions["org_id"] == "acme-test"
 
     def test_metric_not_emitted_for_human(self):
         from common import identity_resolver

@@ -100,15 +100,15 @@ class TestUnknownInstallation:
             (None, "unknown_installation"),
             (
                 ResolvedIdentity(
-                    tenant_id="sophos-hackathon",
-                    org_id="sophos-hackathon",
+                    tenant_id="acme-hackathon",
+                    org_id="acme-hackathon",
                     user_id="u_xyz",
                     user_provisioning_mode="strict",
                 ),
                 "ok",
             ),
         ]
-        mock_auto_reg.return_value = "sophos-hackathon"
+        mock_auto_reg.return_value = "acme-hackathon"
         mock_log.return_value.log_event = MagicMock()
 
         # Patch downstream dispatch bits so the handler can complete
@@ -127,12 +127,12 @@ class TestUnknownInstallation:
 
             # Payload carries the org login via repository.owner.login
             payload = _labeled_payload(installation_id=888888)
-            payload["repository"]["owner"] = {"login": "sophos-hackathon"}
+            payload["repository"]["owner"] = {"login": "acme-hackathon"}
             event = _make_event("issues", payload)
             result = handler(event, None)
 
         assert result["statusCode"] == 202
-        mock_auto_reg.assert_called_once_with(888888, "sophos-hackathon")
+        mock_auto_reg.assert_called_once_with(888888, "acme-hackathon")
         assert mock_resolver.return_value.resolve.call_count == 2
 
 

@@ -17,10 +17,10 @@ on:
   workflow_dispatch:
     inputs:
       tenant_id:
-        description: 'Tenant slug (lowercase-hyphenated, e.g. sophos-test)'
+        description: 'Tenant slug (lowercase-hyphenated, e.g. acme-test)'
         required: true
       org_name:
-        description: 'Human-readable org name (e.g. "Sophos Test")'
+        description: 'Human-readable org name (e.g. "Acme Test")'
         required: true
       installation_id:
         description: 'GitHub App installation ID (numeric)'

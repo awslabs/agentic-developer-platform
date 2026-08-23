@@ -141,7 +141,7 @@ class TestInstallCallbackRoute:
         success_result = {
             "success": True,
             "installation_id": 124731131,
-            "account_login": "sophos-test",
+            "account_login": "acme-test",
             "account_type": "Organization",
             "error_code": None,
             "error_message": None,
@@ -261,12 +261,12 @@ class TestGetConnectionsRoute:
             connections=[
                 GitHubConnectionItem(
                     installation_id=124731131,
-                    account_login="sophos-test",
+                    account_login="acme-test",
                     account_type="Organization",
                     repository_selection="selected",
                     repository_count=2,
                     installed_at=datetime.now(UTC),
-                    configure_url="https://github.com/organizations/sophos-test/settings/installations/124731131",
+                    configure_url="https://github.com/organizations/acme-test/settings/installations/124731131",
                 )
             ]
         )
@@ -280,7 +280,7 @@ class TestGetConnectionsRoute:
         assert resp.status_code == 200
         body = resp.json()
         assert len(body["connections"]) == 1
-        assert body["connections"][0]["account_login"] == "sophos-test"
+        assert body["connections"][0]["account_login"] == "acme-test"
         assert body["connections"][0]["installation_id"] == 124731131
 
     def test_returns_empty_list_when_no_connections(self, app, mock_db):
