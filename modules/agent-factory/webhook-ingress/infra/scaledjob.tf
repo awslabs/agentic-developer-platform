@@ -134,7 +134,17 @@ locals {
       pollingInterval: 5
       minReplicaCount: 0
       maxReplicaCount: 50
-      successfulJobsHistoryLimit: 5
+      # Issue #4031: keep at most ONE Completed job visible. FIFO group
+      # serialization makes KEDA spawn speculative pods that receive nothing
+      # and exit 0 (entrypoint.py: "No message available after long-poll") —
+      # see the triggers block below for why that is accepted and must not be
+      # "fixed" via trigger metadata. At 5, those clean no-ops accumulated in
+      # `kubectl get pods -n adp-agents`, and the SOPHOS PoV could not tell
+      # them apart from genuinely crash-looping workers (#4030) — churn read
+      # as breakage and materially slowed diagnosis of a real bug.
+      # failedJobsHistoryLimit intentionally stays at 5: failed pods are the
+      # diagnostic surface an operator needs to keep.
+      successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 5
       jobTargetRef:
         parallelism: 1
@@ -240,6 +250,44 @@ ${local.knowledge_layer_env_block}
                   capabilities:
                     drop:
                       - ALL
+      # ── Scaling trigger — DO NOT add scaleOnInFlight or scalingStrategy ─────
+      # Issue #4031. This bare trigger is deliberate, not an oversight. KEDA's
+      # scaleOnInFlight (scaler: what is COUNTED) and scalingStrategy (executor:
+      # what is SUBTRACTED) are a matched pair, and the default pairing is the
+      # only internally consistent one for a delete-at-end consumer like ours
+      # (the worker holds its message in flight for the whole run, extending
+      # visibility via a 120s heartbeat, and deletes only at the end).
+      #
+      # Default strategy computes: eff = ceil(visible + notVisible) - running.
+      # Because each running worker holds exactly one message in flight,
+      # notVisible ~= running, so the two cancel and eff ~= visible. Correct.
+      #
+      #   * scaleOnInFlight: "false" (default strategy) -> eff = visible -
+      #     running, double-subtracting live runs. A dispatch arriving in a
+      #     DIFFERENT FIFO group during a long run gets no pod until that run
+      #     ends — up to activeDeadlineSeconds (6h) — and does not self-heal.
+      #   * scalingStrategy: accurate/eager -> subtracts pending, never
+      #     running: a visible-but-undeliverable FIFO message spawns a no-op
+      #     pod that exits in ~20s, then respawns. A ~25-30s churn loop for the
+      #     whole run, amplifying the noise #4031 set out to reduce.
+      #
+      # ACCEPTED residual: messages queued behind an in-flight member of the
+      # same FIFO group are visible but undeliverable, so KEDA still spawns the
+      # occasional speculative pod that exits 0. SQS exposes no
+      # "deliverable visible" attribute, so NO queue-depth scaler config can
+      # see the difference — this is inherent to FIFO, not a misconfiguration.
+      # It is bounded and harmless; the clean-exit path handles it, and
+      # successfulJobsHistoryLimit: 1 above keeps it out of the pod list.
+      #
+      # activationQueueLength is intentionally left at its default of 0, which
+      # is what makes scale-from-zero work (isActive = metric > 0); setting it
+      # would silently break first-message dispatch.
+      #
+      # Derived from KEDA v2.16.0 source (the version pinned in keda.tf), not
+      # the docs — the docs describe scaleOnInFlight without mentioning the
+      # strategy's runningJobCount subtraction, which is where the trap hides:
+      # pkg/scalers/aws_sqs_queue_scaler.go, pkg/scaling/executor/scale_jobs.go.
+      # Full arithmetic: issue #4031 comment 5376105252.
       triggers:
         - type: aws-sqs-queue
           authenticationRef:
