@@ -148,6 +148,12 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 - Wrong VITE_API_URL during build. Rebuild with `VITE_API_URL="/api" npm run build` — must match `gateway-deploy.yml` (`/api`, NOT `/api/gateway`); the wrong prefix makes every SPA call hit the S3 HTML fallback with HTTP 200 and crash the dashboard.
 - Stale cache: `aws cloudfront create-invalidation --distribution-id <id> --paths "/*"`
 
+### All GitHub logins denied after a broker deploy
+- Symptom: every "Sign in with GitHub" (including yours) fails, but `/api/health` is healthy and gateway pods are Running — so it is NOT the CloudFront `/api` fail-destroy class.
+- Broker logs show: `ALLOWLIST_MODE=open without ALLOW_OPEN_SIGNUP=true is a misconfiguration; denying sign-in` (`aws logs tail /aws/lambda/bedrockgw-<env>-github-auth-broker --since 15m`).
+- Cause: the #3986 fail-closed broker CODE publishes on merge, but the `ALLOW_OPEN_SIGNUP` env var only lands via `gateway-infra-apply.yml`. On an env still set to `ALLOWLIST_MODE=open`, the gap between the two is a total login outage.
+- Emergency fix + durable remediation: `docs/runbooks/github-auth-allowlist-remediation.md` (adds `ALLOW_OPEN_SIGNUP=true` to the live Lambda to restore login in ~30s, then move the env to `mode=org`).
+
 ### CodeBuild fails
 - Only 4 docker-build projects use CodeBuild (gateway-build, chat-agent, agent-gateway, arc-runner). They are Terraform-managed in `platform/infra/modules/codebuild/`. Everything else (terraform apply, npm build, kubectl apply) runs directly on the ARC runner.
 - Check logs: `aws codebuild batch-get-builds --ids <build-id> --query 'builds[0].logs.deepLink' --output text`

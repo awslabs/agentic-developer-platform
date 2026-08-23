@@ -22,10 +22,67 @@ Fail-closed also blocks re-authentication for those users — each broker login
 rotates the Cognito password (`cognito_provisioner.py`) — but the account, its
 attributes, and any derived Postgres rows survive until you act.
 
+## Emergency recovery: everyone is locked out right now
+
+**Symptom:** every GitHub sign-in (including yours) is denied after a broker
+deploy. `/api/health` is healthy and the gateway pods are Running, so this is
+**not** a CloudFront `/api` outage. Broker CloudWatch logs show, for each login
+attempt:
+
+```
+[ERROR] ALLOWLIST_MODE=open without ALLOW_OPEN_SIGNUP=true is a misconfiguration; denying sign-in
+```
+
+**Cause — the code-before-config lockout window.** The broker's Lambda **code**
+publishes on merge (see the deploy sequence below, step 1), but the
+`ALLOW_OPEN_SIGNUP` environment variable only lands when `gateway-infra-apply.yml`
+runs (step 2). If your environment was on `ALLOWLIST_MODE=open` and the #3986 code
+reaches it before the config apply, the new code sees `open` **without** the
+acknowledgement flag and fails closed — denying everyone until the apply catches
+up. Any environment still on `mode = open` is armed to hit this on its next broker
+republish.
+
+**Immediate fix (restores login in ~30s):** add the flag to the live function so
+the running code stops denying. This is the exact value Terraform will set on the
+next apply, so it is not a divergent hack — but it *is* untracked drift until the
+apply runs, so do step 2 of the deploy sequence promptly afterward.
+
+```bash
+ENVIRONMENT=dev   # your environment
+aws lambda get-function-configuration \
+  --function-name "bedrockgw-${ENVIRONMENT}-github-auth-broker" \
+  --query 'Environment.Variables' > /tmp/broker-env.json
+# add "ALLOW_OPEN_SIGNUP": "true" to the map in /tmp/broker-env.json, then:
+aws lambda update-function-configuration \
+  --function-name "bedrockgw-${ENVIRONMENT}-github-auth-broker" \
+  --environment "Variables=$(jq -c . /tmp/broker-env.json)"
+```
+
+Then confirm the flag is live and retry your login:
+
+```bash
+aws lambda get-function-configuration \
+  --function-name "bedrockgw-${ENVIRONMENT}-github-auth-broker" \
+  --query 'Environment.Variables.ALLOW_OPEN_SIGNUP'   # expect "true"
+```
+
+> **Preferred posture, not just recovery.** `open` disables allowlist enforcement
+> entirely. Unless open signup is genuinely intended for this environment, the
+> durable fix is to move it to `mode = org` (or `explicit`) via the deploy
+> sequence below — not to leave `ALLOW_OPEN_SIGNUP=true` in place. The hand-patch
+> above buys time; it is not the end state.
+
 ## Deploy sequence (do this first, in order)
 
 The broker's Lambda **code** and its Terraform **configuration** ship through two
 independent paths. Both are required; the code path fires on its own.
+
+> **Order matters — do not merge and walk away.** Step 1 (code) fires
+> automatically on merge; step 2 (config) is manual. On an environment currently
+> set to `ALLOWLIST_MODE=open`, the window between them is a **total login
+> outage** (see *Emergency recovery* above). Run step 2 immediately after the
+> merge, or pre-set `github_auth_allow_open_signup = true` in that environment's
+> tfvars **before** the code reaches it.
 
 1. **Merge the PR.** `.github/workflows/github-auth-broker-deploy.yml` fires
    automatically on any push touching
