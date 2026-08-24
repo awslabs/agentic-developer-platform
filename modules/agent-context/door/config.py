@@ -75,6 +75,36 @@ class ServerConfig:
         self.host: str = os.environ.get("MCP_HOST", "0.0.0.0")
         self.port: int = int(os.environ.get("MCP_PORT", "5100"))
 
+        # Door authentication (issue #4073, finding #8).
+        #
+        # The Door reads caller identity (x-github-login, x-github-teams,
+        # x-tenant-id, x-owner-sub) straight off request headers and uses it to
+        # scope every ACL decision. Until #4073 nothing authenticated the caller,
+        # so any pod that could reach the ClusterIP could set those headers
+        # itself and read any tenant's indexed code and agent memory. The
+        # docstrings in acl.py / personal_context/identity.py claimed an
+        # in-cluster NetworkPolicy prevented that; no such policy existed.
+        #
+        # The shared secret is the same value the gateway uses for its
+        # /internal/v1/* plane (Secrets Manager adp/<env>/gateway/internal-api-key,
+        # bridged into this namespace by agent-context-deploy.yml), so callers
+        # that already hold it need no new credential.
+        self.door_api_key: str = os.environ.get("DOOR_API_KEY", "")
+        # Kill switch, defaulting to ENABLED.
+        #
+        # NOTE the inverted parse: this deliberately does NOT follow the
+        # `in ("true", "1", "yes")` idiom used by the enable-flags above. Those
+        # default to "false", so an unrecognized value failing to "off" is safe.
+        # This flag defaults to "true", so the same idiom would make any
+        # unrecognized value — a typo like "ture", a YAML-quoted "True "
+        # with trailing space, an empty string from an unset ConfigMap key —
+        # evaluate to False and silently DISABLE authentication, reopening the
+        # #4073 cross-tenant read with no signal. Authentication is therefore
+        # switched off only by an explicit, recognized false-y value.
+        self.door_auth_enabled: bool = os.environ.get(
+            "DOOR_AUTH_ENABLED", "true"
+        ).strip().lower() not in ("false", "0", "no")
+
 
 # Singleton — import this in server modules
 config = ServerConfig()

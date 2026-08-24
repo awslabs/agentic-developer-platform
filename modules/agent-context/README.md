@@ -105,7 +105,12 @@ The Knowledge Layer is multi-tenant. Every request is scoped by the caller's ide
 
 ### Identity headers
 
-The Door reads these request headers (set by the trusted ingress / sidecar; a NetworkPolicy prevents external injection):
+The Door reads these request headers (set by the trusted dispatch layer — webhook Lambda → SQS → agent worker — never by agent code):
+
+Every caller must also present `X-Internal-Api-Key`, the shared secret the gateway's internal plane uses (`door/auth.py`; only `/health` is exempt). `manifests/networkpolicy.yaml` additionally restricts which namespaces can reach port 5100.
+
+> **What those controls do and don't do** (issue #4073, finding #8). They establish that the caller is a legitimate in-cluster workload. They do **not** make the headers below unforgeable: the secret is shared by all Door callers and the policy admits whole namespaces, so an authenticated caller can still claim another login, team, tenant or subject id. Cross-tenant isolation rests on the Door's fail-closed ACL filtering (`door/acl.py`) and the personal-context owner read-filter — not on these headers being trustworthy. This README previously stated that a NetworkPolicy prevented external injection; no such policy existed, and nothing authenticated the caller.
+
 
 | Header | Meaning |
 |---|---|

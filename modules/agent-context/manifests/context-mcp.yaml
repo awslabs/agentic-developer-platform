@@ -59,6 +59,25 @@ spec:
               name: agent-context-secrets
               key: DATABASE_URL
               optional: true
+        # Shared secret every Door caller must present (#4073 finding #8).
+        #
+        # Reuses the gateway internal-api-key already bridged into this
+        # namespace as agent-context-gateway-callback by agent-context-deploy.yml
+        # (and by deploy.sh) — the same value the gateway's /internal/v1/* plane
+        # accepts, so no caller needs a new credential type.
+        #
+        # optional: true is deliberate and does NOT fail open. If the secret is
+        # absent DOOR_API_KEY is unset, and door/auth.py rejects every
+        # authenticated path with 503 "not_configured". Making it required
+        # instead would block pod creation on a missing secret, which is a worse
+        # failure mode for the same security outcome (nothing is served either
+        # way) and would take out /health with it.
+        - name: DOOR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-context-gateway-callback
+              key: internal-api-key
+              optional: true
         resources:
           requests:
             cpu: "250m"

@@ -70,12 +70,29 @@ jobs:
       - name: Door verb verification
         if: ${{ inputs.door_verify }}
         run: |
+          # The Door authenticates every caller (#4073 finding #8) — without this
+          # key every call below returns 401 instead of exercising a verb. Read
+          # from the same SM secret the Door mounts as DOOR_API_KEY. Passed via
+          # env (not interpolated into the heredoc) so it is never written to a
+          # file on the runner or echoed into the log.
+          DOOR_API_KEY=$(aws secretsmanager get-secret-value \
+            --secret-id "adp/dev/gateway/internal-api-key" \
+            --query SecretString --output text 2>/dev/null || echo "")
+          if [ -z "$DOOR_API_KEY" ]; then
+            echo "::error::Could not read adp/dev/gateway/internal-api-key; the Door will reject every verb with 401."
+            exit 1
+          fi
+          export DOOR_API_KEY
+
           cat > /tmp/door_verify.py <<'PYEOF'
-          import json, urllib.request
+          import json, os, urllib.request
 
           MCP = "http://context-mcp.agent-context.svc.cluster.local:5100"
           HEADERS = {
               "Content-Type": "application/json",
+              # Shared secret; the identity headers below are only honoured once
+              # the caller is authenticated (#4073 finding #8).
+              "X-Internal-Api-Key": os.environ["DOOR_API_KEY"],
               "X-GitHub-Login": "ops-verify",
               "X-GitHub-Teams": "platform-team",
           }

@@ -355,6 +355,36 @@ async def enrich_span_with_identity(request: Request, call_next):
     return response
 
 
+# ---------------------------------------------------------------------------
+# Authentication middleware (issue #4073, finding #8)
+# ---------------------------------------------------------------------------
+# Registered LAST on purpose. Starlette builds the middleware stack in reverse
+# registration order, so the last-registered decorator is the OUTERMOST layer and
+# therefore runs FIRST. Auth must be outermost for two reasons: unauthenticated
+# identity claims must not be stamped onto an OTel span as though they were real
+# (enrich_span_with_identity above reads exactly the headers an attacker forges),
+# and a rejected request must not reach any verb logic.
+#
+# Moving this decorator above enrich_span_with_identity silently inverts that —
+# the guard still returns 401, but only after the forged identity has been
+# recorded on the trace. tests/unit/test_door_auth.py pins the ordering.
+#
+# This must be middleware, not a route dependency: app.mount("/mcp", ...) at the
+# bottom of this module is a separate ASGI app, and FastAPI Depends() declared on
+# the parent app does NOT run for mounted sub-apps. /mcp is the surface agent
+# workers actually use (and the one with DNS-rebinding protection relaxed), so a
+# Depends()-based guard would leave the principal hole wide open.
+@app.middleware("http")
+async def authenticate_request(request: Request, call_next):
+    """Reject requests that do not present the Door's shared secret."""
+    from .auth import check_request_auth
+
+    denial = check_request_auth(request)
+    if denial is not None:
+        return denial
+    return await call_next(request)
+
+
 @app.get("/tools")
 async def list_tools() -> list[dict[str, Any]]:
     """List available MCP tools with their descriptions and parameters."""

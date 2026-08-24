@@ -20,6 +20,7 @@
  */
 
 import { PersonalContextHeaders } from './complex-task-chat/personal-context-headers';
+import { getDoorAuthHeaders } from './lib/doorAuth';
 
 // ============================================================================
 // Configuration (read at call time for testability)
@@ -247,6 +248,9 @@ async function callExperienceSave(payload: ExperienceSavePayload): Promise<void>
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      // Authenticate to the Door before it will honour the identity headers
+      // below (#4073 finding #8). Missing key => 401 => the save throws below.
+      ...getDoorAuthHeaders(),
       'X-Owner-Sub': identityHeaders['X-Owner-Sub'],
       'X-Tenant-Id': identityHeaders['X-Tenant-Id'],
     },

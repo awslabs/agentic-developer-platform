@@ -71,6 +71,14 @@ locals {
     "                    value: \"1\"",
     "                  - name: CONTEXT_MCP_SERVER_URL",
     "                    value: http://context-mcp.agent-context.svc.cluster.local:5100",
+    "                  # Issue #4073 (finding #8): the Door authenticates every",
+    "                  # caller with a shared secret. entrypoint.py reads this",
+    "                  # secret into DOOR_API_KEY; lib/doorAuth.ts sends it as",
+    "                  # X-Internal-Api-Key. Without it every verb returns 401.",
+    "                  # Same SM secret the gateway internal plane uses, already",
+    "                  # covered by the scaledjob role's adp/* GetSecretValue.",
+    "                  - name: ADP_DOOR_API_KEY_SECRET",
+    "                    value: adp/${var.environment}/gateway/internal-api-key",
   ]) : ""
 
   # OpenTelemetry env vars for agent-worker container (#1630).

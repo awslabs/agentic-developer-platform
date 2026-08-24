@@ -625,6 +625,53 @@ def _fail_bootstrap_status(message_id: str, arrived_at: str, error_message: str)
         logger.warning("Failed to record bootstrap failure status (non-fatal): %s", exc)
 
 
+def _load_door_api_key(region: str) -> None:
+    """Resolve the Door shared secret into DOOR_API_KEY. Issue #4073, finding #8.
+
+    The Door (context-mcp) authenticates every caller with this key. The Node
+    runtime reads it via ``lib/doorAuth.ts``, which looks at ``DOOR_API_KEY``.
+
+    Resolution order:
+      1. ``DOOR_API_KEY`` already in the environment (local dev / explicit
+         override) — used as-is, no AWS call.
+      2. Secrets Manager, at the name in ``ADP_DOOR_API_KEY_SECRET``.
+
+    Degrades gracefully rather than failing the run, mirroring
+    ``lib/marker_signing.py``: the Knowledge Layer verbs are an enhancement
+    (``KNOWLEDGE_LAYER_ENABLED`` defaults off) and an agent summoned to fix an
+    issue must not die because a context-retrieval credential is unavailable. The
+    Door is the side that fails closed — it serves nothing without a key. The
+    cost of this choice is that a misconfiguration shows up as "the agent had no
+    context" rather than a hard error, so both failure paths log at WARNING.
+    """
+    if os.environ.get("DOOR_API_KEY"):
+        logger.debug("DOOR_API_KEY already set in environment; not reading Secrets Manager")
+        return
+
+    secret_id = os.environ.get("ADP_DOOR_API_KEY_SECRET")
+    if not secret_id:
+        logger.warning(
+            "ADP_DOOR_API_KEY_SECRET is not set; Knowledge Layer calls to the Door "
+            "will be rejected with 401 (issue #4073). Set it on the ScaledJob."
+        )
+        return
+
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+        os.environ["DOOR_API_KEY"] = sm.get_secret_value(SecretId=secret_id)["SecretString"]
+        logger.info("Door API key loaded from %s", secret_id)
+    except Exception as exc:  # noqa: BLE001
+        # Blind by design: any failure here must degrade to "no Door access",
+        # never abort the agent run. Never log the exception's response body —
+        # only the secret name and the error text.
+        logger.warning(
+            "Failed to load Door API key from %s: %s. Knowledge Layer verbs will "
+            "return 401 (issue #4073).",
+            secret_id,
+            exc,
+        )
+
+
 def _describe_vault_fetch_failure(exc: Exception, secret_path: str) -> str:
     """Turn a vault_fetch exception into an operator-actionable reason. #4030.
 
@@ -811,6 +858,15 @@ def main() -> int:
     github_login = actor.get("github_login", "")
     if github_login:
         os.environ["ADP_GITHUB_LOGIN"] = github_login
+
+    # Issue #4073 (finding #8): load the Door's shared secret so the Node runtime
+    # can authenticate to context-mcp.
+    #
+    # The identity headers exported just above are exactly what an attacker would
+    # forge, so the Door no longer trusts them on their own — every path except
+    # /health requires this key. Without it the knowledge-layer MCP tools,
+    # experience-save and recall-at-task-start all get 401.
+    _load_door_api_key(region)
 
     repo_owner, repo_name = repo.split("/", 1)
     bootstrap_log.step_success(

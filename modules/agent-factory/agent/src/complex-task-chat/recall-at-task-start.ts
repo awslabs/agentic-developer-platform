@@ -19,6 +19,7 @@
 
 import { PersonalContextIdentity, getPersonalContextHeaders } from './personal-context-headers';
 import { validateBaseUrl } from '../lib/url-guard';
+import { getDoorAuthHeaders } from '../lib/doorAuth';
 
 /**
  * Feature flag: enable recall-at-task-start. Default off until validated.
@@ -169,6 +170,9 @@ export async function callRecall(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        // Authenticate to the Door before it will honour the identity headers
+        // below (#4073 finding #8). Missing key => 401 => recall returns nothing.
+        ...getDoorAuthHeaders(),
         'X-Owner-Sub': headers['X-Owner-Sub'],
         'X-Tenant-Id': headers['X-Tenant-Id'],
       },

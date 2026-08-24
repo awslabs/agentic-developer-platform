@@ -11,6 +11,8 @@
  * Depends on: #1590 (canonical URL), #1591 (identity header), #1602 (native MCP).
  */
 
+import { getDoorAuthHeaders } from './lib/doorAuth';
+
 /**
  * Feature flag: register Knowledge Layer MCP tools.
  * Default OFF — flip ON after verifying identity headers propagate correctly
@@ -40,6 +42,14 @@ const DOOR_MCP_URL =
  */
 export function buildKnowledgeLayerHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
+
+  // Shared secret authenticating this caller to the Door (#4073 finding #8).
+  //
+  // Without it the Door answers 401 and every verb below silently stops
+  // working, because the identity headers that follow are exactly what an
+  // attacker would forge — the Door cannot tell us apart from them on headers
+  // alone.
+  Object.assign(headers, getDoorAuthHeaders());
 
   const login = process.env.ADP_GITHUB_LOGIN;
   if (login) headers['X-GitHub-Login'] = login;

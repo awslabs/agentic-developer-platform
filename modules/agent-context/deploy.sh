@@ -190,6 +190,30 @@ echo ""
 echo "Deploying Context MCP Server (Door)..."
 source "${SCRIPT_DIR}/scripts/_common.sh"
 
+# Bridge the gateway internal API key into this namespace (#4073 finding #8).
+#
+# The Door authenticates every caller with this shared secret; context-mcp.yaml
+# mounts it as DOOR_API_KEY. agent-context-deploy.yml does the same bridge for
+# CI-driven deploys, but deploy.sh created no secrets at all, so a self-managed
+# deploy would leave DOOR_API_KEY unset and the Door would 503 every verb.
+# Same SM secret and same K8s secret name the ScaledJob status-callback uses.
+echo "  Bridging gateway internal-api-key -> agent-context-gateway-callback..."
+DOOR_INTERNAL_API_KEY=$(aws secretsmanager get-secret-value \
+  --secret-id "adp/${ENVIRONMENT:-dev}/gateway/internal-api-key" \
+  --query SecretString --output text 2>/dev/null || echo "")
+if [ -n "${DOOR_INTERNAL_API_KEY}" ] && [ "${DOOR_INTERNAL_API_KEY}" != "None" ]; then
+  kubectl create secret generic agent-context-gateway-callback \
+    -n "${NAMESPACE}" \
+    --from-literal=internal-api-key="${DOOR_INTERNAL_API_KEY}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  echo "    Secret agent-context-gateway-callback applied (Door auth + status callback)"
+else
+  echo "    WARNING: adp/${ENVIRONMENT:-dev}/gateway/internal-api-key not found."
+  echo "    The Door will reject every verb with 503 (fail-closed, see door/auth.py)."
+  echo "    Deploy the gateway first (gateway-deploy.yml creates this secret), then re-run."
+fi
+unset DOOR_INTERNAL_API_KEY
+
 # Resolve image: use ECR-built image if available, else default from config.env
 if [ -z "${CONTEXT_MCP_IMAGE:-}" ] || [ "${CONTEXT_MCP_IMAGE}" = "python:3.11-slim" ]; then
   CONTEXT_MCP_REPO="adp-${ENVIRONMENT:-dev}-agent-context-context-mcp"
@@ -208,6 +232,11 @@ fi
 export CONTEXT_MCP_IMAGE NAMESPACE SERVICE_ACCOUNT
 template_file "${SCRIPT_DIR}/manifests/context-mcp.yaml" | kubectl apply -f -
 echo "  Context MCP Server deployed (image: ${CONTEXT_MCP_IMAGE})"
+
+# Restrict who can reach the Door (#4073 finding #8). Defence in depth behind
+# the DOOR_API_KEY check — see the header comment in the manifest.
+template_file "${SCRIPT_DIR}/manifests/networkpolicy.yaml" | kubectl apply -f -
+echo "  NetworkPolicy context-mcp-ingress applied"
 echo "  Endpoint: http://context-mcp.${NAMESPACE}.svc.cluster.local:5100"
 
 # NOTE: OpenViking removed (Issue #1383). Semantic search now uses S3 Vectors.

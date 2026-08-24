@@ -156,11 +156,20 @@ else
   check_fail "Context MCP /health: ${MCP_HEALTH:0:100}"
 fi
 
-# Check tool listing (confirms the 6 verbs are registered)
+# Check tool listing (confirms the 6 verbs are registered).
+# /tools requires the shared secret (#4073 finding #8) — only /health is public.
+# This runs INSIDE the Door pod, so it reads the key from the pod's own env
+# (DOOR_API_KEY, mounted from the agent-context-gateway-callback secret) rather
+# than passing a credential across the kubectl boundary.
 MCP_TOOLS=$(kubectl exec deploy/context-mcp -n "${NAMESPACE}" -- python3 -c "
-import urllib.request, json
+import urllib.request, json, os
 try:
-    r = urllib.request.urlopen('http://localhost:5100/tools', timeout=5)
+    key = os.environ.get('DOOR_API_KEY', '')
+    req = urllib.request.Request(
+        'http://localhost:5100/tools',
+        headers={'X-Internal-Api-Key': key} if key else {},
+    )
+    r = urllib.request.urlopen(req, timeout=5)
     tools = json.loads(r.read())
     names = [t['name'] for t in tools]
     print(','.join(names))

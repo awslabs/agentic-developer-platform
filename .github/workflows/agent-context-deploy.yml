@@ -435,6 +435,12 @@ jobs:
           kubectl rollout restart deploy/context-mcp -n ${NAMESPACE} || true
           echo "Context MCP Server deployed"
 
+          # Restrict who can reach the Door (#4073 finding #8). Defence in depth
+          # behind the DOOR_API_KEY check in door/auth.py — see the header
+          # comment in the manifest for why this is the weaker of the two.
+          template_file manifests/networkpolicy.yaml | kubectl apply -f -
+          echo "NetworkPolicy context-mcp-ingress applied"
+
       - name: Deploy Ingestion CronJob + KEDA ScaledJob
         run: |
           cd modules/agent-context

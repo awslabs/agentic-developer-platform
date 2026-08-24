@@ -5,8 +5,22 @@ repo against the caller's allowed repos (derived from GitHub permissions stored
 in Postgres). Fails closed: unresolved or empty principal -> empty results.
 
 Trust boundary: X-GitHub-Login and X-GitHub-Teams headers are set by the
-trusted dispatch layer (webhook Lambda -> SQS -> agent worker). In-cluster
-NetworkPolicy prevents external header injection.
+trusted dispatch layer (webhook Lambda -> SQS -> agent worker). Callers are
+authenticated by the shared secret enforced in ``door/auth.py``, and
+``manifests/networkpolicy.yaml`` restricts which namespaces can reach the
+service at all.
+
+Note what those two controls do and do not buy (issue #4073, finding #8). They
+establish that the caller is a legitimate in-cluster workload; they do NOT make
+the identity headers unforgeable. Anything holding the shared secret can still
+claim any login or team, because the secret is shared across all Door callers.
+Cross-tenant isolation therefore rests on this module's filtering, not on the
+headers being trustworthy — which is why ``filter_results`` fails closed.
+
+Earlier versions of this docstring claimed an in-cluster NetworkPolicy
+prevented external header injection. No NetworkPolicy existed anywhere in this
+module when that was written, and nothing authenticated the caller, so the
+boundary described here was asserted and never enforced.
 
 See: docs/design-1356-repo-acl-door-filter.md for full design.
 """
