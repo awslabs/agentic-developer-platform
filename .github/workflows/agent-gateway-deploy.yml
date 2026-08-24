@@ -72,8 +72,15 @@ jobs:
       - name: Terraform init
         working-directory: modules/agent-factory/infra
         run: |
+          # The committed backend tfvars carries a literal ACCOUNT_ID
+          # placeholder (bucket = "adp-terraform-state-ACCOUNT_ID"); nothing
+          # substitutes it here, so init fails with NoSuchBucket whenever the
+          # lambdas job actually runs. Override the bucket key with the
+          # load-deploy-config-resolved STATE_BUCKET, exactly like
+          # gateway-infra-apply.yml. Later -backend-config wins.
           terraform init \
             -backend-config=../../../environments/${ENVIRONMENT}/modules/agent-factory-backend.tfvars \
+            -backend-config="bucket=${STATE_BUCKET}" \
             -input=false -reconfigure
 
       - name: Terraform apply (module.gateway_lambda only)
