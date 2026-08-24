@@ -82,8 +82,11 @@ enable_lambda_reserved_concurrency = false
 
 # GitLab VPC Origin for CloudFront /gitlab/* behavior.
 # GitLab is an OPTIONAL module — its values must NOT be hardcoded here.
-# The gateway-infra-apply.yml workflow reads them from SSM at apply time
-# (platform account only); all other accounts get the empty default which
-# disables the GitLab origin. See #3745 / #3440 (core ≠ optional coupling rule).
-gitlab_origin_dns = ""
-gitlab_origin_arn = ""
+# The gateway-infra-apply.yml workflow reads them from SSM at apply time and
+# injects them as TF_VAR_gitlab_origin_* (platform account only); all other
+# accounts fall back to the variables' empty defaults, which disables the
+# GitLab origin. See #3745 / #3440 (core ≠ optional coupling rule).
+# Do NOT re-add gitlab_origin_dns/arn assignments here, even empty ones: a
+# -var-file entry takes precedence over TF_VAR_* env vars, so an empty pin
+# silently overrides the workflow's SSM injection and makes every apply plan
+# the DESTRUCTION of the live GitLab VPC origin.
