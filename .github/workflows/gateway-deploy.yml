@@ -195,7 +195,11 @@ jobs:
 
           # --- Render and apply ConfigMap (Section 1) ---
           # Issue #1158: Read proxy host allowlist from SSM (or default for dev)
-          VAULT_PROXY_HOST_ALLOWLIST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-proxy-host-allowlist" "api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com")
+          # #4076: "*.atlassian.net" REMOVED from the default — Atlassian Cloud
+          # tenants are self-service, so the wildcard let anyone who registers a
+          # tenant receive a user's injected secret. Operators who use Jira must
+          # opt in by adding their own tenant host to the SSM param below.
+          VAULT_PROXY_HOST_ALLOWLIST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-proxy-host-allowlist" "api.github.com,api.openai.com,api.anthropic.com,api.stripe.com,slack.com")
 
           # #2082: Knowledge-registry ingestion queue (agent-context SQS). Empty
           # is safe — registry routes still mount; dispatch returns 503 until set.
@@ -205,6 +209,12 @@ jobs:
           # for fresh clones). Existing deployments pin via SSM param; dev stays in shadow
           # mode via /adp/dev/gateway/enforce-credential-binding=false.
           ENFORCE_CREDENTIAL_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/enforce-credential-binding" "true")
+
+          # #4076: Credential->host egress binding. Default "false" (shadow mode) —
+          # violations are WARN-logged but allowed, so operators can confirm the
+          # service->host map covers live traffic before anyone gets a 403. Flip to
+          # "true" per env via SSM once the WARN logs are clean.
+          VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-enforce-credential-host-binding" "false")
 
           sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
               -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
@@ -229,6 +239,7 @@ jobs:
               -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
               -e "s|__AGENT_RUN_LOGS_BUCKET__|adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}|g" \
               -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
+              -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---

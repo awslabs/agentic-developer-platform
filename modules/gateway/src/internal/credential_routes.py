@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding import resolve_credential_binding
+from src.internal.credential_egress import allowed_hosts_for, host_matches, is_binding_enforced
 from src.internal.credential_injector import FILE_CREDENTIAL_TYPES, inject_credential
 from src.shared.config import Settings, get_settings
 from src.shared.database import get_db
@@ -306,23 +307,74 @@ def _validate_proxy_url(url: str, settings: Settings) -> None:
             },
         )
 
+    # Matching lives in credential_egress.host_matches so the allowlist check and
+    # the credential->host binding check (#4076) cannot drift apart.
     allowed_hosts = {h.strip().lower() for h in allowlist_raw.split(",") if h.strip()}
-    hostname_lower = hostname.lower()
-
-    for allowed_host in allowed_hosts:
-        if allowed_host.startswith("*."):
-            # Suffix match: *.example.com matches sub.example.com and example.com
-            suffix = allowed_host[1:]  # ".example.com"
-            if hostname_lower.endswith(suffix) or hostname_lower == allowed_host[2:]:
-                return
-        else:
-            if hostname_lower == allowed_host:
-                return
+    if host_matches(hostname, allowed_hosts):
+        return
 
     # No match — reject
     raise HTTPException(
         status_code=403,
         detail={"error": "proxy_host_denied", "message": f"Host {hostname!r} is not in the proxy allowlist"},
+    )
+
+
+def _validate_credential_host_binding(cred_service: str, url: str, settings: Settings) -> None:
+    """Validate that ``cred_service``'s credential may be sent to ``url``'s host.
+
+    Issue #4076: the host allowlist answers "may we talk to this host at all?",
+    not "may THIS credential go there?" — without this check a ``github``
+    credential can be injected into a request to any other allowlisted host.
+
+    ``cred_service`` MUST be the service on the *resolved* credential row, never
+    the caller-supplied ``body.service``: binding on caller input would be
+    self-asserted authority (the #16/#17 class) and worthless.
+
+    Services with no entry in ``SERVICE_HOST_BINDINGS`` are **not** bound (the
+    ``service`` column is deliberately free-form); they fall back to the global
+    host allowlist and emit a WARN so operators can see coverage gaps.
+
+    Raises HTTPException(403) when a bound service targets a host outside its set
+    AND ``vault_enforce_credential_host_binding`` is True.  When the flag is
+    False (shadow mode, the default) the violation is logged and allowed, so
+    rollback is a config flip rather than a redeploy.
+    """
+    hostname = urlparse(url).hostname or ""
+
+    if not is_binding_enforced(cred_service):
+        logger.warning(
+            "Credential egress binding NOT ENFORCED service=%s host=%s reason=service_unmapped",
+            cred_service,
+            hostname,
+        )
+        return
+
+    allowed = allowed_hosts_for(cred_service)
+    if host_matches(hostname, allowed):
+        return
+
+    if not settings.vault_enforce_credential_host_binding:
+        logger.warning(
+            "Credential egress binding VIOLATION (shadow mode, allowed) service=%s host=%s allowed=%s",
+            cred_service,
+            hostname,
+            sorted(allowed),
+        )
+        return
+
+    logger.warning(
+        "Credential egress binding DENIED service=%s host=%s allowed=%s",
+        cred_service,
+        hostname,
+        sorted(allowed),
+    )
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "credential_host_binding_denied",
+            "message": (f"A {cred_service!r} credential may not be sent to host {hostname!r}"),
+        },
     )
 
 
@@ -423,24 +475,27 @@ async def proxy_request(
     )
     effective_user_id = binding.resolved_user_id
 
-    # Issue #1158: Validate target URL before resolving credentials or making requests.
-    try:
-        _validate_proxy_url(body.url, settings)
-    except HTTPException as exc:
-        # Audit-log rejected attempts for forensic visibility.
+    async def _audit_denial(exc: HTTPException, user: User | None = None) -> None:
+        """Best-effort denial audit row, shared by every proxy-request rejection.
+
+        Issue #4076: the credential->host binding 403 must land in the SAME audit
+        path as the URL-validation 403, or an operator sees a denial with no row.
+        ``user`` is passed when it is already resolved (post-#465 callers) and
+        resolved here otherwise.
+        """
+        reason = exc.detail.get("error") if isinstance(exc.detail, dict) else str(exc.detail)
         logger.warning(
             "Proxy request DENIED provenance_id=%s url=%s reason=%s",
             provenance_id,
             body.url,
-            exc.detail.get("error") if isinstance(exc.detail, dict) else str(exc.detail),
+            reason,
         )
-        # Best-effort audit log — resolve user if possible for org_id context.
         try:
-            user = await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request")
+            resolved = user or await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request")
             await _write_audit(
                 db,
                 event_type="vault_proxy_request_denied",
-                org_id=user.org_id,
+                org_id=resolved.org_id,
                 actor_id=body.agent_id,
                 details={
                     "provenance_id": provenance_id,
@@ -452,12 +507,18 @@ async def proxy_request(
                     "task_id": body.task_id,
                     "service": body.service,
                     "url": body.url,
-                    "reason": exc.detail.get("error") if isinstance(exc.detail, dict) else str(exc.detail),
+                    "reason": reason,
                 },
             )
             await db.commit()
         except Exception:
             pass  # Don't let audit-log failures mask the security rejection.
+
+    # Issue #1158: Validate target URL before resolving credentials or making requests.
+    try:
+        _validate_proxy_url(body.url, settings)
+    except HTTPException as exc:
+        await _audit_denial(exc)
         raise
 
     user = await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request")
@@ -470,6 +531,16 @@ async def proxy_request(
         user_id=user.id,
         team_id=user.team_id,
     )
+
+    # Issue #4076: credential->host binding. Runs on the RESOLVED cred.service
+    # (never body.service — caller input must not decide this) and BEFORE
+    # _fetch_secret, so a rejected request never pulls the secret out of Secrets
+    # Manager at all.
+    try:
+        _validate_credential_host_binding(cred.service, body.url, settings)
+    except HTTPException as exc:
+        await _audit_denial(exc, user=user)
+        raise
 
     # Fetch secret and inject.
     secret_value = await _fetch_secret(cred.secret_arn, sm)

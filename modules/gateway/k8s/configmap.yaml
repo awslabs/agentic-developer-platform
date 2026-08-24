@@ -88,6 +88,19 @@ data:
   BG_VAULT_PROXY_HOST_ALLOWLIST: "__VAULT_PROXY_HOST_ALLOWLIST__"
   BG_VAULT_PROXY_REQUIRE_HTTPS: "true"
 
+  # =============================================================================
+  # Issue #4076: Credential -> host egress binding
+  # =============================================================================
+  # The allowlist above says which hosts we may talk to; this says which hosts a
+  # GIVEN service's credential may be sent to (a github credential must not go
+  # to slack.com). The service -> host map is a code constant, see
+  # src/internal/credential_egress.py.
+  # "false" = shadow mode (violations WARN-logged, allowed) — the default, so
+  # coverage gaps surface in logs first. "true" = enforce (403 + audit row).
+  # Flip via SSM: /adp/{env}/gateway/vault-enforce-credential-host-binding
+  # =============================================================================
+  BG_VAULT_ENFORCE_CREDENTIAL_HOST_BINDING: "__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__"
+
   # Logging Configuration
   BG_LOG_LEVEL: "INFO"
 

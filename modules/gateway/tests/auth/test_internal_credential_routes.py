@@ -56,6 +56,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.internal.credential_egress import (
+    allowed_hosts_for,
+    host_matches,
+    is_binding_enforced,
+)
 from src.internal.credential_injector import (
     FILE_CREDENTIAL_TYPES,
     UnsupportedCredentialTypeError,
@@ -167,6 +172,7 @@ def _settings_mock(
     bucket: str = "test-bucket",
     proxy_host_allowlist: str = "api.github.com,api.openai.com,*.atlassian.net,api.stripe.com,slack.com,jira.example.com,bad.host.invalid",
     proxy_require_https: bool = True,
+    enforce_host_binding: bool = False,
 ) -> MagicMock:
     s = MagicMock()
     s.internal_api_key = _VALID_KEY
@@ -175,6 +181,9 @@ def _settings_mock(
     s.aws_region = "us-east-1"
     s.vault_proxy_host_allowlist = proxy_host_allowlist
     s.vault_proxy_require_https = proxy_require_https
+    # Issue #4076: credential->host egress binding defaults to shadow mode (off),
+    # matching the production default in config.py.
+    s.vault_enforce_credential_host_binding = enforce_host_binding
     # Issue #3175: credential binding defaults to shadow mode (off).
     s.enforce_credential_binding = False
     s.webhook_events_table = "adp-test-webhook-events"
@@ -891,6 +900,326 @@ class TestProxyRequestAllowlist:
         assert resp.status_code == 403
         detail = resp.json()["detail"]
         assert detail["error"] == "proxy_host_denied"
+
+
+# ---------------------------------------------------------------------------
+# Issue #4076: credential -> host egress binding
+# ---------------------------------------------------------------------------
+
+
+class TestHostMatcher:
+    """T5 — pin the EXISTING correct matcher behaviour.
+
+    These pass pre-fix, and that is the point: they are the anti-regression pin
+    for extracting the matcher out of _validate_proxy_url into
+    credential_egress.host_matches. Not the failing-test evidence for the fix.
+    """
+
+    @pytest.mark.parametrize(
+        ("hostname", "expected"),
+        [
+            ("myorg.atlassian.net", True),  # wildcard subdomain
+            ("atlassian.net", True),  # bare apex
+            ("foo.bar.atlassian.net", True),  # multi-label subdomain
+            ("evil-atlassian.net", False),  # THE bypass — must stay denied
+            ("myorg.atlassian.net.", False),  # trailing-dot FQDN — fails closed
+            ("x.atlassian.net.evil.com", False),  # suffix-in-the-middle
+            ("notatlassian.net", False),
+        ],
+    )
+    def test_wildcard_matcher_table(self, hostname: str, expected: bool):
+        assert host_matches(hostname, frozenset({"*.atlassian.net"})) is expected
+
+    @pytest.mark.parametrize(
+        ("hostname", "expected"),
+        [
+            ("api.github.com", True),
+            ("API.GITHUB.COM", True),  # case-insensitive
+            ("evil.api.github.com", False),  # exact pattern is not a suffix match
+            ("api.github.com.evil.com", False),
+        ],
+    )
+    def test_exact_matcher_table(self, hostname: str, expected: bool):
+        assert host_matches(hostname, frozenset({"api.github.com"})) is expected
+
+    def test_empty_pattern_set_matches_nothing(self):
+        assert host_matches("api.github.com", frozenset()) is False
+
+
+class TestCredentialEgressMap:
+    """Unit tests for the service -> host binding map."""
+
+    def test_mapped_service_is_enforced(self):
+        assert is_binding_enforced("github") is True
+
+    def test_unmapped_free_form_service_is_not_enforced(self):
+        # `service` is deliberately free-form; custom values must stay unbound.
+        assert is_binding_enforced("custom-api-foo") is False
+        assert allowed_hosts_for("custom-api-foo") == frozenset()
+
+    def test_deployment_specific_services_stay_unmapped(self):
+        # jira/atlassian and aws host sets are per-deployment — binding them in a
+        # process-global constant would break tenants. Wave 3 handles them.
+        assert is_binding_enforced("jira") is False
+        assert is_binding_enforced("aws") is False
+
+    def test_lookup_is_case_insensitive(self):
+        assert is_binding_enforced("GitHub") is True
+        assert allowed_hosts_for("GITHUB") == allowed_hosts_for("github")
+
+
+class TestCredentialHostBinding:
+    """Credential -> host egress binding on POST /internal/v1/proxy-request.
+
+    T1/T2/T3/T6/T8 all FAIL on pre-fix code (no binding exists, so every one of
+    them gets a 200 with the github secret delivered to slack.com).
+    """
+
+    def _mock_sm(self, secret_value: str = "ghp_supersecret") -> MagicMock:
+        sm = MagicMock()
+        sm.get_secret.return_value = secret_value
+        return sm
+
+    def _post(
+        self,
+        db: AsyncSession,
+        *,
+        mock_sm: MagicMock,
+        settings: MagicMock,
+        body_service: str,
+        url: str,
+        task_id: str,
+    ):
+        """POST proxy-request with the upstream HTTP call mocked out."""
+        r = MagicMock()
+        r.status_code = 200
+        r.headers = {}
+        r.text = "{}"
+
+        with (
+            patch("src.internal.routes.get_settings", return_value=settings),
+            patch("httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client.request = AsyncMock(return_value=r)
+            mock_client_cls.return_value = mock_client
+
+            client = _make_app(db, mock_sm=mock_sm)
+            return client.post(
+                "/internal/v1/proxy-request",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "agent-egress",
+                    "task_id": task_id,
+                    "service": body_service,
+                    "method": "GET",
+                    "url": url,
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_github_credential_to_slack_denied(self, mock_settings, db: AsyncSession):
+        """T1 (headline) — a github credential may not be sent to slack.com.
+
+        Both hosts are allowlisted, so pre-fix this returns 200 and the github
+        token is delivered to slack.com. That is the exploit.
+        """
+        settings = _settings_mock(enforce_host_binding=True)
+        mock_settings.return_value = settings
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-egress-t1", service="github", credential_type="bearer"))
+
+        resp = self._post(
+            db,
+            mock_sm=self._mock_sm(),
+            settings=settings,
+            body_service="github",
+            url="https://slack.com/api/chat.postMessage",
+            task_id="task-egress-t1",
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "credential_host_binding_denied"
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_binding_denial_writes_audit_row(self, mock_settings, db: AsyncSession):
+        """T2 — the 403 lands in the same denial audit path as the allowlist 403."""
+        settings = _settings_mock(enforce_host_binding=True)
+        mock_settings.return_value = settings
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-egress-t2", service="github", credential_type="bearer"))
+
+        resp = self._post(
+            db,
+            mock_sm=self._mock_sm(),
+            settings=settings,
+            body_service="github",
+            url="https://slack.com/api/chat.postMessage",
+            task_id="task-egress-t2",
+        )
+        assert resp.status_code == 403
+
+        async def _check():
+            stmt = select(AuditLog).where(
+                AuditLog.event_type == "vault_proxy_request_denied",
+                AuditLog.org_id == "org-test",
+            )
+            logs = (await db.execute(stmt)).scalars().all()
+            reasons = [log.details.get("reason") for log in logs]
+            assert "credential_host_binding_denied" in reasons
+
+        asyncio.get_event_loop().run_until_complete(_check())
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_secret_never_fetched_on_binding_denial(self, mock_settings, db: AsyncSession):
+        """T3 — a denied request must not pull the secret out of Secrets Manager.
+
+        Proves the check sits BEFORE _fetch_secret, not after it.
+        """
+        settings = _settings_mock(enforce_host_binding=True)
+        mock_settings.return_value = settings
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-egress-t3", service="github", credential_type="bearer"))
+        mock_sm = self._mock_sm()
+
+        resp = self._post(
+            db,
+            mock_sm=mock_sm,
+            settings=settings,
+            body_service="github",
+            url="https://slack.com/api/chat.postMessage",
+            task_id="task-egress-t3",
+        )
+
+        assert resp.status_code == 403
+        mock_sm.get_secret.assert_not_called()
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_bound_service_to_own_host_still_allowed(self, mock_settings, db: AsyncSession):
+        """T4 (positive control) — github -> api.github.com keeps working.
+
+        Without this, T1 would be satisfiable by "deny everything".
+        """
+        settings = _settings_mock(enforce_host_binding=True)
+        mock_settings.return_value = settings
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-egress-t4", service="github", credential_type="bearer"))
+
+        resp = self._post(
+            db,
+            mock_sm=self._mock_sm(),
+            settings=settings,
+            body_service="github",
+            url="https://api.github.com/user",
+            task_id="task-egress-t4",
+        )
+
+        assert resp.status_code == 200
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_unmapped_service_falls_back_to_allowlist(self, mock_settings, db: AsyncSession):
+        """Unmapped free-form services fail OPEN — the allowlist is their control.
+
+        `jira` is unmapped (its host set is deployment-specific), so a jira
+        credential to the allowlisted jira.example.com must still succeed.
+        """
+        settings = _settings_mock(enforce_host_binding=True)
+        mock_settings.return_value = settings
+
+        asyncio.get_event_loop().run_until_complete(
+            _seed_credential(db, cred_id="cred-egress-unmapped", service="jira", credential_type="basic_auth")
+        )
+
+        resp = self._post(
+            db,
+            mock_sm=self._mock_sm("user:pass"),
+            settings=settings,
+            body_service="jira",
+            url="https://jira.example.com/rest/api/2/issue/PROJ-1",
+            task_id="task-egress-unmapped",
+        )
+
+        assert resp.status_code == 200
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_resolved_cred_service_drives_decision_not_body_service(self, mock_settings, db: AsyncSession):
+        """T6 (self-assertion guard) — the caller cannot flip the outcome.
+
+        The stored credential is `github`. A caller claiming service="slack" to
+        make slack.com look legitimate must NEVER get a 200 with the github
+        secret: resolution is by body.service, so it 404s (no slack credential)
+        rather than resolving the github row. Either way, never 200.
+        """
+        settings = _settings_mock(enforce_host_binding=True)
+        mock_settings.return_value = settings
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-egress-t6", service="github", credential_type="bearer"))
+        mock_sm = self._mock_sm()
+
+        resp = self._post(
+            db,
+            mock_sm=mock_sm,
+            settings=settings,
+            body_service="slack",  # lie: no slack credential exists
+            url="https://slack.com/api/chat.postMessage",
+            task_id="task-egress-t6",
+        )
+
+        assert resp.status_code != 200
+        assert resp.status_code in (403, 404)
+        mock_sm.get_secret.assert_not_called()
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_shadow_mode_allows_violation_and_warns(self, mock_settings, db: AsyncSession, caplog):
+        """T8a — flag off (the default): violation is logged, not blocked."""
+        settings = _settings_mock(enforce_host_binding=False)
+        mock_settings.return_value = settings
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-egress-t8a", service="github", credential_type="bearer"))
+
+        with caplog.at_level("WARNING", logger="src.internal.credential_routes"):
+            resp = self._post(
+                db,
+                mock_sm=self._mock_sm(),
+                settings=settings,
+                body_service="github",
+                url="https://slack.com/api/chat.postMessage",
+                task_id="task-egress-t8a",
+            )
+
+        assert resp.status_code == 200
+        assert "shadow mode" in caplog.text
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_enforce_mode_blocks_same_violation(self, mock_settings, db: AsyncSession):
+        """T8b — flag on: the same request 403s. Proves the off-switch is real,
+        i.e. rollback is a config flip, not an 8-15 min redeploy."""
+        settings = _settings_mock(enforce_host_binding=True)
+        mock_settings.return_value = settings
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-egress-t8b", service="github", credential_type="bearer"))
+
+        resp = self._post(
+            db,
+            mock_sm=self._mock_sm(),
+            settings=settings,
+            body_service="github",
+            url="https://slack.com/api/chat.postMessage",
+            task_id="task-egress-t8b",
+        )
+
+        assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------

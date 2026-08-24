@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     # When True, only https:// URLs are accepted by the proxy-request endpoint.
     vault_proxy_require_https: bool = True
 
+    # Issue #4076: Credential->host egress binding. When True, a credential whose
+    # service appears in SERVICE_HOST_BINDINGS (see internal/credential_egress.py)
+    # may only be injected into requests to that service's own hosts; anything
+    # else is 403 + an audit row. When False (default), shadow mode: violations
+    # are logged (WARN) but allowed, so the map's coverage gaps surface in logs
+    # before anyone gets a 403 — and rollback is a config flip, not a redeploy.
+    # Services with no map entry are never bound (the service column is
+    # deliberately free-form); the host allowlist above remains their control.
+    vault_enforce_credential_host_binding: bool = False
+
     # Issue #466: Well-known UUID for the adp-default free-tier tenant.
     # Every environment uses the same UUID so seed scripts and code agree.
     adp_default_org_id: str = "00000000-0000-4000-a000-000000000001"
