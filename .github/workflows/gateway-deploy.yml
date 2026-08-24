@@ -66,22 +66,30 @@ jobs:
           CHANGED=$(git diff --name-only HEAD^ HEAD)
           echo "Changed files:"
           echo "$CHANGED"
+
+          BACKEND=false
+          FRONTEND=false
+          MIGRATIONS=false
           if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/Dockerfile|modules/gateway/k8s/)'; then
-            echo "backend=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "backend=false" >> "$GITHUB_OUTPUT"
+            BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "frontend=false" >> "$GITHUB_OUTPUT"
+            FRONTEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/alembic/versions/'; then
-            echo "migrations=true" >> "$GITHUB_OUTPUT"
+            MIGRATIONS=true
             echo "::warning::New Alembic migration detected in this push"
-          else
-            echo "migrations=false" >> "$GITHUB_OUTPUT"
+            # #4123: migration files are baked into the image, and the migrate
+            # job execs `alembic upgrade head` inside the running pod (/app). A
+            # migration-only push must therefore ALSO rebuild+redeploy the image,
+            # or the migrate job runs the OLD in-pod migration files against the
+            # DB — which is exactly how #4123's over-long revision id kept failing
+            # even after the fix had merged. Force a backend rebuild.
+            BACKEND=true
           fi
+          echo "backend=$BACKEND" >> "$GITHUB_OUTPUT"
+          echo "frontend=$FRONTEND" >> "$GITHUB_OUTPUT"
+          echo "migrations=$MIGRATIONS" >> "$GITHUB_OUTPUT"
 
   deploy-backend:
     name: Build and Deploy Backend
