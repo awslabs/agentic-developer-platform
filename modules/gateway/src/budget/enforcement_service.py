@@ -6,19 +6,24 @@ It traverses the entity hierarchy (user → team → department → org) and
 checks budget constraints at each level.
 """
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
 
+import botocore.exceptions
 from sqlalchemy import and_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.database import get_session_factory, reset_engine
 from src.shared.logging import get_logger
+from src.shared.metrics import emit_budget_check_failure, emit_budget_grace_engaged
 from src.shared.models.budget import BudgetConfig, BudgetUsage
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import (
+    DenyReason,
     EnforcementMode,
     EnforcementResult,
     EntityType,
@@ -26,6 +31,7 @@ from src.shared.schemas.budget import (
 )
 
 from .config import budget_config
+from .grace_window import GraceWindow
 from .pricing import PricingService, pricing_service
 from .utils import (
     calculate_budget_utilization,
@@ -33,6 +39,28 @@ from .utils import (
 )
 
 logger = get_logger(__name__)
+
+# Exception types that mean "the ledger is temporarily unreadable" rather than
+# "this code is broken" (Issue #4075).
+#
+# Only these get grace-window treatment. The distinction is load-bearing: a
+# TypeError/AttributeError in the check is DETERMINISTIC — it recurs on every
+# request forever — so a grace window is precisely the wrong medicine. It would
+# expire and then deny 100% of traffic on every enforced path, permanently. A
+# code bug must not be able to do that, so unexpected classes fail open with a
+# distinct high-severity signal instead.
+# Note: TimeoutError and ConnectionError are both subclasses of OSError, so
+# OSError alone would suffice. They are listed explicitly because they are the
+# two faults this path actually sees in production (RDS proxy timeouts, socket
+# resets) and a future narrowing of OSError must not silently drop them.
+_INFRASTRUCTURE_FAULTS: tuple[type[BaseException], ...] = (
+    SQLAlchemyError,
+    TimeoutError,
+    ConnectionError,
+    OSError,
+    botocore.exceptions.BotoCoreError,
+    botocore.exceptions.ClientError,
+)
 
 
 class BudgetEnforcementService:
@@ -50,6 +78,7 @@ class BudgetEnforcementService:
         self,
         db_session: AsyncSession | None = None,
         pricing: PricingService | None = None,
+        grace_window: GraceWindow | None = None,
     ):
         """
         Initialize the budget enforcement service.
@@ -57,9 +86,144 @@ class BudgetEnforcementService:
         Args:
             db_session: Optional injected database session
             pricing: Optional custom pricing service (for testing)
+            grace_window: Optional injected grace window (for testing). When
+                omitted, one is built lazily from config so the Redis client is
+                not created until a failure actually occurs.
         """
         self.db_session = db_session
         self._pricing = pricing or pricing_service
+        self._grace_window = grace_window
+
+    def _get_grace_window(self) -> GraceWindow:
+        """Get (or lazily build) the grace window.
+
+        Built lazily so the healthy path never touches Redis — the window is
+        only consulted when a ledger read has already failed.
+        """
+        if self._grace_window is None:
+            from src.shared.config import get_settings
+
+            redis_url = None
+            if budget_config.budget_grace_window_backend == "redis":
+                redis_url = get_settings().redis_url
+
+            self._grace_window = GraceWindow(
+                grace_seconds=budget_config.budget_fail_open_grace_seconds,
+                redis_url=redis_url,
+            )
+        return self._grace_window
+
+    async def _handle_check_failure(self, exc: Exception, check_name: str) -> EnforcementResult:
+        """Decide what to do when the budget check itself failed (Issue #4075).
+
+        Three outcomes:
+
+        * fail mode is explicitly ``open`` → allow (this is the rollback lever)
+        * unexpected exception class → allow + high-severity signal, because a
+          deterministic code bug must not be able to permanently down all
+          inference (it would recur on every request and outlive any window)
+        * infrastructure fault → allow while inside the bounded grace window,
+          deny once it expires
+
+        Args:
+            exc: The exception raised by the check
+            check_name: Which check failed, for log attribution
+
+        Returns:
+            EnforcementResult carrying the decision and its reason
+        """
+        environment = self._get_environment()
+
+        # Explicit fail-open: the documented rollback path. Kept honest — this
+        # is NOT reported as a grace-window allow.
+        if budget_config.budget_fail_mode.lower() == "open":
+            logger.error(f"{check_name} failed (fail_mode=open, allowing): {exc}", exc_info=True)
+            emit_budget_check_failure(
+                fault_class="infrastructure" if isinstance(exc, _INFRASTRUCTURE_FAULTS) else "unexpected",
+                outcome="allowed_fail_open",
+                environment=environment,
+            )
+            return EnforcementResult(
+                allowed=True,
+                warnings=[f"Budget check failed: {str(exc)}"],
+            )
+
+        # A code bug, not an outage. Failing closed here would be a permanent
+        # total outage that no grace window rescues, so allow and shout.
+        if not isinstance(exc, _INFRASTRUCTURE_FAULTS):
+            logger.error(
+                f"{check_name} raised an unexpected {type(exc).__name__} — allowing request and alarming. "
+                f"This is a code defect, not an outage: {exc}",
+                exc_info=True,
+            )
+            emit_budget_check_failure(
+                fault_class="unexpected",
+                outcome="allowed_fail_open",
+                environment=environment,
+            )
+            return EnforcementResult(
+                allowed=True,
+                warnings=[f"Budget check error ({type(exc).__name__}): {str(exc)}"],
+            )
+
+        # Transient infrastructure fault — consult the bounded window.
+        within_grace = await self._get_grace_window().register_failure()
+
+        if within_grace:
+            logger.error(
+                f"{check_name} failed (infrastructure fault, allowing under grace window): {exc}",
+                exc_info=True,
+            )
+            emit_budget_grace_engaged(1, environment=environment)
+            emit_budget_check_failure(
+                fault_class="infrastructure",
+                outcome="allowed_under_grace",
+                environment=environment,
+            )
+            return EnforcementResult(
+                allowed=True,
+                grace_engaged=True,
+                warnings=[f"Budget check unavailable, allowed under grace window: {str(exc)}"],
+            )
+
+        logger.error(
+            f"{check_name} failed and the grace window has expired — denying: {exc}",
+            exc_info=True,
+        )
+        emit_budget_grace_engaged(1, environment=environment)
+        emit_budget_check_failure(
+            fault_class="infrastructure",
+            outcome="denied",
+            environment=environment,
+        )
+        return EnforcementResult(
+            allowed=False,
+            deny_reason=DenyReason.CHECK_UNAVAILABLE,
+            blocked_reason=f"Budget check failed: {str(exc)}",
+        )
+
+    async def _note_check_succeeded(self) -> None:
+        """Reset the grace window after a healthy ledger read.
+
+        The window tracks CONSECUTIVE failures. Without this reset, unrelated
+        blips hours apart would accumulate into one long-expired streak and the
+        first failure after a healthy week would deny outright. Also emits the
+        healthy-path 0 so the alarm can transition (see emit_budget_grace_engaged).
+        """
+        emit_budget_grace_engaged(0, environment=self._get_environment())
+
+        window = self._grace_window
+        if window is not None:
+            await window.clear()
+
+    @staticmethod
+    def _get_environment() -> str:
+        """Environment name for metric dimensions.
+
+        Read straight from the env var (same pattern as shared/tracing.py) —
+        Settings has no environment field.
+        """
+        return os.environ.get("BG_ENVIRONMENT", "dev")
 
     @asynccontextmanager
     async def _get_session(self) -> AsyncIterator[AsyncSession]:
@@ -129,6 +293,12 @@ class BudgetEnforcementService:
         Returns immediately if a hard limit is exceeded.
         Accumulates warnings for soft limit breaches.
 
+        On failure (Issue #4075) this fails CLOSED by default: if the ledger
+        cannot be read, the request is denied rather than admitted, because
+        admitting it means uncapped spend no cap will stop. A bounded,
+        alarmed grace window keeps a transient DB/IAM blip from hard-downing
+        all inference — see _handle_check_failure for the full policy.
+
         Args:
             context: Token context with user hierarchy info
             estimated_cost: Estimated cost for this request
@@ -162,33 +332,23 @@ class BudgetEnforcementService:
                         )
 
                         if not result.allowed:
-                            # Hard limit exceeded - block immediately
+                            # Hard limit exceeded - block immediately. The
+                            # ledger read itself succeeded, so this counts as a
+                            # healthy check for grace-window purposes.
+                            await self._note_check_succeeded()
                             return result
 
                         # Accumulate warnings from soft limits
                         if result.warnings:
                             all_warnings.extend(result.warnings)
 
-                # All checks passed
+                # All checks passed — the ledger is readable, so reset the
+                # consecutive-failure window and emit the healthy-path 0.
+                await self._note_check_succeeded()
                 return EnforcementResult(allowed=True, warnings=all_warnings)
 
         except Exception as e:
-            # Check fail mode from config (default: closed)
-            fail_mode = budget_config.budget_fail_mode.lower()
-            if fail_mode == "open":
-                # Fail open - log and allow request
-                logger.error(f"Budget check failed with error (failing open): {e}", exc_info=True)
-                return EnforcementResult(
-                    allowed=True,
-                    warnings=[f"Budget check failed: {str(e)}"],
-                )
-            else:
-                # Fail closed (default) - log and block request
-                logger.error(f"Budget check failed with error (failing closed): {e}", exc_info=True)
-                return EnforcementResult(
-                    allowed=False,
-                    blocked_reason=f"Budget check failed: {str(e)}",
-                )
+            return await self._handle_check_failure(e, "Budget check")
 
     async def _check_entity_budget(
         self,
@@ -261,6 +421,7 @@ class BudgetEnforcementService:
                 )
                 return EnforcementResult(
                     allowed=False,
+                    deny_reason=DenyReason.BUDGET_EXCEEDED,
                     blocked_reason=f"Budget exceeded for {entity_type.value} {entity_id}",
                     exceeded_entity_type=entity_type,
                     exceeded_entity_id=entity_id,
@@ -553,6 +714,7 @@ class BudgetEnforcementService:
                         )
                         return EnforcementResult(
                             allowed=False,
+                            deny_reason=DenyReason.BUDGET_EXCEEDED,
                             blocked_reason=f"Agent budget exceeded (config_id={budget_config_id})",
                             exceeded_entity_type=EntityType(budget.entity_type),
                             exceeded_entity_id=budget.entity_id,
@@ -581,22 +743,16 @@ class BudgetEnforcementService:
                 elif utilization >= budget_config.budget_warning_threshold_percent:
                     warnings.append(f"Agent budget at {utilization:.1f}%")
 
+                await self._note_check_succeeded()
                 return EnforcementResult(allowed=True, warnings=warnings)
 
         except Exception as e:
-            fail_mode = budget_config.budget_fail_mode.lower()
-            if fail_mode == "open":
-                logger.error(f"Agent budget check failed (failing open): {e}", exc_info=True)
-                return EnforcementResult(
-                    allowed=True,
-                    warnings=[f"Agent budget check failed: {str(e)}"],
-                )
-            else:
-                logger.error(f"Agent budget check failed (failing closed): {e}", exc_info=True)
-                return EnforcementResult(
-                    allowed=False,
-                    blocked_reason=f"Agent budget check failed: {str(e)}",
-                )
+            # Issue #4075 (D7): this carried an identical fail-open defect to
+            # check_budget_hierarchy. It is unreachable today (#3985 removed
+            # the header that drove it) but it is live code the per-agent
+            # budget work will re-wire, so it gets the same policy rather than
+            # being left as a second silent hole.
+            return await self._handle_check_failure(e, "Agent budget check")
 
 
 # Global enforcement service instance

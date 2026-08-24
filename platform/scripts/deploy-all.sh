@@ -916,6 +916,19 @@ else
   ENFORCE_CREDENTIAL_BINDING=$(_get_ssm "/adp/$ENVIRONMENT/gateway/enforce-credential-binding" "true")
   if [ "$ENFORCE_CREDENTIAL_BINDING" = "None" ]; then ENFORCE_CREDENTIAL_BINDING="true"; fi
 
+  # #4075: Budget enforcement fail mode. Default "closed" (safe-by-default: a failed
+  # budget check must not admit uncapped spend). A bounded, alarmed 30s grace window
+  # keeps transient DB blips from downing inference. Set to "open" via this SSM param
+  # + rollout restart to roll back.
+  BUDGET_FAIL_MODE=$(_get_ssm "/adp/$ENVIRONMENT/gateway/budget-fail-mode" "closed")
+  if [ -z "$BUDGET_FAIL_MODE" ] || [ "$BUDGET_FAIL_MODE" = "None" ]; then BUDGET_FAIL_MODE="closed"; fi
+
+  # #4076: Credential->host egress binding. Default "false" (shadow mode) — violations
+  # are WARN-logged but allowed, so operators can confirm the service->host map covers
+  # live traffic before anyone gets a 403. Flip to "true" per env via SSM once clean.
+  VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(_get_ssm "/adp/$ENVIRONMENT/gateway/vault-enforce-credential-host-binding" "false")
+  if [ "$VAULT_ENFORCE_CREDENTIAL_HOST_BINDING" = "None" ]; then VAULT_ENFORCE_CREDENTIAL_HOST_BINDING="false"; fi
+
   # Issue #1158: Vault proxy host allowlist (SSRF mitigation, FAIL-CLOSED when empty)
   VAULT_PROXY_HOST_ALLOWLIST=$(_get_ssm "/adp/$ENVIRONMENT/gateway/vault-proxy-host-allowlist" "api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com")
   if [ "$VAULT_PROXY_HOST_ALLOWLIST" = "None" ]; then VAULT_PROXY_HOST_ALLOWLIST="api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com"; fi
@@ -993,6 +1006,8 @@ else
       -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
       -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
       -e "s|__AGENT_RUN_LOGS_BUCKET__|${AGENT_RUN_LOGS_BUCKET}|g" \
+      -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
+      -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
       k8s/configmap.yaml | kubectl apply -f -
   # Render serviceaccount with the correct IRSA role ARN (Issue #1008)
   sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \

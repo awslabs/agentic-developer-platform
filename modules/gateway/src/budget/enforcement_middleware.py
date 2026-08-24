@@ -27,7 +27,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.logging import get_logger
 from src.shared.schemas.auth import TokenContext
-from src.shared.schemas.budget import EnforcementResult
+from src.shared.schemas.budget import DenyReason, EnforcementResult
 from src.shared.timing import get_timings
 
 from .enforcement_service import BudgetEnforcementService, budget_enforcement_service
@@ -36,6 +36,11 @@ logger = get_logger(__name__)
 
 # Conservative cost estimate for pre-request budget check (USD).
 _DEFAULT_ESTIMATE_USD = Decimal("0.05")
+
+# Retry-After for check-failure denials (Issue #4075). Short on purpose: the
+# ledger is expected back in seconds, and the whole point of using 503 over 402
+# is that the client can recover unaided.
+_CHECK_UNAVAILABLE_RETRY_AFTER = b"5"
 
 
 class BudgetEnforcementMiddleware:
@@ -113,9 +118,14 @@ class BudgetEnforcementMiddleware:
                 if not msg.get("more_body", False):
                     break
 
-            # Write 402 directly via ASGI send()
-            await self._send_budget_exceeded(send, result)
-            logger.info("Budget exceeded response sent successfully")
+            # Write the denial directly via ASGI send(). Issue #4075: which
+            # denial matters — a real cap is 402, an unreadable ledger is 503.
+            if result.deny_reason == DenyReason.CHECK_UNAVAILABLE:
+                await self._send_check_unavailable(send, result)
+                logger.info("Budget check unavailable response sent successfully")
+            else:
+                await self._send_budget_exceeded(send, result)
+                logger.info("Budget exceeded response sent successfully")
             return
 
         # Let the request through to the next middleware/app
@@ -188,6 +198,49 @@ class BudgetEnforcementMiddleware:
             {
                 "type": "http.response.start",
                 "status": 402,
+                "headers": headers,
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": body_bytes,
+            }
+        )
+
+    async def _send_check_unavailable(self, send: Send, result: EnforcementResult) -> None:
+        """Write a 503 JSON response when the budget CHECK failed (Issue #4075).
+
+        Deliberately not a 402. Under fail-closed, a DB/IAM fault would
+        otherwise present platform-wide as "budget exceeded" with a null budget
+        and null spend — which sends operators chasing a billing problem during
+        a database incident, and corrupts any dashboard built on 402 rates.
+
+        503 is also retryable where 402 is deliberately not (see the comment in
+        _send_budget_exceeded), so clients recover on their own once the ledger
+        comes back instead of needing an operator. Nothing here is known to be
+        over budget, so no budget headers are emitted.
+        """
+        body_bytes = json.dumps(
+            {
+                "error": "budget_check_unavailable",
+                "message": ("Budget enforcement is temporarily unable to verify spend for this request. Retry shortly."),
+                "details": {"reason": result.blocked_reason},
+            }
+        ).encode("utf-8")
+
+        headers: list[tuple[bytes, bytes]] = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body_bytes)).encode()),
+            (b"retry-after", _CHECK_UNAVAILABLE_RETRY_AFTER),
+        ]
+
+        logger.error(f"Budget check unavailable - denying request: {result.blocked_reason}")
+
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 503,
                 "headers": headers,
             }
         )

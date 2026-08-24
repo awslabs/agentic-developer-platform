@@ -9,6 +9,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from src.budget.enforcement_service import BudgetEnforcementService
 from src.budget.pricing import PricingService
@@ -228,19 +229,28 @@ class TestBudgetEnforcementService:
         assert result.allowed is True
 
     @pytest.mark.asyncio
-    async def test_check_budget_fails_closed_on_error_by_default(self, token_context):
-        """Test that budget check fails closed on database errors by default."""
-        # Test by mocking _get_session to raise an exception
+    async def test_check_budget_fails_closed_when_mode_is_closed(self, token_context):
+        """Test that budget check blocks on DB errors when mode is "closed".
+
+        Issue #4075: this test used to be named ``..._by_default`` and its
+        inline comment claimed ``"closed"`` was "Default behavior" — but it
+        patches ``budget_config`` and sets the mode explicitly, so it never
+        reads the shipped default and would have stayed green either way. It is
+        renamed to describe what it actually exercises (an explicitly-closed
+        mode). The real default is asserted against an unpatched
+        ``BudgetConfig()`` in ``tests/budget/test_fail_closed_enforcement.py``.
+        """
         service = BudgetEnforcementService()
 
-        # Patch the internal method to simulate a database error
-        async def mock_get_session_error():
-            raise Exception("Database error")
+        # An infrastructure fault — the class the grace window is scoped to.
+        db_error = OperationalError("SELECT 1", {}, Exception("Database error"))
 
-        with patch.object(service, "_get_session", side_effect=mock_get_session_error):
+        with patch.object(service, "_get_session", side_effect=db_error):
             with patch("src.budget.enforcement_service.budget_config") as mock_config:
                 mock_config.budget_check_enabled = True
-                mock_config.budget_fail_mode = "closed"  # Default behavior
+                mock_config.budget_fail_mode = "closed"
+                mock_config.budget_fail_open_grace_seconds = 0  # no grace: steady state
+                mock_config.budget_grace_window_backend = "process"
                 result = await service.check_budget_hierarchy(token_context, estimated_cost=Decimal("1.00"))
 
         # Should fail closed - block the request
@@ -250,14 +260,11 @@ class TestBudgetEnforcementService:
     @pytest.mark.asyncio
     async def test_check_budget_fails_open_when_configured(self, token_context):
         """Test that budget check fails open when configured to do so."""
-        # Test by mocking _get_session to raise an exception
         service = BudgetEnforcementService()
 
-        # Patch the internal method to simulate a database error
-        async def mock_get_session_error():
-            raise Exception("Database error")
+        db_error = OperationalError("SELECT 1", {}, Exception("Database error"))
 
-        with patch.object(service, "_get_session", side_effect=mock_get_session_error):
+        with patch.object(service, "_get_session", side_effect=db_error):
             with patch("src.budget.enforcement_service.budget_config") as mock_config:
                 mock_config.budget_check_enabled = True
                 mock_config.budget_fail_mode = "open"  # Configure to fail open

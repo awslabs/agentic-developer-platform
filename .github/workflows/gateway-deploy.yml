@@ -210,6 +210,13 @@ jobs:
           # mode via /adp/dev/gateway/enforce-credential-binding=false.
           ENFORCE_CREDENTIAL_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/enforce-credential-binding" "true")
 
+          # #4075: Budget enforcement fail mode. Default "closed" (safe-by-default:
+          # a failed budget check must not admit uncapped spend). A bounded, alarmed
+          # 30s grace window keeps transient DB blips from downing inference.
+          # Set to "open" via this SSM param + rollout restart to roll back.
+          BUDGET_FAIL_MODE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/budget-fail-mode" "closed")
+          if [ -z "$BUDGET_FAIL_MODE" ] || [ "$BUDGET_FAIL_MODE" = "None" ]; then BUDGET_FAIL_MODE="closed"; fi
+
           # #4076: Credential->host egress binding. Default "false" (shadow mode) —
           # violations are WARN-logged but allowed, so operators can confirm the
           # service->host map covers live traffic before anyone gets a 403. Flip to
@@ -239,6 +246,7 @@ jobs:
               -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
               -e "s|__AGENT_RUN_LOGS_BUCKET__|adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}|g" \
               -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
+              -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
               -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 

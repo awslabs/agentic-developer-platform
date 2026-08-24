@@ -11,9 +11,32 @@ class BudgetConfig(BaseSettings):
     budget_check_enabled: bool = True
     cost_calculation_enabled: bool = True
 
-    # Fail mode: "open" (default) allows requests on errors, "closed" blocks them
-    # "open" ensures transient DB/IAM errors don't block all traffic
-    budget_fail_mode: str = "open"
+    # Fail mode (Issue #4075): "closed" (default) blocks requests when the
+    # budget check itself fails, "open" allows them.
+    #
+    # The default used to be "open", which meant any DB/IAM error on the ledger
+    # read admitted the request — so a transient fault was an open window of
+    # uncapped model spend that no cap would stop. Fail-closed removes that
+    # window; budget_fail_open_grace_seconds below keeps a brief blip from
+    # hard-downing all inference instead.
+    #
+    # Set via BG_BUDGET_BUDGET_FAIL_MODE (note the doubled BUDGET — env_prefix
+    # is "BG_BUDGET_"), stamped into the ConfigMap from SSM at deploy time.
+    # Reverting to "open" is the rollback lever; it requires an SSM put plus a
+    # redeploy/rollout-restart, since this is read once at container start.
+    budget_fail_mode: str = "closed"
+
+    # How long CONSECUTIVE budget-check failures may be tolerated before
+    # requests are denied (Issue #4075). Sized to absorb a realistic RDS
+    # IAM-token-expiry blip; state is shared via Redis so this is one window
+    # cluster-wide rather than one per process. Set to 0 to deny on the first
+    # failure.
+    budget_fail_open_grace_seconds: int = 30
+
+    # Where the grace window keeps its state: "redis" (shared, correct across
+    # the 8 replica×worker processes) or "process" (per-process, approximate —
+    # single-process local dev only).
+    budget_grace_window_backend: str = "redis"
 
     # Grace period settings (in seconds)
     soft_enforcement_grace_period: int = 300  # 5 minutes

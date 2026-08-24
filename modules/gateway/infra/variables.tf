@@ -468,6 +468,16 @@ variable "agent_context_ingestion_queue_arn" {
 
 
 # =============================================================================
+# Budget Enforcement Alarms (Issue #4075)
+# =============================================================================
+
+variable "budget_alarm_sns_topic_arns" {
+  type        = list(string)
+  description = "SNS topic ARNs notified by budget-enforcement alarms. Empty means the alarms still evaluate and are visible in the console but page nobody — set this in any environment where uncapped spend matters."
+  default     = []
+}
+
+# =============================================================================
 # Test Users Configuration (Issue #60)
 # =============================================================================
 

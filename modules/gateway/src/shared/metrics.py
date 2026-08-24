@@ -322,6 +322,73 @@ def emit_budget_utilization(
     )
 
 
+def emit_budget_grace_engaged(
+    engaged: int,
+    environment: str = "production",
+) -> None:
+    """
+    Emit BudgetCheckFailOpenGrace metric (Issue #4075).
+
+    Signals that budget enforcement is currently allowing requests it could not
+    verify, because the ledger read is failing and we are inside the bounded
+    grace window. This is the alarm that must page on-call: every second it is
+    engaged is a second of potentially uncapped spend, and when the window
+    expires all enforced paths start denying.
+
+    IMPORTANT: this is emitted with ``engaged=0`` on the healthy path too. A
+    metric that only appears during an incident leaves its alarm permanently in
+    INSUFFICIENT_DATA and it never transitions — which is the most common way
+    this class of alarm ships silently broken. The alarm pairs this with
+    ``treat_missing_data = "notBreaching"``.
+
+    Args:
+        engaged: 1 while the grace window is engaged, 0 when healthy
+        environment: Environment name
+    """
+    _emit_emf(
+        metrics={
+            "BudgetCheckFailOpenGrace": engaged,
+            "Environment": environment,
+        },
+        dimensions=[["Environment"]],
+    )
+
+
+def emit_budget_check_failure(
+    fault_class: str,
+    outcome: str,
+    count: int = 1,
+    environment: str = "production",
+) -> None:
+    """
+    Emit BudgetCheckFailure metric (Issue #4075).
+
+    Args:
+        fault_class: "infrastructure" for transient DB/IAM faults the grace
+            window is designed to absorb, or "unexpected" for exception types
+            that indicate a code bug. The distinction matters: an unexpected
+            fault is deterministic, recurs on every request, and no grace
+            window rescues it — so it fails OPEN with a high-severity signal
+            rather than permanently downing all inference.
+        outcome: "allowed_under_grace", "allowed_fail_open", or "denied"
+        count: Number of failures (default 1)
+        environment: Environment name
+    """
+    _emit_emf(
+        metrics={
+            "BudgetCheckFailure": count,
+            "fault_class": fault_class,
+            "outcome": outcome,
+            "Environment": environment,
+        },
+        dimensions=[
+            ["fault_class", "outcome", "Environment"],
+            ["fault_class", "Environment"],
+            ["Environment"],
+        ],
+    )
+
+
 # ============================================================================
 # Rate Limit Metrics
 # ============================================================================

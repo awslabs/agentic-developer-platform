@@ -215,6 +215,29 @@ data:
   BG_ENFORCE_CREDENTIAL_BINDING: "__ENFORCE_CREDENTIAL_BINDING__"
 
   # =============================================================================
+  # Budget enforcement fail mode (Issue #4075)
+  # =============================================================================
+  # What happens when the budget CHECK itself fails (DB/IAM error), as opposed
+  # to a request genuinely exceeding its cap:
+  #   closed (default) — deny. A failed ledger read must not admit the request,
+  #                      because that is uncapped model spend no cap will stop.
+  #                      A bounded, alarmed grace window (30s of CONSECUTIVE
+  #                      failures, shared via Redis) keeps a transient RDS
+  #                      IAM-token blip from hard-downing all inference.
+  #   open             — allow. This is the ROLLBACK lever, not a normal state.
+  #
+  # Note the doubled BUDGET: budget/config.py sets env_prefix = "BG_BUDGET_",
+  # so the field budget_fail_mode reads BG_BUDGET_BUDGET_FAIL_MODE.
+  #
+  # Read once at container start (module-level singleton, envFrom), and there is
+  # no checksum/config annotation on the Deployment — so a configmap-only
+  # `kubectl apply` does NOT change a running pod. Changing this requires
+  # SSM put + `kubectl rollout restart` (or a redeploy).
+  # Reads from SSM: /adp/{env}/gateway/budget-fail-mode
+  # =============================================================================
+  BG_BUDGET_BUDGET_FAIL_MODE: "__BUDGET_FAIL_MODE__"
+
+  # =============================================================================
   # Identity Index DynamoDB tables (Issue #375, #537)
   # =============================================================================
   # Write-through to DDB identity-index tables enables the webhook Lambda to

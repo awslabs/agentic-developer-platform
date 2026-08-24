@@ -770,6 +770,51 @@ module "cloudwatch_dashboard" {
   pod_deployment_name        = "bedrockgateway"
 }
 
+# =============================================================================
+# Budget Enforcement Alarms (Issue #4075)
+# =============================================================================
+# Budget enforcement fails CLOSED with a bounded grace window. These alarms make
+# that window observable — an unobserved grace window is fail-open with extra
+# steps. Metrics are app EMF from the gateway pod (namespace BedrockGateway,
+# matching src/shared/metrics.py).
+# =============================================================================
+
+module "budget_alarms" {
+  source = "./modules/budget-alarms"
+
+  environment   = var.environment
+  name_prefix   = local.name_prefix
+  common_tags   = local.common_tags
+  alarm_actions = var.budget_alarm_sns_topic_arns
+}
+
+# =============================================================================
+# Budget fail-mode SSM parameter (Issue #4075)
+# =============================================================================
+# Makes budget_fail_mode reversible at runtime. Without this the mode is a
+# compile-time constant, and the documented rollback ("set it back to open")
+# cannot be executed at all — which would make shipping fail-closed strictly
+# worse than the previous fail-open behaviour.
+#
+# Both ConfigMap renderers (gateway-deploy.yml and deploy-all.sh) read this
+# param and stamp it into BG_BUDGET_BUDGET_FAIL_MODE.
+# =============================================================================
+
+resource "aws_ssm_parameter" "budget_fail_mode" {
+  name        = "/adp/${var.environment}/gateway/budget-fail-mode"
+  description = "Budget enforcement fail mode: closed (deny on check failure, default) or open (rollback lever). Issue #4075."
+  type        = "String"
+  value       = "closed"
+
+  tags = local.common_tags
+
+  # Operators flip this out-of-band (SSM put + rollout restart) during an
+  # incident. Terraform must not revert that on the next apply.
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # NOTE: EKS→RDS (5432) and EKS→Redis (6379) security group rules are owned by
 # platform infra (platform/infra/main.tf) — do NOT duplicate them here.
 # See: https://github.com/aws-e/adp/issues/2590
