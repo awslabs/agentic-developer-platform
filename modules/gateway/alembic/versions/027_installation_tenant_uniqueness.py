@@ -31,8 +31,8 @@ reference columns of the indexed table, so a ``NOT EXISTS (...)`` predicate is
 rejected outright. 026 denormalizes the conflict flag onto the row for exactly
 this reason.
 
-Revision ID: 027_installation_tenant_uniqueness
-Revises: 026_channel_tenant_map_installation_id
+Revision ID: 027_install_tenant_unique
+Revises: 026_ctm_installation_id
 Create Date: 2026-08-23
 """
 
@@ -40,8 +40,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "027_installation_tenant_uniqueness"
-down_revision: str | None = "026_channel_tenant_map_installation_id"
+revision: str = "027_install_tenant_unique"
+down_revision: str | None = "026_ctm_installation_id"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -34,7 +34,7 @@ Duplicate handling (decision D3) — quarantine, never guess
   customer, and a DELETE is not covered by this migration's rollback. The
   resolver reads the quarantine table and fails closed instead.
 
-Revision ID: 026_channel_tenant_map_installation_id
+Revision ID: 026_ctm_installation_id
 Revises: 025_org_created_via
 Create Date: 2026-08-23
 """
@@ -47,7 +47,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "026_channel_tenant_map_installation_id"
+revision: str = "026_ctm_installation_id"
 down_revision: str | None = "025_org_created_via"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
