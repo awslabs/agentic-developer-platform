@@ -31,6 +31,11 @@ on:
       - 'modules/agent-factory/agent/src/lib/provenanceClient.ts'
       - 'modules/agent-factory/agent/src/lib/provenanceClient.test.ts'
       - 'modules/agent-factory/agent/src/agent-worker.ts'
+      # Agent trust-boundary contracts (#4074). Broad on purpose: the wrap-site
+      # gate scans every .ts under src/ for Bash+bypassPermissions prompts, so
+      # ANY source change can introduce the regression it exists to catch. A
+      # narrow filter would let a new unwrapped site merge without running it.
+      - 'modules/agent-factory/agent/src/**'
       # This workflow
       - '.github/workflows/provenance-contract-tests.yml'
     branches:
@@ -90,3 +95,43 @@ jobs:
       - name: Assert the Node runtime builds the golden payload
         working-directory: modules/agent-factory/agent
         run: npx jest src/lib/provenanceClient.test.ts
+
+  agent-trust-boundary:
+    name: Agent Trust Boundary Contracts
+    runs-on: arc-runner-org
+    # Issue #4074: two agent trust boundaries were crossed by untrusted content
+    # (model-supplied memory scope; an unwrapped issue body in a Bash +
+    # bypassPermissions prompt). Both fixes are guarded by the suites below.
+    #
+    # These run as named test files rather than a bare `npx jest` because the
+    # suite has a pre-existing red baseline on main (4 suites import `vitest`,
+    # which is not in package.json, plus 2 unrelated assertion failures). A bare
+    # run would fail immediately and train everyone to ignore this job.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+
+      # --include=dev for the same reason as the job above: NODE_ENV=production
+      # in the runner makes npm omit devDependencies, silently stripping ts-jest.
+      - name: Install dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci --include=dev
+
+      - name: Typecheck
+        working-directory: modules/agent-factory/agent
+        run: npx tsc --noEmit
+
+      - name: Assert memory tools cannot be scoped by the model, and every Bash+bypass prompt wraps untrusted input
+        working-directory: modules/agent-factory/agent
+        run: |
+          npx jest \
+            src/complex-task-chat/memory/tools.test.ts \
+            src/complex-task-chat/memory/null-memory.test.ts \
+            src/utils/__tests__/trust-boundary.test.ts \
+            src/utils/__tests__/bash-bypass-wrap-sites.test.ts

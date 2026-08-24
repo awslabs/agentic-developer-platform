@@ -352,7 +352,12 @@ async function processOne(
 
     const tools: AgentTool[] = [
       ...deps.context.tools(),
-      ...deps.memory.tools(),
+      // #4074: closure-inject the authenticated scope so the model cannot
+      // choose the memory partition it reads/writes. `user`/`tenant` are
+      // JWT-derived; `persona.name` is the allowlist-sanitized name from
+      // loadPersona — NOT raw `agent_type`, which the Bedrock classifier
+      // derives from the user's own message.
+      ...deps.memory.tools({ user: user_id, tenant: tenant_id, persona: persona.name }),
       ...artifactTools,
       ...vaultTools,
     ];
