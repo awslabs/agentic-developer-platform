@@ -6,7 +6,7 @@ Issue #134: Vault Phase 1 — schema + secret-store substrate
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from src.shared.identity.providers import SUPPORTED_PROVIDERS, IdentityProvider
@@ -205,16 +205,45 @@ class ChannelTenantMap(Base):
     """Maps external workspaces/orgs (e.g. Slack workspace) to ADP tenants."""
 
     __tablename__ = "channel_tenant_map"
-    __table_args__ = (Index("uq_channel_tenant_map_provider_scope", "provider", "provider_scope_id", unique=True),)
+    __table_args__ = (
+        Index("uq_channel_tenant_map_provider_scope", "provider", "provider_scope_id", unique=True),
+        Index("ix_channel_tenant_map_installation_id", "installation_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    # A per-provider ACCOUNT/WORKSPACE scope key — NOT an installation id.
+    #
+    # Issue #4070 (D1): this column deliberately keeps its existing, correct
+    # meaning. It carries four different value shapes across providers (GitHub
+    # numeric account id or login; ``personal:<gh_account_id>:<adp_user_id>``;
+    # Slack/WhatsApp workspace ids), and Slack/WhatsApp rows have no
+    # installation at all — so it cannot be reconciled to "installation id".
+    # The installation id lives in ``installation_id`` below instead.
     provider_scope_id: Mapped[str] = mapped_column(String(255), nullable=False)
     org_id: Mapped[str] = mapped_column(
         String(255),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Issue #4070 (·A0): the canonical installation -> tenant key.
+    #
+    # Before this column, one writer put a GitHub *account* id and another put an
+    # *installation* id into provider_scope_id — disjoint number spaces, so
+    # ``uq_channel_tenant_map_provider_scope`` never fired and two tenants could
+    # both claim one installation. Uniqueness is enforced here instead, by
+    # migration 027's partial unique index (Postgres). Stored as a string to
+    # match ``organizations.github_installation_ids``, whose entries are strings.
+    #
+    # NULL for non-GitHub rows and for GitHub rows predating migration 026.
+    installation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Denormalized "more than one tenant claims this installation" flag, set by
+    # migration 026's quarantine step. It is a column rather than a subquery
+    # against installation_ownership_conflicts because a Postgres partial-index
+    # predicate may only reference columns of the indexed table — 027's index
+    # excludes disputed rows so the constraint can still be built on a
+    # deployment that already has a conflict.
+    ownership_disputed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     install_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
     # Issue #3073: The user (users.id) who installed this connection.
     # NULL for pre-existing rows or no-nonce public installs. Gates who can
@@ -224,3 +253,37 @@ class ChannelTenantMap(Base):
 
     # Relationship
     organization = relationship("Organization", backref="channel_mappings", lazy="selectin", passive_deletes=True)
+
+
+class InstallationOwnershipConflict(Base):
+    """Quarantine for installations that more than one tenant claims.
+
+    Issue #4070 (·A0, decision D3): the dedup migration must NOT auto-pick a
+    winner when two *different* tenants claim one installation. Only GitHub can
+    authoritatively break that tie, and Alembic has no App credentials — so any
+    heuristic (oldest ``created_at``, first in JSONB order) is a coin flip on a
+    paying customer's tenant, and a ``DELETE`` is not covered by the "the
+    constraint is reversible" rollback.
+
+    Instead, migration 026 records each claim here and leaves the rows in place.
+    The resolver treats a quarantined installation as ``AMBIGUOUS`` and fails
+    **closed**, so nothing resolves it until an operator does — see
+    ``scripts/resolve_installation_conflicts.py``, which *can* call GitHub.
+
+    One row per (installation_id, claiming org_id).
+    """
+
+    __tablename__ = "installation_ownership_conflicts"
+    __table_args__ = (
+        Index("uq_installation_ownership_conflicts_claim", "installation_id", "org_id", unique=True),
+        Index("ix_installation_ownership_conflicts_installation_id", "installation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    installation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    org_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Where the claim came from: "channel_tenant_map" or "organizations.github_installation_ids".
+    # Kept so a revert can be reasoned about (the issue's rollback requirement).
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

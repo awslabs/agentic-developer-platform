@@ -273,7 +273,12 @@ async def resolve_user(
     # 2. Check channel_tenant_map for auto-provisioning
     # Extract the "scope" part of the provider_user_id.
     # For Slack the convention is "WORKSPACE_ID:USER_ID"; the workspace is the scope.
-    # For GitHub the scope is just the org/installation id provided by the Lambda.
+    # For GitHub the scope is the ACCOUNT scope key — never an installation id.
+    # Issue #4070 (·A0): this comment previously said "the org/installation id",
+    # documenting the ambiguity as if it were intentional. It is not: the
+    # installation id now lives in its own column, channel_tenant_map.installation_id,
+    # which is where uniqueness is enforced. Resolve an installation via
+    # src.admin.installations.resolver, not by matching provider_scope_id.
     # We use the channel_context as the provider_scope_id when available;
     # fall back to the provider_user_id itself.
     provider_scope_id = body.channel_context or body.provider_user_id

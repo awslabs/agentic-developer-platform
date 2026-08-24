@@ -140,7 +140,24 @@ class IdentityIndexClient:
         Always sets: org_id, updated_at.
         Conditionally sets: trigger_policy, min_author_association (only when provided).
 
-        Returns True if update succeeded, False if all retries exhausted.
+        Issue #4070 (·A0, decision D4) — uniqueness guard in the second store:
+        this write is now conditional. Previously it was an unconditional
+        UpdateItem, so a mapping claiming installation X for tenant B would
+        silently overwrite a good row that mapped X to tenant A. That is the same
+        "one installation, two tenants" invariant the Postgres unique index
+        enforces, in a different store — so it belongs to the same change rather
+        than to a later wave, otherwise the two stores get two ownership rules.
+
+        The layering is deliberate: **Postgres is the record of truth; DynamoDB
+        is a cache.** A row may therefore be created, or re-confirmed for the
+        tenant that already owns it — but never re-pointed at a different tenant.
+        Re-homing an installation legitimately (support-driven ownership change)
+        means fixing Postgres and re-running ``scripts/backfill-identity-index.py``,
+        which is an operator action with an audit trail, not a silent side effect
+        of a webhook.
+
+        Returns True if the update succeeded, False if it was rejected as a
+        cross-tenant overwrite or all retries were exhausted.
         """
         key = {
             "identity_type": {"S": "github_installation_id"},
@@ -163,6 +180,10 @@ class IdentityIndexClient:
 
         update_expression = "SET " + ", ".join(set_parts)
 
+        # Allow the row to be created, or updated in place for the SAME tenant.
+        # Reject a write that would re-point an existing row at a different one.
+        condition_expression = "attribute_not_exists(org_id) OR org_id = :org"
+
         for attempt in range(MAX_RETRIES):
             try:
                 await asyncio.to_thread(
@@ -171,9 +192,25 @@ class IdentityIndexClient:
                     Key=key,
                     UpdateExpression=update_expression,
                     ExpressionAttributeValues=expression_values,
+                    ConditionExpression=condition_expression,
                 )
                 return True
             except ClientError as e:
+                # A conditional failure is a definitive answer, not a transient
+                # fault: retrying re-evaluates the same condition against the same
+                # data and fails identically. Return immediately so a rejected
+                # cross-tenant overwrite is not mistaken for an outage, and so the
+                # backoff budget is not burned on a guaranteed-failing call.
+                if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                    logger.error(
+                        "identity-index REJECTED cross-tenant overwrite: installation=%s is already owned by another tenant "
+                        "(attempted org=%s). Postgres is the record of truth — fix ownership there, then re-run "
+                        "scripts/backfill-identity-index.py.",
+                        identity_value,
+                        org_id,
+                    )
+                    return False
+
                 wait = BASE_BACKOFF_SECONDS * (2**attempt)
                 logger.warning(
                     "identity-index update_installation_identity failed (attempt %d/%d): %s. Retrying in %.1fs",

@@ -116,6 +116,15 @@ class OrganizationsService:
                     ChannelTenantMap(
                         provider="github",
                         provider_scope_id=entry.installation_id,
+                        # Issue #4070 (·A0): the canonical installation -> tenant
+                        # key, agreeing with _attach_org_installation. This writer
+                        # historically put the installation id in
+                        # provider_scope_id while the other put a GitHub ACCOUNT
+                        # id there — disjoint number spaces, so the unique
+                        # constraint on provider_scope_id never fired and two
+                        # tenants could both claim one installation. Uniqueness
+                        # now lives on this column (migration 027).
+                        installation_id=str(entry.installation_id),
                         org_id=req.id,
                     )
                 )
@@ -207,6 +216,9 @@ class OrganizationsService:
                         ChannelTenantMap(
                             provider="github",
                             provider_scope_id=entry.installation_id,
+                            # Issue #4070 (·A0): same column, same meaning as
+                            # _attach_org_installation and the create path above.
+                            installation_id=str(entry.installation_id),
                             org_id=org_id,
                         )
                     )

@@ -471,28 +471,41 @@ async def verify_installation_ownership(
 ) -> bool:
     """Verify that an installation_id belongs to the given tenant.
 
-    Queries channel_tenant_map using metadata->>'installation_id' to confirm
-    the installation was registered under the caller's tenant. This closes the
-    cross-tenant hole: the global App JWT can resolve ANY tenant's installation,
-    so registration must verify the resolved installation belongs to the caller.
+    Closes the cross-tenant hole: the global App JWT can resolve ANY tenant's
+    installation, so registration must verify the resolved installation belongs
+    to the caller.
 
-    Uses metadata JSON extraction (NOT provider_scope_id, which is the GitHub
-    numeric account id). Handles both org and personal installs (both write
-    channel_tenant_map rows).
+    Issue #4070 (·A0): this is now a thin delegate to the canonical resolver in
+    ``src.admin.installations.resolver``. It used to run its own
+    ``metadata->>'installation_id'`` query, which made it a *second* notion of
+    ownership alongside the admin/connections plane's — the divergence ·A0 exists
+    to remove. Behaviour is preserved for existing callers (bool in, bool out),
+    with two deliberate improvements that follow from the shared rule:
+
+    * an installation claimed by more than one tenant now returns False for
+      *everyone* (fail closed) instead of True for whoever asked first;
+    * the lookup is a portable indexed-column comparison, so it works on both
+      Postgres and the SQLite used by the test suite. The old ``->>`` was
+      Postgres-only, which is why its own test could only assert on the SQL
+      string rather than on the access decision.
+
+    Read-path check: no GitHub call (``attest=False``). Writes that BIND an
+    installation to a tenant should call ``assert_installation_owned_by`` with
+    ``attest=True`` instead.
 
     Returns:
-        True if the installation belongs to the tenant, False otherwise.
+        True if the installation provably belongs to the tenant, False otherwise.
     """
-    result = await db.execute(
-        text("""
-            SELECT 1 FROM channel_tenant_map
-            WHERE provider = 'github'
-              AND org_id = :tenant_id
-              AND metadata->>'installation_id' = :installation_id
-        """),
-        {"tenant_id": tenant_id, "installation_id": str(installation_id)},
+    from src.admin.installations.resolver import (
+        InstallationOwnershipError,
+        assert_installation_owned_by,
     )
-    return result.fetchone() is not None
+
+    try:
+        await assert_installation_owned_by(tenant_id, installation_id, db=db)
+    except InstallationOwnershipError:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------

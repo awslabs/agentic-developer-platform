@@ -1034,6 +1034,11 @@ async def _attach_org_installation(
             )
         # Already mapped to this tenant — update metadata (idempotent re-install)
         existing.install_metadata = _meta()
+        # Issue #4070 (·A0): keep the canonical installation -> tenant column in
+        # step with the metadata blob. A re-install can carry a NEW installation
+        # id for the same GitHub account (uninstall + reinstall), so this must be
+        # assigned, not just backfilled when NULL.
+        existing.installation_id = str(installation_id)
         # Issue #3073: On re-install, update installed_by to the new verified installer.
         if installed_by_user_id:
             existing.installed_by_user_id = installed_by_user_id
@@ -1051,6 +1056,10 @@ async def _attach_org_installation(
     mapping = ChannelTenantMap(
         provider="github",
         provider_scope_id=scope_id,
+        # Issue #4070 (·A0): the canonical installation -> tenant key. Written
+        # here AND by organizations_service so both writers agree on one column
+        # with one meaning; provider_scope_id above stays the ACCOUNT scope key.
+        installation_id=str(installation_id),
         org_id=caller_org_id,
         install_metadata=_meta(),
         installed_by_user_id=installed_by_user_id,
