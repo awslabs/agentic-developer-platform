@@ -4,14 +4,28 @@
  */
 import * as fs from 'fs';
 import { execSync } from 'child_process';
+import { resolveInstallationId } from './installation';
 
 const REPO_OWNER = process.env.REPO_OWNER || '';
 const REPO_NAME = process.env.REPO_NAME || '';
 
 /**
  * Refresh the GitHub App installation token and update all env vars.
+ *
+ * Issue #4071 (finding #13): this used to mint unconditionally against
+ * `installations[0]`. On a GitHub App installed for more than one tenant that
+ * is an arbitrary installation — so the token belonged to a *foreign* org, and
+ * because this function overwrites GH_TOKEN/GITHUB_TOKEN/GH_APP_TOKEN
+ * process-wide it clobbered the correct token that agent-worker.ts had already
+ * resolved, for every subsequent gh/git call in the run. It now shares the same
+ * resolution ladder as agent-worker.ts via `utils/installation.ts`.
  */
 export async function refreshGitHubToken(): Promise<void> {
+  // Issue #3385 (A4): in PAT mode the entrypoint deliberately resolved a PAT
+  // into the environment and omits the GH_APP_* vars so nothing re-mints over
+  // it. Honor that here too — mirrors TokenManager.initialize().
+  if (process.env.ADP_TOKEN_MODE === 'pat') return;
+
   const appId = process.env.GH_APP_ID;
   const privateKey = process.env.GH_APP_PRIVATE_KEY;
   if (!appId || !privateKey) return;
@@ -25,14 +39,14 @@ export async function refreshGitHubToken(): Promise<void> {
       { algorithm: 'RS256' }
     );
 
-    const resp = await fetch('https://api.github.com/app/installations', {
-      headers: { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' },
-    });
-    const installations = await resp.json() as Array<{ id: number }>;
-    if (!installations.length) return;
+    const installationId = await resolveInstallationId(jwtToken);
+    if (!installationId) {
+      console.warn('[WARN] GitHub token refresh skipped: no installation could be resolved');
+      return;
+    }
 
     const tokenResp = await fetch(
-      `https://api.github.com/app/installations/${installations[0].id}/access_tokens`,
+      `https://api.github.com/app/installations/${installationId}/access_tokens`,
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' },
@@ -43,9 +57,14 @@ export async function refreshGitHubToken(): Promise<void> {
       process.env.GH_TOKEN = tokenData.token;
       process.env.GITHUB_TOKEN = tokenData.token;
       process.env.GH_APP_TOKEN = tokenData.token;
+    } else {
+      console.warn(`[WARN] GitHub token refresh returned no token for installation ${installationId}`);
     }
-  } catch {
-    // Token refresh failed — will use existing token
+  } catch (err) {
+    // Non-fatal: the caller falls back to the existing token. But do not stay
+    // silent — a swallowed failure here previously hid wrong-installation
+    // errors entirely.
+    console.warn(`[WARN] GitHub token refresh failed: ${(err as Error).message}`);
   }
 }
 

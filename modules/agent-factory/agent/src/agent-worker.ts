@@ -14,6 +14,7 @@
 
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
+import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
 import { initTokenManager, getToken, getTokenStatus, writeTokenFile } from './token-refresh';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import * as fs from 'fs';
@@ -355,44 +356,12 @@ async function execCommand(command: string, useAppToken: boolean = false): Promi
 /**
  * Resolve the GitHub App installation id for this run's target org.
  *
- * Resolution order:
- *   1. GH_APP_INSTALLATION_ID — authoritative, exported by entrypoint.py for the
- *      exact installation that received the triggering webhook.
- *   2. /orgs/{REPO_OWNER}/installation then /users/{REPO_OWNER}/installation —
- *      resolve by the target owner via the App JWT.
- *   3. Last resort: installations[0] (with a warning) — preserves old behavior
- *      only when no owner/installation context is available at all.
- *
- * Returns the installation id as a string, or null if none could be resolved.
+ * The ladder itself lives in `utils/installation.ts` so that `utils/ghPost.ts`
+ * shares it rather than keeping its own (previously `installations[0]`) copy —
+ * see issue #4071. This wrapper only binds the worker's `log()`.
  */
 async function resolveInstallationId(jwtToken: string): Promise<string | null> {
-  const explicit = process.env.GH_APP_INSTALLATION_ID;
-  if (explicit) return explicit;
-
-  const owner = process.env.REPO_OWNER;
-  const authHeaders = { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' };
-
-  if (owner) {
-    for (const kind of ['orgs', 'users']) {
-      try {
-        const r = await fetch(`https://api.github.com/${kind}/${owner}/installation`, { headers: authHeaders });
-        if (r.ok) {
-          const data = await r.json() as { id: number };
-          if (data?.id) return String(data.id);
-        }
-      } catch {
-        // try next kind
-      }
-    }
-    log('WARN', `Could not resolve installation for owner ${owner}; falling back to installations[0]`);
-  }
-
-  // Last-resort fallback (legacy behavior) — only when no target context exists.
-  const resp = await fetch('https://api.github.com/app/installations', { headers: authHeaders });
-  const installations = await resp.json() as Array<{ id: number }>;
-  if (!installations.length) return null;
-  log('WARN', 'Using installations[0] as a last resort — REPO_OWNER/GH_APP_INSTALLATION_ID not set');
-  return String(installations[0].id);
+  return sharedResolveInstallationId(jwtToken, { log });
 }
 
 async function refreshAppToken(): Promise<void> {

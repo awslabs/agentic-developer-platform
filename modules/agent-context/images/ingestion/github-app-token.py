@@ -8,14 +8,17 @@ Supports two secret formats:
   2. Combined secret: single JSON secret with app_id, installation_id, private_key
      --secret-id adp/github-app
 
-The installation_id is discovered automatically from the GitHub API
-if not provided (matches the behavior of actions/create-github-app-token).
+The installation_id is discovered from the GitHub API if not provided, using
+--owner to select the right installation. --owner is required in that case: a
+GitHub App may be installed on many orgs, so guessing produces a token for
+another tenant's repositories (issue #4071).
 
 Usage:
   # Split secrets (matches existing workflow pattern):
   python3 github-app-token.py \
     --app-id-secret adp/gh-app-ops-id \
     --app-key-secret adp/gh-app-ops-key \
+    --owner my-org \
     --region us-east-1 \
     --output-file /shared/github-token
 
@@ -23,6 +26,7 @@ Usage:
   python3 github-app-token.py \
     --app-id-secret adp/gh-app-ops-id \
     --app-key-secret adp/gh-app-ops-key \
+    --owner my-org \
     --k8s-secret agent-context-secrets \
     --k8s-key github-token \
     --namespace agent-context
@@ -102,8 +106,16 @@ def generate_jwt(app_id, private_key):
         error_exit(f"Failed to generate JWT: {e}")
 
 
-def discover_installation_id(encoded_jwt, owner=None):
-    """Discover the installation ID from the GitHub API."""
+def discover_installation_id(encoded_jwt, owner):
+    """Discover the installation ID for `owner` from the GitHub API.
+
+    `owner` is required (issue #4071). This function used to fall back to
+    installations[0] when it was omitted, which on a GitHub App serving more
+    than one org mints a token for an arbitrary — i.e. foreign — tenant's
+    repositories.
+    """
+    if not owner:
+        error_exit("--owner is required to resolve an installation (refusing to guess)")
     try:
         import requests
     except ImportError:
@@ -122,17 +134,12 @@ def discover_installation_id(encoded_jwt, owner=None):
     installations = resp.json()
     if not installations:
         error_exit("No installations found for this GitHub App")
-    if owner:
-        for inst in installations:
-            if inst.get("account", {}).get("login", "").lower() == owner.lower():
-                return inst["id"]
-        error_exit(f"No installation found for owner '{owner}'")
-    installation = installations[0]
-    print(
-        f"Using installation {installation['id']} (account: {installation.get('account', {}).get('login', 'unknown')})",
-        file=sys.stderr,
-    )
-    return installation["id"]
+    for inst in installations:
+        if inst.get("account", {}).get("login", "").lower() == owner.lower():
+            print(f"Using installation {inst['id']} (account: {owner})", file=sys.stderr)
+            return inst["id"]
+    available = ", ".join(i.get("account", {}).get("login", "?") for i in installations)
+    error_exit(f"No installation found for owner '{owner}'. App is installed on: {available}")
 
 
 def get_installation_token(encoded_jwt, installation_id):
@@ -198,7 +205,11 @@ def main():
     )
     parser.add_argument("--secret-id", help="Single JSON secret ID (legacy mode)")
     parser.add_argument("--region", default="us-east-1")
-    parser.add_argument("--owner", help="GitHub org/user to find installation for")
+    parser.add_argument(
+        "--owner",
+        help="GitHub org/user to find the installation for. Required unless "
+        "--installation-id is given (or a combined secret supplies one).",
+    )
     parser.add_argument("--installation-id", help="Installation ID (auto-discovers if omitted)")
     parser.add_argument("--output-file", help="Write token to file")
     parser.add_argument("--k8s-secret", help="K8s secret to update")

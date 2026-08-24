@@ -14,6 +14,11 @@
 #   SECRET_GITHUB_APP_ID          - Secrets Manager name for GitHub App ID
 #   SECRET_GITHUB_APP_KEY         - Secrets Manager name for GitHub App private key
 #   SECRET_GATEWAY_API_KEY        - Secrets Manager name for Gateway API key
+#   GITHUB_APP_OWNER              - REQUIRED. Org/user whose installation the
+#                                   token is for (falls back to REPO_OWNER).
+#                                   Without it we would mint a token against an
+#                                   arbitrary installation — i.e. another
+#                                   tenant's repositories (issue #4071).
 #   GITHUB_TOKEN_PATH             - File path to write the GitHub token
 #   SECRETS_DIR                   - Directory to write fetched secrets
 #   SIDECAR_MODE                  - "true" for continuous refresh, "false" for one-shot
@@ -31,6 +36,10 @@ SECRETS_DIR="${SECRETS_DIR:-/secrets}"
 GITHUB_TOKEN_REFRESH_INTERVAL="${GITHUB_TOKEN_REFRESH_INTERVAL:-3000}"
 SIDECAR_MODE="${SIDECAR_MODE:-false}"
 GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
+
+# Target org/user whose installation the token is minted for. Required — see
+# get_installation_id(). Falls back to REPO_OWNER for callers that export it.
+GITHUB_APP_OWNER="${GITHUB_APP_OWNER:-${REPO_OWNER:-}}"
 
 log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"; }
 
@@ -67,7 +76,9 @@ generate_jwt() {
   echo "${header}.${payload}.${signature}"
 }
 
-# Get the first installation ID for the GitHub App
+# Resolve the installation id for GITHUB_APP_OWNER. Issue #4071: this used to
+# return installations[0] — an arbitrary install once the App serves more than
+# one org, which yields a token scoped to somebody else's repositories.
 get_installation_id() {
   local jwt="$1" response
   response=$(curl -sf \
@@ -76,7 +87,17 @@ get_installation_id() {
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "${GITHUB_API_URL}/app/installations")
 
-  echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])"
+  OWNER="$GITHUB_APP_OWNER" python3 -c '
+import json, os, sys
+owner = os.environ["OWNER"].lower()
+installations = json.load(sys.stdin)
+for inst in installations:
+    if inst.get("account", {}).get("login", "").lower() == owner:
+        print(inst["id"])
+        sys.exit(0)
+found = ", ".join(i.get("account", {}).get("login", "?") for i in installations) or "none"
+sys.exit(f"No installation found for owner {owner!r}. App is installed on: {found}")
+' <<< "$response"
 }
 
 # Create an installation access token
@@ -117,7 +138,7 @@ generate_and_write_token() {
   log "Generating JWT for GitHub App..."
   jwt=$(generate_jwt "$app_id" "$private_key")
 
-  log "Getting installation ID..."
+  log "Getting installation ID for owner ${GITHUB_APP_OWNER}..."
   installation_id=$(get_installation_id "$jwt")
   log "Installation ID: ${installation_id}"
 
@@ -134,6 +155,13 @@ main() {
   log "=== GitHub App Token Generator ==="
   log "Mode: $([ "$SIDECAR_MODE" = "true" ] && echo "sidecar (continuous)" || echo "init (one-shot)")"
   log "Region: ${AWS_REGION}"
+
+  if [[ -z "$GITHUB_APP_OWNER" ]]; then
+    log "ERROR: GITHUB_APP_OWNER (or REPO_OWNER) must be set to the org/user this token is for."
+    log "       Minting against an arbitrary installation would produce a token for another tenant."
+    exit 1
+  fi
+  log "Owner: ${GITHUB_APP_OWNER}"
 
   # Always fetch gateway API key on init
   fetch_gateway_secret

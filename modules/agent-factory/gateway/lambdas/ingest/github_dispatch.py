@@ -37,7 +37,41 @@ if not GH_APP_SECRET_PREFIX:
     )
 
 _secrets_client = None
-_token_cache: dict[str, Any] = {"token": None, "expires_at": 0}
+
+# Installation tokens, keyed by normalized org. Issue #4071: this used to be a
+# single unkeyed {"token", "expires_at"} pair, and the cache was consulted
+# before `org` was even read — so a warm Lambda container handed org A's token
+# to a later org-B request for up to 3000s. Keyed per org, and bounded because
+# it is a warm-container global that would otherwise grow without limit.
+#   org (lowercased) -> (token, expires_at_epoch_seconds)
+_token_cache: dict[str, tuple[str, float]] = {}
+
+# Max distinct orgs held at once. The App is installed on few orgs in practice;
+# this is a leak guard, not a tuning knob.
+_TOKEN_CACHE_MAX_ENTRIES = 32
+
+
+def _token_cache_get(org: str, now: float) -> str | None:
+    """Return a live cached token for `org`, or None. Drops it if expired."""
+    entry = _token_cache.get(org)
+    if entry is None:
+        return None
+    token, expires_at = entry
+    if now >= expires_at:
+        del _token_cache[org]
+        return None
+    return token
+
+
+def _token_cache_put(org: str, token: str, expires_at: float, now: float) -> None:
+    """Cache `token` for `org`, evicting expired entries and bounding size."""
+    for stale_org in [o for o, (_, exp) in _token_cache.items() if now >= exp]:
+        del _token_cache[stale_org]
+    if org not in _token_cache and len(_token_cache) >= _TOKEN_CACHE_MAX_ENTRIES:
+        # Evict the entry closest to expiry so the cap can never be exceeded.
+        soonest = min(_token_cache, key=lambda o: _token_cache[o][1])
+        del _token_cache[soonest]
+    _token_cache[org] = (token, expires_at)
 
 
 def _get_secrets():
@@ -203,8 +237,16 @@ def _gh_headers(token: str) -> dict:
 
 def _get_installation_token(org: str) -> str | None:
     now = time.time()
-    if _token_cache["token"] and now < _token_cache["expires_at"]:
-        return _token_cache["token"]
+    # Read `org` BEFORE consulting the cache — the old code returned the cached
+    # token first, so whichever org warmed the container won for every caller.
+    cache_key = (org or "").strip().lower()
+    if not cache_key:
+        logger.error("Cannot fetch GH App token: no org supplied")
+        return None
+
+    cached = _token_cache_get(cache_key, now)
+    if cached:
+        return cached
 
     if not GH_APP_SECRET_PREFIX:
         logger.error(
@@ -242,8 +284,7 @@ def _get_installation_token(org: str) -> str | None:
         with urllib.request.urlopen(req) as resp:
             data = json.loads(resp.read())
             token = data["token"]
-            _token_cache["token"] = token
-            _token_cache["expires_at"] = now + 3000
+            _token_cache_put(cache_key, token, now + 3000, now)
             return token
 
     except Exception as e:
