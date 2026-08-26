@@ -15,6 +15,18 @@ evolves; a changed landscape warrants a new investigation.
 | [Hermes agent (NousResearch)](hermes-agent-fit-assessment.md) | **Adapt** — harvest the design; **reject** as the multi-tenant chief-of-staff foundation | 2026-08-26 | #4161 |
 | [ORCA (stablyai)](orca-fit-assessment.md) | **Adapt** patterns (three-value liveness verdict → #4077) + permit as BYO client; no ORCA↔ADP integration | 2026-08-26 | #4162 |
 
+### Routed recommendations
+
+Where an assessment's recommendation has been turned into work, it is recorded
+here so the verdict index reflects what was acted on:
+
+- **ORCA §Q2 item 1 / §Q4 item 2 — `*_unknown` state discipline and the
+  never-auto-resolve gate invariant** (the assessment's highest-value single
+  action) → routed into **#4077** via **#4182**; the requirement text lives in
+  [`docs/design-notes/4077-orchestration-graph-state-invariants.md`](../design-notes/4077-orchestration-graph-state-invariants.md).
+  The read-side half of the same vocabulary (`live` / `unverifiable` / `exited`)
+  is **#4176**.
+
 ## Adding a new assessment
 
 1. File a sub-issue under EPIC #1219 with the subject and the specific
