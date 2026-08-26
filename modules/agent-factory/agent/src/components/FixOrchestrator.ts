@@ -53,23 +53,37 @@ export class FixOrchestrator {
       console.log('\n📋 Analyzing codebase and generating proposal...\n');
       const proposal = await this.generateProposal(fixInstructions, repoDir);
 
-      // Step 2: Post proposal and wait for approval
+      // Step 2: Post proposal and wait for approval.
+      // The request id must be named in the answer so a stale `/approve` on a
+      // busy PR cannot authorize this fix (issue #4181).
+      const requestId = `fix-${prNumber}`;
       await this.githubClient.createComment(prNumber,
-        `## 📋 Proposed Fix\n\n${proposal}\n\n---\n**To approve:** Comment \`/approve\`\n**To reject:** Comment \`/reject <feedback>\``
+        `## 📋 Proposed Fix\n\n${proposal}\n\n---\n**To approve:** Comment \`/approve ${requestId}\`\n**To reject:** Comment \`/reject ${requestId} <feedback>\`\n\n_The request id is required. You need write access to this repository to approve._`
       );
 
-      console.log('\n⏳ Waiting for /approve or /reject...\n');
-      const approval = await this.approvalService.pollForApproval(prNumber, new Date());
+      console.log(`\n⏳ Waiting for \`/approve ${requestId}\` or \`/reject ${requestId}\`...\n`);
+      const approval = await this.approvalService.pollForApproval(prNumber, new Date(), requestId);
 
-      if (!approval.approved) {
+      // Fail-closed: only 'allowed-once' proceeds.
+      if (approval.outcome !== 'allowed-once') {
+        const reason =
+          approval.outcome === 'unavailable'
+            ? 'Could not reach GitHub to request approval, so no changes were made.'
+            : approval.feedback || 'No feedback';
+        this.logger.warn('Fix not approved — making no changes', {
+          component: 'FixOrchestrator',
+          prNumber,
+          outcome: approval.outcome,
+          approver: approval.approver,
+        });
         await this.githubClient.createComment(prNumber,
-          `## ❌ Fix Rejected\n\n${approval.feedback || 'No feedback'}\n\nUse \`/fixPR\` again with updated instructions.`
+          `## ❌ Fix Not Applied\n\n**Outcome:** \`${approval.outcome}\`\n\n${reason}\n\nUse \`/fixPR\` again with updated instructions.`
         );
         return;
       }
 
       // Step 3: Apply the fix (with retries)
-      console.log('\n✅ Approved! Applying fix...\n');
+      console.log(`\n✅ Approved by ${approval.approver ?? 'approver'}! Applying fix...\n`);
       await this.githubClient.createComment(prNumber, `## 🔨 Applying fix...`);
 
       const MAX_FIX_ATTEMPTS = 3;
