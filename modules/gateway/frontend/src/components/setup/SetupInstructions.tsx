@@ -1,127 +1,200 @@
-import { Card, CardTitle } from '@/components/ui';
+/**
+ * SetupInstructions — how to point Claude Code (and Codex) at this gateway.
+ *
+ * Issue #4146 rewrote this end-to-end. The previous content documented an
+ * AWS-SSO + `bg-auth.sh` flow that no longer works: it predated both the
+ * Cognito helper and GitHub login, told users to write `~/.claude/config.json`
+ * with an `apiBaseUrl` key that exists in no file under `cli/`, and shipped
+ * unresolved `https://your-gateway-url/v1` placeholders.
+ *
+ * Two invariants worth preserving on edit:
+ * - The base URL is resolved at runtime from the real origin. Never a placeholder.
+ * - The settings snippets are `JSON.stringify`'d from objects, so the rendered
+ *   text cannot drift from the shape asserted in tests (or from `cli/examples/`).
+ */
+
+import { Card, CardTitle, CopyButton } from '@/components/ui';
+import { getGatewayBaseUrl } from '@/utils/gatewayUrl';
+
+/** Anthropic-format settings — mirrors cli/examples/claude-settings-cognito.json */
+export function buildAnthropicSettings(baseUrl: string) {
+  return {
+    env: {
+      ANTHROPIC_BASE_URL: baseUrl,
+    },
+    apiKeyHelper: 'bash ~/bin/bg-cognito-auth.sh token',
+    // 55 min — matches `cmd_token`'s refresh-on-expiry behaviour. NOT the
+    // 300000 from the legacy cli/claude-settings.example.json (bg-auth.sh era).
+    apiKeyHelperTtlMs: 3300000,
+    permissions: { allow: ['WebSearch', 'WebFetch'] },
+    model: 'global.anthropic.claude-opus-4-6-v1',
+  };
+}
+
+/** Bedrock-format settings — mirrors cli/examples/claude-settings-bedrock-gateway.json */
+export function buildBedrockSettings(baseUrl: string) {
+  return {
+    env: {
+      AWS_REGION: 'us-east-1',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
+      ANTHROPIC_BEDROCK_BASE_URL: baseUrl,
+    },
+    apiKeyHelper: 'bash ~/bin/bg-cognito-auth.sh token',
+    apiKeyHelperTtlMs: 3300000,
+    permissions: { allow: ['WebSearch', 'WebFetch'] },
+    model: 'global.anthropic.claude-opus-4-6-v1',
+  };
+}
+
+function CodeSnippet({ children, copyValue }: { children: string; copyValue?: string }) {
+  return (
+    <div className="relative mt-2">
+      <pre className="p-3 pr-20 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm overflow-x-auto">
+        {children}
+      </pre>
+      <div className="absolute top-2 right-2">
+        <CopyButton value={copyValue ?? children} />
+      </div>
+    </div>
+  );
+}
+
+/** Step numbers are derived from array order — a reorder cannot mis-number them. */
+function Step({ index, title, children }: { index: number; title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+        <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 text-sm">
+          {index + 1}
+        </span>
+        {title}
+      </h3>
+      <div className="mt-2 ml-8 text-sm space-y-2">{children}</div>
+    </div>
+  );
+}
+
+const CODE = 'bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono';
 
 export function SetupInstructions() {
+  const baseUrl = getGatewayBaseUrl();
+  const anthropicSettings = JSON.stringify(buildAnthropicSettings(baseUrl), null, 2);
+  const bedrockSettings = JSON.stringify(buildBedrockSettings(baseUrl), null, 2);
+
+  const steps: { title: string; body: React.ReactNode }[] = [
+    {
+      title: 'Prerequisites',
+      body: (
+        <ul className="list-disc space-y-1">
+          <li>
+            Claude Code installed (
+            <code className={CODE}>npm install -g @anthropic-ai/claude-code</code>)
+          </li>
+          <li>
+            <code className={CODE}>curl</code> and <code className={CODE}>jq</code> available on
+            your PATH
+          </li>
+          <li>Signed in to this dashboard with GitHub — you already are, or you could not see this page</li>
+        </ul>
+      ),
+    },
+    {
+      title: 'Download the helper script',
+      body: (
+        <>
+          <p>
+            Grab <code className={CODE}>bg-cognito-auth.sh</code> from the Downloads section below,
+            then put it on your PATH and make it executable:
+          </p>
+          <CodeSnippet>{`mkdir -p ~/bin
+mv ~/Downloads/bg-cognito-auth.sh ~/bin/
+chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            This is the script Claude Code calls to mint a fresh token on every request.
+          </p>
+        </>
+      ),
+    },
+    {
+      title: 'Connect the CLI',
+      body: (
+        <p>
+          Use the <strong>Connect CLI</strong> panel above: run the{' '}
+          <code className={CODE}>import</code> command it shows and paste your refresh token when
+          prompted. This seeds the CLI from the session this browser already established — you have
+          no Cognito password to type, because signing in with GitHub never created one.
+        </p>
+      ),
+    },
+    {
+      title: 'Configure Claude Code',
+      body: (
+        <>
+          <p>
+            Write this to <code className={CODE}>~/.claude/settings.json</code>. The base URL is
+            this deployment's real gateway URL — already filled in for you, and it takes no{' '}
+            <code className={CODE}>/v1</code> suffix (Claude Code appends the API path itself):
+          </p>
+          <CodeSnippet>{anthropicSettings}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            Prefer to speak the Bedrock API format instead? Use this variant — same helper, same
+            base URL:
+          </p>
+          <details className="mt-1">
+            <summary className="cursor-pointer text-primary-600 dark:text-primary-400">
+              Bedrock-format settings.json
+            </summary>
+            <CodeSnippet>{bedrockSettings}</CodeSnippet>
+          </details>
+        </>
+      ),
+    },
+    {
+      title: 'Run Claude Code',
+      body: (
+        <>
+          <CodeSnippet>claude</CodeSnippet>
+          <p>
+            Claude Code calls <code className={CODE}>bg-cognito-auth.sh token</code> automatically
+            via <code className={CODE}>apiKeyHelper</code> and refreshes the token on its own — you
+            should not need to run the helper by hand again.
+          </p>
+        </>
+      ),
+    },
+    {
+      title: 'Using Codex instead?',
+      body: (
+        <p>
+          Point it at the same base URL, <code className={CODE}>{baseUrl}</code>, with a token from
+          the same helper (<code className={CODE}>bg-cognito-auth.sh token</code>). No separate
+          login, no second credential.
+        </p>
+      ),
+    },
+    {
+      title: 'Verify it works',
+      body: (
+        <p>
+          Ask Claude Code anything, then open the <strong>Log Viewer</strong> in this dashboard. Your
+          request should appear there within a few seconds — that confirms traffic is flowing through
+          the gateway and being metered against your account. If it does not, see Troubleshooting
+          below.
+        </p>
+      ),
+    },
+  ];
+
   return (
     <Card>
       <CardTitle>Setup Instructions</CardTitle>
       <div className="mt-4 space-y-6 text-gray-700 dark:text-gray-300">
-        {/* Step 1 */}
-        <div>
-          <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 text-sm">
-              1
-            </span>
-            Prerequisites
-          </h3>
-          <ul className="mt-2 ml-8 list-disc space-y-1 text-sm">
-            <li>AWS CLI v2 installed and configured</li>
-            <li>Access to AWS SSO (IAM Identity Center)</li>
-            <li>Claude Code installed</li>
-          </ul>
-        </div>
-
-        {/* Step 2 */}
-        <div>
-          <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 text-sm">
-              2
-            </span>
-            Download the Helper Script
-          </h3>
-          <p className="mt-2 ml-8 text-sm">
-            Download the appropriate <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">bg-auth</code> script for your platform from the Downloads section below.
-          </p>
-        </div>
-
-        {/* Step 3 */}
-        <div>
-          <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 text-sm">
-              3
-            </span>
-            Make the Script Executable (Linux/macOS)
-          </h3>
-          <pre className="mt-2 ml-8 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm overflow-x-auto">
-            chmod +x bg-auth.sh
-          </pre>
-        </div>
-
-        {/* Step 4 */}
-        <div>
-          <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 text-sm">
-              4
-            </span>
-            Configure AWS SSO
-          </h3>
-          <p className="mt-2 ml-8 text-sm mb-2">
-            Configure AWS SSO if you haven't already:
-          </p>
-          <pre className="ml-8 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm overflow-x-auto">
-{`aws configure sso
-# Follow the prompts to configure:
-# - SSO Start URL: https://your-org.awsapps.com/start
-# - SSO Region: us-east-1
-# - Account and Role selection`}
-          </pre>
-        </div>
-
-        {/* Step 5 */}
-        <div>
-          <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 text-sm">
-              5
-            </span>
-            Run the Authentication Script
-          </h3>
-          <p className="mt-2 ml-8 text-sm mb-2">
-            Linux/macOS:
-          </p>
-          <pre className="ml-8 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm overflow-x-auto">
-{`./bg-auth.sh --profile your-sso-profile`}
-          </pre>
-          <p className="mt-3 ml-8 text-sm mb-2">
-            Windows PowerShell:
-          </p>
-          <pre className="ml-8 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm overflow-x-auto">
-{`.\\bg-auth.ps1 -Profile your-sso-profile`}
-          </pre>
-        </div>
-
-        {/* Step 6 */}
-        <div>
-          <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 text-sm">
-              6
-            </span>
-            Configure Claude Code
-          </h3>
-          <p className="mt-2 ml-8 text-sm mb-2">
-            Set the platform as your API endpoint in Claude Code:
-          </p>
-          <pre className="ml-8 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm overflow-x-auto">
-{`# Set environment variables
-export ANTHROPIC_BASE_URL="https://your-gateway-url/v1"
-
-# Or configure in ~/.claude/config.json
-{
-  "apiBaseUrl": "https://your-gateway-url/v1"
-}`}
-          </pre>
-        </div>
-
-        {/* Step 7 */}
-        <div>
-          <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 text-sm">
-              7
-            </span>
-            Test the Connection
-          </h3>
-          <p className="mt-2 ml-8 text-sm">
-            Run Claude Code and verify it connects through the platform. You should see your requests logged in the Log Viewer.
-          </p>
-        </div>
+        {steps.map((step, index) => (
+          <Step key={step.title} index={index} title={step.title}>
+            {step.body}
+          </Step>
+        ))}
       </div>
     </Card>
   );

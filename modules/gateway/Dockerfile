@@ -28,6 +28,10 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY src/ src/
 COPY alembic/ alembic/
 COPY alembic.ini .
+# Issue #4146: the /setup page's Download button is served by GET /api/cli/{script_name}
+# (src/cli_download/routes.py), which reads bg-cognito-auth.sh off disk. Without this
+# the route 404s in the image while working fine locally.
+COPY cli/ cli/
 
 EXPOSE 8080
 CMD ["uvicorn", "src.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]

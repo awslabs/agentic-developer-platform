@@ -68,20 +68,19 @@ export function ScriptDownload({
 }
 
 export function ScriptDownloadList() {
+  // Issue #4146: one entry, served by GET /api/cli/{script_name}
+  // (modules/gateway/src/cli_download/routes.py).
+  //
+  // Removed here: the legacy `bg-auth.sh` (deprecated SigV4 credential exchange)
+  // and `bg-auth.ps1` — which had no source file in the repo at all, so that
+  // button advertised a download that could never succeed.
   const scripts: ScriptDownloadProps[] = [
     {
-      scriptName: 'bg-auth.sh',
-      description: 'Background authentication helper script for Linux/macOS. Handles AWS SSO authentication and token refresh automatically.',
+      scriptName: 'bg-cognito-auth.sh',
+      description:
+        'Cognito authentication helper for Linux/macOS. Claude Code calls it via apiKeyHelper to mint and auto-refresh your gateway token.',
       platform: 'unix',
-      downloadUrl: '/api/cli/bg-auth.sh',
-      version: '1.0.0',
-    },
-    {
-      scriptName: 'bg-auth.ps1',
-      description: 'Background authentication helper script for Windows PowerShell. Handles AWS SSO authentication and token refresh automatically.',
-      platform: 'windows',
-      downloadUrl: '/api/cli/bg-auth.ps1',
-      version: '1.0.0',
+      downloadUrl: '/api/cli/bg-cognito-auth.sh',
     },
   ];
 
