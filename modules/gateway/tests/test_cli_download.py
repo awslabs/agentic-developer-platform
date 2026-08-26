@@ -1,14 +1,18 @@
 """
-Unit tests for GET /cli/{script_name} (Issue #4146).
+Unit tests for GET /cli/{script_name} (Issues #4146, #4156).
 
-The in-app /setup page's Download button hits this route via `window.open`, so it
+The in-app /setup page's Download buttons hit this route via `window.open`, so it
 must:
-- serve `bg-cognito-auth.sh` as a shell-script attachment with no Authorization
-  header (window.open cannot send one),
-- serve the real on-disk file, not a stale vendored copy — the page tells users
-  this is the helper that `import` and `apiKeyHelper` run,
+- serve `bg-cognito-auth.sh` and `bg-gateway-proxy.py` as file attachments with no
+  Authorization header (window.open cannot send one),
+- serve the real on-disk files, not stale vendored copies — the page tells users
+  these are the files that `import`, `apiKeyHelper` and `serve` run,
 - reject anything not on the allowlist with a 404, including path traversal.
   `{script_name}` is user input; a filesystem join here would be a traversal bug.
+
+Both files are required together: `bg-cognito-auth.sh serve` looks for
+`bg-gateway-proxy.py` as its sibling, so a Codex user who can download only the
+helper cannot complete the documented flow (Issue #4156).
 """
 
 from pathlib import Path
@@ -23,46 +27,58 @@ test_app = FastAPI()
 test_app.include_router(router)
 client = TestClient(test_app)
 
-SCRIPT_NAME = "bg-cognito-auth.sh"
-ROUTE = f"/cli/{SCRIPT_NAME}"
+HELPER_SCRIPT = "bg-cognito-auth.sh"
+PROXY_SCRIPT = "bg-gateway-proxy.py"
 
 # Resolved independently of the route module so a wrong path in ALLOWED_SCRIPTS
 # cannot make these tests pass. tests/ -> <gateway> -> cli/
-ON_DISK_SCRIPT = Path(__file__).resolve().parents[1] / "cli" / SCRIPT_NAME
+CLI_DIR = Path(__file__).resolve().parents[1] / "cli"
+
+# (script_name, expected media type) — the proxy is Python, the helper is shell,
+# and serving one as the other is what the media-type assertion guards.
+SERVEABLE = [
+    (HELPER_SCRIPT, "text/x-shellscript"),
+    (PROXY_SCRIPT, "text/x-python"),
+]
+SCRIPT_NAMES = [name for name, _ in SERVEABLE]
 
 
 @pytest.mark.unit
 class TestCliScriptDownload:
-    def test_serves_the_cognito_helper(self):
-        resp = client.get(ROUTE)
+    @pytest.mark.parametrize("script_name", SCRIPT_NAMES)
+    def test_serves_the_script(self, script_name):
+        resp = client.get(f"/cli/{script_name}")
 
         assert resp.status_code == 200
         assert resp.text.startswith("#!")
 
-    def test_served_as_shell_script_attachment(self):
+    @pytest.mark.parametrize(("script_name", "media_type"), SERVEABLE)
+    def test_served_as_attachment_with_its_own_media_type(self, script_name, media_type):
         """Content type + filename drive the browser's save-as, not a render."""
-        resp = client.get(ROUTE)
+        resp = client.get(f"/cli/{script_name}")
 
-        assert resp.headers["content-type"].startswith("text/x-shellscript")
+        assert resp.headers["content-type"].startswith(media_type)
         disposition = resp.headers["content-disposition"]
         assert disposition.startswith("attachment")
-        assert SCRIPT_NAME in disposition
+        assert script_name in disposition
 
-    def test_no_authorization_header_required(self):
+    @pytest.mark.parametrize("script_name", SCRIPT_NAMES)
+    def test_no_authorization_header_required(self, script_name):
         """window.open sends no Authorization header — auth would 401 the download."""
-        resp = client.get(ROUTE, headers={})
+        resp = client.get(f"/cli/{script_name}", headers={})
 
         assert resp.status_code == 200
 
-    def test_served_bytes_equal_the_on_disk_script(self):
-        """Guards against serving a stale vendored copy of the helper."""
-        resp = client.get(ROUTE)
+    @pytest.mark.parametrize("script_name", SCRIPT_NAMES)
+    def test_served_bytes_equal_the_on_disk_script(self, script_name):
+        """Guards against serving a stale vendored copy of either file."""
+        resp = client.get(f"/cli/{script_name}")
 
-        assert resp.content == ON_DISK_SCRIPT.read_bytes()
+        assert resp.content == (CLI_DIR / script_name).read_bytes()
 
-    def test_allowlist_contains_only_the_cognito_helper(self):
+    def test_allowlist_contains_exactly_the_helper_and_the_proxy(self):
         """Legacy bg-auth.sh (deprecated) and bg-auth.ps1 (no source file) stay out."""
-        assert set(ALLOWED_SCRIPTS) == {SCRIPT_NAME}
+        assert set(ALLOWED_SCRIPTS) == {HELPER_SCRIPT, PROXY_SCRIPT}
 
     @pytest.mark.parametrize(
         "script_name",
@@ -92,6 +108,7 @@ class TestCliScriptDownload:
         assert resp.status_code == 404
         assert "root:" not in resp.text
 
-    def test_allowlisted_path_points_at_a_real_file(self):
+    @pytest.mark.parametrize("script_name", SCRIPT_NAMES)
+    def test_allowlisted_path_points_at_a_real_file(self, script_name):
         """A missing file here means cli/ was left out of the container image."""
-        assert ALLOWED_SCRIPTS[SCRIPT_NAME].is_file()
+        assert ALLOWED_SCRIPTS[script_name].is_file()

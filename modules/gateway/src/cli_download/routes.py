@@ -1,9 +1,14 @@
-"""CLI helper-script download route — Issue #4146.
+"""CLI helper-script download route — Issues #4146, #4156.
 
-The in-app /setup page offers a Download button for the Cognito auth helper.
-Before this route existed the button pointed at `/api/cli/bg-auth.sh`, which
-nothing served (and its PowerShell sibling had no source file at all), so both
-downloads were dead links.
+The in-app /setup page offers a Download button per CLI helper file. Before this
+route existed the button pointed at `/api/cli/bg-auth.sh`, which nothing served
+(and its PowerShell sibling had no source file at all), so both downloads were
+dead links.
+
+Two files are serveable: the Cognito auth helper `bg-cognito-auth.sh`, and
+`bg-gateway-proxy.py` — the localhost auth proxy its `serve` subcommand starts
+for Codex. `serve` requires the two to sit side by side, so serving only the
+helper left the documented Codex flow unfinishable (Issue #4156).
 
 Two deliberate design points:
 
@@ -14,7 +19,7 @@ no credentials, and is already published in the repo.
 
 **Filename allowlist, not a path join.** `{script_name}` is user input. Joining
 it onto a filesystem path would be a path-traversal bug (`../../etc/passwd`).
-Instead the single permitted name is mapped to a pre-resolved absolute path and
+Instead each permitted name is mapped to a pre-resolved absolute path and
 anything else 404s.
 """
 
@@ -37,31 +42,46 @@ _CLI_DIR = _GATEWAY_ROOT / "cli"
 # The allowlist. Keys are the ONLY values of {script_name} that resolve; the
 # values are absolute paths, so no user-controlled segment is ever joined.
 #
+# bg-gateway-proxy.py is the Codex-only local auth proxy that `bg-cognito-auth.sh
+# serve` starts (Issue #4154). `serve` looks for it as a *sibling* of the helper,
+# so a user following cli/README.md §"Using Codex: zero-touch auth with serve"
+# needs both files — offering only the helper is a dead end (Issue #4156).
+#
 # Deliberately absent:
 #   bg-auth.sh   — legacy SigV4 helper, deprecated (cli/README.md)
 #   bg-auth.ps1  — never existed in the repo; PowerShell parity is a non-goal
 ALLOWED_SCRIPTS: dict[str, Path] = {
     "bg-cognito-auth.sh": (_CLI_DIR / "bg-cognito-auth.sh").resolve(),
+    "bg-gateway-proxy.py": (_CLI_DIR / "bg-gateway-proxy.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
+PYTHON_SCRIPT_MEDIA_TYPE = "text/x-python"
+
+# Per-script media type. Keyed off the same allowlisted names, so an entry added
+# above without one falls back to the shell type rather than 500-ing.
+SCRIPT_MEDIA_TYPES: dict[str, str] = {
+    "bg-cognito-auth.sh": SHELL_SCRIPT_MEDIA_TYPE,
+    "bg-gateway-proxy.py": PYTHON_SCRIPT_MEDIA_TYPE,
+}
 
 
 @router.get(
     "/{script_name}",
     summary="Download a CLI helper script",
     description="""
-    Serve a CLI helper script as a file attachment (Issue #4146).
+    Serve a CLI helper script as a file attachment (Issues #4146, #4156).
 
     Public and unauthenticated by design: the /setup page downloads via
-    `window.open`, which cannot attach an Authorization header. The only
-    serveable file is `bg-cognito-auth.sh`, which contains no secrets.
+    `window.open`, which cannot attach an Authorization header. The serveable
+    files are `bg-cognito-auth.sh` and `bg-gateway-proxy.py`, neither of which
+    contains secrets.
 
     `script_name` is matched against an explicit allowlist — it is never
     joined onto a filesystem path — so traversal attempts return 404.
     """,
     responses={
-        200: {"description": "Script returned as a shell-script attachment"},
+        200: {"description": "Script returned as a file attachment"},
         404: {"description": "Unknown script name, or the file is missing from the image"},
     },
 )
@@ -91,6 +111,6 @@ async def download_cli_script(script_name: str) -> FileResponse:
 
     return FileResponse(
         path=script_path,
-        media_type=SHELL_SCRIPT_MEDIA_TYPE,
+        media_type=SCRIPT_MEDIA_TYPES.get(script_name, SHELL_SCRIPT_MEDIA_TYPE),
         filename=script_name,
     )

@@ -47,6 +47,29 @@ export function buildBedrockSettings(baseUrl: string) {
   };
 }
 
+/**
+ * Default port of the `serve` proxy — DEFAULT_PROXY_PORT in cli/bg-cognito-auth.sh.
+ * It must match the port in the config.toml `base_url` below, so both come from here.
+ */
+export const CODEX_PROXY_PORT = 9191;
+
+/**
+ * Codex provider config — mirrors cli/README.md §"Using Codex: zero-touch auth
+ * with serve", Step 3. Deliberately points at the local proxy, NOT at the gateway
+ * directly: Codex has no apiKeyHelper hook, so a token put here goes stale in an
+ * hour (Issue #4156).
+ */
+export function buildCodexConfigToml(port: number = CODEX_PROXY_PORT): string {
+  return `model = "openai.gpt-5.6-sol"
+model_provider = "adp-gateway"
+
+[model_providers.adp-gateway]
+name = "ADP Gateway (local auth proxy)"
+base_url = "http://127.0.0.1:${port}/openai/v1"
+wire_api = "responses"
+env_key = "ADP_GATEWAY_DUMMY"`;
+}
+
 function CodeSnippet({ children, copyValue }: { children: string; copyValue?: string }) {
   return (
     <div className="relative mt-2">
@@ -81,6 +104,7 @@ export function SetupInstructions() {
   const baseUrl = getGatewayBaseUrl();
   const anthropicSettings = JSON.stringify(buildAnthropicSettings(baseUrl), null, 2);
   const bedrockSettings = JSON.stringify(buildBedrockSettings(baseUrl), null, 2);
+  const codexConfigToml = buildCodexConfigToml();
 
   const steps: { title: string; body: React.ReactNode }[] = [
     {
@@ -164,13 +188,39 @@ chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
       ),
     },
     {
-      title: 'Using Codex instead?',
+      title: 'Using Codex instead? Zero-touch auth with serve',
       body: (
-        <p>
-          Point it at the same base URL, <code className={CODE}>{baseUrl}</code>, with a token from
-          the same helper (<code className={CODE}>bg-cognito-auth.sh token</code>). No separate
-          login, no second credential.
-        </p>
+        <>
+          <p>
+            Codex reads its credential from an env var once at launch and never asks again — so a
+            manually exported token works for about an hour, then every request 401s until you
+            restart it. <code className={CODE}>serve</code> closes that gap: it runs a small
+            localhost proxy that injects a freshly-refreshed token into every request, so you
+            authenticate once and never touch tokens again.
+          </p>
+          <p>
+            Install <strong>both</strong> files from the Downloads section below —{' '}
+            <code className={CODE}>bg-gateway-proxy.py</code> must sit next to{' '}
+            <code className={CODE}>bg-cognito-auth.sh</code>, because{' '}
+            <code className={CODE}>serve</code> looks for its sibling:
+          </p>
+          <CodeSnippet>{`mv ~/Downloads/bg-cognito-auth.sh ~/Downloads/bg-gateway-proxy.py ~/bin/
+chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
+          <p>
+            Add this to <code className={CODE}>~/.codex/config.toml</code> (the helper deliberately
+            does not write this file for you — it is yours):
+          </p>
+          <CodeSnippet>{codexConfigToml}</CodeSnippet>
+          <p>Then start the proxy and, in another terminal, Codex:</p>
+          <CodeSnippet>{`~/bin/bg-cognito-auth.sh serve          # foreground; Ctrl-C to stop
+ADP_GATEWAY_DUMMY=unused codex         # in a second terminal`}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            Leave the proxy running as long as you like — refresh happens per request, behind the
+            scenes. Codex requires <code className={CODE}>env_key</code> to name an existing env var
+            but never validates its value; the proxy discards whatever arrives and injects the real
+            token.
+          </p>
+        </>
       ),
     },
     {

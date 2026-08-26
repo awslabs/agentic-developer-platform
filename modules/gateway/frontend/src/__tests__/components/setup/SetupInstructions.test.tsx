@@ -14,6 +14,8 @@ import {
   SetupInstructions,
   buildAnthropicSettings,
   buildBedrockSettings,
+  buildCodexConfigToml,
+  CODEX_PROXY_PORT,
 } from '@/components/setup/SetupInstructions';
 
 const STUB_ORIGIN = 'https://d123abc.cloudfront.net';
@@ -62,12 +64,15 @@ describe('SetupInstructions', () => {
     expect(document.body.textContent ?? '').not.toContain(needle);
   });
 
-  it('does not suffix the base URL with /v1', () => {
+  it('does not suffix the gateway base URL with /v1', () => {
+    // Claude Code appends the API path itself. Scoped to the gateway origin: the
+    // Codex proxy's own base_url legitimately ends in /openai/v1 (it is an
+    // OpenAI-wire endpoint on localhost, not this gateway URL).
     render(<SetupInstructions />);
     const text = document.body.textContent ?? '';
 
-    expect(text).not.toContain('/v1"');
     expect(text).not.toContain(`${STUB_ORIGIN}/api/v1`);
+    expect(text).not.toContain(`${STUB_ORIGIN}/v1`);
   });
 
   // --- Real base URL ---------------------------------------------------------
@@ -104,10 +109,43 @@ describe('SetupInstructions', () => {
     });
   });
 
-  it('mentions Codex sharing the same base URL', () => {
+  // --- Codex: the zero-touch `serve` flow (Issue #4156) -----------------------
+  it('documents the serve proxy flow for Codex', () => {
     render(<SetupInstructions />);
+    const text = document.body.textContent ?? '';
 
-    expect(document.body.textContent ?? '').toContain('Codex');
+    expect(text).toContain('Codex');
+    expect(text).toContain('serve');
+    expect(text).toContain('bg-gateway-proxy.py');
+    expect(text).toContain('~/.codex/config.toml');
+  });
+
+  it('renders the proxy base URL, wire API and dummy env key', () => {
+    render(<SetupInstructions />);
+    const text = document.body.textContent ?? '';
+
+    expect(text).toContain('http://127.0.0.1:9191/openai/v1');
+    expect(text).toContain('wire_api = "responses"');
+    expect(text).toContain('env_key = "ADP_GATEWAY_DUMMY"');
+    expect(text).toContain('ADP_GATEWAY_DUMMY=unused codex');
+  });
+
+  it('does not present a manually exported token as the Codex path', () => {
+    // The pre-#4155 instruction. It works for ~1h and then every request 401s
+    // with no hook to refresh — which is exactly why `serve` exists.
+    render(<SetupInstructions />);
+    const text = document.body.textContent ?? '';
+
+    expect(text).not.toContain('export ADP_GATEWAY_TOKEN=$(');
+    expect(text).not.toContain('ADP_GATEWAY_TOKEN');
+  });
+
+  it('does not point Codex at the gateway origin directly', () => {
+    // Codex must talk to the loopback proxy; the proxy talks to the gateway.
+    render(<SetupInstructions />);
+    const text = document.body.textContent ?? '';
+
+    expect(text).not.toContain(`base_url = "${STUB_ORIGIN}`);
   });
 
   it('tells the user to verify via the Log Viewer', () => {
@@ -153,5 +191,32 @@ describe('settings builders', () => {
     expect(buildAnthropicSettings('https://x/api').apiKeyHelper).toBe(
       buildBedrockSettings('https://x/api').apiKeyHelper
     );
+  });
+});
+
+describe('buildCodexConfigToml', () => {
+  it('matches the config documented in cli/README.md', () => {
+    expect(buildCodexConfigToml()).toBe(
+      `model = "openai.gpt-5.6-sol"
+model_provider = "adp-gateway"
+
+[model_providers.adp-gateway]
+name = "ADP Gateway (local auth proxy)"
+base_url = "http://127.0.0.1:9191/openai/v1"
+wire_api = "responses"
+env_key = "ADP_GATEWAY_DUMMY"`
+    );
+  });
+
+  it('defaults to the port bg-cognito-auth.sh serve binds', () => {
+    expect(CODEX_PROXY_PORT).toBe(9191);
+    expect(buildCodexConfigToml()).toContain(`127.0.0.1:${CODEX_PROXY_PORT}/`);
+  });
+
+  it('keeps base_url on loopback when the port is overridden', () => {
+    // A credential-injecting listener must never be reachable off-host, and
+    // --port is the only thing serve lets you change.
+    expect(buildCodexConfigToml(9292)).toContain('base_url = "http://127.0.0.1:9292/openai/v1"');
+    expect(buildCodexConfigToml(9292)).not.toContain('0.0.0.0');
   });
 });

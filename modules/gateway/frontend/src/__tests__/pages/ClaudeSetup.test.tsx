@@ -74,9 +74,11 @@ describe('ClaudeSetup', () => {
 
     expect(screen.getByRole('heading', { name: 'Setup Instructions' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Download Helper Scripts' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+    // Two cards: the auth helper, plus the Codex `serve` proxy (Issue #4156).
+    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(2);
     // Named in more than one place (instructions + download card) — that's fine.
     expect(screen.getAllByText('bg-cognito-auth.sh').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('bg-gateway-proxy.py').length).toBeGreaterThan(0);
   });
 
   // --- Troubleshooting matrix ------------------------------------------------

@@ -68,12 +68,15 @@ export function ScriptDownload({
 }
 
 export function ScriptDownloadList() {
-  // Issue #4146: one entry, served by GET /api/cli/{script_name}
+  // Both entries are served by GET /api/cli/{script_name}
   // (modules/gateway/src/cli_download/routes.py).
   //
   // Removed here: the legacy `bg-auth.sh` (deprecated SigV4 credential exchange)
   // and `bg-auth.ps1` — which had no source file in the repo at all, so that
   // button advertised a download that could never succeed.
+  //
+  // Issue #4156: bg-gateway-proxy.py was missing, so Codex users following the
+  // `serve` flow could not get the second of the two files it needs.
   const scripts: ScriptDownloadProps[] = [
     {
       scriptName: 'bg-cognito-auth.sh',
@@ -81,6 +84,13 @@ export function ScriptDownloadList() {
         'Cognito authentication helper for Linux/macOS. Claude Code calls it via apiKeyHelper to mint and auto-refresh your gateway token.',
       platform: 'unix',
       downloadUrl: '/api/cli/bg-cognito-auth.sh',
+    },
+    {
+      scriptName: 'bg-gateway-proxy.py',
+      description:
+        'Codex only — local auth proxy started by `bg-cognito-auth.sh serve`. Save it next to the helper script; serve looks for it as a sibling. Needs only stdlib python3.',
+      platform: 'unix',
+      downloadUrl: '/api/cli/bg-gateway-proxy.py',
     },
   ];
 
