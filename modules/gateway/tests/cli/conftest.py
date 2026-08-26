@@ -39,6 +39,12 @@ def install_script(cli_dir: Path) -> Path:
     return cli_dir / "install.sh"
 
 
+@pytest.fixture
+def bg_cognito_auth_script(cli_dir: Path) -> Path:
+    """Return the path to bg-cognito-auth.sh script (Issue #4145)."""
+    return cli_dir / "bg-cognito-auth.sh"
+
+
 class MockGatewayHandler(BaseHTTPRequestHandler):
     """HTTP request handler for mock gateway responses."""
 
@@ -85,9 +91,20 @@ class MockGatewayHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "healthy"}).encode("utf-8"))
-        else:
+            return
+
+        # Issue #4145: serve configured GET responses (e.g. the
+        # /.well-known/cognito-config discovery document the CLI helper fetches).
+        response_config = self.__class__.mock_responses.get(self.path)
+        if response_config is None:
             self.send_response(404)
             self.end_headers()
+            return
+
+        self.send_response(response_config.get("status", 200))
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(response_config.get("body", {})).encode("utf-8"))
 
 
 class MockGatewayServer:
@@ -169,6 +186,34 @@ if [[ "$1" == "configure" && "$2" == "export-credentials" ]]; then
     exit 0
 fi
 
+# Issue #4145: Handle cognito-idp initiate-auth (REFRESH_TOKEN_AUTH).
+# Behaviour is driven by env vars so tests can force each failure mode:
+#   MOCK_COGNITO_RESULT=ok|notauthorized|other|no_tokens  (default: ok)
+#   MOCK_AWS_LOG=<path>  appends the full argv for assertions
+if [[ "$1" == "cognito-idp" && "$2" == "initiate-auth" ]]; then
+    if [[ -n "${MOCK_AWS_LOG:-}" ]]; then
+        echo "$*" >> "${MOCK_AWS_LOG}"
+    fi
+    case "${MOCK_COGNITO_RESULT:-ok}" in
+        notauthorized)
+            echo "An error occurred (NotAuthorizedException) when calling the InitiateAuth operation: Invalid Refresh Token" >&2
+            exit 254
+            ;;
+        other)
+            echo "An error occurred (ResourceNotFoundException) when calling the InitiateAuth operation: User pool client does not exist" >&2
+            exit 254
+            ;;
+        no_tokens)
+            echo '{"ChallengeParameters": {}}'
+            exit 0
+            ;;
+        *)
+            echo '{"AuthenticationResult": {"IdToken": "mock.id.token", "AccessToken": "mock.access.token", "ExpiresIn": 3600, "TokenType": "Bearer"}}'
+            exit 0
+            ;;
+    esac
+fi
+
 # Handle configure get
 if [[ "$1" == "configure" && "$2" == "get" ]]; then
     case "$3" in
@@ -234,8 +279,13 @@ def run_script(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
     timeout: int = 30,
+    stdin_data: str | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a shell script and capture output."""
+    """Run a shell script and capture output.
+
+    ``stdin_data`` (Issue #4145) feeds the process stdin — needed to test the
+    CLI helper's stdin refresh-token path.
+    """
     cmd = ["bash", str(script_path)]
     if args:
         cmd.extend(args)
@@ -245,7 +295,46 @@ def run_script(
     if env:
         full_env.update(env)
 
-    return subprocess.run(cmd, capture_output=True, text=True, env=full_env, timeout=timeout)
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env=full_env,
+        timeout=timeout,
+        input=stdin_data if stdin_data is not None else "",
+    )
+
+
+@pytest.fixture
+def cognito_home(tmp_path: Path) -> Path:
+    """Sandboxed HOME for bg-cognito-auth.sh runs (Issue #4145)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    return home
+
+
+@pytest.fixture
+def run_bg_cognito_auth(bg_cognito_auth_script: Path, mock_aws_cli: Path, cognito_home: Path):
+    """Run bg-cognito-auth.sh with a sandboxed HOME and the mock aws CLI.
+
+    Issue #4145. HOME is redirected into tmp_path so the helper's
+    ``~/.bedrock-gateway`` and ``~/.aws`` writes never touch the real home dir.
+    """
+
+    def _run(
+        args: list[str] | None = None,
+        extra_env: dict[str, str] | None = None,
+        stdin_data: str | None = None,
+    ) -> subprocess.CompletedProcess:
+        env = {
+            "HOME": str(cognito_home),
+            "PATH": f"{mock_aws_cli}:{os.environ.get('PATH', '')}",
+        }
+        if extra_env:
+            env.update(extra_env)
+        return run_script(bg_cognito_auth_script, args, env, stdin_data=stdin_data)
+
+    return _run
 
 
 @pytest.fixture

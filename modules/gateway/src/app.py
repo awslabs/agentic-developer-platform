@@ -233,13 +233,18 @@ def create_app() -> FastAPI:
     async def ready():  # nosemgrep: useless-inner-function — registered via @app.get decorator
         return {"status": "ready"}
 
-    # Auto-discover and register routers from unit modules
+    # Auto-discover and register routers from unit modules.
+    # Issue #4145: a module may also expose `well_known_router` for prefix-free
+    # /.well-known/* discovery documents that must not inherit the module prefix.
     for module_path in UNIT_MODULES:
         try:
             module = import_module(module_path)
             if hasattr(module, "router"):
                 app.include_router(module.router)
                 logger.info("Registered router", extra={"module_path": module_path})
+            if hasattr(module, "well_known_router"):
+                app.include_router(module.well_known_router)
+                logger.info("Registered well-known router", extra={"module_path": module_path})
         except ImportError as e:
             logger.debug(
                 "Module not available, skipping",

@@ -5,6 +5,10 @@ on:
     paths:
       - 'modules/gateway/src/**'
       - 'modules/gateway/tests/**'
+      # Issue #4145: tests/cli/ exercises the shell helpers in cli/, but a CLI-only
+      # edit used to trigger no workflow at all — so bg-cognito-auth.sh changes
+      # shipped untested. Keep cli/ in lockstep with the suite that covers it.
+      - 'modules/gateway/cli/**'
       - 'modules/gateway/pyproject.toml'
       - 'modules/gateway/Dockerfile'
       - 'modules/gateway/frontend/src/**'

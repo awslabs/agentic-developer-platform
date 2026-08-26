@@ -17,6 +17,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.exceptions import (
     BedrockGatewayError,
@@ -32,6 +33,13 @@ logger = logging.getLogger(__name__)
 
 # Create router with prefix and tags
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+# Issue #4145: Prefix-free router for well-known discovery documents.
+# The main `router` above carries a "/auth" prefix, and the CLI helper
+# (cli/bg-cognito-auth.sh) fetches "<gateway_url>/.well-known/cognito-config",
+# so the discovery route cannot live under it. Registered separately in
+# src/app.py — same shape as the JWKS route in src/auth/gitlab_sso.py.
+well_known_router = APIRouter(tags=["authentication"])
 
 # Initialize services
 auth_service = AuthService()
@@ -187,6 +195,52 @@ async def login_options() -> dict:
     from src.admin.connections.service import is_github_login_enabled
 
     return {"github_login_enabled": await is_github_login_enabled()}
+
+
+@well_known_router.get(
+    "/.well-known/cognito-config",
+    summary="Public Cognito client discovery document",
+    description="""
+    Public, unauthenticated discovery of this deployment's Cognito client settings
+    (Issue #4145).
+
+    `cli/bg-cognito-auth.sh` fetches this before it has any token — both to
+    bootstrap the interactive `login` flow and to learn the `client_id`/`region`
+    that `import` needs to refresh a browser-issued refresh token. Authentication
+    would break that bootstrap.
+
+    Nothing here is secret: the `client_id` is already shipped to every browser as
+    the build-time `VITE_COGNITO_CLIENT_ID`, and the app client is created with
+    `generate_secret = false`. No client secret and no user-specific data is
+    returned.
+
+    `identity_pool_id` is always empty — the gateway does not know it, and neither
+    the `token` nor the `import` path uses it.
+    """,
+    responses={
+        200: {"description": "Cognito client settings returned"},
+        503: {"description": "Cognito is not configured on this deployment"},
+    },
+)
+async def cognito_config() -> dict:
+    """Return public Cognito client settings for the CLI helper (Issue #4145)."""
+    settings = get_settings()
+
+    # Mirror get_cognito_validator's 503 (src/auth/middleware.py). Returning 200
+    # with empty strings would pass the CLI's `jq .`-validity check and silently
+    # persist an unusable config.
+    if not settings.cognito_user_pool_id:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "auth_not_configured", "message": "Cognito authentication is not configured"},
+        )
+
+    return {
+        "user_pool_id": settings.cognito_user_pool_id,
+        "client_id": settings.cognito_client_id,
+        "identity_pool_id": "",
+        "region": settings.aws_region,
+    }
 
 
 @router.post(

@@ -7,6 +7,7 @@
 #
 # Usage:
 #   ./bg-cognito-auth.sh login --gateway-url https://gateway.company.com
+#   ./bg-cognito-auth.sh import --gateway-url https://gateway.company.com/api
 #   ./bg-cognito-auth.sh refresh
 #   ./bg-cognito-auth.sh logout
 #   ./bg-cognito-auth.sh status
@@ -497,6 +498,150 @@ cmd_login() {
     echo ""
 }
 
+# Import command (Issue #4145)
+#
+# Seeds the token store from a refresh token the browser login already holds,
+# so a GitHub-provisioned user (who has a random Cognito password they never
+# see) can authenticate the CLI without a password.
+#
+# Deliberately does NOT touch the Identity Pool or ~/.aws/credentials: the
+# `token` subcommand needs only client_id + region + a valid refresh token.
+cmd_import() {
+    local gateway_url=""
+    local refresh_token=""
+    local user_pool_id=""
+    local client_id=""
+    local region=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --gateway-url)
+                gateway_url="$2"
+                shift 2
+                ;;
+            --refresh-token)
+                # Supported for scripting. Prefer the stdin path: an argv flag
+                # lands in shell history and in `ps` output.
+                refresh_token="$2"
+                shift 2
+                ;;
+            --user-pool-id)
+                user_pool_id="$2"
+                shift 2
+                ;;
+            --client-id)
+                client_id="$2"
+                shift 2
+                ;;
+            --region)
+                region="$2"
+                shift 2
+                ;;
+            *)
+                print_error "Unknown option: $1" >&2
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ -z "${gateway_url}" ]; then
+        print_error "Gateway URL is required (--gateway-url)" >&2
+        exit 1
+    fi
+
+    # Read the refresh token from stdin when not passed as a flag.
+    if [ -z "${refresh_token}" ]; then
+        if [ -t 0 ]; then
+            printf 'Paste your refresh token (input hidden): ' >&2
+            read -rs refresh_token
+            printf '\n' >&2
+        else
+            read -r refresh_token || true
+        fi
+    fi
+
+    if [ -z "${refresh_token}" ]; then
+        print_error "No refresh token supplied. Paste it when prompted, pipe it on stdin, or pass --refresh-token." >&2
+        exit 1
+    fi
+
+    # Discover the Cognito settings the refresh call needs, unless fully overridden.
+    if [ -z "${client_id}" ] || [ -z "${region}" ] || [ -z "${user_pool_id}" ]; then
+        print_info "Discovering Cognito settings from gateway..." >&2
+
+        local discovery_result
+        discovery_result=$(curl -sf "${gateway_url}/.well-known/cognito-config" 2>/dev/null) || true
+
+        if [ -n "${discovery_result}" ] && echo "${discovery_result}" | jq . >/dev/null 2>&1; then
+            user_pool_id=${user_pool_id:-$(echo "${discovery_result}" | jq -r '.user_pool_id // empty')}
+            client_id=${client_id:-$(echo "${discovery_result}" | jq -r '.client_id // empty')}
+            region=${region:-$(echo "${discovery_result}" | jq -r '.region // empty')}
+        fi
+    fi
+
+    if [ -z "${client_id}" ]; then
+        print_error "Could not determine Cognito client_id — pass --client-id, or check that ${gateway_url}/.well-known/cognito-config is reachable" >&2
+        exit 1
+    fi
+    region=${region:-us-east-1}
+
+    # Validate the refresh token BEFORE persisting anything, so a failed import
+    # cannot clobber a working session.
+    print_info "Validating refresh token with Cognito..." >&2
+
+    local auth_result
+    auth_result=$(aws cognito-idp initiate-auth \
+        --auth-flow REFRESH_TOKEN_AUTH \
+        --client-id "${client_id}" \
+        --auth-parameters "REFRESH_TOKEN=${refresh_token}" \
+        --region "${region}" \
+        2>&1) || {
+        if echo "${auth_result}" | grep -q "NotAuthorizedException"; then
+            print_error "Refresh token invalid or expired; sign in again and re-copy it." >&2
+        else
+            print_error "Could not validate the refresh token with Cognito." >&2
+            print_info "Check that --client-id (${client_id}) and --region (${region}) match your deployment." >&2
+        fi
+        exit 1
+    }
+
+    local id_token access_token expires_in
+    id_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.IdToken // empty')
+    access_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.AccessToken // empty')
+    expires_in=$(echo "${auth_result}" | jq -r '.AuthenticationResult.ExpiresIn // empty')
+
+    if [ -z "${access_token}" ] || [ -z "${expires_in}" ]; then
+        print_error "Cognito accepted the refresh token but returned no access token. Nothing was written." >&2
+        exit 1
+    fi
+
+    # REFRESH_TOKEN_AUTH does not normally return a new refresh token — persist
+    # the supplied one, as refresh_tokens() does.
+    local new_refresh_token
+    new_refresh_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.RefreshToken // empty')
+    if [ -z "${new_refresh_token}" ]; then
+        new_refresh_token="${refresh_token}"
+    fi
+
+    save_config "${gateway_url}" "${user_pool_id}" "${client_id}" "" "${region}"
+    save_tokens "${id_token}" "${access_token}" "${new_refresh_token}" "${expires_in}"
+
+    print_success "CLI credentials imported." >&2
+    {
+        echo ""
+        echo "Next: point Claude Code at the gateway (~/.claude/settings.json):"
+        echo ""
+        echo "  {"
+        echo "    \"env\": { \"ANTHROPIC_BASE_URL\": \"${gateway_url}\" },"
+        echo "    \"apiKeyHelper\": \"bash $(basename "$0") token\","
+        echo "    \"apiKeyHelperTtlMs\": 3300000"
+        echo "  }"
+        echo ""
+        echo "Verify with: $(basename "$0") status"
+    } >&2
+}
+
 # Refresh command
 cmd_refresh() {
     if ! refresh_tokens; then
@@ -633,6 +778,7 @@ Usage:
 
 Commands:
     login       Authenticate with Cognito and obtain AWS credentials
+    import      Seed the token store from a browser-login refresh token (no password)
     refresh     Refresh tokens and AWS credentials
     logout      Remove stored tokens and credentials
     status      Show current authentication status
@@ -645,9 +791,21 @@ Login Options:
     --identity-pool-id <id>   Cognito Identity Pool ID
     --region <region>         AWS region (default: us-east-1)
 
+Import Options (Issue #4145):
+    --gateway-url <url>       Gateway URL (required)
+    --refresh-token <token>   Refresh token (optional; read from stdin if omitted)
+    --client-id <id>          Cognito Client ID (else discovered from the gateway)
+    --user-pool-id <id>       Cognito User Pool ID (else discovered from the gateway)
+    --region <region>         AWS region (else discovered; default: us-east-1)
+
 Examples:
     # Interactive login (discovers settings from gateway)
     $(basename "$0") login --gateway-url https://gateway.company.com
+
+    # Seed the CLI after signing in with GitHub in the browser.
+    # Copy the refresh token from Settings > Connect CLI and paste it when
+    # prompted — do NOT pass it as a flag on a shared machine.
+    $(basename "$0") import --gateway-url https://gateway.company.com/api
 
     # Login with explicit settings
     $(basename "$0") login --gateway-url https://gateway.company.com \\
@@ -693,6 +851,9 @@ main() {
     case "${command}" in
         login)
             cmd_login "$@"
+            ;;
+        import)
+            cmd_import "$@"
             ;;
         refresh)
             cmd_refresh "$@"
