@@ -1,0 +1,249 @@
+name: Eval — CLI Onboarding (clean room)
+
+# Clean-room E2E evaluation of the CLI onboarding journey — Issue #4157
+# (Story 5 of EPIC #4143). Automates the manual live validation of 2026-08-26:
+# the approval gate (#4144), CLI seeding + discovery (#4145), the setup-page
+# download route (#4146) and the Codex zero-touch proxy (#4154).
+#
+# WHY `container:` IS LOAD-BEARING
+# The eval MUST NOT run in the agent-worker image (or any environment with CLI
+# config pre-wired): that image bakes in ~/.codex/config.toml pointing at the
+# sigv4-proxy on 127.0.0.1:9090, Claude Code settings and ANTHROPIC_* env, any
+# of which silently substitutes the platform's internal auth for the very auth
+# path under test. A contaminated run reports FALSE GREEN, which is worse than
+# having no eval. So the job runs in a stock public image with a fresh $HOME and
+# step 1 fails the job outright if the container looks contaminated.
+#
+# AWS credentials come from the ARC runner's IRSA and are used ONLY by the
+# harness steps (Cognito seeding, approval row, flag lever). The laptop-emulation
+# steps run through run-eval.sh's `laptop()` wrapper, which strips every AWS
+# credential variable — see platform/evals/cli-onboarding/README.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: false
+        type: string
+        default: dev
+      phases:
+        description: 'Comma-separated phases to run (A=gate off, B=gate on matrix, C=laptop journey)'
+        required: false
+        type: string
+        default: 'A,B,C'
+      inject_failure:
+        description: 'Deliberately break the eval to prove it fails loudly (wrong-org)'
+        required: false
+        type: choice
+        options: ['', 'wrong-org']
+        default: ''
+  schedule:
+    # 05:00 UTC daily — after credential-binding-adversarial-e2e (04:00), before
+    # gateway-live-tests (06:00), so the three nightlies do not contend for the
+    # runner pool or for dev inference capacity.
+    - cron: '0 5 * * *'
+  pull_request:
+    # Lint-only on PRs that touch the eval itself; the live job never runs from a PR.
+    paths:
+      - 'platform/evals/cli-onboarding/**'
+      - '.github/workflows/eval-cli-onboarding.yml'
+    branches:
+      - main
+
+# Never two live runs at once: both would fight over the same
+# BG_ENFORCE_ORG_ASSIGNMENT value and each would restore the other's mutation.
+concurrency:
+  group: eval-cli-onboarding-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  lint:
+    name: Lint eval scripts
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version
+
+      - name: bash -n + shellcheck
+        run: |
+          set -euo pipefail
+          bash -n platform/evals/cli-onboarding/run-eval.sh
+          bash -n platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
+          shellcheck platform/evals/cli-onboarding/run-eval.sh
+          shellcheck platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
+
+      - name: Dry-run harness tests
+        # Stubs aws/kubectl/psql/curl/npm and asserts phase ordering,
+        # cleanup-on-failure, the clean-room detector and the credential strip.
+        run: ./platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
+
+  eval:
+    name: Clean-room eval (${{ github.event.inputs.environment || 'dev' }})
+    # Skipped on pull_request: the live matrix mutates dev (flag flip, throwaway
+    # Cognito user, throwaway users row) and must never run from an untrusted PR.
+    if: github.event_name != 'pull_request'
+    needs: [lint]
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    timeout-minutes: 45
+
+    # THE CLEAN ROOM. A stock public image — nothing installed, nothing
+    # configured, a fresh $HOME. node:20-bookworm brings node/npm (for the two
+    # CLIs) and python3 (for the auth proxy); bash/curl/git are present and jq
+    # is one apt away.
+    container:
+      image: node:20-bookworm
+      options: --user root
+
+    env:
+      AWS_REGION: us-east-1
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      EVAL_WORKDIR: /tmp/cli-onboarding-eval
+
+    steps:
+      # ── STEP 1: the contamination gate. Deliberately BEFORE checkout of any
+      # tooling install, so a contaminated container burns 5 seconds, not 15
+      # minutes, and mutates nothing in dev.
+      - uses: actions/checkout@v7
+
+      - name: Assert clean room (fail fast if contaminated)
+        run: ./platform/evals/cli-onboarding/run-eval.sh --assert-clean-room
+
+      - name: Install harness tooling (aws, kubectl, psql, jq)
+        # The stock image has none of these. They are the HARNESS's tools —
+        # Cognito seeding, the flag lever, the approval row. The laptop phase
+        # uses only curl/node/npm/python3, which the image already ships, plus
+        # the aws CLI for cognito-idp:InitiateAuth, which is an UNSIGNED API and
+        # therefore needs no credentials.
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends jq curl unzip ca-certificates postgresql-client procps
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install
+          fi
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws --version && kubectl version --client=true 2>/dev/null | head -1 && psql --version && jq --version
+
+      - name: Configure kubeconfig (harness — flag lever)
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          kubectl get deploy bedrockgateway -n adp-gateway -o name
+
+      - name: Run the eval matrix
+        id: matrix
+        env:
+          EVAL_PHASES: ${{ github.event.inputs.phases || 'A,B,C' }}
+          EVAL_INJECT: ${{ github.event.inputs.inject_failure || '' }}
+        run: |
+          set -euo pipefail
+          ARGS=(--environment "$ENVIRONMENT" --phases "$EVAL_PHASES")
+          if [ -n "$EVAL_INJECT" ]; then
+            ARGS+=(--inject-failure "$EVAL_INJECT")
+          fi
+          ./platform/evals/cli-onboarding/run-eval.sh "${ARGS[@]}"
+
+      # run-eval.sh restores the flag and deletes its throwaway resources from an
+      # EXIT trap, so this is belt-and-braces for the case where the job is
+      # cancelled or the runner is killed mid-step and the trap never fires.
+      - name: Cleanup sweep (always)
+        if: always()
+        run: ./platform/evals/cli-onboarding/run-eval.sh --environment "$ENVIRONMENT" --cleanup-only || true
+
+      - name: Verify dev was left clean
+        if: always()
+        run: |
+          set -uo pipefail
+          echo "### Post-run state" >> "$GITHUB_STEP_SUMMARY"
+          FLAG=$(kubectl get deploy bedrockgateway -n adp-gateway \
+            -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="BG_ENFORCE_ORG_ASSIGNMENT")].value}' 2>/dev/null || echo "unset")
+          echo "- \`BG_ENFORCE_ORG_ASSIGNMENT\` on the deployment: \`${FLAG:-unset}\`" >> "$GITHUB_STEP_SUMMARY"
+          LEFTOVER=$(aws cognito-idp list-users \
+            --user-pool-id "$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id" --query Parameter.Value --output text)" \
+            --filter "email ^= \"eval-cli-onboarding\"" \
+            --query 'length(Users)' --output text 2>/dev/null || echo "?")
+          echo "- Leftover \`eval-cli-onboarding*\` Cognito users: \`${LEFTOVER}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$LEFTOVER" != "0" ] && [ "$LEFTOVER" != "?" ]; then
+            echo "::warning::${LEFTOVER} eval-cli-onboarding* Cognito user(s) left behind — sweep them."
+          fi
+
+      # Nightly failures UPDATE one tracking issue instead of filing one per
+      # night; a fresh issue every morning trains everyone to ignore the label.
+      - name: File or update the nightly tracking issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          LABEL="cli-onboarding-eval-failure"
+          EXISTING=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "Nightly CLI-onboarding eval failed again on $(date -u +%Y-%m-%d) (\`${ENVIRONMENT}\`).
+
+          **Run:** ${RUN_URL} — see the job summary for the per-phase table."
+            echo "Updated tracking issue #${EXISTING}"
+            exit 0
+          fi
+
+          gh issue create \
+            --title "🔴 Nightly CLI-onboarding eval failing ($(date -u +%Y-%m-%d))" \
+            --label "$LABEL,bug" \
+            --body "## The problem in plain terms
+
+          A new developer following the documented steps to point Claude Code (or Codex) at the gateway
+          may no longer be able to. The nightly clean-room evaluation that walks the whole journey —
+          sign-in identity, admin approval, download the helper, seed the CLI, get a completion — failed
+          on \`${ENVIRONMENT}\`. Until this is green, the approval gate should not be turned on in any
+          environment, because we cannot show that approved users can actually work.
+
+          **The fix in one line:** read the failing phase in the run summary, fix the link it points at, and re-run the eval.
+
+          ## Description
+
+          The nightly \`eval-cli-onboarding.yml\` run failed. It is the regression check for the
+          CLI-onboarding journey (EPIC #4143) and the flag-flip gate for \`BG_ENFORCE_ORG_ASSIGNMENT\`.
+
+          **Run:** ${RUN_URL}
+          **Environment:** \`${ENVIRONMENT}\`
+
+          ## Impact analysis
+
+          - **Who benefits from a fix:** every new developer onboarding onto the gateway via CLI.
+          - **Who's impacted:** the approval-gate rollout is blocked while this is red.
+          - **What breaks if ignored:** an onboarding regression ships and is found by a real user hitting a wall.
+
+          ## Design
+
+          Which phase failed determines the surface. The per-phase table in the run summary names it:
+          Phase A/B = the approval gate; Phase C5-C8 = the download route, discovery doc, or CLI helper;
+          Phase C9/C10 = Claude Code / Codex wiring.
+
+          ## Deployment
+
+          Nothing to deploy — this issue tracks a diagnosis. Any fix follows its own module's deploy path.
+
+          ## Validation
+
+          Re-run: \`gh workflow run eval-cli-onboarding.yml -f environment=${ENVIRONMENT}\` and confirm green.
+
+          ---
+          This issue is UPDATED (not duplicated) on subsequent nightly failures. Close it once the eval is green."
