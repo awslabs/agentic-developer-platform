@@ -678,6 +678,7 @@ case "$*" in
   *"ssm get-parameter"*rds-database-name*)    echo "bedrockgateway" ;;
   *"secretsmanager list-secrets"*)            echo "arn:aws:secretsmanager:us-east-1:000000000000:secret:rds!db-stub" ;;
   *"secretsmanager get-secret-value"*)        echo '{"username":"stub","password":"stubpassword"}' ;;
+  *"rds generate-db-auth-token"*)             echo "stub-iam-auth-token" ;;
   *"cognito-idp admin-create-user"*)          echo '{"User":{"Username":"stub"}}' ;;
   # The two admin-get-user queries must be distinguished: `sub` resolves, while
   # `custom:org_id` must come back EMPTY. Conflating them makes the B3 premise
@@ -994,8 +995,15 @@ resolve_config() {
   GATEWAY_URL="https://${CF_DOMAIN}/api"
   log "gateway: $GATEWAY_URL   pool: $USER_POOL_ID"
 
-  # RDS credentials for the approval-row insert. Same pattern as
-  # postgres-schema-check.yml / seed-hosted-tenant.yml.
+  # RDS auth. bedrockgw-dev-postgres has IAM database authentication enabled and
+  # its master user (bgadmin) is granted rds_iam in-database — exactly how the
+  # gateway itself connects (BG_RDS_IAM_AUTH=true, no password in BG_DATABASE_URL).
+  # That grant *disables* password auth for bgadmin, so pulling the managed
+  # master password from the rds!db-* secret and offering it yields
+  # "PAM authentication failed". We mint a short-lived IAM auth token instead and
+  # use it as PGPASSWORD (the harness runner's IRSA is authorized for
+  # rds-db:connect). The username still comes from the managed secret so we track
+  # the master user without hard-coding it. IAM auth mandates TLS (PGSSLMODE).
   local secret_arn secret
   secret_arn="$(h_aws secretsmanager list-secrets --filters Key=name,Values="rds!db-" \
     --query 'SecretList[0].ARN' --output text 2>/dev/null || echo "")"
@@ -1004,8 +1012,11 @@ resolve_config() {
   fi
   secret="$(h_aws secretsmanager get-secret-value --secret-id "$secret_arn" \
     --query SecretString --output text)"
-  PGPASSWORD="$(printf '%s' "$secret" | jq -r .password)"
   PGUSER="$(printf '%s' "$secret" | jq -r .username)"
+  PGPASSWORD="$(h_aws rds generate-db-auth-token \
+    --hostname "$RDS_HOST" --port 5432 --region "${AWS_REGION:-us-east-1}" \
+    --username "$PGUSER" 2>/dev/null || echo "")"
+  [ -n "$PGPASSWORD" ] || die "Failed to mint an RDS IAM auth token for $PGUSER@$RDS_HOST"
   mask "$PGPASSWORD"
   export PGHOST="$RDS_HOST" PGDATABASE="$RDS_DB" PGUSER PGPASSWORD PGSSLMODE=require
 
