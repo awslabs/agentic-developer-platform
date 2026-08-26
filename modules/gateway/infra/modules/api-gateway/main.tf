@@ -78,6 +78,21 @@ resource "aws_security_group" "vpc_link" {
     }
   }
 
+  # Issue #4010: egress to the internal-plane ALB's SG(s). The
+  # `/internal/{proxy+}` route targets that ALB, so without this the VPC Link
+  # cannot open the connection and the route times out (~10s) then 503s.
+  # Empty until wire-gateway-alb.sh discovers the internal Ingress's ALB.
+  dynamic "egress" {
+    for_each = length(var.internal_plane_alb_security_group_ids) > 0 ? [1] : []
+    content {
+      description     = "Allow VPC Link to reach internal-plane ALB on port 80 (Issue #4010)"
+      from_port       = 80
+      to_port         = 80
+      protocol        = "tcp"
+      security_groups = var.internal_plane_alb_security_group_ids
+    }
+  }
+
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-vpc-link-v2-sg"
     Service = "api-gateway"
@@ -98,6 +113,21 @@ resource "aws_security_group_rule" "alb_from_vpc_link" {
   source_security_group_id = aws_security_group.vpc_link.id
 }
 
+# Issue #4010: the matching inbound half on the internal-plane ALB's SG(s).
+# Both directions are required — the spike confirmed that opening only one side
+# leaves the connection silently dropped rather than refused.
+resource "aws_security_group_rule" "internal_plane_alb_from_vpc_link" {
+  count = length(var.internal_plane_alb_security_group_ids)
+
+  description              = "Allow inbound from API Gateway VPC Link v2 to internal plane (Issue #4010)"
+  type                     = "ingress"
+  from_port                = 80
+  to_port                  = 80
+  protocol                 = "tcp"
+  security_group_id        = var.internal_plane_alb_security_group_ids[count.index]
+  source_security_group_id = aws_security_group.vpc_link.id
+}
+
 # =============================================================================
 # API Gateway REST API (Regional) -- OpenAPI Definition
 # =============================================================================
@@ -109,6 +139,20 @@ resource "aws_security_group_rule" "alb_from_vpc_link" {
 # v2 VPC Link integrations that lack integrationTarget. This was discovered
 # during deployment when the body without integrationTarget was rejected with:
 # "IntegrationTarget is required for VpcLinkV2 <id>"
+
+# =============================================================================
+# Internal-plane routing target (Issue #4010)
+# =============================================================================
+# The `/internal/{proxy+}` route points at a dedicated internal-plane ALB so the
+# internal control plane is not reachable through the ALB that CloudFront fronts.
+# When the internal-plane vars are empty (pre-#4010, or before the internal
+# Ingress has materialized its ALB) these fall back to the edge ALB, preserving
+# exactly the previous behavior. That fallback is what makes this change safe to
+# merge ahead of the cluster-side rollout.
+locals {
+  internal_plane_alb_dns = var.internal_plane_alb_dns != "" ? var.internal_plane_alb_dns : var.internal_alb_dns
+  internal_plane_alb_arn = var.internal_plane_alb_arn != "" ? var.internal_plane_alb_arn : var.internal_alb_arn
+}
 
 resource "aws_api_gateway_rest_api" "main" {
   name        = "${var.name_prefix}-api"
@@ -259,13 +303,17 @@ resource "aws_api_gateway_rest_api" "main" {
             # The Bedrock /agent proxy strips its prefix because the pod serves
             # Bedrock requests at root paths; but the /internal/v1/* routes are
             # registered with the prefix included, so 404s without it.
-            uri                  = "http://${var.internal_alb_dns}/internal/{proxy}"
+            # Issue #4010: routed to the dedicated internal-plane ALB (which
+            # CloudFront has no VPC origin for), falling back to the edge ALB
+            # while internal_plane_alb_* are unset. integrationTarget must be a
+            # LOAD BALANCER ARN — a listener ARN is rejected by the API.
+            uri                  = "http://${local.internal_plane_alb_dns}/internal/{proxy}"
             timeoutInMillis      = var.integration_timeout_ms
             responseTransferMode = "STREAM"
             passthroughBehavior  = "when_no_match"
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
-            integrationTarget    = var.internal_alb_arn
+            integrationTarget    = local.internal_plane_alb_arn
             requestParameters = {
               "integration.request.path.proxy"               = "method.request.path.proxy"
               "integration.request.header.X-Caller-Identity" = "context.identity.userArn"

@@ -67,6 +67,50 @@ variable "alb_security_group_ids" {
 }
 
 # =============================================================================
+# Internal-plane ALB (Issue #4010)
+# =============================================================================
+# The internal control plane (`/internal/{proxy+}`, AWS_IAM/SigV4) is served by
+# a SEPARATE internal ALB created by k8s/ingress-internal.yaml, so that it is
+# unreachable from the CloudFront edge by routing rather than only by header
+# hygiene. CloudFront has no VPC origin for this ALB.
+#
+# Both default to empty, which makes the `/internal/{proxy+}` integration fall
+# back to the edge ALB — i.e. exactly today's behavior. This keeps the change
+# ordered and non-breaking: merging the Terraform alone cannot move the internal
+# route to an ALB that does not exist yet. wire-gateway-alb.sh populates these
+# once the internal Ingress has materialized its ALB, and only then does the
+# route move.
+#
+# `internal_plane_alb_arn` is a LOAD BALANCER ARN, not a listener ARN. Verified
+# against the live API: passing a listener ARN as `integrationTarget` fails with
+# "... is not a valid ALB or NLB arn". The AWS API/CLI/boto3/CFN reference
+# wording ("The ALB or NLB listener to send the request to") is a documentation
+# error. See docs/design-notes/4010-internal-plane-alb-separation.md
+variable "internal_plane_alb_arn" {
+  description = "Load balancer ARN (NOT a listener ARN) of the internal-plane ALB from k8s/ingress-internal.yaml. Set dynamically by wire-gateway-alb.sh. Empty falls back to internal_alb_arn (pre-#4010 behavior)."
+  type        = string
+  default     = ""
+}
+
+variable "internal_plane_alb_dns" {
+  description = "DNS name of the internal-plane ALB from k8s/ingress-internal.yaml. Set dynamically by wire-gateway-alb.sh. Empty falls back to internal_alb_dns (pre-#4010 behavior)."
+  type        = string
+  default     = ""
+}
+
+# The internal-plane ALB gets its own controller-managed security group, so the
+# VPC Link SG needs egress to it and it needs ingress from the VPC Link SG —
+# the same pairing that `alb_security_group_ids` sets up for the edge ALB.
+# Without this the `/internal/{proxy+}` route resolves to the new ALB but the
+# connection is dropped, surfacing as a ~10s timeout then 503. (The spike hit
+# exactly this failure when only one direction was opened.)
+variable "internal_plane_alb_security_group_ids" {
+  description = "Security group IDs of the internal-plane ALB. The VPC Link v2 SG gets egress to these, and these get an ingress rule from the VPC Link SG. Set dynamically by wire-gateway-alb.sh. (Issue #4010)"
+  type        = list(string)
+  default     = []
+}
+
+# =============================================================================
 # Authentication Configuration (Optional)
 # =============================================================================
 # Start with NONE authorization since the backend already validates JWT.

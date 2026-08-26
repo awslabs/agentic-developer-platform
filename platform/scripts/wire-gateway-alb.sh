@@ -23,9 +23,19 @@
 # an API Gateway stage redeploy so it goes live. Idempotent. (deploy-all.sh does
 # this inline as "Step 4b"; --apply makes it runnable standalone.)
 #
+# Issue #4010: also discovers the INTERNAL-PLANE ALB (from
+# modules/gateway/k8s/ingress-internal.yaml), which serves `/internal/*` and is
+# deliberately not fronted by CloudFront. Both ALBs are internal-scheme, so they
+# are told apart by their `ingress.eks.amazonaws.com/stack` tag rather than by
+# "first internal ALB" — see find_alb_by_stack() below. If the internal-plane
+# ALB is absent the internal vars stay empty and Terraform falls back to the edge
+# ALB, i.e. pre-#4010 behavior.
+#
 # Reads: AWS_REGION, ENVIRONMENT
-# Writes (stdout):    ALB_ARN, ALB_DNS, ALB_SG_IDS
+# Writes (stdout):    ALB_ARN, ALB_DNS, ALB_SG_IDS,
+#                     INTERNAL_PLANE_ALB_{ARN,DNS,SG_IDS}
 # Writes (SSM):       /adp/<env>/gateway/internal-alb-{arn,dns,security-group-ids}
+#                     /adp/<env>/gateway/internal-plane-alb-{arn,dns,security-group-ids}
 # Writes (GitHub):    $GITHUB_OUTPUT entries when run in Actions
 #
 # Exit:
@@ -45,6 +55,14 @@ done
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
+
+# Issue #4010: `ingress.eks.amazonaws.com/stack` tag values for the two gateway
+# Ingresses, used to tell their ALBs apart deterministically. These must match
+# `<namespace>/<metadata.name>` in the manifests:
+#   modules/gateway/k8s/ingress.yaml          -> edge (CloudFront-facing)
+#   modules/gateway/k8s/ingress-internal.yaml -> internal control plane
+EDGE_INGRESS_STACK="adp-gateway/bedrockgateway"
+INTERNAL_INGRESS_STACK="adp-gateway/bedrockgateway-internal"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
@@ -66,6 +84,38 @@ gh_env() {
   if [ -n "${GITHUB_ENV:-}" ]; then
     echo "${key}=${value}" >> "$GITHUB_ENV"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Helper: find an Ingress-managed ALB by its `ingress.eks.amazonaws.com/stack`
+# tag (Issue #4010)
+# ---------------------------------------------------------------------------
+# The EKS Auto Mode ALB controller tags each load balancer it creates with
+# `ingress.eks.amazonaws.com/stack: <namespace>/<ingress-name>`. That tag is the
+# only *deterministic* way to tell two Ingress-managed ALBs apart.
+#
+# This matters because #4010 adds a SECOND internal ALB (for the internal
+# control plane). The legacy discovery below picks the FIRST `Scheme==internal`
+# load balancer in the account, which was unambiguous when the gateway had one
+# ALB but is a coin-flip once there are two — and picking the internal-plane ALB
+# for `internal_alb_dns` would silently point CloudFront's VPC origin and the
+# public `/{proxy+}` route at an ALB that only serves `/internal`, i.e. a full
+# gateway outage. So the stack tag is now tried FIRST, with the old name/scheme
+# heuristics kept only as a fallback for pre-tag or self-managed-controller
+# deployments.
+#
+# Echoes the ALB ARN, or nothing if no match.
+find_alb_by_stack() {
+  local stack="$1"
+  local arns
+  arns=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+    --query 'LoadBalancers[?Scheme==`internal`].LoadBalancerArn' \
+    --output text 2>/dev/null | tr '\t' ' ' || true)
+  [ -z "$arns" ] && return 0
+  # shellcheck disable=SC2086  # intentional word-splitting: --resource-arns takes a list
+  aws elbv2 describe-tags --region "$AWS_REGION" --resource-arns $arns \
+    --query "TagDescriptions[?Tags[?Key=='ingress.eks.amazonaws.com/stack' && Value=='${stack}']].ResourceArn" \
+    --output text 2>/dev/null | tr '\t' '\n' | head -1 || true
 }
 
 # ---------------------------------------------------------------------------
@@ -102,9 +152,14 @@ fi
 if [ -z "$ALB_ARN" ]; then
   if [ "$NO_WAIT" = true ]; then
     # Single discovery attempt; the post-deploy invocation will retry with full polling.
-    ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
-      --query 'LoadBalancers[?Scheme==`internal`].LoadBalancerArn' \
-      --output text 2>/dev/null | head -1 || true)
+    # Issue #4010: match the edge Ingress's stack tag first so the second
+    # (internal-plane) ALB can never be mistaken for the edge ALB.
+    ALB_ARN=$(find_alb_by_stack "$EDGE_INGRESS_STACK")
+    if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
+      ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+        --query 'LoadBalancers[?Scheme==`internal`].LoadBalancerArn' \
+        --output text 2>/dev/null | head -1 || true)
+    fi
     if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
       ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
         --query 'LoadBalancers[?contains(LoadBalancerName,`bedrockgw`) || contains(LoadBalancerName,`k8s-bedrockgw`)].LoadBalancerArn' \
@@ -123,10 +178,16 @@ if [ -z "$ALB_ARN" ]; then
   else
   echo "Waiting for EKS Ingress ALB to be provisioned..."
   for i in $(seq 1 40); do
-    # Look for internal ALBs
-    ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
-      --query 'LoadBalancers[?Scheme==`internal`].LoadBalancerArn' \
-      --output text 2>/dev/null | head -1 || true)
+    # Issue #4010: prefer the edge Ingress's stack tag — with two internal ALBs
+    # in the account, "first internal ALB" is no longer deterministic.
+    ALB_ARN=$(find_alb_by_stack "$EDGE_INGRESS_STACK")
+
+    if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
+      # Look for internal ALBs
+      ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+        --query 'LoadBalancers[?Scheme==`internal`].LoadBalancerArn' \
+        --output text 2>/dev/null | head -1 || true)
+    fi
 
     if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
       # Also check by name pattern from ingress group
@@ -193,22 +254,91 @@ if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Step 3b: Discover the internal-plane ALB (Issue #4010)
+# ---------------------------------------------------------------------------
+# Created by modules/gateway/k8s/ingress-internal.yaml and serves `/internal/*`
+# only. CloudFront has no VPC origin for it, which is what makes the internal
+# control plane unreachable from the edge by routing.
+#
+# Absence is NOT an error: on a fresh deploy (or any cluster where
+# ingress-internal.yaml has not been applied yet) these stay empty, and the
+# Terraform falls back to the edge ALB — exactly pre-#4010 behavior. That
+# fallback is deliberate: it means the API Gateway integration only moves to the
+# internal ALB once that ALB genuinely exists, so there is no window where
+# `/internal/{proxy+}` points at nothing and 503s.
+INTERNAL_PLANE_ALB_ARN=""
+INTERNAL_PLANE_ALB_DNS=""
+INTERNAL_PLANE_ALB_SG_IDS="[]"
+
+INTERNAL_PLANE_ALB_ARN=$(find_alb_by_stack "$INTERNAL_INGRESS_STACK")
+if [ -n "$INTERNAL_PLANE_ALB_ARN" ] && [ "$INTERNAL_PLANE_ALB_ARN" != "None" ]; then
+  INTERNAL_PLANE_ALB_DNS=$(aws elbv2 describe-load-balancers \
+    --load-balancer-arns "$INTERNAL_PLANE_ALB_ARN" --region "$AWS_REGION" \
+    --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
+
+  INTERNAL_SG_LIST=$(aws elbv2 describe-load-balancers \
+    --load-balancer-arns "$INTERNAL_PLANE_ALB_ARN" --region "$AWS_REGION" \
+    --query 'LoadBalancers[0].SecurityGroups' --output text 2>/dev/null || echo "")
+  if [ -n "$INTERNAL_SG_LIST" ]; then
+    INTERNAL_PLANE_ALB_SG_IDS="[$(echo "$INTERNAL_SG_LIST" | tr '[:space:]' ',' | sed 's/,$//' | sed 's/\([^,][^,]*\)/"\1"/g')]"
+  fi
+
+  # Guard against the catastrophic case: if the internal-plane ALB were ever
+  # discovered as the SAME load balancer as the edge ALB, the separation this
+  # issue exists to create would silently not exist. Fail loudly instead.
+  if [ "$INTERNAL_PLANE_ALB_ARN" = "$ALB_ARN" ]; then
+    echo "::error::Internal-plane ALB resolved to the SAME ALB as the edge ALB ($ALB_ARN)." >&2
+    echo "::error::Internal-plane separation (#4010) would not be in effect. Check the" >&2
+    echo "::error::'ingress.eks.amazonaws.com/stack' tags and that both Ingresses exist." >&2
+    exit 1
+  fi
+
+  aws ssm put-parameter \
+    --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-arn" \
+    --value "$INTERNAL_PLANE_ALB_ARN" --type String --overwrite \
+    --region "$AWS_REGION" > /dev/null
+  aws ssm put-parameter \
+    --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-dns" \
+    --value "$INTERNAL_PLANE_ALB_DNS" --type String --overwrite \
+    --region "$AWS_REGION" > /dev/null
+  aws ssm put-parameter \
+    --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-security-group-ids" \
+    --value "$INTERNAL_PLANE_ALB_SG_IDS" --type String --overwrite \
+    --region "$AWS_REGION" > /dev/null
+  echo "Internal-plane ALB (#4010): $INTERNAL_PLANE_ALB_DNS  SGs=$INTERNAL_PLANE_ALB_SG_IDS"
+else
+  INTERNAL_PLANE_ALB_ARN=""
+  echo "Internal-plane ALB (#4010) not found (ingress-internal.yaml not applied yet?)."
+  echo "  -> /internal/{proxy+} will fall back to the edge ALB (pre-#4010 behavior)."
+fi
+
+# ---------------------------------------------------------------------------
 # Step 4: Export results
 # ---------------------------------------------------------------------------
 echo "ALB_ARN=$ALB_ARN"
 echo "ALB_DNS=$ALB_DNS"
 echo "ALB_SG_IDS=$ALB_SG_IDS"
+echo "INTERNAL_PLANE_ALB_ARN=$INTERNAL_PLANE_ALB_ARN"
+echo "INTERNAL_PLANE_ALB_DNS=$INTERNAL_PLANE_ALB_DNS"
+echo "INTERNAL_PLANE_ALB_SG_IDS=$INTERNAL_PLANE_ALB_SG_IDS"
 
 gh_output "ALB_ARN" "$ALB_ARN"
 gh_output "ALB_DNS" "$ALB_DNS"
 gh_output "ALB_SG_IDS" "$ALB_SG_IDS"
+gh_output "INTERNAL_PLANE_ALB_ARN" "$INTERNAL_PLANE_ALB_ARN"
+gh_output "INTERNAL_PLANE_ALB_DNS" "$INTERNAL_PLANE_ALB_DNS"
+gh_output "INTERNAL_PLANE_ALB_SG_IDS" "$INTERNAL_PLANE_ALB_SG_IDS"
 
 gh_env "ALB_ARN" "$ALB_ARN"
 gh_env "ALB_DNS" "$ALB_DNS"
 gh_env "ALB_SG_IDS" "$ALB_SG_IDS"
+gh_env "INTERNAL_PLANE_ALB_ARN" "$INTERNAL_PLANE_ALB_ARN"
+gh_env "INTERNAL_PLANE_ALB_DNS" "$INTERNAL_PLANE_ALB_DNS"
+gh_env "INTERNAL_PLANE_ALB_SG_IDS" "$INTERNAL_PLANE_ALB_SG_IDS"
 
 # Also export as shell variables for callers that source this script
 export ALB_ARN ALB_DNS ALB_SG_IDS
+export INTERNAL_PLANE_ALB_ARN INTERNAL_PLANE_ALB_DNS INTERNAL_PLANE_ALB_SG_IDS
 
 # ---------------------------------------------------------------------------
 # Step 5 (--apply only): gateway second-pass re-apply + API GW stage redeploy
@@ -229,6 +359,23 @@ if [ "$DO_APPLY" = true ]; then
   GW_BACKEND="${REPO_ROOT}/environments/${ENVIRONMENT}/modules/gateway-backend.tfvars"
   GW_VARS="${REPO_ROOT}/environments/${ENVIRONMENT}/modules/gateway.tfvars"
 
+  # Issue #4010: the internal-plane vars are passed only when that ALB was
+  # actually discovered. Passing empty values is harmless (Terraform falls back
+  # to the edge ALB), but building the args conditionally keeps the applied plan
+  # identical to today's on clusters where ingress-internal.yaml is not yet
+  # applied — so this script's behavior is unchanged until the manifest lands.
+  INTERNAL_PLANE_ARGS=()
+  if [ -n "$INTERNAL_PLANE_ALB_ARN" ]; then
+    INTERNAL_PLANE_ARGS+=(
+      -var "internal_plane_alb_arn=$INTERNAL_PLANE_ALB_ARN"
+      -var "internal_plane_alb_dns=$INTERNAL_PLANE_ALB_DNS"
+      -var "internal_plane_alb_security_group_ids=$INTERNAL_PLANE_ALB_SG_IDS"
+    )
+    echo "  internal plane -> $INTERNAL_PLANE_ALB_DNS"
+  else
+    echo "  internal plane -> (not discovered; /internal falls back to edge ALB)"
+  fi
+
   echo "Re-applying gateway-infra with ALB vars (internal_alb_dns=$ALB_DNS)..."
   ( cd "$GW_INFRA_DIR" \
     && terraform init -backend-config="$GW_BACKEND" -input=false -reconfigure >/dev/null \
@@ -237,6 +384,7 @@ if [ "$DO_APPLY" = true ]; then
          -var "internal_alb_arn=$ALB_ARN" \
          -var "internal_alb_dns=$ALB_DNS" \
          -var "alb_security_group_ids=$ALB_SG_IDS" \
+         "${INTERNAL_PLANE_ARGS[@]+"${INTERNAL_PLANE_ARGS[@]}"}" \
          -var "enable_vpc_origin=true" \
          -input=false -auto-approve )
   echo "Gateway re-apply complete."
@@ -253,5 +401,26 @@ if [ "$DO_APPLY" = true ]; then
       || echo "WARN: could not force API GW stage redeploy; routes may need a manual create-deployment."
   else
     echo "WARN: REST API bedrockgw-${ENVIRONMENT}-api not found — skipping stage redeploy."
+  fi
+
+  # -------------------------------------------------------------------------
+  # Issue #4010: apply the edge internal-plane deny LAST
+  # -------------------------------------------------------------------------
+  # This runs after the apply AND after the stage redeploy, so the repointed
+  # `/internal/{proxy+}` integration is actually live before the edge ALB starts
+  # denying that path. The script confirms the repoint against the live
+  # integration and skips harmlessly if it has not landed, so this is safe to run
+  # on environments without the internal-plane ALB.
+  #
+  # Requires kubectl access to the cluster; a failure here is non-fatal because
+  # the deny is defence-in-depth and the app-side checks (#4000/#4007) remain in
+  # force either way.
+  if command -v kubectl >/dev/null 2>&1; then
+    ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" \
+      bash "${REPO_ROOT}/modules/gateway/scripts/apply-internal-plane-deny.sh" || \
+      echo "WARN: internal-plane deny (#4010) not applied — re-run apply-internal-plane-deny.sh once kubectl access is available."
+  else
+    echo "kubectl not available — skipping the internal-plane edge deny (#4010)."
+    echo "  Run modules/gateway/scripts/apply-internal-plane-deny.sh from a cluster-connected host."
   fi
 fi

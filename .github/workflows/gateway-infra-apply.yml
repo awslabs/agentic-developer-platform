@@ -348,6 +348,17 @@ jobs:
         # avoiding the bash quoting trap where ${{ ... }} interpolation collapses the
         # inner double quotes in alb_security_group_ids = ["sg-x","sg-y"]).
         env:
+          # Issue #4010: the internal-plane ALB serves `/internal/*` and is not
+          # fronted by CloudFront. These MUST be passed here — this is the only
+          # workflow that repoints the API-GW `/internal/{proxy+}` integration off
+          # the edge ALB. Omitting them (the original #4010 implementation did)
+          # leaves the integration on the edge ALB forever, so the edge deny could
+          # never be safely applied. Empty values are correct on any environment
+          # where k8s/ingress-internal.yaml has not produced its ALB yet: the
+          # Terraform then falls back to the edge ALB, i.e. pre-#4010 behavior.
+          TF_VAR_internal_plane_alb_arn: ${{ steps.alb_pre.outputs.INTERNAL_PLANE_ALB_ARN }}
+          TF_VAR_internal_plane_alb_dns: ${{ steps.alb_pre.outputs.INTERNAL_PLANE_ALB_DNS }}
+          TF_VAR_internal_plane_alb_security_group_ids: ${{ steps.alb_pre.outputs.INTERNAL_PLANE_ALB_SG_IDS }}
           TF_VAR_internal_alb_arn: ${{ steps.alb_pre.outputs.ALB_ARN }}
           TF_VAR_internal_alb_dns: ${{ steps.alb_pre.outputs.ALB_DNS }}
           TF_VAR_alb_security_group_ids: ${{ steps.alb_pre.outputs.ALB_SG_IDS }}
@@ -359,15 +370,34 @@ jobs:
           set -o pipefail
           EXIT_CODE=0
 
+          # Issue #4010: a list-typed TF_VAR must never be the empty string —
+          # terraform parses TF_VAR_* as HCL, and "" is not a valid list. Unset it
+          # instead so the module default ([]) applies.
+          if [ -z "${TF_VAR_internal_plane_alb_security_group_ids:-}" ]; then
+            unset TF_VAR_internal_plane_alb_security_group_ids
+          fi
+
           if [ -n "${TF_VAR_internal_alb_arn:-}" ]; then
             echo "ALB resolved — plan/apply will keep CloudFront VPC origin."
             echo "  ALB ARN: $TF_VAR_internal_alb_arn"
             echo "  ALB DNS: $TF_VAR_internal_alb_dns"
             echo "  ALB SG IDs: $TF_VAR_alb_security_group_ids"
+            # Issue #4010: report the internal plane's routing target explicitly —
+            # this line is how an operator confirms from the log whether this apply
+            # repoints `/internal/{proxy+}` or leaves it on the edge ALB.
+            if [ -n "${TF_VAR_internal_plane_alb_arn:-}" ]; then
+              echo "  internal plane (#4010) -> $TF_VAR_internal_plane_alb_dns"
+            else
+              echo "  internal plane (#4010) -> (not discovered; /internal stays on the edge ALB)"
+            fi
           else
             # Unset the related vars so terraform falls back to module defaults
             # (enable_vpc_origin=false, internal_alb_arn="", count=0 — VPC origin not created).
             unset TF_VAR_internal_alb_arn TF_VAR_internal_alb_dns TF_VAR_alb_security_group_ids TF_VAR_enable_vpc_origin
+            # With no edge ALB this is a fresh deploy; the internal-plane ALB cannot
+            # meaningfully exist yet either, and passing its vars while the rest of
+            # the gateway body is collapsed would be inconsistent.
+            unset TF_VAR_internal_plane_alb_arn TF_VAR_internal_plane_alb_dns TF_VAR_internal_plane_alb_security_group_ids
             echo "ALB not found (fresh deploy) — plan/apply will defer VPC origin creation."
           fi
 

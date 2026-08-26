@@ -1097,11 +1097,32 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
     ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
     ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
     ALB_SG_IDS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-security-group-ids" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "[]")
+    # Issue #4010: internal-plane ALB (serves /internal/*, not fronted by
+    # CloudFront). Absent until modules/gateway/k8s/ingress-internal.yaml has
+    # been applied, in which case these stay empty and the Terraform falls back
+    # to the edge ALB — i.e. pre-#4010 behavior.
+    INTERNAL_PLANE_ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-arn" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    INTERNAL_PLANE_ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-dns" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    INTERNAL_PLANE_ALB_SG_IDS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-security-group-ids" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "[]")
   else
     warn "ALB not found after 10 minutes. Skipping ALB wiring — API Gateway will use MOCK integration."
     ALB_ARN=""
     ALB_DNS=""
     ALB_SG_IDS="[]"
+    INTERNAL_PLANE_ALB_ARN=""
+    INTERNAL_PLANE_ALB_DNS=""
+    INTERNAL_PLANE_ALB_SG_IDS="[]"
+  fi
+
+  # Only pass the internal-plane vars when that ALB actually exists, so the
+  # applied plan is byte-identical to today's on clusters without it.
+  INTERNAL_PLANE_ARGS=()
+  if [ -n "$INTERNAL_PLANE_ALB_ARN" ] && [ "$INTERNAL_PLANE_ALB_ARN" != "None" ]; then
+    INTERNAL_PLANE_ARGS+=(
+      -var "internal_plane_alb_arn=$INTERNAL_PLANE_ALB_ARN"
+      -var "internal_plane_alb_dns=$INTERNAL_PLANE_ALB_DNS"
+      -var "internal_plane_alb_security_group_ids=$INTERNAL_PLANE_ALB_SG_IDS"
+    )
   fi
 
   # Re-apply gateway Terraform with ALB details to wire API Gateway VPC Link v2
@@ -1115,6 +1136,7 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
         -var "internal_alb_arn=$ALB_ARN" \
         -var "internal_alb_dns=$ALB_DNS" \
         -var "alb_security_group_ids=$ALB_SG_IDS" \
+        "${INTERNAL_PLANE_ARGS[@]+"${INTERNAL_PLANE_ARGS[@]}"}" \
         -var "enable_vpc_origin=true"
     else
       terraform apply \
@@ -1122,10 +1144,20 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
         -var "internal_alb_arn=$ALB_ARN" \
         -var "internal_alb_dns=$ALB_DNS" \
         -var "alb_security_group_ids=$ALB_SG_IDS" \
+        "${INTERNAL_PLANE_ARGS[@]+"${INTERNAL_PLANE_ARGS[@]}"}" \
         -var "enable_vpc_origin=true" \
         -auto-approve
       ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB"
     fi
+
+    # Issue #4010: apply the edge `/internal` -> 403 deny LAST, and only if the
+    # apply above actually repointed `/internal/{proxy+}` at the internal-plane
+    # ALB. The script re-reads the live integration to confirm that, and skips
+    # harmlessly otherwise. Ordering matters: applying the deny while the
+    # integration still targets the edge ALB 403s every SigV4 internal call.
+    ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" \
+      bash "$ROOT_DIR/modules/gateway/scripts/apply-internal-plane-deny.sh" || \
+      warn "Internal-plane deny (#4010) not applied; re-run after the API GW repoint lands."
   fi
 fi
 

@@ -312,6 +312,35 @@ variable "alb_security_group_ids" {
   default     = []
 }
 
+# =============================================================================
+# Internal-plane ALB (Issue #4010)
+# =============================================================================
+# The internal control plane (`/internal/{proxy+}`) is served by a separate ALB
+# created by modules/gateway/k8s/ingress-internal.yaml, which CloudFront has no
+# VPC origin for — making the internal plane unreachable from the edge by
+# routing rather than only by header stripping at the CloudFront function.
+#
+# All three are empty by default, which makes the internal route fall back to
+# the edge ALB (exactly pre-#4010 behavior). platform/scripts/wire-gateway-alb.sh
+# discovers the internal Ingress's ALB and populates them via TF_VAR_*.
+variable "internal_plane_alb_arn" {
+  description = "Load balancer ARN (NOT a listener ARN) of the internal-plane ALB. Set dynamically by wire-gateway-alb.sh. Empty falls back to the edge ALB. (Issue #4010)"
+  type        = string
+  default     = ""
+}
+
+variable "internal_plane_alb_dns" {
+  description = "DNS name of the internal-plane ALB. Set dynamically by wire-gateway-alb.sh. Empty falls back to the edge ALB. (Issue #4010)"
+  type        = string
+  default     = ""
+}
+
+variable "internal_plane_alb_security_group_ids" {
+  description = "Security group IDs of the internal-plane ALB. Used for the VPC Link v2 SG egress + matching ALB ingress rules. Set dynamically by wire-gateway-alb.sh. (Issue #4010)"
+  type        = list(string)
+  default     = []
+}
+
 variable "vpc_origin_read_timeout" {
   type        = number
   description = "Origin read timeout in seconds for VPC Origin. CloudFront caps this at 60s for VPC origins (custom origins allow up to 180s)."

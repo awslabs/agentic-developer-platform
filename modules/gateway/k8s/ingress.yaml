@@ -57,8 +57,50 @@ metadata:
     # to prevent the ALB from dropping long-running Bedrock requests.
     # Default is 60s which causes 504s for requests >60s.
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=900
-    # Group ingresses under a single ALB (optional, allows multiple services to share ALB)
+    # NOTE (#4010): this annotation is a NO-OP on EKS Auto Mode. AWS documents
+    # `alb.ingress.kubernetes.io/group.name` as "Not supported — specify groups
+    # in IngressClass only", and k8s/ingressclass.yaml uses the Auto Mode
+    # controller (`eks.amazonaws.com/alb`). Confirmed live: the ALB is named
+    # `k8s-adpgatew-bedrockg-*` and tagged
+    # `ingress.eks.amazonaws.com/stack: adp-gateway/bedrockgateway` — the
+    # implicit single-Ingress pattern, not a `bedrockgw` group.
+    #
+    # It is left in place ON PURPOSE: the ALB's identity (and therefore its DNS
+    # name) derives from this stack, and grouping on Auto Mode would have to move
+    # to `IngressClassParams.spec.group.name`, which REPLACES the load balancer
+    # and forces a CloudFront-VPC-origin + API-GW + SSM re-wire. Do not "fix"
+    # this by removing it and adding IngressClassParams grouping without a
+    # planned DNS migration. See docs/design-notes/4010-internal-plane-alb-separation.md
     alb.ingress.kubernetes.io/group.name: bedrockgw
+
+    # ==========================================================================
+    # Internal-plane deny at the edge (Issue #4010) — NOT APPLIED HERE
+    # ==========================================================================
+    # The `/internal` -> fixed-response 403 rule that makes the internal control
+    # plane unreachable from the edge is deliberately NOT in this manifest. It
+    # lives in `k8s/patches/edge-internal-deny.yaml` and is applied ONLY by
+    # `modules/gateway/scripts/apply-internal-plane-deny.sh`, which first
+    # verifies that the API Gateway `/internal/{proxy+}` integration has already
+    # been repointed at the internal-plane ALB.
+    #
+    # WHY IT IS NOT HERE — this ordering is load-bearing, not stylistic.
+    # Both apply paths (`gateway-deploy.yml` and `deploy-all.sh`) loop over
+    # `k8s/*.yaml` and apply everything unconditionally, with no knowledge of
+    # Terraform state. Shipping the deny in this file therefore takes the deny
+    # live on merge, while the API-GW integration may still target THIS ALB
+    # (`internal_plane_alb_dns` empty -> Terraform falls back to the edge ALB).
+    # The result is every SigV4 `/internal/{proxy+}` call — agent provenance
+    # writes, credential paths — getting a 403 from this ALB until a human
+    # manually re-wires. The deny must be strictly LAST: after the internal ALB
+    # exists AND after the integration is confirmed repointed off this one.
+    #
+    # `k8s/patches/` is a SUBDIRECTORY on purpose: both apply loops glob
+    # `k8s/*.yaml` non-recursively, so a partial Ingress placed alongside this
+    # file would be applied blindly and would three-way-merge away the real
+    # `spec.rules` below. Do not move it up a level.
+    #
+    # See docs/design-notes/4010-internal-plane-alb-separation.md ("Rollout
+    # ordering") for the full ordering argument and the rollback procedure.
 spec:
   ingressClassName: alb
   rules:

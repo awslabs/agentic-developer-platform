@@ -934,6 +934,15 @@ module "api_gateway" {
   # Set dynamically by the deploy workflow alongside ALB ARN/DNS
   alb_security_group_ids = var.alb_security_group_ids
 
+  # Internal-plane ALB (Issue #4010) — the `/internal/{proxy+}` route targets a
+  # separate ALB that CloudFront has no VPC origin for, so the internal control
+  # plane is unreachable from the edge by routing. All three default to
+  # empty/[], in which case the route falls back to the edge ALB (pre-#4010
+  # behavior). Populated by platform/scripts/wire-gateway-alb.sh.
+  internal_plane_alb_arn                = var.internal_plane_alb_arn
+  internal_plane_alb_dns                = var.internal_plane_alb_dns
+  internal_plane_alb_security_group_ids = var.internal_plane_alb_security_group_ids
+
   # Authentication (backend handles JWT validation)
   cognito_user_pool_arn = module.cognito.cognito_user_pool_arn
 

@@ -359,13 +359,61 @@ jobs:
                 --query 'length(DistributionConfig.Origins.Items[?VpcOriginConfig])' \
                 --output text 2>/dev/null || echo "unknown")
             fi
+            NEEDS_APPLY=false
             if [ "$VPC_ORIGINS" = "0" ]; then
               echo "CloudFront ${DIST_ID} has NO VPC origin despite cached ALB — triggering re-apply."
-              echo "newly_wired=true" >> "$GITHUB_OUTPUT"
+              NEEDS_APPLY=true
             else
-              echo "CloudFront VPC origin check: count=${VPC_ORIGINS}. Nothing to wire."
-              echo "newly_wired=false" >> "$GITHUB_OUTPUT"
+              echo "CloudFront VPC origin check: count=${VPC_ORIGINS}. Nothing to wire for CloudFront."
             fi
+
+            # Issue #4010: the cached-edge-ALB path must STILL run internal-plane
+            # discovery. This early-exit used to `exit 0` here, which meant that on
+            # every established environment the internal-plane ALB was never
+            # discovered, its SSM params were never populated, and the API-GW
+            # `/internal/{proxy+}` integration was never repointed off the edge ALB.
+            # Discovery is cheap and idempotent, so just always run it.
+            if timeout 120 bash platform/scripts/wire-gateway-alb.sh; then
+              :
+            else
+              echo "::notice::ALB discovery did not complete; will retry on the next deploy."
+            fi
+
+            # If the internal-plane ALB now exists but the live API-GW integration
+            # still targets the edge ALB, a gateway-infra re-apply is needed to
+            # repoint it. Without this the deny could never be applied (its
+            # precondition is the repoint), and the internal plane would stay on
+            # the edge ALB indefinitely.
+            IP_DNS=$(aws ssm get-parameter \
+              --name "/adp/${ENVIRONMENT}/gateway/internal-plane-alb-dns" \
+              --query Parameter.Value --output text 2>/dev/null || echo "")
+            if [ -n "$IP_DNS" ] && [ "$IP_DNS" != "None" ]; then
+              INVOKE_URL=$(aws ssm get-parameter \
+                --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
+                --query Parameter.Value --output text 2>/dev/null || echo "")
+              API_ID=$(printf '%s' "$INVOKE_URL" | sed -n 's|^https://\([^.]*\)\..*|\1|p')
+              CUR_URI=""
+              if [ -n "$API_ID" ]; then
+                RES_ID=$(aws apigateway get-resources --rest-api-id "$API_ID" \
+                  --query "items[?path=='/internal/{proxy+}'].id" \
+                  --output text 2>/dev/null | head -1 || echo "")
+                if [ -n "$RES_ID" ] && [ "$RES_ID" != "None" ]; then
+                  CUR_URI=$(aws apigateway get-integration --rest-api-id "$API_ID" \
+                    --resource-id "$RES_ID" --http-method ANY \
+                    --query 'uri' --output text 2>/dev/null || echo "")
+                fi
+              fi
+              case "$CUR_URI" in
+                *"$IP_DNS"*)
+                  echo "Internal plane (#4010) already repointed at ${IP_DNS}." ;;
+                *)
+                  echo "Internal-plane ALB exists (${IP_DNS}) but /internal/{proxy+} targets"
+                  echo "  '${CUR_URI:-<unresolved>}' — triggering re-apply to repoint it."
+                  NEEDS_APPLY=true ;;
+              esac
+            fi
+
+            echo "newly_wired=${NEEDS_APPLY}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Run discovery with a short timeout (2 min instead of 10)
@@ -394,6 +442,42 @@ jobs:
           CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label }}
           CUSTOMER_USER_ID: ${{ inputs.customer_user_id }}
           ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+
+      # =====================================================================
+      # Internal-plane edge deny (Issue #4010) — MUST BE LAST
+      # =====================================================================
+      # Applies the `/internal` -> 403 rule to the edge ALB, but only once the
+      # API-GW `/internal/{proxy+}` integration is confirmed repointed at the
+      # internal-plane ALB. The script verifies that against the LIVE integration
+      # and skips (exit 0) if it has not landed yet, so this is safe on the first
+      # deploy after merge: the deny simply lands on a later run.
+      #
+      # This is deliberately NOT part of the `k8s/*.yaml` apply loop above.
+      # Shipping the deny in `k8s/ingress.yaml` applied it unconditionally on
+      # merge, before the repoint, which 403'd every SigV4 internal call (agent
+      # provenance writes, credential paths) until a human re-wired by hand.
+      # Ordering: repoint first, deny second — never the reverse.
+      #
+      # Note the re-apply triggered above is asynchronous (`gh workflow run`), so
+      # on the run that first discovers the internal ALB the repoint will usually
+      # still be in flight and this step will correctly skip.
+      - name: Apply internal-plane edge deny (gated)
+        if: success()
+        run: bash modules/gateway/scripts/apply-internal-plane-deny.sh
+        env:
+          ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+
+      # Deploy smoke assertion (Issue #4010): fail loudly if the edge ALB is
+      # denying /internal while the API-GW integration still targets that same
+      # ALB. That combination is a total internal-plane outage, and it is exactly
+      # the state the original implementation of this change could reach.
+      - name: Verify internal-plane invariant
+        if: success()
+        run: bash modules/gateway/scripts/apply-internal-plane-deny.sh --verify
+        env:
+          ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          NAMESPACE: ${{ env.NAMESPACE }}
 
   deploy-frontend:
     name: Build and Deploy Frontend
