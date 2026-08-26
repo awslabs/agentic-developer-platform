@@ -25,6 +25,11 @@ AWS_CREDENTIALS_FILE="${HOME}/.aws/credentials"
 AWS_CONFIG_FILE="${HOME}/.aws/config"
 PROFILE_NAME="bedrock-gateway"
 
+# Local auth-proxy mode (Issue #4154)
+PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
+PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
+DEFAULT_PROXY_PORT=9191
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -768,6 +773,100 @@ cmd_token() {
     printf "%s" "${ACCESS_TOKEN}"
 }
 
+# Serve command (Issue #4154)
+#
+# Starts a localhost-only proxy that injects a freshly-refreshed token into
+# every request, giving Codex (and any client with no apiKeyHelper-style hook)
+# zero-touch auth. Codex reads its credential from an env var once at launch, so
+# without this a session that outlives the 60-minute token dies with 401s.
+#
+# This wrapper owns arg parsing, config validation and the pidfile; the socket
+# loop lives in bg-gateway-proxy.py. The proxy obtains tokens by calling this
+# script's `token` subcommand, so there is exactly one refresh implementation.
+cmd_serve() {
+    local port="${DEFAULT_PROXY_PORT}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --port)
+                port="$2"
+                shift 2
+                ;;
+            --foreground)
+                # Accepted for explicitness; foreground is the only mode.
+                # Daemonization is a deliberate non-goal — use your shell's job
+                # control or a terminal multiplexer.
+                shift
+                ;;
+            *)
+                print_error "Unknown option: $1" >&2
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    if ! [[ "${port}" =~ ^[0-9]+$ ]] || [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
+        print_error "Invalid --port: ${port}" >&2
+        exit 1
+    fi
+
+    if ! command -v python3 &> /dev/null; then
+        print_error "python3 is required for 'serve' (macOS and Linux both ship it)." >&2
+        exit 1
+    fi
+
+    if [ ! -f "${CONFIG_FILE}" ]; then
+        print_error "Not configured. Run 'bg-cognito-auth.sh import' (GitHub login) or 'login' first." >&2
+        exit 1
+    fi
+    load_config
+
+    if [ -z "${GATEWAY_URL}" ] || [ "${GATEWAY_URL}" = "null" ]; then
+        print_error "No gateway_url in ${CONFIG_FILE}. Run 'bg-cognito-auth.sh import' or 'login' first." >&2
+        exit 1
+    fi
+
+    local proxy_script
+    proxy_script="$(dirname "$(script_path)")/${PROXY_SCRIPT_NAME}"
+    if [ ! -f "${proxy_script}" ]; then
+        print_error "Proxy script not found at ${proxy_script} — copy it alongside $(basename "$0")." >&2
+        exit 1
+    fi
+
+    # A stale pidfile from a killed session is normal; a live one is not, and
+    # would otherwise surface as an opaque "address already in use".
+    if [ -f "${PROXY_PID_FILE}" ]; then
+        local existing_pid
+        existing_pid=$(cat "${PROXY_PID_FILE}" 2>/dev/null || true)
+        if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+            print_error "A gateway proxy is already running (pid ${existing_pid}). Stop it first: kill ${existing_pid}" >&2
+            exit 1
+        fi
+        rm -f "${PROXY_PID_FILE}"
+    fi
+
+    echo "$$" > "${PROXY_PID_FILE}"
+    chmod 600 "${PROXY_PID_FILE}"
+
+    # exec so the pid we just recorded is the pid of the running proxy, and so
+    # Ctrl-C reaches the Python process directly instead of a bash wrapper.
+    exec python3 "${proxy_script}" \
+        --gateway-url "${GATEWAY_URL}" \
+        --auth-helper "$(script_path)" \
+        --port "${port}" \
+        --pidfile "${PROXY_PID_FILE}"
+}
+
+# Absolute path to this script, so `serve` can find its sibling proxy file and
+# tell the proxy how to call back into `token`.
+script_path() {
+    local source="${BASH_SOURCE[0]}"
+    local dir
+    dir="$(cd "$(dirname "${source}")" && pwd)"
+    echo "${dir}/$(basename "${source}")"
+}
+
 # Usage information
 usage() {
     cat << EOF
@@ -783,6 +882,7 @@ Commands:
     logout      Remove stored tokens and credentials
     status      Show current authentication status
     token       Output current access token (for apiKeyHelper - Issue #119)
+    serve       Run a localhost auth proxy for Codex (Issue #4154)
 
 Login Options:
     --gateway-url <url>       Gateway URL (required)
@@ -797,6 +897,10 @@ Import Options (Issue #4145):
     --client-id <id>          Cognito Client ID (else discovered from the gateway)
     --user-pool-id <id>       Cognito User Pool ID (else discovered from the gateway)
     --region <region>         AWS region (else discovered; default: us-east-1)
+
+Serve Options (Issue #4154):
+    --port <port>             Loopback port to listen on (default: ${DEFAULT_PROXY_PORT})
+    --foreground              Run in the foreground (default; accepted for explicitness)
 
 Examples:
     # Interactive login (discovers settings from gateway)
@@ -821,6 +925,11 @@ Examples:
 
     # Get access token for apiKeyHelper (Issue #119)
     $(basename "$0") token
+
+    # Zero-touch auth for Codex: run the local proxy, then launch codex.
+    # Codex reads its key once at launch, so a static token dies after 60 min;
+    # the proxy injects a fresh one per request instead. See cli/README.md.
+    $(basename "$0") serve --port ${DEFAULT_PROXY_PORT}
 
 After authentication, use Claude Code with:
     CLAUDE_CODE_USE_BEDROCK=1 claude
@@ -866,6 +975,9 @@ main() {
             ;;
         token)
             cmd_token "$@"
+            ;;
+        serve)
+            cmd_serve "$@"
             ;;
         help|--help|-h)
             usage

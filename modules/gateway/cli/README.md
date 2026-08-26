@@ -6,7 +6,8 @@ CLI tools for authenticating with the Bedrock Gateway and configuring Claude Cod
 
 | File | Description |
 |------|-------------|
-| `bg-cognito-auth.sh` | Cognito authentication helper (login, import, refresh, token) |
+| `bg-cognito-auth.sh` | Cognito authentication helper (login, import, refresh, token, serve) |
+| `bg-gateway-proxy.py` | Localhost auth proxy started by `serve` — zero-touch auth for Codex (stdlib python3, no pip installs) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `install.sh` | Installation script |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
@@ -105,6 +106,119 @@ There is no `--identity-pool-id`: `import` performs no AWS-credential exchange a
 - If **Connect CLI** says to sign out and back in, your session has no refresh token — re-authenticate to get one.
 - Piping works for automation: `printf '%s' "$TOKEN" | bg-cognito-auth.sh import --gateway-url https://<CLOUDFRONT_DOMAIN>/api`.
 
+## Using Codex: zero-touch auth with `serve`
+
+Claude Code re-asks this helper for a token whenever it needs one (`apiKeyHelper`).
+**Codex has no such hook** — it reads its credential from an env var once at
+launch and never asks again. So `export ADP_GATEWAY_TOKEN=$(bg-cognito-auth.sh token)`
+works for about an hour, and then every request 401s until you restart Codex.
+
+`serve` closes that gap. It runs a small proxy on localhost that injects a
+freshly-refreshed token into every request, so you authenticate once and never
+touch tokens again — including across a session that runs for days.
+
+### Step 1: Install both files
+
+```bash
+cp cli/bg-cognito-auth.sh cli/bg-gateway-proxy.py ~/bin/
+chmod +x ~/bin/bg-cognito-auth.sh
+```
+
+`bg-gateway-proxy.py` must sit **next to** `bg-cognito-auth.sh` — `serve` looks
+for its sibling. It needs only stdlib `python3`, which macOS and Linux both ship.
+
+### Step 2: Authenticate once
+
+```bash
+~/bin/bg-cognito-auth.sh import --gateway-url https://<CLOUDFRONT_DOMAIN>/api
+# ...or `login` if you have a Cognito password
+```
+
+### Step 3: Configure Codex
+
+Add to `~/.codex/config.toml` (the helper deliberately does **not** write this
+file for you — it is yours):
+
+```toml
+model = "openai.gpt-5.6-sol"
+model_provider = "adp-gateway"
+
+[model_providers.adp-gateway]
+name = "ADP Gateway (local auth proxy)"
+base_url = "http://127.0.0.1:9191/openai/v1"
+wire_api = "responses"
+# Codex requires env_key to name an existing env var but never validates its
+# value — the proxy discards whatever arrives and injects the real token.
+env_key = "ADP_GATEWAY_DUMMY"
+```
+
+### Step 4: Run the proxy, then Codex
+
+```bash
+~/bin/bg-cognito-auth.sh serve          # foreground; Ctrl-C to stop
+```
+
+In another terminal:
+
+```bash
+ADP_GATEWAY_DUMMY=unused codex
+```
+
+That's it. Leave the proxy running as long as you like — token refresh happens
+per request, behind the scenes.
+
+### How it works
+
+```
+codex  ──POST http://127.0.0.1:9191/openai/v1/responses
+   │
+   └─ bg-gateway-proxy.py (loopback only)
+        ├─ calls `bg-cognito-auth.sh token`  ← the ONE refresh implementation
+        │    └─ reuses the cached JWT, or renews ~5 min before the 60-min expiry
+        ├─ drops any client Authorization / x-api-key
+        ├─ sets Authorization: Bearer <fresh token>
+        └─ forwards to <gateway_url> and streams the response back verbatim
+             (SSE chunks unbuffered — Codex sends stream=true)
+```
+
+This is the same shape as the hosted-agent sigv4-proxy sidecar
+(`modules/agent-factory/agent-worker-image/`, Codex → `127.0.0.1:9090`): local
+listener, per-request auth injection, streaming passthrough. Only the auth
+material differs — Cognito JWTs here, SigV4 there.
+
+### Options
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--port <port>` | `9191` | Must match the port in your `config.toml` `base_url` |
+| `--foreground` | (always) | Accepted for explicitness; daemonization is a non-goal — use `&`, `tmux`, or a second terminal |
+
+### Security properties
+
+- **Loopback only.** The proxy binds `127.0.0.1` and there is no flag to widen
+  it. A listener that injects your credential must never be reachable from the
+  LAN, so the bind address is a hardcoded literal, enforced by a test.
+- **No secrets in output.** One line per request (method, path, status) on
+  stderr — never the token, never headers, never bodies, never query strings.
+- **One refresh implementation.** The proxy shells out to `bg-cognito-auth.sh
+  token`; the Cognito logic is not duplicated in Python. Concurrent requests are
+  serialized so two refreshes can't race on `tokens.json`.
+- **Proxy vs. gateway errors are distinguishable.** A failure inside the proxy
+  returns `502` with `{"error": "proxy_token_error" | "proxy_upstream_error"}`;
+  anything else is the gateway's own status and body, passed through unchanged.
+
+### Troubleshooting `serve`
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Not configured` | No `~/.bedrock-gateway/config.json` | Run `import` (GitHub login) or `login` first |
+| `Proxy script not found` | `bg-gateway-proxy.py` not beside `bg-cognito-auth.sh` | Copy both files to the same directory |
+| `A gateway proxy is already running (pid N)` | A proxy from a previous session is live | `kill N`, then re-run `serve` |
+| `502 proxy_token_error` | Refresh token expired (30 days) or Cognito rejected it | `bg-cognito-auth.sh status`, then `import`/`login` again |
+| `502 proxy_upstream_error` | Gateway unreachable from your machine | Check the `gateway_url` in `config.json` and your network |
+| Codex hangs with no output | `base_url` port ≠ `--port` | Make them match (default `9191`) |
+| Codex: connection refused | Proxy not running | Start `serve` in another terminal |
+
 ## How It Works
 
 ```
@@ -140,6 +254,9 @@ bg-cognito-auth.sh refresh
 
 # Get current access token (used by apiKeyHelper)
 bg-cognito-auth.sh token
+
+# Run the localhost auth proxy for Codex (zero-touch; see the Codex section above)
+bg-cognito-auth.sh serve --port 9191
 
 # Check auth status
 bg-cognito-auth.sh status
