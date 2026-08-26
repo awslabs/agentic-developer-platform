@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.admin.middleware import create_request_logging_middleware
+from src.auth.approval_middleware import ApprovalEnforcementMiddleware  # Issue #4144: gate spend on approval
 from src.auth.dependencies import require_admin  # Issue #1424: for agent-context indexing admin router guard
 from src.auth.middleware import TokenContextMiddleware
 from src.budget.enforcement_middleware import BudgetEnforcementMiddleware
@@ -185,6 +186,16 @@ def create_app() -> FastAPI:
     if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() == "true":
         app.add_middleware(BudgetEnforcementMiddleware)
         logger.info("Budget enforcement middleware enabled")
+
+    # Issue #4144: approval (org-assignment) enforcement. Added AFTER budget/rate-limit
+    # and BEFORE TokenContextMiddleware, so at runtime it executes after token_context is
+    # populated and before the budget/ledger read — rejecting an un-approved caller
+    # without spending a DB round-trip on a request that is going to be denied anyway.
+    # Registered unconditionally: the BG_ENFORCE_ORG_ASSIGNMENT flag (default False)
+    # short-circuits inside the middleware, so it stays flippable by env change + pod
+    # recycle with no code-path difference.
+    app.add_middleware(ApprovalEnforcementMiddleware)
+    logger.info("Approval enforcement middleware enabled")
 
     # TokenContextMiddleware must be added LAST so it runs FIRST in the request chain.
     # It extracts the Cognito JWT and sets request.state.token_context before

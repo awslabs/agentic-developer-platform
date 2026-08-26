@@ -165,6 +165,14 @@ class Settings(BaseSettings):
     # Set True only for docker-compose / local dev where alembic isn't run on startup.
     db_auto_create: bool = False
 
+    # Issue #4144: gate inference on approval (org assignment). When True, a human
+    # caller with no org assignment (resolved from Postgres, not just the JWT
+    # claim) is rejected with a 409 on the enforced spend paths. Platform admins
+    # and agents/service accounts are exempt. Default False — enable per-env after
+    # smoke. Set BG_ENFORCE_ORG_ASSIGNMENT=false to roll back (checked per-request,
+    # so a pod recycle is enough; no image rebuild).
+    enforce_org_assignment: bool = False
+
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 
 

@@ -215,6 +215,27 @@ data:
   BG_ENFORCE_CREDENTIAL_BINDING: "__ENFORCE_CREDENTIAL_BINDING__"
 
   # =============================================================================
+  # Approval (org-assignment) enforcement on the inference path (Issue #4144)
+  # =============================================================================
+  # When "true", a human caller with no org assignment is rejected with a 409
+  # ({"detail": {"error": "user_not_assigned_to_org", ...}}) on the enforced spend
+  # paths — so platform-admin approval actually gates Bedrock spend, not just the
+  # browser dashboard. Exempt: platform admins (avoids the approver locking
+  # themselves out) and agents / service accounts (IAM/SigV4).
+  #
+  # "Approved" is resolved from Postgres users.org_id keyed on cognito_sub, with
+  # the JWT claim only as a fast path. Do NOT "simplify" this to the claim alone:
+  # the login-time auto-match approval path never syncs Cognito attributes, so
+  # approved users routinely hold tokens with no org_id and would all be locked
+  # out. Fails OPEN on a DB error (a transient blip must not down all inference).
+  #
+  # When "false" (default), the middleware is inert — it still runs, but returns
+  # early. Rollback is a value flip + `kubectl rollout restart`; the flag is read
+  # per-request via get_settings(), so no image rebuild is needed.
+  # =============================================================================
+  BG_ENFORCE_ORG_ASSIGNMENT: "false"
+
+  # =============================================================================
   # Budget enforcement fail mode (Issue #4075)
   # =============================================================================
   # What happens when the budget CHECK itself fails (DB/IAM error), as opposed
