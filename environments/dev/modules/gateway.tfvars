@@ -30,8 +30,17 @@ enable_github_auth_broker = true
 # an empty org list denies). Dev previously relied on the implicit "open" default,
 # which let ANY GitHub user provision a Cognito account, so these must be set
 # explicitly or GitHub login returns not_authorized.
-github_auth_allowlist_mode = "org"
-github_auth_allowed_orgs   = "aws-e"
+#
+# ⚠️ TEMPORARILY "open" until #4139 lands. mode=org is broken while the org
+# check runs on the signing-in user's OAuth token: GitHub 404s org membership
+# to un-granted OAuth apps and the broker misreads that as DENIED, locking out
+# every user including org owners. This fired TWICE (2026-08-24 manual flip;
+# 2026-08-26 when gateway-infra-apply run 33017530462 re-applied this pin over
+# the hand-patched Lambda env). Do NOT set "org" here again until #4139 (App
+# installation-token org check) is deployed; then remove allow_open_signup.
+github_auth_allowlist_mode    = "open"
+github_auth_allow_open_signup = true
+github_auth_allowed_orgs      = "aws-e"
 
 # github_auth_token_secret_arn is intentionally unset: no org-check token secret
 # exists in this account yet. The broker falls back to the signing-in user's own

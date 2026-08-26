@@ -128,3 +128,48 @@ run "no_internal_plane_sg_rules_when_unset" {
     error_message = "No internal-plane SG rules should be created when internal_plane_alb_security_group_ids is empty."
   }
 }
+
+# Test: SGs shared between the edge and internal-plane ALBs must not get
+# duplicate rules. On EKS Auto Mode both Ingress-managed ALBs carry the
+# controller's shared frontend SG; emitting the same (peer, 80/tcp) rule twice
+# fails the apply with InvalidPermission.Duplicate (2026-08-26 incident, run
+# 33017530462 — the partial apply also re-armed a login lockout). Only the SG
+# unique to the internal-plane ALB gets its own rules.
+run "shared_sg_between_planes_is_deduplicated" {
+  command = plan
+
+  variables {
+    alb_security_group_ids                = ["sg-0shared", "sg-0edgeonly"]
+    internal_plane_alb_arn                = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/internal-alb/def456"
+    internal_plane_alb_dns                = "internal-internal-plane-alb-2.us-east-1.elb.amazonaws.com"
+    internal_plane_alb_security_group_ids = ["sg-0shared", "sg-0internalonly"]
+  }
+
+  assert {
+    condition     = length(aws_security_group_rule.internal_plane_alb_from_vpc_link) == 1
+    error_message = "Only the internal-plane-unique SG should get an ingress rule; the shared SG already has one from the edge wiring."
+  }
+
+  assert {
+    condition     = aws_security_group_rule.internal_plane_alb_from_vpc_link[0].security_group_id == "sg-0internalonly"
+    error_message = "The deduplicated ingress rule must target the internal-plane-only SG, not the shared one."
+  }
+}
+
+# Test: when every internal-plane SG is shared with the edge ALB, no
+# internal-plane rules are emitted at all (the edge wiring already covers them).
+run "fully_shared_sgs_emit_no_internal_plane_rules" {
+  command = plan
+
+  variables {
+    alb_security_group_ids                = ["sg-0shared"]
+    internal_plane_alb_arn                = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/internal-alb/def456"
+    internal_plane_alb_dns                = "internal-internal-plane-alb-2.us-east-1.elb.amazonaws.com"
+    internal_plane_alb_security_group_ids = ["sg-0shared"]
+  }
+
+  assert {
+    condition     = length(aws_security_group_rule.internal_plane_alb_from_vpc_link) == 0
+    error_message = "A fully-shared SG list must emit zero internal-plane rules — the edge rules already cover the peer."
+  }
+}

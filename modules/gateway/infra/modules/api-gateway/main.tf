@@ -58,6 +58,20 @@ resource "aws_apigatewayv2_vpc_link" "main" {
 # Egress to the ALB's security group on port 80 (HTTP).
 # The ALB SG must allow inbound from this SG — handled by the ingress rule below.
 
+locals {
+  # Issue #4010 follow-up: on EKS Auto Mode both Ingress-managed ALBs share the
+  # controller's frontend SG (observed live: sg-0623ec… appears in BOTH lists),
+  # and that SG already carries the edge rules from alb_security_group_ids.
+  # Emitting the same (peer, 80/tcp) rule again from the internal-plane blocks
+  # fails the whole apply with InvalidPermission.Duplicate — which aborted the
+  # 2026-08-26 gateway-infra-apply midway (run 33017530462). Only the SGs unique
+  # to the internal-plane ALB need their own rules.
+  internal_plane_only_sg_ids = [
+    for sg in var.internal_plane_alb_security_group_ids : sg
+    if !contains(var.alb_security_group_ids, sg)
+  ]
+}
+
 resource "aws_security_group" "vpc_link" {
   name_prefix = "${var.name_prefix}-vpc-link-v2-"
   description = "API Gateway VPC Link v2 to ALB (Issue #42)"
@@ -83,13 +97,13 @@ resource "aws_security_group" "vpc_link" {
   # cannot open the connection and the route times out (~10s) then 503s.
   # Empty until wire-gateway-alb.sh discovers the internal Ingress's ALB.
   dynamic "egress" {
-    for_each = length(var.internal_plane_alb_security_group_ids) > 0 ? [1] : []
+    for_each = length(local.internal_plane_only_sg_ids) > 0 ? [1] : []
     content {
       description     = "Allow VPC Link to reach internal-plane ALB on port 80 (Issue #4010)"
       from_port       = 80
       to_port         = 80
       protocol        = "tcp"
-      security_groups = var.internal_plane_alb_security_group_ids
+      security_groups = local.internal_plane_only_sg_ids
     }
   }
 
@@ -117,14 +131,14 @@ resource "aws_security_group_rule" "alb_from_vpc_link" {
 # Both directions are required — the spike confirmed that opening only one side
 # leaves the connection silently dropped rather than refused.
 resource "aws_security_group_rule" "internal_plane_alb_from_vpc_link" {
-  count = length(var.internal_plane_alb_security_group_ids)
+  count = length(local.internal_plane_only_sg_ids)
 
   description              = "Allow inbound from API Gateway VPC Link v2 to internal plane (Issue #4010)"
   type                     = "ingress"
   from_port                = 80
   to_port                  = 80
   protocol                 = "tcp"
-  security_group_id        = var.internal_plane_alb_security_group_ids[count.index]
+  security_group_id        = local.internal_plane_only_sg_ids[count.index]
   source_security_group_id = aws_security_group.vpc_link.id
 }
 
