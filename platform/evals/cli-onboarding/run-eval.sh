@@ -10,24 +10,40 @@
 #
 # THE CLEAN ROOM IS THE POINT
 # ---------------------------
-# This script must NOT run inside the agent-worker container. That image bakes
-# in ~/.codex/config.toml (pointing at the sigv4-proxy on 127.0.0.1:9090),
-# Claude Code settings, ANTHROPIC_* env and platform IRSA — any one of which
-# silently substitutes the platform's internal auth for the flow under test, so
-# the eval would report green while every request rode the agent's own
-# credentials. Two mechanisms enforce the boundary:
+# The laptop journey must NOT run in the agent-worker container, or on the ARC
+# runner itself. Those environments bake in ~/.codex/config.toml (pointing at
+# the sigv4-proxy on 127.0.0.1:9090), Claude Code settings, ANTHROPIC_* env and
+# platform IRSA — any one of which silently substitutes the platform's internal
+# auth for the flow under test, so the eval would report green while every
+# request rode the agent's own credentials.
 #
-#   1. `--assert-clean-room` (run as the workflow's FIRST step) fails fast if
-#      the container is contaminated.
-#   2. `laptop()` — every command that emulates the developer's laptop is run
-#      through it. It strips every AWS credential variable and disables IMDS,
-#      so a laptop step physically cannot borrow the runner's IRSA. Only the
-#      harness helpers (h_aws / h_kubectl / h_psql) ever see credentials.
+# So this script runs as a two-part split (issue #4171):
+#
+#   HARNESS — this process, on the ARC runner. Holds the credentials, resolves
+#     SSM, seeds Cognito, flips the flag, reads Postgres, asserts.
+#   LAPTOP  — a pod the harness spawns with kubectl (`node:20-bookworm`,
+#     `automountServiceAccountToken: false`, no env, nothing pre-installed). It
+#     is the emulated developer machine and it is where every Phase-C command
+#     runs, via `kubectl exec`.
+#
+# Three mechanisms enforce the boundary:
+#
+#   1. The pod is created from a stock public image with no service-account
+#      token and no environment, so it HAS no platform credential to borrow.
+#   2. `--assert-clean-room` is the FIRST command exec'd in that pod. It also
+#      guards against someone later pointing laptop() at a dirty target.
+#   3. `laptop()` — every command that emulates the developer's laptop is run
+#      through it, and it can only reach the pod. Only the harness helpers
+#      (h_aws / h_kubectl / h_psql) ever see credentials.
 #
 # This is why Tier-1 identity seeding works at all: cognito-idp:InitiateAuth is
 # an UNSIGNED API, so `import`/`token`/`refresh` need no credentials whatsoever.
 # Anything in the laptop phase that suddenly required credentials would fail —
 # which is exactly the signal we want.
+#
+# Secrets never travel on an exec'd command line: anything in the argv of
+# `kubectl exec` is visible in the exec API and in the runner's process table.
+# Tokens reach the pod on STDIN (laptop_put_file) and live in 0600 files.
 #
 # WHAT IT DOES NOT COVER (by design)
 # ----------------------------------
@@ -37,7 +53,7 @@
 # directly at the Cognito layer and starts from there.
 #
 # USAGE
-#   run-eval.sh --assert-clean-room                 # contamination gate (step 1)
+#   run-eval.sh --assert-clean-room                 # contamination gate (in-pod)
 #   run-eval.sh                                     # full matrix, phases A-D
 #   run-eval.sh --phases A,B                        # subset
 #   run-eval.sh --dry-run                           # stubbed CLIs, asserts ordering
@@ -46,14 +62,21 @@
 #   run-eval.sh --cleanup-only                      # idempotent teardown
 #
 # ENVIRONMENT
-#   ENVIRONMENT    target env (default: dev)
-#   AWS_REGION     default: us-east-1
-#   EVAL_RUN_ID    unique suffix for throwaway resources (default: local-$$)
-#   EVAL_WORKDIR   scratch dir (default: mktemp -d)
-#   EVAL_ORG_ID    org to approve the throwaway user into (default: discovered)
+#   ENVIRONMENT       target env (default: dev)
+#   AWS_REGION        default: us-east-1
+#   EVAL_RUN_ID       unique suffix for throwaway resources (default: local-$$)
+#   EVAL_WORKDIR      scratch dir (default: mktemp -d)
+#   EVAL_ORG_ID       org to approve the throwaway user into (default: discovered)
+#   EVAL_POD_NAMESPACE  namespace for the laptop pod (default: adp-gateway)
+#   EVAL_POD_IMAGE    laptop pod image (default: node:20-bookworm)
 # =============================================================================
 
 set -euo pipefail
+
+# Absolute path to this script, resolved before anything can cd. The harness
+# copies it into the clean-room pod so `--assert-clean-room` runs there verbatim,
+# from the same file, rather than from a re-implementation that could drift.
+EVAL_SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -71,6 +94,22 @@ PROXY_PORT="${EVAL_PROXY_PORT:-9191}"
 EVAL_USER_PREFIX="eval-cli-onboarding"
 EVAL_USERNAME="${EVAL_USER_PREFIX}-${EVAL_RUN_ID}@example.com"
 EVAL_ADMIN_USERNAME="${EVAL_USER_PREFIX}-admin-${EVAL_RUN_ID}@example.com"
+
+# -----------------------------------------------------------------------------
+# The laptop pod — the clean room (#4171)
+# -----------------------------------------------------------------------------
+# The pod lives in the SAME namespace the harness already has RBAC for
+# (adp-gateway: pods create/delete + pods/exec create), so this needs no new
+# permissions. It is labelled so a leaked pod from a crashed run can be swept by
+# selector without knowing its run id — that sweep is what --cleanup-only does.
+POD_NAMESPACE="${EVAL_POD_NAMESPACE:-adp-gateway}"
+POD_IMAGE="${EVAL_POD_IMAGE:-node:20-bookworm}"
+POD_LABEL_APP="$EVAL_USER_PREFIX"
+# RFC 1123 for the name, and the label-value charset for the label: the run id
+# can carry anything (a local run uses "local-$$"; CI uses "<run_id>-<attempt>").
+POD_RUN_LABEL="$(printf '%s' "$EVAL_RUN_ID" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-63)"
+# A trailing '-' is an invalid RFC 1123 name, and both tr and cut can leave one.
+LAPTOP_POD="${EVAL_USER_PREFIX}-$(printf '%s' "$EVAL_RUN_ID" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-24 | sed 's/-*$//')"
 
 # The inference model. Both are in enable-bedrock-models.sh's REQUIRED_MODELS,
 # so a deploy that passed cannot lack access to them.
@@ -159,20 +198,32 @@ RESULTS_FILE="$WORKDIR/results.tsv"
 : > "$TRACE_FILE"
 : > "$RESULTS_FILE"
 
-# The emulated laptop's HOME. Deliberately NOT the container's $HOME: the
-# clean-room gate asserts the container HOME is pristine, and keeping the
-# journey in its own tree makes teardown a single rm -rf.
-LAPTOP_HOME="$WORKDIR/laptop-home"
+# Where the emulated developer's HOME lives INSIDE the pod. Not the pod's own
+# $HOME (/root): the clean-room gate asserts that HOME is pristine, and keeping
+# the journey in its own tree makes teardown a single rm -rf.
+#
+# Under --dry-run the kubectl stub runs exec'd commands locally instead of in a
+# pod, so these live under $WORKDIR: the dry run then exercises the REAL Phase-C
+# code (file modes, JWT shape, the helper's own logic) on a real filesystem
+# without a cluster, and cannot escape the test's scratch directory.
+if [ "$DRY_RUN" = true ]; then
+  POD_WORKDIR="$WORKDIR/pod"
+else
+  POD_WORKDIR="/tmp/laptop"
+fi
+POD_HOME="$POD_WORKDIR/home"
 
 phase_enabled() { case ",$PHASES," in *,"$1",*) return 0 ;; *) return 1 ;; esac; }
 
 # =============================================================================
 # Clean-room assertion
 # =============================================================================
-# Fails fast, before anything mutates dev, if this container is not a plausible
-# fresh developer laptop. Each check maps to a way the agent-worker image (or an
-# inherited shell) would silently substitute platform auth for the flow we mean
-# to test.
+# Runs INSIDE the laptop pod (the harness execs it there as the pod's first
+# command). Fails fast, before anything mutates dev, if the pod is not a
+# plausible fresh developer laptop. Each check maps to a way the agent-worker
+# image (or an inherited shell) would silently substitute platform auth for the
+# flow we mean to test — and it stays in place as the guard against someone
+# later pointing laptop() at a dirty target.
 # /dev/tcp in a subshell, so a refused connection cannot trip `set -e` in the
 # caller and cannot leak fd 3 into the rest of the script.
 port_is_open() {
@@ -259,28 +310,209 @@ h_aws()     { aws --region "$AWS_REGION" "$@"; }
 h_kubectl() { kubectl "$@"; }
 h_psql()    { psql --no-psqlrc -q -t -A "$@"; }
 
-# laptop() runs a command as the emulated developer: fresh HOME, no AWS
-# credentials of any kind, IMDS disabled. This is the mechanism that makes
-# "harness credentials are never exported into the laptop steps" a property of
-# the code rather than a promise in a doc.
+# The PATH the laptop sees. Explicitly NOT built from the harness's own $PATH:
+# the pod's filesystem is not the runner's, so inheriting the runner's PATH would
+# name directories that do not exist there. The npm prefix comes first because
+# the journey installs both CLIs with `npm install -g`.
+POD_PATH="$POD_HOME/.npm-global/bin:$POD_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Extra env for the in-pod clean-room assertion. EMPTY in a real run — the two
+# test-only escape hatches are added here by setup_dry_run_stubs and nowhere
+# else, so the workflow (and therefore the live clean room) can never get them.
+POD_ASSERT_ENV=()
+
+# laptop() runs a command as the emulated developer — INSIDE the clean-room pod,
+# via `kubectl exec -i`. This is the mechanism that makes "harness credentials
+# are never visible to the laptop steps" a property of the code rather than a
+# promise in a doc, and it is strictly stronger than the env-scrubbing wrapper it
+# replaced (#4171): `kubectl exec` forwards NO environment from the runner at
+# all, and the pod is created with `automountServiceAccountToken: false` and no
+# env, so there is no platform credential in there to borrow in the first place.
+#
+# `-i` is always passed so stdin piping keeps working: that is how the refresh
+# token reaches the pod in C7 (`laptop ... < file`). Never put a secret in the
+# argv of a laptop command — an exec'd command line is visible in the exec API
+# and in the runner's own process table.
 laptop() {
-  env -u AWS_ACCESS_KEY_ID \
-      -u AWS_SECRET_ACCESS_KEY \
-      -u AWS_SESSION_TOKEN \
-      -u AWS_SECURITY_TOKEN \
-      -u AWS_PROFILE \
-      -u AWS_ROLE_ARN \
-      -u AWS_WEB_IDENTITY_TOKEN_FILE \
-      -u AWS_CONTAINER_CREDENTIALS_FULL_URI \
-      -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
-      -u AWS_CONTAINER_AUTHORIZATION_TOKEN \
-      -u AWS_SHARED_CREDENTIALS_FILE \
-      -u AWS_CONFIG_FILE \
-      AWS_EC2_METADATA_DISABLED=true \
-      AWS_DEFAULT_REGION="$AWS_REGION" \
-      HOME="$LAPTOP_HOME" \
-      PATH="$LAPTOP_HOME/.npm-global/bin:$LAPTOP_HOME/bin:$PATH" \
-      "$@"
+  h_kubectl exec -i "$LAPTOP_POD" -n "$POD_NAMESPACE" -- \
+    env AWS_EC2_METADATA_DISABLED=true \
+        AWS_DEFAULT_REGION="$AWS_REGION" \
+        HOME="$POD_HOME" \
+        PATH="$POD_PATH" \
+        "$@"
+}
+
+# laptop_put_file <local-src> <pod-dst> [mode] — stream a file into the pod on
+# STDIN. Used for the tokens and curl configs, so the content never appears in an
+# exec'd command line. The `sh -c '...' _ "$@"` form keeps even the paths out of
+# the snippet body, so nothing here can be mis-quoted.
+laptop_put_file() {
+  local src="$1" dst="$2" mode="${3:-600}"
+  # shellcheck disable=SC2016  # $1/$2 are expanded by the POD's shell, not here
+  laptop sh -c 'umask 077; mkdir -p "$(dirname "$1")"; cat > "$1"; chmod "$2" "$1"' \
+    _ "$dst" "$mode" < "$src"
+}
+
+# laptop_get_file <pod-src> <local-dst> — bring a response body back to the
+# harness so the harness (which has jq) can assert on it.
+laptop_get_file() {
+  laptop cat "$1" > "$2"
+}
+
+# The pod-side twin of write_curl_auth_config(). The token is read from a pod
+# file into a pod shell variable — never into argv, and never back to the runner.
+laptop_write_curl_auth_config() {
+  # shellcheck disable=SC2016  # the token is expanded pod-side; interpolating it here would put it in argv
+  laptop sh -c 'umask 077; IFS= read -r t < "$1"; printf "header = \"Authorization: Bearer %s\"\n" "$t" > "$2"; chmod 600 "$2"' \
+    _ "$1" "$2"
+}
+
+# laptop_http_post_json <pod-cfg> <url> <pod-body> <pod-out> -> echoes status.
+# The pod-side twin of http_post_json(): same flags, same 0600-config discipline.
+laptop_http_post_json() {
+  laptop curl -sS -o "$4" -w '%{http_code}' -X POST \
+    -K "$1" \
+    -H 'content-type: application/json' \
+    --data-binary "@$3" \
+    --max-time 120 \
+    "$2" || echo "000"
+}
+
+# The pod-side twin of port_is_open(). /dev/tcp is a bash feature, hence bash.
+laptop_port_is_open() {
+  # shellcheck disable=SC2016  # $1 is expanded by the pod's bash (/dev/tcp is a bash feature)
+  laptop bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' _ "$1" >/dev/null 2>&1
+}
+
+# -----------------------------------------------------------------------------
+# The clean room: a pod the harness spawns (#4171)
+# -----------------------------------------------------------------------------
+# Replaces the job-level `container:` that PR #4165 shipped. The ARC scale set
+# has no Docker daemon and no containerMode, so a `container:` job cannot start
+# at all (run 32987705457: "failed to connect to the docker API"). A pod the
+# runner creates with kubectl is something the runner demonstrably CAN do, and it
+# is a better clean room besides: no service-account token, no env, no volumes.
+laptop_pod_spec() {
+  # Built with jq rather than a heredoc so the JSON is valid by construction.
+  # `containers` must be specified in FULL: overriding it without `command` would
+  # make the pod run the image's ENTRYPOINT and exit immediately (the same trap
+  # documented in the ARC runner's pod template).
+  jq -nc \
+    --arg image "$POD_IMAGE" \
+    --arg app "$POD_LABEL_APP" \
+    --arg run "$POD_RUN_LABEL" \
+    '{
+      metadata: {
+        labels: {app: $app, run: $run},
+        annotations: {"karpenter.sh/do-not-disrupt": "true"}
+      },
+      spec: {
+        # No token to steal: the single most important line in this file.
+        automountServiceAccountToken: false,
+        # Service links would inject <SERVICE>_SERVICE_HOST env vars from the
+        # namespace into the pod. A clean room has no ambient env at all, and the
+        # clean-room gate should not have to know which services happen to exist.
+        enableServiceLinks: false,
+        restartPolicy: "Never",
+        # Requests so Karpenter right-sizes rather than packing the laptop onto a
+        # saturated node; limits so an npm install cannot starve its neighbours.
+        containers: [{
+          name: "laptop",
+          image: $image,
+          command: ["sleep", "3600"],
+          resources: {
+            requests: {cpu: "500m", memory: "1Gi"},
+            limits:   {cpu: "2",    memory: "4Gi"}
+          }
+        }]
+      }
+    }'
+}
+
+laptop_pod_create() {
+  log "creating the clean-room pod ${POD_NAMESPACE}/${LAPTOP_POD} (${POD_IMAGE})"
+
+  # Recorded BEFORE the create call, for the same reason FLAG_MUTATED is: if the
+  # create half-succeeds, cleanup must still know to sweep.
+  state_set LAPTOP_POD "$LAPTOP_POD"
+  state_set POD_NAMESPACE "$POD_NAMESPACE"
+
+  h_kubectl run "$LAPTOP_POD" -n "$POD_NAMESPACE" \
+    --image="$POD_IMAGE" --restart=Never \
+    --overrides="$(laptop_pod_spec)" \
+    --command -- sleep 3600 >/dev/null \
+    || die "could not create the clean-room pod ${POD_NAMESPACE}/${LAPTOP_POD} — does the runner's RBAC allow 'create pods' in ${POD_NAMESPACE}?"
+
+  h_kubectl wait --for=condition=Ready "pod/${LAPTOP_POD}" -n "$POD_NAMESPACE" --timeout=180s >/dev/null \
+    || die "the clean-room pod never became Ready in 180s"
+
+  # THE CONTAMINATION GATE, run INSIDE the pod as its first exec'd command and
+  # deliberately BEFORE anything installs tooling or mutates dev — so a
+  # contaminated clean room burns seconds, not fifteen minutes, and leaves the
+  # target environment untouched. The same file the harness runs from, copied in
+  # and exec'd there, so the check can never drift from a re-implementation.
+  laptop_put_file "$EVAL_SCRIPT_PATH" "$POD_WORKDIR/run-eval.sh" 755 \
+    || die "could not copy the eval script into the clean-room pod"
+
+  # The gate is pointed at the pod's OWN login HOME, not the laptop HOME the
+  # journey is about to create: what it is looking for is CLI config the IMAGE
+  # shipped, and an empty directory that does not exist yet is pristine by
+  # construction and would prove nothing. Discovered rather than hardcoded to
+  # /root so a future non-root image is still checked in the right place.
+  local pod_home
+  # shellcheck disable=SC2016  # reads the POD's $HOME, so it must not expand on the runner
+  pod_home="$(h_kubectl exec "$LAPTOP_POD" -n "$POD_NAMESPACE" -- sh -c 'printf "%s" "${HOME:-/root}"' 2>/dev/null || echo "/root")"
+
+  # `env` applies assignments left to right, so this HOME= wins over the
+  # POD_HOME laptop() sets. The `[@]+` guard keeps an empty POD_ASSERT_ENV from
+  # tripping `set -u` on bash < 4.4.
+  # EVAL_WORKDIR is pinned inside the pod so the in-pod run scratches in its own
+  # tree. In a real run the pod has no EVAL_WORKDIR at all; under --dry-run the
+  # exec stub would otherwise leak the harness's, and the nested run would
+  # truncate the harness's own trace/results files.
+  if laptop HOME="$pod_home" EVAL_WORKDIR="$POD_WORKDIR/gate" \
+       ${POD_ASSERT_ENV[@]+"${POD_ASSERT_ENV[@]}"} \
+       bash "$POD_WORKDIR/run-eval.sh" --assert-clean-room; then
+    pass "clean room is a fresh pod: no service-account token, no ambient env, nothing pre-installed (HOME=${pod_home})"
+  else
+    die "the clean-room pod failed --assert-clean-room — refusing to run the matrix (see the violations above)"
+  fi
+
+  # The emulated developer's HOME and the npm prefix the journey installs into.
+  # shellcheck disable=SC2016  # $1 is expanded by the pod's shell
+  laptop sh -c 'mkdir -p "$1/bin" "$1/.npm-global" && chmod 700 "$1"' _ "$POD_HOME" \
+    || die "could not prepare the laptop HOME in the clean-room pod"
+}
+
+# The tools a real developer's laptop already has, installed AFTER the
+# contamination gate has passed. Deliberately NOT claude/codex: installing those
+# is part of the journey under test (C9/C10). The aws CLI is here for
+# cognito-idp:InitiateAuth, which is an UNSIGNED API and needs no credentials —
+# if a laptop step ever started needing signed calls, it would fail, which is
+# exactly the signal we want.
+laptop_provision() {
+  log "provisioning the laptop pod with the tools a developer already has (jq, curl, aws)"
+  laptop bash -c '
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends jq curl unzip ca-certificates procps
+    if ! command -v aws >/dev/null 2>&1; then
+      curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+      unzip -q /tmp/awscli.zip -d /tmp
+      /tmp/aws/install >/dev/null
+    fi
+    aws --version >/dev/null && jq --version >/dev/null
+  ' >"$WORKDIR/pod-provision.log" 2>&1 \
+    || die "could not provision the laptop pod: $(tail -3 "$WORKDIR/pod-provision.log" | tr '\n' ' ')"
+}
+
+# Sweep by LABEL, not by name: a pod leaked by a crashed run is caught even
+# though this process never learned its run id. Safe because `concurrency` in the
+# workflow guarantees at most one live run per environment.
+laptop_pod_delete() {
+  h_kubectl delete pod -n "$POD_NAMESPACE" \
+    -l "app=${POD_LABEL_APP}" --ignore-not-found --wait=false >/dev/null 2>&1
 }
 
 # -----------------------------------------------------------------------------
@@ -402,10 +634,13 @@ assert_sentinel() {
   esac
 }
 
+# The permissions asserted are the ones the file has ON THE LAPTOP, so the stat
+# runs in the pod. Statting a copy on the runner would prove nothing: kubectl cp
+# does not preserve modes.
 assert_mode() {
   local label="$1" path="$2" expected="$3"
   local actual
-  actual="$(stat -c '%a' "$path" 2>/dev/null || echo "?")"
+  actual="$(laptop stat -c '%a' "$path" 2>/dev/null || echo "?")"
   if [ "$actual" = "$expected" ]; then
     pass "$label: $path is $expected"
   else
@@ -457,13 +692,45 @@ STUB
 
   # The kubectl stub records every invocation to $EVAL_STUB_KUBECTL_LOG so the
   # tests can assert the read-then-restore contract: what was read at start, and
-  # that the restore wrote back exactly that (or removed the var).
+  # that the restore wrote back exactly that (or removed the var) — and, since
+  # #4171, that every laptop command went through `kubectl exec` rather than
+  # running on the runner.
   # EVAL_STUB_FLAG controls the simulated starting state:
   #   "true"/"false" — a deployment-level env override exists with that value
   #   "unset"        — no deployment override (the configmap supplies it)
   cat > "$bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${EVAL_STUB_KUBECTL_LOG:-}" ] && printf '%s\n' "$*" >> "$EVAL_STUB_KUBECTL_LOG"
+
+# ── The clean-room pod (#4171) ───────────────────────────────────────────────
+# `run` / `wait` / `delete pod` are no-ops; the tests assert them from the log.
+#
+# `exec` deliberately is NOT a no-op: it strips the kubectl wrapper and runs the
+# command LOCALLY. That is what keeps the dry run worth having — Phase C still
+# exercises the real logic (file modes, the JWT shape, the helper's own
+# import/token code) against a real filesystem, with no cluster. Safe because
+# $POD_WORKDIR points inside the run's own scratch directory under --dry-run.
+case "${1:-}" in
+  exec)
+    shift
+    # Consume kubectl's own flags/pod name up to the `--` separator.
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --)                   shift; break ;;
+        -n|--namespace)       shift 2 ;;
+        -c|--container)       shift 2 ;;
+        *)                    shift ;;
+      esac
+    done
+    [ $# -eq 0 ] && exit 0
+    exec "$@"
+    ;;
+  run|wait|cp) exit 0 ;;
+  delete)
+    case "$*" in *pod*) exit 0 ;; esac
+    ;;
+esac
+
 # Record what the flag was last set to, so the curl stub can honour it.
 # NB: join into a plain variable first — ${*##pat} applies the pattern to EACH
 # positional parameter and re-joins, which silently yields nonsense here.
@@ -607,6 +874,14 @@ STUB
 exit 0
 STUB
 
+  # laptop_provision() apt-installs the laptop's baseline tooling. Under --dry-run
+  # the kubectl stub runs exec'd commands locally, so this must not reach the real
+  # apt — it would need root and would mutate the machine running the tests.
+  cat > "$bin/apt-get" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+
   cat > "$bin/claude" <<'STUB'
 #!/usr/bin/env bash
 echo "CLI-ONBOARDING-EVAL-OK"
@@ -622,7 +897,25 @@ STUB
   chmod +x "$bin"/*
   PATH="$bin:$PATH"
   export PATH
-  log "dry-run: stubbed aws/kubectl/psql/curl/npm/claude/codex on PATH"
+
+  # The kubectl stub runs exec'd commands locally, and laptop() replaces the
+  # environment wholesale — so the "pod" PATH has to name the stub directory too,
+  # or the laptop steps would find the machine's real curl/npm/claude.
+  POD_PATH="$bin:$POD_PATH"
+
+  # The in-pod clean-room gate is a real re-invocation of this script, so the two
+  # test-only escape hatches have to be forwarded to it. This is the ONLY place
+  # they are ever set for the pod: a live run leaves POD_ASSERT_ENV empty, which
+  # is why the "the workflow never sets them" test still means something.
+  POD_ASSERT_ENV=()
+  if [ -n "${EVAL_SKIP_CLI_PATH_CHECK:-}" ]; then
+    POD_ASSERT_ENV+=("EVAL_SKIP_CLI_PATH_CHECK=$EVAL_SKIP_CLI_PATH_CHECK")
+  fi
+  if [ -n "${EVAL_FORBIDDEN_PORTS:-}" ]; then
+    POD_ASSERT_ENV+=("EVAL_FORBIDDEN_PORTS=$EVAL_FORBIDDEN_PORTS")
+  fi
+
+  log "dry-run: stubbed aws/kubectl/psql/curl/npm/apt-get/claude/codex on PATH; kubectl exec runs locally under $POD_WORKDIR"
 }
 
 # maybe_fail_phase lets the tests prove that a mid-run explosion still restores
@@ -982,22 +1275,25 @@ run_phase_b() {
 # =============================================================================
 # Phase C — the laptop journey
 # =============================================================================
-# Everything here runs through laptop(): fresh HOME, zero AWS credentials. The
-# helper is fetched from the LIVE download route, never the checkout — the eval
-# must test what is deployed, not what is in the repo.
+# Everything here runs through laptop(), i.e. INSIDE the clean-room pod: a fresh
+# HOME on a machine that has no platform credential to borrow. The helper is
+# fetched from the LIVE download route, never the checkout — the eval must test
+# what is deployed, not what is in the repo.
+#
+# The harness keeps the assertions (it has jq and psql); the pod does the doing.
+# Response bodies are copied back for assertion; TOKENS ARE NOT — they are minted,
+# used and destroyed inside the pod.
 run_phase_c() {
-  phase "C" "the laptop journey in a fresh HOME (no AWS credentials)"
+  phase "C" "the laptop journey in the clean-room pod (no credentials in reach)"
   maybe_fail_phase C
 
-  mkdir -p "$LAPTOP_HOME/bin" "$LAPTOP_HOME/.npm-global"
-  chmod 700 "$LAPTOP_HOME"
-  state_set LAPTOP_HOME "$LAPTOP_HOME"
+  laptop_provision
 
   # C5 — download the helper from the real shipped route.
-  local helper="$LAPTOP_HOME/bin/bg-cognito-auth.sh"
+  local helper="$POD_HOME/bin/bg-cognito-auth.sh"
   if laptop curl -fsS -o "$helper" "${GATEWAY_URL}/cli/bg-cognito-auth.sh"; then
-    chmod +x "$helper"
-    if head -1 "$helper" | grep -q '^#!'; then
+    laptop chmod +x "$helper"
+    if laptop head -1 "$helper" | grep -q '^#!'; then
       pass "C5 downloaded bg-cognito-auth.sh from the live route ${GATEWAY_URL}/cli/bg-cognito-auth.sh"
     else
       fail "C5 downloaded bg-cognito-auth.sh but it has no shebang — served the SPA HTML fallback?"
@@ -1011,21 +1307,23 @@ run_phase_c() {
   # C5b — bg-gateway-proxy.py is a SOFT SKIP until #4156 allowlists it in
   # src/cli_download/routes.py. When that lands this branch flips to a pass with
   # no edit here; until then a 404 is the expected, correct behaviour.
-  local proxy_file="$LAPTOP_HOME/bin/bg-gateway-proxy.py"
+  local proxy_file="$POD_HOME/bin/bg-gateway-proxy.py"
   local proxy_downloaded=false
   if laptop curl -fsS -o "$proxy_file" "${GATEWAY_URL}/cli/bg-gateway-proxy.py" 2>/dev/null \
-     && head -1 "$proxy_file" | grep -q 'python\|^#!'; then
+     && laptop head -1 "$proxy_file" | grep -q 'python\|^#!'; then
     proxy_downloaded=true
     pass "C5b bg-gateway-proxy.py is served by the download route (#4156 has landed)"
   else
-    rm -f "$proxy_file"
+    laptop rm -f "$proxy_file" || true
     skip "C5b bg-gateway-proxy.py is not downloadable yet — expected until #4156 allowlists it; Codex leg (C10) will be skipped"
   fi
 
   # C6 — public discovery. The CLI fetches this before it holds any token, so
-  # it must be reachable unauthenticated and agree with SSM.
+  # it must be reachable unauthenticated and agree with SSM. The fetch happens on
+  # the laptop; the comparison happens here, where the SSM values live.
   local disco="$WORKDIR/cognito-config.json"
-  if laptop curl -fsS -o "$disco" "${GATEWAY_URL}/.well-known/cognito-config"; then
+  if laptop curl -fsS -o "$POD_WORKDIR/cognito-config.json" "${GATEWAY_URL}/.well-known/cognito-config" \
+     && laptop_get_file "$POD_WORKDIR/cognito-config.json" "$disco"; then
     local d_pool d_client d_region
     d_pool="$(jq -r '.user_pool_id // empty' "$disco")"
     d_client="$(jq -r '.client_id // empty' "$disco")"
@@ -1039,7 +1337,9 @@ run_phase_c() {
     fail "C6 /.well-known/cognito-config unreachable"
   fi
 
-  # C7 — import via STDIN. The refresh token must never reach argv.
+  # C7 — import via STDIN. The refresh token is piped into `kubectl exec -i` and
+  # so never reaches argv — neither the helper's, nor kubectl's (an exec'd command
+  # line is visible in the exec API and in the runner's process table).
   if laptop bash "$helper" import --gateway-url "$GATEWAY_URL" < "$WORKDIR/USER.refresh" >/dev/null 2>"$WORKDIR/import.err"; then
     pass "C7 import succeeded with the refresh token piped on stdin (never in argv)"
   else
@@ -1047,17 +1347,21 @@ run_phase_c() {
     return 1
   fi
 
-  assert_mode "C7 perms" "$LAPTOP_HOME/.bedrock-gateway" 700
-  assert_mode "C7 perms" "$LAPTOP_HOME/.bedrock-gateway/tokens.json" 600
-  assert_mode "C7 perms" "$LAPTOP_HOME/.bedrock-gateway/config.json" 600
+  assert_mode "C7 perms" "$POD_HOME/.bedrock-gateway" 700
+  assert_mode "C7 perms" "$POD_HOME/.bedrock-gateway/tokens.json" 600
+  assert_mode "C7 perms" "$POD_HOME/.bedrock-gateway/config.json" 600
 
-  # C8 — `token` prints a JWT, and that JWT buys a real completion.
-  local tok="$WORKDIR/laptop.token"
-  umask 077
-  if laptop bash "$helper" token > "$tok" 2>"$WORKDIR/token.err"; then
-    chmod 600 "$tok"
-    mask "$(cat "$tok")"
-    if [ "$(tr -cd '.' < "$tok" | wc -c)" = "2" ]; then
+  # C8 — `token` prints a JWT, and that JWT buys a real completion. The JWT is
+  # written to a 0600 file INSIDE the pod and never leaves it: only its shape
+  # (a dot count) and the completion it bought come back to the harness.
+  local pod_tok="$POD_WORKDIR/laptop.token"
+  local dots
+  # shellcheck disable=SC2016  # $1/$2 are expanded by the pod's shell
+  if laptop sh -c 'umask 077; bash "$1" token > "$2"; chmod 600 "$2"' _ "$helper" "$pod_tok" \
+       2>"$WORKDIR/token.err"; then
+    # shellcheck disable=SC2016  # $1 is expanded by the pod's shell
+    dots="$(laptop sh -c 'tr -cd "." < "$1" | wc -c' _ "$pod_tok" | tr -d ' ')"
+    if [ "$dots" = "2" ]; then
       pass "C8 token printed a three-segment JWT"
     else
       fail "C8 token output is not a JWT"
@@ -1068,11 +1372,14 @@ run_phase_c() {
     return 1
   fi
 
-  local cfg="$WORKDIR/laptop.curlrc" body="$WORKDIR/c8-body.json" out="$WORKDIR/c8-out.json" status
-  write_curl_auth_config "$tok" "$cfg"
+  local pod_cfg="$POD_WORKDIR/laptop.curlrc" body="$WORKDIR/c8-body.json" out="$WORKDIR/c8-out.json" status
+  laptop_write_curl_auth_config "$pod_tok" "$pod_cfg"
   anthropic_body "$body" "Reply with exactly: ${SENTINEL}"
-  status="$(http_post_json "$cfg" "${GATEWAY_URL}/v1/messages" "$body" "$out")"
+  laptop_put_file "$body" "$POD_WORKDIR/c8-body.json" 644
+  status="$(laptop_http_post_json "$pod_cfg" "${GATEWAY_URL}/v1/messages" \
+    "$POD_WORKDIR/c8-body.json" "$POD_WORKDIR/c8-out.json")"
   if [ "$status" = "200" ]; then
+    laptop_get_file "$POD_WORKDIR/c8-out.json" "$out" || true
     assert_sentinel "C8 direct curl with the helper's JWT" \
       "$(jq -r '[.content[]?.text] | join(" ")' "$out" 2>/dev/null || true)"
   else
@@ -1084,11 +1391,14 @@ run_phase_c() {
   # component and what actually works is a broken onboarding page.
   log "installing @anthropic-ai/claude-code from npm"
   if laptop npm install -g --silent @anthropic-ai/claude-code >"$WORKDIR/npm-claude.log" 2>&1; then
-    mkdir -p "$LAPTOP_HOME/.claude"
+    # Rendered here (the harness has jq) and streamed into the pod. Nothing in it
+    # is secret — the token is fetched at call time by apiKeyHelper, which is the
+    # property C9 exists to prove.
     jq -n --arg base "$GATEWAY_URL" --arg helper "bash ${helper} token" --arg model "global.anthropic.claude-opus-4-6-v1" \
       '{env:{ANTHROPIC_BASE_URL:$base}, apiKeyHelper:$helper, apiKeyHelperTtlMs:3300000,
         permissions:{allow:["WebSearch","WebFetch"]}, model:$model}' \
-      > "$LAPTOP_HOME/.claude/settings.json"
+      > "$WORKDIR/claude-settings.json"
+    laptop_put_file "$WORKDIR/claude-settings.json" "$POD_HOME/.claude/settings.json" 644
 
     local answer
     if answer="$(laptop claude -p "Reply with exactly: ${SENTINEL}" 2>"$WORKDIR/claude.err")"; then
@@ -1118,32 +1428,35 @@ run_phase_c() {
     return 0
   fi
 
-  chmod +x "$proxy_file" 2>/dev/null || true
+  laptop chmod +x "$proxy_file" 2>/dev/null || true
   log "installing @openai/codex from npm and starting the auth proxy"
   if ! laptop npm install -g --silent @openai/codex >"$WORKDIR/npm-codex.log" 2>&1; then
     fail "C10 npm install of @openai/codex failed: $(tail -3 "$WORKDIR/npm-codex.log" | tr '\n' ' ')"
     return 0
   fi
 
-  laptop bash "$helper" serve --port "$PROXY_PORT" >"$WORKDIR/proxy.log" 2>&1 &
-  local proxy_pid=$!
-  state_set PROXY_PID "$proxy_pid"
+  # Started DETACHED inside the pod — not as a backgrounded `kubectl exec` on the
+  # runner. Killing a backgrounded kubectl exec does not reliably kill the process
+  # it started in the pod, so the pid that matters is the pod-side one, and it is
+  # recorded in a pod file for cleanup to read.
+  # shellcheck disable=SC2016  # $1/$2/$3 and $! are expanded by the pod's shell
+  laptop sh -c 'nohup bash "$1" serve --port "$2" > "$3/proxy.log" 2>&1 & echo $! > "$3/proxy.pid"' \
+    _ "$helper" "$PROXY_PORT" "$POD_WORKDIR" </dev/null >/dev/null 2>&1 || true
 
   local waited=0
   while [ "$waited" -lt 20 ]; do
-    port_is_open "$PROXY_PORT" && break
+    laptop_port_is_open "$PROXY_PORT" && break
     sleep 1; waited=$((waited + 1))
   done
-  if ! port_is_open "$PROXY_PORT"; then
-    fail "C10 the auth proxy never came up on 127.0.0.1:${PROXY_PORT}: $(tail -3 "$WORKDIR/proxy.log" | tr '\n' ' ')"
+  if ! laptop_port_is_open "$PROXY_PORT"; then
+    fail "C10 the auth proxy never came up on 127.0.0.1:${PROXY_PORT} in the pod: $(laptop tail -3 "$POD_WORKDIR/proxy.log" 2>/dev/null | tr '\n' ' ')"
     return 0
   fi
 
   # Config per cli/README.md §"Using Codex". env_key names a var Codex requires
   # to exist but never validates — the proxy discards it and injects the real
   # token, which is the whole point of the zero-touch path.
-  mkdir -p "$LAPTOP_HOME/.codex"
-  cat > "$LAPTOP_HOME/.codex/config.toml" <<TOML
+  cat > "$WORKDIR/codex-config.toml" <<TOML
 model = "${EVAL_CODEX_MODEL}"
 model_provider = "adp-gateway"
 
@@ -1153,6 +1466,7 @@ base_url = "http://127.0.0.1:${PROXY_PORT}/openai/v1"
 wire_api = "responses"
 env_key = "ADP_GATEWAY_DUMMY"
 TOML
+  laptop_put_file "$WORKDIR/codex-config.toml" "$POD_HOME/.codex/config.toml" 644
 
   local codex_out
   if codex_out="$(laptop env ADP_GATEWAY_DUMMY=unused codex exec --skip-git-repo-check \
@@ -1177,14 +1491,15 @@ run_cleanup() {
   echo ""
   log "═══ Phase D — restore + cleanup (always runs) ═══"
 
-  # 1. Kill the proxy first: it holds a token in memory and a port.
-  local proxy_pid
-  proxy_pid="$(state_get PROXY_PID)"
-  if [ -n "$proxy_pid" ] && kill -0 "$proxy_pid" 2>/dev/null; then
-    kill "$proxy_pid" 2>/dev/null || true
-    sleep 1
-    kill -9 "$proxy_pid" 2>/dev/null || true
-    log "stopped the auth proxy (pid $proxy_pid)"
+  # 1. Delete the clean-room pod FIRST. It holds the laptop HOME, the imported
+  #    refresh token, the minted JWT and the running auth proxy, so deleting it
+  #    destroys all of them in one action — nothing survives the pod.
+  #    Swept by LABEL, so a pod leaked by an earlier crashed run goes too, which
+  #    is what makes --cleanup-only worth running after a killed job.
+  if laptop_pod_delete; then
+    log "deleted clean-room pod(s) labelled app=${POD_LABEL_APP} in ${POD_NAMESPACE} (laptop HOME, tokens and the auth proxy went with it)"
+  else
+    fail "D could not delete the clean-room pod — sweep manually: kubectl delete pod -n ${POD_NAMESPACE} -l app=${POD_LABEL_APP}"
   fi
 
   # 2. Restore the flag to the value READ AT START — never a hardcoded false.
@@ -1240,9 +1555,9 @@ run_cleanup() {
     fi
   done
 
-  # 5. Wipe the emulated laptop, tokens and curl configs included.
-  rm -rf "$LAPTOP_HOME"
-  rm -f "$WORKDIR"/*.access "$WORKDIR"/*.refresh "$WORKDIR"/*.curlrc "$WORKDIR"/laptop.token 2>/dev/null || true
+  # 5. Wipe the harness-side token material. The laptop-side copies went with the
+  #    pod in step 1; these are the seeds the harness minted to hand it.
+  rm -f "$WORKDIR"/*.access "$WORKDIR"/*.refresh "$WORKDIR"/*.curlrc 2>/dev/null || true
 
   write_summary
   exit "$rc"
@@ -1309,6 +1624,17 @@ main() {
   trap run_cleanup EXIT
 
   resolve_config
+
+  # The clean room is created here — AFTER resolve_config (which only reads) and
+  # BEFORE seed_user (the first thing that mutates dev). That ordering preserves
+  # the property the workflow's old step-1 gate had: a contaminated clean room
+  # fails the run in seconds, having changed nothing in the target environment.
+  # Only Phase C needs it, and it costs a pod plus a possible node scale-up, so an
+  # A,B-only run does not pay for one.
+  if phase_enabled C; then
+    laptop_pod_create
+  fi
+
   seed_user "$EVAL_USERNAME" "USER" ""
 
   # Each phase is called DIRECTLY (not through a dispatcher taking a function

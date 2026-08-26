@@ -5,19 +5,28 @@ name: Eval — CLI Onboarding (clean room)
 # the approval gate (#4144), CLI seeding + discovery (#4145), the setup-page
 # download route (#4146) and the Codex zero-touch proxy (#4154).
 #
-# WHY `container:` IS LOAD-BEARING
-# The eval MUST NOT run in the agent-worker image (or any environment with CLI
-# config pre-wired): that image bakes in ~/.codex/config.toml pointing at the
-# sigv4-proxy on 127.0.0.1:9090, Claude Code settings and ANTHROPIC_* env, any
-# of which silently substitutes the platform's internal auth for the very auth
-# path under test. A contaminated run reports FALSE GREEN, which is worse than
-# having no eval. So the job runs in a stock public image with a fresh $HOME and
-# step 1 fails the job outright if the container looks contaminated.
+# WHERE THE CLEAN ROOM LIVES (#4171)
+# The laptop journey MUST NOT run in the agent-worker image, or in any
+# environment with CLI config pre-wired: that image bakes in ~/.codex/config.toml
+# pointing at the sigv4-proxy on 127.0.0.1:9090, Claude Code settings and
+# ANTHROPIC_* env, any of which silently substitutes the platform's internal auth
+# for the very auth path under test. A contaminated run reports FALSE GREEN,
+# which is worse than having no eval.
 #
-# AWS credentials come from the ARC runner's IRSA and are used ONLY by the
-# harness steps (Cognito seeding, approval row, flag lever). The laptop-emulation
-# steps run through run-eval.sh's `laptop()` wrapper, which strips every AWS
-# credential variable — see platform/evals/cli-onboarding/README.md.
+# This job therefore SPLITS in two, and neither half is a job-level image
+# override — the ARC scale set has no Docker daemon and no containerMode, so a
+# job that asks for one dies before its first step:
+#
+#   HARNESS — this job, on the ARC runner. Holds IRSA and kubeconfig; does the
+#     Cognito seeding, the approval row, the flag lever and every assertion.
+#   LAPTOP  — a stock `node:20-bookworm` pod that run-eval.sh creates with
+#     `kubectl run` and reaches only with `kubectl exec`. It gets no
+#     service-account token, no service-link env and none of this job's
+#     environment, so there is no platform credential in reach to borrow. The
+#     contamination gate runs INSIDE that pod as the first command exec'd there,
+#     before anything is installed. Phase D deletes it, `if: always()`.
+#
+# See platform/evals/cli-onboarding/README.md for the full split.
 
 on:
   workflow_dispatch:
@@ -86,7 +95,8 @@ jobs:
 
       - name: Dry-run harness tests
         # Stubs aws/kubectl/psql/curl/npm and asserts phase ordering,
-        # cleanup-on-failure, the clean-room detector and the credential strip.
+        # cleanup-on-failure, the clean-room detector, that laptop commands only
+        # ever run via kubectl exec, and that the pod is always deleted.
         run: ./platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
 
   eval:
@@ -98,14 +108,9 @@ jobs:
     runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     timeout-minutes: 45
 
-    # THE CLEAN ROOM. A stock public image — nothing installed, nothing
-    # configured, a fresh $HOME. node:20-bookworm brings node/npm (for the two
-    # CLIs) and python3 (for the auth proxy); bash/curl/git are present and jq
-    # is one apt away.
-    container:
-      image: node:20-bookworm
-      options: --user root
-
+    # No job-level image: this job is the HARNESS, on the runner. The clean room
+    # is the pod run-eval.sh spawns (see the header). The runner's existing RBAC
+    # in adp-gateway already grants pods create/delete and pods/exec create.
     env:
       AWS_REGION: us-east-1
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
@@ -113,31 +118,18 @@ jobs:
       EVAL_WORKDIR: /tmp/cli-onboarding-eval
 
     steps:
-      # ── STEP 1: the contamination gate. Deliberately BEFORE checkout of any
-      # tooling install, so a contaminated container burns 5 seconds, not 15
-      # minutes, and mutates nothing in dev.
       - uses: actions/checkout@v7
 
-      - name: Assert clean room (fail fast if contaminated)
-        run: ./platform/evals/cli-onboarding/run-eval.sh --assert-clean-room
-
-      - name: Install harness tooling (aws, kubectl, psql, jq)
-        # The stock image has none of these. They are the HARNESS's tools —
-        # Cognito seeding, the flag lever, the approval row. The laptop phase
-        # uses only curl/node/npm/python3, which the image already ships, plus
-        # the aws CLI for cognito-idp:InitiateAuth, which is an UNSIGNED API and
-        # therefore needs no credentials.
+      - name: Install harness tooling (psql)
+        # HARNESS tools only — Cognito seeding, the flag lever, the approval row.
+        # The ARC runner image already ships aws/kubectl/jq/node/python3; psql is
+        # the one gap. The contamination gate is NOT run here: the runner is the
+        # harness and legitimately holds credentials. It runs inside the pod.
         run: |
           set -euo pipefail
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends jq curl unzip ca-certificates postgresql-client procps
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install
-          fi
-          if ! command -v kubectl >/dev/null 2>&1; then
-            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends postgresql-client
           fi
           aws --version && kubectl version --client=true 2>/dev/null | head -1 && psql --version && jq --version
 
@@ -182,6 +174,14 @@ jobs:
           echo "- Leftover \`eval-cli-onboarding*\` Cognito users: \`${LEFTOVER}\`" >> "$GITHUB_STEP_SUMMARY"
           if [ "$LEFTOVER" != "0" ] && [ "$LEFTOVER" != "?" ]; then
             echo "::warning::${LEFTOVER} eval-cli-onboarding* Cognito user(s) left behind — sweep them."
+          fi
+          # eval-pod leftover check: a clean-room pod outlives the job that made
+          # it, so a leak here is a leaked node until Karpenter reclaims it.
+          PODS=$(kubectl get pods -n adp-gateway -l app=eval-cli-onboarding \
+            --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          echo "- Leftover clean-room pods (\`app=eval-cli-onboarding\`): \`${PODS}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${PODS:-0}" != "0" ]; then
+            echo "::warning::${PODS} clean-room pod(s) left behind — sweep: kubectl delete pod -n adp-gateway -l app=eval-cli-onboarding"
           fi
 
       # Nightly failures UPDATE one tracking issue instead of filing one per

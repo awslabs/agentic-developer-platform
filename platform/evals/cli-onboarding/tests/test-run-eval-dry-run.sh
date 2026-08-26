@@ -17,8 +17,11 @@
 #      would leave the dev gateway with the approval gate flipped.
 #   3. The flag is restored to the value READ AT START, not a hardcoded false.
 #      Hardcoding false silently disables the gate in an env that had it on.
-#   4. laptop() really strips AWS credentials. If it stopped, the laptop phase
-#      would ride the runner's IRSA and the eval would pass on the wrong auth.
+#   4. laptop() really executes in the clean-room pod. If it stopped — if a
+#      laptop command ever ran bare on the runner — the laptop phase would ride
+#      the runner's IRSA and the eval would pass on the wrong auth.
+#   5. The clean-room pod is deleted in phase D, on every exit path. A leaked
+#      pod is a leaked node, and the next run's label sweep is what catches it.
 #
 # Follows the mock-CLI pattern of platform/scripts/tests/test-flip-gate-check.sh.
 #
@@ -210,8 +213,13 @@ if [ -f "$WORKFLOW" ]; then
   for hatch in EVAL_SKIP_CLI_PATH_CHECK EVAL_FORBIDDEN_PORTS; do
     assert_not_contains "$(cat "$WORKFLOW")" "$hatch" "eval-cli-onboarding.yml never sets \$$hatch"
   done
-  assert_contains "$(cat "$WORKFLOW")" "--assert-clean-room" "the workflow runs the clean-room gate"
-  assert_contains "$(cat "$WORKFLOW")" "container:" "the workflow runs the matrix in a container"
+  # The ARC scale set has no Docker daemon, so a job-level `container:` cannot
+  # start at all (#4171). The clean room is a pod the harness spawns instead;
+  # a `container:` reappearing here means the job dies before its first step.
+  assert_not_contains "$(cat "$WORKFLOW")" "container:" \
+    "the eval job does NOT use container: — ARC runners have no Docker daemon"
+  assert_contains "$(cat "$WORKFLOW")" "eval-pod leftover check" \
+    "the workflow checks for leaked clean-room pods"
 else
   bad "could not find eval-cli-onboarding.yml at $WORKFLOW"
 fi
@@ -281,53 +289,118 @@ assert_contains "$LAST_SET" "BG_ENFORCE_ORG_ASSIGNMENT-" \
   "with no override at start, restore deletes the var rather than pinning a value"
 
 # -----------------------------------------------------------------------------
-name "laptop() strips every AWS credential and disables IMDS"
+name "laptop commands execute in the pod, never on the runner"
 # -----------------------------------------------------------------------------
-# Sourcing just the definition would need the whole script's setup, so the
-# function is extracted and exercised directly — the point is the env it yields.
-new_env "laptop"
-LAPTOP_PROBE="$RUN_DIR/probe.sh"
-cat > "$LAPTOP_PROBE" <<'PROBE'
-#!/usr/bin/env bash
-# Print every AWS-ish var that survived, plus the IMDS switch and HOME.
-compgen -e | grep -E '^AWS_' | sort | while IFS= read -r v; do
-  printf '%s=%s\n' "$v" "${!v}"
-done
-printf 'HOME=%s\n' "$HOME"
-PROBE
-chmod +x "$LAPTOP_PROBE"
+# The guarantee that replaced env-scrubbing (#4171): the runner is the harness
+# and holds credentials; the laptop is a separate pod reached only by
+# `kubectl exec`. `kubectl exec` forwards none of the runner's environment, so
+# there is no IRSA to borrow rather than one that gets stripped. The property is
+# therefore "every laptop command left the runner", asserted from the stub log.
+run_eval laptoproute --phases C; OUT="$RUN_OUT"
+KLOG="$RUN_DIR/kubectl.log"
+if [ ! -f "$KLOG" ]; then
+  bad "no kubectl invocations were logged — phase C did not reach the pod"
+else
+  EXECS="$(grep -c '^exec ' "$KLOG" || echo 0)"
+  if [ "$EXECS" -gt 0 ]; then
+    ok "phase C routed $EXECS command(s) through kubectl exec"
+  else
+    bad "phase C issued no 'kubectl exec' — the laptop journey ran on the runner"
+  fi
+  # Every exec must target the clean-room pod — an exec at anything else would
+  # be a command running somewhere that holds credentials.
+  STRAY="$(grep '^exec ' "$KLOG" | grep -vc 'eval-cli-onboarding' || true)"
+  assert_eq "$STRAY" "0" "every exec targets the clean-room pod"
+  # Every exec that carries the laptop env (i.e. came through laptop()) must
+  # carry -i: stdin is the only channel a secret is allowed to travel on, since
+  # anything in an exec'd argv is visible in the exec API.
+  NO_STDIN="$(grep '^exec ' "$KLOG" | grep 'AWS_EC2_METADATA_DISABLED' | grep -vc -- '^exec -i ' || true)"
+  assert_eq "$NO_STDIN" "0" "every laptop() exec passes -i (stdin stays the secret channel)"
+  assert_contains "$(grep '^exec ' "$KLOG" | head -1)" "AWS_EC2_METADATA_DISABLED=true" \
+    "the pod env disables IMDS"
+fi
 
-# Extract laptop() from the eval verbatim so the test can never drift from it.
+# laptop() itself must contain no path that runs on the runner. Extracted
+# verbatim so the test can never drift from the implementation.
 LAPTOP_FN="$(sed -n '/^laptop() {/,/^}/p' "$EVAL_SCRIPT")"
 if [ -z "$LAPTOP_FN" ]; then
   bad "could not extract laptop() from run-eval.sh — did it get renamed?"
 else
-  PROBE_OUT="$(
-    env \
-      AWS_ACCESS_KEY_ID=AKIAcontaminated \
-      AWS_SECRET_ACCESS_KEY=secretcontaminated \
-      AWS_SESSION_TOKEN=sessioncontaminated \
-      AWS_ROLE_ARN=arn:aws:iam::000000000000:role/contaminated \
-      AWS_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/contaminated \
-      AWS_CONTAINER_CREDENTIALS_FULL_URI=http://169.254.170.2/contaminated \
-      AWS_PROFILE=contaminated \
-      bash -c "
-        AWS_REGION=us-east-1
-        LAPTOP_HOME='$RUN_DIR/home'
-        $LAPTOP_FN
-        laptop bash '$LAPTOP_PROBE'
-      " 2>&1
-  )"
-
-  for leaked in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
-                AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE \
-                AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_PROFILE; do
-    assert_not_contains "$PROBE_OUT" "$leaked=" "laptop() removes \$$leaked"
+  # shellcheck disable=SC2016  # matching laptop()'s source text, so $LAPTOP_POD must stay literal
+  assert_contains "$LAPTOP_FN" 'h_kubectl exec -i "$LAPTOP_POD"' \
+    "laptop() is a kubectl-exec wrapper onto the clean-room pod"
+  assert_contains "$LAPTOP_FN" 'AWS_EC2_METADATA_DISABLED=true' "laptop() disables IMDS in the pod"
+  # A credential the harness holds must never be named in the exec'd argv:
+  # anything in an exec's arguments is visible in the exec API and the runner's
+  # process table. Tokens reach the pod on stdin instead.
+  for forbidden in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+                   AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE \
+                   AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_PROFILE; do
+    assert_not_contains "$LAPTOP_FN" "$forbidden" "laptop() never forwards \$$forbidden into the pod"
   done
-  assert_not_contains "$PROBE_OUT" "contaminated" "no credential value survives into the laptop env"
-  assert_contains "$PROBE_OUT" "AWS_EC2_METADATA_DISABLED=true" "laptop() disables IMDS"
-  assert_contains "$PROBE_OUT" "HOME=$RUN_DIR/home" "laptop() redirects HOME to the emulated laptop"
 fi
+
+# -----------------------------------------------------------------------------
+name "the clean-room pod is created hardened, and the gate runs inside it"
+# -----------------------------------------------------------------------------
+# The pod IS the clean room, so its spec is the boundary. No service-account
+# token and no service-link env means there is no platform credential in reach
+# — not a scrubbed one, an absent one.
+RUN_CMD="$(grep '^run ' "$RUN_DIR/kubectl.log" 2>/dev/null | head -1)"
+if [ -z "$RUN_CMD" ]; then
+  bad "no 'kubectl run' was logged — the clean room was never created"
+else
+  assert_contains "$RUN_CMD" '"automountServiceAccountToken":false' \
+    "the pod gets no service-account token"
+  assert_contains "$RUN_CMD" '"enableServiceLinks":false' \
+    "the pod gets no service-link env for in-cluster services"
+  assert_contains "$RUN_CMD" '"app":"eval-cli-onboarding"' \
+    "the pod is labelled for the leftover sweep"
+  assert_contains "$RUN_CMD" '"karpenter.sh/do-not-disrupt"' \
+    "the pod is annotated do-not-disrupt so a consolidation cannot kill it mid-run"
+  assert_contains "$RUN_CMD" 'command -- sleep' \
+    "the pod sleeps rather than running the image entrypoint and exiting"
+  assert_contains "$RUN_CMD" '"limits"' "the pod declares resource limits"
+fi
+# The gate moved into the pod, and it is the FIRST thing exec'd there — before
+# any provisioning, so "nothing pre-installed" is still an honest claim.
+assert_contains "$OUT" "clean room is a fresh pod" \
+  "the clean-room gate ran inside the pod"
+FIRST_EXEC_LINE="$(grep -n '^exec ' "$RUN_DIR/kubectl.log" 2>/dev/null | grep 'assert-clean-room' | head -1)"
+if [ -n "$FIRST_EXEC_LINE" ]; then
+  ok "--assert-clean-room is exec'd in the pod (kubectl log line ${FIRST_EXEC_LINE%%:*})"
+else
+  bad "--assert-clean-room was never exec'd in the pod — the clean room is unverified"
+fi
+assert_not_contains "$(grep '^exec ' "$RUN_DIR/kubectl.log" 2>/dev/null | grep 'assert-clean-room' || true)" \
+  "npm install" "the gate runs before anything is installed in the pod"
+
+# -----------------------------------------------------------------------------
+name "the clean-room pod is deleted in phase D, including after a failure"
+# -----------------------------------------------------------------------------
+# A pod outlives the job that made it, so a leak here is a leaked node. Deletion
+# is by LABEL, not name: a pod orphaned by a crashed run is swept by a later run
+# that never learned the old run id.
+for scenario in "" "--fail-phase B"; do
+  label="${scenario:-full run}"
+  # shellcheck disable=SC2086  # deliberate word-split of the scenario flags
+  run_eval "poddel-${scenario// /-}" $scenario; OUT="$RUN_OUT"
+  DEL="$(grep '^delete .*pod' "$RUN_DIR/kubectl.log" 2>/dev/null | tail -1)"
+  if [ -z "$DEL" ]; then
+    bad "no pod deletion was logged ($label) — the clean room leaked"
+  else
+    assert_contains "$DEL" "-l app=eval-cli-onboarding" \
+      "phase D sweeps the pod by label ($label)"
+    assert_contains "$DEL" "--ignore-not-found" \
+      "the sweep tolerates an already-gone pod, so cleanup stays idempotent ($label)"
+  fi
+done
+
+# --cleanup-only must sweep pods too: it is what an operator runs after a killed
+# run, when no state file records the pod's name.
+run_eval podsweep --cleanup-only; OUT="$RUN_OUT"
+assert_contains "$(grep '^delete .*pod' "$RUN_DIR/kubectl.log" 2>/dev/null || true)" \
+  "-l app=eval-cli-onboarding" "--cleanup-only sweeps leaked pods by label"
 
 # -----------------------------------------------------------------------------
 name "--inject-failure wrong-org makes the run fail loudly"

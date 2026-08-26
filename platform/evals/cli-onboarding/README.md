@@ -26,18 +26,46 @@ internal auth for the auth path under test — the eval would go green while
 every request rode the agent's credentials rather than the user's.
 
 **A false green here is worse than having no eval**, because it actively
-certifies a journey nobody checked. Two mechanisms make the boundary real:
+certifies a journey nobody checked. So the run splits in two, and the split is
+enforced by a process boundary rather than by scrubbing variables:
 
-1. **`--assert-clean-room`** is the workflow's first step. It fails the job if
-   `~/.codex`, `~/.claude`, `~/.bedrock-gateway` or `~/.claude.json` exists, if
-   any `ANTHROPIC_*` / `ADP_GATEWAY_*` / `CLAUDE_CODE_*` variable is set, if
-   `claude` or `codex` is already on `PATH`, or if anything is listening on the
-   proxy ports. The job runs in a stock `node:20-bookworm` container with a
-   fresh `$HOME` so this check can pass honestly.
-2. **`laptop()`** wraps every command that emulates the developer. It strips
-   every AWS credential variable and disables IMDS, so a laptop step *cannot*
-   borrow the runner's IRSA even by accident. Only `h_aws`, `h_kubectl` and
-   `h_psql` — grep for them — ever touch credentials.
+| | Where | Holds credentials? | Does what |
+|---|---|---|---|
+| **Harness** | the ARC runner | yes — IRSA + kubeconfig | Cognito seeding, the approval row, the flag lever, every assertion |
+| **Laptop** | a `node:20-bookworm` **pod** the harness creates | no | the developer's half: download the helper, `import`, `token`, run the CLIs |
+
+Three mechanisms make that boundary real:
+
+1. **The pod is the clean room.** `run-eval.sh` creates it with `kubectl run`
+   (`automountServiceAccountToken: false`, `enableServiceLinks: false`, no env
+   from the job) and reaches it only with `kubectl exec`. `kubectl exec`
+   forwards *none* of the runner's environment, so there is no platform
+   credential in the pod to borrow — an absent one, not a scrubbed one. The pod
+   talks to the public CloudFront domain, exactly as a laptop would, so it has
+   no in-cluster dependency either.
+2. **`--assert-clean-room`** runs **inside the pod, as the first command exec'd
+   there** — before any tooling is installed, so "nothing pre-installed" stays
+   an honest claim. It fails the run if `~/.codex`, `~/.claude`,
+   `~/.bedrock-gateway` or `~/.claude.json` exists, if any `ANTHROPIC_*` /
+   `ADP_GATEWAY_*` / `CLAUDE_CODE_*` variable is set, if `claude` or `codex` is
+   already on `PATH`, or if anything is listening on the proxy ports. Keeping it
+   also guards the case where someone later points `laptop()` at a dirty target.
+3. **`laptop()`** wraps every command that emulates the developer, and is
+   nothing but a `kubectl exec -i` onto that pod. Only `h_aws`, `h_kubectl` and
+   `h_psql` — grep for them — ever touch credentials, and they only ever run on
+   the harness side.
+
+**Secrets never travel in an exec'd command line.** Anything in the argv of a
+`kubectl exec` is visible in the exec API and in the runner's process table, so
+the refresh token reaches the pod on **stdin** (`kubectl exec -i`) and lives
+there in a `0600` file. The minted JWT is created, used and destroyed inside the
+pod; only its shape ever comes back.
+
+Why a pod and not a job-level `container:`: the ARC scale set runs without a
+Docker daemon and without `containerMode`, so a job that asks for a container
+image dies before its first step (`failed to connect to the docker API`). The
+runner *can* create pods — its `adp-gateway` RBAC already grants `pods`
+create/delete and `pods/exec` create — so the clean room is a pod (#4171).
 
 That split is what makes the whole thing possible: `cognito-idp:InitiateAuth` is
 an **unsigned** API, so `import` / `token` / `refresh` genuinely need no AWS
@@ -54,7 +82,7 @@ is precisely the signal we want.
 | **B2** | `/auth/me` and `/access/status` stay reachable while gated — a pending user must still be able to see the "request access" screen |
 | **B3** | The **DB-fallback** leg: approval written only to Postgres admits a token whose `org_id` claim is still blank |
 | **B4** | An admin with a blank org is exempt — the person who approves everyone is never the first locked out |
-| **C5–C6** | The helper downloads from the **live** route and `/.well-known/cognito-config` agrees with SSM |
+| **C5–C6** | The helper downloads from the **live** route into the clean-room pod and `/.well-known/cognito-config` agrees with SSM |
 | **C7–C8** | `import` (refresh token via stdin), `0700`/`0600` permissions, `token` prints a JWT, and that JWT buys a real completion |
 | **C9** | Claude Code works configured exactly as the setup page renders it — confirmed by a `usage_logs` row for this user's sub |
 | **C10** | Codex works through the local auth proxy (skipped until #4156 — see below) |
@@ -132,8 +160,8 @@ D, which runs from an `EXIT` trap *and* as a separate `if: always()` step:
 | `BG_ENFORCE_ORG_ASSIGNMENT` on the gateway deployment | Set back to the value **read at start**. If there was no deployment-level override, the override is *removed* rather than pinned, so the deployment keeps tracking the configmap. |
 | Two throwaway Cognito users (`eval-cli-onboarding*`) | `admin-delete-user` |
 | One or two `users` rows | `DELETE` by the ids recorded in state |
-| A local auth proxy process | Killed |
-| The emulated laptop `$HOME`, tokens, curl configs | `rm -rf` |
+| One clean-room pod in `adp-gateway` | `kubectl delete pod -l app=eval-cli-onboarding`. Deleted **by label, not by name**, so a pod orphaned by a crashed run is swept by a later run that never learned the old run id. The laptop `$HOME`, the tokens and the auth-proxy process go with it. |
+| Harness-side token scratch files | `rm -f` |
 
 Restoring to the value read at start — never a hardcoded `false` — is the point:
 an eval that assumed `false` would silently disable the approval gate in an
@@ -150,13 +178,17 @@ Re-run `--cleanup-only`, which is idempotent and works standalone:
 ./platform/evals/cli-onboarding/run-eval.sh --environment dev --cleanup-only
 ```
 
-Then check the flag and sweep any leaked users. Anything in Cognito matching
-`eval-cli-onboarding*` is a throwaway from a crashed run and is safe to delete —
-that prefix is the sweep convention.
+Then check the flag and sweep any leaked users or pods. Anything in Cognito
+matching `eval-cli-onboarding*`, or any pod labelled `app=eval-cli-onboarding`,
+is a throwaway from a crashed run and is safe to delete — that prefix/label is
+the sweep convention.
 
 ```bash
 kubectl get deploy bedrockgateway -n adp-gateway \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="BG_ENFORCE_ORG_ASSIGNMENT")].value}'
+
+# Leaked clean-room pods (--cleanup-only already does this)
+kubectl delete pod -n adp-gateway -l app=eval-cli-onboarding
 ```
 
 ## Triaging a failure
@@ -191,10 +223,12 @@ label keeps meaning something.
 - The runner needs `cognito-idp:Admin*` on the target pool, RDS reachability,
   and `kubectl` access to `deploy/bedrockgateway`. The `runner-iam` module
   currently grants `cognito-idp:*`.
-- The `eval` job uses a `container:`, which requires the ARC scale set to
-  support container jobs. No other workflow in this repo uses `container:` yet,
-  so this is unproven on our runners — tracked in **#4167**. The eval will not
-  fall back to the host runner: a run outside the clean room would report a
-  false green, which is the one outcome this eval exists to prevent.
+- The runner needs Kubernetes RBAC to `create` / `exec` / `delete` **pods** in
+  `adp-gateway` for the clean room. Already granted: the `adp-runner-deploy`
+  Role (`modules/agent-factory/infra/runner-rbac.tf`) covers `pods` with
+  create/delete and `pods/exec` with create. Nothing to add.
+- The eval will not fall back to running the laptop journey on the runner: a run
+  outside the clean-room pod would report a false green, which is the one
+  outcome this eval exists to prevent.
 - The eval spends a small amount of real inference on each run (a handful of
   short completions).
