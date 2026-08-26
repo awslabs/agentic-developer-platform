@@ -96,7 +96,9 @@ export function Navigation() {
   }
 
   // Setup page for all authenticated users
-  navItems.push({ to: '/setup', label: 'Claude Code Setup', icon: '⚙️' });
+  // Label is "CLI Setup", not "Claude Code Setup": the page covers Codex too
+  // (Issue #4159). Route is unchanged.
+  navItems.push({ to: '/setup', label: 'CLI Setup', icon: '⚙️' });
 
   // Connections page — link external services (Issue #465)
   if (features.connections) {

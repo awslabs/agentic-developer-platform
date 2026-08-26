@@ -1,5 +1,5 @@
 /**
- * SetupInstructions — how to point Claude Code (and Codex) at this gateway.
+ * SetupInstructions — how to point Claude Code or Codex at this gateway.
  *
  * Issue #4146 rewrote this end-to-end. The previous content documented an
  * AWS-SSO + `bg-auth.sh` flow that no longer works: it predated both the
@@ -7,14 +7,26 @@
  * with an `apiBaseUrl` key that exists in no file under `cli/`, and shipped
  * unresolved `https://your-gateway-url/v1` placeholders.
  *
- * Two invariants worth preserving on edit:
+ * Issue #4159 restructured it (content frozen, layout only): the flat 7-step
+ * list buried Codex as step 6 inside the Claude Code flow and told users to
+ * fetch the helper scripts from a Downloads section that rendered *after* the
+ * instructions. It is now three sections — a common "connect your machine"
+ * (downloads first, so nothing forward-references), a Claude Code | Codex tab
+ * switcher, and a shared verify step.
+ *
+ * Three invariants worth preserving on edit:
  * - The base URL is resolved at runtime from the real origin. Never a placeholder.
  * - The settings snippets are `JSON.stringify`'d from objects, so the rendered
  *   text cannot drift from the shape asserted in tests (or from `cli/examples/`).
+ * - Step numbers are derived from array order and the common-section length, so
+ *   each tab reads as one continuous flow and a reorder cannot mis-number them.
  */
 
-import { Card, CardTitle, CopyButton } from '@/components/ui';
+import { Fragment } from 'react';
+import { Card, CardTitle, CopyButton, Tabs, TabsList, Tab, TabPanel } from '@/components/ui';
 import { getGatewayBaseUrl } from '@/utils/gatewayUrl';
+import { ScriptDownloadList } from '@/components/setup/ScriptDownload';
+import { ConnectCliPanel } from '@/components/setup/ConnectCliPanel';
 
 /** Anthropic-format settings — mirrors cli/examples/claude-settings-cognito.json */
 export function buildAnthropicSettings(baseUrl: string) {
@@ -98,7 +110,23 @@ function Step({ index, title, children }: { index: number; title: string; childr
   );
 }
 
+function SectionHeading({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h2>
+      <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{children}</p>
+    </div>
+  );
+}
+
 const CODE = 'bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono';
+
+interface SetupStep {
+  title: string;
+  body: React.ReactNode;
+  /** Rendered after this step's card — the panel or card the step points at. */
+  after?: React.ReactNode;
+}
 
 export function SetupInstructions() {
   const baseUrl = getGatewayBaseUrl();
@@ -106,7 +134,8 @@ export function SetupInstructions() {
   const bedrockSettings = JSON.stringify(buildBedrockSettings(baseUrl), null, 2);
   const codexConfigToml = buildCodexConfigToml();
 
-  const steps: { title: string; body: React.ReactNode }[] = [
+  // --- Section 1: both tools ------------------------------------------------
+  const commonSteps: SetupStep[] = [
     {
       title: 'Prerequisites',
       body: (
@@ -122,13 +151,15 @@ export function SetupInstructions() {
           <li>Signed in to this dashboard with GitHub — you already are, or you could not see this page</li>
         </ul>
       ),
+      // Downloads come before the step that tells you to install them (Issue #4159).
+      after: <ScriptDownloadList />,
     },
     {
       title: 'Download the helper script',
       body: (
         <>
           <p>
-            Grab <code className={CODE}>bg-cognito-auth.sh</code> from the Downloads section below,
+            Grab <code className={CODE}>bg-cognito-auth.sh</code> from the Downloads section above,
             then put it on your PATH and make it executable:
           </p>
           <CodeSnippet>{`mkdir -p ~/bin
@@ -144,13 +175,18 @@ chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
       title: 'Connect the CLI',
       body: (
         <p>
-          Use the <strong>Connect CLI</strong> panel above: run the{' '}
+          Use the <strong>Connect CLI</strong> panel below: run the{' '}
           <code className={CODE}>import</code> command it shows and paste your refresh token when
           prompted. This seeds the CLI from the session this browser already established — you have
           no Cognito password to type, because signing in with GitHub never created one.
         </p>
       ),
+      after: <ConnectCliPanel />,
     },
+  ];
+
+  // --- Section 2, Claude Code tab -------------------------------------------
+  const claudeCodeSteps: SetupStep[] = [
     {
       title: 'Configure Claude Code',
       body: (
@@ -187,8 +223,12 @@ chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
         </>
       ),
     },
+  ];
+
+  // --- Section 2, Codex tab -------------------------------------------------
+  const codexSteps: SetupStep[] = [
     {
-      title: 'Using Codex instead? Zero-touch auth with serve',
+      title: 'Install the proxy script alongside the helper',
       body: (
         <>
           <p>
@@ -199,18 +239,32 @@ chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
             authenticate once and never touch tokens again.
           </p>
           <p>
-            Install <strong>both</strong> files from the Downloads section below —{' '}
+            Install <strong>both</strong> files from the Downloads section above —{' '}
             <code className={CODE}>bg-gateway-proxy.py</code> must sit next to{' '}
             <code className={CODE}>bg-cognito-auth.sh</code>, because{' '}
             <code className={CODE}>serve</code> looks for its sibling:
           </p>
           <CodeSnippet>{`mv ~/Downloads/bg-cognito-auth.sh ~/Downloads/bg-gateway-proxy.py ~/bin/
 chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
+        </>
+      ),
+    },
+    {
+      title: 'Configure Codex',
+      body: (
+        <>
           <p>
             Add this to <code className={CODE}>~/.codex/config.toml</code> (the helper deliberately
             does not write this file for you — it is yours):
           </p>
           <CodeSnippet>{codexConfigToml}</CodeSnippet>
+        </>
+      ),
+    },
+    {
+      title: 'Start the proxy, then Codex',
+      body: (
+        <>
           <p>Then start the proxy and, in another terminal, Codex:</p>
           <CodeSnippet>{`~/bin/bg-cognito-auth.sh serve          # foreground; Ctrl-C to stop
 ADP_GATEWAY_DUMMY=unused codex         # in a second terminal`}</CodeSnippet>
@@ -223,29 +277,71 @@ ADP_GATEWAY_DUMMY=unused codex         # in a second terminal`}</CodeSnippet>
         </>
       ),
     },
-    {
-      title: 'Verify it works',
-      body: (
-        <p>
-          Ask Claude Code anything, then open the <strong>Log Viewer</strong> in this dashboard. Your
-          request should appear there within a few seconds — that confirms traffic is flowing through
-          the gateway and being metered against your account. If it does not, see Troubleshooting
-          below.
-        </p>
-      ),
-    },
   ];
 
+  /** Tab steps continue the common numbering, so each tool reads as one flow. */
+  const toolStepOffset = commonSteps.length;
+
+  const renderToolSteps = (steps: SetupStep[]) => (
+    <div className="space-y-6 text-gray-700 dark:text-gray-300">
+      {steps.map((step, index) => (
+        <Step key={step.title} index={toolStepOffset + index} title={step.title}>
+          {step.body}
+        </Step>
+      ))}
+    </div>
+  );
+
   return (
-    <Card>
-      <CardTitle>Setup Instructions</CardTitle>
-      <div className="mt-4 space-y-6 text-gray-700 dark:text-gray-300">
-        {steps.map((step, index) => (
-          <Step key={step.title} index={index} title={step.title}>
-            {step.body}
-          </Step>
+    <div className="space-y-8">
+      <section className="space-y-4">
+        <SectionHeading title="Connect your machine">
+          Same for both tools: get the helper script, then seed it from this browser session.
+        </SectionHeading>
+        {commonSteps.map((step, index) => (
+          <Fragment key={step.title}>
+            <Card>
+              <div className="text-gray-700 dark:text-gray-300">
+                <Step index={index} title={step.title}>
+                  {step.body}
+                </Step>
+              </div>
+            </Card>
+            {step.after}
+          </Fragment>
         ))}
-      </div>
-    </Card>
+      </section>
+
+      <section className="space-y-4">
+        <SectionHeading title="Set up your tool">
+          Pick the CLI you use — the steps below continue from the ones above.
+        </SectionHeading>
+        <Card>
+          <Tabs defaultValue="claude-code">
+            <TabsList>
+              <Tab value="claude-code">Claude Code</Tab>
+              <Tab value="codex">Codex</Tab>
+            </TabsList>
+            <TabPanel value="claude-code">{renderToolSteps(claudeCodeSteps)}</TabPanel>
+            <TabPanel value="codex">{renderToolSteps(codexSteps)}</TabPanel>
+          </Tabs>
+        </Card>
+      </section>
+
+      <section className="space-y-4">
+        <SectionHeading title="Verify">
+          One check, whichever tool you set up.
+        </SectionHeading>
+        <Card>
+          <CardTitle>Verify it works</CardTitle>
+          <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">
+            Ask Claude Code or Codex anything, then open the <strong>Log Viewer</strong> in this
+            dashboard. Your request should appear there within a few seconds — that confirms traffic
+            is flowing through the gateway and being metered against your account. If it does not,
+            see Troubleshooting below.
+          </p>
+        </Card>
+      </section>
+    </div>
   );
 }

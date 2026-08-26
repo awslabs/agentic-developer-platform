@@ -1,13 +1,18 @@
 /**
- * ClaudeSetup page tests — Issue #4146. First tests for this page.
+ * CLI Setup page tests — Issues #4146, #4159.
  *
- * Covers the page-level composition: the approval note, the Connect CLI panel,
- * and the troubleshooting matrix. Content-level assertions for the instructions
- * themselves live in SetupInstructions.test.tsx.
+ * Covers the page-level composition: the title, the approval note, the three
+ * setup sections, and the troubleshooting matrix. Content-level assertions for
+ * the instructions themselves live in SetupInstructions.test.tsx.
+ *
+ * #4159 renamed the page to "CLI Setup" and moved the download cards + Connect
+ * CLI panel inside SetupInstructions, so the page-level assertions here changed
+ * shape but not substance — the same elements must still reach the user.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import ClaudeSetup from '@/pages/ClaudeSetup';
 import * as auth from '@/services/auth';
 
@@ -42,7 +47,18 @@ describe('ClaudeSetup', () => {
   it('renders the page heading', () => {
     render(<ClaudeSetup />);
 
-    expect(screen.getByRole('heading', { name: 'Claude Code Setup' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'CLI Setup' })).toBeInTheDocument();
+  });
+
+  it('names both tools in the subtitle rather than Claude Code alone', () => {
+    // The old title, "Claude Code Setup", made Codex users think the page was
+    // not for them (Issue #4159).
+    render(<ClaudeSetup />);
+
+    expect(
+      screen.queryByRole('heading', { name: 'Claude Code Setup' })
+    ).not.toBeInTheDocument();
+    expect(document.body.textContent ?? '').toContain('Use Claude Code or Codex on your machine');
   });
 
   it('shows the approval note explaining the 409', () => {
@@ -69,16 +85,28 @@ describe('ClaudeSetup', () => {
     expect(screen.getByTestId('import-command')).toBeInTheDocument();
   });
 
-  it('renders the setup instructions and the download list', () => {
+  it('renders the setup sections and the download list', () => {
     render(<ClaudeSetup />);
 
-    expect(screen.getByRole('heading', { name: 'Setup Instructions' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connect your machine' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Set up your tool' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Verify' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Download Helper Scripts' })).toBeInTheDocument();
     // Two cards: the auth helper, plus the Codex `serve` proxy (Issue #4156).
     expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(2);
     // Named in more than one place (instructions + download card) — that's fine.
     expect(screen.getAllByText('bg-cognito-auth.sh').length).toBeGreaterThan(0);
     expect(screen.getAllByText('bg-gateway-proxy.py').length).toBeGreaterThan(0);
+  });
+
+  it('offers both tool tabs, defaulting to Claude Code', () => {
+    render(<ClaudeSetup />);
+
+    expect(screen.getByRole('tab', { name: 'Claude Code' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    expect(screen.getByRole('tab', { name: 'Codex' })).toBeInTheDocument();
   });
 
   // --- Troubleshooting matrix ------------------------------------------------
@@ -93,17 +121,42 @@ describe('ClaudeSetup', () => {
     expect(screen.getByText(pattern)).toBeInTheDocument();
   });
 
-  it('no longer references the deprecated bg-auth script', () => {
+  it('describes the 401 fix for both tools, not Claude Code only', () => {
     render(<ClaudeSetup />);
-    const text = document.body.textContent ?? '';
+
+    expect(document.body.textContent ?? '').toContain(
+      'This applies to both Claude Code and Codex'
+    );
+  });
+
+  it('no longer references the deprecated bg-auth script', async () => {
+    render(<ClaudeSetup />);
 
     // The old Troubleshooting card told users to re-run `bg-auth`, which is the
-    // deprecated SigV4 helper and would not fix a 401 on this flow.
-    expect(text).not.toContain('bg-auth.sh');
-    expect(text).not.toContain('bg-auth.ps1');
-    expect(text).not.toContain('aws configure sso');
-    expect(text).not.toContain('your-gateway-url');
-    expect(text).not.toContain('apiBaseUrl');
+    // deprecated SigV4 helper and would not fix a 401 on this flow. Checked on
+    // both tabs — inactive tab panels render nothing, so a single view could
+    // miss a regression parked behind the other tab.
+    for (const needle of [
+      'bg-auth.sh',
+      'bg-auth.ps1',
+      'aws configure sso',
+      'your-gateway-url',
+      'apiBaseUrl',
+    ]) {
+      expect(document.body.textContent ?? '').not.toContain(needle);
+    }
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Codex' }));
+
+    for (const needle of [
+      'bg-auth.sh',
+      'bg-auth.ps1',
+      'aws configure sso',
+      'your-gateway-url',
+      'apiBaseUrl',
+    ]) {
+      expect(document.body.textContent ?? '').not.toContain(needle);
+    }
   });
 
   it('shows the user access information when authenticated', () => {

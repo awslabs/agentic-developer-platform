@@ -201,4 +201,20 @@ describe('Navigation', () => {
       );
     });
   });
+
+  describe('CLI Setup link (Issue #4159)', () => {
+    it('is labelled "CLI Setup", not "Claude Code Setup"', () => {
+      // The page covers Codex too; the old label hid that from Codex users.
+      renderNavigation();
+
+      expect(screen.getByText('CLI Setup')).toBeInTheDocument();
+      expect(screen.queryByText('Claude Code Setup')).not.toBeInTheDocument();
+    });
+
+    it('still points at /setup (rename must not break the link)', () => {
+      renderNavigation();
+
+      expect(screen.getByText('CLI Setup').closest('a')).toHaveAttribute('href', '/setup');
+    });
+  });
 });
