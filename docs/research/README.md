@@ -11,7 +11,7 @@ evolves; a changed landscape warrants a new investigation.
 | Candidate | Verdict | Date | Issue |
 |-----------|---------|------|-------|
 | [OpenClaw](openclaw-fit-assessment.md) | Adapt — parity table drives `tests/e2e/test_openclaw_parity.py` | 2026 | — |
-| [DeepSeek Harness (dsh)](deepseek-harness-fit-assessment.md) | **Adapt** the architecture (event-sourced session log, fail-closed HITL contract, spill-to-file, seam discipline) + one gated experiment; do **not** adopt as the worker runtime | 2026-08-26 | #4160 |
+| [DeepSeek Harness (dsh)](deepseek-harness-fit-assessment.md) | **Adapt** the architecture (event-sourced session log, fail-closed HITL contract, spill-to-file, seam discipline) + one gated experiment; do **not** adopt as the worker runtime. Gated experiment: designed in [`docs/spikes/spike-4188-dsh-experiment.md`](../spikes/spike-4188-dsh-experiment.md), results record [`dsh-experiment-results.md`](dsh-experiment-results.md) — **not yet run**, so this row is analysis, not evidence | 2026-08-26 | #4160, #4188 |
 | [Hermes agent (NousResearch)](hermes-agent-fit-assessment.md) | **Adapt** — harvest the design; **reject** as the multi-tenant chief-of-staff foundation | 2026-08-26 | #4161 |
 | [ORCA (stablyai)](orca-fit-assessment.md) | **Adapt** patterns (three-value liveness verdict → #4077) + permit as BYO client; no ORCA↔ADP integration | 2026-08-26 | #4162 |
 

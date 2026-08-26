@@ -219,6 +219,28 @@ The issue asks for this explicitly. **The trio (#4160 / #4161 / #4162) partition
 
 ## 6. Experiment spec — self-contained, reversible, independently deployable
 
+> **Pointer (issue #4188).** This section is the spec; the run design that grounds
+> it against the live tree is **[`docs/spikes/spike-4188-dsh-experiment.md`](../spikes/spike-4188-dsh-experiment.md)**
+> and the results record is **[`dsh-experiment-results.md`](dsh-experiment-results.md)**.
+> **The experiment has not been run** — it remains human-gated.
+>
+> The run design corrects six assumptions in this section that do not match what
+> is actually deployed. Three matter enough to flag here:
+>
+> - **Test 5's substrate is unspecified below and cannot be left to the runner.**
+>   dsh's persistence backends are all node-local, and the cluster has no RWX
+>   filesystem; the only `ReadWriteMany` volume in the tree is Mountpoint-for-S3,
+>   which provides no random writes and no file locking. Running test 5 on
+>   `emptyDir` would produce a "refuted" that is really a statement about our
+>   storage. See spike §4.
+> - **"read-only agent-context credentials" (invariant 5, and the ⚠️ note) does not
+>   exist.** The Door has one unscoped credential and no read-only mode, and 2 of
+>   its **7** verbs write. Combined with headless's mandatory `approval: 'never'`,
+>   the guard has to come from using a disposable tenant identity. See spike §3.5.
+> - **The sigv4 "sidecar" is a subprocess of our Python entrypoint**, not a sidecar
+>   container, so a dsh pod does not inherit it — and its role must be registered
+>   in the agent registry or every request 403s. See spike §3.4.
+
 **Purpose:** decide Option B (additional persona runtime) on evidence rather than argument, and validate the gateway-fronting claim. Deliberately scoped so it proves the integration questions without touching production paths.
 
 **Hypothesis.** A dsh headless pod can run a real coding task against ADP's gateway with budgets, rate limits, and metering intact, consuming agent-context MCP tools — and its event-sourced session survives a pod kill and resumes.

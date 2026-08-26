@@ -1,0 +1,75 @@
+# =============================================================================
+# dsh experiment — namespace, resource caps
+# =============================================================================
+# Issue #4188. Design: docs/spikes/spike-4188-dsh-experiment.md §3.1, §3.3.
+#
+# NOT PRODUCTION INFRASTRUCTURE. Applied by hand for a gated, bounded experiment
+# and deleted afterwards. No CI workflow references this file.
+#
+# The namespace is used for nothing else. It exists so third-party code with a
+# documented plaintext-credential finding and documented outbound telemetry
+# (assessment §Q6) never shares a namespace with platform services.
+# =============================================================================
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dsh-experiment
+  labels:
+    app.kubernetes.io/name: dsh-experiment
+    app.kubernetes.io/component: third-party-evaluation
+    app.kubernetes.io/managed-by: manual
+    # Marks this as a throwaway environment so it is obvious in any namespace
+    # listing that this is not a platform namespace.
+    adp.io/ephemeral: "true"
+    adp.io/issue: "4188"
+---
+# Bounds the experiment's compute. §6 of the assessment bounds spend (via the
+# gateway budget) but not compute; an unbounded long-lived Node process could
+# otherwise consume a node.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dsh-experiment-quota
+  namespace: dsh-experiment
+  labels:
+    app.kubernetes.io/name: dsh-experiment
+spec:
+  hard:
+    pods: "4"
+    requests.cpu: "4"
+    requests.memory: 16Gi
+    limits.cpu: "8"
+    limits.memory: 32Gi
+    requests.ephemeral-storage: 40Gi
+    limits.ephemeral-storage: 60Gi
+    # The harness must not be able to create durable cluster storage on its own.
+    # The test-5 substrate (spike §4) is provisioned deliberately, not incidentally.
+    persistentvolumeclaims: "1"
+    # No Services: the headless profile mounts no HTTP server, and a Service
+    # would be the mechanism by which the unauthenticated web server (§Q6
+    # finding 1) became reachable. Zero is the enforcement of spike gate G3.
+    services: "0"
+    secrets: "4"
+---
+# Default request/limit so a container that declares neither cannot escape the
+# quota's intent.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: dsh-experiment-limits
+  namespace: dsh-experiment
+  labels:
+    app.kubernetes.io/name: dsh-experiment
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "2"
+        memory: 4Gi
+      defaultRequest:
+        cpu: "500m"
+        memory: 1Gi
+      max:
+        cpu: "4"
+        memory: 8Gi
