@@ -5,8 +5,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  PGHOST: bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com
-  PGDATABASE: bedrockgateway
+  ENVIRONMENT: dev
   PGSSLMODE: require
 
 jobs:
@@ -19,20 +18,53 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends postgresql-client jq
 
-      - name: Resolve RDS credentials
+      # The gateway RDS master user is IAM-auth-only (BG_RDS_IAM_AUTH=true) —
+      # password authentication is disabled in-database, so the secret's
+      # .password is dead and reading it yields "PAM authentication failed".
+      # Mint a short-lived IAM auth token instead. Same sequence as
+      # platform/evals/cli-onboarding/run-eval.sh resolve_db_creds().
+      # The token is valid 15 minutes, so this step runs immediately before psql.
+      - name: Resolve RDS connection (IAM auth token)
         run: |
           set -euo pipefail
+          PGHOST=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/rds-host" \
+            --region "$AWS_REGION" \
+            --query Parameter.Value --output text)
+          PGDATABASE=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/rds-database-name" \
+            --region "$AWS_REGION" \
+            --query Parameter.Value --output text)
+          if [ -z "$PGHOST" ] || [ -z "$PGDATABASE" ]; then
+            echo "::error::Could not resolve RDS host/database from SSM for ${ENVIRONMENT}"
+            exit 1
+          fi
+
+          # The rds!db-* secret is read for the username only — never the password.
           SECRET_ARN=$(aws secretsmanager list-secrets \
             --region "$AWS_REGION" \
             --filters Key=name,Values="rds!db-" \
             --query 'SecretList[0].ARN' --output text)
-          SECRET=$(aws secretsmanager get-secret-value \
+          if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
+            echo "::error::Could not find the rds!db-* secret"
+            exit 1
+          fi
+          PGUSER=$(aws secretsmanager get-secret-value \
             --secret-id "$SECRET_ARN" \
             --region "$AWS_REGION" \
-            --query SecretString --output text)
-          PGUSER=$(echo "$SECRET" | jq -r .username)
-          PGPASSWORD=$(echo "$SECRET" | jq -r .password)
+            --query SecretString --output text | jq -r .username)
+
+          PGPASSWORD=$(aws rds generate-db-auth-token \
+            --hostname "$PGHOST" --port 5432 \
+            --username "$PGUSER" --region "$AWS_REGION")
+          if [ -z "$PGPASSWORD" ]; then
+            echo "::error::Failed to mint an RDS IAM auth token for ${PGUSER}@${PGHOST}"
+            exit 1
+          fi
           echo "::add-mask::$PGPASSWORD"
+
+          echo "PGHOST=$PGHOST" >> "$GITHUB_ENV"
+          echo "PGDATABASE=$PGDATABASE" >> "$GITHUB_ENV"
           echo "PGUSER=$PGUSER" >> "$GITHUB_ENV"
           echo "PGPASSWORD=$PGPASSWORD" >> "$GITHUB_ENV"
 
