@@ -29,6 +29,13 @@ resource "aws_iam_policy" "runner_boundary" {
         Effect = "Allow"
         Action = [
           "ec2:*", "s3:*", "lambda:*", "dynamodb:*", "rds:*",
+          # rds-db:connect is a SEPARATE service namespace from rds:* — it is
+          # NOT covered by "rds:*". Required for IAM database authentication
+          # (aws rds generate-db-auth-token) now that the gateway RDS master
+          # user is IAM-auth-only (BG_RDS_IAM_AUTH=true); password auth is
+          # disabled, so DB-touching workflows (evals, schema-check, seeding)
+          # must connect with an IAM token.
+          "rds-db:connect",
           "ecs:*", "ecr:*", "elasticloadbalancing:*", "autoscaling:*",
           "cloudformation:*", "cloudwatch:*", "logs:*", "sns:*", "sqs:*",
           "apigateway:*", "route53:*", "cloudfront:*", "acm:*",

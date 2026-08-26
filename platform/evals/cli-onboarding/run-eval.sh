@@ -1554,13 +1554,19 @@ run_cleanup() {
     done
   fi
 
-  # 4. Delete the throwaway Cognito users.
-  local key username
+  # 4. Delete the throwaway Cognito users. Idempotent: an already-absent user
+  #    (e.g. the always-on "Cleanup sweep" step re-running Phase D after the
+  #    matrix step already deleted it) is a clean state, not a failure — mirror
+  #    the pod delete's --ignore-not-found semantics so a second sweep stays green.
+  local key username delete_err
   for key in USER ADMIN; do
     username="$(state_get "${key}_USERNAME")"
     [ -n "$username" ] || continue
-    if h_aws cognito-idp admin-delete-user --user-pool-id "${USER_POOL_ID:-}" --username "$username" >/dev/null 2>&1; then
+    if delete_err="$(h_aws cognito-idp admin-delete-user \
+      --user-pool-id "${USER_POOL_ID:-}" --username "$username" 2>&1)"; then
       log "deleted Cognito user $username"
+    elif printf '%s' "$delete_err" | grep -q "UserNotFoundException"; then
+      log "Cognito user $username already absent — nothing to delete"
     else
       fail "D could not delete Cognito user $username — sweep with the '${EVAL_USER_PREFIX}' prefix"
     fi
