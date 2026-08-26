@@ -969,6 +969,49 @@ state_get() {
   sed -n "s/^${key}=//p" "$STATE_FILE" | tail -1
 }
 
+# Resolve the RDS connection + a fresh IAM auth token into the PG* environment.
+# Self-contained (resolves RDS_HOST/RDS_DB from SSM if not already set) so it is
+# callable from BOTH resolve_config (full run) and the --cleanup-only branch —
+# the sweep deletes users rows via psql, so it needs DB creds too. Without this
+# the standalone sweep failed to connect and reported spurious "could not delete
+# users row" litter.
+#
+# bedrockgw-dev-postgres has IAM database authentication enabled and its master
+# user (bgadmin) is granted rds_iam in-database — exactly how the gateway itself
+# connects (BG_RDS_IAM_AUTH=true, no password in BG_DATABASE_URL). That grant
+# *disables* password auth for bgadmin, so pulling the managed master password
+# from the rds!db-* secret and offering it yields "PAM authentication failed".
+# We mint a short-lived IAM auth token instead and use it as PGPASSWORD (the
+# harness runner's IRSA is authorized for rds-db:connect). The username still
+# comes from the managed secret so we track the master user without hard-coding
+# it. IAM auth mandates TLS (PGSSLMODE).
+resolve_db_creds() {
+  local secret_arn secret
+  db_ssm() {
+    h_aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo ""
+  }
+  [ -n "${RDS_HOST:-}" ] || RDS_HOST="$(db_ssm "/adp/${ENVIRONMENT}/gateway/rds-host")"
+  [ -n "${RDS_DB:-}" ]   || RDS_DB="$(db_ssm "/adp/${ENVIRONMENT}/gateway/rds-database-name")"
+  if [ -z "$RDS_HOST" ] || [ -z "$RDS_DB" ]; then
+    die "Could not resolve RDS host/database for ${ENVIRONMENT}"
+  fi
+
+  secret_arn="$(h_aws secretsmanager list-secrets --filters Key=name,Values="rds!db-" \
+    --query 'SecretList[0].ARN' --output text 2>/dev/null || echo "")"
+  if [ -z "$secret_arn" ] || [ "$secret_arn" = "None" ]; then
+    die "Could not find the rds!db-* secret"
+  fi
+  secret="$(h_aws secretsmanager get-secret-value --secret-id "$secret_arn" \
+    --query SecretString --output text)"
+  PGUSER="$(printf '%s' "$secret" | jq -r .username)"
+  PGPASSWORD="$(h_aws rds generate-db-auth-token \
+    --hostname "$RDS_HOST" --port 5432 --region "${AWS_REGION:-us-east-1}" \
+    --username "$PGUSER" 2>/dev/null || echo "")"
+  [ -n "$PGPASSWORD" ] || die "Failed to mint an RDS IAM auth token for $PGUSER@$RDS_HOST"
+  mask "$PGPASSWORD"
+  export PGHOST="$RDS_HOST" PGDATABASE="$RDS_DB" PGUSER PGPASSWORD PGSSLMODE=require
+}
+
 # =============================================================================
 # Phase 0 — resolve configuration (harness only)
 # =============================================================================
@@ -995,30 +1038,7 @@ resolve_config() {
   GATEWAY_URL="https://${CF_DOMAIN}/api"
   log "gateway: $GATEWAY_URL   pool: $USER_POOL_ID"
 
-  # RDS auth. bedrockgw-dev-postgres has IAM database authentication enabled and
-  # its master user (bgadmin) is granted rds_iam in-database — exactly how the
-  # gateway itself connects (BG_RDS_IAM_AUTH=true, no password in BG_DATABASE_URL).
-  # That grant *disables* password auth for bgadmin, so pulling the managed
-  # master password from the rds!db-* secret and offering it yields
-  # "PAM authentication failed". We mint a short-lived IAM auth token instead and
-  # use it as PGPASSWORD (the harness runner's IRSA is authorized for
-  # rds-db:connect). The username still comes from the managed secret so we track
-  # the master user without hard-coding it. IAM auth mandates TLS (PGSSLMODE).
-  local secret_arn secret
-  secret_arn="$(h_aws secretsmanager list-secrets --filters Key=name,Values="rds!db-" \
-    --query 'SecretList[0].ARN' --output text 2>/dev/null || echo "")"
-  if [ -z "$secret_arn" ] || [ "$secret_arn" = "None" ]; then
-    die "Could not find the rds!db-* secret"
-  fi
-  secret="$(h_aws secretsmanager get-secret-value --secret-id "$secret_arn" \
-    --query SecretString --output text)"
-  PGUSER="$(printf '%s' "$secret" | jq -r .username)"
-  PGPASSWORD="$(h_aws rds generate-db-auth-token \
-    --hostname "$RDS_HOST" --port 5432 --region "${AWS_REGION:-us-east-1}" \
-    --username "$PGUSER" 2>/dev/null || echo "")"
-  [ -n "$PGPASSWORD" ] || die "Failed to mint an RDS IAM auth token for $PGUSER@$RDS_HOST"
-  mask "$PGPASSWORD"
-  export PGHOST="$RDS_HOST" PGDATABASE="$RDS_DB" PGUSER PGPASSWORD PGSSLMODE=require
+  resolve_db_creds
 
   # The org to approve the throwaway user into. A real org is used rather than a
   # synthetic id so budget/rate-limit lookups behave as they do for a real user.
@@ -1080,6 +1100,35 @@ set_flag() {
     || die "could not set ${FLAG_NAME}=${value} on ${K8S_DEPLOYMENT}"
   h_kubectl rollout status "$K8S_DEPLOYMENT" -n "$K8S_NAMESPACE" --timeout=300s >/dev/null \
     || die "rollout after ${FLAG_NAME}=${value} did not complete in 300s"
+
+  # `kubectl rollout status` returns when K8S reports the new pods Ready, but the
+  # ALB target group lags: old targets drain and new ones clear health checks a
+  # few seconds later. A request through CloudFront→ALB in that window hits a
+  # deregistering target and comes back 502 — which previously made the very
+  # first gated assertion after the flip (B1 /v1/messages) flake to 502 while the
+  # calls milliseconds behind it saw the real 409. Settle until the edge serves
+  # the app again (any non-5xx: 200/401/409 all mean "serving") before asserting.
+  # A logic response is never 502/503/504 — those come only from the edge — so
+  # this cannot mask a gate bug. Best-effort: needs the user creds to already
+  # exist, which they do by the time either phase flips the flag.
+  if [ -f "$WORKDIR/USER.curlrc" ] && [ -n "${GATEWAY_URL:-}" ]; then
+    local settle_body settle_out settle_status i
+    settle_body="$WORKDIR/settle-body.json"
+    settle_out="$WORKDIR/settle-out.json"
+    printf '{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' \
+      "$EVAL_MODEL" > "$settle_body"
+    for i in $(seq 1 30); do
+      settle_status="$(curl -sS -o "$settle_out" -w '%{http_code}' -X POST \
+        -K "$WORKDIR/USER.curlrc" -H 'content-type: application/json' \
+        --data-binary "@${settle_body}" --max-time 30 \
+        "${GATEWAY_URL}/v1/messages" 2>/dev/null || echo "000")"
+      case "$settle_status" in
+        502|503|504|000) sleep 2 ;;
+        *) [ "$i" -gt 1 ] && log "edge settled after ${i} probe(s) (HTTP $settle_status)"; break ;;
+      esac
+    done
+    rm -f "$settle_body" "$settle_out" 2>/dev/null || true
+  fi
 }
 
 # =============================================================================
@@ -1626,6 +1675,10 @@ main() {
       if [ "$DRY_RUN" = true ]; then setup_dry_run_stubs; fi
       USER_POOL_ID="$(h_aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id" \
         --query Parameter.Value --output text 2>/dev/null || echo "")"
+      # The sweep deletes users rows via psql, so it needs DB creds too — without
+      # this the standalone --cleanup-only run could not connect and reported
+      # spurious "could not delete users row" failures.
+      resolve_db_creds
       run_cleanup
       ;;
   esac
