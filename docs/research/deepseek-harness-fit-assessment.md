@@ -177,7 +177,7 @@ Also note `packages/identity/` contains *only* `anonymous-user-id`. There is no 
 
 **Solves a current gap:** yes, but as a *reference design*, not as a component. The gap is durable multi-day session state with resume; dsh has the best articulation of it I have read, and we have none. The gap is real and independent of dsh.
 
-**Duplicates existing work:** substantially. Approval/HITL (AIDLC gates, durably and better for our shape), compaction and cross-session memory (`agent/src/complex-task-chat/context/lcm/`, `memory/dynamo-memory.ts` — see `docs/openclaw-fit-assessment.md` rows 10-11), metering and budgets (gateway, which *enforces* where dsh only measures), and skills (`modules/harness/skills/`, `.claude/skills/`).
+**Duplicates existing work:** substantially. Approval/HITL (AIDLC gates, durably and better for our shape), compaction and cross-session memory (`agent/src/complex-task-chat/context/lcm/`, `memory/dynamo-memory.ts` — see `docs/research/openclaw-fit-assessment.md` rows 10-11), metering and budgets (gateway, which *enforces* where dsh only measures), and skills (`modules/harness/skills/`, `.claude/skills/`).
 
 **Collides with:**
 - 🔴 Tenant isolation — static MCP headers vs. header-derived ACL (Q3).
@@ -286,5 +286,5 @@ If a future evaluation *does* need HITL, it must use the web host or the ACP bri
 ## References
 
 - Upstream: `deepseek-ai/deepseek-harness` @ `dsh-v0.1.1-rc.2`; `docs/architecture.md`, `docs/capability-seams.md`, `docs/subsystems/{session,persistence,approval,user-questions,spill,compaction,goal,jobs,sandbox,web-server,token-meter,session-telemetry}.md`, `packages/{bundle/headless,mcp/mcp-client,llm/llm-pi-ai,subagent/subagent-claude-code,identity/anonymous-user-id}`; and for the HITL/security findings specifically `packages/interaction/{user-questions,user-approval,permission-presets}/src/index.ts`, `packages/host/apiproxy/src/api-proxy.ts`, `packages/client/connection/src/index.ts`, `packages/acp/acp/src/index.ts`, `packages/core/session/src/{known-event-types.ts,repair.ts}`, `packages/sdk/{protocol,client}/README.md`
-- ADP: `ARCHITECTURE.md`; `modules/harness/contracts/README.md`; `modules/agent-factory/agent/src/{agent-worker.ts,aidlc-presence.ts,utils/resilientQuery.ts}`; `modules/agent-factory/webhook-ingress/infra/{scaledjob.tf,variables.tf}`; `modules/agent-factory/agent/k8s/chat-scaledjob.yaml`; `modules/gateway/src/proxy/routes.py`; `modules/gateway/src/shared/enforced_paths.py`; `modules/agent-context/door/{auth.py,mcp_app.py}`; `docs/openclaw-fit-assessment.md`
+- ADP: `ARCHITECTURE.md`; `modules/harness/contracts/README.md`; `modules/agent-factory/agent/src/{agent-worker.ts,aidlc-presence.ts,utils/resilientQuery.ts}`; `modules/agent-factory/webhook-ingress/infra/{scaledjob.tf,variables.tf}`; `modules/agent-factory/agent/k8s/chat-scaledjob.yaml`; `modules/gateway/src/proxy/routes.py`; `modules/gateway/src/shared/enforced_paths.py`; `modules/agent-context/door/{auth.py,mcp_app.py}`; `docs/research/openclaw-fit-assessment.md`
 - Issues: EPIC #1219; siblings #4161 (Hermes), #4162 (ORCA); #4077 (orchestration graph); #1220 (gbrain); #2079, #3231, #3232, #4073, #2792, #2809
