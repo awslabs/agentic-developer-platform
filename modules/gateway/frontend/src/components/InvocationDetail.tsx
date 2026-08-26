@@ -13,6 +13,8 @@ import { Modal } from '@/components/ui';
 import { TranscriptContent } from '@/components/TranscriptViewer';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
 import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
+import { describeLiveness } from '@/utils/liveness';
+import { LivenessBadge } from '@/components/activity/LivenessBadge';
 import type { InvocationItem, InvocationStatus } from '@/types/activity';
 
 // ---------------------------------------------------------------------------
@@ -128,13 +130,25 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
   // Row fragments — extracted for conditional ordering (Issue #3765)
   // ---------------------------------------------------------------------------
 
+  /**
+   * Issue #4176: the derived liveness verdict, shown beside the status.
+   *
+   * On the detail view we show it for ALL verdicts, not just `unverifiable` —
+   * unlike the dense table, this surface has room, and an operator who opened a
+   * run specifically to understand its state deserves the explicit answer.
+   */
+  const livenessConfig = describeLiveness(item.liveness);
+
   const statusRow = (
     <DetailRow label="Status">
       <div className="space-y-1">
-        <span className={`inline-flex items-center gap-1 font-medium ${statusConfig.colorClass}`}>
-          <span aria-hidden="true">{statusConfig.glyph}</span>
-          <span>{statusConfig.label}</span>
-        </span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`inline-flex items-center gap-1 font-medium ${statusConfig.colorClass}`}>
+            <span aria-hidden="true">{statusConfig.glyph}</span>
+            <span>{statusConfig.label}</span>
+          </span>
+          <LivenessBadge verdict={item.liveness} />
+        </div>
         {item.status_updated_at && (
           <p className="text-xs text-gray-500 dark:text-gray-400">
             Last transition:{' '}
@@ -143,11 +157,24 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
             </span>
           </p>
         )}
-        {!isTerminal && (
-          <p className="text-xs text-gray-400 dark:text-gray-500 italic">
-            Active — not yet terminal
-          </p>
-        )}
+        {/*
+          Issue #4176: this line used to read a flat "Active — not yet terminal"
+          on every non-terminal run, including ones that stopped reporting days
+          ago. When the verdict says we cannot confirm the run, say that instead —
+          it is the whole point of the field. Carefully worded as "cannot
+          confirm", never "stopped": loss of contact is not evidence of exit, and
+          a run described as ended is a run someone will retry.
+        */}
+        {!isTerminal &&
+          (livenessConfig && item.liveness === 'unverifiable' ? (
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              {livenessConfig.description}
+            </p>
+          ) : (
+            <p className="text-xs text-gray-400 dark:text-gray-500 italic">
+              Active — not yet terminal
+            </p>
+          ))}
       </div>
     </DetailRow>
   );

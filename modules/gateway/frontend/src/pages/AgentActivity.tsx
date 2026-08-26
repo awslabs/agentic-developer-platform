@@ -23,6 +23,7 @@ import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
 import { FilterChips } from '@/components/activity/FilterChips';
 import { ActivityCardList } from '@/components/activity/ActivityCardList';
+import { LivenessBadge } from '@/components/activity/LivenessBadge';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { ActiveFilter } from '@/components/activity/FilterChips';
 import InvocationChain from '@/components/InvocationChain';
@@ -38,6 +39,7 @@ import {
   isNonRunStatus,
   NON_RUN_STATUSES,
 } from '@/utils/skipReason';
+import { LIVENESS_OPTIONS } from '@/utils/liveness';
 import type {
   InvocationItem,
   InvocationStatus,
@@ -461,6 +463,17 @@ export default function AgentActivity() {
   });
   const [channelFilter, setChannelFilter] = useState('');
   const [personaFilter, setPersonaFilter] = useState('');
+  /**
+   * Issue #4176: liveness filter.
+   *
+   * Applied CLIENT-SIDE to the current page, unlike every other filter here.
+   * `liveness` is derived at serialization time and is not stored, so there is
+   * no DynamoDB attribute to build a FilterExpression against — the backend
+   * cannot filter on it. Narrowing the page in the browser is therefore the
+   * honest implementation; the UI says "on this page" so the operator is not
+   * misled into reading it as a fleet-wide query.
+   */
+  const [livenessFilter, setLivenessFilter] = useState('');
   const [startDate, setStartDate] = useState(() => {
     const paramSince = searchParams.get('since');
     if (paramSince === 'today') {
@@ -654,6 +667,14 @@ export default function AgentActivity() {
     [resetPagination],
   );
 
+  // Issue #4176: liveness filter. No resetPagination — unlike the server-side
+  // filters this only narrows the page already in hand, so the cursor stack
+  // stays valid and discarding it would needlessly send the operator back to
+  // page 1.
+  const handleLivenessChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    setLivenessFilter(e.target.value);
+  }, []);
+
   const handleStartDateChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       setStartDate(e.target.value);
@@ -721,7 +742,27 @@ export default function AgentActivity() {
 
   // Issue #1662: Derive typed data from whichever query is active
   const chainData = isChainView ? chainQuery.data : undefined;
-  const flatData = !isChainView ? flatQuery.data : undefined;
+  const rawFlatData = !isChainView ? flatQuery.data : undefined;
+
+  /**
+   * Issue #4176: narrow the page by liveness verdict.
+   *
+   * Applied here, once, so every downstream consumer (table, card list, empty
+   * states, the deep-link lookup) sees the same set — filtering at each render
+   * site would let them disagree about whether the page is empty.
+   *
+   * Client-side by necessity: `liveness` is derived at serialization time and
+   * never persisted, so there is no DynamoDB attribute for the backend to filter
+   * on. Rows lacking a verdict (pre-#4176) are excluded whenever a specific
+   * verdict is requested — an unknown verdict is not a match for any of them.
+   */
+  const flatData = useMemo(() => {
+    if (!rawFlatData || !livenessFilter) return rawFlatData;
+    return {
+      ...rawFlatData,
+      items: rawFlatData.items.filter((item: InvocationItem) => item.liveness === livenessFilter),
+    };
+  }, [rawFlatData, livenessFilter]);
 
   // Issue #3768: Derive active filter chips for visual indication
   const activeFilters: ActiveFilter[] = useMemo(() => {
@@ -738,6 +779,17 @@ export default function AgentActivity() {
       const opt = PERSONA_OPTIONS.find((o) => o.value === personaFilter);
       chips.push({ key: 'persona', label: 'Persona', displayValue: opt?.label ?? personaFilter });
     }
+    // Issue #4176: the chip says "on this page" because this filter, alone among
+    // these, is client-side — the operator must not read a narrowed page as a
+    // fleet-wide answer.
+    if (livenessFilter) {
+      const opt = LIVENESS_OPTIONS.find((o) => o.value === livenessFilter);
+      chips.push({
+        key: 'liveness',
+        label: 'Liveness (this page)',
+        displayValue: opt?.label ?? livenessFilter,
+      });
+    }
     if (startDate) {
       chips.push({ key: 'startDate', label: 'Since', displayValue: startDate });
     }
@@ -745,7 +797,7 @@ export default function AgentActivity() {
       chips.push({ key: 'endDate', label: 'Until', displayValue: endDate });
     }
     return chips;
-  }, [statusFilter, channelFilter, personaFilter, startDate, endDate]);
+  }, [statusFilter, channelFilter, personaFilter, livenessFilter, startDate, endDate]);
 
   const handleRemoveFilter = useCallback(
     (key: string) => {
@@ -758,6 +810,10 @@ export default function AgentActivity() {
           break;
         case 'persona':
           setPersonaFilter('');
+          break;
+        // Issue #4176
+        case 'liveness':
+          setLivenessFilter('');
           break;
         case 'startDate':
           setStartDate('');
@@ -775,6 +831,7 @@ export default function AgentActivity() {
     setStatusFilter('');
     setChannelFilter('');
     setPersonaFilter('');
+    setLivenessFilter('');
     setStartDate('');
     setEndDate('');
     resetPagination();
@@ -869,7 +926,7 @@ export default function AgentActivity() {
 
       {/* Filters */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Status
@@ -881,6 +938,26 @@ export default function AgentActivity() {
               aria-label="Filter by status"
             />
           </div>
+          {/* Issue #4176: liveness filter — only offered on the flat run view.
+              The verdict is per-run and derived; chain grouping filters by ROOT,
+              so offering it there would silently hide chains whose root is fine
+              but whose child is the unverifiable one. */}
+          {!isChainView && (
+            <div>
+              <label
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                title="Derived per run: live (recent signal), unverifiable (no signal and no observed ending), exited (ending observed)."
+              >
+                Liveness
+              </label>
+              <Select
+                value={livenessFilter}
+                onChange={handleLivenessChange}
+                options={LIVENESS_OPTIONS}
+                aria-label="Filter by liveness verdict (applies to this page only)"
+              />
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Source
@@ -1143,7 +1220,21 @@ export default function AgentActivity() {
                           )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <StatusBadge status={item.status} skipReason={item.skip_reason} />
+                          <div className="flex flex-col items-start gap-1">
+                            <StatusBadge status={item.status} skipReason={item.skip_reason} />
+                            {/* Issue #4176: the verdict sits BESIDE the status, not
+                                instead of it — a stalled run still reads
+                                "In progress" (what it last told us) but now also
+                                reads "Unverifiable" (that we no longer believe it).
+                                attentionOnly keeps the dense table quiet: labelling
+                                every healthy row "Live" would bury the one row that
+                                is not. */}
+                            <LivenessBadge
+                              verdict={item.liveness}
+                              attentionOnly
+                              testIdSuffix={item.invocation_id}
+                            />
+                          </div>
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-900 dark:text-white max-w-xs truncate">
                           {item.topic || <span className="text-gray-400 italic">—</span>}

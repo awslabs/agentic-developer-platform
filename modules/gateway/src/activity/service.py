@@ -25,11 +25,13 @@ import base64
 import json
 import logging
 import os
+from datetime import UTC, datetime
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
+from src.activity.liveness import OBSERVED_TERMINAL_STATUSES, compute_liveness
 from src.activity.schemas import (
     ChainListResponse,
     ChainSummary,
@@ -366,19 +368,16 @@ class ActivityService:
         """Map a raw DynamoDB item to the InvocationItem schema."""
         # Issue #1653: Derive completed_at from status_updated_at for terminal statuses
         status = item.get("status")
+        arrived_at = item.get("arrived_at", "")
         # Issue #4020: `blocked` (guard stopped the spawn) and `skipped` (worker
         # deduplicated a redelivery) are terminal too — the row will never be
         # updated again, so completed_at should be derived for them as well.
-        terminal_statuses = {
-            "complete",
-            "failed",
-            "rejected",
-            "rate_limited",
-            "no_op",
-            "blocked",
-            "skipped",
-        }
-        completed_at = item.get("status_updated_at") if status in terminal_statuses else None
+        #
+        # Issue #4176: this set used to be an inline literal here. It now lives in
+        # liveness.py as OBSERVED_TERMINAL_STATUSES and is imported back, so the
+        # completed_at derivation and the liveness verdict cannot disagree about
+        # which statuses represent a positively-observed exit.
+        completed_at = item.get("status_updated_at") if status in OBSERVED_TERMINAL_STATUSES else None
 
         return InvocationItem(
             # Issue #1756: the DDB webhook-events row keys the invocation by
@@ -388,9 +387,12 @@ class ActivityService:
             # which broke the cost-join (cost_map.get("")) so per-run cost never
             # rendered. Fall back to event_id.
             invocation_id=item.get("invocation_id") or item.get("pk") or item.get("event_id", ""),
-            invoked_at=item.get("arrived_at", ""),
+            invoked_at=arrived_at,
             channel=item.get("channel"),
             status=status,
+            # Issue #4176: derived, not stored. "unverifiable" means we could not
+            # learn whether this run is alive — it is NOT a claim that it exited.
+            liveness=compute_liveness(status, arrived_at, datetime.now(UTC)),
             status_updated_at=item.get("status_updated_at"),
             topic=item.get("topic"),
             persona=item.get("persona"),
@@ -804,12 +806,15 @@ class ActivityService:
                     if not include_non_triggering and item_status in _non_triggering_statuses:
                         continue
 
+                    item_arrived_at = item.get("arrived_at", "")
                     descendants.append(
                         InvocationChainItem(
                             invocation_id=inv_id,
-                            invoked_at=item.get("arrived_at", ""),
+                            invoked_at=item_arrived_at,
                             channel=item.get("channel"),
                             status=item_status,
+                            # Issue #4176: derived liveness verdict.
+                            liveness=compute_liveness(item_status, item_arrived_at, datetime.now(UTC)),
                             topic=item.get("topic"),
                             persona=item.get("persona"),
                             parent_invocation_id=item.get("parent_invocation_id"),
@@ -967,14 +972,21 @@ def _build_chain_tree(items: list[dict]) -> list[InvocationChainItem]:
     """
     # Create nodes
     nodes: dict[str, InvocationChainItem] = {}
+    now = datetime.now(UTC)
     for item in items:
         # Issue #1756: fall back to event_id (the real DDB key) — see _map_item.
         inv_id = item.get("invocation_id") or item.get("pk") or item.get("event_id", "")
+        arrived_at = item.get("arrived_at", "")
         nodes[inv_id] = InvocationChainItem(
             invocation_id=inv_id,
-            invoked_at=item.get("arrived_at", ""),
+            invoked_at=arrived_at,
             channel=item.get("channel"),
             status=item.get("status"),
+            # Issue #4176: derived liveness verdict. `now` is hoisted out of the
+            # loop so every node in one tree is judged against the same instant —
+            # otherwise a run near the cutoff could read `live` while its sibling
+            # of identical age read `unverifiable`.
+            liveness=compute_liveness(item.get("status"), arrived_at, now),
             topic=item.get("topic"),
             persona=item.get("persona"),
             parent_invocation_id=item.get("parent_invocation_id"),

@@ -3305,3 +3305,128 @@ class TestQueryChainsByUserRootBackfill:
         # Chain IS emitted — the backfilled root (status=failed) bypasses the filter
         assert result.count == 1
         assert result.chains[0].root.invocation_id == "inv-failed-root"
+
+
+class TestLivenessOnMappedItems:
+    """Issue #4176: every serialized item carries a liveness verdict.
+
+    The verdict itself is unit-tested in `test_liveness.py`; these assert the
+    WIRING — that the field is actually populated on the way out of the service,
+    for the flat list and for both chain construction paths, and that it agrees
+    with each item's status.
+    """
+
+    @staticmethod
+    def _recent() -> str:
+        """An `arrived_at` well inside the staleness window."""
+        from datetime import UTC, datetime
+
+        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_list_items_all_carry_a_consistent_verdict(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Every item in the list response has a liveness value matching its status."""
+        recent = self._recent()
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {"event_id": "inv-a", "arrived_at": recent, "status": "complete", "user_id": "user-1"},
+                {"event_id": "inv-b", "arrived_at": recent, "status": "failed", "user_id": "user-1"},
+                {"event_id": "inv-c", "arrived_at": recent, "status": "in_progress", "user_id": "user-1"},
+                {"event_id": "inv-d", "arrived_at": recent, "status": "blocked", "user_id": "user-1"},
+                # A status no build of the gateway knows about.
+                {"event_id": "inv-e", "arrived_at": recent, "status": "who_knows", "user_id": "user-1"},
+            ],
+            "Count": 5,
+        }
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        by_id = {item.invocation_id: item for item in result.items}
+        # No item is left without a verdict.
+        assert all(item.liveness is not None for item in result.items)
+        assert by_id["inv-a"].liveness == "exited"
+        assert by_id["inv-b"].liveness == "exited"
+        assert by_id["inv-c"].liveness == "live"
+        assert by_id["inv-d"].liveness == "exited"
+        # Unknown status is indeterminate, never reported as finished.
+        assert by_id["inv-e"].liveness == "unverifiable"
+
+    def test_stale_in_progress_item_reports_unverifiable_not_exited(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """The operator-facing payoff: a long-dead run stops claiming to be healthy.
+
+        This is the row that renders as "in progress" forever today. It must now
+        serialize as `unverifiable` — and specifically NOT as `exited`, which
+        would license a future reaper to double-dispatch a live run.
+        """
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-stalled",
+                    "arrived_at": "2020-01-01T00:00:00Z",
+                    "status": "in_progress",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.query_by_user(user_id="user-1").items[0]
+
+        assert item.status == "in_progress"
+        assert item.liveness == "unverifiable"
+        assert item.liveness != "exited"
+
+    def test_completed_at_still_derives_from_the_hoisted_terminal_set(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Regression: hoisting the terminal set out of `_map_item` must not have
+        changed the #1653/#4020 `completed_at` behaviour it also drives."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-done",
+                    "arrived_at": "2026-08-20T10:00:00Z",
+                    "status": "skipped",
+                    "status_updated_at": "2026-08-20T10:00:09Z",
+                    "user_id": "user-1",
+                },
+                {
+                    "event_id": "inv-running",
+                    "arrived_at": "2026-08-20T10:00:00Z",
+                    "status": "in_progress",
+                    "status_updated_at": "2026-08-20T10:00:03Z",
+                    "user_id": "user-1",
+                },
+            ],
+            "Count": 2,
+        }
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        by_id = {i.invocation_id: i for i in service.query_by_user(user_id="user-1").items}
+
+        assert by_id["inv-done"].completed_at == "2026-08-20T10:00:09Z"
+        assert by_id["inv-running"].completed_at is None
+
+    def test_chain_tree_nodes_carry_a_verdict(self):
+        """`_build_chain_tree` populates liveness on roots and nested children."""
+        recent = self._recent()
+        roots = _build_chain_tree(
+            [
+                {"invocation_id": "root", "arrived_at": recent, "status": "complete"},
+                {
+                    "invocation_id": "child",
+                    "arrived_at": recent,
+                    "status": "in_progress",
+                    "parent_invocation_id": "root",
+                },
+                {
+                    "invocation_id": "stalled",
+                    "arrived_at": "2020-01-01T00:00:00Z",
+                    "status": "in_progress",
+                    "parent_invocation_id": "root",
+                },
+            ]
+        )
+
+        assert len(roots) == 1
+        assert roots[0].liveness == "exited"
+        children = {c.invocation_id: c for c in roots[0].children}
+        assert children["child"].liveness == "live"
+        # A stalled child is indeterminate, not finished.
+        assert children["stalled"].liveness == "unverifiable"

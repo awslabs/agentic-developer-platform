@@ -5,7 +5,42 @@
  * Issue #1461: Phase 6 — lineage fields (trigger_kind, parent, chain).
  */
 
-import type { InvocationItem, InvocationStatus, InvocationChannel, TriggerKind } from '@/types/activity';
+import type {
+  InvocationItem,
+  InvocationStatus,
+  InvocationChannel,
+  LivenessVerdict,
+  TriggerKind,
+} from '@/types/activity';
+
+/**
+ * Issue #4176: mirror the backend's derived verdict in the mock.
+ *
+ * Deliberately a local re-derivation rather than a random pick: the mock board
+ * must never show a self-contradictory row like "Complete / Unverifiable", which
+ * would train reviewers to distrust a field that is in fact always consistent
+ * with the status beside it.
+ *
+ * Kept in step with `src/activity/liveness.py` — terminal statuses are `exited`,
+ * active ones are `live` inside the 24h window and `unverifiable` outside it.
+ */
+const OBSERVED_TERMINAL: InvocationStatus[] = [
+  'complete',
+  'failed',
+  'rejected',
+  'rate_limited',
+  'no_op',
+  'blocked',
+  'skipped',
+];
+
+const STALENESS_HOURS = 24;
+
+function deriveLiveness(status: InvocationStatus, invokedAt: Date, now: Date): LivenessVerdict {
+  if (OBSERVED_TERMINAL.includes(status)) return 'exited';
+  const ageHours = (now.getTime() - invokedAt.getTime()) / (60 * 60 * 1000);
+  return ageHours <= STALENESS_HOURS ? 'live' : 'unverifiable';
+}
 
 const statuses: InvocationStatus[] = [
   'webhook_received',
@@ -89,6 +124,11 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       persona: personas[Math.floor(Math.random() * personas.length)],
       channel,
       status,
+      // Issue #4176: derived exactly as the backend derives it. The mock spreads
+      // `invoked_at` over 14 days, so non-terminal rows past the 24h window
+      // produce `unverifiable` naturally — the board therefore exercises the one
+      // verdict that had no representation before this change.
+      liveness: deriveLiveness(status, invokedAt, new Date()),
       topic: topics[Math.floor(Math.random() * topics.length)],
       summary: status === 'complete' ? `Completed work on issue #${issueNumber || i + 1}` : null,
       source_url:

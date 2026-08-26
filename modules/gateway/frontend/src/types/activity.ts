@@ -20,6 +20,27 @@ export type InvocationStatus =
   // Issue #4020: the worker deduplicated a redelivery of already-completed work.
   | 'skipped';
 
+/**
+ * Issue #4176: three-value liveness verdict, derived server-side.
+ *
+ * Distinct from `status`, and rendered *beside* it rather than instead of it:
+ *
+ * - `live`         — a recent positive signal exists.
+ * - `exited`       — a terminal status was actually observed.
+ * - `unverifiable` — no positive evidence either way. We could not learn whether
+ *                    the run is alive.
+ *
+ * `unverifiable` is emphatically NOT a claim that the run ended. Loss of contact
+ * is not evidence of exit, so nothing in the UI may render it as finished or use
+ * it to decide a run can be retried — that mistake orphans live work and can
+ * double-dispatch an agent onto an issue that already has one.
+ *
+ * Optional: rows serialized before the field existed carry no verdict, and the
+ * backend may add values on its own cadence, so unknown values must degrade
+ * rather than throw.
+ */
+export type LivenessVerdict = 'live' | 'unverifiable' | 'exited';
+
 /** Channel through which the invocation was triggered. */
 export type InvocationChannel = 'github' | 'slack' | 'api' | 'manual';
 
@@ -33,6 +54,8 @@ export interface InvocationItem {
   persona: string;
   channel: InvocationChannel;
   status: InvocationStatus;
+  /** Issue #4176: derived liveness verdict. Null on pre-feature rows. */
+  liveness?: LivenessVerdict | null;
   topic: string | null;
   summary: string | null;
   source_url: string | null;
@@ -80,6 +103,8 @@ export interface InvocationChainItem {
   invoked_at: string;
   channel: string | null;
   status: string | null;
+  /** Issue #4176: derived liveness verdict. Null on pre-feature rows. */
+  liveness?: LivenessVerdict | null;
   topic: string | null;
   persona: string | null;
   parent_invocation_id: string | null;

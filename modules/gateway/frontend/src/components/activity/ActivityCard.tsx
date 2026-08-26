@@ -13,6 +13,7 @@ import { useState, useCallback } from 'react';
 import type { InvocationItem, InvocationStatus, TriggerKind } from '@/types/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
 import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
+import { LivenessBadge } from '@/components/activity/LivenessBadge';
 
 // ---------------------------------------------------------------------------
 // Status rendering (mirrors AgentActivity.tsx STATUS_CONFIG)
@@ -112,6 +113,10 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
       role="button"
       aria-label={`Run: ${item.topic || 'untitled'}, Status: ${statusConfig.label}${
         skipReasonText ? ` (${skipReasonText})` : ''
+      }${
+        /* Issue #4176: an unverifiable run must be announced as such — the
+           badge alone would leave a screen-reader user reading it as healthy. */
+        item.liveness === 'unverifiable' ? ', Liveness: unverifiable' : ''
       }, ${formatRelativeTime(item.invoked_at)}`}
       data-testid={`activity-card-${item.invocation_id}`}
     >
@@ -120,12 +125,21 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
         <h3 className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1 min-w-0">
           {item.topic || <span className="italic text-gray-400">untitled</span>}
         </h3>
-        <span
-          className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${statusConfig.colorClass}`}
-        >
-          <span aria-hidden="true">{statusConfig.glyph}</span>
-          <span>{statusConfig.label}</span>
-        </span>
+        <div className="flex flex-col items-end gap-1">
+          <span
+            className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${statusConfig.colorClass}`}
+          >
+            <span aria-hidden="true">{statusConfig.glyph}</span>
+            <span>{statusConfig.label}</span>
+          </span>
+          {/* Issue #4176: attentionOnly — a card is narrow, so only the verdict
+              that changes the operator's reading of the status earns the space. */}
+          <LivenessBadge
+            verdict={item.liveness}
+            attentionOnly
+            testIdSuffix={item.invocation_id}
+          />
+        </div>
       </div>
 
       {/* Issue #4020: reason line for non-runs — replaces the card's previously

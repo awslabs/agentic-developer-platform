@@ -26,8 +26,23 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from src.activity.liveness import LivenessVerdict
+
 # Trigger kind: human (user-initiated), agent (spawned by another run), bot (cron/automated, not human-rooted)
 TriggerKind = Literal["human", "agent", "bot"]
+
+# Issue #4176: shared description for the derived liveness verdict. Defined once
+# so the two serializers that expose the field cannot describe it differently —
+# the distinction between "unverifiable" and "exited" is the whole point of the
+# field, and a client reading a drifted description would miss it.
+_LIVENESS_DESCRIPTION = (
+    "Three-value liveness verdict derived at read time (issue #4176): `live` "
+    "(recent positive signal), `exited` (a terminal status was actually "
+    "observed), or `unverifiable` (no positive evidence either way). "
+    "`unverifiable` is explicitly NOT a claim of exit — loss of contact is not "
+    "evidence that a run ended, so consumers must not treat it as terminal. "
+    "Null only for rows serialized before this field existed."
+)
 
 
 class InvocationItem(BaseModel):
@@ -46,6 +61,10 @@ class InvocationItem(BaseModel):
     issue_number: int | None = None
     correlation_id: str | None = None
     run_id: str | None = None
+
+    # Issue #4176: derived liveness verdict (see src/activity/liveness.py).
+    # Additive and optional — existing clients ignore it.
+    liveness: LivenessVerdict | None = Field(default=None, description=_LIVENESS_DESCRIPTION)
 
     # Phase 6 lineage fields (#1461)
     trigger_kind: TriggerKind = Field(
@@ -125,6 +144,9 @@ class InvocationChainItem(BaseModel):
     persona: str | None = None
     parent_invocation_id: str | None = None
     children: list["InvocationChainItem"] = Field(default_factory=list)
+
+    # Issue #4176: derived liveness verdict (see src/activity/liveness.py).
+    liveness: LivenessVerdict | None = Field(default=None, description=_LIVENESS_DESCRIPTION)
 
     # Issue #3069: S3 transcript key
     transcript_key: str | None = None
