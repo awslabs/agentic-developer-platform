@@ -16,6 +16,7 @@ import { runQuery } from './run-query';
 import { SqsClient, TaskPayload, AgUiEventEnvelope } from './sqs-client';
 import { AgentTool } from './context/types';
 import { ArtifactRef } from './artifacts/port';
+import { ArtifactSpillStore } from '../utils/spill/artifact-store-adapter';
 import {
   AgUiEventType,
   agUiTimestamp,
@@ -350,6 +351,19 @@ async function processOne(
       identity: org_id ? { orgId: org_id, teamId: team_id, userId: user_id } : undefined,
     });
 
+    // Issue #4179: oversized tool output spills into the SAME artifact store as
+    // everything else this turn publishes, so it inherits that store's session +
+    // team scoping instead of landing somewhere cross-run readable.
+    const spillStore = new ArtifactSpillStore(
+      deps.artifacts,
+      {
+        sessionId: session_id,
+        taskId: task_id,
+        identity: org_id ? { orgId: org_id, teamId: team_id, userId: user_id } : undefined,
+      },
+      { log: msg => console.log(msg) },
+    );
+
     const tools: AgentTool[] = [
       ...deps.context.tools(),
       // #4074: closure-inject the authenticated scope so the model cannot
@@ -402,6 +416,8 @@ async function processOne(
       cwd: '/tmp/workspace',
       env: scopedEnv,
       effort: getChannelEffort(channel ?? ''),
+      // Issue #4179: spill oversized tool results to the artifact store.
+      spillStore,
       // Issue #1592: Knowledge Layer MCP — mount Door as HTTP MCP server.
       ...(KNOWLEDGE_LAYER_ENABLED ? {
         additionalMcpServers: { [KNOWLEDGE_LAYER_SERVER_NAME]: getKnowledgeLayerMcpConfig() },

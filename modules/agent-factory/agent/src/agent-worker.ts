@@ -15,6 +15,7 @@
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
+import { createSpillHooks, TmpSpillStore } from './utils/spill';
 import { initTokenManager, getToken, getTokenStatus, writeTokenFile } from './token-refresh';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import * as fs from 'fs';
@@ -1205,6 +1206,16 @@ Now, complete the assigned task.`;
             // beyond the pod's lifetime.
             persistSession: true,
             maxTurns: 10000,
+            // Issue #4179: spill oversized tool output to the run's workspace
+            // and hand the model a `Read`-able locator instead of the full
+            // blob. With maxTurns: 10000, one verbose command's output would
+            // otherwise be re-sent on every remaining turn and force an early
+            // (lossy) compaction. The hook fails open — a storage error leaves
+            // the original output in place.
+            hooks: createSpillHooks({
+              store: buildWorkerSpillStore(),
+              log: (msg) => log('INFO', msg),
+            }),
           }
         },
         maxRetries: 5,
@@ -1388,6 +1399,42 @@ function sanitizeMemory(text: string): string {
     sanitized = sanitized.replace(pattern, '[REDACTED]');
   }
   return sanitized;
+}
+
+/**
+ * Build the spill store for this run (Issue #4179).
+ *
+ * The workspace directory is the authoritative destination: `Read` is in the
+ * allowlist above, so a path under CWD is a locator the model can always act
+ * on. The S3 leg is strictly best-effort durability so the payload outlives the
+ * pod — it is decoupled from the locator on purpose, because the worker's
+ * bucket configuration is known-unreliable (#4184). Spilling must work with the
+ * S3 leg entirely absent.
+ */
+function buildWorkerSpillStore(): TmpSpillStore {
+  const bucket = process.env.AGENT_RUN_LOGS_BUCKET || '';
+
+  const uploadToS3 = bucket
+    ? async (key: string, body: string): Promise<void> => {
+        const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+        const s3 = new S3Client({ region: AWS_REGION });
+        // Same run-scoped prefix shape as the transcript upload in
+        // agent-worker-image/entrypoint.py — keeps spills beside the run they
+        // came from, and inherits that prefix's scoping rather than inventing
+        // a new shared location.
+        await s3.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: `${AGENT_TYPE}/${REPO_OWNER}/${REPO_NAME}/issue-${ISSUE_NUMBER}/spill/${key}`,
+          Body: body,
+          ContentType: 'text/plain',
+        }));
+      }
+    : undefined;
+
+  return new TmpSpillStore(CWD, {
+    uploadToS3,
+    log: (msg) => log('WARN', msg),
+  });
 }
 
 /**

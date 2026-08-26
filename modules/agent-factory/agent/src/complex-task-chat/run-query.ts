@@ -21,6 +21,7 @@
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { resilientQuery } from '../utils/resilientQuery';
+import { createSpillHooks, SpillStore } from '../utils/spill';
 import { AgentTool, AgentToolResult, SDKMessage } from './context/types';
 import { buildPromptStream } from './prompt-stream';
 
@@ -122,6 +123,15 @@ export interface RunQueryInput {
    * Issue #1592: Knowledge Layer tool allowlisting.
    */
   additionalAllowedTools?: readonly string[];
+  /**
+   * Destination for oversized tool output (Issue #4179). When supplied, a
+   * `PostToolUse` hook persists any tool result over the spill threshold and
+   * replaces the model's copy with a short excerpt plus a `Read`-able locator,
+   * so a single verbose result stops being re-sent on every subsequent turn.
+   *
+   * Omit to disable spilling entirely (the hook is simply not registered).
+   */
+  spillStore?: SpillStore;
 }
 
 export interface RunQueryResult {
@@ -146,6 +156,7 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
     onProgress,
     additionalMcpServers,
     additionalAllowedTools,
+    spillStore,
   } = input;
 
   // 1) Build an MCP server that hosts port-provided tools.
@@ -302,6 +313,12 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
     }
     if (Object.keys(mergedMcpServers).length > 0) {
       streamOptions.mcpServers = mergedMcpServers;
+    }
+    if (spillStore) {
+      // Issue #4179: replace oversized tool results with an excerpt + locator
+      // so they stop consuming context on every later turn. Fails open — a
+      // store error leaves the original output untouched.
+      streamOptions.hooks = createSpillHooks({ store: spillStore, log });
     }
 
     // Labeled loop so we can break out of the `for await` from inside the
