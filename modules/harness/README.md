@@ -71,7 +71,7 @@ Think of it as the runtime API layer between agents and everything else. Agents 
 
 ### `contracts/`
 
-The public API between the harness and apps. JSON Schema definitions for every registration type:
+The public API between the harness and apps. One contract per registration type:
 
 | Contract | Purpose |
 |----------|---------|
@@ -79,7 +79,7 @@ The public API between the harness and apps. JSON Schema definitions for every r
 | `job.schema.json` | Job kind registration (retry policy, worker pool) |
 | `event.schema.json` | Event type (payload schema, ordering guarantees) |
 | `artifact.schema.json` | Artifact kind (MIME type, retention, access policy) |
-| `hitl-ticket.schema.json` | HITL ticket shape (scope, prompt, response schema, approvers) |
+| **[`hitl-ticket` v1](../../contracts/hitl-ticket/v1/) ✅ written** | HITL ticket shape (scope, prompt, fail-closed answer vocabulary, timeout, approvers) |
 | `skill.manifest.json` | Skill declaration (required tools, scopes, inputs/outputs) |
 | `agent.manifest.json` | Agent declaration (runtime, model, permissions, persona) |
 | `inbox-item.schema.json` | Work item envelope (caller identity, priority, artifact refs) |
@@ -88,6 +88,11 @@ The public API between the harness and apps. JSON Schema definitions for every r
 | `provenance-record.schema.json` | Derivation DAG node |
 
 Contracts are versioned. Breaking changes require a new version number. See [contracts/README.md](contracts/README.md) for the full versioning rules.
+
+Written contracts live under the repo-root `contracts/<name>/v<n>/` tree, where a
+CI job executes each one's golden fixture on every PR that touches it;
+`contracts/` in this module is the catalogue. `contracts/README.md` explains the
+split.
 
 ### `mcp-hub/`
 
@@ -120,11 +125,12 @@ Also contains `docker/agent-mail/` — an email gateway that forwards messages t
 
 The harness is in early development:
 
-- **Contracts:** README with 11 planned schemas documented. Schemas not yet written — they land incrementally as each surface is built.
+- **Contracts:** 11 planned, **1 written** — [`hitl-ticket` v1](../../contracts/hitl-ticket/v1/) (validator + golden fixture + CI, #4178). The rest land incrementally as each surface is built.
 - **MCP Hub:** Requirements and design complete. No running service yet.
-- **Other surfaces (Jobs, Events, Artifacts, HITL):** Not yet started.
+- **Other surfaces (Jobs, Events, Artifacts):** Not yet started.
+- **HITL:** contract written, no implementation. The payload shape is settled; the surface that serves it is not. ADP's durable AIDLC gate is the working mechanism the contract describes, and it is unchanged.
 
-The ordering most likely to happen:
+Remaining contract ordering, most likely:
 1. `tool.schema.json` — MCP Hub is the most-built surface
 2. `agent.manifest.json` + `skill.manifest.json` — needed to formalize existing agents
 3. `inbox-item.schema.json` / `outbox-item.schema.json` — invocation surface typing
