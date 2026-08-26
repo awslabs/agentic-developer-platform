@@ -103,6 +103,76 @@ resource "aws_iam_role_policy" "broker_cognito" {
   })
 }
 
+# --- Exchange-Code Table (Issue #4133) ---
+# Holds the pending Cognito session between the GitHub callback redirect and the
+# SPA's POST /exchange, so session tokens never travel in a URL. Rows are
+# single-use (deleted on redemption) and short-lived; TTL only sweeps codes that
+# were never redeemed (abandoned logins).
+
+resource "aws_dynamodb_table" "auth_codes" {
+  name         = "${local.function_name}-codes"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "code"
+
+  attribute {
+    name = "code"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  # Bearer tokens at rest — encrypt with the customer-managed key.
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.dynamodb_kms_key_arn
+  }
+
+  # No point_in_time_recovery: rows live ~2 minutes and are worthless once
+  # redeemed. Backing up short-lived bearer tokens would add exposure, not value.
+
+  tags = merge(var.common_tags, {
+    Name    = "${local.function_name}-codes"
+    Service = "dynamodb"
+    Purpose = "github-auth-session-handoff"
+  })
+}
+
+resource "aws_iam_role_policy" "broker_auth_codes" {
+  name = "${local.function_name}-auth-codes"
+  role = aws_iam_role.broker.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Sid    = "AuthCodeReadWrite"
+        Effect = "Allow"
+        # No GetItem: the exchange consumes codes via delete_item(ALL_OLD) so the
+        # read and the invalidation are one atomic call (no replay window).
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem"
+        ]
+        Resource = [aws_dynamodb_table.auth_codes.arn]
+      }
+      ], var.dynamodb_kms_key_arn != "" ? [
+      {
+        Sid    = "AuthCodeKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [var.dynamodb_kms_key_arn]
+      }
+    ] : [])
+  })
+}
+
 # --- Lambda Function ---
 
 resource "aws_lambda_function" "broker" {
@@ -134,6 +204,7 @@ resource "aws_lambda_function" "broker" {
       ALLOWED_ORGS             = var.allowed_orgs
       ALLOW_OPEN_SIGNUP        = var.allow_open_signup ? "true" : "false"
       GITHUB_TOKEN_SECRET_ARN  = var.github_token_secret_arn
+      AUTH_CODE_TABLE          = aws_dynamodb_table.auth_codes.name
       LOG_LEVEL                = "INFO"
     }
   }

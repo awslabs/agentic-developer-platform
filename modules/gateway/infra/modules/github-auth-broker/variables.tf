@@ -90,6 +90,12 @@ variable "lambda_artifact_bucket" {
   type        = string
 }
 
+variable "dynamodb_kms_key_arn" {
+  description = "ARN of the KMS key encrypting the exchange-code table (Issue #4133). Empty falls back to the AWS-owned DynamoDB key."
+  type        = string
+  default     = ""
+}
+
 variable "cloudwatch_kms_key_arn" {
   description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
   type        = string

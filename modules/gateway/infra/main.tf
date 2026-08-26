@@ -1308,6 +1308,10 @@ module "github_auth_broker" {
   github_token_secret_arn = var.github_auth_token_secret_arn
   lambda_artifact_bucket  = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
 
+  # Issue #4133: encrypt the session-handoff code table with the existing
+  # gateway DynamoDB CMK.
+  dynamodb_kms_key_arn = aws_kms_key.dynamodb.arn
+
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 

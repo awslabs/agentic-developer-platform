@@ -4,12 +4,14 @@ Unit tests for the GitHub Auth Broker Lambda handler.
 Issue #520: Lambda broker for GitHub sign-in.
 """
 
+import base64
 import hashlib
 import hmac as hmac_module
 import json
 import logging
 import os
 import time
+import urllib.parse
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -738,3 +740,579 @@ class TestCallbackUrlDerivation:
 
         handler.CALLBACK_URL = ""
         assert handler._derive_callback_url({"requestContext": {}}) == ""
+
+
+# =============================================================================
+# Issue #4133 — session handoff carries no tokens in the URL and is state-bound
+# =============================================================================
+
+
+def _login_event(state: str, path: str = "/callback") -> dict:
+    """A GitHub callback event with matching state param + cookie."""
+    return {
+        "rawPath": path,
+        "requestContext": {"http": {"method": "GET"}},
+        "queryStringParameters": {"code": "github-auth-code", "state": state},
+        "cookies": [f"gh_oauth_state={state}"],
+    }
+
+
+@pytest.fixture
+def broker_user_flow():
+    """Patch the GitHub/Cognito calls a successful login makes."""
+    with (
+        patch("handler.check_org_membership", return_value="allowed"),
+        patch("handler.exchange_code_for_token", return_value="gh-token"),
+        patch("handler.get_github_user") as get_user,
+        patch("handler.provision_and_authenticate") as provision,
+    ):
+        get_user.return_value = {
+            "id": 12345,
+            "login": "testuser",
+            "email": "test@example.com",
+            "name": "Test User",
+            "avatar_url": "",
+        }
+        provision.return_value = {
+            "id_token": "cognito-id-token",
+            "access_token": "cognito-access-token",
+            "refresh_token": "cognito-refresh-token",
+            "expires_in": 3600,
+        }
+        yield provision
+
+
+@pytest.fixture
+def code_table(monkeypatch):
+    """Enable the exchange-code transport with an in-memory DynamoDB stand-in.
+
+    Models the two calls the handler makes — put_item, and delete_item with
+    ReturnValues=ALL_OLD — including the single-use semantics that make the
+    delete both the read and the invalidation.
+    """
+    import handler
+
+    monkeypatch.setattr(handler, "AUTH_CODE_TABLE", "test-auth-codes")
+    rows: dict[str, dict] = {}
+
+    # N803: these argument names must match boto3's PascalCase DynamoDB kwargs
+    # exactly — the handler calls them by keyword, so lowercase would not bind.
+    def put_item(TableName, Item):  # noqa: N803
+        rows[Item["code"]["S"]] = Item
+        return {}
+
+    def delete_item(TableName, Key, ReturnValues=None):  # noqa: N803
+        item = rows.pop(Key["code"]["S"], None)
+        return {"Attributes": item} if item else {}
+
+    ddb = MagicMock()
+    ddb.put_item.side_effect = put_item
+    ddb.delete_item.side_effect = delete_item
+
+    def fake_client(service, *args, **kwargs):
+        if service == "dynamodb":
+            return ddb
+        sm = MagicMock()
+        sm.get_secret_value.return_value = {"SecretString": json.dumps({"client_id": "test-client-id", "client_secret": "test-secret-123"})}
+        return sm
+
+    with patch("handler.boto3.client", side_effect=fake_client):
+        yield {"rows": rows, "ddb": ddb}
+
+
+def _seed_creds():
+    """Prime the cached OAuth creds so state signing/verification works."""
+    import handler
+
+    handler._github_oauth_creds = {"client_id": "test-client-id", "client_secret": "test-secret-123"}
+    handler._github_oauth_creds_ts = time.time()
+
+
+class TestNoTokensInRedirect:
+    """The core #4133 fix: session tokens must never reach the URL."""
+
+    def test_redirect_carries_no_token_params(self, code_table, broker_user_flow):
+        """Redirect has a code, and none of the three token params."""
+        import handler
+
+        _seed_creds()
+        state = handler._generate_state("spa-nonce-abc")
+        response = handler.handler(_login_event(state), None)
+
+        assert response["statusCode"] == 302
+        location = response["headers"]["Location"]
+        assert "id_token=" not in location
+        assert "access_token=" not in location
+        assert "refresh_token=" not in location
+        # The real token values must not appear under any parameter name either.
+        assert "cognito-id-token" not in location
+        assert "cognito-access-token" not in location
+        assert "cognito-refresh-token" not in location
+        assert "code=" in location
+        assert "source=github_broker" in location
+
+    def test_redirect_echoes_the_spa_nonce(self, code_table, broker_user_flow):
+        """The SPA's nonce comes back as `state` so the SPA can verify it."""
+        import handler
+
+        _seed_creds()
+        state = handler._generate_state("spa-nonce-abc")
+        location = handler.handler(_login_event(state), None)["headers"]["Location"]
+
+        assert "state=spa-nonce-abc" in location
+
+    def test_redirect_sets_no_referrer_policy(self, code_table, broker_user_flow):
+        """Referrer-Policy: no-referrer keeps the callback URL out of Referer."""
+        import handler
+
+        _seed_creds()
+        state = handler._generate_state("spa-nonce-abc")
+        response = handler.handler(_login_event(state), None)
+
+        assert response["headers"]["Referrer-Policy"] == "no-referrer"
+
+    def test_error_redirect_sets_no_referrer_policy(self, mock_secrets):
+        """Error redirects are covered too."""
+        import handler
+
+        assert handler._redirect_with_error("boom")["headers"]["Referrer-Policy"] == "no-referrer"
+
+    def test_stored_row_holds_only_a_nonce_digest(self, code_table, broker_user_flow):
+        """The persisted row must not contain the raw nonce."""
+        import handler
+
+        _seed_creds()
+        state = handler._generate_state("spa-nonce-abc")
+        handler.handler(_login_event(state), None)
+
+        (row,) = code_table["rows"].values()
+        assert row["app_state_hash"]["S"] == hashlib.sha256(b"spa-nonce-abc").hexdigest()
+        assert "spa-nonce-abc" not in json.dumps(row)
+
+    def test_handoff_failure_does_not_fall_back_to_url_tokens(self, broker_user_flow, monkeypatch):
+        """A DynamoDB fault must error out, never leak tokens into the URL."""
+        import handler
+
+        _seed_creds()
+        monkeypatch.setattr(handler, "AUTH_CODE_TABLE", "test-auth-codes")
+
+        ddb = MagicMock()
+        ddb.put_item.side_effect = RuntimeError("throttled")
+
+        with patch("handler.boto3.client", return_value=ddb):
+            state = handler._generate_state("spa-nonce-abc")
+            # State verification needs the cached creds, already seeded above.
+            response = handler.handler(_login_event(state), None)
+
+        location = response["headers"]["Location"]
+        assert "error=handoff_failed" in location
+        assert "cognito-access-token" not in location
+
+
+class TestExchangeEndpoint:
+    """POST /exchange swaps the single-use code for tokens in a body."""
+
+    def _issue_code(self, handler_mod, app_state="spa-nonce-abc"):
+        _seed_creds()
+        state = handler_mod._generate_state(app_state)
+        location = handler_mod.handler(_login_event(state), None)["headers"]["Location"]
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        return query["code"][0]
+
+    def _exchange(self, handler_mod, code, app_state="spa-nonce-abc"):
+        return handler_mod.handler(
+            {
+                "rawPath": "/exchange",
+                "requestContext": {"http": {"method": "POST"}},
+                "body": json.dumps({"code": code, "app_state": app_state}),
+            },
+            None,
+        )
+
+    def test_returns_tokens_in_body(self, code_table, broker_user_flow):
+        """Happy path: the code yields the tokens as JSON."""
+        import handler
+
+        code = self._issue_code(handler)
+        response = self._exchange(handler, code)
+
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["id_token"] == "cognito-id-token"
+        assert body["access_token"] == "cognito-access-token"
+        assert body["refresh_token"] == "cognito-refresh-token"
+        assert body["expires_in"] == 3600
+        assert body["token_type"] == "Bearer"
+
+    def test_code_is_single_use(self, code_table, broker_user_flow):
+        """A second redemption of the same code fails."""
+        import handler
+
+        code = self._issue_code(handler)
+        assert self._exchange(handler, code)["statusCode"] == 200
+
+        replay = self._exchange(handler, code)
+        assert replay["statusCode"] == 400
+        assert json.loads(replay["body"])["error"] == "invalid_code"
+
+    def test_consumes_via_atomic_delete(self, code_table, broker_user_flow):
+        """The code is consumed by delete_item(ALL_OLD) — no read-then-delete race."""
+        import handler
+
+        code = self._issue_code(handler)
+        self._exchange(handler, code)
+
+        code_table["ddb"].delete_item.assert_called_once_with(
+            TableName="test-auth-codes",
+            Key={"code": {"S": code}},
+            ReturnValues="ALL_OLD",
+        )
+        code_table["ddb"].get_item.assert_not_called()
+
+    def test_rejects_mismatched_app_state(self, code_table, broker_user_flow):
+        """A code lifted from history is useless without the SPA's nonce."""
+        import handler
+
+        code = self._issue_code(handler, "victim-nonce")
+        response = self._exchange(handler, code, "attacker-nonce")
+
+        assert response["statusCode"] == 400
+        assert json.loads(response["body"])["error"] == "state_mismatch"
+        assert "cognito-access-token" not in response["body"]
+
+    def test_rejects_expired_code(self, code_table, broker_user_flow, monkeypatch):
+        """expires_at is enforced on read, not left to DynamoDB's lazy TTL."""
+        import handler
+
+        code = self._issue_code(handler)
+        code_table["rows"][code]["expires_at"] = {"N": str(int(time.time()) - 1)}
+
+        response = self._exchange(handler, code)
+        assert response["statusCode"] == 400
+        assert json.loads(response["body"])["error"] == "expired_code"
+
+    def test_rejects_unknown_code(self, code_table):
+        """An invented code is rejected."""
+        import handler
+
+        response = self._exchange(handler, "not-a-real-code")
+        assert response["statusCode"] == 400
+        assert json.loads(response["body"])["error"] == "invalid_code"
+
+    def test_rejects_missing_code(self, code_table):
+        """A body with no code is a 400."""
+        import handler
+
+        response = self._exchange(handler, "")
+        assert response["statusCode"] == 400
+        assert json.loads(response["body"])["error"] == "missing_code"
+
+    def test_rejects_malformed_body(self, code_table):
+        """Non-JSON body is a 400, not a 500."""
+        import handler
+
+        response = handler.handler(
+            {"rawPath": "/exchange", "requestContext": {"http": {"method": "POST"}}, "body": "not json"},
+            None,
+        )
+        assert response["statusCode"] == 400
+        assert json.loads(response["body"])["error"] == "invalid_body"
+
+    def test_rejects_non_object_body(self, code_table):
+        """Valid JSON that isn't an object must 400, not raise AttributeError."""
+        import handler
+
+        response = handler.handler(
+            {"rawPath": "/exchange", "requestContext": {"http": {"method": "POST"}}, "body": "[]"},
+            None,
+        )
+        assert response["statusCode"] == 400
+        assert json.loads(response["body"])["error"] == "invalid_body"
+
+    def test_accepts_base64_encoded_body(self, code_table, broker_user_flow):
+        """API Gateway may deliver the body base64-encoded."""
+        import handler
+
+        code = self._issue_code(handler)
+        response = handler.handler(
+            {
+                "rawPath": "/exchange",
+                "requestContext": {"http": {"method": "POST"}},
+                "body": base64.b64encode(json.dumps({"code": code, "app_state": "spa-nonce-abc"}).encode()).decode(),
+                "isBase64Encoded": True,
+            },
+            None,
+        )
+
+        assert response["statusCode"] == 200
+        assert json.loads(response["body"])["access_token"] == "cognito-access-token"
+
+    def test_unavailable_without_table(self, mock_secrets):
+        """With no table configured the exchange 503s rather than 500s."""
+        import handler
+
+        response = handler.handler(
+            {"rawPath": "/exchange", "requestContext": {"http": {"method": "POST"}}, "body": json.dumps({"code": "x"})},
+            None,
+        )
+        assert response["statusCode"] == 503
+        assert json.loads(response["body"])["error"] == "exchange_unavailable"
+
+    def test_response_is_not_cacheable(self, code_table, broker_user_flow):
+        """Token responses must never be cached by a proxy or the browser."""
+        import handler
+
+        code = self._issue_code(handler)
+        response = self._exchange(handler, code)
+
+        assert response["headers"]["Cache-Control"] == "no-store"
+
+
+class TestExchangeCors:
+    """The SPA (CloudFront) and broker (API Gateway) are different origins."""
+
+    def test_preflight_is_answered(self, mock_secrets):
+        """OPTIONS returns 204 with the SPA origin allowed."""
+        import handler
+
+        response = handler.handler(
+            {"rawPath": "/exchange", "requestContext": {"http": {"method": "OPTIONS"}}},
+            None,
+        )
+        assert response["statusCode"] == 204
+        assert response["headers"]["Access-Control-Allow-Origin"] == "https://example.com"
+        assert "POST" in response["headers"]["Access-Control-Allow-Methods"]
+
+    def test_origin_is_scoped_not_wildcard(self, mock_secrets):
+        """Allow-Origin is the configured frontend, never '*'."""
+        import handler
+
+        headers = handler._cors_headers()
+        assert headers["Access-Control-Allow-Origin"] == "https://example.com"
+
+    def test_no_allow_credentials(self, mock_secrets):
+        """The code travels in the body; no cookie needs to ride along."""
+        import handler
+
+        assert "Access-Control-Allow-Credentials" not in handler._cors_headers()
+
+
+class TestAppStateBinding:
+    """The signed-state changes that carry the SPA nonce through GitHub."""
+
+    def test_app_state_round_trips_through_signed_state(self, mock_secrets):
+        """A nonce put into state comes back out intact."""
+        import handler
+
+        _seed_creds()
+        state = handler._generate_state("spa-nonce-abc")
+        assert handler._verify_state(state) is True
+        assert handler._extract_app_state(state) == "spa-nonce-abc"
+
+    def test_state_without_app_state_still_verifies(self, mock_secrets):
+        """3-field state (SPA build predating #4133) is still accepted."""
+        import handler
+
+        _seed_creds()
+        state = handler._generate_state()
+        assert handler._verify_state(state) is True
+        assert handler._extract_app_state(state) == ""
+
+    def test_tampered_app_state_fails_verification(self, mock_secrets):
+        """Swapping the nonce breaks the signature — it is signed, not passed through."""
+        import handler
+
+        _seed_creds()
+        nonce, timestamp, app_state, signature = handler._generate_state("victim-nonce").split(".")
+        forged = f"{nonce}.{timestamp}.attacker-nonce.{signature}"
+
+        assert handler._verify_state(forged) is False
+
+    def test_start_binds_app_state_from_query(self, mock_secrets):
+        """/start folds the SPA's nonce into the state it sends to GitHub."""
+        import handler
+
+        response = handler.handler(
+            {
+                "rawPath": "/start",
+                "requestContext": {"http": {"method": "GET"}},
+                "queryStringParameters": {"app_state": "spa-nonce-abc"},
+            },
+            None,
+        )
+        location = response["headers"]["Location"]
+        state = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)["state"][0]
+
+        assert handler._extract_app_state(state) == "spa-nonce-abc"
+
+    def test_start_without_app_state_still_works(self, mock_secrets):
+        """An old SPA build sends no app_state; login must not break."""
+        import handler
+
+        response = handler.handler(
+            {"rawPath": "/start", "requestContext": {"http": {"method": "GET"}}},
+            None,
+        )
+        assert response["statusCode"] == 302
+        assert "state=" in response["headers"]["Location"]
+
+    def test_start_ignores_malformed_app_state(self, mock_secrets):
+        """A nonce containing the '.' separator is dropped, not signed in."""
+        import handler
+
+        response = handler.handler(
+            {
+                "rawPath": "/start",
+                "requestContext": {"http": {"method": "GET"}},
+                "queryStringParameters": {"app_state": "evil.forged.fields"},
+            },
+            None,
+        )
+        location = response["headers"]["Location"]
+        state = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)["state"][0]
+
+        assert handler._extract_app_state(state) == ""
+        assert handler._verify_state(state) is True
+
+    def test_app_state_validation_rules(self):
+        """Separator, emptiness and length are all rejected."""
+        import handler
+
+        assert handler._is_valid_app_state("abc-123_XYZ~") is True
+        assert handler._is_valid_app_state("has.dot") is False
+        assert handler._is_valid_app_state("") is False
+        assert handler._is_valid_app_state("x" * 129) is False
+
+
+class TestLegacyTransportFallback:
+    """Rollout safety: no table yet must degrade to main's behaviour, not a lockout."""
+
+    def test_falls_back_to_url_tokens_without_table(self, mock_secrets, broker_user_flow):
+        """AUTH_CODE_TABLE unset → legacy redirect, so login still works mid-deploy."""
+        import handler
+
+        _seed_creds()
+        assert handler.AUTH_CODE_TABLE == ""
+
+        state = handler._generate_state("spa-nonce-abc")
+        location = handler.handler(_login_event(state), None)["headers"]["Location"]
+
+        assert "id_token=cognito-id-token" in location
+        assert "source=github_broker" in location
+
+
+class TestExchangeUnderRestV1EventShape:
+    """The broker runs behind the REST (v1) API, so /exchange must work on v1 events.
+
+    Production fronts this Lambda with aws_api_gateway_rest_api and
+    /auth/github/{proxy+} (x-amazon-apigateway-any-method + aws_proxy). Those
+    events carry `path` and a top-level `httpMethod` and have NO
+    `requestContext.http`. The rest of the suite is v2-shaped, which is exactly
+    why a v2-only method read passed tests while breaking every real login.
+    """
+
+    @staticmethod
+    def _v1_event(path: str, method: str, body: str | None = None) -> dict:
+        """A REST v1 proxy event — top-level httpMethod, no requestContext.http."""
+        event = {
+            "path": path,
+            "httpMethod": method,
+            "requestContext": {
+                "resourcePath": "/auth/github/{proxy+}",
+                "httpMethod": method,
+            },
+            "headers": {"Content-Type": "application/json"},
+            "queryStringParameters": None,
+        }
+        if body is not None:
+            event["body"] = body
+        return event
+
+    def _issue_code(self, handler_mod, app_state="spa-nonce-abc"):
+        _seed_creds()
+        state = handler_mod._generate_state(app_state)
+        location = handler_mod.handler(_login_event(state), None)["headers"]["Location"]
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        return query["code"][0]
+
+    def test_preflight_is_answered_on_v1_event(self, mock_secrets):
+        """OPTIONS on a v1 event → 204, so the browser lets the POST through."""
+        import handler
+
+        response = handler.handler(self._v1_event("/auth/github/exchange", "OPTIONS"), None)
+
+        assert response["statusCode"] == 204
+        assert response["headers"]["Access-Control-Allow-Origin"] == "https://example.com"
+        assert "POST" in response["headers"]["Access-Control-Allow-Methods"]
+
+    def test_preflight_is_not_routed_into_exchange(self, code_table):
+        """Regression: the preflight must not fall through into _handle_exchange.
+
+        The v2-only method read made http_method default to "GET" for every v1
+        request, so OPTIONS reached the exchange handler and 400'd on a missing
+        code. A non-2xx preflight blocks the POST → every GitHub login fails.
+        """
+        import handler
+
+        response = handler.handler(self._v1_event("/auth/github/exchange", "OPTIONS"), None)
+
+        assert response["statusCode"] == 204
+        assert json.loads(response["body"] or "{}") == {}
+        code_table["ddb"].delete_item.assert_not_called()
+
+    def test_exchange_happy_path_on_v1_event(self, code_table, broker_user_flow):
+        """POST /exchange on a v1 event returns the tokens in the body."""
+        import handler
+
+        code = self._issue_code(handler)
+        response = handler.handler(
+            self._v1_event(
+                "/auth/github/exchange",
+                "POST",
+                json.dumps({"code": code, "app_state": "spa-nonce-abc"}),
+            ),
+            None,
+        )
+
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["id_token"] == "cognito-id-token"
+        assert body["access_token"] == "cognito-access-token"
+        assert body["token_type"] == "Bearer"
+
+    def test_lowercase_method_is_normalised(self, mock_secrets):
+        """Method comparison is case-insensitive, so 'options' still preflights."""
+        import handler
+
+        response = handler.handler(self._v1_event("/auth/github/exchange", "options"), None)
+        assert response["statusCode"] == 204
+
+
+class TestExchangeRejectsUnboundCodes:
+    """A code minted without a nonce has no binding, so it must not be redeemable."""
+
+    def test_code_minted_without_app_state_is_refused(self, code_table, broker_user_flow):
+        """sha256("") is public, so an empty-nonce code would be anyone's to redeem."""
+        import handler
+
+        _seed_creds()
+        # A login that sent no app_state: _is_valid_app_state("") is False, so
+        # nothing is signed into the state and the row stores sha256("").
+        state = handler._generate_state("")
+        location = handler.handler(_login_event(state), None)["headers"]["Location"]
+        code = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)["code"][0]
+
+        assert code_table["rows"][code]["app_state_hash"]["S"] == hashlib.sha256(b"").hexdigest()
+
+        response = handler.handler(
+            {
+                "rawPath": "/exchange",
+                "requestContext": {"http": {"method": "POST"}},
+                "body": json.dumps({"code": code, "app_state": ""}),
+            },
+            None,
+        )
+
+        assert response["statusCode"] == 400
+        assert json.loads(response["body"])["error"] == "state_mismatch"
+        assert "cognito-access-token" not in response["body"]

@@ -26,6 +26,9 @@ const ID_TOKEN_KEY = 'cognito_id_token';
 const REFRESH_TOKEN_KEY = 'cognito_refresh_token';
 const TOKEN_EXPIRY_KEY = 'cognito_token_expiry';
 const PKCE_VERIFIER_KEY = 'pkce_code_verifier';
+// Issue #4133: nonce binding the GitHub broker login attempt to this browser
+// session, mirroring what PKCE_VERIFIER_KEY does for the password path.
+const BROKER_STATE_KEY = 'github_broker_state';
 
 // Role to permissions mapping (matching backend)
 const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
@@ -177,14 +180,88 @@ export async function buildLoginUrl(): Promise<string> {
  * endpoint. The broker handles the GitHub OAuth flow and returns Cognito tokens.
  *
  * The broker URL is configured via VITE_GITHUB_AUTH_BROKER_URL env var.
+ *
+ * Issue #4133: also generates a nonce, stores it in sessionStorage, and passes it
+ * to the broker as `app_state`. The broker signs it into its state token and
+ * echoes it back on the callback, so AuthCallback can reject a callback this
+ * browser never initiated (login CSRF / session fixation).
  */
 export async function buildGitHubLoginUrl(): Promise<string> {
   const brokerUrl = import.meta.env.VITE_GITHUB_AUTH_BROKER_URL;
   if (!brokerUrl) {
     throw new Error('GitHub sign-in is not configured (VITE_GITHUB_AUTH_BROKER_URL not set)');
   }
+  const appState = generateBrokerState();
+  storeBrokerState(appState);
   // The broker's /start endpoint handles state generation and redirects to GitHub
-  return `${brokerUrl.replace(/\/$/, '')}/start`;
+  const params = new URLSearchParams({ app_state: appState });
+  return `${brokerUrl.replace(/\/$/, '')}/start?${params.toString()}`;
+}
+
+/**
+ * Generate the broker login nonce (Issue #4133).
+ *
+ * Uses a charset WITHOUT "." — the broker's signed state token is dot-delimited,
+ * so a dot in the nonce would make its fields ambiguous (the broker rejects such
+ * values outright, which would break login rather than weaken it).
+ */
+function generateBrokerState(): string {
+  const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_~';
+  const randomValues = new Uint8Array(32);
+  crypto.getRandomValues(randomValues);
+  return Array.from(randomValues)
+    .map((v) => charset[v % charset.length])
+    .join('');
+}
+
+/**
+ * Store the broker login nonce for the callback (Issue #4133)
+ */
+export function storeBrokerState(state: string): void {
+  sessionStorage.setItem(BROKER_STATE_KEY, state);
+}
+
+/**
+ * Retrieve and clear the broker login nonce (Issue #4133).
+ *
+ * Single-use, like getPKCEVerifier: clearing on read means a replayed callback
+ * URL finds nothing to match against.
+ */
+export function getBrokerState(): string | null {
+  const state = sessionStorage.getItem(BROKER_STATE_KEY);
+  sessionStorage.removeItem(BROKER_STATE_KEY);
+  return state;
+}
+
+/**
+ * Exchange a broker handoff code for Cognito tokens (Issue #4133).
+ *
+ * The broker no longer puts tokens in the redirect URL; it hands over a
+ * single-use code which we POST back (alongside the nonce that code was bound
+ * to) to receive the tokens in a response body instead.
+ */
+export async function exchangeBrokerCode(
+  code: string,
+  appState: string
+): Promise<CognitoTokenResponse> {
+  const brokerUrl = import.meta.env.VITE_GITHUB_AUTH_BROKER_URL;
+  if (!brokerUrl) {
+    throw new Error('GitHub sign-in is not configured (VITE_GITHUB_AUTH_BROKER_URL not set)');
+  }
+
+  // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of our own configured broker endpoint; SSRF is not a client-side vulnerability
+  const response = await fetch(`${brokerUrl.replace(/\/$/, '')}/exchange`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, app_state: appState }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || 'Failed to complete GitHub sign-in');
+  }
+
+  return response.json();
 }
 
 /**
