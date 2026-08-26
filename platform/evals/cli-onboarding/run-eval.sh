@@ -532,18 +532,52 @@ write_curl_auth_config() {
 # http_post_json <curl-cfg> <url> <body-file> <out-body-file> -> echoes status
 http_post_json() {
   local cfg="$1" url="$2" body_file="$3" out="$4"
-  curl -sS -o "$out" -w '%{http_code}' -X POST \
-    -K "$cfg" \
-    -H 'content-type: application/json' \
-    --data-binary "@${body_file}" \
-    --max-time 120 \
-    "$url" || echo "000"
+  # Retry transient EDGE errors (502/503/504) and connection failures (000).
+  # A flag flip rolls the gateway deployment; while the roll completes the ALB
+  # target group flaps (ready/draining targets churn) and successive requests
+  # can each hit a bad target for a few seconds even after `kubectl rollout
+  # status` returns. A real gate/logic response is 200/401/402/409/429 — NEVER
+  # 502/503/504 — so retrying those cannot mask a gate bug; it only rides out
+  # the ALB churn so the assertion sees the true status. A genuine upstream 502
+  # (e.g. a retired model) simply exhausts the retries and is still reported.
+  local status attempt=0 max_attempts=8
+  while :; do
+    status="$(curl -sS -o "$out" -w '%{http_code}' -X POST \
+      -K "$cfg" \
+      -H 'content-type: application/json' \
+      --data-binary "@${body_file}" \
+      --max-time 120 \
+      "$url" || echo "000")"
+    case "$status" in
+      502|503|504|000)
+        attempt=$((attempt + 1))
+        [ "$attempt" -ge "$max_attempts" ] && break
+        sleep 3
+        ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$status"
 }
 
 # http_get <curl-cfg> <url> <out-body-file> -> echoes status
 http_get() {
   local cfg="$1" url="$2" out="$3"
-  curl -sS -o "$out" -w '%{http_code}' -K "$cfg" --max-time 60 "$url" || echo "000"
+  # Retry transient edge 5xx / connection failures for the same reason
+  # http_post_json does — the ALB target group flaps during a rollout.
+  local status attempt=0 max_attempts=8
+  while :; do
+    status="$(curl -sS -o "$out" -w '%{http_code}' -K "$cfg" --max-time 60 "$url" || echo "000")"
+    case "$status" in
+      502|503|504|000)
+        attempt=$((attempt + 1))
+        [ "$attempt" -ge "$max_attempts" ] && break
+        sleep 3
+        ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$status"
 }
 
 anthropic_body() {
@@ -618,6 +652,15 @@ assert_not_gated() {
     fail "$label: blocked by the approval gate (409 $EXPECTED_409_ERROR) but should have passed"
     return 0
   fi
+  # A transient edge error is NOT evidence of "not gated" — it is a broken
+  # request. http_get/http_post_json already retry these, so reaching here with
+  # a 5xx means the retries were exhausted; report it rather than pass falsely.
+  case "$status" in
+    502|503|504|000)
+      fail "$label: edge error HTTP $status after retries — could not determine gate behavior"
+      return 0
+      ;;
+  esac
   pass "$label: not gated (HTTP $status)"
   return 0
 }
