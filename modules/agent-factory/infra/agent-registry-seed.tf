@@ -42,13 +42,19 @@ resource "aws_dynamodb_table_item" "scaledjob_worker_agent" {
     scope            = { S = "internal" }
     budget_config_id = { S = "" }
     allowed_models   = { SS = ["*"] }
-    status           = { S = "active" }
-    description      = { S = "Hosted agent worker pods (webhook + chat ScaledJob). Authenticates via IRSA to /internal/v1/* endpoints." }
-    image_uri        = { S = "" }
-    code_repo        = { S = "" }
-    workflow_name    = { S = "" }
-    created_at       = { S = "2026-05-12T00:00:00Z" }
-    updated_at       = { S = "2026-05-12T00:00:00Z" }
+    # Issue #4131 (grant step): credential scopes granted to this agent, resolved
+    # server-side by the gateway instead of trusted from an X-Agent-Scopes header.
+    # Must stay in lockstep with the canonical copy in
+    # modules/gateway/infra/modules/lambda-authorizer/main.tf — the gateway test
+    # tests/auth/test_credential_scopes_seed.py asserts both roots agree.
+    credential_scopes = { SS = ["credential:raw-read"] }
+    status            = { S = "active" }
+    description       = { S = "Hosted agent worker pods (webhook + chat ScaledJob). Authenticates via IRSA to /internal/v1/* endpoints." }
+    image_uri         = { S = "" }
+    code_repo         = { S = "" }
+    workflow_name     = { S = "" }
+    created_at        = { S = "2026-05-12T00:00:00Z" }
+    updated_at        = { S = "2026-05-12T00:00:00Z" }
   })
 
   lifecycle {

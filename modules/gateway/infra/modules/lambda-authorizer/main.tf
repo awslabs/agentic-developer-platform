@@ -263,6 +263,15 @@ resource "aws_dynamodb_table_item" "scaledjob_worker" {
     allowed_models = {
       SS = ["*"]
     }
+    # Issue #4131 (grant step): credential scopes granted to this agent, resolved
+    # server-side by the gateway instead of trusted from an X-Agent-Scopes header.
+    # credential:raw-read is the only scope any caller asserts today
+    # (agent-worker-image/lib/gateway_credential_client.py). Must stay in lockstep
+    # with the copy in modules/agent-factory/infra/agent-registry-seed.tf — the
+    # gateway test tests/auth/test_credential_scopes_seed.py asserts both agree.
+    credential_scopes = {
+      SS = ["credential:raw-read"]
+    }
     status = {
       S = "active"
     }

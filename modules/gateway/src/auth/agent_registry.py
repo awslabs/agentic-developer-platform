@@ -43,6 +43,10 @@ class AgentRegistryEntry(TypedDict):
     scope: str
     budget_config_id: str
     allowed_models: list[str]
+    # Issue #4131 (grant step): the credential scopes this agent has actually
+    # been granted, resolved server-side from the registry. Absent/empty means
+    # the agent holds no credential scopes.
+    credential_scopes: list[str]
     status: str
     description: str
     image_uri: str
@@ -111,6 +115,7 @@ class AgentRegistryService:
             scope=item.get("scope", {}).get("S", ""),
             budget_config_id=item.get("budget_config_id", {}).get("S", ""),
             allowed_models=item.get("allowed_models", {}).get("SS", []),
+            credential_scopes=item.get("credential_scopes", {}).get("SS", []),
             status=item.get("status", {}).get("S", ""),
             description=item.get("description", {}).get("S", ""),
             image_uri=item.get("image_uri", {}).get("S", ""),
@@ -259,4 +264,10 @@ def agent_entry_to_token_context(entry: AgentRegistryEntry) -> TokenContext:
         # internal plane with no way to distinguish an internal principal from
         # any other registered agent.
         scope=entry.get("scope", ""),
+        # Issue #4131 (grant step): carry the registry-granted credential scopes
+        # so credential routes can authorize against them server-side instead of
+        # trusting a caller-supplied header. Nothing reads this yet — the
+        # enforcement change is a separate, follow-on PR that must not land until
+        # the registry rows are seeded and verified.
+        credential_scopes=list(entry.get("credential_scopes", [])),
     )

@@ -35,3 +35,9 @@ class TokenContext(BaseModel):
     # are never internal-plane principals. Only scopes in INTERNAL_PLANE_SCOPES
     # may act on the internal plane.
     scope: str = ""
+    # Issue #4131: the credential scopes this caller has actually been granted,
+    # resolved server-side from the agent_registry entry. Empty for human/JWT
+    # callers and for any agent that has not been granted one. This is the
+    # authoritative source for credential-scope decisions — never a
+    # caller-supplied header.
+    credential_scopes: list[str] = []

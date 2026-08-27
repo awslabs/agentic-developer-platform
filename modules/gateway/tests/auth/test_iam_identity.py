@@ -84,6 +84,7 @@ class TestAgentEntryToTokenContext:
             "scope": "shared",
             "budget_config_id": "",
             "allowed_models": ["claude-sonnet"],
+            "credential_scopes": [],
             "status": "active",
             "description": "Test agent",
             "image_uri": "",
@@ -103,6 +104,58 @@ class TestAgentEntryToTokenContext:
         assert context.is_admin is False
         assert context.auth_source == "iam"
         assert context.expires_at > datetime.now(UTC)
+        # Issue #4131: no grant in the registry entry means no credential scopes.
+        assert context.credential_scopes == []
+
+    def test_carries_credential_scopes_from_entry(self):
+        """Issue #4131 (grant step): a granted scope must reach the TokenContext.
+
+        The credential routes' scope decision is moving off the caller-supplied
+        X-Agent-Scopes header and onto the registry entry. If this plumb-through
+        drops, enforcement (follow-on PR) sees an empty grant and 403s every
+        legitimate internal credential call.
+        """
+        entry: AgentRegistryEntry = {
+            "agent_id": "scaledjob-worker",
+            "role_arn": "arn:aws:iam::123456789012:role/adp-dev-agent-scaledjob-role",
+            "agent_name": "scaledjob-worker",
+            "org_id": "__platform__",
+            "team_id": "__agents__",
+            "owner": "platform",
+            "scope": "internal",
+            "budget_config_id": "",
+            "allowed_models": ["*"],
+            "credential_scopes": ["credential:raw-read"],
+            "status": "active",
+            "description": "Hosted agent worker pods",
+            "image_uri": "",
+            "code_repo": "",
+            "workflow_name": "",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        }
+
+        context = agent_entry_to_token_context(entry)
+
+        assert context.credential_scopes == ["credential:raw-read"]
+
+    def test_credential_scopes_default_when_key_absent(self):
+        """A registry entry predating the grant has no key at all — must not raise.
+
+        Rows seeded before #4131 lack the attribute entirely, so the parse falls
+        back to an absent key. Converting such an entry must yield an empty grant
+        rather than a KeyError that would 500 the whole auth path.
+        """
+        entry = {
+            "agent_name": "legacy-agent",
+            "org_id": "test-org",
+            "team_id": "test-team",
+            "scope": "internal",
+        }
+
+        context = agent_entry_to_token_context(entry)  # type: ignore[arg-type]
+
+        assert context.credential_scopes == []
 
 
 class TestAgentRegistryService:
@@ -152,6 +205,44 @@ class TestAgentRegistryService:
                 assert entry["agent_name"] == "test-agent"
                 assert entry["org_id"] == "test-org"
                 assert entry["status"] == "active"
+
+    def test_parses_credential_scopes_string_set(self, mock_dynamodb_response):
+        """Issue #4131: a seeded credential_scopes SS parses onto the entry.
+
+        Mirrors the allowed_models SS parse — same DynamoDB string-set shape, same
+        .get("SS", []) fallback.
+        """
+        item = dict(mock_dynamodb_response["Items"][0])
+        item["credential_scopes"] = {"SS": ["credential:raw-read"]}
+
+        service = AgentRegistryService(table_name="test-table")
+        entry = service._parse_dynamodb_item(item)
+
+        assert entry["credential_scopes"] == ["credential:raw-read"]
+
+    def test_parses_credential_scopes_absent(self, mock_dynamodb_response):
+        """A row seeded before #4131 has no credential_scopes attribute at all.
+
+        DynamoDB stores no empty string sets, so "no grant" is an absent attribute
+        rather than an empty one. It must parse to [] and never raise.
+        """
+        item = mock_dynamodb_response["Items"][0]
+        assert "credential_scopes" not in item
+
+        service = AgentRegistryService(table_name="test-table")
+        entry = service._parse_dynamodb_item(item)
+
+        assert entry["credential_scopes"] == []
+
+    def test_parses_credential_scopes_empty_set(self, mock_dynamodb_response):
+        """An empty SS parses to an empty grant, not to a missing key."""
+        item = dict(mock_dynamodb_response["Items"][0])
+        item["credential_scopes"] = {"SS": []}
+
+        service = AgentRegistryService(table_name="test-table")
+        entry = service._parse_dynamodb_item(item)
+
+        assert entry["credential_scopes"] == []
 
     def test_get_agent_by_role_arn_not_found(self):
         """Test agent lookup when not found."""
@@ -256,6 +347,7 @@ class TestExtractIamIdentityFromHeaders:
             "scope": "shared",
             "budget_config_id": "",
             "allowed_models": ["claude-sonnet"],
+            "credential_scopes": [],
             "status": "active",
             "description": "Test agent",
             "image_uri": "",
@@ -294,6 +386,7 @@ class TestExtractIamIdentityFromHeaders:
             "scope": "shared",
             "budget_config_id": "",
             "allowed_models": ["claude-sonnet"],
+            "credential_scopes": [],
             "status": "active",
             "description": "Test agent",
             "image_uri": "",
@@ -362,6 +455,7 @@ class TestExtractIamIdentityFromHeaders:
             "scope": "internal",
             "budget_config_id": "",
             "allowed_models": ["*"],
+            "credential_scopes": [],
             "status": "active",
             "description": "Internal worker",
             "image_uri": "",
@@ -404,6 +498,7 @@ class TestExtractIamIdentityFromHeaders:
             "scope": "shared",
             "budget_config_id": "",
             "allowed_models": ["claude-sonnet"],
+            "credential_scopes": [],
             "status": "active",
             "description": "External agent",
             "image_uri": "",
