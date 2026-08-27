@@ -27,6 +27,13 @@ on:
       - 'modules/agent-factory/webhook-ingress/lambda/common/identity_resolver.py'
       - 'platform/scripts/smoke_assertions.py'
       - 'platform/scripts/tests/test_smoke_assertions.py'
+      # Loop-proposal validator + its fixtures (#4199). The advisory CLI imports
+      # the shared model from src/orchestration/proposal.py, so the Lint job's
+      # validation step is the only CI signal either one gets — without these
+      # paths, editing the script or a fixture triggers no workflow at all and a
+      # broken validator ships unnoticed (the same gap #4145 fixed for cli/).
+      - '.github/scripts/validate_loop_proposal.py'
+      - 'aidlc/spaces/issue-4120/construction/loop-proposal/**'
       - '.github/workflows/gateway-ci.yml'
       - '.github/workflows/gateway-smoke.yml'
     branches:
@@ -67,6 +74,27 @@ jobs:
         run: |
           ruff check src/ tests/
           ruff format --check src/ tests/
+
+      # Issue #4199: the advisory half of the loop-proposal contract. Runs from
+      # the repo root (the script adds modules/gateway to sys.path itself) over
+      # both shipped fixtures. The valid one must exit 0 and the deliberately
+      # cyclic one must exit non-zero — asserting the failure case is the point,
+      # since a validator that never rejects anything passes CI while catching
+      # nothing. The authoritative check is in compile_proposal, inside the
+      # approval transaction; this step only proves the shared rules still load
+      # and still fire.
+      - name: Validate loop-proposal fixtures
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/validate_loop_proposal.py \
+            aidlc/spaces/issue-4120/construction/loop-proposal/example-proposal.json
+
+          if python3 .github/scripts/validate_loop_proposal.py \
+               aidlc/spaces/issue-4120/construction/loop-proposal/cyclic-proposal.json; then
+            echo "::error::validator accepted a deliberately-cyclic proposal; cycle detection is broken"
+            exit 1
+          fi
+          echo "Loop-proposal validator rejected the cyclic fixture as expected."
 
   test:
     name: Test
