@@ -169,6 +169,72 @@ class GatewayCredentialClient:
             endpoint, payload, extra_headers={"X-Agent-Scopes": "credential:raw-read"}
         )
 
+    def github_installation_token(
+        self,
+        *,
+        installation_id: int,
+        repo_owner: str,
+        repo_name: str,
+        invocation_id: str | None = None,
+        purpose: str | None = None,
+    ) -> dict[str, Any]:
+        """Mint a repo-scoped GitHub App installation token via the gateway.
+
+        Issue #4272: the GitHub-token gatekeeper. The platform App private key
+        stays inside the gateway; this asks the gateway to mint on the run's
+        behalf, scoped to the run's own org and the single repo it was assigned.
+
+        Note what is NOT sent: a tenant. The gateway resolves the tenant from the
+        run's webhook-events row and refuses to mint for an installation the run
+        is not bound to, so a compromised worker cannot name someone else's org.
+
+        The path rides the existing ``/agent/{proxy+}`` API Gateway route, so no
+        new route and no new execute-api grant are needed.
+
+        Args:
+            installation_id: The run's GitHub App installation id.
+            repo_owner: Owner of the repo this run operates on.
+            repo_name: Name of the repo this run operates on.
+            invocation_id: The run's invocation id. Defaults to ADP_MESSAGE_ID.
+                The gateway rejects a request without one (fail-closed binding).
+            purpose: Optional audit purpose string.
+
+        Returns:
+            ``{"token": "ghs_...", "expires_at": "<iso8601>", "app_id": "<id>"}``.
+            ``app_id`` is the App's PUBLIC identifier (not a credential) — the
+            caller needs it for the bot commit identity and for GH_APP_ID.
+
+        Raises:
+            GatewayCredentialError: On any HTTP or network error. Deliberately
+                NOT caught here and NOT fallen back to a local mint — a silent
+                fallback would defeat the entire change.
+        """
+        endpoint = f"{self._base_url}/internal/v1/github-installation-token"
+        payload: dict[str, Any] = {
+            "installation_id": int(installation_id),
+            "repo_owner": repo_owner,
+            "repo_name": repo_name,
+            "purpose": purpose or "agent run GitHub token (broker)",
+        }
+        resolved_invocation_id = invocation_id or os.environ.get("ADP_MESSAGE_ID")
+        if resolved_invocation_id:
+            payload["invocation_id"] = resolved_invocation_id
+
+        logger.info(
+            "Minting GitHub installation token via gateway (%s mode): installation_id=%s repo=%s/%s",
+            "sigv4" if self._use_sigv4 else "legacy",
+            installation_id,
+            repo_owner,
+            repo_name,
+        )
+
+        result = self._make_request(endpoint, payload)
+
+        if not result.get("token"):
+            raise GatewayCredentialError("Gateway returned no token for the installation-token request")
+
+        return result
+
     def assume_role(
         self,
         *,

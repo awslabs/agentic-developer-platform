@@ -8,6 +8,13 @@ Endpoints (IAM-signed; internal only, not exposed to end users):
     POST /internal/v1/resolve-user       — resolve provider identity to internal
                                             user_id; auto-provision shadow user if
                                             channel_tenant_map matches
+    POST /internal/v1/resolve-installation
+                                         — installation_id -> owning ADP tenant
+    POST /internal/v1/github-installation-token
+                                         — Issue #4272: mint a repo-scoped GitHub
+                                            App installation token for an agent
+                                            run, so the App private key never
+                                            leaves the gateway
 
 Authentication:
     A shared secret (BG_INTERNAL_API_KEY) is expected in the
@@ -17,6 +24,7 @@ Authentication:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -24,11 +32,22 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.installations.resolver import (
+    InstallationOwnershipError,
+    OwnerState,
+    assert_installation_owned_by,
+)
 from src.auth.magic_link import (
     issue_token,
     store_nonce,
 )
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.credential_binding import resolve_installation_binding
+from src.knowledge.github_app_service import (
+    AGENT_RUN_PERMISSIONS,
+    mint_installation_token_with_expiry,
+    resolve_tenant_app_credentials,
+)
 from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
@@ -115,6 +134,38 @@ class ResolveInstallationResponse(BaseModel):
     # no-nonce install callback. Callers that predate this field must treat its
     # absence as "unknown" and fail open, never as "untrusted".
     created_via: str = "operator"
+
+
+class GithubInstallationTokenRequest(BaseModel):
+    """Body for POST /internal/v1/github-installation-token.
+
+    Issue #4272. Note what is NOT here: the caller does not assert its tenant.
+    The tenant is resolved server-side from the run's webhook-events row, so a
+    prompt-injected worker cannot name a tenant it does not belong to.
+    """
+
+    installation_id: int
+    repo_owner: str
+    repo_name: str
+    # The run's invocation id (= event_id in webhook-events). Required in
+    # practice: the binding rejects a request without one.
+    invocation_id: str | None = None
+    purpose: str | None = None
+
+
+class GithubInstallationTokenResponse(BaseModel):
+    token: str
+    # GitHub's own expiry, passed through verbatim. The worker's TokenManager
+    # schedules its refresh from this; a locally-guessed "+1h" drifts and the run
+    # dies mid-flight.
+    expires_at: str
+    # The App ID is a PUBLIC identifier, not a credential (only the private key
+    # is secret). It is returned because the worker still needs it for two
+    # non-secret purposes it previously read from the vault alongside the key: the
+    # bot commit identity (`<app_id>+adp-agent[bot]@…`), and GH_APP_ID, which
+    # gates whether the JS TokenManager initialises at all. Omitting it would put
+    # the 1-hour silent-death path straight back.
+    app_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -466,3 +517,172 @@ async def resolve_installation(
         status_code=404,
         detail={"error": "not_found", "message": "Unknown installation"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: POST /internal/v1/github-installation-token
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/github-installation-token",
+    response_model=GithubInstallationTokenResponse,
+    summary="Mint a repo-scoped GitHub App installation token for an agent run",
+    description=(
+        "Issue #4272: the GitHub-token gatekeeper. The platform GitHub App "
+        "private key stays server-side; an agent run calls this to obtain a "
+        "short-lived installation token scoped to its OWN org and, within that, "
+        "to the single repo it was assigned. Previously the key itself was "
+        "exported into the agent subprocess, so a prompt-injected run could mint "
+        "tokens for every org that had installed the App.\n\n"
+        "Two independent authz layers gate the mint: the run's invocation is "
+        "bound to an installation via the webhook-events registry (fail-closed), "
+        "and that installation's ownership by the bound tenant is confirmed "
+        "against Postgres. The caller never asserts its own tenant."
+    ),
+    responses={
+        200: {"description": "Token minted"},
+        403: {"description": "Run is not bound to, or its tenant does not own, this installation"},
+        409: {"description": "Installation belongs to a different tenant"},
+        502: {"description": "GitHub rejected the mint"},
+    },
+)
+async def github_installation_token(
+    body: GithubInstallationTokenRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_internal_or_irsa),
+) -> GithubInstallationTokenResponse:
+    settings = get_settings()
+
+    # Layer 1 — bind the run to the installation its originating webhook carried.
+    # Fail-closed, and deliberately NOT gated on ENFORCE_CREDENTIAL_BINDING:
+    # that flag is false on at least one live environment, so a control behind it
+    # shadows instead of enforcing.
+    binding = await asyncio.to_thread(
+        resolve_installation_binding,
+        invocation_id=body.invocation_id,
+        requested_installation_id=body.installation_id,
+        settings=settings,
+    )
+
+    # Layer 2 — the authoritative ownership check. Layer 1 proves "this run's
+    # webhook said installation X for tenant T"; this proves T really owns X.
+    # attest=False: this is a hot per-run read, not a write that BINDS an
+    # installation to a tenant, and the resolver already fails closed on
+    # NOT_FOUND / AMBIGUOUS.
+    try:
+        await assert_installation_owned_by(
+            binding.tenant_id,
+            binding.installation_id,
+            db=db,
+        )
+    except InstallationOwnershipError as exc:
+        await _write_audit(
+            db,
+            event_type="github_installation_token_denied",
+            org_id=binding.tenant_id,
+            actor_id=None,
+            details={
+                "reason": "ownership_check_failed",
+                "state": str(exc.state),
+                "installation_id": binding.installation_id,
+                "repo": f"{body.repo_owner}/{body.repo_name}",
+                "invocation_id": body.invocation_id,
+            },
+        )
+        await db.commit()
+        logger.warning(
+            "github-installation-token DENIED — ownership state=%s tenant=%s installation=%s",
+            exc.state,
+            binding.tenant_id,
+            binding.installation_id,
+        )
+        # A cleanly-resolved installation owned by someone else is a genuine
+        # cross-tenant conflict (409); everything else is an unproven claim (403).
+        status_code = 409 if exc.state is OwnerState.RESOLVED else 403
+        raise HTTPException(
+            status_code=status_code,
+            detail={"error": "installation_not_owned", "message": str(exc)},
+        ) from exc
+
+    # Mint. The key is read here, inside the gateway, and never leaves it.
+    try:
+        app_id, private_key = await resolve_tenant_app_credentials(binding.tenant_id)
+    except ValueError as exc:
+        logger.warning(
+            "github-installation-token: no App credentials for tenant=%s: %s",
+            binding.tenant_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "app_credentials_unavailable", "message": str(exc)},
+        ) from exc
+
+    # Least-privilege: this run's one repo, and only the verbs an agent run needs.
+    # GitHub already scopes the token to one org (one installation = one org);
+    # narrowing repo + permissions on top means a hijacked run's live token can
+    # touch only the repo it was working on.
+    try:
+        token, expires_at = await mint_installation_token_with_expiry(
+            app_id,
+            private_key,
+            binding.installation_id,
+            repositories=[body.repo_name],
+            permissions=AGENT_RUN_PERMISSIONS,
+        )
+    except Exception as exc:
+        await _write_audit(
+            db,
+            event_type="github_installation_token_denied",
+            org_id=binding.tenant_id,
+            actor_id=None,
+            details={
+                "reason": "mint_failed",
+                "installation_id": binding.installation_id,
+                "repo": f"{body.repo_owner}/{body.repo_name}",
+                "invocation_id": body.invocation_id,
+                "error": str(exc),
+            },
+        )
+        await db.commit()
+        logger.warning(
+            "github-installation-token: mint failed tenant=%s installation=%s: %s",
+            binding.tenant_id,
+            binding.installation_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "mint_failed", "message": "GitHub rejected the installation token request."},
+        ) from exc
+
+    # Audit every mint, mirroring credential-raw-read. Without this an operator
+    # cannot answer "which run got a token for which org" after the fact — which
+    # is the whole point of moving the mint server-side.
+    await _write_audit(
+        db,
+        event_type="github_installation_token_minted",
+        org_id=binding.tenant_id,
+        actor_id=None,
+        details={
+            "installation_id": binding.installation_id,
+            "repo": f"{body.repo_owner}/{body.repo_name}",
+            "repositories": [body.repo_name],
+            "permissions": AGENT_RUN_PERMISSIONS,
+            "invocation_id": body.invocation_id,
+            "expires_at": expires_at,
+            "purpose": body.purpose,
+        },
+    )
+    await db.commit()
+
+    logger.info(
+        "github-installation-token minted tenant=%s installation=%s repo=%s/%s expires_at=%s",
+        binding.tenant_id,
+        binding.installation_id,
+        body.repo_owner,
+        body.repo_name,
+        expires_at,
+    )
+    return GithubInstallationTokenResponse(token=token, expires_at=expires_at, app_id=str(app_id))

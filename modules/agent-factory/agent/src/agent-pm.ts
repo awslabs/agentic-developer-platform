@@ -95,12 +95,14 @@ import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
 import { resolveAgentLogGroup } from './lib/logGroup';
 import {
   initTokenManager,
+  canInitTokenManager,
   getToken,
   needsRefresh,
   getTokenStatus,
   setToken,
   forceRefresh,
 } from './token-refresh';
+import { isBrokerEnabled } from './lib/githubTokenBroker';
 
 // ============================================================================
 // Configuration
@@ -167,14 +169,24 @@ const TOKEN_REFRESH_ENABLED = process.env.TOKEN_REFRESH_ENABLED === 'true';
 const GH_APP_ID = process.env.GH_APP_ID || '';
 const GH_APP_PRIVATE_KEY = process.env.GH_APP_PRIVATE_KEY || '';
 
-if (TOKEN_REFRESH_ENABLED && GH_APP_ID && GH_APP_PRIVATE_KEY) {
+// Issue #4272: in broker mode the private key is not in this process — the
+// gateway gatekeeper mints. Requiring the key here would leave the token manager
+// uninitialised and the PM's long-running loop would die at the 1-hour mark.
+const GH_TOKEN_BROKER_MODE = isBrokerEnabled();
+
+// canInitTokenManager() rather than a hand-written predicate: the decision is
+// tested once in token-refresh.ts, so it cannot drift from the agent-worker copy.
+if (TOKEN_REFRESH_ENABLED && canInitTokenManager()) {
   initTokenManager({
     appId: GH_APP_ID,
-    privateKey: GH_APP_PRIVATE_KEY,
+    privateKey: GH_TOKEN_BROKER_MODE ? undefined : GH_APP_PRIVATE_KEY,
+    brokerMode: GH_TOKEN_BROKER_MODE,
     owner: REPO_OWNER,
     repo: REPO_NAME,
+    installationId: process.env.GH_APP_INSTALLATION_ID || undefined,
     workDir: CWD,
-    refreshThresholdMs: 15 * 60 * 1000, // Refresh 15 min before expiry
+    // Broker mode refreshes earlier — see initTokenManager.
+    refreshThresholdMs: GH_TOKEN_BROKER_MODE ? 20 * 60 * 1000 : 15 * 60 * 1000,
   });
   // Set the initial token (from workflow)
   if (GH_APP_TOKEN) {
@@ -182,7 +194,11 @@ if (TOKEN_REFRESH_ENABLED && GH_APP_ID && GH_APP_PRIVATE_KEY) {
   }
   console.log('[TokenRefresh] Initialized - tokens will auto-refresh before expiry');
 } else if (TOKEN_REFRESH_ENABLED) {
-  console.warn('[TokenRefresh] Enabled but missing GH_APP_ID or GH_APP_PRIVATE_KEY');
+  console.warn(
+    GH_TOKEN_BROKER_MODE
+      ? '[TokenRefresh] Enabled but missing GH_APP_ID (broker mode needs no private key)'
+      : '[TokenRefresh] Enabled but missing GH_APP_ID or GH_APP_PRIVATE_KEY',
+  );
 }
 
 // Module-level variable for bd prime context (set in main after Beads init)

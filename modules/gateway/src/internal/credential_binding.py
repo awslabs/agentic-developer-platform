@@ -212,3 +212,205 @@ def _lookup_authorized_user(
         return ""
 
     return items[0].get("authorized_user_id", "")
+
+
+# ---------------------------------------------------------------------------
+# Installation binding (issue #4272)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InstallationBinding:
+    """The tenant + installation a run is provably bound to.
+
+    Resolved from the run's webhook-events row, never from the request body.
+    """
+
+    tenant_id: str
+    installation_id: int
+
+
+def resolve_installation_binding(
+    *,
+    invocation_id: str | None,
+    requested_installation_id: int,
+    settings: Settings,
+) -> InstallationBinding:
+    """Bind a run to the installation its originating webhook actually carried.
+
+    Issue #4272. The GitHub-token gatekeeper mints an org-scoped credential
+    server-side, so it must never accept the caller's word for *which* org. This
+    resolves the authoritative pair from the webhook-events row written at
+    ingress and rejects anything that disagrees.
+
+    Deliberately distinct from :func:`resolve_credential_binding`, which resolves
+    a *user* (``authorized_user_id``) and has no notion of an installation or a
+    tenant — it cannot perform this check.
+
+    Two properties this must have, both learned the hard way:
+
+    * **Fail-closed on absence.** ``installation_id`` is written conditionally
+      into the row (``webhook_events.write_event``: ``if installation_id``), so a
+      row legitimately may not carry one. That is a *reject*, not a pass: an
+      unbound mint request is exactly the confused-deputy primitive this guard
+      exists to deny.
+    * **Independent of ``ENFORCE_CREDENTIAL_BINDING``.** That flag is ``false``
+      on at least one live environment, so a control gated on it silently
+      shadows instead of enforcing. This function never reads it. Its caller must
+      not gate it either.
+
+    A DDB error is also a reject. ``resolve_credential_binding`` is fail-soft
+    there by design (a lookup failure must not break credential reads); the
+    opposite is correct here, because failing soft would hand out an
+    unverifiable org-scoped GitHub token.
+
+    Args:
+        invocation_id: The run's invocation id (= ``event_id`` PK in
+            webhook-events). Typically ``ADP_MESSAGE_ID`` in the worker.
+        requested_installation_id: The installation the caller wants a token for.
+        settings: Application settings (table name + region).
+
+    Returns:
+        The bound ``InstallationBinding``. ``tenant_id`` comes from the row and
+        is what callers must use for the ownership check — never a body value.
+
+    Raises:
+        HTTPException(403): missing invocation_id, no row, row missing
+            ``installation_id`` or ``tenant_id``, lookup failure, or a mismatch
+            between the row and the request.
+    """
+    if not invocation_id:
+        logger.warning(
+            "installation_binding: REJECTED — missing invocation_id (requested_installation_id=%s)",
+            requested_installation_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "installation_binding_failed",
+                "message": "invocation_id is required to mint an installation token.",
+            },
+        )
+
+    row = _lookup_installation_row(
+        invocation_id=invocation_id,
+        table_name=settings.webhook_events_table,
+        aws_region=settings.aws_region,
+    )
+    if row is None:
+        logger.warning(
+            "installation_binding: REJECTED — no registry row for invocation_id=%s",
+            invocation_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "installation_binding_failed",
+                "message": "No authorization record for this invocation. Token minting denied.",
+            },
+        )
+
+    bound_raw = row.get("installation_id")
+    tenant_id = str(row.get("tenant_id") or "")
+
+    if not bound_raw:
+        # Fail-closed on absence. See the docstring: the attribute is optional in
+        # the table, so this is a reachable state and must not be a pass.
+        logger.warning(
+            "installation_binding: REJECTED — row carries no installation_id invocation_id=%s",
+            invocation_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "installation_binding_failed",
+                "message": "This invocation is not bound to a GitHub App installation.",
+            },
+        )
+
+    if not tenant_id:
+        logger.warning(
+            "installation_binding: REJECTED — row carries no tenant_id invocation_id=%s",
+            invocation_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "installation_binding_failed",
+                "message": "This invocation is not bound to a tenant.",
+            },
+        )
+
+    try:
+        bound_installation_id = int(bound_raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "installation_binding: REJECTED — unparseable installation_id=%r invocation_id=%s",
+            bound_raw,
+            invocation_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "installation_binding_failed",
+                "message": "This invocation's bound installation could not be read.",
+            },
+        ) from None
+
+    if bound_installation_id != requested_installation_id:
+        logger.warning(
+            "installation_binding: REJECTED — mismatch invocation_id=%s bound=%s requested=%s tenant_id=%s",
+            invocation_id,
+            bound_installation_id,
+            requested_installation_id,
+            tenant_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "installation_binding_mismatch",
+                "message": "Requested installation does not match this invocation's installation.",
+            },
+        )
+
+    return InstallationBinding(tenant_id=tenant_id, installation_id=bound_installation_id)
+
+
+def _lookup_installation_row(
+    *,
+    invocation_id: str,
+    table_name: str,
+    aws_region: str,
+) -> dict | None:
+    """Fetch the latest webhook-events row for ``invocation_id``.
+
+    Same Query shape as :func:`_lookup_authorized_user` (composite key
+    ``event_id`` HASH + ``arrived_at`` RANGE, newest first), projecting the
+    attributes the installation binding needs.
+
+    Returns the row, or ``None`` when it is absent OR the lookup failed. The
+    caller treats both as a reject — unlike the user-binding lookup, this one
+    must not fail soft.
+    """
+    try:
+        table = _get_dynamodb_table(table_name, aws_region)
+        response = table.query(
+            KeyConditionExpression=Key("event_id").eq(invocation_id),
+            ProjectionExpression="installation_id, tenant_id, arrived_at",
+            ScanIndexForward=False,  # descending arrived_at -> latest first
+            Limit=1,
+        )
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        logger.warning(
+            "installation_binding: DDB Query failed — invocation_id=%s error_code=%s table=%s (failing closed)",
+            invocation_id,
+            error_code,
+            table_name,
+        )
+        return None
+
+    items = response.get("Items", [])
+    if not items:
+        return None
+    return items[0]

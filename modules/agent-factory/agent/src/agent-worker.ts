@@ -16,8 +16,9 @@ import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
 import { createSpillHooks, TmpSpillStore } from './utils/spill';
+import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile } from './token-refresh';
+import { fetchBrokeredToken, isBrokerEnabled } from './lib/githubTokenBroker';
 import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
-import { initTokenManager, getToken, getTokenStatus, writeTokenFile } from './token-refresh';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { resolveAgentLogGroup } from './lib/logGroup';
 import * as fs from 'fs';
@@ -374,6 +375,35 @@ async function resolveInstallationId(jwtToken: string): Promise<string | null> {
 async function refreshAppToken(): Promise<void> {
   const appId = process.env.GH_APP_ID;
   const privateKey = process.env.GH_APP_PRIVATE_KEY;
+
+  // Issue #4272: broker mode — no private key in this process, so the local mint
+  // below cannot run. Route through the gatekeeper instead. Without this branch
+  // the function would hit the `!privateKey` early-return and silently stop
+  // refreshing the token that every gh/git call in the run depends on.
+  if (isBrokerEnabled()) {
+    const installationId = process.env.GH_APP_INSTALLATION_ID;
+    const repoOwner = process.env.REPO_OWNER;
+    if (!appId || !installationId || !repoOwner) return; // Not using app auth
+    try {
+      const brokered = await fetchBrokeredToken({
+        installationId,
+        repoOwner,
+        repoName: process.env.REPO_NAME || '',
+      });
+      process.env.GH_TOKEN = brokered.token;
+      process.env.GITHUB_TOKEN = brokered.token;
+      process.env.GH_APP_TOKEN = brokered.token;
+      // Keep the token file in step too: git-askpass-helper prefers the file and
+      // only falls back to $GITHUB_TOKEN, so refreshing env alone would leave
+      // git authenticating with the stale file contents.
+      writeTokenFile(brokered.token);
+      log('INFO', 'Refreshed GitHub App token via gatekeeper for gh CLI');
+    } catch (err) {
+      log('WARN', `Brokered token refresh failed: ${(err as Error).message}`);
+    }
+    return;
+  }
+
   if (!appId || !privateKey) return; // Not using app auth
 
   try {
@@ -1633,11 +1663,20 @@ async function main(): Promise<void> {
   const appId = process.env.GH_APP_ID || '';
   const appKey = process.env.GH_APP_PRIVATE_KEY || process.env.GH_APP_KEY || '';
   const repoOwner = process.env.REPO_OWNER || '';
+  // Issue #4272: in broker mode there is no private key in this process — the
+  // gateway gatekeeper mints. The predicate MUST NOT require appKey then, or the
+  // token manager never initialises, no refresh is ever scheduled, and the run
+  // dies at the 1-hour mark with a 401 while git/gh degrade quietly.
+  const brokerMode = isBrokerEnabled();
 
-  if (appId && appKey && repoOwner) {
+  // canInitTokenManager() rather than a hand-written predicate: this decision is
+  // tested once in token-refresh.ts. A local copy here is what silently goes
+  // false when the key stops being exported.
+  if (canInitTokenManager()) {
     initTokenManager({
       appId,
-      privateKey: appKey,
+      privateKey: brokerMode ? undefined : appKey,
+      brokerMode,
       owner: repoOwner,
       repo: REPO_NAME,
       // Authoritative installation id for this run's target org (exported by
@@ -1645,7 +1684,9 @@ async function main(): Promise<void> {
       // is installed on many tenants.
       installationId: process.env.GH_APP_INSTALLATION_ID || undefined,
       workDir: CWD,
-      refreshThresholdMs: 15 * 60 * 1000, // Refresh when 15 min remaining
+      // Broker mode refreshes earlier: a gatekeeper round-trip can fail and need
+      // retrying, and 15 min of headroom leaves too little room to recover.
+      refreshThresholdMs: brokerMode ? 20 * 60 * 1000 : 15 * 60 * 1000,
     });
 
     // Proactively refresh token every 30 minutes

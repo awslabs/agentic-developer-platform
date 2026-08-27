@@ -65,6 +65,64 @@ def _sanitize_for_sts_tag(value: str) -> str:
     return _STS_TAG_FORBIDDEN.sub("_", value)
 
 
+# --- Issue #4272: GitHub-token gatekeeper kill-switch ---------------------------
+# Mirrors the ADP_PAT_EXECUTION_ENABLED precedent below: default off = today's
+# behavior byte-for-byte. When on, the platform GitHub App private key is never
+# read in this pod at all — the gateway mints on our behalf, both for the
+# bootstrap token and for every in-run refresh — and GH_APP_PRIVATE_KEY is not
+# exported to the agent subprocess.
+ADP_GH_TOKEN_BROKER_ENV = "ADP_GH_TOKEN_BROKER_ENABLED"
+
+
+def _gh_token_broker_enabled(environ: dict | None = None) -> bool:
+    """Return True when the GitHub-token gatekeeper is enabled (issue #4272)."""
+    env = environ if environ is not None else os.environ
+    return env.get(ADP_GH_TOKEN_BROKER_ENV, "").lower() in ("1", "true", "yes")
+
+
+def _broker_installation_token(
+    *,
+    installation_id: int,
+    repo_owner: str,
+    repo_name: str,
+    cred_client: GatewayCredentialClient | None = None,
+) -> tuple[str, str]:
+    """Mint this run's GitHub token through the gateway gatekeeper.
+
+    Issue #4272. Replaces the in-pod ``mint_installation_token`` (and the vault
+    read that fed it) so the platform App private key never enters this process.
+
+    Deliberately has NO local-mint fallback: falling back would keep the key in
+    pod memory and quietly undo the whole change. A gatekeeper outage is a loud
+    bootstrap failure, which the caller surfaces via _fail_bootstrap_status.
+
+    Returns:
+        ``(token, app_id)``. The App ID is public (not a credential) and comes
+        back from the gateway because the caller still needs it for the bot commit
+        identity and for the GH_APP_ID the JS TokenManager gates on — both of
+        which used to be read from the vault alongside the private key.
+
+    Raises:
+        RuntimeError: if the gateway is not configured for this pod.
+        GatewayCredentialError: if the gatekeeper call fails.
+    """
+    client = cred_client or GatewayCredentialClient()
+    if not client.is_configured:
+        raise RuntimeError(
+            f"{ADP_GH_TOKEN_BROKER_ENV} is on but the gateway is not reachable from this pod "
+            "(neither ADP_GATEWAY_ENDPOINT nor VAULT_GATEWAY_URL+VAULT_INTERNAL_API_KEY is set). "
+            "Refusing to fall back to an in-pod mint."
+        )
+
+    result = client.github_installation_token(
+        installation_id=int(installation_id),
+        repo_owner=repo_owner,
+        repo_name=repo_name,
+        purpose="bootstrap GitHub token for agent run",
+    )
+    return result["token"], str(result.get("app_id") or "")
+
+
 class PatResolutionResult:
     """Result of _resolve_execution_token() — PAT mode or App fallback."""
 
@@ -906,6 +964,44 @@ def main() -> int:
         token = _pat_token
         app_id = ""
         private_key = ""
+    elif _gh_token_broker_enabled():
+        # Issue #4272: broker mode. Neither the vault read nor the mint happens
+        # in this pod — the gateway holds the App private key and mints a token
+        # scoped to this run's own org and repo. private_key stays empty so
+        # nothing downstream can export or re-use it; the JS runtime re-mints
+        # through the same gatekeeper (see token-refresh.ts broker mode).
+        #
+        # app_id comes back from the gatekeeper. It is a public identifier, not a
+        # credential, and leaving it empty would break two things quietly: the bot
+        # commit identity (step 6 builds `<app_id>+adp-agent[bot]@…`), and the
+        # GH_APP_ID the JS TokenManager gates on — i.e. no refresh, 1-hour death.
+        private_key = ""
+        bootstrap_log.step_start(
+            2,
+            "broker_mint_token",
+            installation_id=installation_id,
+            repo=f"{repo_owner}/{repo_name}",
+        )
+        try:
+            token, app_id = _broker_installation_token(
+                installation_id=installation_id,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+            )
+        except Exception as exc:
+            # Loud failure, never silent drift onto a dying/absent token.
+            bootstrap_log.step_error(2, "broker_mint_token", exc)
+            _fail_bootstrap_status(
+                message_id,
+                arrived_at,
+                f"the GitHub-token gatekeeper could not mint a token for "
+                f"installation_id={installation_id} repo={repo_owner}/{repo_name} — the gateway "
+                f"may be unreachable, or this run may not be bound to that installation. "
+                f"No in-pod fallback exists by design ({ADP_GH_TOKEN_BROKER_ENV} is on): {exc}",
+            )
+            bootstrap_log.close()
+            raise
+        bootstrap_log.step_success(2, "broker_mint_token")
     else:
         _secret_rel_path = f"tenants/{tenant_id}/github-app"
         bootstrap_log.step_start(2, "vault_fetch", secret=_secret_rel_path)
@@ -1029,11 +1125,34 @@ def main() -> int:
             os.close(fd)
         os.replace(_token_tmp, _token_path)
     else:
-        # GitHub App credentials for token refresh (#1502). The agent-worker.ts
-        # TokenManager requires these to re-mint installation tokens before the
-        # 1-hour expiry. Without them, long-running agents die with 401.
+        # Credentials the agent-worker.ts TokenManager needs to re-mint an
+        # installation token before the 1-hour expiry (#1502). Without a working
+        # refresh path, long-running agents die with 401.
+        #
+        # Issue #4272: in broker mode the private key is NOT exported — the JS
+        # side re-mints through the gateway gatekeeper instead. GH_APP_ID and
+        # GH_APP_INSTALLATION_ID still go out: the former is harmless (it is a
+        # public identifier, not a credential) and the latter is what pins the
+        # re-mint to THIS run's org.
+        #
+        # ADP_GH_TOKEN_BROKER_ENABLED must be exported too. Both initTokenManager
+        # call sites (agent-worker.ts, agent-pm.ts) historically gated on the key
+        # being present; with the key gone and no flag to key off, they would go
+        # false, the token manager would never initialise, no refresh would ever
+        # be scheduled, and the run would die silently at the 1-hour mark.
         env_vars["GH_APP_ID"] = str(app_id)
-        env_vars["GH_APP_PRIVATE_KEY"] = private_key
+        if _gh_token_broker_enabled():
+            env_vars[ADP_GH_TOKEN_BROKER_ENV] = "1"
+            # Not setting it is NOT sufficient. The agent subprocess env is
+            # os.environ.copy() (see the agent_env assembly below), so any
+            # GH_APP_PRIVATE_KEY the pod inherited from somewhere else — a
+            # leftover from an earlier code path, a Secret projected into the pod
+            # spec, an operator debugging by hand — would still reach the agent
+            # and the flag would be silently ineffective. Remove it explicitly so
+            # the invariant holds regardless of how the pod env was populated.
+            os.environ.pop("GH_APP_PRIVATE_KEY", None)
+        else:
+            env_vars["GH_APP_PRIVATE_KEY"] = private_key
         # Authoritative installation id for THIS run's target org. The JS worker
         # must re-mint against this installation — NOT installations[0], which is
         # an arbitrary (newest-first) install and resolves to the wrong org once

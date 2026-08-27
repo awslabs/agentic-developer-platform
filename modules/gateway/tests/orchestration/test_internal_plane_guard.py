@@ -60,6 +60,7 @@ EXPECTED_INTERNAL_ROUTES = {
     ("/internal/v1/credential-materialize", "POST"),
     ("/internal/v1/credential-raw-read", "POST"),
     ("/internal/v1/credential-assume-role", "POST"),
+    ("/internal/v1/github-installation-token", "POST"),
     ("/internal/v1/provenance", "POST"),
     ("/internal/v1/knowledge-assets/status-callback", "POST"),
     ("/internal/v1/admin/tenant-config/{tenant}", "GET"),

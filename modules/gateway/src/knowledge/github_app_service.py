@@ -189,6 +189,94 @@ async def mint_installation_token(
             await client.aclose()
 
 
+# Least-privilege default for agent runs (issue #4272). The GitHub App's full
+# permission set is much broader; an agent run needs to read/write code, open and
+# update pull requests, and comment on issues. Anything else (members, admin,
+# secrets, workflows...) is deliberately withheld so a hijacked run's live token
+# is narrower than the App that minted it.
+AGENT_RUN_PERMISSIONS: dict[str, str] = {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "write",
+    "metadata": "read",
+}
+
+
+async def mint_installation_token_with_expiry(
+    app_id: str,
+    private_key_pem: str,
+    installation_id: int,
+    *,
+    repositories: list[str] | None = None,
+    permissions: dict[str, str] | None = None,
+    http_client: httpx.AsyncClient | None = None,
+) -> tuple[str, str]:
+    """Mint an installation access token and return ``(token, expires_at)``.
+
+    Sibling of :func:`mint_installation_token`, which returns a bare string and
+    discards GitHub's ``expires_at``. Callers that must schedule their own
+    refresh (the agent worker's TokenManager, issue #4272) need the real expiry
+    — a local ``now + 1h`` guess drifts and the run dies mid-flight. The
+    existing function's signature is left alone because its caller in
+    ``list_accessible_repos`` depends on the string return.
+
+    ``repositories`` and ``permissions`` narrow the token below the
+    installation's own grant (issue #4272 least-privilege note). GitHub already
+    scopes a token to one org — one installation is one org — so this is
+    defence-in-depth: a run assigned one repo gets a token good for that repo
+    only, with only the verbs it needs. Omitting either falls back to GitHub's
+    default (all repos / the App's full permission set), so callers acting on
+    behalf of an agent run should always pass both.
+
+    Returns:
+        ``(token, expires_at)`` where ``expires_at`` is GitHub's own ISO-8601
+        string, passed through verbatim.
+
+    Raises:
+        httpx.HTTPStatusError: on a non-2xx response from GitHub.
+        ValueError: if GitHub returns a 2xx without a token or an expiry — a
+            token we cannot schedule a refresh for is not usable, so this fails
+            loudly rather than handing back a value that expires unpredictably.
+    """
+    jwt_token = _mint_app_jwt(app_id, private_key_pem)
+    client = http_client or httpx.AsyncClient(
+        base_url=GITHUB_API_BASE,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=10.0,
+    )
+
+    body: dict[str, Any] = {}
+    if repositories:
+        body["repositories"] = repositories
+    if permissions:
+        body["permissions"] = permissions
+
+    try:
+        resp = await client.post(
+            f"/app/installations/{installation_id}/access_tokens",
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            json=body,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    finally:
+        if http_client is None:
+            await client.aclose()
+
+    token = payload.get("token") or ""
+    expires_at = payload.get("expires_at") or ""
+    if not token:
+        raise ValueError(f"GitHub returned no token for installation {installation_id}")
+    if not expires_at:
+        raise ValueError(f"GitHub returned no expires_at for installation {installation_id}; cannot schedule refresh")
+
+    return token, expires_at
+
+
 # ---------------------------------------------------------------------------
 # List accessible repositories
 # ---------------------------------------------------------------------------

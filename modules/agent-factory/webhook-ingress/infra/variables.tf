@@ -146,6 +146,33 @@ variable "org_tenant_auto_create" {
   default     = false
 }
 
+variable "gh_token_broker_enabled" {
+  description = <<-EOT
+    Issue #4272: route the agent run's GitHub token through the gateway
+    gatekeeper (POST /internal/v1/github-installation-token) instead of minting
+    it in-pod from the platform GitHub App private key.
+
+    When false (default), behavior is unchanged: the worker reads
+    adp/<env>/tenants/<tenant>/github-app, mints locally, and exports
+    GH_APP_PRIVATE_KEY into the agent subprocess. When true, the key is never
+    read in this pod at all — neither the bootstrap token nor any in-run refresh
+    — and GH_APP_PRIVATE_KEY is not exported. The gateway mints a token scoped
+    to the run's own installation and the single repo it was assigned, after
+    confirming the installation belongs to the run's tenant.
+
+    Turn this on only after the gatekeeper is verified end-to-end in the target
+    environment: there is deliberately NO in-pod fallback, so a gateway that
+    cannot mint fails the run loudly at bootstrap rather than degrading quietly.
+
+    ROLLBACK IS A DEPLOY, NOT A TOGGLE. The value is rendered into the KEDA
+    ScaledJob pod env by this Terraform, so flipping it back costs a
+    webhook-ingress apply (minutes). Pods already running keep the setting they
+    started with for the life of the run.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "require_signed_provenance" {
   description = <<-EOT
     Issue #4128 (#4073 findings #18 + #1b): strict-rejection switch for

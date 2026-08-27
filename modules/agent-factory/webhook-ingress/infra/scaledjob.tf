@@ -270,6 +270,13 @@ locals {
                   # endpoint to POST /agent/trigger (SigV4-signed).
                   - name: ADP_TRIGGER_ENDPOINT
                     value: ${aws_api_gateway_stage.dev.invoke_url}/agent/trigger
+                  # Issue #4272: GitHub-token gatekeeper kill-switch. Off by
+                  # default = today's behavior (in-pod mint from the platform App
+                  # private key). On = the key is never read in this pod and the
+                  # gateway mints a repo-scoped token instead. See the
+                  # gh_token_broker_enabled variable for the rollback caveat.
+                  - name: ADP_GH_TOKEN_BROKER_ENABLED
+                    value: "${var.gh_token_broker_enabled ? "1" : "0"}"
 ${local.otel_env_block}
 ${local.knowledge_layer_env_block}
                 resources:
