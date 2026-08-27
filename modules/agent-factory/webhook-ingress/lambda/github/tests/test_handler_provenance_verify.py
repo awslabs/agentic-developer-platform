@@ -118,21 +118,48 @@ def _mock_sm(secret_value: str) -> MagicMock:
     return client
 
 
-def _run(pointer, marker_text, *, secret=REAL_KEY, marker_trusted=False):
-    """Invoke determine_correlation with a stubbed pointer store + signing key."""
+def _chain_from(pointer: dict | None) -> dict | None:
+    """The server-written webhook-events row a legitimate pointer corresponds to.
+
+    Issue #4129: chain provenance is now read from the ``correlation-index`` GSI
+    rather than off the pointer row, so these #4128 tests must stub BOTH. Mirroring
+    the pointer's values here keeps each test asserting what it was written to
+    assert (marker-verification behaviour) rather than accidentally re-testing
+    #4129's fail-closed path.
+    """
+    if pointer is None:
+        return None
+    return {
+        "event_id": pointer.get("triggering_invocation_id") or "evt-chain",
+        "correlation_id": pointer["correlation_id"],
+        "root_human_id": pointer.get("root_human_id"),
+        "is_human_rooted": pointer.get("is_human_rooted"),
+        "chain_depth": pointer.get("chain_depth"),
+    }
+
+
+def _run(pointer, marker_text, *, secret=REAL_KEY, marker_trusted=False, chain="from-pointer"):
+    """Invoke determine_correlation with a stubbed pointer store + signing key.
+
+    Args:
+        chain: The server-written chain row ``_resolve_chain_record`` returns.
+            Defaults to one mirroring ``pointer`` (see :func:`_chain_from`).
+    """
     store = MagicMock()
     store.read_pointer.return_value = pointer
+    chain_record = _chain_from(pointer) if chain == "from-pointer" else chain
 
     with patch.dict(os.environ, {"MARKER_SIGNING_KEY_SECRET_ARN": TEST_SECRET_ARN}):
         with patch("common.secrets._get_client", return_value=_mock_sm(secret)):
             with patch("handler._get_correlation_store", return_value=store):
-                return determine_correlation(
-                    {},
-                    _Identity(),
-                    CHANNEL,
-                    marker_text=marker_text,
-                    marker_trusted=marker_trusted,
-                )
+                with patch("handler._resolve_chain_record", return_value=chain_record):
+                    return determine_correlation(
+                        {},
+                        _Identity(),
+                        CHANNEL,
+                        marker_text=marker_text,
+                        marker_trusted=marker_trusted,
+                    )
 
 
 # =============================================================================

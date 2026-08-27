@@ -799,8 +799,108 @@ def _get_correlation_store():
     return _correlation_store_mod
 
 
+def _resolve_chain_record(correlation_id: str) -> dict[str, Any] | None:
+    """Return the newest server-written ``webhook-events`` row for this chain.
+
+    Issue #4129: thin wrapper over ``agent_trigger._resolve_chain`` so there is
+    exactly ONE ``correlation-index`` GSI query implementation in this Lambda
+    (the reuse table in the issue is explicit about not adding a second one).
+    Imported lazily because ``agent_trigger`` imports boto3 at call time and this
+    module is on the cold-start path.
+    """
+    if not correlation_id:
+        return None
+    try:
+        from agent_trigger import _resolve_chain
+
+        return _resolve_chain(correlation_id)
+    except Exception as e:  # noqa: BLE001 — resolution failure must fail closed, not 500
+        logger.warning(
+            "Chain resolution failed for correlation=%s: %s — failing closed",
+            correlation_id,
+            e,
+        )
+        return None
+
+
+def _resolve_pointer_provenance(
+    pointer: dict,
+    fallback_root_human_id: str,
+) -> tuple[str, bool, int | None]:
+    """Resolve a pointer's chain provenance from server-written state (#4129).
+
+    The correlation-pointers row is writable by the agent pod
+    (``dynamodb:UpdateItem`` on ``adp-*-correlation-pointers``), so the three
+    fields that decide **whose authority a run holds** and **how deep the chain
+    is** must not be read off it. A compromised pod could otherwise set
+    ``root_human_id=<victim> is_human_rooted=true chain_depth=0``, trigger the
+    channel, and have the webhook persist the victim's id as a legitimate
+    server-side ``authorized_user_id`` with the depth counter reset.
+
+    Instead they come from the ``correlation-index`` GSI on ``webhook-events`` —
+    written only by this Lambda — via :func:`_resolve_chain_record`.
+
+    Fail-closed on an unresolvable chain: authority is dropped
+    (``is_human_rooted=False``, root falls back to the caller-supplied bot id) but
+    the chain itself is still inherited by the caller, because the pointer's
+    ``correlation_id`` and parent edge are not authority-bearing. That keeps
+    legitimate #1828 cross-issue lineage connected on a channel the webhook has
+    never seen while granting it no vault access it hasn't earned.
+
+    Args:
+        pointer: The row returned by ``correlation_store.read_pointer``. Its
+            provenance fields are deliberately IGNORED — passing a forged row is
+            inert by construction, which is the property this function exists to
+            provide.
+        fallback_root_human_id: Root human to report when the chain cannot be
+            resolved. Callers pass the resolved BOT sender id, never anything
+            claimed by the event.
+
+    Returns:
+        ``(root_human_id, is_human_rooted, chain_depth)``. ``chain_depth`` is
+        None when unresolvable; callers treat that as depth 0 exactly as they
+        already treat a pointer with no depth.
+    """
+    chain = _resolve_chain_record(pointer.get("correlation_id") or "")
+    if not chain:
+        logger.warning(
+            "No server-written chain row for correlation=%s — dropping "
+            "chain authority (fail-closed); lineage is still inherited",
+            pointer.get("correlation_id"),
+        )
+        return fallback_root_human_id, False, None
+
+    root_human_id = chain.get("root_human_id") or ""
+    is_human_rooted = bool(chain.get("is_human_rooted")) and bool(root_human_id)
+    if not is_human_rooted:
+        root_human_id = root_human_id or fallback_root_human_id
+
+    chain_depth = chain.get("chain_depth")
+    if chain_depth is not None:
+        try:
+            chain_depth = int(chain_depth)
+        except (ValueError, TypeError):
+            logger.warning(
+                "Malformed chain_depth=%r on chain row correlation=%s — treating "
+                "as unknown",
+                chain_depth,
+                pointer.get("correlation_id"),
+            )
+            chain_depth = None
+    if chain_depth is not None and chain_depth < 0:
+        # A negative depth would evade the runaway-chain guard on increment.
+        logger.warning(
+            "Negative chain_depth=%d on chain row correlation=%s — treating as unknown",
+            chain_depth,
+            pointer.get("correlation_id"),
+        )
+        chain_depth = None
+
+    return root_human_id, is_human_rooted, chain_depth
+
+
 def _pr_marker_text_with_issue_fallback(
-    store, repo, pr_body, head_ref
+    store, repo, pr_body, head_ref, fallback_root_human_id: str = ""
 ) -> tuple[str | None, bool]:
     """Resolve the marker text to use for a PR event's correlation.
 
@@ -815,13 +915,23 @@ def _pr_marker_text_with_issue_fallback(
     pointer so determine_correlation can set parent_invocation_id across the
     issue→PR boundary without depending on the racy PR-body marker.
 
+    Issue #4129: the synthesized marker's PROVENANCE fields come from
+    :func:`_resolve_pointer_provenance` (the ``webhook-events`` GSI), not from the
+    pointer row. This path is trusted by construction, so reading authority off a
+    pod-writable row here would forward the forgery straight into a Rule-4 spawn
+    on the PR channel — the pointer supplies only the chain id and parent edge.
+
+    Args:
+        fallback_root_human_id: Root human to embed when the chain cannot be
+            resolved server-side. Callers pass the resolved sender's id.
+
     Returns:
         A ``(marker_text, trusted)`` tuple. ``trusted`` is True ONLY for the
         synthesized-from-pointer case (issue #4128): that marker is built here,
-        server-side, out of a server-written correlation pointer, so it is
-        unsigned by construction yet carries the pointer's trust. Marker text
-        that came from the PR body is attacker-controllable and returns False,
-        so :func:`determine_correlation` verifies its signature.
+        server-side, out of server-written state, so it is unsigned by
+        construction yet carries that state's trust. Marker text that came from
+        the PR body is attacker-controllable and returns False, so
+        :func:`determine_correlation` verifies its signature.
     """
     from common.marker_parse import has_valid_marker
 
@@ -834,12 +944,15 @@ def _pr_marker_text_with_issue_fallback(
     issue_pointer = store.read_pointer(issue_channel)
     if not issue_pointer:
         return pr_body, False
+    root_human_id, is_human_rooted, chain_depth = _resolve_pointer_provenance(
+        issue_pointer, fallback_root_human_id
+    )
     return (
         f"<!-- adp-correlation:{issue_pointer['correlation_id']} "
-        f"adp-root-human:{issue_pointer['root_human_id']} "
-        f"adp-is-human-rooted:{'true' if issue_pointer.get('is_human_rooted') else 'false'} "
+        f"adp-root-human:{root_human_id} "
+        f"adp-is-human-rooted:{'true' if is_human_rooted else 'false'} "
         f"adp-invocation:{issue_pointer.get('triggering_invocation_id') or ''} "
-        f"adp-chain-depth:{issue_pointer.get('chain_depth') or 0} -->",
+        f"adp-chain-depth:{chain_depth or 0} -->",
         True,
     )
 
@@ -963,13 +1076,20 @@ def determine_correlation(
             # run's invocation id, so fall back to it when the pointer lacks one.
             # This is what actually populates parent_invocation_id across the
             # issue→PR boundary.
-            pointer_depth = pointer.get("chain_depth")
+            #
+            # Issue #4129: root_human_id / is_human_rooted / chain_depth are
+            # resolved from the webhook-events GSI, NOT read off this row. The
+            # row is pod-writable, so trusting it here is the laundering hop
+            # that turns a forged pointer into a server-blessed authority.
+            root_human_id, is_human_rooted, pointer_depth = _resolve_pointer_provenance(
+                pointer, resolved_identity.user_id
+            )
             inherited_depth = pointer_depth if pointer_depth is not None else 0
             return {
                 "correlation_id": pointer["correlation_id"],
-                "root_human_id": pointer["root_human_id"],
+                "root_human_id": root_human_id,
                 "triggered_by": resolved_identity.user_id,
-                "is_human_rooted": pointer["is_human_rooted"],
+                "is_human_rooted": is_human_rooted,
                 "is_new_chain": False,
                 "parent_invocation_id": (
                     pointer.get("triggering_invocation_id") or marker.get("invocation_id")
@@ -1014,14 +1134,17 @@ def determine_correlation(
             }
 
     if pointer:
-        # Pointer only — same-channel continuation
-        pointer_depth = pointer.get("chain_depth")
+        # Pointer only — same-channel continuation.
+        # Issue #4129: same server-side resolution as the pointer+marker branch.
+        root_human_id, is_human_rooted, pointer_depth = _resolve_pointer_provenance(
+            pointer, resolved_identity.user_id
+        )
         inherited_depth = pointer_depth if pointer_depth is not None else 0
         return {
             "correlation_id": pointer["correlation_id"],
-            "root_human_id": pointer["root_human_id"],
+            "root_human_id": root_human_id,
             "triggered_by": resolved_identity.user_id,
-            "is_human_rooted": pointer["is_human_rooted"],
+            "is_human_rooted": is_human_rooted,
             "is_new_chain": False,
             "parent_invocation_id": pointer.get("triggering_invocation_id"),
             "chain_depth": inherited_depth + 1,
@@ -1509,7 +1632,7 @@ def handler(event: dict, context) -> dict:
             # Issue #4128: marker_trusted is True only for the server-synthesized
             # fallback marker; a marker read out of the PR body is verified.
             marker_text, marker_trusted = _pr_marker_text_with_issue_fallback(
-                store, repo, pr_body, head_ref
+                store, repo, pr_body, head_ref, resolved.user_id
             )
             correlation_ctx = determine_correlation(
                 payload,

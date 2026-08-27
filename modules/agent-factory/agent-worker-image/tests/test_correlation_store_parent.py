@@ -41,8 +41,6 @@ class TestWritePointerTriggeringInvocationId:
         correlation_store.write_pointer(
             channel_key="github:repo=org/repo,issue=42",
             correlation_id="corr-abc",
-            root_human_id="user-xyz",
-            is_human_rooted=True,
             triggering_invocation_id="msg-run-parent-123",
         )
 
@@ -61,8 +59,6 @@ class TestWritePointerTriggeringInvocationId:
         correlation_store.write_pointer(
             channel_key="github:repo=org/repo,issue=43",
             correlation_id="corr-def",
-            root_human_id="user-abc",
-            is_human_rooted=False,
             triggering_invocation_id=None,
         )
 
@@ -80,8 +76,6 @@ class TestWritePointerTriggeringInvocationId:
         correlation_store.write_pointer(
             channel_key="github:repo=org/repo,issue=44",
             correlation_id="corr-ghi",
-            root_human_id="user-def",
-            is_human_rooted=True,
             triggering_invocation_id="",
         )
 
@@ -101,8 +95,6 @@ class TestWritePointerTriggeringInvocationId:
         correlation_store.write_pointer(
             channel_key="github:repo=org/repo,issue=45",
             correlation_id="corr-jkl",
-            root_human_id="user-ghi",
-            is_human_rooted=True,
             triggering_invocation_id="msg-run-456",
         )
 
@@ -111,10 +103,14 @@ class TestRoundTripCompatibility:
     """Verify worker writes produce items the webhook reader can parse.
 
     Issue #1661: The webhook's read_pointer expects attributes named
-    correlation_id, root_human_id, is_human_rooted (no 'latest_' prefix).
-    This test simulates the round-trip: worker writes an item using boto3
-    low-level client format, then we verify the attribute names match what
-    the webhook's read_pointer would access.
+    correlation_id, triggering_invocation_id (no 'latest_' prefix). This test
+    simulates the round-trip: worker writes an item using boto3 low-level client
+    format, then we verify the attribute names match what the webhook's
+    read_pointer would access.
+
+    Issue #4129: root_human_id / is_human_rooted / chain_depth are no longer part
+    of that round-trip — the webhook resolves them from the webhook-events GSI,
+    and this pod must be structurally unable to write them.
     """
 
     def setup_method(self):
@@ -130,8 +126,6 @@ class TestRoundTripCompatibility:
         correlation_store.write_pointer(
             channel_key="github:repo=aws-e/adp,issue=1320",
             correlation_id="chain-abc",
-            root_human_id="user-human",
-            is_human_rooted=True,
             triggering_invocation_id="inv-AAA",
         )
 
@@ -143,8 +137,6 @@ class TestRoundTripCompatibility:
         # The SET expression writes these exact attribute names (matching what
         # the webhook's read_pointer accesses):
         assert "correlation_id = :cid" in expr
-        assert "root_human_id = :rh" in expr
-        assert "is_human_rooted = :hr" in expr
         assert "triggering_invocation_id = :tii" in expr
 
         # Must NOT have the old prefixed names that would be invisible to webhook
@@ -152,8 +144,11 @@ class TestRoundTripCompatibility:
         assert "latest_root_human_id" not in expr
         assert "latest_is_human_rooted" not in expr
 
+        # Issue #4129: chain provenance is NOT written by the pod.
+        assert "root_human_id" not in expr
+        assert "is_human_rooted" not in expr
+        assert "chain_depth" not in expr
+
         # Verify values (low-level DDB format)
         assert vals[":cid"] == {"S": "chain-abc"}
-        assert vals[":rh"] == {"S": "user-human"}
-        assert vals[":hr"] == {"BOOL": True}
         assert vals[":tii"] == {"S": "inv-AAA"}

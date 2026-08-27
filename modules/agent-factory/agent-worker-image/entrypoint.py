@@ -2158,19 +2158,16 @@ def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str
     Lambda so the pointer round-trips correctly.
     """
     corr = os.environ.get("ADP_CORRELATION_ID", "")
+    # root / rooted are still needed for the provenance POST below (the gateway
+    # attributes the record). Issue #4129: they are NO LONGER passed to
+    # write_pointer — the webhook resolves chain provenance from its own
+    # webhook-events rows, so the pod cannot name a root human on the pointer.
     root = os.environ.get("ADP_ROOT_HUMAN_ID", "")
     rooted = os.environ.get("ADP_IS_HUMAN_ROOTED", "false") == "true"
     own_message_id = os.environ.get("ADP_MESSAGE_ID", "")
-    depth_str = os.environ.get("ADP_CHAIN_DEPTH", "0")
 
     if not corr or not root:
         return  # No correlation context — skip silently
-
-    # Parse chain depth (issue #1696) — defaults to 0 if absent/invalid
-    try:
-        current_depth = int(depth_str)
-    except (ValueError, TypeError):
-        current_depth = 0
 
     # Build canonical channel key matching webhook-ingress format (#1661).
     # channel_suffix is "issue:{N}" or "pr:{branch}" — parse to extract kind/number.
@@ -2181,15 +2178,12 @@ def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str
         # PR path: keep legacy format for now (out of scope per #1661 approved design).
         key = f"github:{repo}:{channel_suffix}"
 
-    # DDB pointer write (fail-soft) — includes triggering_invocation_id + chain_depth
+    # DDB pointer write (fail-soft) — chain id + parent edge only (#4129)
     try:
         write_pointer(
             channel_key=key,
             correlation_id=corr,
-            root_human_id=root,
-            is_human_rooted=rooted,
             triggering_invocation_id=own_message_id or None,
-            chain_depth=current_depth,
         )
     except Exception as exc:
         logger.warning("Outbound correlation pointer write failed (non-fatal): %s", exc)

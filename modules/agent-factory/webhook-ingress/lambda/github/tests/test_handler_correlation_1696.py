@@ -42,21 +42,41 @@ MARKER_TEXT = (
 )
 
 
+def _chain(correlation_id, root_human_id, is_human_rooted, chain_depth):
+    """A server-written ``webhook-events`` row for a chain (issue #4129).
+
+    The pointer branches of determine_correlation now source root_human_id /
+    is_human_rooted / chain_depth from the ``correlation-index`` GSI instead of
+    reading them off the pod-writable pointer row, so precedence tests must stub
+    the chain row too. Values mirror the pointer under test, which keeps these
+    tests asserting pointer-vs-marker PRECEDENCE (their actual subject) rather
+    than #4129's fail-closed path.
+    """
+    return {
+        "event_id": "evt-chain",
+        "correlation_id": correlation_id,
+        "root_human_id": root_human_id,
+        "is_human_rooted": is_human_rooted,
+        "chain_depth": chain_depth,
+    }
+
+
 class TestDetermineCorrelationPrecedence:
     """Test pointer-vs-marker precedence rule (issue #1696, architect I1)."""
 
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-marker-001", "user-pointer", True, 4),
+    )
     @patch("handler._get_correlation_store")
-    def test_pointer_and_marker_same_correlation_uses_pointer(self, mock_store_fn):
+    def test_pointer_and_marker_same_correlation_uses_pointer(self, mock_store_fn, _chain_fn):
         """Pointer + marker with matching correlation_id → pointer wins."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
         mock_store.read_pointer.return_value = {
             "correlation_id": "corr-marker-001",  # Same as marker
-            "root_human_id": "user-pointer",
-            "is_human_rooted": True,
             "triggering_invocation_id": "msg-pointer-inv",
-            "chain_depth": 4,
         }
         mock_store_fn.return_value = mock_store
 
@@ -66,10 +86,11 @@ class TestDetermineCorrelationPrecedence:
         )
 
         assert result["correlation_id"] == "corr-marker-001"
-        # Pointer data wins (server-written, authoritative)
+        # Server-resolved chain data wins over the marker's claim (issue #4129:
+        # sourced from the webhook-events GSI, not from the pointer row).
         assert result["root_human_id"] == "user-pointer"
         assert result["parent_invocation_id"] == "msg-pointer-inv"
-        assert result["chain_depth"] == 5  # pointer depth (4) + 1
+        assert result["chain_depth"] == 5  # chain depth (4) + 1
         assert result["is_new_chain"] is False
 
     @patch("handler._get_correlation_store")
@@ -131,18 +152,19 @@ class TestDetermineCorrelationPrecedence:
         assert result["chain_depth"] == 3  # marker depth (2) + 1
         assert result["is_new_chain"] is False
 
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-ptr-001", "user-ptr", True, 1),
+    )
     @patch("handler._get_correlation_store")
-    def test_pointer_only_no_marker(self, mock_store_fn):
+    def test_pointer_only_no_marker(self, mock_store_fn, _chain_fn):
         """Pointer exists, no marker → same-channel continuation (pointer wins)."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
         mock_store.read_pointer.return_value = {
             "correlation_id": "corr-ptr-001",
-            "root_human_id": "user-ptr",
-            "is_human_rooted": True,
             "triggering_invocation_id": "msg-ptr-inv",
-            "chain_depth": 1,
         }
         mock_store_fn.return_value = mock_store
 
@@ -229,18 +251,19 @@ class TestDetermineCorrelationPrecedence:
 class TestChainDepthIncrement:
     """Verify depth increments exactly once per hop."""
 
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-001", "user-h", True, 3),
+    )
     @patch("handler._get_correlation_store")
-    def test_depth_increments_once_from_pointer(self, mock_store_fn):
-        """Pointer depth N → spawned run gets depth N+1."""
+    def test_depth_increments_once_from_pointer(self, mock_store_fn, _chain_fn):
+        """Server-resolved chain depth N → spawned run gets depth N+1."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
         mock_store.read_pointer.return_value = {
             "correlation_id": "corr-001",
-            "root_human_id": "user-h",
-            "is_human_rooted": True,
             "triggering_invocation_id": "msg-parent",
-            "chain_depth": 3,
         }
         mock_store_fn.return_value = mock_store
 

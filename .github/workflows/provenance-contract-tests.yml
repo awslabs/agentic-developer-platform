@@ -27,6 +27,17 @@ on:
       - 'modules/agent-factory/agent-worker-image/lib/provenance_client.py'
       - 'modules/agent-factory/agent-worker-image/entrypoint.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_provenance_client.py'
+      # Chain-provenance write narrowing (#4129). The pod must not write
+      # root_human_id / is_human_rooted / chain_depth to its correlation pointer
+      # — the webhook derives all three from the server-written webhook-events
+      # GSI instead. A follow-up PR pins this with a dynamodb:Attributes IAM
+      # Condition, which is all-or-nothing per request: if this write set drifts,
+      # that Condition denies EVERY pointer write, and write_pointer is fail-soft,
+      # so chains would silently degrade to new-chain-per-event with no alarm.
+      # Hence the paths below gate the writer and both of its callers.
+      - 'modules/agent-factory/agent-worker-image/lib/correlation_store.py'
+      - 'modules/agent-factory/agent-worker-image/lib/seed_trigger_pointer.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_correlation_store_no_provenance_4129.py'
       # Node runtime producer
       - 'modules/agent-factory/agent/src/lib/provenanceClient.ts'
       - 'modules/agent-factory/agent/src/lib/provenanceClient.test.ts'
@@ -67,6 +78,16 @@ jobs:
       - name: Assert the worker builds the golden payload
         working-directory: modules/agent-factory/agent-worker-image
         run: pytest tests/test_provenance_client.py -v --tb=short --timeout=60
+
+      # Named explicitly rather than as a bare `pytest tests/` for the same
+      # reason as the agent-trust-boundary job below: this suite has a
+      # pre-existing red baseline on main (test_entrypoint.py, test_adp_cred_assume.py,
+      # and test_correlation_store.py's TableName assertion, which reads the
+      # pod's real CORRELATION_POINTERS_TABLE env var cached at import). A bare
+      # run would fail on arrival and train everyone to ignore this job.
+      - name: Assert the pod cannot write chain provenance to its pointer row
+        working-directory: modules/agent-factory/agent-worker-image
+        run: pytest tests/test_correlation_store_no_provenance_4129.py -v --tb=short --timeout=60
 
   node-producer:
     name: Node Runtime Producer
