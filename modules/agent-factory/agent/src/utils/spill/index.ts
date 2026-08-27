@@ -27,7 +27,7 @@
  *
  * Reference: docs/research/deepseek-harness-fit-assessment.md §Q4, §7
  */
-import { SpillStore } from './store';
+import { SpillStore, SPILL_DIR_NAME } from './store';
 
 export { SpillStore, TmpSpillStore, SPILL_DIR_NAME } from './store';
 
@@ -48,6 +48,16 @@ const HEAD_EXCERPT_BYTES = 2_000;
  * final count — is almost always at the end.
  */
 const TAIL_EXCERPT_BYTES = 3_000;
+
+/**
+ * Line count suggested as the `limit` of a retrieval read (#4234).
+ *
+ * The stand-in has to name a concrete number: told only to "read in ranges",
+ * a model reads the whole file, which reloads the payload spilling just removed.
+ * 500 lines is a few KiB of typical log output — enough to make progress in one
+ * read, small enough that a handful of reads still costs less than the payload.
+ */
+const RETRIEVAL_CHUNK_LINES = 500;
 
 /**
  * Read the spill threshold from the environment, falling back to
@@ -132,6 +142,12 @@ export function tailBytes(text: string, maxBytes: number): string {
  * the head, show the tail, then give the locator and the exact instruction for
  * retrieving the rest. The retrieval instruction names `Read`, which is present
  * in both call sites' tool allowlists — the model can always act on it.
+ *
+ * The instruction is **ranged** (#4234): it names an `offset` that skips the
+ * lines already quoted above and a bounded `limit`, because an unranged read
+ * pulls the entire payload back into the context that spilling just cleared —
+ * the excerpt structure above is only useful if retrieval is chunk-addressable
+ * too.
  */
 export function formatSpillStandIn(input: {
   toolName: string;
@@ -150,6 +166,11 @@ export function formatSpillStandIn(input: {
   const tail = tailBytes(payload, TAIL_EXCERPT_BYTES);
   const omittedBytes = Math.max(0, totalBytes - Buffer.byteLength(head, 'utf8') - Buffer.byteLength(tail, 'utf8'));
 
+  // Where the un-quoted middle begins. `Read` offsets are 1-indexed lines, and
+  // the head excerpt above already covers everything before this point, so this
+  // is the first line the model has not already seen.
+  const resumeAtLine = head.split('\n').length + 1;
+
   return [
     `[spilled] Output from \`${toolName}\` was ${totalBytes} bytes (${totalLines} lines), over the ${thresholdBytes}-byte inline limit, so it was written to durable storage instead of being included here in full. Nothing was lost — the complete output is retrievable at the locator below.`,
     '',
@@ -163,8 +184,10 @@ export function formatSpillStandIn(input: {
     '--- END OF EXCERPT ---',
     '',
     `Locator: ${locator}`,
-    `To retrieve the full output, use the ${retrievalTool} tool on: ${locator}`,
-    `If the excerpt above already answers your question, do not retrieve it — that is the point of this summary.`,
+    `To retrieve more, use the ${retrievalTool} tool on the locator IN RANGES — pass offset and limit, do not read the whole file. The middle section omitted above starts at line ${resumeAtLine}, so start with:`,
+    `    ${retrievalTool}(file_path: "${locator}", offset: ${resumeAtLine}, limit: ${RETRIEVAL_CHUNK_LINES})`,
+    `Then advance offset by ${RETRIEVAL_CHUNK_LINES} per read (the file has ${totalLines} lines) until you find what you need. Reading it unranged would pull all ${totalBytes} bytes back into this conversation and undo the saving.`,
+    `If the excerpt above already answers your question, do not retrieve it at all — that is the point of this summary.`,
   ].join('\n');
 }
 
@@ -187,6 +210,45 @@ export function buildSpillKey(toolName: string, toolUseId: string | undefined): 
   const tool = safe(toolName || 'tool');
   const id = safe(toolUseId || 'no-id');
   return `${tool}-${id}.txt`;
+}
+
+/**
+ * Does `candidate` live inside a spill directory?
+ *
+ * Matched per path *segment*, not as a substring: `/w/.adp-spill/x.txt` is a
+ * spill file, `/w/.adp-spill-backup/x.txt` and `/w/my.adp-spill.txt` are not.
+ * A substring test would exempt unrelated files whose names happen to contain
+ * the directory name, which is the over-broad-exemption failure mode in #4234.
+ *
+ * Both separators are checked so the test does not depend on the host platform.
+ */
+export function isSpillDirPath(candidate: unknown): boolean {
+  if (typeof candidate !== 'string' || candidate === '') return false;
+  return candidate.split(/[/\\]/).includes(SPILL_DIR_NAME);
+}
+
+/**
+ * Is this tool call reading a previously-spilled payload back?
+ *
+ * This is the fix for #4234. `createSpillHookCallback` decides on payload size
+ * alone, so a `Read` of a spilled file — the exact action the stand-in tells the
+ * model to take — produced an oversized result and got spilled *again*, handing
+ * back a second stand-in instead of the content. The stand-in's promise was
+ * therefore unhonourable through the path it advertised.
+ *
+ * The exemption is deliberately scoped to the **path**, not to the tool. An
+ * oversized `Read` of an ordinary file must still spill, otherwise the context
+ * bloat this feature exists to prevent walks straight back in through `Read`.
+ * (Hence an in-hook guard rather than an SDK `matcher`, which can only match on
+ * tool name and so cannot express "Read, but only of these paths".)
+ *
+ * `tool_input` is `unknown` in the SDK types; `file_path` is what `Read`/`Write`/
+ * `Edit` use and `path` is the common alternative among MCP file tools.
+ */
+export function readsSpilledFile(toolInput: unknown): boolean {
+  if (toolInput === null || typeof toolInput !== 'object') return false;
+  const input = toolInput as { file_path?: unknown; path?: unknown };
+  return isSpillDirPath(input.file_path) || isSpillDirPath(input.path);
 }
 
 export interface SpillHookOptions {
@@ -218,9 +280,15 @@ export function createSpillHookCallback(opts: SpillHookOptions) {
     try {
       const hookInput = (input ?? {}) as {
         tool_name?: string;
+        tool_input?: unknown;
         tool_response?: unknown;
         tool_use_id?: string;
       };
+
+      // #4234: never spill a read of an already-spilled payload — that turns
+      // the stand-in's own retrieval instruction into a loop. Checked before
+      // serialization: there is no size at which re-spilling is the right call.
+      if (readsSpilledFile(hookInput.tool_input)) return {};
 
       const payload = serializeToolResponse(hookInput.tool_response);
       if (payload === null) return {};
@@ -268,7 +336,10 @@ export function createSpillHookCallback(opts: SpillHookOptions) {
  *
  * Shaped as `Partial<Record<HookEvent, HookCallbackMatcher[]>>`. No `matcher`
  * is set, so the hook sees every tool — spilling is about payload size, not
- * about which tool produced it.
+ * about which tool produced it. The one exemption (reads of already-spilled
+ * files, #4234) is enforced *inside* the callback by `readsSpilledFile`, because
+ * a matcher can only select on tool name and the exemption is path-scoped: it
+ * must exempt `Read` of a spill file without exempting `Read` in general.
  *
  * Typed loosely (`Record<string, unknown>`) on purpose: both call sites already
  * hand the SDK a loosely-typed options object, and importing the SDK's hook

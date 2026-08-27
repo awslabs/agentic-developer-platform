@@ -19,7 +19,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { ArtifactStore, CallerIdentity } from '../../complex-task-chat/artifacts/port';
-import { SpillStore } from './store';
+import { SpillStore, SPILL_DIR_NAME } from './store';
 
 export interface ArtifactSpillStoreScope {
   sessionId: string;
@@ -49,7 +49,10 @@ export class ArtifactSpillStore implements SpillStore {
   ) {}
 
   async spill(key: string, body: string): Promise<string> {
-    const stagingDir = this.opts.stagingDir ?? path.join(os.tmpdir(), 'adp-spill');
+    // SPILL_DIR_NAME, not a private literal: the hook's re-spill exemption
+    // (#4234) recognises spilled files by that directory segment, so a staging
+    // dir named anything else would leave the chat path looping.
+    const stagingDir = this.opts.stagingDir ?? path.join(os.tmpdir(), SPILL_DIR_NAME);
     await fs.promises.mkdir(stagingDir, { recursive: true });
     const localPath = path.join(stagingDir, key);
     await fs.promises.writeFile(localPath, body, 'utf8');
