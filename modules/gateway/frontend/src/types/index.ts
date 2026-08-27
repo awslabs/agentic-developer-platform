@@ -29,6 +29,8 @@ export enum Permission {
   USER_READ = 'user:read',
   USER_MANAGE = 'user:manage',
   METRICS_READ = 'metrics:read',
+  // Issue #4200: accepting or amending an orchestration plan.
+  PLAN_APPROVE = 'plan:approve',
 }
 
 // Period types for budgets

@@ -47,13 +47,22 @@ class TestPermission:
 
     def test_permission_count(self):
         """Test Permission enum has expected number of permissions."""
-        # Should have 17 permissions based on the source file
-        # (Issue #3989 added AGENT_REGISTER for agent-registry writes)
-        assert len(Permission) == 17
+        # Should have 18 permissions based on the source file
+        # (Issue #3989 added AGENT_REGISTER for agent-registry writes;
+        #  Issue #4200 added PLAN_APPROVE for orchestration promotion-state writes)
+        assert len(Permission) == 18
 
     def test_agent_register_permission_exists(self):
         """Issue #3989: agent-registry writes gate on their own permission."""
         assert Permission.AGENT_REGISTER.value == "agent:register"
+
+    def test_plan_approve_permission_exists(self):
+        """Issue #4200: promotion-state writes gate on their own permission.
+
+        Shared by gate approval and plan amendment — amendment must never be
+        gated more weakly than the approval it sits beside.
+        """
+        assert Permission.PLAN_APPROVE.value == "plan:approve"
 
     def test_org_permissions_exist(self):
         """Test organization management permissions exist."""

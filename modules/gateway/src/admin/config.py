@@ -54,6 +54,16 @@ class Permission(str, Enum):
     # every role that can edit any org attribute.
     AGENT_REGISTER = "agent:register"
 
+    # Issue #4200: writes into orchestration promotion state — accepting a loop
+    # proposal at a gate, and amending an accepted plan. A dedicated permission
+    # rather than reusing ORG_UPDATE, which every role that can edit any org
+    # attribute holds: promotion state is the record of what was approved, and
+    # the EPIC's central guarantee is that it cannot be reached by anything
+    # softer than an explicit approval authority. Amendment is a SECOND write
+    # path into that state, so it shares this permission rather than getting a
+    # weaker one of its own — a softer door into the same room is the same hole.
+    PLAN_APPROVE = "plan:approve"
+
 
 # Role to permissions mapping
 ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
@@ -75,6 +85,7 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.USER_MANAGE,
         Permission.METRICS_READ,
         Permission.AGENT_REGISTER,
+        Permission.PLAN_APPROVE,
     },
     AdminRole.ORG_ADMIN: {
         Permission.ORG_READ,
@@ -91,6 +102,9 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         # Issue #3989: an org admin may register agents into their OWN org; the
         # target_org_id scope check in check_permission() enforces the boundary.
         Permission.AGENT_REGISTER,
+        # Issue #4200: an org admin may accept and amend plans for their OWN
+        # org's flows; the target_org_id scope check enforces the boundary.
+        Permission.PLAN_APPROVE,
     },
     AdminRole.DEPT_ADMIN: {
         Permission.BUDGET_READ,

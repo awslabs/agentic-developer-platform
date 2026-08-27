@@ -49,6 +49,8 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     Permission.USER_READ,
     Permission.USER_MANAGE,
     Permission.METRICS_READ,
+    // Issue #4200: mirrors ROLE_PERMISSIONS[PLATFORM_ADMIN] in src/admin/config.py.
+    Permission.PLAN_APPROVE,
   ],
   [AdminRole.ORG_ADMIN]: [
     Permission.ORG_READ,
@@ -62,6 +64,8 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     Permission.LOGS_EXPORT,
     Permission.USER_READ,
     Permission.USER_MANAGE,
+    // Issue #4200: mirrors ROLE_PERMISSIONS[ORG_ADMIN] in src/admin/config.py.
+    Permission.PLAN_APPROVE,
   ],
   [AdminRole.DEPT_ADMIN]: [
     Permission.BUDGET_READ,

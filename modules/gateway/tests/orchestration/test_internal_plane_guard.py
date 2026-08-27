@@ -239,23 +239,41 @@ class TestNoPromotionStateOnInternalPlane:
         assert offenders == [], f"internal-plane handlers/dependencies touch promotion state: {offenders}"
 
 
-class TestOrchestrationExposesNoRouter:
-    """The strongest form of the guarantee for this story: there is no route.
+class TestOrchestrationRouterIsOperatorPlane:
+    """The orchestration router exists (Issue #4200) and is operator-plane only.
 
-    This story ships storage only. No orchestration router exists, so promotion
-    state is not reachable over HTTP from any plane. When a later story adds an
+    Issue #4196 shipped storage with no router at all, and asserted that. Its
+    docstring set the instruction this class follows: "When a later story adds an
     operator-plane router, this test changes to assert it is NOT in UNIT_MODULES'
-    internal set — it should not simply be deleted.
+    internal set — it should not simply be deleted."
+
+    #4200 added `POST /api/orchestration/flows/{flow_id}/amendments`, so the
+    no-router assertion is now converted rather than dropped. What has to stay
+    true is narrower but is the part that actually matters: the router is reachable
+    only from the Cognito-authenticated operator plane, never from `/internal/v1/*`
+    where agent pods can call anything with any method.
     """
 
-    def test_orchestration_package_has_no_router_attribute(self):
+    def test_orchestration_package_still_exports_no_router(self):
+        """The PACKAGE (`src/orchestration/__init__.py`) must stay router-free.
+
+        `app.py` auto-registers any `router` attribute on a listed module. The
+        router lives in the `src.orchestration.routes` submodule, which is listed
+        explicitly; re-exporting it from the package would create a second
+        registration path that no allowlist here covers.
+        """
         import src.orchestration as orchestration
 
         assert not hasattr(orchestration, "router"), (
-            "src.orchestration now exposes a `router`. app.py auto-registers any "
-            "module attribute named `router`, so confirm this is operator-plane "
-            "(Cognito-authenticated), NOT internal-plane, then update this test."
+            "src.orchestration (the package) now re-exports a `router`. Keep the router in "
+            "src.orchestration.routes so registration stays explicit and single-path."
         )
+
+    def test_orchestration_routes_are_registered_on_the_operator_plane(self):
+        """The router is in UNIT_MODULES under its own non-internal module path."""
+        from src.app import UNIT_MODULES
+
+        assert "src.orchestration.routes" in UNIT_MODULES, "src.orchestration.routes is not registered; the amendment endpoint would 404."
 
     def test_orchestration_is_not_registered_as_an_internal_module(self):
         """Registering orchestration routes under /internal/v1 is the failure mode."""
@@ -263,3 +281,46 @@ class TestOrchestrationExposesNoRouter:
 
         internal_orchestration = [m for m in UNIT_MODULES if "orchestration" in m and "internal" in m]
         assert internal_orchestration == [], f"orchestration registered on the internal plane: {internal_orchestration}"
+
+    def test_orchestration_router_is_not_in_the_internal_route_surface(self):
+        """No orchestration path may appear under the internal-plane prefix.
+
+        Belt and braces against the mount-path variant of the mistake: a router
+        listed as an operator module could still declare an `/internal/v1` prefix
+        and land on the plane agents can reach.
+        """
+        from src.orchestration.routes import router as orchestration_router
+
+        internal_paths = [route.path for route in orchestration_router.routes if "/internal/" in getattr(route, "path", "")]
+        assert internal_paths == [], f"orchestration router declares internal-plane paths: {internal_paths}"
+
+        assert _internal_routes().isdisjoint(
+            {(route.path, method) for route in orchestration_router.routes for method in getattr(route, "methods", set()) or set()}
+        ), "an orchestration route collides with the internal-plane surface"
+
+    def test_every_orchestration_route_requires_authentication_and_permission(self):
+        """Each route depends on `get_current_user` and checks `PLAN_APPROVE`.
+
+        The router has no router-level dependency, so a future route added here
+        would be unauthenticated by default. This walks every registered endpoint
+        rather than trusting that the two current ones are the only ones.
+        """
+        from src.auth.dependencies import get_current_user
+        from src.orchestration.routes import router as orchestration_router
+
+        unguarded = []
+        for route in orchestration_router.routes:
+            endpoint = getattr(route, "endpoint", None)
+            if endpoint is None:
+                continue
+
+            dependency_calls = {getattr(dep, "call", None) for dep in getattr(getattr(route, "dependant", None), "dependencies", []) or []}
+            source = inspect.getsource(endpoint)
+
+            if get_current_user not in dependency_calls or "Permission.PLAN_APPROVE" not in source:
+                unguarded.append(getattr(route, "path", "?"))
+
+        assert unguarded == [], (
+            f"orchestration routes missing authentication or the PLAN_APPROVE check: {unguarded}. "
+            "Promotion state must never be reachable without an explicit approval authority."
+        )

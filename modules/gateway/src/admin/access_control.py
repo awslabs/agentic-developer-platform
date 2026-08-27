@@ -47,6 +47,15 @@ _ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
         # then short-circuit the target_org_id check (which requires a truthy
         # allowed_org_id), passing the scope check entirely.
         Permission.AGENT_REGISTER,
+        # Issue #4200: promotion-state writes are org-scoped. A flow belongs to
+        # exactly one tenant, so a principal with an empty org_id has no flow it
+        # could legitimately amend. Omitting this would let such a principal skip
+        # the membership-deny below AND short-circuit the target_org_id check
+        # (which requires a truthy allowed_org_id), passing the scope check
+        # entirely — a second, softer door into the state this EPIC exists to
+        # protect. tests/orchestration/test_amend.py asserts this frozenset for
+        # EQUALITY so the next permission cannot be added without landing here.
+        Permission.PLAN_APPROVE,
     }
 )
 

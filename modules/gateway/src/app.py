@@ -48,6 +48,11 @@ UNIT_MODULES = [
     "src.features.routes",  # Issue #3566: Feature-flag endpoint
     "src.auth.gitlab_sso",  # Issue #3775: GitLab SSO JWT minting + JWKS
     "src.cli_download.routes",  # Issue #4146: /setup page CLI helper-script download
+    # Issue #4200: orchestration plan amendment. OPERATOR plane (Cognito + the
+    # PLAN_APPROVE permission), deliberately NOT src.internal.* — agent pods can
+    # call any internal route with any method, so promotion state must never be
+    # registered there. Guarded by tests/orchestration/test_internal_plane_guard.py.
+    "src.orchestration.routes",
 ]
 
 

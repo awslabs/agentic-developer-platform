@@ -60,8 +60,11 @@ __all__ = [
     "CompileResult",
     "ProposalRejectedError",
     "TenantMismatchError",
+    "address_of",
     "compile_proposal",
     "plan_hash",
+    "upsert_edges",
+    "upsert_nodes",
 ]
 
 
@@ -216,12 +219,12 @@ async def compile_proposal(
                 plan_version=in_force.version,
                 decision_id=in_force.accepted_by_decision_id or "",
                 plan_hash=document_hash,
-                node_ids={_address_of(flow.slug, node): node.id for node in existing},
+                node_ids={address_of(flow.slug, node): node.id for node in existing},
                 already_compiled=True,
             )
 
-        node_ids, nodes_created = await _upsert_nodes(repo, proposal=proposal, org_id=decision.org_id, flow_id=flow.id)
-        edges_created = await _upsert_edges(repo, proposal=proposal, org_id=decision.org_id, flow_id=flow.id, node_ids=node_ids)
+        node_ids, nodes_created = await upsert_nodes(repo, proposal=proposal, org_id=decision.org_id, flow_id=flow.id)
+        edges_created = await upsert_edges(repo, proposal=proposal, org_id=decision.org_id, flow_id=flow.id, node_ids=node_ids)
 
         # The decision is appended before the plan row so the plan can point at
         # it: `accepted_by_decision_id` is nullable only because one of the two
@@ -255,7 +258,15 @@ async def compile_proposal(
         )
 
 
-def _address_of(flow_slug: str, node) -> str:
+# --- Shared with amend.py ---------------------------------------------------
+# The three helpers below are module-public (no leading underscore) because
+# `amend.py` calls them. Issue #4200 amends a plan by reusing this compile path
+# rather than reimplementing it: a second copy of "insert the proposal's nodes"
+# could accept a document this one would refuse, and validation parity between
+# the original and amended paths is exactly what AC-29 forbids breaking.
+
+
+def address_of(flow_slug: str, node) -> str:
     """Reassemble a stored node's graph address from its components.
 
     The store holds the four segments denormalised (there is no container table to
@@ -284,7 +295,7 @@ async def _resolve_flow(repo: OrchestrationRepository, *, proposal: LoopProposal
     )
 
 
-async def _upsert_nodes(
+async def upsert_nodes(
     repo: OrchestrationRepository,
     *,
     proposal: LoopProposal,
@@ -303,7 +314,7 @@ async def _upsert_nodes(
     default in `models.py`. Not passed explicitly: a literal here would be a
     second place the initial state is decided, and the two could disagree.
     """
-    existing = {_address_of(proposal.flow_slug, node): node for node in await repo.list_nodes(org_id=org_id, flow_id=flow_id)}
+    existing = {address_of(proposal.flow_slug, node): node for node in await repo.list_nodes(org_id=org_id, flow_id=flow_id)}
 
     node_ids: dict[str, str] = {}
     created = 0
@@ -331,7 +342,7 @@ async def _upsert_nodes(
     return node_ids, created
 
 
-async def _upsert_edges(
+async def upsert_edges(
     repo: OrchestrationRepository,
     *,
     proposal: LoopProposal,
