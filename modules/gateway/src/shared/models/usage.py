@@ -33,6 +33,13 @@ class UsageLog(Base, TenantMixin):
     # hit-rate query silently wrong. Never give these a default.
     cache_read_input_tokens: Mapped[int | None] = mapped_column(Integer)
     cache_creation_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    # Issue #4207: the orchestration graph address (`flow/epic/wave/node`) this
+    # call is attributable to. Nullable with NO default, and never backfilled —
+    # a null means "this row is not addressed to a graph node", which is the
+    # truth for every pre-feature row and for every non-gateway Bedrock path
+    # (ADP_BEDROCK_VIA=direct|user writes no row at all). A default would stamp a
+    # fabricated address onto historical rows and land them in some EPIC's total.
+    graph_address: Mapped[str | None] = mapped_column(String(512), index=True)
 
 
 class RateLimitConfig(Base, TenantMixin):

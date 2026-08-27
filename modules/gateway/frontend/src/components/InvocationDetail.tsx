@@ -12,6 +12,8 @@ import { useState } from 'react';
 import { Modal } from '@/components/ui';
 import { TranscriptContent } from '@/components/TranscriptViewer';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
+// Issue #4207: was a local formatCost with the same sub-cent convention.
+import { formatCost } from '@/utils/cost';
 import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
 import { describeLiveness } from '@/utils/liveness';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
@@ -35,12 +37,6 @@ function formatDuration(startIso: string, endIso: string): string {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-}
-
-/** Format a cost value to a readable string. */
-function formatCost(costUsd: number): string {
-  if (costUsd < 0.01) return `$${costUsd.toFixed(4)}`;
-  return `$${costUsd.toFixed(2)}`;
 }
 
 // ---------------------------------------------------------------------------

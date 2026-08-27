@@ -300,28 +300,123 @@ class TestOrchestrationRouterIsOperatorPlane:
         ), "an orchestration route collides with the internal-plane surface"
 
     def test_every_orchestration_route_requires_authentication_and_permission(self):
-        """Each route depends on `get_current_user` and checks `PLAN_APPROVE`.
+        """Each route depends on `get_current_user` and checks an allowlisted permission.
 
         The router has no router-level dependency, so a future route added here
         would be unauthenticated by default. This walks every registered endpoint
-        rather than trusting that the two current ones are the only ones.
+        rather than trusting that the current ones are the only ones.
+
+        Issue #4207: this required `Permission.PLAN_APPROVE` on *every* route,
+        which was right while every route wrote promotion state. `GET
+        /flows/{flow_id}/cost` only reads spend, and gating a read of cost on
+        approval authority would mean nobody could see what a flow cost without
+        also being able to accept plans — granting strictly more than the
+        operation needs.
+
+        So the invariant is now per-route rather than uniform, and it stays
+        fail-closed by **equality against an allowlist** (the same shape as
+        EXPECTED_INTERNAL_ROUTES above): a new route is not covered by a default,
+        it breaks this test until someone adds it here and states its permission
+        out loud. Anything that touches promotion state must still be
+        PLAN_APPROVE — that is asserted separately below.
         """
         from src.auth.dependencies import get_current_user
         from src.orchestration.routes import router as orchestration_router
 
+        # path -> the permission that route must check. ADDING A ROUTE REQUIRES A
+        # LINE HERE, and that is the review moment: if the route reads or writes
+        # promotion state, the answer is PLAN_APPROVE and nothing weaker.
+        expected_permissions = {
+            "/api/orchestration/flows/{flow_id}/amendments": "Permission.PLAN_APPROVE",
+            "/api/orchestration/flows/{flow_id}/plans": "Permission.PLAN_APPROVE",
+            # Read-only cost rollup. Reads usage_logs, never promotion state.
+            "/api/orchestration/flows/{flow_id}/cost": "Permission.USAGE_READ",
+        }
+
+        actual_paths = set()
         unguarded = []
         for route in orchestration_router.routes:
             endpoint = getattr(route, "endpoint", None)
             if endpoint is None:
                 continue
 
+            path = getattr(route, "path", "?")
+            actual_paths.add(path)
             dependency_calls = {getattr(dep, "call", None) for dep in getattr(getattr(route, "dependant", None), "dependencies", []) or []}
             source = inspect.getsource(endpoint)
 
-            if get_current_user not in dependency_calls or "Permission.PLAN_APPROVE" not in source:
-                unguarded.append(getattr(route, "path", "?"))
+            required = expected_permissions.get(path)
+            if get_current_user not in dependency_calls or required is None or required not in source:
+                unguarded.append(path)
+
+        assert actual_paths == set(expected_permissions), (
+            f"orchestration route surface changed: {sorted(actual_paths ^ set(expected_permissions))}. "
+            "Add the new route to expected_permissions with the permission it enforces."
+        )
 
         assert unguarded == [], (
-            f"orchestration routes missing authentication or the PLAN_APPROVE check: {unguarded}. "
+            f"orchestration routes missing authentication or their required permission check: {unguarded}. "
             "Promotion state must never be reachable without an explicit approval authority."
+        )
+
+    def test_routes_that_mutate_or_read_acceptance_records_require_plan_approve(self):
+        """The part of the old uniform rule that must never relax.
+
+        `test_every_orchestration_route_requires_authentication_and_permission`
+        allows a per-route permission so a pure cost read is not forced to demand
+        approval authority. That flexibility must not become a hole, so the two
+        cases that genuinely ARE approval authority are pinned here regardless of
+        what the allowlist says:
+
+          1. **Any non-GET method.** Writing anything on this router is promotion
+             activity.
+          2. **Any handler touching the acceptance records** — accepted plans and
+             decisions. These are "what was approved"; reading them under a
+             weaker permission leaks the approval record.
+
+        Deliberately NOT included: `OrchestrationFlow`/`Node`/`Edge` and
+        `OrchestrationRepository`. Those are the graph's *structure*, and the cost
+        route reads them purely to resolve `flow_id` within the caller's org
+        before querying the ledger — refusing that would force every read on this
+        router back to demanding approval authority, which is the very thing this
+        change fixes. The scan below is on the acceptance records only.
+        """
+        from src.orchestration.routes import router as orchestration_router
+
+        # Model/table names alone would be VACUOUS here: handlers reach these
+        # records through repository methods and response fields, never by naming
+        # the ORM class. Verified by mutation — flipping `list_plans` to
+        # USAGE_READ must make this test fail, and with only the class names in
+        # this set it did not.
+        acceptance_records = frozenset(
+            {
+                "OrchestrationAcceptedPlan",
+                "OrchestrationDecision",
+                "orchestration_accepted_plans",
+                "orchestration_decisions",
+                "list_plan_versions",
+                "accepted_by_decision_id",
+                "accepted_plan",
+                "plan_document",
+                "record_decision",
+            }
+        )
+
+        offenders = []
+        for route in orchestration_router.routes:
+            endpoint = getattr(route, "endpoint", None)
+            if endpoint is None:
+                continue
+
+            source = inspect.getsource(endpoint)
+            methods = set(getattr(route, "methods", set()) or set())
+            mutating = sorted(methods - {"GET", "HEAD", "OPTIONS"})
+            touches = sorted(name for name in acceptance_records if name in source)
+
+            if (mutating or touches) and "Permission.PLAN_APPROVE" not in source:
+                offenders.append((getattr(route, "path", "?"), mutating, touches))
+
+        assert offenders == [], (
+            f"orchestration routes mutate state or read acceptance records without PLAN_APPROVE: {offenders}. "
+            "A weaker permission on promotion state is exactly the escalation this guard exists to stop."
         )

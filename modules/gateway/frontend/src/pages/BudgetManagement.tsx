@@ -24,22 +24,14 @@ import {
 import { EntityType } from '@/types';
 import { BudgetFormModal } from '@/components/budget/BudgetFormModal';
 import { DeleteConfirmationModal } from '@/components/ui/DeleteConfirmationModal';
+// Issue #4207: was a byte-identical local copy of utils/format's formatCurrency.
+import { formatCurrency } from '@/utils/format';
 
 // Helper to get utilization badge color
 function getUtilizationBadgeVariant(pct: number): 'success' | 'warning' | 'danger' {
   if (pct < 50) return 'success';
   if (pct < 80) return 'warning';
   return 'danger';
-}
-
-// Format currency
-function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount);
 }
 
 // Format entity type for display

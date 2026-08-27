@@ -13,6 +13,8 @@ import { Alert, Button } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
 import { getMyInvocationChain, getAdminInvocationChain } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
+// Issue #4207: replaces two copy-pasted inline 4/2-decimal expressions.
+import { formatAmount } from '@/utils/cost';
 import type { InvocationChainItem, InvocationChainResponse } from '@/types/activity';
 
 // ---------------------------------------------------------------------------
@@ -77,7 +79,7 @@ function ChainNode({ node, depth, highlightId, onNodeClick }: ChainNodeProps) {
         {/* Per-node cost badge — Issue #1653 */}
         {node.total_cost_usd != null && (
           <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
-            ${node.total_cost_usd < 0.01 ? node.total_cost_usd.toFixed(4) : node.total_cost_usd.toFixed(2)}
+            {formatAmount(node.total_cost_usd)}
           </span>
         )}
 
@@ -246,7 +248,7 @@ export default function InvocationChain({
         <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
           <span>
             Chain total: <span className="font-medium font-mono">
-              ${data.chain_total_cost_usd < 0.01 ? data.chain_total_cost_usd.toFixed(4) : data.chain_total_cost_usd.toFixed(2)}
+              {formatAmount(data.chain_total_cost_usd)}
             </span>
           </span>
           {data.chain_total_call_count != null && (

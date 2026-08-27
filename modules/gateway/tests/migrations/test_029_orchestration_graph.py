@@ -412,10 +412,11 @@ class TestRevisionChain:
         deploy, and it is invisible until `alembic upgrade head` runs in a pod.
 
         Asserts the *count*, not the head's name: the head advances with every
-        migration that lands (030 in #4287), and a name-pinned assertion turns
-        every future migration into a spurious failure here — which trains people
-        to edit this test rather than read it. What must never change is that
-        there is exactly one head, and that 029 is still on the chain.
+        migration that lands (030 in #4287, 031 in #4207), and a name-pinned
+        assertion turns every future migration into a spurious failure here —
+        which trains people to edit this test rather than read it. What must
+        never change is that there is exactly one head, and that 029 is still on
+        the chain.
         """
         import ast
 

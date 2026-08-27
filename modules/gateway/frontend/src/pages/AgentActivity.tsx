@@ -33,6 +33,9 @@ import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { usePermissions } from '@/hooks/usePermissions';
 import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationDetail } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
+// Issue #4207: CostBadge/ChainCostBadge each had their own copy of the 4/2-decimal
+// split and the null policy. Formatting is shared now; these only style it.
+import { formatAmount, formatCost, formatRunCost, NO_DATA_INDICATOR, COST_SCOPE_LABEL } from '@/utils/cost';
 import {
   describeSkipReason,
   skipReasonLabel,
@@ -147,20 +150,22 @@ function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
 // ---------------------------------------------------------------------------
 
 function CostBadge({ item }: { item: InvocationItem }) {
-  if (item.total_cost_usd === null || item.total_cost_usd === undefined) {
-    // Not metered (non-gateway-mode run) or no usage_logs rows yet
-    return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
+  // Issue #4207: formatting (including the no-data and pending policies) now
+  // lives in utils/cost. This component decides only how to STYLE the result —
+  // the three cases used to be three copies of the same conditional.
+  const formatted = formatRunCost(item.total_cost_usd, item.status);
+  if (formatted === NO_DATA_INDICATOR) {
+    // Not metered (non-gateway-mode run) or no usage_logs rows yet.
+    return <span className="text-gray-400 dark:text-gray-500 text-sm" title={COST_SCOPE_LABEL}>{formatted}</span>;
   }
-  if (item.total_cost_usd === 0 && item.status === 'in_progress') {
-    // Run in progress, cost not yet backfilled
-    return <span className="text-gray-400 dark:text-gray-500 text-sm italic">pending</span>;
+  if (formatted === 'pending') {
+    return <span className="text-gray-400 dark:text-gray-500 text-sm italic">{formatted}</span>;
   }
-  // Format cost: show 4 decimal places for small amounts, 2 for larger
-  const formatted = item.total_cost_usd < 0.01
-    ? `$${item.total_cost_usd.toFixed(4)}`
-    : `$${item.total_cost_usd.toFixed(2)}`;
   return (
-    <span className="text-sm text-gray-900 dark:text-white font-mono" title={`${item.call_count ?? 0} calls, ${item.total_tokens ?? 0} tokens`}>
+    <span
+      className="text-sm text-gray-900 dark:text-white font-mono"
+      title={`${item.call_count ?? 0} calls, ${item.total_tokens ?? 0} tokens — ${COST_SCOPE_LABEL}`}
+    >
       {formatted}
     </span>
   );
@@ -171,14 +176,12 @@ function CostBadge({ item }: { item: InvocationItem }) {
 // ---------------------------------------------------------------------------
 
 function ChainCostBadge({ cost }: { cost: number | null }) {
-  if (cost === null || cost === undefined) {
-    return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
+  const formatted = formatCost(cost);
+  if (formatted === NO_DATA_INDICATOR) {
+    return <span className="text-gray-400 dark:text-gray-500 text-sm" title={COST_SCOPE_LABEL}>{formatted}</span>;
   }
-  const formatted = cost < 0.01
-    ? `$${cost.toFixed(4)}`
-    : `$${cost.toFixed(2)}`;
   return (
-    <span className="text-sm text-gray-900 dark:text-white font-mono">
+    <span className="text-sm text-gray-900 dark:text-white font-mono" title={COST_SCOPE_LABEL}>
       {formatted}
     </span>
   );
@@ -314,7 +317,7 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
                 </span>
                 {desc.total_cost_usd != null && (
                   <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
-                    ${desc.total_cost_usd < 0.01 ? desc.total_cost_usd.toFixed(4) : desc.total_cost_usd.toFixed(2)}
+                    {formatAmount(desc.total_cost_usd)}
                   </span>
                 )}
                 {desc.transcript_key && (

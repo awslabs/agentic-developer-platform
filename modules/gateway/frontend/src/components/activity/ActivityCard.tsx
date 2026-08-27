@@ -12,6 +12,9 @@
 import { useState, useCallback } from 'react';
 import type { InvocationItem, InvocationStatus, TriggerKind } from '@/types/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
+// Issue #4207: the local formatCost closed over item.status; formatRunCost takes
+// it as an argument so the same no-data/pending policy is shared, not copied.
+import { formatRunCost } from '@/utils/cost';
 import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
 
@@ -89,13 +92,6 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
     [onTranscriptClick, item.invocation_id],
   );
 
-  // Format cost
-  const formatCost = (cost: number | null | undefined): string => {
-    if (cost === null || cost === undefined) return '—';
-    if (cost === 0 && item.status === 'in_progress') return 'pending';
-    return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
-  };
-
   // Source link label
   const sourceLabel =
     item.repo && item.issue_number
@@ -172,7 +168,7 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
         )}
 
         <span className="ml-auto font-mono text-gray-700 dark:text-gray-300">
-          {formatCost(item.total_cost_usd)}
+          {formatRunCost(item.total_cost_usd, item.status)}
         </span>
       </div>
 

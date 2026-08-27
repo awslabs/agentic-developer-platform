@@ -6,6 +6,9 @@ Endpoints:
 - POST /api/orchestration/flows/{flow_id}/amendments — supersede the accepted plan
 - GET  /api/orchestration/flows/{flow_id}/plans — read plan versions, including
   superseded ones
+- GET  /api/orchestration/flows/{flow_id}/cost — three-valued cost rolled up by
+  graph address (issue #4207). Gated on `USAGE_READ`, not `PLAN_APPROVE`: it is a
+  read of spend, and approval is a write authority over promotion state.
 
 **This is the operator plane, not the internal plane.** The distinction is the
 EPIC's central guarantee, not a routing detail. Agent pods can reach any
@@ -45,6 +48,7 @@ from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.orchestration.amend import AmendmentContext, FlowNotFoundError, amend_plan
 from src.orchestration.compile import ProposalRejectedError, TenantMismatchError
+from src.orchestration.cost import COST_SCOPE_LABEL, get_flow_cost
 from src.orchestration.proposal import LoopProposal
 from src.orchestration.repository import OrchestrationRepository
 from src.shared.database import get_db
@@ -230,3 +234,117 @@ async def list_plans(
         )
         for plan in plans
     ]
+
+
+class NodeCostResponse(BaseModel):
+    """Cost for one graph address, three-valued.
+
+    `amount_usd` is null for any status but `known`, and it is a **string**, not a
+    float: `Numeric(10, 6)` through a float loses the sub-cent precision that is
+    the majority of an individual agent call's cost. Serialising the Decimal as a
+    string is what keeps the wire value exact.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    address: str
+    status: str
+    amount_usd: str | None
+    total_tokens: int
+    call_count: int
+    reason: str | None
+    scope: str
+
+
+class FlowCostResponse(BaseModel):
+    """A flow's rolled-up cost, with the labels that stop it being misread.
+
+    `partial` and `scope` are not decoration. A partial total is a **lower
+    bound** — some node's contribution was never measured — and `scope` says the
+    figure covers agent-run Bedrock spend only. A client that renders the number
+    without either one presents a lower bound of one cost category as the total
+    cost, which is the misreading this story exists to prevent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    flow_id: str
+    address: str
+    status: str
+    amount_usd: str | None
+    total_tokens: int
+    call_count: int
+    node_count: int
+    unknown_node_count: int
+    partial: bool
+    reason: str | None
+    scope: str
+    nodes: list[NodeCostResponse]
+
+
+@router.get("/flows/{flow_id}/cost", response_model=FlowCostResponse)
+async def get_flow_cost_route(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> FlowCostResponse:
+    """A flow's cost, rolled up from its nodes by graph address.
+
+    Gated on `USAGE_READ` rather than `PLAN_APPROVE`: this is a read of spend, and
+    approval authority is a *write* permission over promotion state. Requiring the
+    stronger one would mean nobody could see costs without also being able to
+    accept plans — authority creep in the direction that grants more than the
+    operation needs. `USAGE_READ` is already in `_ORG_SCOPED_PERMISSIONS`, so a
+    principal with an empty `org_id` is denied rather than skipping the scope
+    check.
+
+    A `flow_id` from another tenant returns 404, consistent with the rest of this
+    router: a 403 would confirm the id exists somewhere and let a caller enumerate
+    flows by status code.
+
+    Every figure in the response carries `scope`, and aggregates carry `partial`.
+    A node with no ledger row is `unknown` — never `0`.
+    """
+    await access.check_permission(
+        current_user,
+        Permission.USAGE_READ,
+        target_org_id=current_user.org_id,
+    )
+
+    repo = OrchestrationRepository(db)
+
+    # Org-filtered flow resolution before any ledger read, so a cross-tenant
+    # flow_id can never reach the cost query.
+    flow = await repo.get_flow(org_id=current_user.org_id, flow_id=flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail=f"no orchestration flow {flow_id!r} in this tenant")
+
+    nodes = await repo.list_nodes(org_id=current_user.org_id, flow_id=flow.id)
+    aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
+
+    return FlowCostResponse(
+        flow_id=flow.id,
+        address=aggregate.address,
+        status=aggregate.status.value,
+        amount_usd=str(aggregate.amount_usd) if aggregate.amount_usd is not None else None,
+        total_tokens=aggregate.total_tokens,
+        call_count=aggregate.call_count,
+        node_count=aggregate.node_count,
+        unknown_node_count=aggregate.unknown_node_count,
+        partial=aggregate.partial,
+        reason=aggregate.reason.value if aggregate.reason else None,
+        scope=COST_SCOPE_LABEL,
+        nodes=[
+            NodeCostResponse(
+                address=node.address,
+                status=node.status.value,
+                amount_usd=str(node.amount_usd) if node.amount_usd is not None else None,
+                total_tokens=node.total_tokens,
+                call_count=node.call_count,
+                reason=node.reason.value if node.reason else None,
+                scope=node.scope,
+            )
+            for node in aggregate.nodes
+        ],
+    )
