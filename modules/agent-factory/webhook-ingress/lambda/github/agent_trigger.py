@@ -47,6 +47,9 @@ _GSI_MAX_ATTEMPTS = 2
 # parent_invocation_id. The correlation-index GSI is ordered by arrived_at, so
 # this bounds the read while still spanning a realistic chain. Legitimate
 # cross-issue lineage (#1828) points at a recent ancestor, not an arbitrary one.
+#
+# NOTE: no longer used to validate parent_invocation_id — see _parent_in_chain.
+# A recency window silently rejected valid parents once a chain outgrew it.
 _CHAIN_SCAN_LIMIT = 50
 
 # Required body fields
@@ -388,6 +391,58 @@ def _query_chain(correlation_id: str, limit: int) -> list[dict[str, Any]]:
     return []
 
 
+def _query_event_row(event_id: str) -> list[dict[str, Any]]:
+    """Query the webhook-events base table for one row by ``event_id``.
+
+    ``event_id`` is the table's partition key (range key ``arrived_at``), so this
+    is a bounded primary-key query rather than a scan. Used by
+    :func:`_parent_in_chain` to resolve a claimed parent directly instead of
+    hoping it falls inside a recency window — see that function for why the
+    window approach broke long-lived chains (#4245).
+
+    Mirrors :func:`_query_chain`'s retry policy: the parent may have written its
+    row moments ago, and a read that races the write must not be read as "the
+    row does not exist".
+
+    Returns the matching row(s), or an empty list when the row does not exist,
+    the query failed, or the table is unconfigured. The caller treats empty as
+    fail-closed.
+    """
+    import boto3
+    from boto3.dynamodb.conditions import Key
+
+    table_name = os.environ.get("EVENTS_TABLE", "")
+    if not table_name:
+        logger.error("agent_trigger: EVENTS_TABLE not configured")
+        return []
+
+    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+    dynamodb = boto3.resource("dynamodb", region_name=region)
+    table = dynamodb.Table(table_name)
+
+    for attempt in range(_GSI_MAX_ATTEMPTS):
+        try:
+            resp = table.query(
+                KeyConditionExpression=Key("event_id").eq(event_id),
+                Limit=1,
+            )
+            items = resp.get("Items", [])
+            if items:
+                return items
+        except Exception as e:
+            logger.warning(
+                "agent_trigger: event row query failed attempt=%d error=%s",
+                attempt + 1,
+                e,
+            )
+
+        # Retry with backoff (only if not last attempt)
+        if attempt < _GSI_MAX_ATTEMPTS - 1:
+            time.sleep(_GSI_RETRY_DELAY_S)  # nosemgrep: arbitrary-sleep
+
+    return []
+
+
 def _resolve_chain(correlation_id: str) -> dict[str, Any] | None:
     """Return the most recent event row for this correlation_id, or None.
 
@@ -578,25 +633,45 @@ def _parent_in_chain(
     points at an ancestor that is not the newest row in the chain, so requiring
     "parent == the latest event" would fragment real chains. Matching ANY row of
     the chain is what the issue's design asks for.
+
+    Resolved by PRIMARY-KEY LOOKUP, not by scanning a recency window. The
+    previous implementation read the newest ``_CHAIN_SCAN_LIMIT`` (50) rows of
+    the correlation-index GSI and required the parent to be among them, which
+    made validity depend on how busy the chain had been rather than on whether
+    the lineage edge was real. A long-lived orchestrator run dispatching several
+    children is the pathological case: every child writes chain rows, so the
+    orchestrator's OWN row slides out of the window and its later, entirely
+    legitimate dispatches start failing closed with 422. Observed on issue #4245
+    at 477 rows, where the caller's row was position 477/477.
+
+    ``event_id`` is the base table's partition key, so "is this row in this
+    chain?" is one bounded ``query`` on the row itself — strictly cheaper than
+    the 50-row GSI read it replaces, and correct for chains of any length and
+    any age. The chain membership assertion is preserved in full: the row must
+    exist AND carry this ``correlation_id``.
     """
     if chain_record.get("event_id") == parent_invocation_id:
         # Fast path: the parent is the row we already read. Avoids a second query
         # for the common agent-just-wrote-its-row case.
         return True
 
-    rows = _query_chain(correlation_id, limit=_CHAIN_SCAN_LIMIT)
+    rows = _query_event_row(parent_invocation_id)
     if not rows:
-        # The chain resolved a moment ago, so an empty result here means the GSI
-        # query itself failed rather than "no such chain". Fail closed: an
-        # unverifiable lineage edge is exactly what this check exists to stop.
+        # Either the row genuinely does not exist (forged lineage — the case this
+        # check exists to stop) or the query failed. Both are unverifiable, so
+        # both fail closed.
         logger.warning(
-            "agent_trigger: chain scan returned nothing for correlation=%s "
-            "while validating parent — failing closed",
+            "agent_trigger: parent row lookup returned nothing for "
+            "parent_invocation_id=%s correlation=%s — failing closed",
+            parent_invocation_id,
             correlation_id,
         )
         return False
 
-    return any(row.get("event_id") == parent_invocation_id for row in rows)
+    # The row exists; it belongs to this chain only if its correlation matches.
+    # Without this comparison the check would accept any real invocation id from
+    # any chain, which is precisely the forged-lineage edge #4128 closed.
+    return any(row.get("correlation_id") == correlation_id for row in rows)
 
 
 def _repo_in_tenant(

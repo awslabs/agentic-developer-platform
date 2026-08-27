@@ -401,18 +401,22 @@ class TestChainDepth:
 class TestParentInvocation:
     """The claimed parent must belong to the claimed chain."""
 
-    @patch("agent_trigger._query_chain")
+    @patch("agent_trigger._query_event_row")
     @patch("agent_trigger._resolve_chain")
-    def test_parent_from_another_chain_rejected(self, mock_resolve, mock_query):
+    def test_parent_from_another_chain_rejected(self, mock_resolve, mock_row):
         """parent_invocation_id from a different chain → rejected.
 
         Without this the field is free text that fabricates a lineage edge the
-        Activity chain view then renders as real.
+        Activity chain view then renders as real. The row EXISTS here (it is a
+        real invocation) but carries a different correlation_id, which is the
+        forged-lineage case rather than a nonexistent-row case.
         """
         mock_resolve.return_value = _chain_record(event_id="inv-real-latest")
-        mock_query.return_value = [
-            _chain_record(event_id="inv-real-latest"),
-            _chain_record(event_id="inv-real-earlier"),
+        mock_row.return_value = [
+            _chain_record(
+                event_id="inv-from-someone-elses-chain",
+                correlation_id="corr-SOMEONE-ELSE",
+            )
         ]
         body = _valid_body(parent_invocation_id="inv-from-someone-elses-chain")
         resp = handle_agent_trigger(_make_event(body), None)
@@ -421,10 +425,10 @@ class TestParentInvocation:
 
     @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=1247)
     @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._query_chain")
+    @patch("agent_trigger._query_event_row")
     @patch("agent_trigger._resolve_chain")
     def test_parent_is_an_older_row_of_the_chain_accepted(
-        self, mock_resolve, mock_query, mock_spawn, mock_install
+        self, mock_resolve, mock_row, mock_spawn, mock_install
     ):
         """Regression #1828: cross-issue lineage points at a non-latest ancestor.
 
@@ -432,10 +436,7 @@ class TestParentInvocation:
         so any row of the chain is a valid parent.
         """
         mock_resolve.return_value = _chain_record(event_id="inv-newest")
-        mock_query.return_value = [
-            _chain_record(event_id="inv-newest"),
-            _chain_record(event_id="inv-ancestor"),
-        ]
+        mock_row.return_value = [_chain_record(event_id="inv-ancestor")]
         mock_spawn.return_value = _ok_spawn()
         body = _valid_body(parent_invocation_id="inv-ancestor")
         resp = handle_agent_trigger(_make_event(body), None)
@@ -443,16 +444,45 @@ class TestParentInvocation:
         ctx = mock_spawn.call_args[1]["correlation_ctx"]
         assert ctx["parent_invocation_id"] == "inv-ancestor"
 
-    @patch("agent_trigger._query_chain")
+    @patch("agent_trigger._query_event_row")
     @patch("agent_trigger._resolve_chain")
-    def test_chain_scan_failure_fails_closed(self, mock_resolve, mock_query):
+    def test_chain_scan_failure_fails_closed(self, mock_resolve, mock_row):
         """An unverifiable lineage edge is a rejection, not a pass."""
         mock_resolve.return_value = _chain_record(event_id="inv-newest")
-        mock_query.return_value = []  # GSI query failed
+        mock_row.return_value = []  # row absent, or the query failed
         body = _valid_body(parent_invocation_id="inv-unknown")
         resp = handle_agent_trigger(_make_event(body), None)
         assert resp["statusCode"] == 422
         assert json.loads(resp["body"])["error"] == "unknown_parent_invocation"
+
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=1247)
+    @patch("common.spawn_persona.spawn_persona")
+    @patch("agent_trigger._query_chain")
+    @patch("agent_trigger._query_event_row")
+    @patch("agent_trigger._resolve_chain")
+    def test_parent_older_than_the_recency_window_accepted(
+        self, mock_resolve, mock_row, mock_chain, mock_spawn, mock_install
+    ):
+        """Regression #4245: chain length must not decide lineage validity.
+
+        A long-lived orchestrator dispatches several children; each child writes
+        chain rows, so the orchestrator's own row is pushed arbitrarily far back.
+        The old implementation read only the newest 50 GSI rows and rejected
+        anything older, so a valid dispatch started failing with 422 purely
+        because the chain got busy (observed at 477 rows, caller at 477/477).
+
+        The parent is resolved by primary key, so a chain of ANY length works and
+        no bounded chain scan is consulted at all.
+        """
+        mock_resolve.return_value = _chain_record(event_id="inv-newest-of-477")
+        mock_row.return_value = [_chain_record(event_id="inv-the-oldest-row")]
+        mock_spawn.return_value = _ok_spawn()
+        body = _valid_body(parent_invocation_id="inv-the-oldest-row")
+        resp = handle_agent_trigger(_make_event(body), None)
+        assert resp["statusCode"] == 202
+        mock_row.assert_called_once_with("inv-the-oldest-row")
+        # The recency-window scan must not gate the decision any more.
+        mock_chain.assert_not_called()
 
 
 # =============================================================================
