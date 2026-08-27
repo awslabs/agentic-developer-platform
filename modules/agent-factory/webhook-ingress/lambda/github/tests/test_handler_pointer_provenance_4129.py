@@ -182,7 +182,10 @@ class TestForgedPointerIsInert:
         )
         ctx = _determine(_forged_pointer(chain_depth=0), chain)
 
-        assert ctx["chain_depth"] == 10  # 9 + 1, not 1
+        # Issue #4268: ingest inherits unchanged, so the server's 9 — not the
+        # forged 0, and not 0+1. The property under test is that the pod's
+        # claimed depth is ignored entirely in favour of the chain row's.
+        assert ctx["chain_depth"] == 9
         authorized = _compute_authorized_user_id(
             correlation_ctx=ctx,
             cognito_sub="",
@@ -264,10 +267,15 @@ class TestLineageSurvivesAbsentProvenance:
         assert ctx["root_human_id"] == REAL_HUMAN
         assert ctx["is_human_rooted"] is True
 
-    def test_bare_pointer_still_increments_depth_from_the_chain(self):
-        """The smoke test in the issue asserts exactly this: depth increments."""
+    def test_bare_pointer_sources_depth_from_the_chain(self):
+        """Depth comes from the server-written chain row, not the pointer.
+
+        Issue #4268 moved the increment to dispatch, so the assertion is now
+        "the chain row's depth, unchanged" rather than "+1". What #4129 cares
+        about — that the value is SOURCED server-side — is unchanged.
+        """
         ctx = _determine(_bare_pointer(), _chain_row(chain_depth=2))
-        assert ctx["chain_depth"] == 3
+        assert ctx["chain_depth"] == 2
 
     def test_human_rooted_chain_still_grants_the_root_human_vault_access(self):
         """The legitimate counterpart of the exploit test: real chains still work."""

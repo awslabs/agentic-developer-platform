@@ -366,7 +366,12 @@ class TestChainDepth:
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
     def test_depth_taken_from_verified_marker(self, mock_resolve, mock_spawn, mock_install):
-        """Depth comes from the VERIFIED marker when one is supplied."""
+        """Depth comes from the VERIFIED marker when one is supplied.
+
+        Issue #4268 moved the +1 into ``spawn_persona`` (mocked here), so the
+        asserted value is the marker's depth as resolved, not depth+1. The subject
+        of this test is unchanged: WHICH source the depth is read from.
+        """
         mock_resolve.return_value = _chain_record(chain_depth=1)
         mock_spawn.return_value = _ok_spawn()
         body = _valid_body(provenance_marker=_marker_text(chain_depth="6", key=REAL_KEY))
@@ -376,7 +381,8 @@ class TestChainDepth:
                 resp = handle_agent_trigger(_make_event(body), None)
 
         assert resp["statusCode"] == 202
-        assert mock_spawn.call_args[1]["correlation_ctx"]["chain_depth"] == 7
+        # The marker's 6 wins over the chain record's 1 (the point of the test).
+        assert mock_spawn.call_args[1]["correlation_ctx"]["chain_depth"] == 6
 
     @patch("agent_trigger._resolve_chain")
     def test_forged_marker_cannot_reset_depth(self, mock_resolve):

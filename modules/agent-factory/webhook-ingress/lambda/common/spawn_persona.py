@@ -185,10 +185,15 @@ def spawn_persona(
             )
         return SpawnResult(success=False, block_reason=block_reason)
 
+    # --- Step 5.5: the chain hop actually happened — advance the depth ---
+    # Issue #4268: THE single increment point. Everything below describes the run
+    # being spawned, not the run that asked, so it gets its own depth.
+    spawned_ctx = _advance_chain_depth(correlation_ctx)
+
     # --- Step 6: Write pointer + provenance (fail-soft) ---
     _write_pointer_and_provenance(
         persona=persona,
-        correlation_ctx=correlation_ctx,
+        correlation_ctx=spawned_ctx,
         channel_key=channel_key,
         resolved_identity=resolved_identity,
         actor_user_id=actor_user_id,
@@ -210,7 +215,7 @@ def spawn_persona(
         installation_id=installation_id,
         repo=repo,
         payload=payload,
-        correlation_ctx=correlation_ctx,
+        correlation_ctx=spawned_ctx,
         intent_trigger=intent_trigger,
         intent_label=intent_label,
         model_requested=model_requested,
@@ -233,7 +238,7 @@ def spawn_persona(
         repo=repo,
         persona=persona,
         payload=payload,
-        correlation_ctx=correlation_ctx,
+        correlation_ctx=spawned_ctx,
         max_credential_chain_depth=max_cred_depth,
     )
 
@@ -251,6 +256,62 @@ def spawn_persona(
         message_id,
     )
     return SpawnResult(success=True, message_id=message_id)
+
+
+def _advance_chain_depth(correlation_ctx: dict) -> dict:
+    """Return a copy of ``correlation_ctx`` holding the SPAWNED run's depth (#4268).
+
+    This is the one place ``chain_depth`` advances. It is called only after every
+    guard has passed, which is precisely the condition the counter is supposed to
+    measure: one agent has actually caused another agent to start.
+
+    Why it moved here. Depth used to be incremented per webhook EVENT on the
+    chain, in ``determine_correlation``. That value is persisted on the row for
+    every outcome — including the ``no_op`` rows the ingest Lambda writes and then
+    discards — and the next event inherits the newest row's depth. So events that
+    started nothing advanced the counter that gates starting things: an
+    orchestrator posting routine status comments drove its own chain to
+    ``chain_depth`` 290 against ``MAX_CHAIN_DEPTH`` 8 with two real generations,
+    and was then refused with ``chain_depth_exceeded``. 679 of those rows were
+    ``event_type_unhandled`` — event types with no handler at all.
+
+    Semantics, unchanged from what Guard 5 and the #3174 credential policy already
+    assume: the depth on a run's row is the run's own generation. A run spawned
+    directly by a human/service (``is_new_chain``) is generation 0 — the existing
+    "depth 0 == human-initiated" convention ``_compute_authorized_user_id`` is
+    written against. Every subsequent hop is caller + 1, so a chain of N genuine
+    generations reports depth N-1 at its head and the cap still bounds recursion
+    at ``MAX_CHAIN_DEPTH`` generations.
+
+    A caller cannot use this to reset depth. The inherited value still comes from
+    server-written state only (``handler._resolve_pointer_provenance`` reads the
+    ``webhook-events`` GSI per #4129, ``agent_trigger._resolve_chain_depth`` 422s
+    on absent/malformed/negative per #4128), and ``is_new_chain`` is False on
+    every chain-continuation branch — a bot cannot present a continuation as a
+    fresh root.
+
+    Returns a shallow copy so the caller's context (used for the ``blocked`` row,
+    where no run started and the depth must NOT advance) is left untouched.
+    """
+    advanced = dict(correlation_ctx)
+    if correlation_ctx.get("is_new_chain"):
+        # This spawn IS the root generation — nothing spawned it.
+        advanced["chain_depth"] = 0
+        return advanced
+
+    caller_depth = correlation_ctx.get("chain_depth", 0)
+    if not isinstance(caller_depth, int) or isinstance(caller_depth, bool):
+        # Non-int depth reaching here would silently disable Guard 5 on the next
+        # hop. The upstream resolvers reject these (#4128), so this is a
+        # defensive floor, not a supported input.
+        logger.warning(
+            "spawn_persona: non-integer chain_depth=%r in correlation_ctx — "
+            "treating the spawned run as a root generation",
+            caller_depth,
+        )
+        caller_depth = 0
+    advanced["chain_depth"] = caller_depth + 1
+    return advanced
 
 
 def _is_bot_sender(sender: dict) -> bool:

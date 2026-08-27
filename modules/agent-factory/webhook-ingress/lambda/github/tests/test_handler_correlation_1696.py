@@ -90,7 +90,8 @@ class TestDetermineCorrelationPrecedence:
         # sourced from the webhook-events GSI, not from the pointer row).
         assert result["root_human_id"] == "user-pointer"
         assert result["parent_invocation_id"] == "msg-pointer-inv"
-        assert result["chain_depth"] == 5  # chain depth (4) + 1
+        # Issue #4268: inherited unchanged — the chain row's 4, not 4+1.
+        assert result["chain_depth"] == 4
         assert result["is_new_chain"] is False
 
     @patch("handler._get_correlation_store")
@@ -149,7 +150,8 @@ class TestDetermineCorrelationPrecedence:
         assert result["correlation_id"] == "corr-marker-001"
         assert result["root_human_id"] == "user-marker"
         assert result["parent_invocation_id"] == "msg-parent-123"
-        assert result["chain_depth"] == 3  # marker depth (2) + 1
+        # Issue #4268: inherited unchanged — the marker's 2, not 2+1.
+        assert result["chain_depth"] == 2
         assert result["is_new_chain"] is False
 
     @patch(
@@ -175,7 +177,7 @@ class TestDetermineCorrelationPrecedence:
 
         assert result["correlation_id"] == "corr-ptr-001"
         assert result["parent_invocation_id"] == "msg-ptr-inv"
-        assert result["chain_depth"] == 2  # 1 + 1
+        assert result["chain_depth"] == 1  # inherited unchanged (#4268)
         assert result["is_new_chain"] is False
 
     @patch("handler._get_correlation_store")
@@ -195,7 +197,8 @@ class TestDetermineCorrelationPrecedence:
         assert result["correlation_id"] == "corr-marker-001"
         assert result["root_human_id"] == "user-marker"
         assert result["parent_invocation_id"] == "msg-parent-123"
-        assert result["chain_depth"] == 3  # marker depth (2) + 1
+        # Issue #4268: inherited unchanged — the marker's 2, not 2+1.
+        assert result["chain_depth"] == 2
         assert result["is_new_chain"] is False
 
     @patch("handler._get_correlation_store")
@@ -248,16 +251,24 @@ class TestDetermineCorrelationPrecedence:
         assert result["is_human_rooted"] is True
 
 
-class TestChainDepthIncrement:
-    """Verify depth increments exactly once per hop."""
+class TestChainDepthInheritance:
+    """Ingest inherits depth unchanged; the increment belongs to dispatch (#4268).
+
+    This class asserted ``inherited + 1`` until #4268. The +1 on ingest is what
+    made the counter measure webhook events instead of agent generations: the
+    value is persisted on every row, including the ``no_op`` rows this Lambda
+    writes and discards, and the next event inherits the newest row's depth. Which
+    SOURCE the depth is read from (server-written chain row vs marker, and the
+    legacy-absent fallback) is unchanged and still covered here.
+    """
 
     @patch(
         "handler._resolve_chain_record",
         return_value=_chain("corr-001", "user-h", True, 3),
     )
     @patch("handler._get_correlation_store")
-    def test_depth_increments_once_from_pointer(self, mock_store_fn, _chain_fn):
-        """Server-resolved chain depth N → spawned run gets depth N+1."""
+    def test_depth_inherited_from_server_resolved_chain(self, mock_store_fn, _chain_fn):
+        """Server-resolved chain depth N → context carries N, not N+1."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -269,11 +280,11 @@ class TestChainDepthIncrement:
 
         identity = _bot_identity()
         result = determine_correlation({}, identity, "key", marker_text=None)
-        assert result["chain_depth"] == 4
+        assert result["chain_depth"] == 3
 
     @patch("handler._get_correlation_store")
-    def test_depth_increments_once_from_marker(self, mock_store_fn):
-        """Marker depth N → spawned run gets depth N+1."""
+    def test_depth_inherited_from_marker(self, mock_store_fn):
+        """Marker depth N → context carries N, not N+1."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -287,11 +298,11 @@ class TestChainDepthIncrement:
         )
         identity = _bot_identity()
         result = determine_correlation({}, identity, "key", marker_text=marker)
-        assert result["chain_depth"] == 6
+        assert result["chain_depth"] == 5
 
     @patch("handler._get_correlation_store")
     def test_missing_depth_in_pointer_defaults_to_zero(self, mock_store_fn):
-        """Pointer without chain_depth (old data) → treated as 0, child gets 1."""
+        """Pointer without chain_depth (old data) → treated as 0."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -306,11 +317,11 @@ class TestChainDepthIncrement:
 
         identity = _bot_identity()
         result = determine_correlation({}, identity, "key", marker_text=None)
-        assert result["chain_depth"] == 1  # 0 + 1
+        assert result["chain_depth"] == 0
 
     @patch("handler._get_correlation_store")
     def test_missing_depth_in_marker_defaults_to_zero(self, mock_store_fn):
-        """Marker without chain_depth (legacy) → treated as 0, child gets 1."""
+        """Marker without chain_depth (legacy) → treated as 0."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -324,7 +335,7 @@ class TestChainDepthIncrement:
         )
         identity = _bot_identity()
         result = determine_correlation({}, identity, "key", marker_text=legacy_marker)
-        assert result["chain_depth"] == 1  # 0 + 1
+        assert result["chain_depth"] == 0
 
 
 class TestSourceRefIssueFallback:

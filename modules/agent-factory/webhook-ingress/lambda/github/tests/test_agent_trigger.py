@@ -188,8 +188,17 @@ class TestChainResolution:
     @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_chain_depth_incremented(self, mock_resolve, mock_spawn, mock_install):
-        """Chain depth from record is incremented by 1 in correlation_ctx."""
+    def test_chain_depth_passed_through_for_spawn_to_increment(
+        self, mock_resolve, mock_spawn, mock_install
+    ):
+        """The CALLER's depth reaches correlation_ctx un-incremented (#4268).
+
+        This route used to add its own +1 here. The increment now happens once, in
+        ``spawn_persona``, at the point the dispatch is authorised — so adding one
+        here as well would double-count every hop through /agent/trigger.
+        ``spawn_persona`` is mocked in this test, so what is asserted is the
+        pre-increment context it receives: the depth of the run that is asking.
+        """
         mock_resolve.return_value = _chain_record(chain_depth=3)
         mock_spawn.return_value = MagicMock(success=True, message_id="msg-456", block_reason=None)
 
@@ -197,7 +206,7 @@ class TestChainResolution:
         handle_agent_trigger(event, None)
 
         call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["correlation_ctx"]["chain_depth"] == 4
+        assert call_kwargs["correlation_ctx"]["chain_depth"] == 3
 
     @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")

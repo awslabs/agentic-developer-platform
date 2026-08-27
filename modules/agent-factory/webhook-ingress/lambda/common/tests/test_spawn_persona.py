@@ -420,7 +420,9 @@ class TestEnvelopeShape:
         assert corr["root_human_id"] == "user-alice"
         assert corr["is_human_rooted"] is True
         assert corr["parent_invocation_id"] == "parent-abc"
-        assert corr["chain_depth"] == 2
+        # Issue #4268: the envelope describes the SPAWNED run, so it carries the
+        # caller's depth + 1 (2 -> 3). This is the single increment point.
+        assert corr["chain_depth"] == 3
 
     @patch("common.spawn_persona._emit_metric")
     @patch("common.spawn_persona._write_pointer_and_provenance")

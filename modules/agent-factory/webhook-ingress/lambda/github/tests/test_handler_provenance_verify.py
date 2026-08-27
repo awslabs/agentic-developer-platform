@@ -294,13 +294,14 @@ class TestPath3PointerOnly:
 
         assert ctx["correlation_id"] == "corr-POINTER"
         assert ctx["is_new_chain"] is False
-        assert ctx["chain_depth"] == 4  # inherited from the pointer, not reset
+        # Inherited from the pointer's chain, not reset (#4268: unchanged, not +1).
+        assert ctx["chain_depth"] == 3
 
     def test_pointer_only_no_marker_unaffected(self):
         """Regression: the plain pointer-only path is unchanged."""
         ctx = _run(_pointer(correlation_id="corr-POINTER", chain_depth=1), None)
         assert ctx["correlation_id"] == "corr-POINTER"
-        assert ctx["chain_depth"] == 2
+        assert ctx["chain_depth"] == 1  # inherited unchanged (#4268)
 
 
 # =============================================================================

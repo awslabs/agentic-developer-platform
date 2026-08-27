@@ -984,6 +984,24 @@ def determine_correlation(
 
     Returns a dict with: correlation_id, root_human_id, triggered_by,
     is_human_rooted, is_new_chain, parent_invocation_id, chain_depth.
+
+    ``chain_depth`` is INHERITED UNCHANGED here — it is the depth of the run this
+    event came out of, not a depth for this event. Issue #4268: this function used
+    to return ``inherited_depth + 1`` on every branch, which made the counter
+    measure *webhook events on the chain* rather than *agent generations*. Because
+    the returned value is persisted on the row for EVERY outcome, including the
+    ``no_op`` rows this Lambda writes and discards, an event that started nothing
+    still advanced the counter that gates starting things. An orchestrator posting
+    routine status comments inflated its own chain to depth 290 against a cap of 8
+    with a true generation count of 2, and was then refused with
+    ``chain_depth_exceeded`` — a safety guard firing on a signal unrelated to the
+    recursion it exists to bound.
+
+    The increment now happens exactly once, in ``spawn_persona``, at the point a
+    dispatch is authorised — i.e. only when one agent actually causes another to
+    start. Nothing about WHERE the depth is sourced from changed: the #4129
+    server-written-row resolution and the #4128 no-silent-reset hardening are
+    untouched, so a caller still cannot reset or forge it.
     """
     # Human senders ALWAYS start a new chain
     if resolved_identity.user_kind == "human":
@@ -1094,7 +1112,8 @@ def determine_correlation(
                 "parent_invocation_id": (
                     pointer.get("triggering_invocation_id") or marker.get("invocation_id")
                 ),
-                "chain_depth": inherited_depth + 1,
+                # Issue #4268: inherited unchanged — spawn_persona owns the increment.
+                "chain_depth": inherited_depth,
                 "last_triggered_persona": pointer.get("last_triggered_persona"),
                 # Issue #2149: preserve cross-persona loop tracking from pointer
                 "recent_triggered_personas": pointer.get("recent_triggered_personas", set()),
@@ -1130,7 +1149,8 @@ def determine_correlation(
                 "is_human_rooted": claims_human_rooted,
                 "is_new_chain": False,
                 "parent_invocation_id": marker.get("invocation_id"),
-                "chain_depth": inherited_depth + 1,
+                # Issue #4268: inherited unchanged — spawn_persona owns the increment.
+                "chain_depth": inherited_depth,
             }
 
     if pointer:
@@ -1147,7 +1167,8 @@ def determine_correlation(
             "is_human_rooted": is_human_rooted,
             "is_new_chain": False,
             "parent_invocation_id": pointer.get("triggering_invocation_id"),
-            "chain_depth": inherited_depth + 1,
+            # Issue #4268: inherited unchanged — spawn_persona owns the increment.
+            "chain_depth": inherited_depth,
             "last_triggered_persona": pointer.get("last_triggered_persona"),
             # Issue #2149: preserve cross-persona loop tracking from pointer
             "recent_triggered_personas": pointer.get("recent_triggered_personas", set()),
@@ -1194,7 +1215,8 @@ def determine_correlation(
                 "is_human_rooted": False,  # Stripped — unsigned, fail-closed
                 "is_new_chain": False,
                 "parent_invocation_id": marker.get("invocation_id"),
-                "chain_depth": inherited_depth + 1,
+                # Issue #4268: inherited unchanged — spawn_persona owns the increment.
+                "chain_depth": inherited_depth,
             }
         else:
             # sig_result is True (verified) or None with is_human_rooted=False
@@ -1208,7 +1230,8 @@ def determine_correlation(
                 "is_human_rooted": marker.get("is_human_rooted", False),
                 "is_new_chain": False,
                 "parent_invocation_id": marker.get("invocation_id"),
-                "chain_depth": inherited_depth + 1,
+                # Issue #4268: inherited unchanged — spawn_persona owns the increment.
+                "chain_depth": inherited_depth,
             }
 
     # No pointer, no marker — bot-initiated chain (e.g. cron-like, CI-triggered)

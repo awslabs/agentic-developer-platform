@@ -238,7 +238,12 @@ def handle_agent_trigger(event: dict, context) -> dict:
         "is_human_rooted": chain_is_human_rooted,
         "is_new_chain": False,
         "parent_invocation_id": parent_invocation_id,
-        "chain_depth": chain_depth + 1,
+        # Issue #4268: the CALLER's depth, passed through unincremented. The
+        # increment moved into spawn_persona, which is the point a dispatch is
+        # actually authorised — incrementing here as well would double-count
+        # every hop through this route. Guard 5 reads this field as "the depth of
+        # the run asking to spawn", which is what it needs to bound recursion.
+        "chain_depth": chain_depth,
         # Carry forward loop-tracking from pointer if available
         "last_triggered_persona": chain_record.get("last_triggered_persona"),
         "recent_triggered_personas": set(chain_record.get("recent_triggered_personas") or []),
