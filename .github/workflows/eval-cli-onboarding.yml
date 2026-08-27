@@ -56,6 +56,10 @@ on:
     # Lint-only on PRs that touch the eval itself; the live job never runs from a PR.
     paths:
       - 'platform/evals/cli-onboarding/**'
+      # The shared harness (#4163) is sourced by this eval, so a lib-only change
+      # can break it. Lint-gate it here too, and keep this eval's dry-run suite as
+      # the regression guard for every change to the shared code.
+      - 'platform/evals/lib/**'
       - '.github/workflows/eval-cli-onboarding.yml'
     branches:
       - main
@@ -86,12 +90,18 @@ jobs:
           shellcheck --version
 
       - name: bash -n + shellcheck
+        # -x follows the `.` into platform/evals/lib/*.sh, so the shared harness is
+        # linted in the context that actually uses it. run-eval.sh carries a
+        # file-level `# shellcheck source-path=SCRIPTDIR` so ../lib resolves from
+        # the script rather than from this job's cwd.
         run: |
           set -euo pipefail
-          bash -n platform/evals/cli-onboarding/run-eval.sh
-          bash -n platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
-          shellcheck platform/evals/cli-onboarding/run-eval.sh
-          shellcheck platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
+          for f in platform/evals/lib/*.sh \
+                   platform/evals/cli-onboarding/run-eval.sh \
+                   platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh; do
+            bash -n "$f"
+            shellcheck -x "$f"
+          done
 
       - name: Dry-run harness tests
         # Stubs aws/kubectl/psql/curl/npm and asserts phase ordering,

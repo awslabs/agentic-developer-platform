@@ -322,9 +322,13 @@ fi
 
 # laptop() itself must contain no path that runs on the runner. Extracted
 # verbatim so the test can never drift from the implementation.
-LAPTOP_FN="$(sed -n '/^laptop() {/,/^}/p' "$EVAL_SCRIPT")"
+# It lives in the shared harness (#4163 factored it out of run-eval.sh so the
+# budget/rate-limit eval reuses the SAME boundary rather than a second copy that
+# could be weaker); this test therefore guards the boundary for every eval.
+LAPTOP_LIB="$SCRIPT_DIR/../../lib/pod.sh"
+LAPTOP_FN="$(sed -n '/^laptop() {/,/^}/p' "$LAPTOP_LIB" 2>/dev/null)"
 if [ -z "$LAPTOP_FN" ]; then
-  bad "could not extract laptop() from run-eval.sh — did it get renamed?"
+  bad "could not extract laptop() from lib/pod.sh — did it get renamed or moved?"
 else
   # shellcheck disable=SC2016  # matching laptop()'s source text, so $LAPTOP_POD must stay literal
   assert_contains "$LAPTOP_FN" 'h_kubectl exec -i "$LAPTOP_POD"' \

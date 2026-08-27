@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 #
+# `source-path` must be a FILE-LEVEL directive (in the leading comment block,
+# before the first command) — a directive attached to the `.` line itself only
+# applies to that one line and shellcheck still resolves ../lib relative to the
+# invoking cwd. With this, `shellcheck -x` follows the shared harness and lints
+# this file against the real lib, which is why the lint gate passes -x.
+# shellcheck source-path=SCRIPTDIR
+#
 # =============================================================================
 # run-eval.sh — clean-room E2E evaluation of the CLI onboarding journey
 # =============================================================================
@@ -78,6 +85,29 @@ set -euo pipefail
 # from the same file, rather than from a re-implementation that could drift.
 EVAL_SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
+# The shared harness (#4163 factored it out of this file so the budget/rate-limit
+# eval could reuse it verbatim). Resolved RELATIVE to this script, which is what
+# lets the in-pod copy work: laptop_put_harness mirrors the repo layout into the
+# pod as harness/<eval>/run-eval.sh + harness/lib/*.sh, so `../lib` resolves the
+# same way on the runner and in the clean room — with no env var, because telling
+# the clean room where its lib is would mean adding environment to the thing whose
+# defining property is that it has none.
+EVAL_LIB_DIR="$(cd "$(dirname "$EVAL_SCRIPT_PATH")/../lib" && pwd)"
+# shellcheck source=../lib/log.sh
+. "$EVAL_LIB_DIR/log.sh"
+# shellcheck source=../lib/state.sh
+. "$EVAL_LIB_DIR/state.sh"
+# shellcheck source=../lib/aws.sh
+. "$EVAL_LIB_DIR/aws.sh"
+# shellcheck source=../lib/clean-room.sh
+. "$EVAL_LIB_DIR/clean-room.sh"
+# shellcheck source=../lib/http.sh
+. "$EVAL_LIB_DIR/http.sh"
+# shellcheck source=../lib/pod.sh
+. "$EVAL_LIB_DIR/pod.sh"
+# shellcheck source=../lib/cognito.sh
+. "$EVAL_LIB_DIR/cognito.sh"
+
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
@@ -126,46 +156,10 @@ FAIL_PHASE=""
 INJECT_FAILURE=""
 PHASES="A,B,C"
 
-# -----------------------------------------------------------------------------
-# Output helpers. No token, header or body is ever echoed.
-# -----------------------------------------------------------------------------
-if [ -t 1 ]; then
-  RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
-else
-  RED=""; GREEN=""; YELLOW=""; BLUE=""; NC=""
-fi
-
-log()   { echo "${BLUE}[eval]${NC} $*"; }
-pass()  { echo "${GREEN}[PASS]${NC} $*"; record_result PASS "$*"; }
-fail()  { echo "${RED}[FAIL]${NC} $*" >&2; record_result FAIL "$*"; FAILURES=$((FAILURES + 1)); }
-skip()  { echo "${YELLOW}[SKIP]${NC} $*"; record_result SKIP "$*"; }
-die()   { echo "${RED}[FATAL]${NC} $*" >&2; exit 1; }
-
-FAILURES=0
-CURRENT_PHASE="init"
-
-# trace() records phase/step ordering. The dry-run unit tests assert against it,
-# and on a real failure it tells the triage agent which phase died.
-trace() { echo "$1" >> "$TRACE_FILE"; }
-
-record_result() {
-  printf '%s\t%s\t%s\n' "$CURRENT_PHASE" "$1" "$2" >> "$RESULTS_FILE"
-}
-
-phase() {
-  CURRENT_PHASE="$1"
-  trace "phase:$1"
-  echo ""
-  log "═══ Phase $1 — $2 ═══"
-}
-
-# mask() hides a secret from the Actions log the moment it exists. Guarded so a
-# local run does not print the token it is trying to protect.
-mask() {
-  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-    echo "::add-mask::$1"
-  fi
-}
+# Output helpers, the results table and the summary come from lib/log.sh.
+# The `name` attribute stamped on seeded Cognito users, which is also the sweep tag.
+EVAL_SEED_NAME="$EVAL_USER_PREFIX"
+EVAL_SUMMARY_TITLE="CLI onboarding eval"
 
 # -----------------------------------------------------------------------------
 # Argument parsing
@@ -215,100 +209,8 @@ POD_HOME="$POD_WORKDIR/home"
 
 phase_enabled() { case ",$PHASES," in *,"$1",*) return 0 ;; *) return 1 ;; esac; }
 
-# =============================================================================
-# Clean-room assertion
-# =============================================================================
-# Runs INSIDE the laptop pod (the harness execs it there as the pod's first
-# command). Fails fast, before anything mutates dev, if the pod is not a
-# plausible fresh developer laptop. Each check maps to a way the agent-worker
-# image (or an inherited shell) would silently substitute platform auth for the
-# flow we mean to test — and it stays in place as the guard against someone
-# later pointing laptop() at a dirty target.
-# /dev/tcp in a subshell, so a refused connection cannot trip `set -e` in the
-# caller and cannot leak fd 3 into the rest of the script.
-port_is_open() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1
-}
-
-assert_clean_room() {
-  local violations=0
-  log "Asserting clean room (HOME=$HOME)"
-
-  local d
-  for d in "$HOME/.codex" "$HOME/.claude" "$HOME/.bedrock-gateway"; do
-    if [ -e "$d" ]; then
-      echo "${RED}[FAIL]${NC} contaminated: $d exists — this container has pre-wired CLI config" >&2
-      violations=$((violations + 1))
-    fi
-  done
-  if [ -e "$HOME/.claude.json" ]; then
-    echo "${RED}[FAIL]${NC} contaminated: $HOME/.claude.json exists" >&2
-    violations=$((violations + 1))
-  fi
-
-  # Any ANTHROPIC_* / ADP_GATEWAY_* / CLAUDE_CODE_* var can redirect a CLI at
-  # another endpoint or hand it a credential, so the whole namespace is barred.
-  local var
-  while IFS= read -r var; do
-    case "$var" in
-      ANTHROPIC_*|ADP_GATEWAY_*|CLAUDE_CODE_*)
-        echo "${RED}[FAIL]${NC} contaminated: \$$var is set" >&2
-        violations=$((violations + 1))
-        ;;
-    esac
-  done < <(compgen -e || true)
-
-  # A pre-installed CLI means a pre-configured CLI in the images we care about,
-  # and the journey under test includes installing them from npm.
-  #
-  # EVAL_SKIP_CLI_PATH_CHECK exists ONLY for this repo's own harness tests, which
-  # necessarily run inside the agent container where codex IS installed. The
-  # workflow must never set it: if it ever appears in eval-cli-onboarding.yml,
-  # the clean room is a fiction. Every other check still applies when it is set.
-  if [ "${EVAL_SKIP_CLI_PATH_CHECK:-false}" != "true" ]; then
-    local bin
-    for bin in claude codex; do
-      if command -v "$bin" >/dev/null 2>&1; then
-        echo "${RED}[FAIL]${NC} contaminated: '$bin' is already on PATH" >&2
-        violations=$((violations + 1))
-      fi
-    done
-  fi
-
-  # A listener on either port would answer the CLI instead of our own proxy —
-  # 9090 specifically is the agent-worker's sigv4-proxy sidecar, i.e. exactly
-  # the platform-internal auth this eval must not accidentally ride on.
-  # (Overridable only so the harness tests can aim at a known-free port; the
-  # workflow always uses the default.)
-  local port
-  for port in ${EVAL_FORBIDDEN_PORTS:-$PROXY_PORT 9090}; do
-    if port_is_open "$port"; then
-      echo "${RED}[FAIL]${NC} contaminated: something is listening on 127.0.0.1:${port}" >&2
-      violations=$((violations + 1))
-    fi
-  done
-
-  if [ "$violations" -gt 0 ]; then
-    echo "" >&2
-    echo "${RED}Clean-room assertion failed with $violations violation(s).${NC}" >&2
-    echo "Run this eval in a stock container (see .github/workflows/eval-cli-onboarding.yml)," >&2
-    echo "never in the agent-worker image — a contaminated run reports false green on the" >&2
-    echo "exact auth path under test, which is worse than having no eval at all." >&2
-    return 1
-  fi
-
-  pass "clean room verified: no pre-wired CLI config, no ANTHROPIC_*/ADP_GATEWAY_*/CLAUDE_CODE_* env, no CLI on PATH, proxy ports free"
-  return 0
-}
-
-# =============================================================================
-# Harness vs. laptop
-# =============================================================================
-# h_* helpers are the ONLY credentialed paths. They exist so a reader can grep
-# for which steps touch AWS.
-h_aws()     { aws --region "$AWS_REGION" "$@"; }
-h_kubectl() { kubectl "$@"; }
-h_psql()    { psql --no-psqlrc -q -t -A "$@"; }
+# The clean-room gate lives in lib/clean-room.sh; the credentialed h_* helpers in
+# lib/aws.sh; laptop() and the pod lifecycle in lib/pod.sh.
 
 # The PATH the laptop sees. Explicitly NOT built from the harness's own $PATH:
 # the pod's filesystem is not the runner's, so inheriting the runner's PATH would
@@ -320,283 +222,6 @@ POD_PATH="$POD_HOME/.npm-global/bin:$POD_HOME/bin:/usr/local/sbin:/usr/local/bin
 # test-only escape hatches are added here by setup_dry_run_stubs and nowhere
 # else, so the workflow (and therefore the live clean room) can never get them.
 POD_ASSERT_ENV=()
-
-# laptop() runs a command as the emulated developer — INSIDE the clean-room pod,
-# via `kubectl exec -i`. This is the mechanism that makes "harness credentials
-# are never visible to the laptop steps" a property of the code rather than a
-# promise in a doc, and it is strictly stronger than the env-scrubbing wrapper it
-# replaced (#4171): `kubectl exec` forwards NO environment from the runner at
-# all, and the pod is created with `automountServiceAccountToken: false` and no
-# env, so there is no platform credential in there to borrow in the first place.
-#
-# `-i` is always passed so stdin piping keeps working: that is how the refresh
-# token reaches the pod in C7 (`laptop ... < file`). Never put a secret in the
-# argv of a laptop command — an exec'd command line is visible in the exec API
-# and in the runner's own process table.
-laptop() {
-  h_kubectl exec -i "$LAPTOP_POD" -n "$POD_NAMESPACE" -- \
-    env AWS_EC2_METADATA_DISABLED=true \
-        AWS_DEFAULT_REGION="$AWS_REGION" \
-        HOME="$POD_HOME" \
-        PATH="$POD_PATH" \
-        "$@"
-}
-
-# laptop_put_file <local-src> <pod-dst> [mode] — stream a file into the pod on
-# STDIN. Used for the tokens and curl configs, so the content never appears in an
-# exec'd command line. The `sh -c '...' _ "$@"` form keeps even the paths out of
-# the snippet body, so nothing here can be mis-quoted.
-laptop_put_file() {
-  local src="$1" dst="$2" mode="${3:-600}"
-  # shellcheck disable=SC2016  # $1/$2 are expanded by the POD's shell, not here
-  laptop sh -c 'umask 077; mkdir -p "$(dirname "$1")"; cat > "$1"; chmod "$2" "$1"' \
-    _ "$dst" "$mode" < "$src"
-}
-
-# laptop_get_file <pod-src> <local-dst> — bring a response body back to the
-# harness so the harness (which has jq) can assert on it.
-laptop_get_file() {
-  laptop cat "$1" > "$2"
-}
-
-# The pod-side twin of write_curl_auth_config(). The token is read from a pod
-# file into a pod shell variable — never into argv, and never back to the runner.
-laptop_write_curl_auth_config() {
-  # shellcheck disable=SC2016  # the token is expanded pod-side; interpolating it here would put it in argv
-  laptop sh -c 'umask 077; IFS= read -r t < "$1"; printf "header = \"Authorization: Bearer %s\"\n" "$t" > "$2"; chmod 600 "$2"' \
-    _ "$1" "$2"
-}
-
-# laptop_http_post_json <pod-cfg> <url> <pod-body> <pod-out> -> echoes status.
-# The pod-side twin of http_post_json(): same flags, same 0600-config discipline.
-laptop_http_post_json() {
-  laptop curl -sS -o "$4" -w '%{http_code}' -X POST \
-    -K "$1" \
-    -H 'content-type: application/json' \
-    --data-binary "@$3" \
-    --max-time 120 \
-    "$2" || echo "000"
-}
-
-# The pod-side twin of port_is_open(). /dev/tcp is a bash feature, hence bash.
-laptop_port_is_open() {
-  # shellcheck disable=SC2016  # $1 is expanded by the pod's bash (/dev/tcp is a bash feature)
-  laptop bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' _ "$1" >/dev/null 2>&1
-}
-
-# -----------------------------------------------------------------------------
-# The clean room: a pod the harness spawns (#4171)
-# -----------------------------------------------------------------------------
-# Replaces the job-level `container:` that PR #4165 shipped. The ARC scale set
-# has no Docker daemon and no containerMode, so a `container:` job cannot start
-# at all (run 32987705457: "failed to connect to the docker API"). A pod the
-# runner creates with kubectl is something the runner demonstrably CAN do, and it
-# is a better clean room besides: no service-account token, no env, no volumes.
-laptop_pod_spec() {
-  # Built with jq rather than a heredoc so the JSON is valid by construction.
-  # `containers` must be specified in FULL: overriding it without `command` would
-  # make the pod run the image's ENTRYPOINT and exit immediately (the same trap
-  # documented in the ARC runner's pod template).
-  jq -nc \
-    --arg image "$POD_IMAGE" \
-    --arg app "$POD_LABEL_APP" \
-    --arg run "$POD_RUN_LABEL" \
-    '{
-      metadata: {
-        labels: {app: $app, run: $run},
-        annotations: {"karpenter.sh/do-not-disrupt": "true"}
-      },
-      spec: {
-        # No token to steal: the single most important line in this file.
-        automountServiceAccountToken: false,
-        # Service links would inject <SERVICE>_SERVICE_HOST env vars from the
-        # namespace into the pod. A clean room has no ambient env at all, and the
-        # clean-room gate should not have to know which services happen to exist.
-        enableServiceLinks: false,
-        restartPolicy: "Never",
-        # Requests so Karpenter right-sizes rather than packing the laptop onto a
-        # saturated node; limits so an npm install cannot starve its neighbours.
-        containers: [{
-          name: "laptop",
-          image: $image,
-          command: ["sleep", "3600"],
-          resources: {
-            requests: {cpu: "500m", memory: "1Gi"},
-            limits:   {cpu: "2",    memory: "4Gi"}
-          }
-        }]
-      }
-    }'
-}
-
-laptop_pod_create() {
-  log "creating the clean-room pod ${POD_NAMESPACE}/${LAPTOP_POD} (${POD_IMAGE})"
-
-  # Recorded BEFORE the create call, for the same reason FLAG_MUTATED is: if the
-  # create half-succeeds, cleanup must still know to sweep.
-  state_set LAPTOP_POD "$LAPTOP_POD"
-  state_set POD_NAMESPACE "$POD_NAMESPACE"
-
-  h_kubectl run "$LAPTOP_POD" -n "$POD_NAMESPACE" \
-    --image="$POD_IMAGE" --restart=Never \
-    --overrides="$(laptop_pod_spec)" \
-    --command -- sleep 3600 >/dev/null \
-    || die "could not create the clean-room pod ${POD_NAMESPACE}/${LAPTOP_POD} — does the runner's RBAC allow 'create pods' in ${POD_NAMESPACE}?"
-
-  h_kubectl wait --for=condition=Ready "pod/${LAPTOP_POD}" -n "$POD_NAMESPACE" --timeout=180s >/dev/null \
-    || die "the clean-room pod never became Ready in 180s"
-
-  # THE CONTAMINATION GATE, run INSIDE the pod as its first exec'd command and
-  # deliberately BEFORE anything installs tooling or mutates dev — so a
-  # contaminated clean room burns seconds, not fifteen minutes, and leaves the
-  # target environment untouched. The same file the harness runs from, copied in
-  # and exec'd there, so the check can never drift from a re-implementation.
-  laptop_put_file "$EVAL_SCRIPT_PATH" "$POD_WORKDIR/run-eval.sh" 755 \
-    || die "could not copy the eval script into the clean-room pod"
-
-  # The gate is pointed at the pod's OWN login HOME, not the laptop HOME the
-  # journey is about to create: what it is looking for is CLI config the IMAGE
-  # shipped, and an empty directory that does not exist yet is pristine by
-  # construction and would prove nothing. Discovered rather than hardcoded to
-  # /root so a future non-root image is still checked in the right place.
-  local pod_home
-  # shellcheck disable=SC2016  # reads the POD's $HOME, so it must not expand on the runner
-  pod_home="$(h_kubectl exec "$LAPTOP_POD" -n "$POD_NAMESPACE" -- sh -c 'printf "%s" "${HOME:-/root}"' 2>/dev/null || echo "/root")"
-
-  # `env` applies assignments left to right, so this HOME= wins over the
-  # POD_HOME laptop() sets. The `[@]+` guard keeps an empty POD_ASSERT_ENV from
-  # tripping `set -u` on bash < 4.4.
-  # EVAL_WORKDIR is pinned inside the pod so the in-pod run scratches in its own
-  # tree. In a real run the pod has no EVAL_WORKDIR at all; under --dry-run the
-  # exec stub would otherwise leak the harness's, and the nested run would
-  # truncate the harness's own trace/results files.
-  if laptop HOME="$pod_home" EVAL_WORKDIR="$POD_WORKDIR/gate" \
-       ${POD_ASSERT_ENV[@]+"${POD_ASSERT_ENV[@]}"} \
-       bash "$POD_WORKDIR/run-eval.sh" --assert-clean-room; then
-    pass "clean room is a fresh pod: no service-account token, no ambient env, nothing pre-installed (HOME=${pod_home})"
-  else
-    die "the clean-room pod failed --assert-clean-room — refusing to run the matrix (see the violations above)"
-  fi
-
-  # The emulated developer's HOME and the npm prefix the journey installs into.
-  # shellcheck disable=SC2016  # $1 is expanded by the pod's shell
-  laptop sh -c 'mkdir -p "$1/bin" "$1/.npm-global" && chmod 700 "$1"' _ "$POD_HOME" \
-    || die "could not prepare the laptop HOME in the clean-room pod"
-}
-
-# The tools a real developer's laptop already has, installed AFTER the
-# contamination gate has passed. Deliberately NOT claude/codex: installing those
-# is part of the journey under test (C9/C10). The aws CLI is here for
-# cognito-idp:InitiateAuth, which is an UNSIGNED API and needs no credentials —
-# if a laptop step ever started needing signed calls, it would fail, which is
-# exactly the signal we want.
-laptop_provision() {
-  log "provisioning the laptop pod with the tools a developer already has (jq, curl, aws)"
-  laptop bash -c '
-    set -euo pipefail
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq --no-install-recommends jq curl unzip ca-certificates procps
-    if ! command -v aws >/dev/null 2>&1; then
-      curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-      unzip -q /tmp/awscli.zip -d /tmp
-      /tmp/aws/install >/dev/null
-    fi
-    aws --version >/dev/null && jq --version >/dev/null
-  ' >"$WORKDIR/pod-provision.log" 2>&1 \
-    || die "could not provision the laptop pod: $(tail -3 "$WORKDIR/pod-provision.log" | tr '\n' ' ')"
-}
-
-# Sweep by LABEL, not by name: a pod leaked by a crashed run is caught even
-# though this process never learned its run id. Safe because `concurrency` in the
-# workflow guarantees at most one live run per environment.
-laptop_pod_delete() {
-  h_kubectl delete pod -n "$POD_NAMESPACE" \
-    -l "app=${POD_LABEL_APP}" --ignore-not-found --wait=false >/dev/null 2>&1
-}
-
-# -----------------------------------------------------------------------------
-# HTTP helpers
-# -----------------------------------------------------------------------------
-# Tokens travel to curl in a 0600 config file, never in argv (/proc/<pid>/cmdline
-# is world-readable) and never in an exported variable a child could inherit.
-write_curl_auth_config() {
-  local token_file="$1" cfg="$2" header_name="${3:-Authorization}" prefix="${4:-Bearer }"
-  local token
-  token="$(cat "$token_file")"
-  umask 077
-  printf 'header = "%s: %s%s"\n' "$header_name" "$prefix" "$token" > "$cfg"
-  chmod 600 "$cfg"
-}
-
-# http_post_json <curl-cfg> <url> <body-file> <out-body-file> -> echoes status
-http_post_json() {
-  local cfg="$1" url="$2" body_file="$3" out="$4"
-  # Retry transient EDGE errors (502/503/504) and connection failures (000).
-  # A flag flip rolls the gateway deployment; while the roll completes the ALB
-  # target group flaps (ready/draining targets churn) and successive requests
-  # can each hit a bad target for a few seconds even after `kubectl rollout
-  # status` returns. A real gate/logic response is 200/401/402/409/429 — NEVER
-  # 502/503/504 — so retrying those cannot mask a gate bug; it only rides out
-  # the ALB churn so the assertion sees the true status. A genuine upstream 502
-  # (e.g. a retired model) simply exhausts the retries and is still reported.
-  local status attempt=0 max_attempts=8
-  while :; do
-    status="$(curl -sS -o "$out" -w '%{http_code}' -X POST \
-      -K "$cfg" \
-      -H 'content-type: application/json' \
-      --data-binary "@${body_file}" \
-      --max-time 120 \
-      "$url" || echo "000")"
-    case "$status" in
-      502|503|504|000)
-        attempt=$((attempt + 1))
-        [ "$attempt" -ge "$max_attempts" ] && break
-        sleep 3
-        ;;
-      *) break ;;
-    esac
-  done
-  printf '%s' "$status"
-}
-
-# http_get <curl-cfg> <url> <out-body-file> -> echoes status
-http_get() {
-  local cfg="$1" url="$2" out="$3"
-  # Retry transient edge 5xx / connection failures for the same reason
-  # http_post_json does — the ALB target group flaps during a rollout.
-  local status attempt=0 max_attempts=8
-  while :; do
-    status="$(curl -sS -o "$out" -w '%{http_code}' -K "$cfg" --max-time 60 "$url" || echo "000")"
-    case "$status" in
-      502|503|504|000)
-        attempt=$((attempt + 1))
-        [ "$attempt" -ge "$max_attempts" ] && break
-        sleep 3
-        ;;
-      *) break ;;
-    esac
-  done
-  printf '%s' "$status"
-}
-
-anthropic_body() {
-  local out="$1" prompt="$2"
-  jq -n --arg m "$EVAL_MODEL" --arg p "$prompt" \
-    '{model:$m, max_tokens:64, messages:[{role:"user",content:$p}]}' > "$out"
-}
-
-openai_body() {
-  local out="$1" prompt="$2"
-  jq -n --arg m "$EVAL_MODEL" --arg p "$prompt" \
-    '{model:$m, max_tokens:64, messages:[{role:"user",content:$p}]}' > "$out"
-}
-
-responses_body() {
-  local out="$1" prompt="$2"
-  jq -n --arg m "$EVAL_CODEX_MODEL" --arg p "$prompt" \
-    '{model:$m, input:$p}' > "$out"
-}
 
 # -----------------------------------------------------------------------------
 # Assertions
@@ -970,106 +595,17 @@ maybe_fail_phase() {
   fi
 }
 
-# after_phase <label> <rc> <failures-before> — reconcile a finished phase.
-#
-# A phase gives up early (`return 1`) when a prerequisite is missing: no point
-# asserting `token` works if the helper never downloaded. That must NOT end the
-# run — the remaining phases still have to execute so the summary table is
-# complete and the triage agent sees every regression, not just the first.
-# `die()` (a genuinely unrecoverable setup error) still exits, because it exits
-# the shell rather than returning.
-#
-# Invoking a phase with `|| rc=$?` also suspends `set -e` for its dynamic extent,
-# so an unguarded command failure inside a phase surfaces as a non-zero return
-# rather than killing the script. Either way it is recorded: a phase that returns
-# non-zero without having called fail() would otherwise pass silently, so the
-# count is checked here and a failure synthesised.
-after_phase() {
-  local label="$1" rc="$2" before="$3"
-  [ "$rc" -eq 0 ] && return 0
-  if [ "$FAILURES" -eq "$before" ]; then
-    CURRENT_PHASE="$label"
-    fail "phase $label aborted early with no recorded assertion failure — a command failed unguarded"
-  else
-    log "phase $label stopped early after a failed assertion (remaining phases still run)"
-  fi
-}
-
-# =============================================================================
-# State — survives across processes so --cleanup-only works standalone
-# =============================================================================
-state_set() {
-  local key="$1" value="$2"
-  touch "$STATE_FILE"; chmod 600 "$STATE_FILE"
-  grep -v "^${key}=" "$STATE_FILE" > "$STATE_FILE.tmp" 2>/dev/null || true
-  mv -f "$STATE_FILE.tmp" "$STATE_FILE"
-  printf '%s=%s\n' "$key" "$value" >> "$STATE_FILE"
-}
-
-state_get() {
-  local key="$1"
-  [ -f "$STATE_FILE" ] || return 0
-  sed -n "s/^${key}=//p" "$STATE_FILE" | tail -1
-}
-
-# Resolve the RDS connection + a fresh IAM auth token into the PG* environment.
-# Self-contained (resolves RDS_HOST/RDS_DB from SSM if not already set) so it is
-# callable from BOTH resolve_config (full run) and the --cleanup-only branch —
-# the sweep deletes users rows via psql, so it needs DB creds too. Without this
-# the standalone sweep failed to connect and reported spurious "could not delete
-# users row" litter.
-#
-# bedrockgw-dev-postgres has IAM database authentication enabled and its master
-# user (bgadmin) is granted rds_iam in-database — exactly how the gateway itself
-# connects (BG_RDS_IAM_AUTH=true, no password in BG_DATABASE_URL). That grant
-# *disables* password auth for bgadmin, so pulling the managed master password
-# from the rds!db-* secret and offering it yields "PAM authentication failed".
-# We mint a short-lived IAM auth token instead and use it as PGPASSWORD (the
-# harness runner's IRSA is authorized for rds-db:connect). The username still
-# comes from the managed secret so we track the master user without hard-coding
-# it. IAM auth mandates TLS (PGSSLMODE).
-resolve_db_creds() {
-  local secret_arn secret
-  db_ssm() {
-    h_aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo ""
-  }
-  [ -n "${RDS_HOST:-}" ] || RDS_HOST="$(db_ssm "/adp/${ENVIRONMENT}/gateway/rds-host")"
-  [ -n "${RDS_DB:-}" ]   || RDS_DB="$(db_ssm "/adp/${ENVIRONMENT}/gateway/rds-database-name")"
-  if [ -z "$RDS_HOST" ] || [ -z "$RDS_DB" ]; then
-    die "Could not resolve RDS host/database for ${ENVIRONMENT}"
-  fi
-
-  secret_arn="$(h_aws secretsmanager list-secrets --filters Key=name,Values="rds!db-" \
-    --query 'SecretList[0].ARN' --output text 2>/dev/null || echo "")"
-  if [ -z "$secret_arn" ] || [ "$secret_arn" = "None" ]; then
-    die "Could not find the rds!db-* secret"
-  fi
-  secret="$(h_aws secretsmanager get-secret-value --secret-id "$secret_arn" \
-    --query SecretString --output text)"
-  PGUSER="$(printf '%s' "$secret" | jq -r .username)"
-  PGPASSWORD="$(h_aws rds generate-db-auth-token \
-    --hostname "$RDS_HOST" --port 5432 --region "${AWS_REGION:-us-east-1}" \
-    --username "$PGUSER" 2>/dev/null || echo "")"
-  [ -n "$PGPASSWORD" ] || die "Failed to mint an RDS IAM auth token for $PGUSER@$RDS_HOST"
-  mask "$PGPASSWORD"
-  export PGHOST="$RDS_HOST" PGDATABASE="$RDS_DB" PGUSER PGPASSWORD PGSSLMODE=require
-}
-
 # =============================================================================
 # Phase 0 — resolve configuration (harness only)
 # =============================================================================
 resolve_config() {
   phase "0" "resolve deployment configuration"
 
-  ssm() {
-    h_aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo ""
-  }
-
-  USER_POOL_ID="$(ssm "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id")"
-  CLIENT_ID="$(ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")"
-  CF_DOMAIN="$(ssm "/adp/${ENVIRONMENT}/gateway/cloudfront-domain")"
-  RDS_HOST="$(ssm "/adp/${ENVIRONMENT}/gateway/rds-host")"
-  RDS_DB="$(ssm "/adp/${ENVIRONMENT}/gateway/rds-database-name")"
+  USER_POOL_ID="$(eval_ssm "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id")"
+  CLIENT_ID="$(eval_ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")"
+  CF_DOMAIN="$(eval_ssm "/adp/${ENVIRONMENT}/gateway/cloudfront-domain")"
+  RDS_HOST="$(eval_ssm "/adp/${ENVIRONMENT}/gateway/rds-host")"
+  RDS_DB="$(eval_ssm "/adp/${ENVIRONMENT}/gateway/rds-database-name")"
 
   local v
   for v in USER_POOL_ID CLIENT_ID CF_DOMAIN RDS_HOST RDS_DB; do
@@ -1175,85 +711,18 @@ set_flag() {
 }
 
 # =============================================================================
-# Tier-1 identity seeding
+# Tier-1 identity seeding — seed_user() lives in lib/cognito.sh
 # =============================================================================
 # The broker's GitHub-OAuth output is just a Cognito user plus tokens, so an
 # equivalent session is minted directly. Deterministic, and needs no bot GitHub
 # account (that's Tier 2, out of scope — see the header).
 #
-# seed_user <username> <state-key-prefix> [role]
-#   role="" leaves custom:role unset — a plain, un-approved human.
-#   role="admin" exercises the admin exemption with a BLANK org.
-# custom:org_id is NEVER set: the pre-token-generation Lambda copies user
-# attributes into the access token, so leaving it unset is what keeps the
-# org_id claim blank and forces the middleware down its DB-fallback path — the
-# one leg the 2026-08-26 manual validation skipped.
-seed_user() {
-  local username="$1" key="$2" role="${3:-}"
-  local password attrs
-
-  # 24 hex chars + fixed symbol/upper/lower/digit — satisfies the pool's
-  # 12-char, all-classes policy without ever being predictable.
-  password="Ev!1$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')Aa9"
-  mask "$password"
-
-  attrs="Name=email,Value=${username} Name=email_verified,Value=true Name=name,Value=eval-cli-onboarding"
-  if [ -n "$role" ]; then
-    attrs="${attrs} Name=custom:role,Value=${role}"
-  fi
-
-  # shellcheck disable=SC2086  # attrs is a deliberately word-split arg list
-  h_aws cognito-idp admin-create-user \
-    --user-pool-id "$USER_POOL_ID" \
-    --username "$username" \
-    --message-action SUPPRESS \
-    --user-attributes $attrs >/dev/null
-  state_set "${key}_USERNAME" "$username"
-
-  h_aws cognito-idp admin-set-user-password \
-    --user-pool-id "$USER_POOL_ID" \
-    --username "$username" \
-    --password "$password" \
-    --permanent >/dev/null
-
-  local sub
-  # SC2016 is a false positive here: the backticks are JMESPath literal syntax
-  # for the --query expression and MUST NOT be expanded by the shell.
-  # shellcheck disable=SC2016
-  sub="$(h_aws cognito-idp admin-get-user --user-pool-id "$USER_POOL_ID" --username "$username" \
-    --query 'UserAttributes[?Name==`sub`].Value' --output text)"
-  if [ -z "$sub" ] || [ "$sub" = "None" ]; then
-    die "Could not resolve Cognito sub for $username"
-  fi
-  state_set "${key}_SUB" "$sub"
-
-  # USER_PASSWORD_AUTH yields exactly what the SPA holds after GitHub login:
-  # an access token (Bearer material) and a refresh token (what `import` takes).
-  local auth
-  auth="$(h_aws cognito-idp initiate-auth \
-    --auth-flow USER_PASSWORD_AUTH \
-    --client-id "$CLIENT_ID" \
-    --auth-parameters "USERNAME=${username},PASSWORD=${password}" \
-    --output json)"
-
-  local access refresh
-  access="$(printf '%s' "$auth" | jq -r '.AuthenticationResult.AccessToken')"
-  refresh="$(printf '%s' "$auth" | jq -r '.AuthenticationResult.RefreshToken')"
-  if [ -z "$access" ] || [ "$access" = "null" ]; then
-    die "No AccessToken minted for $username"
-  fi
-  mask "$access"
-  mask "$refresh"
-
-  # Tokens land in 0600 files, never in exported variables or argv.
-  umask 077
-  printf '%s' "$access"  > "$WORKDIR/${key}.access"
-  printf '%s' "$refresh" > "$WORKDIR/${key}.refresh"
-  chmod 600 "$WORKDIR/${key}.access" "$WORKDIR/${key}.refresh"
-
-  write_curl_auth_config "$WORKDIR/${key}.access" "$WORKDIR/${key}.curlrc"
-  pass "seeded Cognito identity ${username} (sub ${sub:0:8}…, role='${role:-none}', org claim blank)"
-}
+# THIS eval calls seed_user with NO extra attributes, so custom:org_id is never
+# set. The pre-token-generation Lambda copies user attributes into the access
+# token, so leaving it unset is what keeps the org_id claim blank and forces the
+# middleware down its DB-fallback path — the one leg the 2026-08-26 manual
+# validation skipped. (The budget/rate-limit eval does the opposite and passes the
+# tenant claims explicitly, because its hierarchy is built from them.)
 
 # The approval an admin performs: a users row with a non-empty org_id keyed on
 # the Cognito sub. The claim stays blank on purpose.
@@ -1650,18 +1119,11 @@ run_cleanup() {
   #    (e.g. the always-on "Cleanup sweep" step re-running Phase D after the
   #    matrix step already deleted it) is a clean state, not a failure — mirror
   #    the pod delete's --ignore-not-found semantics so a second sweep stays green.
-  local key username delete_err
+  local key username
   for key in USER ADMIN; do
     username="$(state_get "${key}_USERNAME")"
     [ -n "$username" ] || continue
-    if delete_err="$(h_aws cognito-idp admin-delete-user \
-      --user-pool-id "${USER_POOL_ID:-}" --username "$username" 2>&1)"; then
-      log "deleted Cognito user $username"
-    elif printf '%s' "$delete_err" | grep -q "UserNotFoundException"; then
-      log "Cognito user $username already absent — nothing to delete"
-    else
-      fail "D could not delete Cognito user $username — sweep with the '${EVAL_USER_PREFIX}' prefix"
-    fi
+    delete_seeded_user "$username"
   done
 
   # 5. Wipe the harness-side token material. The laptop-side copies went with the
@@ -1670,39 +1132,6 @@ run_cleanup() {
 
   write_summary
   exit "$rc"
-}
-
-# =============================================================================
-# Reporting
-# =============================================================================
-# A per-phase table in the job summary is what the triage agent reads to decide
-# which phase to file a fix-issue against, so it must render even on a crash.
-write_summary() {
-  local out="${GITHUB_STEP_SUMMARY:-/dev/null}"
-  {
-    echo "## CLI onboarding eval — ${ENVIRONMENT} — run ${EVAL_RUN_ID}"
-    echo ""
-    echo "| Phase | Result | Assertion |"
-    echo "|-------|--------|-----------|"
-    if [ -s "$RESULTS_FILE" ]; then
-      awk -F'\t' '{printf "| %s | %s | %s |\n", $1, ($2=="PASS"?"✅ pass":($2=="FAIL"?"❌ FAIL":"⚪ skip")), $3}' "$RESULTS_FILE"
-    else
-      echo "| — | ❌ FAIL | eval produced no assertions (died during setup) |"
-    fi
-    echo ""
-    echo "**Failures: ${FAILURES}**"
-    if [ -n "$INJECT_FAILURE" ]; then
-      echo ""
-      echo "> \`--inject-failure ${INJECT_FAILURE}\` was set: this run is EXPECTED to fail."
-    fi
-  } >> "$out"
-
-  echo ""
-  if [ "$FAILURES" -eq 0 ]; then
-    echo "${GREEN}=== eval passed: 0 failures ===${NC}"
-  else
-    echo "${RED}=== eval FAILED: ${FAILURES} failure(s) ===${NC}"
-  fi
 }
 
 # =============================================================================
