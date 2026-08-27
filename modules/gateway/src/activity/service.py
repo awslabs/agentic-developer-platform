@@ -392,7 +392,14 @@ class ActivityService:
             status=status,
             # Issue #4176: derived, not stored. "unverifiable" means we could not
             # learn whether this run is alive — it is NOT a claim that it exited.
-            liveness=compute_liveness(status, arrived_at, datetime.now(UTC)),
+            # Issue #4235: dated from `status_updated_at` (last signal) so a
+            # healthy multi-day run is not called unverifiable for its age alone.
+            liveness=compute_liveness(
+                status,
+                arrived_at,
+                datetime.now(UTC),
+                status_updated_at=item.get("status_updated_at"),
+            ),
             status_updated_at=item.get("status_updated_at"),
             topic=item.get("topic"),
             persona=item.get("persona"),
@@ -813,8 +820,14 @@ class ActivityService:
                             invoked_at=item_arrived_at,
                             channel=item.get("channel"),
                             status=item_status,
-                            # Issue #4176: derived liveness verdict.
-                            liveness=compute_liveness(item_status, item_arrived_at, datetime.now(UTC)),
+                            # Issue #4176: derived liveness verdict. Issue #4235:
+                            # dated from the last signal, not the start time.
+                            liveness=compute_liveness(
+                                item_status,
+                                item_arrived_at,
+                                datetime.now(UTC),
+                                status_updated_at=item.get("status_updated_at"),
+                            ),
                             topic=item.get("topic"),
                             persona=item.get("persona"),
                             parent_invocation_id=item.get("parent_invocation_id"),
@@ -986,7 +999,13 @@ def _build_chain_tree(items: list[dict]) -> list[InvocationChainItem]:
             # loop so every node in one tree is judged against the same instant —
             # otherwise a run near the cutoff could read `live` while its sibling
             # of identical age read `unverifiable`.
-            liveness=compute_liveness(item.get("status"), arrived_at, now),
+            # Issue #4235: dated from the last signal, not the start time.
+            liveness=compute_liveness(
+                item.get("status"),
+                arrived_at,
+                now,
+                status_updated_at=item.get("status_updated_at"),
+            ),
             topic=item.get("topic"),
             persona=item.get("persona"),
             parent_invocation_id=item.get("parent_invocation_id"),

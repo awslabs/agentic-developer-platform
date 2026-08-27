@@ -23,6 +23,12 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
+from src.activity.liveness import (
+    ACTIVE_STALENESS_HOURS,
+    ACTIVE_STATUSES,
+    last_signal_at,
+    within_staleness_window,
+)
 from src.activity.stats_schemas import (
     ActiveRun,
     DailyEntry,
@@ -42,18 +48,32 @@ _DEFAULT_TABLE_NAME = "adp-dev-webhook-events"
 _ITEM_BACKSTOP = 10_000
 
 # In-progress statuses (non-terminal).
-# Canonical source: modules/agent-factory/agent-worker-image/lib/invocation_status.py
+#
+# Issue #4235: this used to be a local `{"in_progress"}` literal while
+# `liveness.ACTIVE_STATUSES` said `{"in_progress", "webhook_received"}`. A stale
+# `webhook_received` row therefore read `unverifiable` on its badge but
+# contributed 0 to the operator-facing `stale_count` — two numbers on the same
+# page disagreeing about one row. It is now an alias for the single definition in
+# `liveness.py`; see that module for why the union is the behaviour-preserving
+# direction (`_fetch_items` already excludes `webhook_received` at the DDB layer,
+# so this widening does not change any count).
+#
+# Canonical source of the status value itself:
+# modules/agent-factory/agent-worker-image/lib/invocation_status.py
 # (writes "in_progress" when pod starts; see also #3696 for the vocabulary audit).
-_ACTIVE_STATUSES = {"in_progress"}
+_ACTIVE_STATUSES = ACTIVE_STATUSES
 
 # Terminal statuses — canonical sources:
 # - "complete" / "failed": agent-worker-image/lib/invocation_status.py
 # - "rate_limited" / "no_op": webhook-ingress/lambda/github/handler.py
 _TERMINAL_STATUSES = {"complete", "failed", "rate_limited", "no_op"}
 
-# Staleness cutoff for active runs (hours). An in_progress run older than this
-# is treated as orphaned (terminal status was never delivered). Issue #3696.
-_ACTIVE_STALENESS_HOURS = 24
+# Staleness cutoff for active runs (hours). An in_progress run whose LAST SIGNAL
+# is older than this is treated as orphaned (terminal status was never
+# delivered). Issue #3696 tuned the value; issue #4235 moved it to `liveness.py`
+# so the per-run verdict and this stale count share one constant. Kept as an
+# alias because existing importers reference this name.
+_ACTIVE_STALENESS_HOURS = ACTIVE_STALENESS_HOURS
 
 # Statuses to exclude from stats (same as Issue #1658)
 _NON_TRIGGERING_STATUSES = {"no_op", "webhook_received"}
@@ -267,7 +287,6 @@ class StatsService:
         """Aggregate raw DDB items into the stats response shape."""
         now = datetime.now(UTC)
         today_str = now.strftime("%Y-%m-%d")
-        staleness_cutoff = (now - timedelta(hours=_ACTIVE_STALENESS_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Initialize containers
         active_runs: list[ActiveRun] = []
@@ -288,9 +307,19 @@ class StatsService:
             # Extract date part from ISO timestamp
             date_part = arrived_at[:10] if len(arrived_at) >= 10 else ""
 
+            # Issue #4235: freshness is dated from the run's LAST SIGNAL, not from
+            # when it started. Computed once per item and shared with the
+            # today.active branch below so the two cannot disagree. Uses the same
+            # helpers as `compute_liveness`, which is what makes `stale_count`
+            # agree with the per-run liveness badge on every row.
+            is_fresh = within_staleness_window(
+                last_signal_at(arrived_at, item.get("status_updated_at")),
+                now,
+            )
+
             # Active runs (non-terminal status) — exclude stale orphans (#3696)
             if status in _ACTIVE_STATUSES:
-                if arrived_at >= staleness_cutoff:
+                if is_fresh:
                     active_runs.append(
                         ActiveRun(
                             invocation_id=invocation_id,
@@ -310,7 +339,7 @@ class StatsService:
                     today_counts.completed += 1
                 elif status == "failed":
                     today_counts.failed += 1
-                elif status in _ACTIVE_STATUSES and arrived_at >= staleness_cutoff:
+                elif status in _ACTIVE_STATUSES and is_fresh:
                     today_counts.active += 1
 
             # Daily breakdown

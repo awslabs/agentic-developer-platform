@@ -30,6 +30,7 @@ def _make_item(
     topic: str | None = "Fix bug",
     arrived_at: str | None = None,
     error_message: str | None = None,
+    status_updated_at: str | None = None,
 ) -> dict:
     """Build a DynamoDB item dict shaped like a real webhook-events row."""
     if arrived_at is None:
@@ -41,6 +42,9 @@ def _make_item(
         "user_id": "user-abc-123",
         "tenant_id": "org-tenant-001",
     }
+    # Issue #4235: staleness is dated from the last signal when the row has one.
+    if status_updated_at:
+        item["status_updated_at"] = status_updated_at
     if persona:
         item["persona"] = persona
     if repo:
@@ -202,6 +206,104 @@ class TestStatsServiceAggregation:
 
         assert len(result.active_runs) == 1
         assert result.active_runs[0].invocation_id == "inv-fresh"
+        assert result.stale_count == 1
+
+    def test_long_running_healthy_run_is_active_not_stale(self):
+        """Issue #4235: staleness is dated from the last signal, not the start.
+
+        A run that started 30h ago but transitioned a minute ago is a healthy
+        multi-day run. It must stay in `active_runs` and contribute 0 to
+        `stale_count` — matching the `live` badge the same row now gets from
+        `compute_liveness`. Before #4235 the two contradicted each other here.
+        """
+        old = (datetime.now(UTC) - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        recent = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        items = [
+            _make_item(event_id="inv-multiday", status="in_progress", arrived_at=old, status_updated_at=recent),
+        ]
+        service = self._make_service(items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        assert result.stale_count == 0
+        assert [r.invocation_id for r in result.active_runs] == ["inv-multiday"]
+
+    def test_wedged_run_still_counted_stale(self):
+        """No over-correction: a run whose last signal is also old stays stale.
+
+        Guards the third row of the issue's blast-radius table — if #4235 had
+        treated every `in_progress` row as active, a genuinely wedged run would
+        never be flagged again.
+        """
+        old = (datetime.now(UTC) - timedelta(hours=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        also_old = (datetime.now(UTC) - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        items = [
+            _make_item(event_id="inv-wedged", status="in_progress", arrived_at=old, status_updated_at=also_old),
+        ]
+        service = self._make_service(items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        assert result.stale_count == 1
+        assert result.active_runs == []
+
+    def test_today_active_count_uses_last_signal_too(self):
+        """`today.active` shares the one freshness decision, not a second one.
+
+        Both branches read the same per-item `is_fresh`, so a long-running healthy
+        run cannot be active in one number and stale in the other.
+        """
+        today_early = datetime.now(UTC).strftime("%Y-%m-%dT00:00:01Z")
+        recent = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        items = [
+            _make_item(event_id="inv-today", status="in_progress", arrived_at=today_early, status_updated_at=recent),
+        ]
+        service = self._make_service(items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        assert result.today.active == 1
+        assert result.stale_count == 0
+
+    def test_stale_count_agrees_with_the_liveness_badge(self):
+        """The reconciliation, asserted directly on a mixed fixture.
+
+        For every active row, `stale_count` membership must be the exact
+        complement of a `live` verdict from `compute_liveness`. This is the
+        "two numbers on the same page contradict each other" defect, pinned.
+        """
+        from src.activity.liveness import compute_liveness
+
+        now = datetime.now(UTC)
+        old = (now - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        recent = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        items = [
+            # Long-running but healthy → live, not stale.
+            _make_item(event_id="inv-multiday", status="in_progress", arrived_at=old, status_updated_at=recent),
+            # Wedged → unverifiable, stale.
+            _make_item(event_id="inv-wedged", status="in_progress", arrived_at=old, status_updated_at=old),
+            # Fresh ordinary run → live, not stale.
+            _make_item(event_id="inv-fresh", status="in_progress", arrived_at=recent, status_updated_at=recent),
+        ]
+        service = self._make_service(items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        live_ids = {
+            item["event_id"]
+            for item in items
+            if compute_liveness(item["status"], item["arrived_at"], now, status_updated_at=item.get("status_updated_at")) == "live"
+        }
+        assert {r.invocation_id for r in result.active_runs} == live_ids
+        assert result.stale_count == len(items) - len(live_ids)
+
+    def test_rows_without_status_updated_at_fall_back_to_arrived_at(self):
+        """Regression: the pre-#4235 fixture shape still classifies as before."""
+        old = (datetime.now(UTC) - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        items = [
+            _make_item(event_id="inv-fresh", status="in_progress", arrived_at=_today_iso()),
+            _make_item(event_id="inv-stale", status="in_progress", arrived_at=old),
+        ]
+        service = self._make_service(items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        assert [r.invocation_id for r in result.active_runs] == ["inv-fresh"]
         assert result.stale_count == 1
 
     def test_empty_window_returns_zeros(self):
@@ -525,6 +627,49 @@ class TestStatusVocabularyGuard:
 
         overlap = _ACTIVE_STATUSES & _TERMINAL_STATUSES
         assert not overlap, f"Status in both active AND terminal: {overlap}"
+
+    def test_webhook_received_active_and_non_triggering_overlap_is_deliberate(self):
+        """Issue #4235: `webhook_received` is in BOTH _ACTIVE and _NON_TRIGGERING.
+
+        That looks like a bug and is not — do not "fix" it by narrowing
+        _ACTIVE_STATUSES. The set is shared with `liveness.ACTIVE_STATUSES` so the
+        per-run badge and `stale_count` cannot disagree about a `webhook_received`
+        row (they did before #4235). It changes no count, because every
+        aggregation path reaches `_aggregate` via `_fetch_items`, which excludes
+        _NON_TRIGGERING_STATUSES at the DynamoDB layer first — so no
+        `webhook_received` row is ever aggregated. This test states the
+        invariant that makes the widening safe.
+        """
+        from src.activity.stats_service import _ACTIVE_STATUSES, _NON_TRIGGERING_STATUSES
+
+        assert "webhook_received" in _ACTIVE_STATUSES
+        assert "webhook_received" in _NON_TRIGGERING_STATUSES
+
+    def test_webhook_received_rows_never_reach_the_stale_count(self):
+        """The behavioural half of the test above: the DDB filter is load-bearing.
+
+        Feeding a stale `webhook_received` row straight into `_aggregate` (bypassing
+        the DDB filter, which real callers cannot do) is what WOULD count it. This
+        asserts the real path — via the query filter — keeps `stale_count` at 0.
+        """
+        old = (datetime.now(UTC) - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        mock_table = MagicMock()
+        # The real DDB FilterExpression drops webhook_received before it is returned.
+        mock_table.query.return_value = {"Items": [], "LastEvaluatedKey": None}
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
+
+        result = service.get_stats_by_user("user-abc-123", days=7)
+        assert result.stale_count == 0
+
+        # And when one IS aggregated (filter bypassed), it is classified as active —
+        # i.e. consistently with the liveness badge, which is the point of #4235.
+        from src.activity.liveness import compute_liveness
+
+        direct = service._aggregate([_make_item(event_id="inv-wr", status="webhook_received", arrived_at=old)], days=7)
+        assert direct.stale_count == 1
+        assert compute_liveness("webhook_received", old, datetime.now(UTC)) == "unverifiable"
 
 
 class TestStatsServiceRootHumanMerge:

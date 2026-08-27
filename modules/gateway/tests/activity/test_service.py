@@ -3375,6 +3375,68 @@ class TestLivenessOnMappedItems:
         assert item.liveness == "unverifiable"
         assert item.liveness != "exited"
 
+    def test_multi_day_healthy_run_serializes_as_live(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Issue #4235 end-to-end: the wiring passes `status_updated_at` through.
+
+        The unit semantics live in `test_liveness.py`; this asserts the service
+        actually hands the last-signal timestamp to `compute_liveness`. Without
+        the wiring this row would serialize `unverifiable` — a healthy multi-day
+        agent that an operator might kill on the strength of the badge.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-multiday",
+                    "arrived_at": (now - timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "status_updated_at": (now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "status": "in_progress",
+                    "user_id": "user-1",
+                },
+                {
+                    "event_id": "inv-wedged",
+                    "arrived_at": (now - timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "status_updated_at": (now - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "status": "in_progress",
+                    "user_id": "user-1",
+                },
+            ],
+            "Count": 2,
+        }
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        by_id = {item.invocation_id: item for item in service.query_by_user(user_id="user-1").items}
+
+        # Started days ago, still signalling → live.
+        assert by_id["inv-multiday"].liveness == "live"
+        # Started days ago, last signal also stale → still unverifiable (no over-correction).
+        assert by_id["inv-wedged"].liveness == "unverifiable"
+        assert by_id["inv-wedged"].liveness != "exited"
+
+    def test_chain_nodes_also_use_the_last_signal(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """The chain-tree path passes `status_updated_at` too, not just the flat list."""
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-root",
+                    "arrived_at": (now - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "status_updated_at": (now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "status": "in_progress",
+                    "user_id": "user-1",
+                    "correlation_id": "corr-multiday",
+                }
+            ],
+            "Count": 1,
+        }
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1")
+
+        assert result.chains[0].root.liveness == "live"
+
     def test_completed_at_still_derives_from_the_hoisted_terminal_set(self, mock_dynamodb_resource, mock_dynamodb_table):
         """Regression: hoisting the terminal set out of `_map_item` must not have
         changed the #1653/#4020 `completed_at` behaviour it also drives."""
