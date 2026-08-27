@@ -9,6 +9,17 @@ COPY pyproject.toml .
 RUN pip install --no-cache-dir .
 # Issue #144: Install tracing dependencies (adds ~20MB but only active when OTEL_ENABLED=true)
 RUN pip install --no-cache-dir ".[tracing]" || echo "Tracing dependencies not available, skipping"
+# Issue #4203: the AWS Lambda Runtime Interface Client, so this same image can be
+# invoked as a container Lambda (the orchestration tick) as well as served by
+# uvicorn in the pod. The tick needs src/ plus the async SQLAlchemy stack plus the
+# RDS CA bundle below, all of which only exist in this image — no Lambda layer
+# provides them.
+#
+# The image's ENTRYPOINT/CMD are deliberately left alone: the K8s deployment
+# overrides neither, so it relies on the uvicorn CMD at the bottom of this file.
+# The Lambda supplies the RIC via `image_config.entry_point` in
+# infra/modules/orchestration-tick/main.tf instead, so the pod path is untouched.
+RUN pip install --no-cache-dir awslambdaric==3.1.1
 
 # Runtime stage
 FROM public.ecr.aws/docker/library/python:3.13-slim

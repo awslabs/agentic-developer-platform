@@ -379,6 +379,34 @@ variable "enable_chat_logging" {
   default     = true
 }
 
+# --- Orchestration tick (Issue #4203) ---------------------------------------
+
+variable "enable_orchestration_tick" {
+  type        = bool
+  description = <<-EOT
+    Create the scheduled orchestration tick Lambda (EventBridge -> VPC Lambda ->
+    RDS). Enabled by default: without the tick nothing advances the delivery-loop
+    graph. Requires migration 029_orchestration_graph to be applied.
+  EOT
+  default     = true
+}
+
+variable "orchestration_tick_schedule" {
+  type        = string
+  description = "EventBridge schedule expression for the orchestration tick"
+  default     = "rate(5 minutes)"
+}
+
+variable "orchestration_tick_image_tag" {
+  type        = string
+  description = <<-EOT
+    Tag of the adp-gateway image the tick Lambda runs. The tick's logic lives in
+    `src/orchestration/tick.py`, which ships inside the gateway image, so it uses
+    the same artifact the pod does.
+  EOT
+  default     = "latest"
+}
+
 variable "chat_logging_scrub_level" {
   type        = string
   description = "Chat logging scrub level: off, basic (headers+regex), or standard (headers+regex+Comprehend PII)"

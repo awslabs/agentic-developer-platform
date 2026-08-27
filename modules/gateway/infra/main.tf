@@ -898,6 +898,59 @@ module "budget_lambda" {
 }
 
 # =============================================================================
+# Orchestration Tick Module (Issue #4203)
+# =============================================================================
+# The delivery-loop engine's heartbeat: EventBridge -> VPC Lambda -> RDS, every
+# few minutes. Reads the orchestration graph (migration 029_orchestration_graph),
+# moves nodes whose predecessors are satisfied from `pending` to `ready` through
+# the `transition()` guard, and exits. No dispatch — that is a later story.
+#
+# NOTE ON NAMING: `name_prefix` here is `adp-<env>`, NOT `local.name_prefix`
+# (which is `bedrockgw-<env>`). The tick's function, log group and schedule rule
+# are pinned to `adp-<env>-orchestration-tick` by the wave-3 evaluation and the
+# documented smoke check. Composed from `var.environment` rather than hardcoded,
+# matching the `adp-${var.environment}` idiom already used in kms.tf and
+# user_identity_index.tf in this same root module.
+#
+# The Lambda runs the existing adp-gateway container image: the tick's logic is
+# `src/orchestration/tick.py` (async SQLAlchemy/asyncpg), and that image is the
+# only artifact that already carries the async stack plus the RDS CA bundle the
+# TLS path needs. See modules/orchestration-tick/main.tf for the full rationale.
+module "orchestration_tick" {
+  count  = var.enable_orchestration_tick ? 1 : 0
+  source = "./modules/orchestration-tick"
+
+  environment = var.environment
+  name_prefix = "adp-${var.environment}"
+  common_tags = local.common_tags
+  aws_region  = var.aws_region
+
+  image_uri = "${local.ecr_gateway_url}:${var.orchestration_tick_image_tag}"
+
+  # VPC Configuration
+  vpc_id             = local.vpc_id
+  private_subnet_ids = local.private_subnets
+
+  # RDS Configuration
+  rds_security_group_id = local.rds_security_group_id
+  db_host               = module.rds.db_instance_address
+  db_port               = module.rds.db_instance_port
+  db_name               = var.rds_db_name
+  db_username           = var.rds_username
+  rds_resource_id       = module.rds.db_instance_resource_id
+
+  tick_schedule = var.orchestration_tick_schedule
+
+  # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+
+  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
+  reserved_concurrency = var.enable_lambda_reserved_concurrency ? 2 : -1
+
+  depends_on = [module.rds]
+}
+
+# =============================================================================
 # API Gateway REST API Module (Issue #236)
 # =============================================================================
 # Creates an API Gateway REST API as an alternate route to the internal ALB.
