@@ -30,6 +30,15 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "fakeredis==2.26.2",
+    # Issue #4287: fakeredis only evaluates Lua via this optional extra. Without
+    # it register_script/EVAL raise ResponseError, which is why five
+    # tests/ratelimit/test_redis_backend.py cases are xfail'd as "fakeredis
+    # doesn't support Lua" — it does, given lupa. The budget reservation counter
+    # IS a Lua script, so its tests must run against a real Lua engine rather
+    # than a mock of the thing under test.
+    # Pin note: keep redis at 5.2.1 above. redis-py 8.x negotiates RESP3, which
+    # fakeredis rejects with "unknown command 'hello'".
+    "lupa==2.8",
     "moto==5.0.27",
     "ruff==0.9.6",
     "pytest-timeout==2.3.1",

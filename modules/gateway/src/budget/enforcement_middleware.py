@@ -16,6 +16,9 @@ Issue #234: Removed inline usage recording — now handled by S3-triggered
 
 Issue #249: Added agent-level budget checking via X-Agent-BudgetConfigId header.
             Agent budgets are checked BEFORE team/org hierarchy (most specific wins).
+
+Issue #4287: the pre-request estimate is model- and size-aware instead of a flat
+            $0.05. Still no body read — see _estimate_cost.
 """
 
 import json
@@ -34,7 +37,14 @@ from .enforcement_service import BudgetEnforcementService, budget_enforcement_se
 
 logger = get_logger(__name__)
 
-# Conservative cost estimate for pre-request budget check (USD).
+# Fallback pre-request estimate (USD), used only when neither the model nor the
+# request size can be determined from the ASGI scope — e.g. a chunked upload with
+# no content-length on a route that does not carry the model in its path.
+#
+# Issue #4287: this used to be the estimate for EVERY request, flat, regardless of
+# model or size. A single large call against an expensive model could therefore
+# overshoot a cap the check had just passed, because the check priced it at 5
+# cents. It is now the last resort, not the rule.
 _DEFAULT_ESTIMATE_USD = Decimal("0.05")
 
 # Retry-After for check-failure denials (Issue #4075). Short on purpose: the
@@ -90,7 +100,7 @@ class BudgetEnforcementMiddleware:
 
         timings = get_timings(request)
         with timings.time_segment("budget_check"):
-            estimated_cost = _DEFAULT_ESTIMATE_USD
+            estimated_cost = self._estimate_cost(scope, path)
 
             # Issue #249 read the agent-level budget config id from the
             # X-Agent-BudgetConfigId header, which the (now deprecated and
@@ -104,7 +114,15 @@ class BudgetEnforcementMiddleware:
             # Re-adding per-agent budget enforcement requires resolving the
             # config id from the agent registry entry (server-side, keyed off
             # the authenticated identity), not from a request header.
-            result = await self.enforcement_service.check_budget_hierarchy(token_context, estimated_cost)
+            result = await self.enforcement_service.check_budget_hierarchy(
+                token_context,
+                estimated_cost,
+                # Issue #4287: idempotency key for the live-denominator
+                # reservation, so the proxy can adjust THIS request's reservation
+                # to its real cost once the response lands. Set by
+                # LoggingMiddleware, which runs outside this one.
+                request_id=state.get("request_id"),
+            )
 
         if not result.allowed:
             # Drain the request body — some ASGI servers (Uvicorn/h11)
@@ -139,11 +157,66 @@ class BudgetEnforcementMiddleware:
     def _should_enforce(self, path: str) -> bool:
         return any(path.startswith(p) for p in ENFORCED_PATHS)
 
+    def _estimate_cost(self, scope: Scope, path: str) -> Decimal:
+        """Estimate this request's cost from the ASGI scope alone (Issue #4287).
+
+        Two inputs, both available without touching the body:
+
+        * the model, from the URL path (``/model/{model_id}/invoke``)
+        * the request size, from the ``content-length`` header
+
+        The body is deliberately NOT read. This is pure ASGI: ``receive()`` is a
+        one-shot stream, so consuming it here would starve the downstream handler
+        unless it were buffered and replayed — and the mantle route
+        (``/openai/v1/responses``) forwards the body byte-for-byte, which
+        ``src/shared/enforced_paths.py`` documents as a hard constraint. The cost
+        of that constraint is that ``max_tokens`` is invisible, so the output
+        estimate falls back to the pricing module's default.
+
+        The remaining gap is closed on the way out, not here: the reservation
+        taken against this estimate is adjusted to the request's real token cost
+        once the response lands (see
+        ``BudgetEnforcementService.reconcile_reservation``). So this only has to
+        be a reasonable pre-charge, not an accurate price.
+
+        Falls back to the flat ``_DEFAULT_ESTIMATE_USD`` only when the size is
+        unknown, which is strictly better than the pre-#4287 behavior of using it
+        for everything.
+        """
+        content_length = self._content_length(scope)
+        if content_length is None:
+            return _DEFAULT_ESTIMATE_USD
+
+        # No model in the path (e.g. /v1/chat/completions, where it lives in the
+        # unreadable body) — price it with the pricing table's conservative
+        # default rather than giving up on size-awareness too.
+        model_id = self._extract_model_id_from_path(path) or "default"
+
+        return self.enforcement_service.estimate_cost_from_payload_size(model_id, content_length)
+
+    @staticmethod
+    def _content_length(scope: Scope) -> int | None:
+        """Read ``content-length`` out of the raw ASGI headers.
+
+        Same convention as ``src/admin/middleware.py``. Returns ``None`` when the
+        header is absent (chunked upload) or unparseable, so the caller can fall
+        back rather than pre-charge a request $0.
+        """
+        for name, value in scope.get("headers", []):
+            if name.lower() == b"content-length":
+                try:
+                    return max(0, int(value))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
     def _extract_model_id_from_path(self, path: str) -> str | None:
         """Extract model ID from /model/{model_id}/invoke style paths.
 
-        Currently unused after Issue #234 removed inline usage recording.
-        Kept for potential future per-model budget enforcement.
+        Issue #4287: revived. This was dead code after Issue #234 removed inline
+        usage recording, kept "for potential future per-model budget
+        enforcement" — which is exactly what the model-aware pre-request estimate
+        needs, and it is the only model signal available without reading the body.
         """
         if not path.startswith("/model/"):
             return None

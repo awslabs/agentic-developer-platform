@@ -389,6 +389,44 @@ def emit_budget_check_failure(
     )
 
 
+def emit_budget_reservation_outcome(
+    outcome: str,
+    count: int = 1,
+    environment: str = "production",
+) -> None:
+    """
+    Emit BudgetReservationOutcome metric (Issue #4287).
+
+    The live-denominator reservation puts Redis on the HEALTHY hot path of every
+    enforced request for the first time — Wave 1 (#4075) only touched Redis after
+    a DB read had already failed. That is a new availability surface, so it needs
+    its own signal, separate from BudgetCheckFailure: a Redis blip here is NOT a
+    ledger fault, does not consume the DB grace window, and never denies.
+
+    ``degraded`` is the one to alarm on. While it is firing, caps are being
+    enforced against the lagged settled total only — i.e. exactly the overshoot
+    #4287 exists to close is back, silently, until Redis returns.
+
+    Args:
+        outcome: "reserved" (live denominator had room), "denied" (in-flight
+            spend exhausted the cap), or "degraded" (reservation backend
+            unreachable; fell back to the settled-ledger check).
+        count: Number of occurrences (default 1)
+        environment: Environment name
+    """
+    _emit_emf(
+        metrics={
+            "BudgetReservationOutcome": count,
+            "outcome": outcome,
+            "Environment": environment,
+        },
+        dimensions=[
+            ["outcome", "Environment"],
+            ["Environment"],
+        ],
+    )
+
+
 # ============================================================================
 # Rate Limit Metrics
 # ============================================================================

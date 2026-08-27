@@ -19,7 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.database import get_session_factory, reset_engine
 from src.shared.logging import get_logger
-from src.shared.metrics import emit_budget_check_failure, emit_budget_grace_engaged
+from src.shared.metrics import (
+    emit_budget_check_failure,
+    emit_budget_grace_engaged,
+    emit_budget_reservation_outcome,
+)
 from src.shared.models.budget import BudgetConfig, BudgetUsage
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import (
@@ -33,6 +37,7 @@ from src.shared.schemas.budget import (
 from .config import budget_config
 from .grace_window import GraceWindow
 from .pricing import PricingService, pricing_service
+from .reservations import ReservationStore, ReservationTarget
 from .utils import (
     calculate_budget_utilization,
     get_period_start_end,
@@ -79,6 +84,7 @@ class BudgetEnforcementService:
         db_session: AsyncSession | None = None,
         pricing: PricingService | None = None,
         grace_window: GraceWindow | None = None,
+        reservations: ReservationStore | None = None,
     ):
         """
         Initialize the budget enforcement service.
@@ -89,10 +95,13 @@ class BudgetEnforcementService:
             grace_window: Optional injected grace window (for testing). When
                 omitted, one is built lazily from config so the Redis client is
                 not created until a failure actually occurs.
+            reservations: Optional injected reservation store (Issue #4287, for
+                testing). When omitted, one is built lazily from config.
         """
         self.db_session = db_session
         self._pricing = pricing or pricing_service
         self._grace_window = grace_window
+        self._reservations = reservations
 
     def _get_grace_window(self) -> GraceWindow:
         """Get (or lazily build) the grace window.
@@ -112,6 +121,21 @@ class BudgetEnforcementService:
                 redis_url=redis_url,
             )
         return self._grace_window
+
+    def _get_reservations(self) -> ReservationStore:
+        """Get (or lazily build) the live-denominator reservation store (#4287)."""
+        if self._reservations is None:
+            from src.shared.config import get_settings
+
+            redis_url = None
+            if budget_config.budget_reservation_backend == "redis":
+                redis_url = get_settings().redis_url
+
+            self._reservations = ReservationStore(
+                redis_url=redis_url,
+                ttl_seconds=budget_config.budget_reservation_ttl_seconds,
+            )
+        return self._reservations
 
     async def _handle_check_failure(self, exc: Exception, check_name: str) -> EnforcementResult:
         """Decide what to do when the budget check itself failed (Issue #4075).
@@ -291,6 +315,7 @@ class BudgetEnforcementService:
         self,
         context: TokenContext,
         estimated_cost: Decimal,
+        request_id: str | None = None,
     ) -> EnforcementResult:
         """
         Check budget constraints across the entire hierarchy.
@@ -305,9 +330,19 @@ class BudgetEnforcementService:
         alarmed grace window keeps a transient DB/IAM blip from hard-downing
         all inference — see _handle_check_failure for the full policy.
 
+        Issue #4287: the settled ledger is eventually consistent — spend only
+        materializes once the budget-usage-tracker Lambda processes the chat log,
+        minutes later. So passing every DB check is necessary but not sufficient:
+        a burst of concurrent requests all read the same stale total and
+        collectively exceed a cap each one individually passed. Once the DB checks
+        pass, this takes an atomic reservation against the live in-flight counter
+        so concurrent requests contend on a current figure. See reservations.py.
+
         Args:
             context: Token context with user hierarchy info
             estimated_cost: Estimated cost for this request
+            request_id: Request identifier, used as the reservation's idempotency
+                key so completion can adjust this request's own reservation.
 
         Returns:
             EnforcementResult indicating if request is allowed
@@ -319,6 +354,7 @@ class BudgetEnforcementService:
             async with self._get_session() as session:
                 entities = self._get_entity_hierarchy(context)
                 all_warnings = []
+                reservation_targets: list[ReservationTarget] = []
 
                 # Check each entity in the hierarchy
                 for entity_type, entity_id in entities:
@@ -328,7 +364,7 @@ class BudgetEnforcementService:
                         PeriodType.WEEKLY,
                         PeriodType.MONTHLY,
                     ]:
-                        result = await self._check_entity_budget(
+                        result, target = await self._check_entity_budget(
                             session,
                             entity_type,
                             entity_id,
@@ -346,6 +382,9 @@ class BudgetEnforcementService:
                             await self._note_check_succeeded()
                             return result
 
+                        if target is not None:
+                            reservation_targets.append(target)
+
                         # Accumulate warnings from soft limits
                         if result.warnings:
                             all_warnings.extend(result.warnings)
@@ -353,10 +392,124 @@ class BudgetEnforcementService:
                 # All checks passed — the ledger is readable, so reset the
                 # consecutive-failure window and emit the healthy-path 0.
                 await self._note_check_succeeded()
-                return EnforcementResult(allowed=True, warnings=all_warnings)
 
         except Exception as e:
             return await self._handle_check_failure(e, "Budget check")
+
+        # Issue #4287: the live-denominator gate. Deliberately OUTSIDE the try
+        # above: a reservation fault is not a ledger-read fault, and routing it
+        # into _handle_check_failure would let a Redis blip burn the DB grace
+        # window and then deny all traffic. It degrades instead — see
+        # _reserve_or_degrade.
+        reservation_denial = await self._reserve_or_degrade(request_id, estimated_cost, reservation_targets)
+        if reservation_denial is not None:
+            return reservation_denial
+
+        return EnforcementResult(allowed=True, warnings=all_warnings)
+
+    async def _reserve_or_degrade(
+        self,
+        request_id: str | None,
+        estimated_cost: Decimal,
+        targets: list[ReservationTarget],
+    ) -> EnforcementResult | None:
+        """Take a live reservation, or degrade to the settled-ledger verdict.
+
+        Issue #4287. Three outcomes:
+
+        * reservations disabled / no capped budget / Redis unreachable → ``None``
+          (the Wave 1 DB verdict stands unchanged). Redis is a NEW hot-path
+          dependency here, and a blip on it must never 503 inference nor consume
+          the DB grace window.
+        * live denominator has room → ``None`` (allow)
+        * live denominator exhausted → a 402 ``BUDGET_EXCEEDED`` denial
+
+        Returns:
+            A denial result, or ``None`` to leave the caller's verdict alone.
+        """
+        if not budget_config.budget_reservation_enabled or not targets or request_id is None:
+            return None
+
+        store = self._get_reservations()
+        if not store.enabled:
+            return None
+
+        environment = self._get_environment()
+        outcome = await store.reserve(request_id, estimated_cost, targets)
+
+        if outcome is None:
+            # Redis unavailable. Degrade to the settled-ledger check (lagged
+            # denominator, still fail-closed on the ledger itself) and alarm.
+            emit_budget_reservation_outcome(outcome="degraded", environment=environment)
+            return None
+
+        if outcome.admitted:
+            emit_budget_reservation_outcome(outcome="reserved", environment=environment)
+            return None
+
+        exhausted = outcome.exhausted
+        assert exhausted is not None  # denials always name the exhausted budget
+        emit_budget_reservation_outcome(outcome="denied", environment=environment)
+        logger.warning(
+            f"Budget exceeded (in-flight reservations): {exhausted.entity_type} {exhausted.entity_id} "
+            f"- {exhausted.period_type} settled headroom ${exhausted.headroom_usd}, request estimate ${estimated_cost}"
+        )
+        return EnforcementResult(
+            allowed=False,
+            deny_reason=DenyReason.BUDGET_EXCEEDED,
+            blocked_reason=f"Budget exceeded for {exhausted.entity_type} {exhausted.entity_id} (including in-flight spend)",
+            exceeded_entity_type=EntityType(exhausted.entity_type),
+            exceeded_entity_id=exhausted.entity_id,
+            enforcement_mode=EnforcementMode.HARD,
+        )
+
+    async def reconcile_reservation(
+        self,
+        context: TokenContext,
+        request_id: str,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        """Adjust this request's reservation from estimate to settled actual (#4287).
+
+        Called from the proxy's ``_log_usage``, which runs in a ``finally`` on
+        every path — so this fires on success AND on failure. A request that
+        raised logs ~zero tokens, so its reservation adjusts to ~zero and the
+        headroom it was holding is returned.
+
+        Idempotent on ``request_id``: rerunning it overwrites the same value
+        rather than debiting twice.
+
+        No DB read is needed. The reconcile script only touches hash fields that
+        already exist, so enumerating the full hierarchy × period grid is safe —
+        entities without a reservation are no-ops.
+        """
+        if not budget_config.budget_reservation_enabled:
+            return
+
+        store = self._get_reservations()
+        if not store.enabled:
+            return
+
+        actual_cost = self._pricing.calculate_cost(model_id, input_tokens, output_tokens)
+
+        targets = [
+            ReservationTarget(
+                org_id=context.attributed_org_id,
+                entity_type=entity_type.value,
+                entity_id=entity_id,
+                period_type=period_type.value,
+                period_start=get_period_start_end(period_type)[0].isoformat(),
+                # Unused on the reconcile path: the script overwrites an existing
+                # amount and never re-evaluates headroom.
+                headroom_usd=Decimal("0"),
+            )
+            for entity_type, entity_id in self._get_entity_hierarchy(context)
+            for period_type in (PeriodType.DAILY, PeriodType.WEEKLY, PeriodType.MONTHLY)
+        ]
+
+        await store.reconcile(request_id, actual_cost, targets)
 
     async def _check_entity_budget(
         self,
@@ -366,7 +519,7 @@ class BudgetEnforcementService:
         period_type: PeriodType,
         estimated_cost: Decimal,
         org_id: str,
-    ) -> EnforcementResult:
+    ) -> tuple[EnforcementResult, ReservationTarget | None]:
         """
         Check budget for a specific entity and period.
 
@@ -379,7 +532,12 @@ class BudgetEnforcementService:
             org_id: Organization ID for tenant isolation
 
         Returns:
-            EnforcementResult for this entity/period
+            Tuple of (EnforcementResult for this entity/period, reservation
+            target). Issue #4287: the second element is the live-denominator
+            reservation this budget needs, carrying the settled headroom this
+            read just observed — or ``None`` when there is nothing to reserve
+            against (no budget row, or a soft limit, which by definition does
+            not block).
         """
         # Get budget configuration
         budget_result = await session.execute(
@@ -396,7 +554,7 @@ class BudgetEnforcementService:
 
         if not budget:
             # No budget configured for this entity/period - allow
-            return EnforcementResult(allowed=True)
+            return EnforcementResult(allowed=True), None
 
         # Get current usage
         period_start, period_end = get_period_start_end(period_type)
@@ -415,11 +573,10 @@ class BudgetEnforcementService:
 
         current_spend = usage.total_cost_usd if usage else Decimal("0")
         projected_spend = current_spend + estimated_cost
+        enforcement_mode = EnforcementMode(budget.enforcement_mode)
 
         # Check if budget would be exceeded
         if projected_spend > budget.budget_amount_usd:
-            enforcement_mode = EnforcementMode(budget.enforcement_mode)
-
             if enforcement_mode == EnforcementMode.HARD:
                 # Hard limit - block request
                 logger.warning(
@@ -427,15 +584,18 @@ class BudgetEnforcementService:
                     f"- {period_type.value} budget ${budget.budget_amount_usd}, "
                     f"current ${current_spend}, projected ${projected_spend}"
                 )
-                return EnforcementResult(
-                    allowed=False,
-                    deny_reason=DenyReason.BUDGET_EXCEEDED,
-                    blocked_reason=f"Budget exceeded for {entity_type.value} {entity_id}",
-                    exceeded_entity_type=entity_type,
-                    exceeded_entity_id=entity_id,
-                    budget_amount_usd=budget.budget_amount_usd,
-                    current_spend_usd=current_spend,
-                    enforcement_mode=enforcement_mode,
+                return (
+                    EnforcementResult(
+                        allowed=False,
+                        deny_reason=DenyReason.BUDGET_EXCEEDED,
+                        blocked_reason=f"Budget exceeded for {entity_type.value} {entity_id}",
+                        exceeded_entity_type=entity_type,
+                        exceeded_entity_id=entity_id,
+                        budget_amount_usd=budget.budget_amount_usd,
+                        current_spend_usd=current_spend,
+                        enforcement_mode=enforcement_mode,
+                    ),
+                    None,
                 )
             else:
                 # Soft limit - warn and continue
@@ -444,13 +604,31 @@ class BudgetEnforcementService:
                     f"- {period_type.value} budget ${budget.budget_amount_usd}, "
                     f"current ${current_spend}, projected ${projected_spend}"
                 )
-                return EnforcementResult(
-                    allowed=True,
-                    warnings=[
-                        f"Budget exceeded for {entity_type.value} {entity_id} "
-                        f"({period_type.value}): ${projected_spend:.2f} / ${budget.budget_amount_usd:.2f}"
-                    ],
+                return (
+                    EnforcementResult(
+                        allowed=True,
+                        warnings=[
+                            f"Budget exceeded for {entity_type.value} {entity_id} "
+                            f"({period_type.value}): ${projected_spend:.2f} / ${budget.budget_amount_usd:.2f}"
+                        ],
+                    ),
+                    None,
                 )
+
+        # Issue #4287: this budget passed against the SETTLED total, so it is a
+        # candidate for the live-denominator gate. Only hard limits get one — a
+        # soft limit never blocks, so reserving against it would consume headroom
+        # nothing is ever going to enforce.
+        target = None
+        if enforcement_mode == EnforcementMode.HARD:
+            target = ReservationTarget(
+                org_id=org_id,
+                entity_type=entity_type.value,
+                entity_id=entity_id,
+                period_type=period_type.value,
+                period_start=period_start.isoformat(),
+                headroom_usd=budget.budget_amount_usd - current_spend,
+            )
 
         # Check for warning threshold
         utilization = calculate_budget_utilization(budget.budget_amount_usd, projected_spend)
@@ -461,7 +639,7 @@ class BudgetEnforcementService:
         elif utilization >= budget_config.budget_warning_threshold_percent:
             warnings.append(f"{entity_type.value} {entity_id} {period_type.value} budget at {utilization:.1f}%")
 
-        return EnforcementResult(allowed=True, warnings=warnings)
+        return EnforcementResult(allowed=True, warnings=warnings), target
 
     async def record_usage(
         self,
@@ -662,6 +840,23 @@ class BudgetEnforcementService:
         """
         return self._pricing.estimate_request_cost(model_id, request_body)
 
+    def estimate_cost_from_payload_size(self, model_id: str, content_length: int) -> Decimal:
+        """
+        Estimate the cost of a request from its model and serialized size.
+
+        Issue #4287: the pre-request estimate for the enforced proxy paths, where
+        the middleware cannot read the body. See
+        ``PricingService.estimate_cost_from_payload_size``.
+
+        Args:
+            model_id: Model ID for the request
+            content_length: Value of the request's ``content-length`` header
+
+        Returns:
+            Estimated cost in USD
+        """
+        return self._pricing.estimate_cost_from_payload_size(model_id, content_length)
+
     async def check_agent_budget(
         self,
         budget_config_id: str,
@@ -769,3 +964,37 @@ class BudgetEnforcementService:
 
 # Global enforcement service instance
 budget_enforcement_service = BudgetEnforcementService()
+
+
+async def reconcile_budget_reservation(
+    context: TokenContext,
+    request_id: str | None,
+    model_id: str,
+    input_tokens: int,
+    output_tokens: int,
+) -> None:
+    """Metering-side entry point for reservation reconciliation (Issue #4287).
+
+    Called from the proxy's usage-logging ``finally`` blocks. Kept as a
+    module-level function taking the global service so the metering path does not
+    have to own a service instance, and so it can be patched in one place.
+
+    Swallows everything. This runs after the response has been produced: a
+    reconcile failure must never surface to the caller, and the reservation's own
+    expiry already bounds the cost of losing one.
+    """
+    if request_id is None:
+        # Without an idempotency key there is no reservation to find. The check
+        # skips reserving in this case too, so there is nothing to release.
+        return
+
+    try:
+        await budget_enforcement_service.reconcile_reservation(
+            context=context,
+            request_id=request_id,
+            model_id=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+    except Exception as exc:
+        logger.warning(f"Budget reservation reconcile failed: {exc}")

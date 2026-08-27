@@ -38,6 +38,32 @@ class BudgetConfig(BaseSettings):
     # single-process local dev only).
     budget_grace_window_backend: str = "redis"
 
+    # Live-denominator reservations (Issue #4287). The settled ledger only
+    # materializes minutes after a request, so concurrent requests otherwise all
+    # read the same stale spend and collectively exceed a cap each one passed.
+    # Setting this False is the rollback lever: enforcement reverts to the Wave 1
+    # settled-ledger check with no other behavior change. Same operational shape
+    # as budget_fail_mode — read once at container start, so flipping it needs an
+    # SSM put plus a rollout restart.
+    budget_reservation_enabled: bool = True
+
+    # How long an un-reconciled reservation keeps consuming cap headroom.
+    #
+    # This is the SIGKILL backstop, not the primary release: a pod killed between
+    # reserving and logging usage never runs its release, so only this expiry
+    # returns the headroom. Sized at roughly 2x p99 request latency — long enough
+    # that a slow-but-live streaming request is not double-counted against
+    # itself, short enough that a lost reservation is not a lasting
+    # denial-of-service against the tenant's own cap.
+    budget_reservation_ttl_seconds: int = 120
+
+    # Where reservations live: "redis" (shared, the only correct setting for a
+    # multi-process deployment) or anything else to disable them. A per-process
+    # counter would be 8 independent denominators, which is not a live figure at
+    # all, so there is deliberately no in-process fallback here — see
+    # reservations.py on why unavailability degrades rather than approximates.
+    budget_reservation_backend: str = "redis"
+
     # Grace period settings (in seconds)
     soft_enforcement_grace_period: int = 300  # 5 minutes
     budget_exceeded_notification_cooldown: int = 3600  # 1 hour

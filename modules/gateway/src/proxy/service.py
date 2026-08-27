@@ -11,6 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+from src.budget.enforcement_service import reconcile_budget_reservation
 from src.proxy.exceptions import (
     BedrockInvocationError,
 )
@@ -374,6 +375,11 @@ class ProxyService(IProxyService):
         pass None (not 0) when the provider did not report them — see
         ``_cache_tokens_from_usage``.
 
+        Issue #4287: also reconciles this request's budget reservation. Every
+        caller invokes this from a ``finally``, so it is the one point that runs
+        on success AND on failure — which makes it both the "charge the real
+        cost" hook and the "release what a failed request was holding" hook.
+
         Failures are swallowed to avoid impacting the proxy hot path.
         """
         # Issue #1074: Use contextvar if no explicit request_id provided
@@ -382,6 +388,14 @@ class ProxyService(IProxyService):
 
         # Issue #1616: Pick up agent_run_id from contextvar
         agent_run_id = _current_agent_run_id.get()
+
+        await reconcile_budget_reservation(
+            context=context,
+            request_id=request_id,
+            model_id=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
         try:
             session_factory = get_session_factory()

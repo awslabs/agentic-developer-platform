@@ -410,6 +410,12 @@ class TestRevisionChain:
 
         Parses every version file and walks the chain. Two heads is a broken
         deploy, and it is invisible until `alembic upgrade head` runs in a pod.
+
+        Asserts the *count*, not the head's name: the head advances with every
+        migration that lands (030 in #4287), and a name-pinned assertion turns
+        every future migration into a spurious failure here — which trains people
+        to edit this test rather than read it. What must never change is that
+        there is exactly one head, and that 029 is still on the chain.
         """
         import ast
 
@@ -434,7 +440,8 @@ class TestRevisionChain:
         parents = {down for down in revisions.values() if down is not None}
         heads = sorted(rev for rev in revisions if rev not in parents)
 
-        assert heads == ["029_orchestration_graph"], f"expected 029 to be the single head, got {heads}"
+        assert len(heads) == 1, f"expected exactly one head, got {heads}"
+        assert "029_orchestration_graph" in revisions, "029 must still be on the chain"
 
 
 class TestModelMigrationParity:

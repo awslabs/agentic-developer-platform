@@ -262,6 +262,18 @@ MODEL_ALIASES: dict[str, str] = {
 # Default output token estimate for pre-request budget check
 DEFAULT_OUTPUT_TOKEN_ESTIMATE = 500
 
+# Chars-per-token heuristic for pre-request input estimation.
+#
+# Deliberately one constant shared by both estimators (body-parsing and
+# header-only) so they cannot drift apart and disagree about the same request.
+#
+# It is an approximation, not a measurement: it counts text only, so requests
+# carrying images or large tool-result blocks under-estimate. That is acceptable
+# for a pre-charge because the reservation is reconciled to the real token counts
+# once the response lands (Issue #4287) — but it is NOT safe to treat the output
+# of these estimators as a billable figure.
+_CHARS_PER_TOKEN = 4
+
 
 class PricingService:
     """
@@ -397,11 +409,64 @@ class PricingService:
                         total_chars += len(text)
 
         # Estimate tokens (~4 chars per token, conservative)
-        estimated_tokens = max(1, total_chars // 4)
+        estimated_tokens = max(1, total_chars // _CHARS_PER_TOKEN)
 
         logger.debug(f"Estimated input tokens: {estimated_tokens} from {total_chars} chars")
 
         return estimated_tokens
+
+    def estimate_input_tokens_from_payload_size(self, content_length: int) -> int:
+        """
+        Estimate input tokens from the serialized request size alone.
+
+        Issue #4287: the budget middleware is pure ASGI and must NOT read the
+        request body — ``receive()`` is a one-shot stream and the mantle route
+        (``/openai/v1/responses``) forwards the body byte-for-byte, so consuming
+        it in middleware would starve the downstream handler. See
+        ``src/shared/enforced_paths.py``. The ``content-length`` header is
+        therefore the only size signal available pre-request.
+
+        This over-counts relative to ``estimate_input_tokens`` because it counts
+        JSON structure (keys, quotes, braces) as prompt text. That direction is
+        the safe one for a pre-charge: over-estimating reserves too much
+        headroom, which is corrected downward on reconciliation, whereas
+        under-estimating lets a request overshoot the cap it just passed.
+
+        Args:
+            content_length: Value of the ``content-length`` request header.
+
+        Returns:
+            Estimated input token count (at least 1).
+        """
+        return max(1, content_length // _CHARS_PER_TOKEN)
+
+    def estimate_cost_from_payload_size(self, model_id: str, content_length: int) -> Decimal:
+        """
+        Estimate request cost from the model id and serialized request size.
+
+        Issue #4287: the pre-request estimate used to be a flat ``$0.05``
+        regardless of model or size, so one large request against an expensive
+        model could overshoot a cap the check had just passed. This makes the
+        pre-charge both model-aware and size-aware without reading the body.
+
+        Output tokens fall back to ``DEFAULT_OUTPUT_TOKEN_ESTIMATE``: ``max_tokens``
+        lives in the body, which is unreadable here.
+
+        Args:
+            model_id: Bedrock model ID or alias (from the request URL path).
+            content_length: Value of the ``content-length`` request header.
+
+        Returns:
+            Estimated cost in USD.
+        """
+        input_tokens = self.estimate_input_tokens_from_payload_size(content_length)
+        output_tokens = self.estimate_output_tokens(None)
+
+        estimated_cost = self.calculate_cost(model_id, input_tokens, output_tokens)
+
+        logger.debug(f"Estimated request cost from payload size: ${estimated_cost:.6f} (model={model_id}, bytes={content_length})")
+
+        return estimated_cost
 
     def estimate_output_tokens(self, max_tokens: int | None) -> int:
         """

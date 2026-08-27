@@ -29,7 +29,11 @@ class BudgetUsage(Base, TenantMixin):
     entity_id: Mapped[str] = mapped_column(String(255), nullable=False)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_type: Mapped[str] = mapped_column(String(10), nullable=False)
-    total_cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=0)
+    # NUMERIC(14,6), not (10,2) — migration 030. Costs are computed to 6dp
+    # (pricing.calculate_cost) and usage_logs.cost_usd already stores 6dp, so a
+    # 2dp accumulator rounded every sub-cent request to $0.00: a burst of haiku
+    # traffic accrued real spend while the enforced denominator stayed at zero.
+    total_cost_usd: Mapped[Decimal] = mapped_column(Numeric(14, 6), nullable=False, default=0)
     # BIGINT: unbounded accumulators — a monthly row overflowed int32 at
     # ~2.1B tokens (migration 024).
     total_tokens: Mapped[int] = mapped_column(BigInteger, default=0)

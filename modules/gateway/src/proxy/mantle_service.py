@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from src.budget.enforcement_service import reconcile_budget_reservation
 from src.budget.pricing import pricing_service
 from src.proxy.mantle_auth import MantleAuth
 from src.shared.database import get_session_factory
@@ -387,10 +388,25 @@ class MantlePassthroughService:
         Mirrors ``ProxyService._log_usage``: failures are swallowed so metering
         never impacts the proxy hot path. The recorded ``model`` carries the
         OpenAI family so billing can distinguish it from Claude rows.
+
+        Issue #4287: this is the SECOND usage-logging call-site, and it needs the
+        reservation reconcile hook just as much as the Bedrock one. Without it,
+        every mantle passthrough would hold its pre-charge until the reservation
+        expired — so a burst of them would be denied against their own stale
+        estimates instead of their real cost.
         """
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+
+        await reconcile_budget_reservation(
+            context=context,
+            request_id=request_id,
+            model_id=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
         try:
-            input_tokens = usage.get("input_tokens", 0)
-            output_tokens = usage.get("output_tokens", 0)
             # Issue #2792: compute real cost via the shared pricing table instead
             # of the previous hardcoded 0.0. Unknown models fall back to the
             # table's conservative "default" pricing (same as the Bedrock proxy).
