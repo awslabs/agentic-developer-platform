@@ -12,7 +12,10 @@
  * - Typed dependencies (blocks, parent-child, discovered-from)
  *
  * Architecture:
- *   S3 (s3://adp-agent-state/beads/) ←→ Local .beads/dolt/ ←→ All Agents
+ *   S3 (s3://$BEADS_S3_BUCKET/beads/) ←→ Local .beads/dolt/ ←→ All Agents
+ *
+ * The bucket is supplied by configuration (BEADS_S3_BUCKET), not hardcoded —
+ * see DEFAULT_CONFIG below and issue #4184.
  */
 
 import { execSync } from 'child_process';
@@ -31,10 +34,17 @@ export interface BeadsConfig {
   fallbackToGitHub: boolean;  // If beads fails, fall back to GitHub Projects
 }
 
+// Issue #4184: `adp-agent-state` is a bucket in a foreign AWS account that no
+// statement in the agent's IAM policy permits, and `us-west-2` contradicted the
+// us-east-1 deployment. Both call sites (agent-worker.ts, agent-pm.ts) override
+// these via configureBeads() before any bd command runs, so these values were
+// unreachable in practice — corrected anyway so they cannot become reachable,
+// and because the old literals were being copy-pasted outward.
+// Empty bucket is the safe default: syncPull/syncPush guard on it and skip.
 const DEFAULT_CONFIG: BeadsConfig = {
   enabled: true,
-  s3Bucket: 'adp-agent-state',
-  s3Region: 'us-west-2',
+  s3Bucket: '',
+  s3Region: process.env.AWS_REGION || 'us-east-1',
   s3Path: 'beads/adp',
   syncOnStart: true,
   syncOnComplete: true,

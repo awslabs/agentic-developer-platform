@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { resolveInstallationId } from './installation';
+import { resolveFallbackBucket, buildFallbackKey } from './s3Fallback';
 
 const REPO_OWNER = process.env.REPO_OWNER || '';
 const REPO_NAME = process.env.REPO_NAME || '';
@@ -72,11 +73,14 @@ export async function refreshGitHubToken(): Promise<void> {
  * Save content to S3 as fallback when GitHub API fails.
  */
 export async function saveToS3Fallback(issueNumber: string | number, label: string, content: string): Promise<string | null> {
+  // Issue #4184: bucket from config only — no hardcoded default. Unset →
+  // one ERROR + explicit skip rather than a PutObject that IAM will deny.
+  const bucket = resolveFallbackBucket(msg => console.error(`[ERROR] ${msg}`));
+  if (!bucket) return null;
   try {
     const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
     const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
-    const key = `agent-fallback/issue-${issueNumber}/${new Date().toISOString().replace(/[:.]/g, '-')}-${label}.md`;
-    const bucket = process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state';
+    const key = buildFallbackKey(issueNumber, label);
     await s3.send(new PutObjectCommand({
       Bucket: bucket,
       Key: key,

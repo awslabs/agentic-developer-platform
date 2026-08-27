@@ -142,8 +142,14 @@ configureMonitoring({
 
 // Beads configuration - distributed state management
 const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false';
-const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || 'adp-agent-state';
-const BEADS_S3_REGION = process.env.BEADS_S3_REGION || 'us-west-2';
+// Issue #4184: this is the LIVE hardcoded-region defect (the issue pointed at
+// beads.ts:37, which configureBeads() overwrites before any bd command runs).
+// `us-west-2` was wrong for us-east-1 infra, and `adp-agent-state` is a bucket
+// in a foreign account that no IAM statement here permits. Empty bucket is the
+// safe default: beads syncPull/syncPush already guard on it and skip cleanly,
+// whereas a wrong name degrades to a denied write.
+const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || '';
+const BEADS_S3_REGION = process.env.BEADS_S3_REGION || process.env.AWS_REGION || 'us-east-1';
 const BEADS_S3_PATH = process.env.BEADS_S3_PATH || `beads/${REPO_NAME}`;
 configureBeads({
   enabled: BEADS_ENABLED,

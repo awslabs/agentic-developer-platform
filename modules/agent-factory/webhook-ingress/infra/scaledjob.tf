@@ -204,6 +204,34 @@ locals {
                     value: adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}
                   - name: AGENT_RUN_LOGS_BUCKET
                     value: adp-${var.environment}-agent-run-logs-${local.account_id}
+                  # Issue #4184: AGENT_FALLBACK_BUCKET had six readers in the
+                  # agent TypeScript (agent-worker.ts, ghPost.ts, S3Fallback.ts)
+                  # and NO writer anywhere in the repo, so every fallback write
+                  # took a `|| 'adp-agent-state'` branch. That bucket lives in a
+                  # foreign AWS account (HeadBucket → 403 while a control name
+                  # → 404) and matches no prefix in scaledjob-iam.tf's S3Combined
+                  # statement — verified `implicitDeny` via simulate-custom-policy
+                  # against the inline policy document alone. Every fallback write
+                  # was therefore silently AccessDenied, at exactly the moment the
+                  # primary path had already failed. The git-changes backup site
+                  # preserves uncommitted work after a failed push, so the denial
+                  # was discarding whole runs of irreplaceable agent output.
+                  #
+                  # Deliberately EQUAL to AGENT_RUN_LOGS_BUCKET above: run output
+                  # that could not reach GitHub is a run log, and this is the same
+                  # bucket + credentials as the transcript upload that demonstrably
+                  # works (entrypoint.py). Keep both names — they are read by two
+                  # different runtimes (Python entrypoint vs Node worker); do not
+                  # "simplify" them into one, that couples independent consumers.
+                  - name: AGENT_FALLBACK_BUCKET
+                    value: adp-${var.environment}-agent-run-logs-${local.account_id}
+                  # Beads (agent task state). Latent on this path today: `bd` is
+                  # not installed in the agent-runtime image, so isBeadsAvailable()
+                  # returns false and no beads S3 op runs here. Set now so the path
+                  # is correct if/when bd is added, rather than inheriting the same
+                  # foreign-bucket default. Region comes from AWS_REGION above.
+                  - name: BEADS_S3_BUCKET
+                    value: adp-${var.environment}-agent-beads-state-${local.account_id}
                   - name: ADP_GATEWAY_ENDPOINT
                     value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}
                   # Reconciled from live cluster drift (was kubectl-applied during

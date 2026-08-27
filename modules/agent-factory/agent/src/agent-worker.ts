@@ -16,6 +16,7 @@ import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
 import { createSpillHooks, TmpSpillStore } from './utils/spill';
+import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
 import { initTokenManager, getToken, getTokenStatus, writeTokenFile } from './token-refresh';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { resolveAgentLogGroup } from './lib/logGroup';
@@ -108,7 +109,11 @@ const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
 
 // Beads configuration - distributed state management (shared with PM)
 const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false';
-const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || 'adp-agent-state';
+// Issue #4184: no `adp-agent-state` default — that bucket is in a foreign AWS
+// account and no IAM statement here permits it. Empty degrades to a clean no-op
+// (beads syncPull/syncPush guard on it); the real value arrives via
+// BEADS_S3_BUCKET, set on the pod template in webhook-ingress scaledjob.tf.
+const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || '';
 const BEADS_S3_REGION = process.env.BEADS_S3_REGION || AWS_REGION;
 const BEADS_S3_PATH = process.env.BEADS_S3_PATH || `beads/${REPO_NAME}`;
 
@@ -485,20 +490,25 @@ async function postToMainIssue(mainIssueNumber: number | null, body: string): Pr
     writeOutboundCorrelation(`issue:${targetIssue}`, 'comment_post');
   } catch (err) {
     log('WARN', `GitHub post failed, saving to S3 fallback: ${(err as Error).message}`);
-    try {
-      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-      const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
-      const key = `agent-fallback/issue-${targetIssue}/${new Date().toISOString().replace(/[:.]/g, '-')}-comment.md`;
-      await s3.send(new PutObjectCommand({
-        Bucket: process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state',
-        Key: key,
-        Body: markedBody,
-        ContentType: 'text/markdown',
-      }));
-      log('INFO', `Comment saved to s3://${process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state'}/${key}`);
-      console.log(`📦 GitHub API failed — comment saved to S3: ${key}`);
-    } catch (s3Err) {
-      log('ERROR', `Both GitHub and S3 fallback failed: ${(s3Err as Error).message}`);
+    // Issue #4184: resolve the bucket from config, never from a hardcoded
+    // default. Unset → one ERROR + skip, not a doomed PutObject.
+    const bucket = resolveFallbackBucket(msg => log('ERROR', msg));
+    if (bucket) {
+      try {
+        const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+        const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+        const key = buildFallbackKey(targetIssue, 'comment');
+        await s3.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: markedBody,
+          ContentType: 'text/markdown',
+        }));
+        log('INFO', `Comment saved to s3://${bucket}/${key}`);
+        console.log(`📦 GitHub API failed — comment saved to S3: ${key}`);
+      } catch (s3Err) {
+        log('ERROR', `Both GitHub and S3 fallback failed: ${(s3Err as Error).message}`);
+      }
     }
   } finally {
     try { fs.unlinkSync(tmpFile); } catch {}
@@ -562,20 +572,24 @@ async function postComment(body: string): Promise<void> {
     await gh(`issue comment ${ISSUE_NUMBER} --body-file "${tmpFile}"`);
   } catch (err) {
     log('WARN', `GitHub post failed, saving to S3 fallback: ${(err as Error).message}`);
-    try {
-      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-      const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
-      const key = `agent-fallback/issue-${ISSUE_NUMBER}/${new Date().toISOString().replace(/[:.]/g, '-')}-comment.md`;
-      await s3.send(new PutObjectCommand({
-        Bucket: process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state',
-        Key: key,
-        Body: body,
-        ContentType: 'text/markdown',
-      }));
-      log('INFO', `Comment saved to S3: ${key}`);
-      console.log(`📦 GitHub API failed — comment saved to S3: ${key}`);
-    } catch (s3Err) {
-      log('ERROR', `Both GitHub and S3 fallback failed: ${(s3Err as Error).message}`);
+    // Issue #4184: see postToMainIssue — bucket from config, skip when unset.
+    const bucket = resolveFallbackBucket(msg => log('ERROR', msg));
+    if (bucket) {
+      try {
+        const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+        const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+        const key = buildFallbackKey(ISSUE_NUMBER, 'comment');
+        await s3.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: body,
+          ContentType: 'text/markdown',
+        }));
+        log('INFO', `Comment saved to s3://${bucket}/${key}`);
+        console.log(`📦 GitHub API failed — comment saved to S3: ${key}`);
+      } catch (s3Err) {
+        log('ERROR', `Both GitHub and S3 fallback failed: ${(s3Err as Error).message}`);
+      }
     }
   } finally {
     try { fs.unlinkSync(tmpFile); } catch {}
@@ -1560,10 +1574,23 @@ async function uploadGitChangesToS3(): Promise<void> {
     // Tar the changed files
     execSync(`tar czf ${tarFile} ${uniqueFiles.join(' ')}`, { cwd: CWD, stdio: 'pipe' });
 
-    // Upload to S3
+    // Upload to S3.
+    // Issue #4184: this is the one fallback site that loses IRREPLACEABLE work —
+    // it preserves uncommitted changes after `git push` already failed, i.e. the
+    // entire output of a run that may have burned hours of model time. It was
+    // silently AccessDenied on every occurrence. When the bucket is unconfigured,
+    // say so on stdout too: a log line the operator never reads is not an alert.
+    const bucket = resolveFallbackBucket(msg => log('ERROR', msg));
+    if (!bucket) {
+      console.error(
+        `❌ Git push failed and AGENT_FALLBACK_BUCKET is unset — ` +
+          `${uniqueFiles.length} changed files could NOT be preserved.`
+      );
+      try { fs.unlinkSync(tarFile); } catch {}
+      return;
+    }
     const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
-    const bucket = process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state';
-    const key = `agent-fallback/issue-${ISSUE_NUMBER}/${timestamp}-git-changes.tar.gz`;
+    const key = buildFallbackKey(ISSUE_NUMBER, 'git-changes', 'tar.gz');
 
     const fileContent = fs.readFileSync(tarFile);
     await s3.send(new PutObjectCommand({

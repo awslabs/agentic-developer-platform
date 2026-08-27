@@ -1,7 +1,7 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { Logger } from '../components/Logger';
+import { resolveFallbackBucket, buildFallbackKey } from '../utils/s3Fallback';
 
-const S3_BUCKET = process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state';
 const S3_REGION = process.env.AWS_REGION || 'us-east-1';
 
 export class S3Fallback {
@@ -20,17 +20,22 @@ export class S3Fallback {
    * Returns the S3 URI on success, or null if S3 also fails.
    */
   async upload(label: string, content: string): Promise<string | null> {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const key = `agent-fallback/issue-${this.issueNumber}/${timestamp}-${label}.md`;
+    // Issue #4184: no hardcoded bucket default — resolve from config or skip.
+    const bucket = resolveFallbackBucket(msg =>
+      this.logger.error(msg, undefined, { component: 'S3Fallback' })
+    );
+    if (!bucket) return null;
+
+    const key = buildFallbackKey(this.issueNumber, label);
 
     try {
       await this.s3.send(new PutObjectCommand({
-        Bucket: S3_BUCKET,
+        Bucket: bucket,
         Key: key,
         Body: content,
         ContentType: 'text/markdown',
       }));
-      const uri = `s3://${S3_BUCKET}/${key}`;
+      const uri = `s3://${bucket}/${key}`;
       this.logger.info('Fallback upload to S3 succeeded', { component: 'S3Fallback', uri });
       console.log(`📦 GitHub API failed — data saved to ${uri}`);
       return uri;
