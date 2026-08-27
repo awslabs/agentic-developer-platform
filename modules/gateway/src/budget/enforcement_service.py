@@ -253,6 +253,12 @@ class BudgetEnforcementService:
         Returns entities in order from most specific to most general:
         user/service_account → team → department → organization
 
+        Issue #4132: the org level uses attributed_org_id. Budget is a spend
+        ledger, so its denominator must follow attribution — a hosted run's
+        spend belongs to the tenant that triggered it. Leaving this on the
+        authenticated org_id would charge every hosted run to __platform__ and
+        leave per-tenant caps unenforced.
+
         Args:
             context: Token context with user hierarchy info
 
@@ -275,9 +281,9 @@ class BudgetEnforcementService:
         if context.department_id:
             entities.append((EntityType.DEPARTMENT, context.department_id))
 
-        # Organization level
-        if context.org_id:
-            entities.append((EntityType.ORGANIZATION, context.org_id))
+        # Organization level (attribution — see docstring)
+        if context.attributed_org_id:
+            entities.append((EntityType.ORGANIZATION, context.attributed_org_id))
 
         return entities
 
@@ -328,7 +334,9 @@ class BudgetEnforcementService:
                             entity_id,
                             period_type,
                             estimated_cost,
-                            context.org_id,
+                            # Issue #4132: ledger partition must match the
+                            # attributed tenant whose rows we are checking.
+                            context.attributed_org_id,
                         )
 
                         if not result.allowed:
@@ -489,7 +497,9 @@ class BudgetEnforcementService:
                         session,
                         entity_type,
                         entity_id,
-                        context.org_id,
+                        # Issue #4132: spend is recorded against the attributed
+                        # tenant, matching _get_entity_hierarchy's org level.
+                        context.attributed_org_id,
                         input_tokens,
                         output_tokens,
                         cost,
@@ -585,11 +595,13 @@ class BudgetEnforcementService:
                     period_type = PeriodType.MONTHLY
                     period_start, period_end = get_period_start_end(period_type)
 
-                    # Get budget config
+                    # Get budget config. Issue #4132: same attributed-tenant
+                    # partition as the check/record paths, so the headers
+                    # describe the ledger actually being enforced.
                     budget_result = await session.execute(
                         select(BudgetConfig).where(
                             and_(
-                                BudgetConfig.org_id == context.org_id,
+                                BudgetConfig.org_id == context.attributed_org_id,
                                 BudgetConfig.entity_type == entity_type.value,
                                 BudgetConfig.entity_id == entity_id,
                                 BudgetConfig.period_type == period_type.value,
@@ -605,7 +617,7 @@ class BudgetEnforcementService:
                     usage_result = await session.execute(
                         select(BudgetUsage).where(
                             and_(
-                                BudgetUsage.org_id == context.org_id,
+                                BudgetUsage.org_id == context.attributed_org_id,
                                 BudgetUsage.entity_type == entity_type.value,
                                 BudgetUsage.entity_id == entity_id,
                                 BudgetUsage.period_type == period_type.value,

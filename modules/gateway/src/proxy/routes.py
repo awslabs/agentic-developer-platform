@@ -357,7 +357,9 @@ async def create_message(
                 chat_logger=chat_logger,
                 request_id=request_id,
                 timestamp=timestamp,
-                org_id=context.org_id,
+                # Issue #4132: attribution — chat logs are what the budget-usage-tracker
+                # Lambda reads to write budget_usage rows (#234), so this is a billing path.
+                org_id=context.attributed_org_id,
                 user_id=context.user_id,
                 team_id=context.team_id,
                 account_type="service" if context.account_type == "service" else "human",
@@ -387,7 +389,9 @@ async def create_message(
             chat_logger.log_chat_async(
                 request_id=request_id,
                 timestamp=timestamp,
-                org_id=context.org_id,
+                # Issue #4132: attribution — chat logs are what the budget-usage-tracker
+                # Lambda reads to write budget_usage rows (#234), so this is a billing path.
+                org_id=context.attributed_org_id,
                 user_id=context.user_id,
                 team_id=context.team_id,
                 account_type="service" if context.account_type == "service" else "human",
@@ -624,7 +628,9 @@ async def invoke_model_by_path(
         chat_logger.log_chat_async(
             request_id=request_id,
             timestamp=timestamp,
-            org_id=context.org_id,
+            # Issue #4132: attribution — chat logs are what the budget-usage-tracker
+            # Lambda reads to write budget_usage rows (#234), so this is a billing path.
+            org_id=context.attributed_org_id,
             user_id=context.user_id,
             team_id=context.team_id,
             account_type="service" if context.account_type == "service" else "human",
@@ -696,7 +702,9 @@ async def invoke_model_stream_by_path(
             chat_logger=chat_logger,
             request_id=request_id,
             timestamp=timestamp,
-            org_id=context.org_id,
+            # Issue #4132: attribution — chat logs are what the budget-usage-tracker
+            # Lambda reads to write budget_usage rows (#234), so this is a billing path.
+            org_id=context.attributed_org_id,
             user_id=context.user_id,
             team_id=context.team_id,
             account_type="service" if context.account_type == "service" else "human",

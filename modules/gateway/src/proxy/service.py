@@ -121,7 +121,9 @@ class ProxyService(IProxyService):
 
             # Emit metrics
             emit_request_metrics(
-                org_id=context.org_id,
+                # Issue #4132: metric org dimension is attribution (per-tenant
+                # usage dashboards), not an authorization decision.
+                org_id=context.attributed_org_id,
                 model=model,
                 latency_ms=latency_ms,
                 tokens_in=tokens_in,
@@ -150,7 +152,8 @@ class ProxyService(IProxyService):
 
             # Emit error metrics
             emit_error_count(
-                org_id=context.org_id,
+                # Issue #4132: attribution — see emit_request_metrics above.
+                org_id=context.attributed_org_id,
                 model=model,
                 error_type=error_type,
             )

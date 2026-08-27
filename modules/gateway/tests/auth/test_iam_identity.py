@@ -434,10 +434,16 @@ class TestExtractIamIdentityFromHeaders:
             assert "not registered" in exc_info.value.message.lower()
 
     def test_accepts_x_agent_org_id_for_internal_scope(self):
-        """Test that internal-scope agents can override org_id via X-Agent-OrgId header.
+        """X-Agent-OrgId moves ATTRIBUTION for internal-scope agents, not authorization.
 
-        Issue #747: Internal agents (scaledjob-worker) pass the triggering tenant's
-        org_id so usage_logs attribute calls to the correct tenant.
+        Issue #747: internal agents (scaledjob-worker) pass the triggering tenant's
+        org_id so usage/billing attribute to the correct tenant.
+
+        Issue #4132 rewrote this test: it previously asserted
+        ``context.org_id == "customer-tenant-123"``, i.e. that a caller-supplied
+        header rewrote the AUTHENTICATED org. That is the defect. The header must
+        now land on attributed_org_id only, and org_id must keep the value the
+        agent registry assigned.
         """
         headers = {
             API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/test-agent/session",
@@ -473,14 +479,115 @@ class TestExtractIamIdentityFromHeaders:
             context = extract_iam_identity_from_headers(request)
 
             assert context is not None
-            assert context.org_id == "customer-tenant-123"
+            # THE EXPLOIT: the authenticated org must NOT follow the header.
+            assert context.org_id == "__platform__"
+            assert context.org_id != "customer-tenant-123"
+            # #747 preserved: attribution still follows the header.
+            assert context.attributed_org_id == "customer-tenant-123"
             assert context.user_id == "scaledjob-worker"
+
+    def test_internal_scope_without_header_attributes_to_authenticated_org(self):
+        """Issue #4132: absent the header, attributed_org_id defaults to org_id.
+
+        Proves the new field is inert for every caller that does not opt in.
+        """
+        headers = {
+            API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/test-agent/session",
+        }
+        request = self._create_mock_request(headers)
+
+        mock_entry: AgentRegistryEntry = {
+            "agent_id": "00000000-0000-0000-0000-000000000003",
+            "role_arn": "arn:aws:iam::123456789012:role/test-agent",
+            "agent_name": "scaledjob-worker",
+            "org_id": "__platform__",
+            "team_id": "__agents__",
+            "owner": "platform",
+            "scope": "internal",
+            "budget_config_id": "",
+            "allowed_models": ["*"],
+            "status": "active",
+            "description": "Internal worker",
+            "image_uri": "",
+            "code_repo": "",
+            "workflow_name": "",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        }
+
+        with patch("src.auth.agent_registry.get_agent_registry_service") as mock_get_service:
+            mock_service = MagicMock()
+            mock_service.get_agent_by_role_arn.return_value = mock_entry
+            mock_get_service.return_value = mock_service
+
+            context = extract_iam_identity_from_headers(request)
+
+            assert context is not None
+            assert context.org_id == "__platform__"
+            assert context.attributed_org_id == "__platform__"
+
+    def test_x_agent_org_id_cannot_buy_organization_access(self):
+        """Issue #4132: the header must not purchase authorization to the named org.
+
+        require_organization_access gates on the AUTHENTICATED org_id, so an
+        internal agent that names another tenant in X-Agent-OrgId is still denied
+        access to that tenant's org-scoped routes.
+        """
+        from fastapi import HTTPException
+
+        from src.auth.middleware import require_organization_access
+
+        headers = {
+            API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/test-agent/session",
+            "X-Agent-OrgId": "victim-tenant",
+        }
+        request = self._create_mock_request(headers)
+
+        mock_entry: AgentRegistryEntry = {
+            "agent_id": "00000000-0000-0000-0000-000000000004",
+            "role_arn": "arn:aws:iam::123456789012:role/test-agent",
+            "agent_name": "scaledjob-worker",
+            "org_id": "__platform__",
+            "team_id": "__agents__",
+            "owner": "platform",
+            "scope": "internal",
+            "budget_config_id": "",
+            "allowed_models": ["*"],
+            "status": "active",
+            "description": "Internal worker",
+            "image_uri": "",
+            "code_repo": "",
+            "workflow_name": "",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        }
+
+        with patch("src.auth.agent_registry.get_agent_registry_service") as mock_get_service:
+            mock_service = MagicMock()
+            mock_service.get_agent_by_role_arn.return_value = mock_entry
+            mock_get_service.return_value = mock_service
+
+            context = extract_iam_identity_from_headers(request)
+
+        assert context is not None
+        assert context.attributed_org_id == "victim-tenant"
+
+        # The header named victim-tenant, so access to victim-tenant must fail.
+        with pytest.raises(HTTPException) as exc_info:
+            require_organization_access("victim-tenant", context)
+        assert exc_info.value.status_code == 403
+
+        # ...while access to the authenticated org still succeeds.
+        assert require_organization_access("__platform__", context) is context
 
     def test_rejects_x_agent_org_id_for_external_scope(self):
         """Test that non-internal agents cannot override org_id via X-Agent-OrgId.
 
         Issue #747: Security guard — only internal-scope agents may claim arbitrary
         org_ids. External/shared agents must use their registry-assigned org_id.
+
+        Issue #4132: the header is ignored *entirely* for non-internal scope —
+        neither org_id nor attributed_org_id may follow it.
         """
         headers = {
             API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/external-agent/session",
@@ -519,6 +626,10 @@ class TestExtractIamIdentityFromHeaders:
             # org_id should remain the registry-assigned value, NOT the spoofed one
             assert context.org_id == "real-org"
             assert context.org_id != "spoofed-tenant-id"
+            # Issue #4132: attribution must not follow the header either — a
+            # non-internal agent cannot bill another tenant.
+            assert context.attributed_org_id == "real-org"
+            assert context.attributed_org_id != "spoofed-tenant-id"
 
     def test_returns_none_for_invalid_arn(self):
         """Test returns None when ARN cannot be parsed."""

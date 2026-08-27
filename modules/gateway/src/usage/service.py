@@ -68,7 +68,10 @@ class UsageService(IUsageService):
             agent_run_id: Optional agent run/invocation ID (issue #1616)
         """
         log_entry = UsageLog(
-            org_id=context.org_id,
+            # Issue #4132: usage_logs is an ATTRIBUTION surface — a hosted run
+            # must land on the tenant that triggered it, not on __platform__.
+            # Never context.org_id (authenticated-only, authorization's field).
+            org_id=context.attributed_org_id,
             department_id=context.department_id,
             team_id=context.team_id,
             user_id=context.user_id,

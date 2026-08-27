@@ -165,9 +165,11 @@ class RateLimitService(IRateLimitService):
         if context.department_id:
             entities.append((EntityType.DEPARTMENT, context.department_id))
 
-        # Organization level
-        if context.org_id:
-            entities.append((EntityType.ORGANIZATION, context.org_id))
+        # Organization level. Issue #4132: the quota bucket follows attribution
+        # for the same reason budget does — a hosted run consumes the triggering
+        # tenant's quota, not one shared __platform__ bucket.
+        if context.attributed_org_id:
+            entities.append((EntityType.ORGANIZATION, context.attributed_org_id))
 
         return entities
 
@@ -186,13 +188,13 @@ class RateLimitService(IRateLimitService):
         # Check each level if hierarchy enforcement is enabled
         if self._config.enforce_hierarchy:
             for entity_type, entity_id in entities:
-                result = await self._check_entity_limits(entity_type, entity_id, context.org_id, is_service_account)
+                result = await self._check_entity_limits(entity_type, entity_id, context.attributed_org_id, is_service_account)
                 if not result.allowed:
                     return result
         else:
             # Only check the user/service account level
             entity_type, entity_id = entities[0]
-            result = await self._check_entity_limits(entity_type, entity_id, context.org_id, is_service_account)
+            result = await self._check_entity_limits(entity_type, entity_id, context.attributed_org_id, is_service_account)
             if not result.allowed:
                 return result
 
@@ -260,8 +262,8 @@ class RateLimitService(IRateLimitService):
         levels_to_consume = entities if self._config.enforce_hierarchy else [entities[0]]
 
         for entity_type, entity_id in levels_to_consume:
-            limits = self._get_limits_for_entity(entity_type, entity_id, context.org_id, is_service_account)
-            key = self._get_entity_key(entity_type, entity_id, context.org_id)
+            limits = self._get_limits_for_entity(entity_type, entity_id, context.attributed_org_id, is_service_account)
+            key = self._get_entity_key(entity_type, entity_id, context.attributed_org_id)
 
             # Consume RPM token
             if limits["rpm"]:
@@ -320,7 +322,7 @@ class RateLimitService(IRateLimitService):
         levels_to_release = entities if self._config.enforce_hierarchy else [entities[0]]
 
         for entity_type, entity_id in levels_to_release:
-            key = self._get_entity_key(entity_type, entity_id, context.org_id)
+            key = self._get_entity_key(entity_type, entity_id, context.attributed_org_id)
             await self._backend.decrement_concurrent(key)
 
     async def configure_limits(

@@ -286,6 +286,45 @@ class TestBudgetEnforcementService:
         assert entities[2] == (EntityType.DEPARTMENT, "dept-012")
         assert entities[3] == (EntityType.ORGANIZATION, "org-456")
 
+    def test_get_entity_hierarchy_uses_attributed_org(self):
+        """Issue #4132: the budget denominator follows ATTRIBUTION, not the authenticated org.
+
+        Billing-integrity guard. An internal agent running on behalf of
+        customer-tenant-123 must consume THAT tenant's budget, not __platform__'s.
+        Had the attribution rename left this reader on org_id, every hosted run
+        would have billed the platform and per-tenant caps would go unenforced.
+        """
+        service = BudgetEnforcementService()
+
+        context = TokenContext(
+            user_id="scaledjob-worker",
+            org_id="__platform__",
+            team_id="__agents__",
+            department_id="",
+            account_type="service",
+            is_admin=False,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            scope="internal",
+            attributed_org_id="customer-tenant-123",
+        )
+
+        entities = service._get_entity_hierarchy(context)
+
+        assert (EntityType.ORGANIZATION, "customer-tenant-123") in entities
+        assert (EntityType.ORGANIZATION, "__platform__") not in entities
+
+    def test_get_entity_hierarchy_defaults_to_authenticated_org(self, token_context):
+        """Issue #4132: with no attribution override, the denominator is unchanged.
+
+        Regression guard for every non-internal caller.
+        """
+        service = BudgetEnforcementService()
+
+        assert token_context.attributed_org_id == "org-456"
+        entities = service._get_entity_hierarchy(token_context)
+
+        assert (EntityType.ORGANIZATION, "org-456") in entities
+
     def test_get_entity_hierarchy_service_account(self, service_account_context):
         """Test entity hierarchy for service accounts."""
         service = BudgetEnforcementService()

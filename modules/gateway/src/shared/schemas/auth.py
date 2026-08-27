@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class AuthExchangeRequest(BaseModel):
@@ -20,7 +20,18 @@ class AuthExchangeResponse(BaseModel):
 
 
 class TokenContext(BaseModel):
-    """Attached to every authenticated request after token validation."""
+    """Attached to every authenticated request after token validation.
+
+    Two org fields, with a deliberate split of duties (Issue #4132):
+
+    - ``org_id`` is **authenticated-only**. It comes from the Cognito token
+      claim or the agent_registry entry and is never writable by a request
+      header. It is the *sole* field any authorization path may read.
+    - ``attributed_org_id`` is **caller-influenced** and must never gate
+      access. Internal-plane agents may point it at the tenant that triggered
+      the run (Issue #747) so usage/billing lands on that tenant. It defaults
+      to ``org_id``, so every non-internal caller sees the two fields agree.
+    """
 
     user_id: str
     org_id: str
@@ -41,3 +52,20 @@ class TokenContext(BaseModel):
     # authoritative source for credential-scope decisions — never a
     # caller-supplied header.
     credential_scopes: list[str] = []
+    # Issue #4132: the org that usage/billing is *attributed* to. Attribution
+    # only — never an authorization input. See the class docstring.
+    attributed_org_id: str = ""
+
+    @model_validator(mode="after")
+    def _default_attributed_org_id(self) -> "TokenContext":
+        """Default attribution to the authenticated org when unset.
+
+        Keeps every existing construction site and every non-internal caller
+        behaving exactly as before: absent an explicit attribution override,
+        attributed_org_id == org_id.
+        """
+        if not self.attributed_org_id:
+            # Bypass validation re-entry (model_validator(mode="after") would
+            # otherwise recurse on assignment when validate_assignment is on).
+            object.__setattr__(self, "attributed_org_id", self.org_id)
+        return self

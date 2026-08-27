@@ -224,6 +224,9 @@ def require_organization_access(required_org_id: str, token_context: TokenContex
     Raises:
         HTTPException: If user lacks access to the organization
     """
+    # Issue #4132: authorization compares the AUTHENTICATED org_id. Never
+    # attributed_org_id — that field is caller-influenced (X-Agent-OrgId) and
+    # reading it here would let a header buy access to another tenant.
     if token_context.org_id != required_org_id:
         logger.warning(
             f"Organization access denied: user {token_context.user_id} in org {token_context.org_id} tried to access org {required_org_id}"
@@ -304,6 +307,8 @@ AGENT_PATH_PREFIX = "/agent"
 # remaining X-Agent-* header with any authority is X-Agent-OrgId, and it is
 # honored solely as a tenant-attribution override for callers already
 # authenticated via (1) whose registry entry has scope == "internal" (#747).
+# Issue #4132 narrowed that authority further: it now writes only
+# TokenContext.attributed_org_id, never the authenticated org_id.
 API_GATEWAY_HEADER_ORG_ID = "X-Agent-OrgId"
 
 # =============================================================================
@@ -414,14 +419,28 @@ def extract_iam_identity_from_headers(request: Request) -> TokenContext | None:
 
     # Issue #747: Accept X-Agent-OrgId override for internal-scope agents.
     # Internal agents (e.g. scaledjob-worker) pass the triggering tenant's
-    # org_id via this header so usage_logs attribute calls to the right tenant.
+    # org_id via this header so usage/billing attribute calls to the right tenant.
+    #
+    # INVARIANT (Issue #4132) — do not weaken:
+    #   token_context.org_id       is AUTHENTICATED-ONLY (registry entry / JWT
+    #                              claim) and is the SOLE field any
+    #                              authorization path may read.
+    #   token_context.attributed_org_id is CALLER-INFLUENCED (this header) and
+    #                              MUST NEVER gate access. It is read only by
+    #                              attribution/billing paths (usage_logs,
+    #                              budget + rate-limit denominators, chat logs).
+    # This override previously wrote org_id, which meant one caller-supplied
+    # header moved both attribution AND authorization scope to another tenant.
     if agent_entry.get("scope") == "internal":
         override_org_id = headers.get(API_GATEWAY_HEADER_ORG_ID, "").strip()
         if override_org_id:
-            token_context.org_id = override_org_id
-            logger.debug(f"Internal agent org_id overridden to: {override_org_id}")
+            token_context.attributed_org_id = override_org_id
+            logger.debug(f"Internal agent attribution overridden to: {override_org_id}")
 
-    logger.info(f"IAM auth successful: agent={agent_entry['agent_name']}, org={token_context.org_id}, team={agent_entry['team_id']}")
+    logger.info(
+        f"IAM auth successful: agent={agent_entry['agent_name']}, org={token_context.org_id}, "
+        f"attributed_org={token_context.attributed_org_id}, team={agent_entry['team_id']}"
+    )
     return token_context
 
 

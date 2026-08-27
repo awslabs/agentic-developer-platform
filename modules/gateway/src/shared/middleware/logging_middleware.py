@@ -110,7 +110,11 @@ class LoggingMiddleware:
                     token_context = state.get("token_context")
                     if token_context and isinstance(token_context, TokenContext):
                         set_request_context(
-                            org_id=token_context.org_id,
+                            # Issue #4132: request logs are an attribution
+                            # surface (per-tenant activity views). The
+                            # authenticated principal is still recorded as
+                            # user_id below.
+                            org_id=token_context.attributed_org_id,
                             user_id=token_context.user_id,
                             team_id=token_context.team_id,
                             department_id=token_context.department_id,

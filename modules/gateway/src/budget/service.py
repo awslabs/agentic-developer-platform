@@ -289,6 +289,10 @@ class BudgetService(IBudgetService):
         # Calculate cost
         cost, _, _ = calculate_model_cost(model, tokens_in, tokens_out)
 
+        # Issue #4132: spend is recorded against the ATTRIBUTED tenant, not
+        # the authenticated one, so a hosted run bills the tenant that
+        # triggered it rather than __platform__. Attribution defaults to
+        # org_id, so non-internal callers are unaffected.
         # Record for user
         await self.record_cost(
             CostRecordRequest(
@@ -299,7 +303,7 @@ class BudgetService(IBudgetService):
                 tokens_out=tokens_out,
                 request_cost_usd=cost,
             ),
-            context.org_id,
+            context.attributed_org_id,
         )
 
         # Record for team
@@ -312,7 +316,7 @@ class BudgetService(IBudgetService):
                 tokens_out=tokens_out,
                 request_cost_usd=cost,
             ),
-            context.org_id,
+            context.attributed_org_id,
         )
 
         # Record for department
@@ -325,20 +329,20 @@ class BudgetService(IBudgetService):
                 tokens_out=tokens_out,
                 request_cost_usd=cost,
             ),
-            context.org_id,
+            context.attributed_org_id,
         )
 
         # Record for organization
         await self.record_cost(
             CostRecordRequest(
                 entity_type=EntityType.ORGANIZATION,
-                entity_id=context.org_id,
+                entity_id=context.attributed_org_id,
                 model_name=model,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 request_cost_usd=cost,
             ),
-            context.org_id,
+            context.attributed_org_id,
         )
 
     async def record_cost(self, request: CostRecordRequest, org_id: str) -> None:
@@ -406,7 +410,12 @@ class BudgetService(IBudgetService):
     # Hierarchical Enforcement Methods
 
     async def check_hierarchical_budget(self, context: TokenContext, estimated_cost_usd: Decimal) -> EnforcementResult:
-        """Check budget constraints across the entire hierarchy (user → team → dept → org)."""
+        """Check budget constraints across the entire hierarchy (user → team → dept → org).
+
+        Issue #4132: the org level and the ledger partition both use
+        attributed_org_id, matching record_usage above — a run must be checked
+        against the same tenant ledger it will be billed to.
+        """
         async with self._get_session() as session:
             # Get entity hierarchy
             entities = get_parent_entity_info(
@@ -414,7 +423,7 @@ class BudgetService(IBudgetService):
                 user_id=context.user_id,
                 team_id=context.team_id,
                 department_id=context.department_id,
-                org_id=context.org_id,
+                org_id=context.attributed_org_id,
             )
 
             # Accumulate warnings across the hierarchy
@@ -423,7 +432,9 @@ class BudgetService(IBudgetService):
             # Check each entity in the hierarchy
             for entity_type, entity_id in entities:
                 for period_type in [PeriodType.DAILY, PeriodType.WEEKLY, PeriodType.MONTHLY]:
-                    result = await self._check_entity_budget(session, entity_type, entity_id, period_type, estimated_cost_usd, context.org_id)
+                    result = await self._check_entity_budget(
+                        session, entity_type, entity_id, period_type, estimated_cost_usd, context.attributed_org_id
+                    )
 
                     if not result.allowed:
                         return result
