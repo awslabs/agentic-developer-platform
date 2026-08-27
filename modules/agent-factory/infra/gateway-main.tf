@@ -45,22 +45,30 @@ module "gateway_lambda" {
   # Chat agent uses the FIFO queue (MessageGroupId=session_id serializes
   # per-session turns). The standard queue still exists for the legacy Python
   # worker but the ingest Lambda only sends to FIFO now.
-  input_queue_url        = aws_sqs_queue.chat_agent_tasks_fifo.url
-  input_queue_arn        = aws_sqs_queue.chat_agent_tasks_fifo.arn
-  response_queue_url     = module.gateway_sqs.response_queue_url
-  response_queue_arn     = module.gateway_sqs.response_queue_arn
-  sessions_table_name    = module.gateway_sessions.table_name
-  sessions_table_arn     = module.gateway_sessions.table_arn
-  artifacts_bucket_arn   = aws_s3_bucket.chat_artifacts.arn
-  artifacts_bucket_name  = aws_s3_bucket.chat_artifacts.id
-  artifacts_table_arn    = aws_dynamodb_table.chat_artifacts.arn
-  artifacts_table_name   = aws_dynamodb_table.chat_artifacts.name
-  ws_api_endpoint        = var.gateway_deployed ? module.gateway_apigw[0].stage_invoke_url : ""
-  ws_api_id              = var.gateway_deployed ? module.gateway_apigw[0].api_id : ""
-  ws_execution_arn       = var.gateway_deployed ? module.gateway_apigw[0].execution_arn : ""
-  enable_ws_policies     = true
-  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
-  tags                   = { Component = "agent-gateway" }
+  input_queue_url       = aws_sqs_queue.chat_agent_tasks_fifo.url
+  input_queue_arn       = aws_sqs_queue.chat_agent_tasks_fifo.arn
+  response_queue_url    = module.gateway_sqs.response_queue_url
+  response_queue_arn    = module.gateway_sqs.response_queue_arn
+  sessions_table_name   = module.gateway_sessions.table_name
+  sessions_table_arn    = module.gateway_sessions.table_arn
+  artifacts_bucket_arn  = aws_s3_bucket.chat_artifacts.arn
+  artifacts_bucket_name = aws_s3_bucket.chat_artifacts.id
+  artifacts_table_arn   = aws_dynamodb_table.chat_artifacts.arn
+  artifacts_table_name  = aws_dynamodb_table.chat_artifacts.name
+  # Issue #4233: chat-dispatch ownership layer. Sourced from the gateway
+  # module's state (it owns the identity-index) and its KMS alias, so nothing
+  # here hardcodes a table name. All three are empty when the gateway is not
+  # deployed, which leaves the ownership layer inactive and the ingest
+  # Lambda's code-only org allowlist as the whole gate.
+  identity_index_table_name  = local.identity_index_table_name
+  identity_index_table_arn   = local.identity_index_table_arn
+  identity_index_kms_key_arn = local.gateway_dynamodb_kms_key_arn
+  ws_api_endpoint            = var.gateway_deployed ? module.gateway_apigw[0].stage_invoke_url : ""
+  ws_api_id                  = var.gateway_deployed ? module.gateway_apigw[0].api_id : ""
+  ws_execution_arn           = var.gateway_deployed ? module.gateway_apigw[0].execution_arn : ""
+  enable_ws_policies         = true
+  cloudwatch_kms_key_arn     = aws_kms_key.cloudwatch.arn
+  tags                       = { Component = "agent-gateway" }
 }
 
 # --- Gateway Auth (reuse authorizer from gateway module via remote state) ---
@@ -75,10 +83,38 @@ data "terraform_remote_state" "gateway" {
   }
 }
 
+# Issue #4233: the gateway's customer-managed KMS key encrypts the
+# identity-index. Referenced by alias so key rotation doesn't break the ingest
+# Lambda's read policy. Only read when the gateway is deployed — the alias does
+# not exist before then.
+data "aws_kms_alias" "gateway_dynamodb" {
+  count = var.gateway_deployed ? 1 : 0
+  name  = "alias/adp-${var.environment}-gateway-dynamodb"
+}
+
 locals {
   # Authorizer Lambda from gateway module (empty if gateway not deployed)
   authorizer_invoke_arn    = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.authorizer_lambda_invoke_arn, "") : ""
   authorizer_function_name = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.lambda_authorizer_name, "") : ""
+
+  # Issue #4233: identity-index (owned by the gateway module) for the
+  # chat-dispatch ownership layer. `try` keeps a gateway state predating these
+  # outputs from failing the apply — an empty value simply leaves the ownership
+  # layer inactive, which is the documented pre-apply posture.
+  identity_index_table_name    = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.identity_index_table_name, "") : ""
+  identity_index_table_arn     = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.identity_index_table_arn, "") : ""
+  gateway_dynamodb_kms_key_arn = var.gateway_deployed ? try(data.aws_kms_alias.gateway_dynamodb[0].target_key_arn, "") : ""
+}
+
+# Fail-closed on a half-wired ownership layer: granting the table without the
+# KMS key produces AccessDenied on every read, which the gate treats as
+# unverifiable and denies. Better to fail the apply than ship a dispatch path
+# that rejects everything.
+check "identity_index_kms_wired_when_table_present" {
+  assert {
+    condition     = local.identity_index_table_arn == "" || local.gateway_dynamodb_kms_key_arn != ""
+    error_message = "identity-index ARN resolved but the gateway KMS alias did not. The ingest Lambda's dispatch ownership layer needs kms:Decrypt on alias/adp-<env>-gateway-dynamodb; without it every identity-index read is AccessDenied and all chat dispatch is denied."
+  }
 }
 
 # Fail-closed: when gateway_deployed=true, the authorizer outputs MUST be

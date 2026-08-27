@@ -81,6 +81,54 @@ def _get_secrets():
     return _secrets_client
 
 
+def configured_github_org() -> str:
+    """The single GitHub org this Lambda's App serves, lowercased.
+
+    Issue #4233: the ingest App is single-org by construction — Terraform sets
+    `GH_APP_SECRET_PREFIX = "adp/<github_org>/gh-app-ops"` — so the configured
+    org is derivable from the prefix without a second env var to keep in sync.
+
+    Returns "" when the prefix is unset or malformed; callers treat that as
+    "cannot determine the org" and fail closed.
+    """
+    parts = [p for p in GH_APP_SECRET_PREFIX.split("/") if p]
+    return parts[1].strip().lower() if len(parts) >= 3 else ""
+
+
+def installation_id_for_org(org: str) -> int | None:
+    """Resolve the App installation id GitHub reports for `org`, or None.
+
+    Issue #4233: used by the chat-dispatch tenant gate to assert that the
+    caller's org OWNS the installation covering the target repo owner, rather
+    than trusting that two labels look alike. Deliberately does not mint an
+    access token — the gate runs before we are willing to act as the App.
+    """
+    if not org:
+        return None
+    if not GH_APP_SECRET_PREFIX:
+        logger.error(
+            "Cannot resolve installation for org %s: GH_APP_SECRET_PREFIX is unset", org
+        )
+        return None
+
+    id_secret_id = f"{GH_APP_SECRET_PREFIX}-id"
+    key_secret_id = f"{GH_APP_SECRET_PREFIX}-key"
+    try:
+        secrets = _get_secrets()
+        app_id = secrets.get_secret_value(SecretId=id_secret_id)["SecretString"]
+        private_key = secrets.get_secret_value(SecretId=key_secret_id)["SecretString"]
+        return _get_installation_id(_create_jwt(app_id, private_key), org)
+    except Exception as e:
+        logger.error(
+            "Failed to resolve installation for org %s (secrets: %s, %s): %s",
+            org,
+            id_secret_id,
+            key_secret_id,
+            e,
+        )
+        return None
+
+
 def create_issue_and_dispatch(
     repo_owner: str,
     repo_name: str,

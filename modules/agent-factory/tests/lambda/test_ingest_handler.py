@@ -564,8 +564,17 @@ class TestExtendedClaimsPersistence:
         assert task["team_id"] == "team-sqs"
         assert task["account_type"] == "human"
 
-    def test_missing_org_id_not_rejected_logging_only(self, mocked_aws_services):
-        """Missing custom:org_id is NOT rejected — logging only (Stage A)."""
+    def test_missing_org_id_allowed_off_the_dispatch_path(self, mocked_aws_services):
+        """Missing custom:org_id does not block non-dispatch paths.
+
+        Issue #4233 made a missing org_id fail CLOSED on the github_actions
+        dispatch path (see test_ingest_tenant_gate.py). It deliberately did not
+        touch the other paths: chatting without an org claim must keep working,
+        because no repository is being targeted. This is the regression guard
+        for that boundary — it replaces the Stage A
+        `test_missing_org_id_not_rejected_logging_only` contract, which asserted
+        logging-only enforcement everywhere.
+        """
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.return_value = _make_bedrock_response({
             "path": "direct_response",
@@ -583,8 +592,8 @@ class TestExtendedClaimsPersistence:
             authorizer_claims={"sub": "user-no-org"},
         )
         result = handler.lambda_handler(event, None)
-        # Should NOT reject — logging-only enforcement in Stage A
         assert result["statusCode"] == 200
+        assert json.loads(result["body"])["status"] == "completed"
 
 
 class TestParseAttachmentsWithStringArtifactIds:

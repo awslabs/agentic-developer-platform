@@ -42,6 +42,12 @@ resource "aws_lambda_function" "ingest" {
       # Lambda returns; the ingest Lambda must push responses back via
       # apigatewaymanagementapi.post_to_connection, which needs this URL.
       WS_API_ENDPOINT = var.ws_api_endpoint
+      # Issue #4233: identity-index table backing the chat-dispatch tenant
+      # gate's ownership layer (org_id → App installation, compared against the
+      # installation covering the target repo owner). Empty until the gateway
+      # module has been applied; the handler treats empty as "ownership layer
+      # inactive" and the code-only org allowlist remains in force.
+      IDENTITY_INDEX_TABLE = var.identity_index_table_name
     }
   }
 
@@ -122,6 +128,39 @@ resource "aws_iam_role_policy" "ingest_dynamodb" {
         var.artifacts_table_arn, "${var.artifacts_table_arn}/index/*",
       ]
     }]
+  })
+}
+
+# Issue #4233: read access to the identity-index for the chat-dispatch tenant
+# gate's ownership layer. GetItem reads the org_installation reverse row; Query
+# covers installation_resolver's forward-scan fallback when that row is missing.
+# Read-only on purpose — the ingest Lambda is not an identity-index writer, so
+# it deliberately does not get the PutItem that would let the resolver's
+# self-heal write-through succeed (it is best-effort and logs on failure).
+#
+# The KMS grant is not optional: the identity-index is encrypted with the
+# gateway's customer-managed key, and without kms:Decrypt every GetItem returns
+# AccessDeniedException — the gate would then fail closed on every dispatch,
+# which reads as "the feature is broken", not "the key is missing".
+resource "aws_iam_role_policy" "ingest_identity_index" {
+  count = var.identity_index_table_arn != "" ? 1 : 0
+  name  = "identity-index-read"
+  role  = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = var.identity_index_table_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:DescribeKey"]
+        Resource = var.identity_index_kms_key_arn
+      },
+    ]
   })
 }
 

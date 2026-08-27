@@ -69,6 +69,15 @@ jobs:
           terraform_version: '1.9.0'
           terraform_wrapper: false
 
+      # Terraform zips the ingest source dir as-is, so runtime deps (pyjwt,
+      # cryptography) and vendored shared modules must be present BEFORE apply.
+      # Issue #4233: the chat-dispatch tenant gate imports
+      # installation_resolver, which this script vendors from
+      # webhook-ingress/lambda/common — without it the ownership layer fails
+      # closed on ImportError once IDENTITY_INDEX_TABLE is set.
+      - name: Build ingest Lambda package (deps + vendored modules)
+        run: bash platform/scripts/build-ingest-lambda.sh
+
       - name: Terraform init
         working-directory: modules/agent-factory/infra
         run: |

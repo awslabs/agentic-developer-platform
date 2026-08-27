@@ -578,11 +578,121 @@ def handle_direct_response(session_id, task_id, connection_id, message, classifi
     return {"statusCode": 200, "body": json.dumps({"task_id": task_id, "session_id": session_id, "status": "completed"})}
 
 
+# ─── Issue #4233: chat-dispatch tenant gate ───────────────────
+
+# Values of org_id that name no tenant. The JWT path defaults org_id to
+# "default" when Cognito carries no custom:org_id claim, and adapters emit ""
+# when the claim is absent entirely — neither can authorize a dispatch at a
+# repo. NOTE: this gate reads `org_id`, never `tenant_id`. tenant_id is always
+# "" on the github_actions path, so gating on it would be a silent no-op.
+_UNUSABLE_ORG_IDS = frozenset({"", "default"})
+
+
+def _tenant_gate_denial(message: UnifiedMessage, repo_owner: str) -> str | None:
+    """Why this chat message may not dispatch at `repo_owner` — None to allow.
+
+    Layered, cheapest first (Issue #4233):
+
+      1. **org_id fail-closed.** An absent or placeholder org_id identifies no
+         tenant, so it cannot authorize a dispatch. This path used to log and
+         allow, which is what made cross-tenant targeting reachable.
+      2. **Org allowlist** (code-only, effective on merge). The ingest App is
+         single-org by construction — Terraform sets
+         `GH_APP_SECRET_PREFIX = "adp/<github_org>/gh-app-ops"` — so a target
+         owner outside that org is never legitimate.
+      3. **Ownership** (needs IDENTITY_INDEX_TABLE; inert until the manual
+         `agent-factory-infra-apply.yml` adds the env + IAM). The caller's org
+         must resolve, via the identity index, to the SAME App installation
+         that covers the target owner. This asserts ownership rather than label
+         equality, so an org_id that merely happens to spell the org login does
+         not pass by coincidence.
+
+    Fail-closed throughout: anything we cannot positively verify is a denial.
+    """
+    from github_dispatch import configured_github_org, installation_id_for_org
+
+    org_id = str(message.platform_data.get("org_id", "") or "").strip()
+    if org_id.lower() in _UNUSABLE_ORG_IDS:
+        return "caller has no usable org_id"
+
+    configured_org = configured_github_org()
+    if not configured_org:
+        return "the ingest Lambda's GitHub org is not configured"
+    if repo_owner.strip().lower() != configured_org:
+        return f"target owner {repo_owner!r} is outside org {configured_org!r}"
+
+    # Layer 3 — only once the identity-index env has been applied. Until then
+    # the org allowlist above is the whole gate, by design.
+    identity_index_table = os.environ.get("IDENTITY_INDEX_TABLE", "")
+    if not identity_index_table:
+        logger.info(
+            "Dispatch ownership layer inactive (IDENTITY_INDEX_TABLE unset); "
+            "org allowlist allowed org_id=%s → %s",
+            org_id, repo_owner,
+        )
+        return None
+
+    try:
+        from installation_resolver import resolve_installation_for_tenant
+
+        caller_installation = resolve_installation_for_tenant(org_id)
+        if caller_installation is None:
+            return f"org_id {org_id!r} resolves to no GitHub App installation"
+        owner_installation = installation_id_for_org(repo_owner)
+        if owner_installation is None:
+            return f"target owner {repo_owner!r} resolves to no GitHub App installation"
+        if caller_installation != owner_installation:
+            return (
+                f"org_id {org_id!r} owns installation {caller_installation}, "
+                f"but {repo_owner!r} belongs to installation {owner_installation}"
+            )
+    except Exception as e:
+        # An unverifiable ownership claim is exactly what this gate exists to
+        # stop — never degrade to "allow" on error.
+        logger.warning(
+            "Dispatch ownership check failed for org_id=%s owner=%s: %s — failing closed",
+            org_id, repo_owner, e,
+        )
+        return "dispatch ownership could not be verified"
+
+    return None
+
+
 def handle_github_dispatch(session_id, task_id, connection_id, message, classification, threads, now):
     """Always dispatch — github_actions tasks are independent, never blocked."""
     repo_parts = (classification.repo or "").split("/", 1)
     repo_owner = repo_parts[0] if len(repo_parts) > 1 else ""
     repo_name = repo_parts[1] if len(repo_parts) > 1 else repo_parts[0] if repo_parts else ""
+
+    # Issue #4233: no chat message may steer a dispatch at a repo outside the
+    # caller's org. Runs before any GitHub call so a denied request creates no
+    # issue, posts no comment, and leaves no thread record.
+    #
+    # Only reached when the classifier named an owner. A repo with no owner
+    # ("myrepo") cannot dispatch anywhere — no installation resolves for an
+    # empty owner — so it keeps falling through to long_running below rather
+    # than being rejected outright, which would break a legitimate in-org ask.
+    if repo_owner:
+        denial = _tenant_gate_denial(message, repo_owner)
+        if denial:
+            logger.warning(
+                "Rejected github_actions dispatch: %s (session=%s repo=%s)",
+                denial, session_id, classification.repo,
+            )
+            send_notification(
+                session_id, task_id, connection_id, message,
+                "🚫 I can't act on that repository — it's outside your organization. "
+                "Name a repository your organization owns and I'll pick it up.",
+                now,
+            )
+            return {
+                "statusCode": 403,
+                "body": json.dumps({
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "status": "rejected_cross_tenant",
+                }),
+            }
 
     # Follow-up to existing github thread → post comment on the issue
     if classification.thread_action == "follow_up" and classification.follow_up_thread_id:
