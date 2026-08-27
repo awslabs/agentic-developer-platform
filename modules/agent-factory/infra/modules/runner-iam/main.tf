@@ -116,6 +116,37 @@ resource "aws_iam_policy" "runner_boundary" {
         Resource = "*"
       },
       {
+        # Cross-tenant vault lockout — DEFENCE IN DEPTH ONLY (issue #4130).
+        #
+        # This does NOT close #4073 finding #4 for this role. The binding grant
+        # here is aws_iam_policy.runner_base Sid AllowBroadAccess, which holds
+        # secretsmanager:* on Resource="*" — broader than this finding and
+        # tracked separately in #4116. Do not mark #4116 addressed by this.
+        #
+        # Placed in the BOUNDARY rather than in runner_base on purpose: the
+        # boundary is the ceiling on this role's effective permissions, so a
+        # Deny here is reachable regardless of what any attached policy allows
+        # and cannot be out-voted by the secretsmanager:* grant above. A Deny
+        # added to runner_base instead would be trivially bypassed the moment a
+        # future policy re-granted the same actions elsewhere.
+        #
+        # Same four env-less namespaces as the scaledjob role — see
+        # webhook-ingress/infra/scaledjob-iam.tf Sid DenyTenantVaultSecrets for
+        # the full rationale and the path-shape warning. Keep the two in sync.
+        Sid    = "DenyTenantVaultSecrets"
+        Effect = "Deny"
+        Action = [
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/users/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/teams/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/orgs/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*"
+        ]
+      },
+      {
         Sid    = "DenyDangerousActions"
         Effect = "Deny"
         Action = [

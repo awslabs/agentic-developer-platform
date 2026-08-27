@@ -10,6 +10,7 @@
 #   - Bedrock: invoke models for agent reasoning
 #   - Bedrock AgentCore: ephemeral browser sessions (url-analysis skill)
 #   - Secrets Manager: read GitHub App keys, tenant credentials
+#     (explicitly DENIED on the four customer vault namespaces — #4130)
 #   - STS: assume customer AWS roles for operations-persona tasks
 #   - Execute API: invoke internal gateway endpoints via SigV4
 #   - DynamoDB: update correlation pointers (UpdateItem, not PutItem — #1716)
@@ -18,7 +19,7 @@
 #   - S3: beads state + url-analysis evidence + agent-run-logs
 #   - Preflight: read-only checks (multiple services)
 #
-# Issue: #346, #1204, #4028
+# Issue: #346, #1204, #4028, #4130
 # =============================================================================
 
 resource "aws_iam_role" "agent_scaledjob" {
@@ -282,6 +283,58 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
             "kms:EncryptionContext:SecretARN" = aws_secretsmanager_secret.marker_signing_key.arn
           }
         }
+      },
+      {
+        # Cross-tenant vault lockout (issue #4130, #4073 finding #4).
+        #
+        # SecretsManagerOps above grants GetSecretValue + DescribeSecret on
+        # secret:adp/*, and Multiple grants ListSecrets on *. The customer vault
+        # lives under the SAME adp/ prefix — gateway/src/shared/services/
+        # secrets_manager.py:92-100 mints vault secrets as adp/users/<sub>/…,
+        # adp/teams/<id>/…, adp/orgs/<id>/… and adp/domain-apps/<app>/<org>/….
+        # So without this statement a run triggered by one customer can read
+        # every other customer's stored API keys, DB passwords and third-party
+        # tokens, and the read is indistinguishable from ordinary worker traffic.
+        #
+        # This is the SOLE control for that exposure. #4028's CMK scoping does
+        # not reach vault secrets: they are created at runtime with the
+        # AWS-managed key (secrets_manager.py:186-196), not a platform CMK, so
+        # there is no kms:Decrypt grant to withhold. Mirrors the
+        # DenyTenantAwsAccess precedent at agent-factory/infra/gateway-main.tf.
+        #
+        # DENY, NOT A NARROWED ALLOW — deliberate. The worker legitimately reads
+        # its own tenant's github-app secret and the tenant is not known at plan
+        # time, so a narrowed Allow would either break that read or require
+        # runtime policy generation. An explicit Deny always beats any Allow, so
+        # this is both simpler and stronger.
+        #
+        # PATH SHAPE IS LOAD-BEARING — do NOT "normalise" these to
+        # adp/${var.environment}/*. Vault paths have NO env segment (compare
+        # gateway/infra/main.tf:474-477, which grants the gateway CRUD on
+        # exactly these four env-less namespaces). An env-segmented Deny would
+        # match nothing at all while reading, in review, as though it closed
+        # this hole — the worst possible failure mode for a security control.
+        #
+        # Both actions are required: a GetSecretValue-only Deny still lets the
+        # pod enumerate other tenants' secret names and metadata.
+        #
+        # Equally, do NOT broaden this to adp/* to "be safe": that would deny
+        # the worker's own adp/<env>/tenants/<tenant>/github-app read
+        # (agent-worker-image/lib/vault_client.py:35-37) and break GitHub
+        # authentication on EVERY agent run. The four namespaces below do not
+        # overlap that path.
+        Sid    = "DenyTenantVaultSecrets"
+        Effect = "Deny"
+        Action = [
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:*:${local.account_id}:secret:adp/users/*",
+          "arn:aws:secretsmanager:*:${local.account_id}:secret:adp/teams/*",
+          "arn:aws:secretsmanager:*:${local.account_id}:secret:adp/orgs/*",
+          "arn:aws:secretsmanager:*:${local.account_id}:secret:adp/domain-apps/*"
+        ]
       },
       {
         Sid    = "SQSQueueMgmt"

@@ -11,6 +11,14 @@ on:
       # webhook-ingress-deploy.yml — a docs-only commit must not trigger a
       # Lambda deploy.
       - 'docs/agent-catalogue.md'
+      # Issue #4130: lambda/common/tests/test_scaledjob_vault_deny_policy.py
+      # asserts the cross-tenant vault Deny on BOTH the scaledjob role (in this
+      # module, already covered by the path above) and the runner permissions
+      # boundary, which lives outside it. Without this path a runner-only edit
+      # that drops or env-segments that Deny would run no CI at all, and the
+      # guard would go quietly stale. Same lockstep-reachability pattern
+      # gateway-ci.yml uses for the webhook-ingress identity resolver.
+      - 'modules/agent-factory/infra/modules/runner-iam/main.tf'
     branches:
       - main
 
