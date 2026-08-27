@@ -146,6 +146,34 @@ variable "org_tenant_auto_create" {
   default     = false
 }
 
+variable "require_signed_provenance" {
+  description = <<-EOT
+    Issue #4128 (#4073 findings #18 + #1b): strict-rejection switch for
+    provenance on the /agent/trigger plane.
+
+    A FORGED signature (verify_marker -> False) is ALWAYS rejected with 403,
+    regardless of this flag — no legitimate caller sends a bad signature, so
+    there is no rollout risk in rejecting one.
+
+    This flag governs only the INDETERMINATE case (verify_marker -> None:
+    unsigned marker, no marker at all, or no usable signing key because the
+    secret still holds the un-rotated placeholder). When false (default), such
+    a request is accepted with the claim's authority stripped and a warning
+    logged. When true, it is rejected with 403.
+
+    Default false per #4073's adopted decision 5, and for a concrete reason:
+    the in-repo trigger client (agent_worker's adp_trigger/client.py) sends no
+    signature today, so flipping this on before that client signs would break
+    every legitimate agent-to-agent hop. Land code first, observe the
+    "accepting (flag off)" warnings in CloudWatch to confirm no legitimate
+    caller is unsigned, then flip. This is deliberately NOT the
+    ALLOW_OPEN_SIGNUP pattern where code and config landed out of step and took
+    login down.
+  EOT
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # EKS / KEDA ScaledJob
 # -----------------------------------------------------------------------------

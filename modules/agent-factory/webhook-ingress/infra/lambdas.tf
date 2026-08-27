@@ -72,6 +72,14 @@ resource "aws_lambda_function" "github_webhook" {
       # but they are not promoted to tenants and get no agent dispatch.
       # Flipping this to "true" is the documented env-only rollback.
       ORG_TENANT_AUTO_CREATE = tostring(var.org_tenant_auto_create)
+      # Issue #4128: strict-rejection switch for /agent/trigger provenance.
+      # A FORGED signature is rejected regardless of this flag. This governs
+      # only the INDETERMINATE case (unsigned / no marker / placeholder key):
+      # false (default) strips the claim's authority and warns, true returns
+      # 403. Default off per #4073 decision 5 — the in-repo trigger client does
+      # not sign yet, so flipping this before it does would break legitimate
+      # agent-to-agent hops. See variables.tf for the rollout sequence.
+      REQUIRE_SIGNED_PROVENANCE = tostring(var.require_signed_provenance)
     }
   }
 

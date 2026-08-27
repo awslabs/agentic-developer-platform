@@ -799,7 +799,9 @@ def _get_correlation_store():
     return _correlation_store_mod
 
 
-def _pr_marker_text_with_issue_fallback(store, repo, pr_body, head_ref) -> str | None:
+def _pr_marker_text_with_issue_fallback(
+    store, repo, pr_body, head_ref
+) -> tuple[str | None, bool]:
     """Resolve the marker text to use for a PR event's correlation.
 
     Issue #1731/#1735: the PR body usually has NO valid adp-* marker at
@@ -813,27 +815,32 @@ def _pr_marker_text_with_issue_fallback(store, repo, pr_body, head_ref) -> str |
     pointer so determine_correlation can set parent_invocation_id across the
     issue→PR boundary without depending on the racy PR-body marker.
 
-    Returns marker text (PR body if it already has a valid marker, else a
-    synthesized marker from the issue pointer), or pr_body unchanged when no
-    fallback applies.
+    Returns:
+        A ``(marker_text, trusted)`` tuple. ``trusted`` is True ONLY for the
+        synthesized-from-pointer case (issue #4128): that marker is built here,
+        server-side, out of a server-written correlation pointer, so it is
+        unsigned by construction yet carries the pointer's trust. Marker text
+        that came from the PR body is attacker-controllable and returns False,
+        so :func:`determine_correlation` verifies its signature.
     """
     from common.marker_parse import has_valid_marker
 
     if pr_body and has_valid_marker(pr_body):
-        return pr_body
+        return pr_body, False
     m = re.match(r"agent/issue-(\d+)", head_ref or "")
     if not m:
-        return pr_body
+        return pr_body, False
     issue_channel = store.channel_key("github", repo, "issue", int(m.group(1)))
     issue_pointer = store.read_pointer(issue_channel)
     if not issue_pointer:
-        return pr_body
+        return pr_body, False
     return (
         f"<!-- adp-correlation:{issue_pointer['correlation_id']} "
         f"adp-root-human:{issue_pointer['root_human_id']} "
         f"adp-is-human-rooted:{'true' if issue_pointer.get('is_human_rooted') else 'false'} "
         f"adp-invocation:{issue_pointer.get('triggering_invocation_id') or ''} "
-        f"adp-chain-depth:{issue_pointer.get('chain_depth') or 0} -->"
+        f"adp-chain-depth:{issue_pointer.get('chain_depth') or 0} -->",
+        True,
     )
 
 
@@ -842,6 +849,7 @@ def determine_correlation(
     resolved_identity,
     channel_key: str,
     marker_text: str | None = None,
+    marker_trusted: bool = False,
 ) -> dict[str, Any]:
     """Determine correlation context for this event (read-only).
 
@@ -851,6 +859,15 @@ def determine_correlation(
       - Pointer exists but correlation_id differs from marker → use marker (cross-channel hop)
       - No pointer → use marker
       - No marker and no pointer → new chain (fallback)
+
+    Args:
+        marker_trusted: Issue #4128 — True only when ``marker_text`` was
+            SYNTHESIZED SERVER-SIDE from a correlation pointer (see
+            :func:`_pr_marker_text_with_issue_fallback`) rather than read from
+            attacker-controllable GitHub content. Such a marker is unsigned by
+            construction, but it is derived from a server-written pointer, so it
+            carries the pointer's trust. Callers MUST NOT set this for any
+            marker that came out of a comment body or PR body.
 
     Returns a dict with: correlation_id, root_human_id, triggered_by,
     is_human_rooted, is_new_chain, parent_invocation_id, chain_depth.
@@ -878,12 +895,63 @@ def determine_correlation(
 
         marker = parse_marker(marker_text)
 
+    # Issue #4128: verify the marker signature ONCE, here, and let every branch
+    # below read provenance through the verdict. Previously verify_marker() ran
+    # only in the Rule-4 branch, so the three other branches trusted
+    # marker-borne root_human_id / is_human_rooted / invocation_id / chain_depth
+    # on sight — and marker_text comes from a GitHub comment or PR body, which
+    # anyone who can comment controls.
+    #
+    # marker_sig is the verdict from common/marker_verify.py:
+    #   True  — signature valid under the current or previous key
+    #   False — signature present but does NOT verify (forged/corrupted)
+    #   None  — indeterminate: unsigned marker, no key configured, or (since
+    #           #4128) the signing secret still holds the un-rotated placeholder
+    marker_sig: bool | None = None
+    if marker is not None and not marker_trusted:
+        from common.marker_verify import verify_marker as _verify_marker
+
+        marker_sig = _verify_marker(marker)
+        if marker_sig is False:
+            logger.warning(
+                "Marker signature verification FAILED (forged): "
+                "correlation_id=%s, claimed_root_human=%s, sender=%s — "
+                "marker authority discarded",
+                marker.get("correlation_id"),
+                marker.get("root_human_id"),
+                resolved_identity.user_id,
+            )
+    elif marker is not None:
+        # Server-synthesized marker (from a server-written pointer) — unsigned
+        # by construction, but not attacker-supplied. Trust it as verified.
+        marker_sig = True
+
+    # Whether marker-borne provenance may be trusted at all. A forged signature
+    # is discarded outright. An indeterminate marker (unsigned / no key) may
+    # still supply non-authority fields, but never an is_human_rooted=true
+    # escalation — that is the fail-closed policy #3179 established for Rule 4
+    # and #4128 extends to every path.
+    marker_forged = marker_sig is False
+
     # Precedence resolution for bot senders:
     # 1. Pointer + marker with SAME correlation_id → pointer wins (authoritative)
     # 2. Pointer + marker with DIFFERENT correlation_id → marker wins (cross-channel hop)
     # 3. Pointer only (no marker) → pointer (same-channel continuation)
     # 4. Marker only (no pointer) → marker (cross-channel first hop)
     # 5. Neither → new chain
+
+    # Issue #4128: a FORGED marker is discarded entirely, before precedence is
+    # resolved. This is what closes all three previously-unverified paths at
+    # once, because the marker is what SELECTS the branch:
+    #   - Rule 1 (pointer + same correlation): the marker can no longer supply
+    #     the parent_invocation_id fallback → pointer-only path.
+    #   - Rule 2 (pointer + DIFFERENT correlation): a forged cross-channel claim
+    #     can no longer redirect the chain or its root human → pointer-only path,
+    #     i.e. the server-written pointer wins.
+    #   - Rule 4 (marker only): unchanged from #3179 — falls through to a new
+    #     bot-rooted chain.
+    if marker_forged:
+        marker = None
 
     if pointer and marker:
         if pointer["correlation_id"] == marker.get("correlation_id"):
@@ -913,14 +981,33 @@ def determine_correlation(
                 "recent_trigger_count": pointer.get("recent_trigger_count", 0),
             }
         else:
-            # Different correlation — marker represents cross-channel hop
+            # Different correlation — marker represents cross-channel hop (Rule 2).
+            #
+            # Issue #4128: this is the THIRD provenance path, and it is the one
+            # #4073's design did not name. It is materially the same hole as
+            # Rule 4: the marker's OWN correlation_id and root_human_id win over
+            # the server-written pointer's, so an unsigned marker here mints a
+            # cross-channel chain under any claimed human. Apply exactly the
+            # Rule-4 fail-closed policy: an unsigned marker may continue lineage
+            # but may NOT claim human-rooted authority.
             marker_depth = marker.get("chain_depth")
             inherited_depth = marker_depth if marker_depth is not None else 0
+            claims_human_rooted = marker.get("is_human_rooted", False)
+            if marker_sig is None and claims_human_rooted:
+                logger.warning(
+                    "Rule-2 unsigned marker claims is_human_rooted=true — "
+                    "stripping authority (fail-closed): correlation_id=%s, "
+                    "claimed_root_human=%s, sender=%s",
+                    marker.get("correlation_id"),
+                    marker.get("root_human_id"),
+                    resolved_identity.user_id,
+                )
+                claims_human_rooted = False
             return {
                 "correlation_id": marker["correlation_id"],
                 "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
                 "triggered_by": resolved_identity.user_id,
-                "is_human_rooted": marker.get("is_human_rooted", False),
+                "is_human_rooted": claims_human_rooted,
                 "is_new_chain": False,
                 "parent_invocation_id": marker.get("invocation_id"),
                 "chain_depth": inherited_depth + 1,
@@ -949,9 +1036,13 @@ def determine_correlation(
         # Issue #3179 (cred-binding S5): verify marker signature before trusting
         # marker-borne root_human_id/is_human_rooted. Unsigned or forged markers
         # in Rule-4 position confer no root-human authority → new chain.
-        from common.marker_verify import verify_marker as _verify_marker
-
-        sig_result = _verify_marker(marker)
+        #
+        # Issue #4128: the verdict is now computed once above (marker_sig) and
+        # shared with the pointer branches, instead of being computed here only.
+        # A forged marker never reaches this branch at all — it was dropped
+        # before precedence resolution — so the False case is unreachable here
+        # and kept only as a defensive assertion of the fail-closed intent.
+        sig_result = marker_sig
 
         if sig_result is False:
             # Forged signature — do NOT trust marker authority. Log and fall
@@ -1415,9 +1506,17 @@ def handler(event: dict, context) -> dict:
             is_bot = sender.get("type") == "Bot" or sender.get("login", "").endswith("[bot]")
             pr_body = payload.get("pull_request", {}).get("body", "") if is_bot else None
             head_ref = payload.get("pull_request", {}).get("head", {}).get("ref", "")
-            marker_text = _pr_marker_text_with_issue_fallback(store, repo, pr_body, head_ref)
+            # Issue #4128: marker_trusted is True only for the server-synthesized
+            # fallback marker; a marker read out of the PR body is verified.
+            marker_text, marker_trusted = _pr_marker_text_with_issue_fallback(
+                store, repo, pr_body, head_ref
+            )
             correlation_ctx = determine_correlation(
-                payload, resolved, channel_key_str, marker_text=marker_text
+                payload,
+                resolved,
+                channel_key_str,
+                marker_text=marker_text,
+                marker_trusted=marker_trusted,
             )
 
     # 10. Parse intent (with correlation context for chain-aware bot logic)

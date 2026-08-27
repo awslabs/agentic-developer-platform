@@ -53,12 +53,20 @@ def _valid_body(**overrides) -> dict:
 
 
 def _chain_record(**overrides) -> dict:
-    """Build a mock chain record (webhook-events row) from the GSI."""
+    """Build a mock chain record (webhook-events row) from the GSI.
+
+    Issue #4128: ``event_id`` matches the ``parent_invocation_id`` in
+    :func:`_valid_body`, and ``repo`` matches ``target.repo``. Both are now
+    checked, and the previous fixture described a row that cannot exist in a
+    real chain — an event whose id is not the parent the caller claims, in a
+    chain with no repo. The fixture was encoding the vulnerable behaviour.
+    """
     defaults = {
-        "event_id": "evt-001",
+        "event_id": "inv-parent-001",
         "arrived_at": "2026-06-27T10:00:00Z",
         "tenant_id": "test-tenant",
         "correlation_id": "corr-chain-001",
+        "repo": "org/repo",
         "root_human_id": "user-human-789",
         "is_human_rooted": True,
         "chain_depth": 1,
@@ -210,8 +218,15 @@ class TestChainResolution:
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
     def test_parent_invocation_id_from_body(self, mock_resolve, mock_spawn, mock_install):
-        """parent_invocation_id comes from the body (caller declares itself)."""
-        mock_resolve.return_value = _chain_record()
+        """parent_invocation_id comes from the body, but must be IN the chain.
+
+        Issue #4128: the caller still declares its own invocation id — that is
+        how the lineage edge is drawn — but the id must resolve to a real event
+        of this chain. The declared value flowing through unchanged is the
+        happy path; the forged-parent rejection is covered in
+        test_agent_trigger_provenance.py.
+        """
+        mock_resolve.return_value = _chain_record(event_id="my-inv-id-555")
         mock_spawn.return_value = MagicMock(success=True, message_id="msg-pid", block_reason=None)
 
         body = _valid_body(parent_invocation_id="my-inv-id-555")
@@ -256,14 +271,41 @@ class TestCrossTenantCheck:
     @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_no_body_tenant_allowed(self, mock_resolve, mock_spawn, mock_install):
-        """Body without tenant_id (omitted) bypasses cross-tenant check."""
+    def test_no_body_tenant_still_checks_chain_tenant(
+        self, mock_resolve, mock_spawn, mock_install
+    ):
+        """Issue #4128: omitting tenant_id no longer BYPASSES the check.
+
+        This test replaces ``test_no_body_tenant_allowed``, which asserted the
+        vulnerable behaviour: the old ``if body_tenant`` guard meant simply
+        leaving tenant_id out skipped cross-tenant validation entirely. Omitting
+        it is still ALLOWED (the tenant is server-resolved from the chain — that
+        is the point of the route), but the check now runs: the chain must have
+        a resolvable tenant, and the target must belong to it.
+        """
         mock_resolve.return_value = _chain_record(tenant_id="my-tenant")
         mock_spawn.return_value = MagicMock(success=True, message_id="msg-nt", block_reason=None)
         body = _valid_body()  # No tenant_id in body
         event = _make_event(body)
         resp = handle_agent_trigger(event, None)
         assert resp["statusCode"] == 202
+        # The tenant used downstream is the chain's, never a body-supplied one.
+        assert mock_spawn.call_args[1]["tenant_id"] == "my-tenant"
+
+    @patch("agent_trigger._resolve_chain")
+    def test_chain_without_tenant_rejected(self, mock_resolve):
+        """Issue #4128: a chain with no tenant_id cannot be dispatched from.
+
+        Previously the omitted-tenant path reached spawn_persona with
+        tenant_id="" — tenant isolation cannot be enforced on a run with no
+        tenant, so this fails closed.
+        """
+        record = _chain_record()
+        del record["tenant_id"]
+        mock_resolve.return_value = record
+        resp = handle_agent_trigger(_make_event(_valid_body()), None)
+        assert resp["statusCode"] == 403
+        assert json.loads(resp["body"])["error"] == "cross_tenant"
 
 
 # =============================================================================
