@@ -46,7 +46,19 @@ from src.orchestration.tick import TickReport, run_tick
 from src.shared.database import get_session_factory, reset_engine
 
 logger = logging.getLogger("bedrockgateway.orchestration.tick_handler")
-if not logging.getLogger().handlers:  # pragma: no cover - Lambda configures this
+
+# Set the level on THIS logger explicitly, and never gate it on the root logger
+# having no handlers. `awslambdaric` installs a root handler before importing
+# this module and leaves the root level at WARNING, so a
+# `if not logging.getLogger().handlers: basicConfig(level=INFO)` guard is skipped
+# in exactly the environment it was meant to cover — which silently suppressed
+# every `tick_report` line in dev even though the tick itself ran fine and its
+# CloudWatch metrics landed. The token has to survive on a warm container with a
+# pre-configured root logger, since that is the steady state. Matches the
+# explicit-setLevel pattern every other Lambda in this repo already uses
+# (`lambda/budget-usage-tracker/handler.py:37-38`, `lambda/pre-signup/handler.py:23-25`).
+logger.setLevel(getattr(logging, os.environ.get("BG_LOG_LEVEL", "INFO").upper(), logging.INFO))
+if not logging.getLogger().handlers:  # pragma: no cover - local/pytest only
     logging.basicConfig(level=logging.INFO)
 
 # CloudWatch namespace for the engine's own metrics. Kept distinct from the

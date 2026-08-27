@@ -643,3 +643,69 @@ class TestTenantIsolation:
         assert await _state_of(session, target.id) == NodeState.READY.value
         assert target.id not in report.blocked
         assert report.per_org[ORG_A]["transitions_effected"] == 1
+
+
+class TestTickReportTokenSurvivesLambdaLogging:
+    """Check 2 of evaluation #4240 greps CloudWatch for the `tick_report` token.
+
+    That check is the only evidence the schedule actually FIRED rather than merely
+    having been deployed, so the token must land under the logging setup Lambda
+    really presents — not the one pytest presents.
+
+    The distinction is what broke in dev: `awslambdaric` installs a root handler
+    before importing the handler module and leaves the root level at WARNING, so
+    the original `if not logging.getLogger().handlers: basicConfig(level=INFO)`
+    guard was skipped precisely where it was needed, and every `tick_report` line
+    was suppressed while the tick itself ran correctly and emitted metrics. A test
+    using `caplog.at_level(...)` cannot catch this, because forcing the level is
+    exactly the bug being masked.
+    """
+
+    def test_token_is_emitted_at_info_under_a_preconfigured_root_logger(self, monkeypatch):
+        """Reproduces the Lambda container: root handler present, root at WARNING."""
+        import importlib
+        import io
+        import logging as _logging
+
+        root = _logging.getLogger()
+        original_handlers = root.handlers[:]
+        original_level = root.level
+        try:
+            stream = io.StringIO()
+            root.handlers = [_logging.StreamHandler(stream)]
+            root.setLevel(_logging.WARNING)  # awslambdaric's default
+
+            # Re-import so module-level logging setup runs against that state.
+            import src.orchestration.tick_handler as handler_module
+
+            handler_module = importlib.reload(handler_module)
+
+            report = _TickReportStub()
+            monkeypatch.setattr(handler_module, "_run", lambda: report, raising=True)
+            monkeypatch.setattr(handler_module.asyncio, "run", lambda coro: report, raising=True)
+            monkeypatch.setattr(handler_module, "_emit_metrics", lambda _r: None, raising=True)
+
+            handler_module.handler({}, None)
+
+            assert handler_module.TICK_REPORT_TOKEN in stream.getvalue()
+        finally:
+            root.handlers = original_handlers
+            root.setLevel(original_level)
+            import src.orchestration.tick_handler as handler_module
+
+            importlib.reload(handler_module)
+
+
+class _TickReportStub:
+    """Minimal stand-in with the attributes `handler()` reads for its summary."""
+
+    success = True
+    nodes_examined = 0
+    transitions_effected = 0
+    transitions_rejected = 0
+    errors = 0
+    lost_races = 0
+    pages_read = 1
+    truncated = False
+    per_org: dict = {}
+    blocked: dict = {}
