@@ -464,6 +464,24 @@ async def install_callback(
     #    if found, route the install to that org's tenant instead of caller's.
     #    For unknown orgs (public-App installs), upsert the tenant shell.
     #    Personal installs and pre-existing behavior preserved via caller_org_id.
+    #
+    #    Issue #4072 (#5, CRITICAL) — why this block needs an authorization gate:
+    #    this endpoint is unauthenticated by design (GitHub redirects a browser
+    #    here), so the nonce validated above is the ONLY authenticator, and it
+    #    binds the CALLER. The target tenant, by contrast, was re-derived from
+    #    caller-supplied data: installation_id → GitHub account → github_org_id →
+    #    matching organizations row. That made "which tenant do I take over?" a
+    #    request parameter. Everything downstream of this block — the routing row,
+    #    the org_admin membership (#4006), the auto-switch (#3072), the tenant
+    #    secret seed (#2085), the identity-index row (#2950) — then landed in the
+    #    victim's tenant. _attach_org_installation's own cross-tenant guard could
+    #    not catch it: it compares against `caller_org_id`, which by then has
+    #    already been overwritten with the victim's tenant id.
+    #
+    #    Decision D1 option (b) keeps #2952's routing — a real GitHub org install
+    #    SHOULD land in the org's shared workspace so co-workers share it — but
+    #    makes it conditional on the caller having STANDING in that tenant. See
+    #    _caller_has_standing_in_tenant.
     resolved_org_id = caller_org_id
 
     if account_type == "Organization" and github_org_id is not None:
@@ -471,6 +489,33 @@ async def install_callback(
         org_by_github_id = (await db.execute(select(Organization).where(Organization.github_org_id == str(github_org_id)))).scalar_one_or_none()
 
         if org_by_github_id is not None:
+            # Issue #4072 (#5): the gate. An install may only be routed INTO a
+            # pre-existing tenant by someone who already belongs to it.
+            if not await _caller_has_standing_in_tenant(
+                user_id=user_row.id,
+                caller_org_id=caller_org_id,
+                target_tenant_id=org_by_github_id.id,
+                db=db,
+            ):
+                logger.warning(
+                    "event=install_callback_cross_tenant_denied installation_id=%d account=%s github_org_id=%s "
+                    "caller_user=%s caller_tenant=%s target_tenant=%s reason=no_membership_in_target_tenant",
+                    installation_id,
+                    account_login,
+                    github_org_id,
+                    user_row.id,
+                    caller_org_id,
+                    org_by_github_id.id,
+                )
+                # PermissionError is the established cross-tenant signal on this
+                # path — the route already renders it as `tenant_conflict`
+                # (connections/routes.py) rather than a 500. Raised BEFORE any
+                # write, so nothing is bound, granted, seeded, or switched.
+                raise PermissionError(
+                    f"GitHub organization '{account_login}' is already connected to another ADP workspace that you are not a member of. "
+                    "Ask an administrator of that workspace to invite you, then re-run the install."
+                )
+
             resolved_org_id = org_by_github_id.id
             logger.info(
                 "install-callback: resolved org by github_org_id=%s → tenant=%s",
@@ -483,6 +528,37 @@ async def install_callback(
             # Issue #2724: this branch is reached only after nonce validation
             # above (the nonce IS the authenticator), so an authenticated ADP
             # user deliberately drove this install → register_flow (trusted).
+            #
+            # Issue #4072 (#5): second door into a pre-existing tenant.
+            # _upsert_org_tenant_shell is idempotent BY SLUG, so it returns an
+            # existing tenant whenever the account login slugifies onto one. That
+            # is the same re-point as the branch above reached by a different
+            # route, so it needs the same standing gate — otherwise the gate is
+            # bypassable by choosing an account whose login collides with the
+            # victim tenant's id. A shell this install actually CREATES has no
+            # victim, so #2952 first-installer onboarding is unaffected.
+            preexisting_shell = await db.get(Organization, _slugify_org_id(account_login))
+            if preexisting_shell is not None and not await _caller_has_standing_in_tenant(
+                user_id=user_row.id,
+                caller_org_id=caller_org_id,
+                target_tenant_id=preexisting_shell.id,
+                db=db,
+            ):
+                logger.warning(
+                    "event=install_callback_cross_tenant_denied installation_id=%d account=%s github_org_id=%s "
+                    "caller_user=%s caller_tenant=%s target_tenant=%s reason=slug_collides_with_foreign_tenant",
+                    installation_id,
+                    account_login,
+                    github_org_id,
+                    user_row.id,
+                    caller_org_id,
+                    preexisting_shell.id,
+                )
+                raise PermissionError(
+                    f"GitHub organization '{account_login}' maps to an existing ADP workspace that you are not a member of. "
+                    "Ask an administrator of that workspace to invite you, then re-run the install."
+                )
+
             upserted_id = await _upsert_org_tenant_shell(
                 owner_login=account_login,
                 github_org_id=str(github_org_id),
@@ -617,6 +693,60 @@ async def install_callback(
         "error_message": None,
         "switched_from": switched_from if account_type == "Organization" and user_row else None,
     }
+
+
+async def _caller_has_standing_in_tenant(
+    *,
+    user_id: str,
+    caller_org_id: str,
+    target_tenant_id: str,
+    db: AsyncSession,
+) -> bool:
+    """Whether the install-callback caller may route an install INTO a tenant.
+
+    Issue #4072 (#5, CRITICAL) + decision D1 option (b). The install callback is
+    unauthenticated by design (GitHub redirects a browser here with no bearer
+    token), so the nonce establishes *identity* — but identity alone is not
+    authority over the tenant the install would be bound to. This is the missing
+    authority half.
+
+    "Standing" is deliberately narrow — only two things count:
+
+    * the target IS the caller's own tenant (``users.org_id``), or
+    * the caller already holds a ``tenant_memberships`` row in the target.
+
+    Note what is NOT accepted: the caller's *role*. Someone who is org_admin of
+    tenant A has no standing in tenant B, and #4006 makes every installer an
+    org_admin of their own tenant — so accepting role would re-open the hole for
+    anybody who has ever installed the App anywhere.
+
+    Membership is checked without an ``is_active`` filter on purpose: ``is_active``
+    is per-user session state that ``switch_tenant`` flips, so an inactive row is
+    still real standing. Requiring ``is_active`` would break a legitimate
+    multi-workspace installer whose active workspace happens to be another one —
+    which is the #4006 lockout failure mode #4072's blast-radius table warns
+    against.
+    """
+    if target_tenant_id == caller_org_id:
+        return True
+
+    # Function-local imports, matching this module's established convention
+    # (install_callback imports select/update the same way).
+    from sqlalchemy import select
+
+    from src.shared.models.onboarding import TenantMembership
+
+    membership = (
+        await db.execute(
+            select(TenantMembership.id)
+            .where(
+                TenantMembership.user_id == user_id,
+                TenantMembership.tenant_id == target_tenant_id,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return membership is not None
 
 
 def _promotion_allowed_for_provenance(created_via: str | None) -> tuple[bool, str]:

@@ -34,7 +34,7 @@ from src.admin.connections.service import (
     register_app_callback,
 )
 from src.shared.models.base import Base
-from src.shared.models.onboarding import Tenant
+from src.shared.models.onboarding import Tenant, TenantMembership
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import ChannelTenantMap, MagicLinkNonce
 
@@ -482,9 +482,46 @@ class TestRegisterAppCallbackOrgTenant:
 
 
 class TestInstallCallbackOrgRouting:
-    async def test_org_install_routes_to_org_tenant(self, db_session: AsyncSession, caller_org, caller_user, _mock_env):
-        """Org install resolves to the org's tenant, not the caller's."""
-        # Pre-create the org tenant with github_org_id
+    """Install routing into a PRE-EXISTING tenant (Issue #2952, amended by #4072).
+
+    Reframed for Issue #4072 (#5, CRITICAL). This class previously contained
+
+        test_org_install_routes_to_org_tenant
+
+    which pre-created ``acme-corp`` and asserted that an install by a caller from
+    ``caller-org-001`` — a caller holding NO membership in ``acme-corp`` — landed
+    in ``acme-corp`` anyway. That test did not merely fail to catch the
+    vulnerability; it encoded the vulnerability as the intended contract and
+    would have failed the fix. Per #4068's C3 it is inverted here rather than
+    silently edited, and the rationale is recorded in place:
+
+    The install callback is deliberately unauthenticated (GitHub redirects the
+    browser to it), so its only authenticator is the nonce, which binds the
+    *caller*. The target tenant, by contrast, was re-derived from the
+    caller-supplied ``installation_id`` → account → ``github_org_id`` chain. An
+    attacker who installs their own GitHub App on an account whose numeric id
+    matches a victim tenant's ``github_org_id`` therefore had every downstream
+    write — membership row, ``org_admin`` grant, active-tenant switch, tenant
+    secret seed, DynamoDB identity-index row — land in the VICTIM's tenant.
+
+    Human decision D1 chose option (b): keep #2952's org-tenant routing, because
+    a real GitHub org install should land in the org's shared workspace so
+    co-workers share it, but make it conditional on the caller already holding
+    membership in that tenant. So the property under test splits in two, and both
+    halves are pinned below:
+
+    * caller WITHOUT standing in the target tenant  -> denied, nothing written
+      (``test_org_install_denied_when_caller_not_member_of_target``)
+    * caller WITH standing in the target tenant     -> still routes to the org
+      tenant, exactly as #2952 intended
+      (``test_org_install_routes_to_org_tenant_for_member``)
+
+    The second test is what remains of the original: same fixtures, same
+    assertions, plus the membership row that makes the routing legitimate.
+    """
+
+    async def test_org_install_denied_when_caller_not_member_of_target(self, db_session: AsyncSession, caller_org, caller_user, _mock_env):
+        """#4072 (#5): install must NOT be routed into a tenant the caller is not in."""
         target_org = Organization(
             id="acme-corp",
             name="Acme-Corp",
@@ -494,6 +531,66 @@ class TestInstallCallbackOrgRouting:
             github_org_id="98765432",
         )
         db_session.add(target_org)
+        await db_session.commit()
+
+        await _write_nonce(db_session)
+        gh = _mock_github_client(account_github_id=98765432)
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            new_callable=AsyncMock,
+        ) as mock_seed:
+            with pytest.raises(PermissionError):
+                await install_callback(
+                    installation_id=124731131,
+                    setup_action="install",
+                    state="test-jti-001",
+                    db=db_session,
+                    github_client=gh,
+                )
+
+        # Assert the OUTCOME, not the plumbing: no routing row, no membership,
+        # no tenant secret, no identity-index row may exist for the victim.
+        mapping = (
+            await db_session.execute(
+                select(ChannelTenantMap).where(
+                    ChannelTenantMap.provider == "github",
+                    ChannelTenantMap.provider_scope_id == "98765432",
+                )
+            )
+        ).scalar_one_or_none()
+        assert mapping is None
+
+        membership = (await db_session.execute(select(TenantMembership).where(TenantMembership.tenant_id == "acme-corp"))).scalar_one_or_none()
+        assert membership is None
+
+        mock_seed.assert_not_awaited()
+        _mock_env.assert_not_awaited()
+
+    async def test_org_install_routes_to_org_tenant_for_member(self, db_session: AsyncSession, caller_org, caller_user, _mock_env):
+        """#2952 preserved: a MEMBER of the org tenant still routes there, not to their own."""
+        target_org = Organization(
+            id="acme-corp",
+            name="Acme-Corp",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_org_id="98765432",
+        )
+        db_session.add(target_org)
+        await db_session.commit()
+        # The standing that makes this routing legitimate. Deliberately
+        # is_active=False: is_active is per-user session state flipped by
+        # switch_tenant, so membership alone must be sufficient (see
+        # _caller_has_standing_in_tenant).
+        db_session.add(
+            TenantMembership(
+                user_id=caller_user.id,
+                tenant_id="acme-corp",
+                role="member",
+                is_active=False,
+            )
+        )
         await db_session.commit()
 
         await _write_nonce(db_session)
@@ -637,7 +734,15 @@ class TestInstallCallbackOrgRouting:
         assert mapping.org_id == "caller-org-001"
 
     async def test_ddb_write_uses_resolved_org_tenant(self, db_session: AsyncSession, caller_org, caller_user, _mock_env):
-        """Issue #2952 (E): DDB write receives the org tenant id, not the installer's."""
+        """Issue #2952 (E): DDB write receives the org tenant id, not the installer's.
+
+        Issue #4072 (#5): the pre-created target tenant now needs a membership row
+        for the caller. Without it the install is refused before any DDB write, so
+        the original form of this test asserted the identity-index row landing in a
+        tenant the caller had no standing in — the #5 primitive. The property being
+        pinned is unchanged (DDB gets the *resolved* tenant, not the installer's
+        home tenant); only the setup is made legitimate.
+        """
         # Pre-create the org tenant
         target_org = Organization(
             id="target-org",
@@ -648,6 +753,15 @@ class TestInstallCallbackOrgRouting:
             github_org_id="77777777",
         )
         db_session.add(target_org)
+        await db_session.commit()
+        db_session.add(
+            TenantMembership(
+                user_id=caller_user.id,
+                tenant_id="target-org",
+                role="member",
+                is_active=False,
+            )
+        )
         await db_session.commit()
 
         await _write_nonce(db_session)

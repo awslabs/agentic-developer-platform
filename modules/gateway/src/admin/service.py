@@ -11,6 +11,7 @@ from src.admin.cognito_claims import sync_cognito_role_claims
 from src.admin.cognito_service import CognitoService, CognitoServiceError
 from src.admin.config import get_admin_config
 from src.admin.exceptions import PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
+from src.admin.installations.guards import assert_new_installation_ids_claimable_by
 from src.admin.memberships import is_admin_level_role, set_membership_role, upsert_tenant_membership
 from src.admin.schemas import (
     BudgetConfigResponse,
@@ -288,6 +289,21 @@ class AdminService:
         old_cognito_ids = list(org.cognito_client_ids or [])
 
         if request.github_installation_ids is not None:
+            # Issue #4072 (#11, HIGH): github_installation_ids arrives verbatim
+            # from the request body with no validator, and this assignment used
+            # to trust it. The route's ORG_UPDATE + target_org_id check confines
+            # the caller to their OWN org, but nothing confirmed the
+            # *installation* belongs to that org — so an org-admin could name a
+            # victim's installation and inherit the victim's webhook events,
+            # agent runs and credential context. Checked BEFORE the assignment so
+            # neither Postgres nor the DDB write-through below is reached for a
+            # foreign claim. Raises InstallationClaimError (409/403).
+            await assert_new_installation_ids_claimable_by(
+                org_id,
+                new_ids=list(request.github_installation_ids),
+                old_ids=old_github_ids,
+                db=self.db,
+            )
             org.github_installation_ids = request.github_installation_ids
 
         if request.cognito_client_ids is not None:

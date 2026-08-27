@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
+from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user, require_admin
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
@@ -92,7 +93,40 @@ async def update_organization(
     db: AsyncSession = Depends(get_db),
     current_user: TokenContext = Depends(get_current_user),
 ):
-    """Update an organization."""
+    """Update an organization. Platform-admin only.
+
+    - 403 if the caller is not a platform admin.
+    - 404 if the organization does not exist.
+    - 409 if the request claims a GitHub installation owned by another tenant.
+    """
+    # Issue #4072 (#11, HIGH), decision D4 — defense in depth, stated honestly:
+    # the router-level ``require_admin`` dependency already checks
+    # TokenContext.is_admin, which is PLATFORM admin only (auth/dependencies.py
+    # deliberately excludes org_admin per #3981), so this is NOT closing a live
+    # escalation the way the #5 fix is. It is here because this route mints tenant
+    # identity — it rebinds github_installation_ids AND rewrites the org's
+    # channel_tenant_map rows, which is what decides where a GitHub or Slack event
+    # gets routed — and a blast radius that large should not rest on a gate that
+    # lives only in the mount, one refactor away from silently disappearing. Every
+    # other identity-minting route in this file re-checks in the handler.
+    #
+    # Mirrors admin/tenants/routes.py::link_org_to_tenant (the pre-existing
+    # platform-admin-only org-linking endpoint) rather than Permission.ORG_UPDATE:
+    # in-repo precedent (#3981/#4018) holds ORG_UPDATE insufficient for
+    # identity-minting writes because a tenant's own org_admin satisfies it.
+    try:
+        AccessControl(db).require_platform_admin(current_user)
+    except AccessDeniedError:
+        logger.warning(
+            "event=identity_org_update_denied org=%s caller=%s reason=not_platform_admin",
+            org_id,
+            current_user.user_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrator privileges required",
+        ) from None
+
     svc = OrganizationsService(db)
     org = await svc.update_organization(org_id, req)
     if org is None:

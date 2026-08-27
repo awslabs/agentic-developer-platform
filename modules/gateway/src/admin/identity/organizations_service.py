@@ -9,6 +9,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.installations.guards import assert_new_installation_ids_claimable_by
 from src.shared.models.organization import Department, Organization, Team
 from src.shared.models.vault import ChannelTenantMap
 
@@ -204,8 +205,32 @@ class OrganizationsService:
         if req.plan is not None:
             settings["plan"] = req.plan
         if req.channels is not None:
-            settings["channels"] = req.channels.model_dump()
             new_github_ids = _extract_github_installation_ids(req.channels)
+
+            # Issue #4072 (#11, HIGH): verify the caller may claim each NEWLY
+            # ADDED installation before touching anything.
+            #
+            # Placement is the whole point. The delete below is unscoped by
+            # provider: it removes EVERY channel_tenant_map row for this org,
+            # GitHub and Slack alike, and only the github/slack entries present
+            # in this request body are re-inserted. So a request that names a
+            # victim's installation is destructive twice over — it steals the
+            # victim's GitHub routing AND, if it is rejected only after the
+            # delete has run, silently drops the target org's Slack routing on
+            # the way out. Guarding before the delete (and before any field
+            # assignment) means a refused claim leaves the row set untouched.
+            #
+            # ·A0's resolver (#4070) is the single source of the ownership rule;
+            # the 409/403 mapping is shared with PUT /admin/organizations/{id}
+            # via admin/installations/guards.py so the two writers cannot drift.
+            await assert_new_installation_ids_claimable_by(
+                org_id,
+                new_ids=new_github_ids,
+                old_ids=old_github_ids,
+                db=self._db,
+            )
+
+            settings["channels"] = req.channels.model_dump()
             org.github_installation_ids = new_github_ids
 
             # Update channel_tenant_map: delete old, insert new
