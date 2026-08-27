@@ -1422,4 +1422,172 @@ describe('resilientQuery', () => {
       jest.useFakeTimers();
     }, 10000);
   });
+  describe('issue #4186 Phase 1: onSessionId escape hatch', () => {
+    it('fires once with the captured session id, mid-stream', async () => {
+      jest.useRealTimers();
+
+      const seen: string[] = [];
+      // The id must be delivered while the stream is still running — a run
+      // killed before its `result` message is exactly the run whose id matters.
+      const yieldedWhenCalled: number[] = [];
+      let yielded = 0;
+
+      mockQuery.mockImplementation(() =>
+        asyncFromArray([
+          { type: 'system', subtype: 'init', session_id: 'sess-4186' },
+          { type: 'assistant', content: 'work' },
+          { type: 'result', subtype: 'success' },
+        ]) as any,
+      );
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'task', options: {} } as any,
+        onSessionId: (id) => {
+          seen.push(id);
+          yieldedWhenCalled.push(yielded);
+        },
+        log: jest.fn(),
+      };
+
+      for await (const _msg of resilientQuery(opts)) {
+        yielded++;
+      }
+
+      expect(seen).toEqual(['sess-4186']);
+      // Called before the first message was yielded to the caller, i.e. mid-stream.
+      expect(yieldedWhenCalled).toEqual([0]);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('fires only once even when the id repeats on later messages and across retries', async () => {
+      jest.useRealTimers();
+
+      const seen: string[] = [];
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return asyncThrowingGenerator(
+            [
+              { type: 'system', subtype: 'init', session_id: 'sess-once' },
+              { type: 'assistant', session_id: 'sess-once', content: 'work' },
+            ],
+            new Error('fetch failed'),
+            2,
+          ) as any;
+        }
+        return asyncFromArray([
+          { type: 'assistant', session_id: 'sess-once', content: 'more' },
+          { type: 'result', subtype: 'success' },
+        ]) as any;
+      });
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'task', options: {} } as any,
+        maxRetries: 3,
+        baseDelayMs: 10,
+        onSessionId: (id) => seen.push(id),
+        log: jest.fn(),
+      };
+
+      await collectAll(resilientQuery(opts));
+
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(seen).toEqual(['sess-once']);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('is not called when the stream never emits a session id', async () => {
+      jest.useRealTimers();
+
+      const onSessionId = jest.fn();
+      mockQuery.mockImplementation(() =>
+        asyncFromArray([
+          { type: 'assistant', content: 'work' },
+          { type: 'result', subtype: 'success' },
+        ]) as any,
+      );
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'task', options: {} } as any,
+        onSessionId,
+        log: jest.fn(),
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      expect(onSessionId).not.toHaveBeenCalled();
+      expect(results).toHaveLength(2);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('a throwing callback is swallowed and does not break the stream', async () => {
+      jest.useRealTimers();
+
+      // The callback is an observability sink. It must never be able to take
+      // the agent run down with it.
+      mockQuery.mockImplementation(() =>
+        asyncFromArray([
+          { type: 'system', subtype: 'init', session_id: 'sess-boom' },
+          { type: 'assistant', content: 'work' },
+          { type: 'result', subtype: 'success' },
+        ]) as any,
+      );
+
+      const log = jest.fn();
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'task', options: {} } as any,
+        onSessionId: () => {
+          throw new Error('disk full');
+        },
+        log,
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      // Every message still reached the caller.
+      expect(results).toHaveLength(3);
+      expect(log.mock.calls.flat().join('\n')).toContain('onSessionId callback threw');
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('regression: omitting onSessionId leaves resume behaviour unchanged', async () => {
+      jest.useRealTimers();
+
+      let callCount = 0;
+      let secondParams: any;
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        if (callCount === 1) {
+          return asyncThrowingGenerator(
+            [{ type: 'system', subtype: 'init', session_id: 'sess-regress' }],
+            new Error('fetch failed'),
+            1,
+          ) as any;
+        }
+        secondParams = params;
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'ORIGINAL', options: { model: 'm' } } as any,
+        maxRetries: 3,
+        baseDelayMs: 10,
+        resumeContext: () => 'nudge',
+        log: jest.fn(),
+      };
+
+      await collectAll(resilientQuery(opts));
+
+      // In-process resume still works exactly as before (issue #2079).
+      expect(secondParams.options.resume).toBe('sess-regress');
+      expect(secondParams.prompt).toBe('nudge');
+
+      jest.useFakeTimers();
+    }, 10000);
+  });
 });

@@ -19,6 +19,13 @@
  * Issue #2079: Previously retries restarted from scratch (no conversation
  * memory), causing duplicate plan posts and guaranteed non-termination on
  * long tasks that hit even a single idle timeout.
+ *
+ * Scope note (issue #4186): the resume described above is IN-PROCESS only —
+ * it recovers a stalled stream within the life of one pod. It is not
+ * cross-pod resume: if the pod dies, the captured session id dies with it.
+ * `onSessionId` (Phase 1 of #4186) exists so the caller can record the id
+ * durably; the cross-pod resume branch that would consume it is Phase 3 and
+ * is NOT implemented here.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
@@ -57,6 +64,24 @@ export interface ResilientQueryOptions {
    * compute on long-running agent tasks.
    */
   resumeContext?: (attemptNumber: number, priorMessagesYielded: number) => string;
+  /**
+   * Optional callback fired ONCE, the first time the SDK surfaces a
+   * `session_id` on the stream (issue #4186, Phase 1).
+   *
+   * The captured session id is otherwise process-local: it is the input to
+   * `options.resume` on an in-process retry and nothing else can see it. A
+   * pod that dies takes the id with it, so a replacement pod has no way to
+   * locate the conversation even though the SDK persisted it. This callback
+   * is the escape hatch — the caller records the id somewhere durable.
+   *
+   * Called with the id while the stream is still running (not after), because
+   * that is when the id is needed: a run that never reaches its `result`
+   * message is exactly the run whose id matters most.
+   *
+   * Contract: this callback MUST NOT be able to break the run. It is invoked
+   * inside a try/catch and a throw is logged and swallowed.
+   */
+  onSessionId?: (sessionId: string) => void;
   /** Optional logger — receives retry lifecycle messages. */
   log?: (msg: string) => void;
 }
@@ -119,6 +144,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
     maxDelayMs = 120_000,
     idleTimeoutMs = 600_000,
     resumeContext,
+    onSessionId,
     log = console.log,
   } = opts;
 
@@ -195,6 +221,17 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
             const sid = extractSessionId(result.value);
             if (sid) {
               capturedSessionId = sid;
+              // Issue #4186 (Phase 1): let the id escape the process so a
+              // replacement pod could locate this conversation. Fail-soft by
+              // contract — a broken observability sink must never take the
+              // agent run down with it.
+              if (onSessionId) {
+                try {
+                  onSessionId(sid);
+                } catch (err) {
+                  log(`   ⚠️  onSessionId callback threw (ignored): ${(err as Error)?.message ?? err}`);
+                }
+              }
             }
           }
           messagesThisAttempt++;

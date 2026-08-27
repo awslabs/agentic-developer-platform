@@ -695,6 +695,57 @@ function loadRules(): string {
 }
 
 // ============================================================================
+// Result metadata bridge (/tmp/adp-result-metadata.json)
+// ============================================================================
+
+/**
+ * Cross-process channel to entrypoint.py. Python owns the DynamoDB write
+ * because it holds both halves of the row key (`event_id` = message_id AND
+ * `arrived_at`); Node only ever has `ADP_MESSAGE_ID`. Rather than export
+ * `arrived_at` into Node and add a second DDB writer, Node writes facts here
+ * and Python does the single write (issue #4186 Phase 1).
+ */
+const RESULT_METADATA_PATH = '/tmp/adp-result-metadata.json';
+
+/**
+ * Merge fields into the result-metadata file, preserving anything already
+ * there.
+ *
+ * Merge rather than overwrite because there are now two writers at different
+ * times: the session id lands mid-stream (on first capture) and the
+ * cost/turns fields land at the `result` message. A truncating write from
+ * either would erase the other — and the cost/turns pair is load-bearing for
+ * the zero-token infrastructure-failure discriminator in entrypoint.py
+ * (issue #2883), so losing it would resurrect that bug.
+ *
+ * Best-effort by design: mirrors the /tmp/adp-check-run-final.md pattern and
+ * never throws.
+ */
+function writeResultMetadata(fields: Record<string, unknown>): void {
+  try {
+    let existing: Record<string, unknown> = {};
+    try {
+      const raw = fs.readFileSync(RESULT_METADATA_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Absent or unparseable — start from an empty object. A corrupt file is
+      // not worth failing over; the fields we are about to write are the ones
+      // that matter.
+    }
+    fs.writeFileSync(
+      RESULT_METADATA_PATH,
+      JSON.stringify({ ...existing, ...fields }),
+      'utf8',
+    );
+  } catch (err) {
+    log('WARN', `Failed to write result metadata (non-fatal): ${err}`);
+  }
+}
+
+// ============================================================================
 // Agent Execution
 // ============================================================================
 
@@ -1258,6 +1309,16 @@ Now, complete the assigned task.`;
           `(re-reading files, re-running analysis, or re-posting an Implementation`,
           `Plan you already posted). Proceed with the next unfinished step.`,
         ].join('\n'),
+        // Issue #4186 (Phase 1): record the SDK session id as soon as it
+        // exists, so it outlives this process. Written to the metadata bridge
+        // (not DynamoDB) because Python holds the row key — see
+        // writeResultMetadata. Observability only: nothing reads this to
+        // resume yet (that is Phase 3), so a Phase-1 deploy cannot change the
+        // outcome of any run.
+        onSessionId: (sessionId) => {
+          log('INFO', `SDK session id captured: ${sessionId}`, { phase: 'session-id', sessionId });
+          writeResultMetadata({ session_id: sessionId });
+        },
         log: (msg) => log('WARN', msg),
       })) {
         lastActivityTime = Date.now();
@@ -1309,19 +1370,14 @@ Now, complete the assigned task.`;
             // gracefully in that case, so without this signal the entrypoint
             // would report a fake success (issue #2883). Best-effort: mirrors
             // the /tmp/adp-check-run-final.md pattern; never throws.
-            try {
-              fs.writeFileSync(
-                '/tmp/adp-result-metadata.json',
-                JSON.stringify({
-                  subtype: res.subtype ?? null,
-                  total_cost_usd: res.total_cost_usd ?? null,
-                  num_turns: res.num_turns ?? null,
-                }),
-                'utf8',
-              );
-            } catch (err) {
-              log('WARN', `Failed to write result metadata (non-fatal): ${err}`);
-            }
+            //
+            // Issue #4186: merged rather than overwritten so the session id
+            // written mid-stream survives this write.
+            writeResultMetadata({
+              subtype: res.subtype ?? null,
+              total_cost_usd: res.total_cost_usd ?? null,
+              num_turns: res.num_turns ?? null,
+            });
             // Flush final transcript to Check Run before breaking the loop
             if (checkRunStreamer) {
               const codexUsage = codexEventWatcher.getTotalUsage();

@@ -1525,6 +1525,12 @@ def main() -> int:
     if proxy_process is not None:
         _stop_sigv4_proxy(proxy_process)
 
+    # Issue #4186 (Phase 1): persist the SDK session id the Node worker
+    # captured, so the identifier outlives the process that created it.
+    # Deliberately before the terminal handlers, which overwrite the status but
+    # not this field. Observability only — nothing resumes from it yet.
+    _record_session_id(message_id, arrived_at)
+
     # Step 11/12: Post-agent actions
     if result.returncode == 0:
         exit_code = _handle_success(
@@ -1816,6 +1822,53 @@ def _read_result_metadata() -> dict | None:
             data = json.load(fh)
         return data if isinstance(data, dict) else None
     except Exception:
+        return None
+
+
+def _record_session_id(message_id: str, arrived_at: str) -> str | None:
+    """Record the SDK session id on the invocation row (issue #4186, Phase 1).
+
+    The Node worker captures the session id mid-stream and writes it to
+    RESULT_METADATA_PATH; this reads it back and persists it to DynamoDB. The
+    handover goes through the file rather than an env var because the DDB row
+    key is (event_id=message_id, arrived_at) and ``arrived_at`` never reaches
+    the Node process — so Python has to own the write, and keeping it here also
+    keeps a single DDB writer.
+
+    Observability only. Nothing reads this field to resume a run: the resume
+    branch is Phase 3 and is not implemented. Writing it changes no run
+    outcome.
+
+    Status is re-asserted as ``in_progress`` because that is the row's current
+    value at this point (set before the agent exec) — this call must add a
+    field, never move the status. The terminal handlers that run after this set
+    the real terminal status.
+
+    Returns the session id written, or None if there was nothing to write.
+
+    Fail-soft twice over: update_invocation_status already logs rather than
+    raising, and this wraps it anyway. This runs after a completed agent exec
+    but before the terminal handlers post their outcome, so an exception here
+    would turn a successful run into a failed pod — over a field that is purely
+    observational.
+    """
+    try:
+        meta = _read_result_metadata()
+        session_id = (meta or {}).get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            logger.debug("No SDK session id in result metadata; skipping session_id write")
+            return None
+
+        update_invocation_status(
+            message_id,
+            arrived_at,
+            "in_progress",
+            session_id=session_id,
+        )
+        logger.info("Recorded SDK session id on invocation row: %s", session_id)
+        return session_id
+    except Exception as exc:
+        logger.warning("Failed to record SDK session id (non-fatal): %s", exc)
         return None
 
 

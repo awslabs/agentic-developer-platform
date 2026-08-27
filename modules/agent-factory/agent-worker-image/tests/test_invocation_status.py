@@ -392,3 +392,79 @@ class TestErrorMessage:
             status="failed",
             error_message="tenant secret missing",
         )
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_session_id_written_when_provided(self, mock_get_client):
+        """Issue #4186 (Phase 1): session_id lands on the row when passed."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="in_progress",
+            session_id="0198f3c1-4f2a-7b3d-9c11-aa22bb33cc44",
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        expr_values = call_kwargs["ExpressionAttributeValues"]
+        assert expr_values[":session_id"] == {"S": "0198f3c1-4f2a-7b3d-9c11-aa22bb33cc44"}
+        assert "session_id" in call_kwargs["UpdateExpression"]
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_session_id_omitted_when_none(self, mock_get_client):
+        """Issue #4186: absent session_id leaves the expression byte-identical to before."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="in_progress",
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        assert ":session_id" not in call_kwargs["ExpressionAttributeValues"]
+        assert "session_id" not in call_kwargs["UpdateExpression"]
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_session_id_does_not_disturb_other_fields(self, mock_get_client):
+        """Issue #4186: session_id composes with the existing kwargs, not replaces them."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="in_progress",
+            run_id="job-abc",
+            token_mode="app",
+            session_id="sess-xyz",
+        )
+
+        expr_values = mock_client.update_item.call_args[1]["ExpressionAttributeValues"]
+        assert expr_values[":run_id"] == {"S": "job-abc"}
+        assert expr_values[":token_mode"] == {"S": "app"}
+        assert expr_values[":session_id"] == {"S": "sess-xyz"}
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_session_id_write_is_fail_soft(self, mock_get_client):
+        """Issue #4186: a DDB failure recording the session id must not raise.
+
+        The session id is observability. Losing it is acceptable; failing the
+        run over it is not.
+        """
+        mock_client = MagicMock()
+        mock_client.update_item.side_effect = RuntimeError("DDB down")
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="in_progress",
+            session_id="sess-xyz",
+        )

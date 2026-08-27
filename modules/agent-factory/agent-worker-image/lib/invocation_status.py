@@ -41,6 +41,7 @@ def update_status(
     run_id: str | None = None,
     summary: str | None = None,
     transcript_key: str | None = None,
+    session_id: str | None = None,
     token_mode: str | None = None,
     error_message: str | None = None,
     skip_reason: str | None = None,
@@ -54,6 +55,13 @@ def update_status(
         run_id: KEDA job/pod name (set at in_progress).
         summary: Outcome summary (set at terminal status).
         transcript_key: S3 object key for the full run transcript (set at terminal status).
+        session_id: Issue #4186 (Phase 1) — the Claude Agent SDK session id for
+            this run, captured by the Node worker and handed over via
+            /tmp/adp-result-metadata.json. Recorded for observability only:
+            nothing reads it to resume a run yet. It is the identifier a future
+            replacement pod would need to locate the persisted conversation
+            (Phase 3), and on its own it already lets an operator correlate a
+            run to its session.
         token_mode: Issue #3385 (C5) — "app" or "pat" provenance (set at in_progress).
         error_message: Issue #4030 — concrete failure cause, surfaced in the
             Agent Activity detail view. Previously only the ingress Lambda wrote
@@ -100,6 +108,11 @@ def update_status(
             expr_parts.append("#tk = :transcript_key")
             expr_names["#tk"] = "transcript_key"
             expr_values[":transcript_key"] = {"S": transcript_key}
+
+        if session_id:
+            expr_parts.append("#sid = :session_id")
+            expr_names["#sid"] = "session_id"
+            expr_values[":session_id"] = {"S": session_id}
 
         if token_mode:
             expr_parts.append("#tm = :token_mode")
