@@ -186,6 +186,38 @@ jobs:
             fi
           done
 
+      - name: Adopt pre-existing agent bootstrap log group into state
+        # Issue #4051. aws_cloudwatch_log_group.agent_bootstrap is declared
+        # unconditionally, but agent-worker-image/lib/bootstrap_logger.py calls
+        # CreateLogGroup at runtime as a fallback. In any environment whose
+        # worker has already run, the group exists outside state and the first
+        # apply dies with ResourceAlreadyExistsException, wedging the module for
+        # every later PR — that is what happened in dev after #4039.
+        #
+        # A static TF `import` block cannot express this: it fails in a fresh
+        # environment where the group does not exist yet. Import conditionally
+        # instead — only when the group is present in AWS AND absent from state.
+        # Both guards make repeat runs a clean no-op, never a collision.
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -euo pipefail
+          GROUP="/adp/${ENVIRONMENT}/agent-factory/bootstrap"
+          FOUND=$(aws logs describe-log-groups \
+            --log-group-name-prefix "$GROUP" \
+            --query "logGroups[?logGroupName=='${GROUP}'].logGroupName | [0]" \
+            --output text --region "${AWS_REGION}" 2>/dev/null || echo "None")
+          if [ "$FOUND" != "$GROUP" ]; then
+            echo "$GROUP does not exist yet — terraform will create it"
+            exit 0
+          fi
+          if terraform state list | grep -qx 'aws_cloudwatch_log_group.agent_bootstrap'; then
+            echo "$GROUP already in state — no import needed"
+            exit 0
+          fi
+          echo "::warning::$GROUP exists in AWS but not in Terraform state — importing (#4051)"
+          terraform import -var-file="terraform.tfvars" \
+            aws_cloudwatch_log_group.agent_bootstrap "$GROUP"
+
       - name: Install kubectl
         run: |
           if ! command -v kubectl >/dev/null 2>&1; then

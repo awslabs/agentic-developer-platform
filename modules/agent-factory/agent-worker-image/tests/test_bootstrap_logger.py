@@ -89,6 +89,30 @@ class TestCloudWatchBootstrapHandler:
         assert handler._initialized is True
 
     @patch("lib.bootstrap_logger.boto3.client")
+    def test_init_never_sets_retention(self, mock_boto_client):
+        """Handler must NOT call put_retention_policy (issue #4051).
+
+        The group is Terraform-managed with retention_in_days = 14
+        (webhook-ingress/infra/cloudwatch.tf). This call previously fired
+        unconditionally with retentionInDays=7 on every agent run, stomping
+        Terraform's 14 straight back to 7 after each apply. Terraform owns
+        retention; if this assertion ever fails the drift is back.
+        """
+        mock_logs = MagicMock()
+        mock_boto_client.return_value = mock_logs
+
+        handler = CloudWatchBootstrapHandler(
+            log_group="/adp/dev/agent-factory/bootstrap",
+            log_stream="test-stream",
+            region="us-east-1",
+        )
+
+        mock_logs.put_retention_policy.assert_not_called()
+        # Group/stream setup still happens — only retention is hands-off.
+        assert handler._initialized is True
+        assert handler._failed is False
+
+    @patch("lib.bootstrap_logger.boto3.client")
     def test_init_fails_soft_on_boto_error(self, mock_boto_client):
         """Handler sets _failed=True and continues if boto3 init fails."""
         mock_boto_client.side_effect = Exception("No credentials")

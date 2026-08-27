@@ -42,6 +42,25 @@ resource "aws_cloudwatch_metric_alarm" "rate_limit_alarm" {
 # role. For CMK-encrypted log groups the CloudWatch Logs *service* performs the
 # encryption under its own key-policy grant (kms.tf CloudWatchLogsService
 # statement, ArnLike on log-group:*), not the PutLogEvents caller.
+#
+# Two #4051 hazards apply to THIS group specifically, both because
+# bootstrap_logger.py touches it at runtime:
+#
+#  1. Adoption. The worker's fallback CreateLogGroup means the group already
+#     exists, outside state, in any environment whose worker has ever run. A
+#     plain apply then fails with ResourceAlreadyExistsException and wedges the
+#     module. The conditional pre-apply import in webhook-ingress-deploy.yml and
+#     deploy-webhook-ingress.sh adopts it instead. A static TF `import` block is
+#     NOT usable here — it fails in a fresh env where the group does not exist.
+#
+#  2. Retention drift. retention_in_days below was silently ineffective until
+#     #4051: the worker called PutRetentionPolicy(7) on every run, so each apply
+#     set 14 and the next agent run reset it to 7. Live dev read 7 for two months
+#     while the diff read as applied. The call is now gone from
+#     bootstrap_logger.py. scaledjob-iam.tf also omits logs:PutRetentionPolicy,
+#     but that alone was not enough — the role carries AdministratorAccess
+#     (#1619), so deny-by-omission granted nothing. Terraform owns retention; do
+#     not reintroduce a retention write in worker code.
 resource "aws_cloudwatch_log_group" "agent_bootstrap" {
   name              = "/adp/${var.environment}/agent-factory/bootstrap"
   retention_in_days = 14

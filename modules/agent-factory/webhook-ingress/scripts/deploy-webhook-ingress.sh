@@ -164,15 +164,51 @@ else
   warn "internal-api-key secret not found — webhook→gateway identity resolution will be disabled"
 fi
 
+# Adopt a pre-existing agent bootstrap log group into state (issue #4051).
+#
+# aws_cloudwatch_log_group.agent_bootstrap is declared unconditionally, but
+# agent-worker-image/lib/bootstrap_logger.py calls CreateLogGroup at runtime as
+# a fallback. In any environment whose worker has already run, the group exists
+# outside state and the first apply dies with ResourceAlreadyExistsException,
+# wedging the whole module — that is what happened in dev.
+#
+# A static TF `import` block cannot express this: it fails in a fresh
+# environment where the group does not exist yet. So import conditionally, only
+# when the group is present in AWS AND absent from state. Both guards make this
+# a clean no-op on re-runs rather than a collision.
+BOOTSTRAP_LOG_GROUP="/adp/${ENVIRONMENT}/agent-factory/bootstrap"
+import_bootstrap_log_group() {
+  local found
+  found=$(aws logs describe-log-groups \
+    --log-group-name-prefix "$BOOTSTRAP_LOG_GROUP" \
+    --query "logGroups[?logGroupName=='${BOOTSTRAP_LOG_GROUP}'].logGroupName | [0]" \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "None")
+  if [ "$found" != "$BOOTSTRAP_LOG_GROUP" ]; then
+    ok "Bootstrap log group does not exist yet — terraform will create it"
+    return 0
+  fi
+  if terraform state list 2>/dev/null | grep -qx 'aws_cloudwatch_log_group.agent_bootstrap'; then
+    ok "Bootstrap log group already in state — no import needed"
+    return 0
+  fi
+  warn "Bootstrap log group exists in AWS but not in state — importing (#4051)"
+  terraform import \
+    -var="environment=${ENVIRONMENT}" \
+    aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
+  ok "Imported aws_cloudwatch_log_group.agent_bootstrap"
+}
+
 if [ "$SKIP_TF" = true ]; then
   warn "Skipping terraform apply (--skip-terraform)."
 elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] terraform init -backend-config=$BACKEND"
+  echo "  [dry-run] conditional import of aws_cloudwatch_log_group.agent_bootstrap ($BOOTSTRAP_LOG_GROUP)"
   echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT -var=gateway_api_url=$GATEWAY_API_URL${GITLAB_OVERRIDE:+ $GITLAB_OVERRIDE}"
 else
   # shellcheck disable=SC2086
   ( cd "${MODULE_ROOT}/infra" \
     && terraform init -backend-config="$BACKEND" -input=false -reconfigure >/dev/null \
+    && import_bootstrap_log_group \
     && terraform apply \
          -var="environment=${ENVIRONMENT}" \
          -var="gateway_api_url=${GATEWAY_API_URL}" \

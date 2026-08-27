@@ -65,11 +65,28 @@ class CloudWatchBootstrapHandler(logging.Handler):
             except ClientError as e:
                 if e.response["Error"]["Code"] != "ResourceAlreadyExistsException":
                     raise
-            # Set retention (7 days — bootstrap logs are transient diagnostics)
-            try:
-                self._client.put_retention_policy(logGroupName=self._log_group, retentionInDays=7)
-            except ClientError:
-                pass  # Non-fatal: retention is a nice-to-have
+            # Retention is deliberately NOT set here (issue #4051).
+            #
+            # This used to call put_retention_policy(retentionInDays=7)
+            # unconditionally on every run. Since #4028 the group is
+            # Terraform-managed (aws_cloudwatch_log_group.agent_bootstrap in
+            # webhook-ingress/infra/cloudwatch.tf) and declares 14 days, so the
+            # call was a per-run stomp: terraform apply set 14, the next agent
+            # run reset it to 7, and the group never actually held the retention
+            # the module declares. Terraform owns retention; the worker must not
+            # touch it.
+            #
+            # scaledjob-iam.tf already omits logs:PutRetentionPolicy from the
+            # BootstrapLogging grant to prevent exactly this, but that defence is
+            # inert while adp-dev-agent-scaledjob-role carries AdministratorAccess
+            # (#1619) — deny-by-omission grants nothing when an allow-all policy
+            # is attached. Removing the call fixes the drift at its source rather
+            # than relying on the IAM boundary being restored, and avoids a
+            # spurious per-run AccessDenied in CloudTrail once it is.
+            #
+            # create_log_group above is retained on purpose: it is the fallback
+            # for an environment whose Terraform has not applied yet, and the
+            # AlreadyExists it returns for a TF-managed group is swallowed.
 
             # Create log stream (idempotent)
             try:
