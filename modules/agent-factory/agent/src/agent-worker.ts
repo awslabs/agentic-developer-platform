@@ -719,28 +719,30 @@ async function runAgent(issue: Issue, mainIssueNumber: number | null, beadsPrime
     ? `\n\n**IMPORTANT**: This task is part of a larger initiative. Post your progress updates to the MAIN issue #${mainIssueNumber}.`
     : '';
 
-  const prompt = `You are @agent-${AGENT_TYPE}, the ${agentDescriptions[AGENT_TYPE] || 'agent'}.${mainIssueInfo}
-
-## Your Task
-Process this GitHub issue and complete the assigned work.
-
-### Issue #${issue.number}: ${issue.title}
-
-${wrapUntrusted(issue.body)}
-${memoryCtx ? `
----
-
-${memoryCtx}
-` : ''}${commentsContext ? `
----
-
-## Existing Discussion / Comments
-
-The following comments have been posted on this issue. Read them carefully - they may contain important context, decisions, research, or approvals from previous agents or users.
-
-${wrapUntrusted(commentsContext)}
-` : ''}
----
+  // ── Prompt assembly: most-stable-first ordering (issue #4183) ──────────────
+  // Sections are emitted in descending order of stability, so that the
+  // invariant head of the prompt is an actual PREFIX:
+  //
+  //   1. role line                       — varies by AGENT_TYPE, not by run
+  //   2. Rules and Guidelines (`rules`)  — the largest block in the prompt;
+  //                                        byte-identical for a given persona
+  //   3. Available Skills / Knowledge Layer — static text, env-gated
+  //   ─────── stable/variable boundary: the `## Your Task` heading ───────
+  //   4. issue title / body / memory / comments — new on every single run
+  //   5. Instructions                    — interpolates ISSUE_NUMBER, so it
+  //                                        belongs below the boundary
+  //
+  // Previously `rules` was emitted AFTER the issue body, which put the largest
+  // invariant segment behind the highest-entropy one: nothing downstream of the
+  // issue body could ever be a reusable prefix.
+  //
+  // NOTE for the cache-marker work (#4180): `## Your Task` is the boundary a
+  // cache breakpoint should attach to. Everything above it is run-invariant;
+  // everything below it changes per run. Ordering alone does not produce reuse
+  // — the provider must also be told where the boundary is, which is that
+  // issue's job and not this one's. Do not introduce run-specific
+  // interpolations above `## Your Task` without moving that breakpoint too.
+  const prompt = `You are @agent-${AGENT_TYPE}, the ${agentDescriptions[AGENT_TYPE] || 'agent'}.
 
 ## Rules and Guidelines
 
@@ -769,6 +771,27 @@ ${KNOWLEDGE_LAYER_ENABLED ? `
 
 ${KNOWLEDGE_LAYER_PROMPT}` : ''}
 
+---
+
+## Your Task
+Process this GitHub issue and complete the assigned work.${mainIssueInfo}
+
+### Issue #${issue.number}: ${issue.title}
+
+${wrapUntrusted(issue.body)}
+${memoryCtx ? `
+---
+
+${memoryCtx}
+` : ''}${commentsContext ? `
+---
+
+## Existing Discussion / Comments
+
+The following comments have been posted on this issue. Read them carefully - they may contain important context, decisions, research, or approvals from previous agents or users.
+
+${wrapUntrusted(commentsContext)}
+` : ''}
 ---
 
 ## Instructions
