@@ -51,6 +51,8 @@ class UsageService(IUsageService):
         request_id: str | None = None,
         bedrock_account_id: str | None = None,
         agent_run_id: str | None = None,
+        cache_read_input_tokens: int | None = None,
+        cache_creation_input_tokens: int | None = None,
     ) -> None:
         """
         Log a Bedrock API request.
@@ -66,6 +68,12 @@ class UsageService(IUsageService):
             request_id: Optional request ID
             bedrock_account_id: Optional Bedrock account ID used
             agent_run_id: Optional agent run/invocation ID (issue #1616)
+            cache_read_input_tokens: Prompt-cache read tokens, or None when the
+                provider did not report the counter (issue #4180). Pass None
+                rather than 0 for "unreported" — the distinction is what makes
+                the cache hit-rate query meaningful.
+            cache_creation_input_tokens: Prompt-cache write tokens, same
+                None-means-unreported contract.
         """
         log_entry = UsageLog(
             # Issue #4132: usage_logs is an ATTRIBUTION surface — a hosted run
@@ -85,6 +93,8 @@ class UsageService(IUsageService):
             request_id=request_id,
             bedrock_account_id=bedrock_account_id,
             agent_run_id=agent_run_id,
+            cache_read_input_tokens=cache_read_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
         )
 
         self.db.add(log_entry)

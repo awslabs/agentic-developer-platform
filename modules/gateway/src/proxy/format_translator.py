@@ -492,7 +492,14 @@ class FormatTranslator:
         bedrock_content: list[dict[str, Any]] = []
         for item in content:
             if hasattr(item, "model_dump"):
-                bedrock_content.append(item.model_dump())
+                # Issue #4180: exclude_none is load-bearing, not cosmetic. The
+                # content-block models now carry an optional `cache_control`, so a
+                # plain model_dump() would emit `"cache_control": null` on EVERY
+                # non-caching request — a wire change for the common case, and one
+                # Bedrock may reject. exclude_none keeps the no-marker path
+                # byte-identical to before this fix while letting a real
+                # breakpoint through.
+                bedrock_content.append(item.model_dump(exclude_none=True))
             elif isinstance(item, dict):
                 bedrock_content.append(item)
             else:

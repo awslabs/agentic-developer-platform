@@ -223,6 +223,10 @@ class ProxyService(IProxyService):
                 cost_usd=0.0,
                 latency_ms=int(latency_ms),
                 status_code=status_code,
+                # Issue #4180: absent keys stay absent in the accumulator, so
+                # .get() yields None for "provider never reported it".
+                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
             )
 
     # =========================================================================
@@ -354,6 +358,8 @@ class ProxyService(IProxyService):
         latency_ms: int,
         status_code: int,
         request_id: str | None = None,
+        cache_read_input_tokens: int | None = None,
+        cache_creation_input_tokens: int | None = None,
     ) -> None:
         """Write a row to usage_logs for admin dashboard visibility.
 
@@ -363,6 +369,10 @@ class ProxyService(IProxyService):
 
         Issue #1616: Now includes agent_run_id (from contextvar, set by route
         handler from X-Agent-RunId header) for per-run cost traceability.
+
+        Issue #4180: Now includes the prompt-cache token counters. Callers must
+        pass None (not 0) when the provider did not report them — see
+        ``_cache_tokens_from_usage``.
 
         Failures are swallowed to avoid impacting the proxy hot path.
         """
@@ -387,12 +397,27 @@ class ProxyService(IProxyService):
                     status_code=status_code,
                     request_id=request_id,
                     agent_run_id=agent_run_id,
+                    cache_read_input_tokens=cache_read_input_tokens,
+                    cache_creation_input_tokens=cache_creation_input_tokens,
                 )
         except Exception as exc:
             logger.warning(
                 "Failed to write usage_logs row",
                 extra={"error": str(exc), "model": model},
             )
+
+    @staticmethod
+    def _cache_tokens_from_usage(usage: dict[str, Any]) -> tuple[int | None, int | None]:
+        """Read the prompt-cache counters out of a raw provider usage payload.
+
+        Issue #4180: the RAW dict is the only null-preserving source in the
+        codebase. Every typed producer coerces these to 0 (``AnthropicUsage``
+        defaults them, chat_logging uses ``.get(..., 0)``, the tracker Lambda
+        does ``int(x or 0)``), so reading from any of those would pin the columns
+        at 0 forever and destroy the "unreported vs. reported zero" distinction
+        the hit-rate query depends on. Hence ``.get()`` with NO default.
+        """
+        return usage.get("cache_read_input_tokens"), usage.get("cache_creation_input_tokens")
 
     # =========================================================================
     # Internal Methods
@@ -582,6 +607,8 @@ class ProxyService(IProxyService):
         start_time = time.time()
         tokens_in = 0
         tokens_out = 0
+        cache_read: int | None = None
+        cache_creation: int | None = None
         status_code = 200
         try:
             client = await self._pool_service.get_client()
@@ -589,6 +616,8 @@ class ProxyService(IProxyService):
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
+            # Issue #4180: raw dict, no default — preserves unreported-vs-zero
+            cache_read, cache_creation = self._cache_tokens_from_usage(bedrock_response.usage)
             return self._translator.bedrock_to_openai(bedrock_response, model)
         except Exception:
             status_code = 500
@@ -603,6 +632,8 @@ class ProxyService(IProxyService):
                 cost_usd=0.0,
                 latency_ms=int(latency_ms),
                 status_code=status_code,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
             )
 
     async def _stream_openai_response(
@@ -649,6 +680,10 @@ class ProxyService(IProxyService):
                 cost_usd=0.0,
                 latency_ms=int(latency_ms),
                 status_code=status_code,
+                # Issue #4180: absent keys stay absent in the accumulator, so
+                # .get() yields None for "provider never reported it".
+                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
             )
 
     async def _invoke_anthropic_response(
@@ -672,6 +707,8 @@ class ProxyService(IProxyService):
         start_time = time.time()
         tokens_in = 0
         tokens_out = 0
+        cache_read: int | None = None
+        cache_creation: int | None = None
         status_code = 200
         try:
             client = await self._pool_service.get_client()
@@ -679,6 +716,8 @@ class ProxyService(IProxyService):
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
+            # Issue #4180: raw dict, no default — preserves unreported-vs-zero
+            cache_read, cache_creation = self._cache_tokens_from_usage(bedrock_response.usage)
             return self._translator.bedrock_to_anthropic(bedrock_response, model)
         except Exception:
             status_code = 500
@@ -693,6 +732,8 @@ class ProxyService(IProxyService):
                 cost_usd=0.0,
                 latency_ms=int(latency_ms),
                 status_code=status_code,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
             )
 
     async def _stream_anthropic_response(
@@ -738,6 +779,10 @@ class ProxyService(IProxyService):
                 cost_usd=0.0,
                 latency_ms=int(latency_ms),
                 status_code=status_code,
+                # Issue #4180: absent keys stay absent in the accumulator, so
+                # .get() yields None for "provider never reported it".
+                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
             )
 
     async def _invoke_bedrock_response(
@@ -759,6 +804,8 @@ class ProxyService(IProxyService):
         start_time = time.time()
         tokens_in = 0
         tokens_out = 0
+        cache_read: int | None = None
+        cache_creation: int | None = None
         status_code = 200
         try:
             client = await self._pool_service.get_client()
@@ -766,6 +813,8 @@ class ProxyService(IProxyService):
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
+            # Issue #4180: raw dict, no default — preserves unreported-vs-zero
+            cache_read, cache_creation = self._cache_tokens_from_usage(bedrock_response.usage)
             return bedrock_response.model_dump()
         except Exception:
             status_code = 500
@@ -780,6 +829,8 @@ class ProxyService(IProxyService):
                 cost_usd=0.0,
                 latency_ms=int(latency_ms),
                 status_code=status_code,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
             )
 
     async def _stream_bedrock_response(
@@ -823,6 +874,10 @@ class ProxyService(IProxyService):
                 cost_usd=0.0,
                 latency_ms=int(latency_ms),
                 status_code=status_code,
+                # Issue #4180: absent keys stay absent in the accumulator, so
+                # .get() yields None for "provider never reported it".
+                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
             )
 
     # =========================================================================
@@ -855,9 +910,13 @@ class ProxyService(IProxyService):
                         if msg_usage.get("input_tokens"):
                             usage["input_tokens"] = msg_usage["input_tokens"]
                         # Issue #1486: Capture cache token counts
-                        if msg_usage.get("cache_read_input_tokens"):
+                        # Issue #4180: `is not None`, not truthiness. A provider
+                        # that explicitly reports 0 cache tokens is asserting
+                        # "no cache activity"; truthiness would discard that and
+                        # the row would read NULL = "unknown" instead.
+                        if msg_usage.get("cache_read_input_tokens") is not None:
                             usage["cache_read_input_tokens"] = msg_usage["cache_read_input_tokens"]
-                        if msg_usage.get("cache_creation_input_tokens"):
+                        if msg_usage.get("cache_creation_input_tokens") is not None:
                             usage["cache_creation_input_tokens"] = msg_usage["cache_creation_input_tokens"]
                     # message_delta carries output_tokens
                     elif data.get("type") == "message_delta":

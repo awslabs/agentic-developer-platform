@@ -27,6 +27,12 @@ class UsageLog(Base, TenantMixin):
     # Issue #1616: Per-run cost traceability
     agent_run_id: Mapped[str | None] = mapped_column(String(255), index=True)
     chat_log_s3_key: Mapped[str | None] = mapped_column(String(1024))
+    # Issue #4180: prompt-cache token accounting. Nullable on purpose —
+    # NULL means "provider did not report this counter", 0 means "provider
+    # reported zero cache activity". Collapsing the two would make the cache
+    # hit-rate query silently wrong. Never give these a default.
+    cache_read_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_creation_input_tokens: Mapped[int | None] = mapped_column(Integer)
 
 
 class RateLimitConfig(Base, TenantMixin):

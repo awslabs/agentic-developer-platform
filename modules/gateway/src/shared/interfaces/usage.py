@@ -17,6 +17,8 @@ class IUsageService(ABC):
         status_code: int,
         request_id: str | None = None,
         bedrock_account_id: str | None = None,
+        cache_read_input_tokens: int | None = None,
+        cache_creation_input_tokens: int | None = None,
     ) -> None: ...
 
     @abstractmethod
