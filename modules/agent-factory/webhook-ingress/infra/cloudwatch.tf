@@ -53,3 +53,46 @@ resource "aws_cloudwatch_log_group" "agent_bootstrap" {
     Component = "hosted-agent-worker"
   })
 }
+
+# =============================================================================
+# Agent primary log group (issue #4221)
+# =============================================================================
+# The worker's main structured log stream — everything the Node entrypoints emit
+# via log() after bootstrap hands off (agent/src/lib/logGroup.ts).
+#
+# Before this existed, all five entrypoints (agent-worker, agent-superpower,
+# agent-pm, skill-agent, components/Logger) hardcoded the env-less group
+# /github-ccsdk-agent/logs, which was created by no Terraform resource and
+# existed in no account. The failure was silent and one step earlier than a
+# denied PutLogEvents: initCloudWatch() calls CreateLogStream on the missing
+# group, gets ResourceNotFoundException, and leaves cwInitialized false — so
+# log() never buffers and PutLogEvents is never attempted at all. The single
+# console.warn went to pod stdout, which KEDA garbage-collects with the pod.
+# Operators debugging a failed run found nothing and assumed the run never
+# logged. #4184 is a bug that stayed hidden for months behind exactly this gap.
+#
+# Env-scoped rather than reusing the env-less name, per #4028: an env-less group
+# has staging/prod agents writing into dev's logs, and makes env-scoped IAM deny
+# silently outside dev.
+#
+# Retention/CMK mirror aws_cloudwatch_log_group.agent_bootstrap above, including
+# the note that a CMK-encrypted group needs no extra KMS grant on the worker
+# role — CloudWatch Logs encrypts under its own key-policy grant (kms.tf).
+#
+# Unlike the bootstrap group, this one is NOT at risk of the #4051
+# ResourceAlreadyExistsException wedge: no code path creates it at runtime. The
+# TS workers only ever call CreateLogStream — CreateLogGroup is called solely by
+# bootstrap_logger.py, and only for the bootstrap group. The corresponding IAM
+# statement therefore does not grant CreateLogGroup (see scaledjob-iam.tf), so
+# no import is required and repeated applies are a clean no-op.
+resource "aws_cloudwatch_log_group" "agent_logs" {
+  name              = "/adp/${var.environment}/agent-factory/agent"
+  retention_in_days = 14
+  kms_key_id        = aws_kms_key.cloudwatch.arn
+
+  tags = merge(var.tags, {
+    Name      = "/adp/${var.environment}/agent-factory/agent"
+    Module    = "webhook-ingress"
+    Component = "hosted-agent-worker"
+  })
+}

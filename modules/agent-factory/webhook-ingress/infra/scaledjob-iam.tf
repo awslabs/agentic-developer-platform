@@ -155,24 +155,52 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         Resource = "arn:aws:execute-api:us-east-1:*:*/*/*/agent/*"
       },
       {
+        # Primary agent logging (issue #4221). Scoped to the TF-managed,
+        # env-scoped group aws_cloudwatch_log_group.agent_logs (cloudwatch.tf).
+        #
+        # This previously named /github-ccsdk-agent/logs — a group that no
+        # Terraform resource created and that existed in no account, so the
+        # worker's entire primary log stream was silently discarded. Keep this
+        # Resource list and the log-group resource in lockstep: a grant that
+        # names a group nobody writes to is the exact defect that was fixed
+        # here, and it fails without any error surfacing anywhere.
+        #
+        # CreateLogGroup and DescribeLogGroups were granted here historically
+        # but are called by nothing: the Node entrypoints only ever call
+        # CreateLogStream (agent/src/lib/logGroup.ts consumers), and
+        # CreateLogGroup is exercised solely by bootstrap_logger.py against the
+        # *bootstrap* group, which is granted separately below. Dropping them
+        # makes it structurally impossible for this group to hit the #4051
+        # ResourceAlreadyExistsException wedge, where a worker-created group
+        # collides with the TF resource and blocks every subsequent apply.
+        #
+        # PutRetentionPolicy is deliberately absent for the same reason as the
+        # bootstrap grant: TF owns retention (14 days, this module's
+        # convention). See the extended note on the BootstrapLogging statement.
+        #
+        # Deriving both ARNs from the resource (rather than repeating the name as
+        # a literal, as BootstrapLogging must since it wildcards the env) is what
+        # makes grant/group drift structurally impossible here. Note the log-group
+        # `arn` attribute has the API's trailing ":*" trimmed by the provider, so
+        # the bare arn is the group itself and the ":*" form below is the
+        # log-streams-within-group ARN that PutLogEvents needs — appending ":*"
+        # is correct and does not double up.
         Sid    = "CloudWatchLogGroups"
         Effect = "Allow"
         Action = [
-          "logs:CreateLogGroup",
           "logs:CreateLogStream",
-          "logs:DescribeLogGroups",
           "logs:PutLogEvents"
         ]
         Resource = [
-          "arn:aws:logs:us-east-1:*:log-group:/github-ccsdk-agent/logs",
-          "arn:aws:logs:us-east-1:*:log-group:/github-ccsdk-agent/logs:*"
+          aws_cloudwatch_log_group.agent_logs.arn,
+          "${aws_cloudwatch_log_group.agent_logs.arn}:*"
         ]
       },
       {
         # Durable bootstrap logging (issue #4028). The worker writes step-level
         # Setup logs to /adp/<env>/agent-factory/bootstrap so bootstrap failures
         # stay diagnosable after KEDA GCs the pod — the CloudWatchLogGroups grant
-        # above only covers /github-ccsdk-agent/logs, so every bootstrap write
+        # above covers only the primary agent group, so every bootstrap write
         # was denied and the logs existed on pod stdout only.
         #
         # An identical grant exists at agent-factory/infra/gateway-main.tf

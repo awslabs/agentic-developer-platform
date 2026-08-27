@@ -92,6 +92,7 @@ import {
 
 // Token refresh module - handles GitHub App token expiration (tokens expire after 1 hour)
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
+import { resolveAgentLogGroup } from './lib/logGroup';
 import {
   initTokenManager,
   getToken,
@@ -560,7 +561,7 @@ function getErrorSummary(): string {
 // Logging
 // ============================================================================
 
-const LOG_GROUP = '/github-ccsdk-agent/logs';
+const LOG_GROUP = resolveAgentLogGroup();
 const LOG_STREAM = `agent-pm-issue-${ISSUE_NUMBER}-${Date.now()}`;
 const cwClient = new CloudWatchLogsClient({ region: AWS_REGION });
 let cwBuffer: { timestamp: number; message: string }[] = [];

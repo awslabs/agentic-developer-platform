@@ -11,6 +11,7 @@ import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
+import { resolveAgentLogGroup } from './lib/logGroup';
 import { LiveStatusComment, createSkillAgentStages } from './github-comments';
 
 const REPO_OWNER = process.env.REPO_OWNER || '';
@@ -22,7 +23,7 @@ const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929';
 const GITHUB_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
 
 // ── CloudWatch Logger ──────────────────────────────────────────────
-const LOG_GROUP = '/github-ccsdk-agent/logs';
+const LOG_GROUP = resolveAgentLogGroup();
 const LOG_STREAM = `skill-agent-issue-${ISSUE_NUMBER}-${Date.now()}`;
 const cwClient = new CloudWatchLogsClient({ region: process.env.AWS_REGION || 'us-east-1' });
 let cwBuffer: { timestamp: number; message: string }[] = [];

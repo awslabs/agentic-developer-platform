@@ -20,6 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
+import { resolveAgentLogGroup } from './lib/logGroup';
 
 // ============================================================================
 // Configuration
@@ -54,7 +55,7 @@ const POLL_INTERVAL_MS = 30_000; // 30 seconds
 // CloudWatch Logging
 // ============================================================================
 
-const LOG_GROUP = '/github-ccsdk-agent/logs';
+const LOG_GROUP = resolveAgentLogGroup();
 const LOG_STREAM = `agent-superpower-issue-${ISSUE_NUMBER}-${Date.now()}`;
 const cwClient = new CloudWatchLogsClient({ region: AWS_REGION });
 let cwBuffer: { timestamp: number; message: string }[] = [];

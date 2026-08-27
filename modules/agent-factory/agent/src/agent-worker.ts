@@ -18,6 +18,7 @@ import { resolveInstallationId as sharedResolveInstallationId } from './utils/in
 import { createSpillHooks, TmpSpillStore } from './utils/spill';
 import { initTokenManager, getToken, getTokenStatus, writeTokenFile } from './token-refresh';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { resolveAgentLogGroup } from './lib/logGroup';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -120,7 +121,7 @@ const AIDLC_ENABLED = fs.existsSync(path.join(CWD, 'aidlc'));
 // CloudWatch Logging
 // ============================================================================
 
-const LOG_GROUP = '/github-ccsdk-agent/logs';
+const LOG_GROUP = resolveAgentLogGroup();
 const LOG_STREAM = `agent-${AGENT_TYPE}-issue-${ISSUE_NUMBER}-${Date.now()}`;
 const cwClient = new CloudWatchLogsClient({ region: AWS_REGION });
 let cwBuffer: { timestamp: number; message: string }[] = [];
