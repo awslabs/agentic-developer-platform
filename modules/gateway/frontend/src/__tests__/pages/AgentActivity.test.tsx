@@ -64,6 +64,8 @@ function makeInvocation(overrides: Partial<InvocationItem> = {}): InvocationItem
     correlation_id: 'chain-001',
     // Issue #4020: only non-run statuses ever carry a reason
     skip_reason: null,
+    // Issue #4187: only budget_stopped runs ever carry a stop reason
+    stop_reason: null,
     ...overrides,
   };
 }
@@ -489,6 +491,47 @@ describe('AgentActivity Page', () => {
       const values = Array.from(select.querySelectorAll('option')).map((o) => o.value);
       expect(values).toContain('blocked');
       expect(values).toContain('skipped');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #4187: runs a spend cap stopped
+  // ---------------------------------------------------------------------------
+
+  describe('budget-stopped runs (Issue #4187)', () => {
+    it('renders budget_stopped with its own label, not as a failure', async () => {
+      // The whole reason for a distinct status: "Failed" beside a run a cap
+      // deliberately stopped sends operators to debug correct behaviour.
+      mockGetMine.mockResolvedValue({
+        items: [
+          makeInvocation({
+            invocation_id: 'inv-cap1',
+            status: 'budget_stopped',
+            topic: 'capped-topic',
+            stop_reason: 'run_cap_exceeded',
+          }),
+        ],
+        last_key: null,
+      });
+
+      await renderAgentActivityFlat();
+
+      // Scoped to the table — the status <select> renders the same label.
+      const table = within(screen.getByRole('table'));
+      expect(table.getByText('Budget stopped')).toBeInTheDocument();
+      expect(table.queryByText('Failed')).not.toBeInTheDocument();
+    });
+
+    it('offers Budget stopped as a status filter option', async () => {
+      // Without the filter option an operator cannot answer "what did my caps
+      // stop this week", which is the question the feature creates.
+      mockGetMine.mockResolvedValue({ items: [], last_key: null });
+
+      await renderAgentActivityFlat();
+
+      const select = screen.getByLabelText(/status/i);
+      const values = Array.from(select.querySelectorAll('option')).map((o) => o.value);
+      expect(values).toContain('budget_stopped');
     });
   });
 

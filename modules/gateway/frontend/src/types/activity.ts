@@ -18,7 +18,10 @@ export type InvocationStatus =
   // Issue #4020: a loop/validation guard in the Lambda stopped the spawn.
   | 'blocked'
   // Issue #4020: the worker deduplicated a redelivery of already-completed work.
-  | 'skipped';
+  | 'skipped'
+  // Issue #4187: a per-run or per-chain spend cap ended the run. Deliberately
+  // not 'failed' — the run was stopped on purpose by a limit that was working.
+  | 'budget_stopped';
 
 /**
  * Issue #4176: three-value liveness verdict, derived server-side.
@@ -85,6 +88,12 @@ export interface InvocationItem {
    * never show the raw enum to the user.
    */
   skip_reason: string | null;
+  /**
+   * Issue #4187: static enum naming the spend cap that stopped this run, paired
+   * with the `budget_stopped` status. Null for every other status. Render via
+   * `describeStopReason()` — never show the raw enum to the user.
+   */
+  stop_reason: string | null;
   // Issue #1653: Run log link (Tier 2 — null until worker persists it)
   run_log_url: string | null;
   // Issue #3069: S3 transcript key (null for pre-#3061 runs or upload failures)

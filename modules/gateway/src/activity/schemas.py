@@ -103,6 +103,17 @@ class InvocationItem(BaseModel):
             "dispatched normally and for rows written before this field existed."
         ),
     )
+    # Issue #4187: why a spend cap stopped this run
+    stop_reason: str | None = Field(
+        default=None,
+        description=(
+            "Static enum naming the spend cap that ended this run (paired with "
+            "the 'budget_stopped' status) — 'run_cap_exceeded', "
+            "'chain_cap_exceeded', or 'hierarchy_cap_exceeded'. Separate from "
+            "'error_message' because a cap firing is the control working, not a "
+            "fault. Null for every other status."
+        ),
+    )
     completed_at: str | None = Field(
         default=None,
         description="ISO 8601 completion timestamp (= status_updated_at when status is terminal). Null for in-progress runs.",

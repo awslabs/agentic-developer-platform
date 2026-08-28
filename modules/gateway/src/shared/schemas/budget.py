@@ -9,6 +9,12 @@ class PeriodType(str, Enum):
     DAILY = "daily"
     WEEKLY = "weekly"
     MONTHLY = "monthly"
+    # Issue #4187: a run/chain cap is scoped to a *lifetime*, not a calendar
+    # window — it must accumulate for as long as the run does and reset only
+    # when a new run starts. `get_period_start_end` deliberately rejects this
+    # value: there is no calendar period to compute, and the run/chain id in the
+    # reservation key is already what separates one run's ledger from the next.
+    RUN = "run"
 
 
 class EntityType(str, Enum):
@@ -18,6 +24,15 @@ class EntityType(str, Enum):
     USER = "user"
     SERVICE_ACCOUNT = "service_account"
     AGENT = "agent"  # IAM-authenticated agents (Issue #249)
+    # Issue #4187: the two spend-cap scopes. Deliberately NOT "attempt" — that
+    # word has no referent in this codebase, whereas both of these do:
+    #   RUN   -> one agent run, keyed on the webhook-events `event_id`
+    #   CHAIN -> a run and every run it spawned, keyed on `correlation_id`
+    # A fan-out is a parent plus N children, so when best-of-N lands its cap IS
+    # CHAIN with no new vocabulary. Both ids are resolved SERVER-SIDE from the
+    # run's registry row (src/budget/run_binding.py) — never from a header.
+    RUN = "run"
+    CHAIN = "chain"
 
 
 class EnforcementMode(str, Enum):
@@ -124,6 +139,23 @@ class EnforcementResult(BaseModel):
     # code. Defaulted to None so every pre-existing construction site keeps
     # producing the original 402 cap response.
     deny_reason: DenyReason | None = None
+
+    # Issue #4187: which spend-cap scope stopped this request — "run" or
+    # "chain". Surfaced in the 402 body's `details` so the worker can map the
+    # denial to a `budget_stopped` terminal reason instead of reporting a
+    # phantom crash, and so the stop is attributable after the fact.
+    #
+    # None on the hierarchy scopes (user/team/dept/org), which keeps every
+    # pre-#4187 denial byte-identical.
+    scope: str | None = None
+
+    # Issue #4187: the cap that was hit, reported alongside `scope` so the 402
+    # says how much the run was allowed rather than only that it ran out.
+    # Deliberately NOT paired with a spend figure: `current_spend_usd` is the
+    # *settled* Postgres total, and run/chain scopes have no settled ledger at
+    # all (the tracker Lambda writes no run rows), so there is no honest number
+    # to put beside it.
+    scope_cap_usd: Decimal | None = None
 
 
 class CostCalculationRequest(BaseModel):

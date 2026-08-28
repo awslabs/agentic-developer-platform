@@ -64,6 +64,8 @@ ACTIVE_STALENESS_HOURS = 24
 #   - no_op                    -- ditto (the delivery asked for no work)
 #   - blocked / skipped        -- #4020: a guard stopped the spawn / the worker
 #                                 deduplicated a redelivery
+#   - budget_stopped           -- #4187: a per-run or per-chain spend cap ended
+#                                 the run (agent-worker-image/entrypoint.py)
 #
 # Hoisted out of the inline literal that `ActivityService._map_item` used to
 # carry, so the `completed_at` derivation and this verdict cannot drift apart.
@@ -78,6 +80,7 @@ OBSERVED_TERMINAL_STATUSES = frozenset(
         "no_op",
         "blocked",
         "skipped",
+        "budget_stopped",
     }
 )
 

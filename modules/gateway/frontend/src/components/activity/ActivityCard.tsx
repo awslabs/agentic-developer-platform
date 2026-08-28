@@ -33,6 +33,8 @@ const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; co
   // Issue #4020: non-run statuses, neutral-coloured like no_op.
   blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
   skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
+  // Issue #4187: a spend cap stopped the run — amber, not red.
+  budget_stopped: { glyph: '⊘', label: 'Budget stopped', colorClass: 'text-amber-600 dark:text-amber-400' },
 };
 
 const TRIGGER_CONFIG: Record<TriggerKind, { label: string; icon: string }> = {

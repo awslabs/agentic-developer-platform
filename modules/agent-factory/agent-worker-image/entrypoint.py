@@ -1726,15 +1726,28 @@ def main() -> int:
         final_text, repo, issue, message_id, arrived_at, persona
     )
 
+    # Issue #4187: a run the gateway stopped on a spend cap is neither a success
+    # nor a crash, so it gets its own terminal status and a reason. Resolved
+    # BEFORE the write below because that write is unconditional: it would
+    # otherwise overwrite `budget_stopped` with a plain `failed` (the exit code is
+    # non-zero either way) and the distinction would be lost again one line after
+    # being made.
+    stop_reason = _budget_stop_reason(_read_result_metadata())
+
     # Issue #3069: Write-back the S3 key to the DDB invocation row so the
     # gateway can serve the transcript from the Agent Activity UI.
     # Fail-soft: reuses the same update_invocation_status contract (logs, never raises).
-    if transcript_key:
+    if transcript_key or stop_reason:
+        if stop_reason:
+            terminal_status = "budget_stopped"
+        else:
+            terminal_status = "complete" if exit_code == 0 else "failed"
         update_invocation_status(
             message_id,
             arrived_at,
-            "complete" if exit_code == 0 else "failed",
+            terminal_status,
             transcript_key=transcript_key,
+            stop_reason=stop_reason,
         )
 
     # Step 13: Delete the SQS message on ANY terminal exit — success or failure.
@@ -1989,6 +2002,25 @@ def _record_session_id(message_id: str, arrived_at: str) -> str | None:
     except Exception as exc:
         logger.warning("Failed to record SDK session id (non-fatal): %s", exc)
         return None
+
+
+def _budget_stop_reason(meta: dict | None) -> str | None:
+    """Return the spend-cap stop reason from SDK metadata, or None (issue #4187).
+
+    The Node worker records ``budget_stopped`` when the gateway refuses a model
+    call with a 402 naming an exhausted cap. Reading it here is what turns that
+    into an operator-visible outcome: without it the run lands as a generic
+    ``failed`` with an HTTP error in the transcript, which reads as a platform
+    bug rather than the cap doing its job.
+
+    Fail-soft, like every other reader of this file: anything unexpected returns
+    None and the existing success/failure classification stands.
+    """
+    if not meta or not meta.get("budget_stopped"):
+        return None
+    reason = meta.get("stop_reason")
+    # A static enum, rendered as prose by the UI — same contract as skip_reason.
+    return str(reason) if reason else "budget_cap_exceeded"
 
 
 def _is_zero_token_failure(meta: dict | None) -> bool:

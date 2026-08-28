@@ -26,6 +26,7 @@ from botocore.exceptions import ClientError
 from src.activity.liveness import (
     ACTIVE_STALENESS_HOURS,
     ACTIVE_STATUSES,
+    OBSERVED_TERMINAL_STATUSES,
     last_signal_at,
     within_staleness_window,
 )
@@ -63,10 +64,15 @@ _ITEM_BACKSTOP = 10_000
 # (writes "in_progress" when pod starts; see also #3696 for the vocabulary audit).
 _ACTIVE_STATUSES = ACTIVE_STATUSES
 
-# Terminal statuses — canonical sources:
-# - "complete" / "failed": agent-worker-image/lib/invocation_status.py
-# - "rate_limited" / "no_op": webhook-ingress/lambda/github/handler.py
-_TERMINAL_STATUSES = {"complete", "failed", "rate_limited", "no_op"}
+# Terminal statuses. Issue #4187: an ALIAS for the single definition in
+# `liveness.py`, exactly as `_ACTIVE_STATUSES` above became one in #4235.
+#
+# This was a local literal `{"complete", "failed", "rate_limited", "no_op"}` and
+# it had already drifted: `rejected`, `blocked` and `skipped` were terminal to
+# `liveness.py` and absent here. Adding a fifth status by hand-editing a second
+# copy would just widen that gap, so the copy is gone. Kept under the private
+# name because existing importers (and the vocabulary-drift tests) reference it.
+_TERMINAL_STATUSES = OBSERVED_TERMINAL_STATUSES
 
 # Staleness cutoff for active runs (hours). An in_progress run whose LAST SIGNAL
 # is older than this is treated as orphaned (terminal status was never

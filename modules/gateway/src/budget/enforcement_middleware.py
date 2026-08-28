@@ -122,6 +122,13 @@ class BudgetEnforcementMiddleware:
                 # to its real cost once the response lands. Set by
                 # LoggingMiddleware, which runs outside this one.
                 request_id=state.get("request_id"),
+                # Issue #4187: the caller's ASSERTED run id. Passed on as an
+                # assertion to be verified server-side against the webhook-events
+                # registry, never used as an identity — see run_binding.py. The
+                # header is read here rather than reusing the route-level
+                # `set_agent_run_id_from_header` dependency because this
+                # middleware runs before any route is resolved.
+                run_id=self._asserted_run_id(scope),
             )
 
         if not result.allowed:
@@ -195,6 +202,19 @@ class BudgetEnforcementMiddleware:
         return self.enforcement_service.estimate_cost_from_payload_size(model_id, content_length)
 
     @staticmethod
+    def _asserted_run_id(scope: Scope) -> str | None:
+        """Read the ``X-Agent-RunId`` header out of the raw ASGI scope (#4187).
+
+        Named "asserted" on purpose: this value is client-controlled and is not
+        trusted for anything here. It is a lookup key that must survive
+        verification against the run's registry row before any cap is keyed on it.
+        """
+        for name, value in scope.get("headers", []):
+            if name.lower() == b"x-agent-runid":
+                return value.decode("utf-8", errors="replace").strip() or None
+        return None
+
+    @staticmethod
     def _content_length(scope: Scope) -> int | None:
         """Read ``content-length`` out of the raw ASGI headers.
 
@@ -249,6 +269,15 @@ class BudgetEnforcementMiddleware:
                 "enforcement_mode": (result.enforcement_mode.value if result.enforcement_mode else None),
             },
         }
+
+        # Issue #4187: tell the worker WHICH cap stopped it. Still a 402 — a run
+        # cap is a real spend limit, not an unavailable check, so it must not be
+        # retried and must not be a 503. The worker keys `budget_stopped` off this
+        # discriminator; without it a run stop is indistinguishable from an org
+        # cap and the transcript records the wrong reason.
+        if result.scope:
+            error_body["details"]["scope"] = result.scope
+            error_body["details"]["scope_cap_usd"] = float(result.scope_cap_usd) if result.scope_cap_usd is not None else None
 
         body_bytes = json.dumps(error_body).encode("utf-8")
 

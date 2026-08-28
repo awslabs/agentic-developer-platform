@@ -77,7 +77,7 @@ _KEY_PREFIX = "budget:resv"
 # Check EVERY key's headroom before incrementing ANY of them.
 #
 # KEYS  = one reservation hash per (entity, period) budget being enforced
-# ARGV  = [request_id, amount, now, deadline, ttl, headroom_1, ... headroom_N]
+# ARGV  = [request_id, amount, now, headroom_1, ttl_1, ... headroom_N, ttl_N]
 #
 # Each hash maps request_id -> "<amount>:<deadline>". Storing the deadline
 # per-field (rather than relying on the key TTL) is what makes an abandoned
@@ -86,6 +86,14 @@ _KEY_PREFIX = "budget:resv"
 # The key TTL is refreshed on each write so an entity with continuous traffic
 # never loses its live counter mid-period, while an idle one is reaped.
 #
+# Issue #4187: the TTL is PER-KEY, not one value shared across all of them. The
+# hierarchy budgets (user/team/dept/org) want the short #4287 lifetime — it is a
+# SIGKILL backstop for one in-flight request, and holding longer would throttle a
+# tenant below their real spend. A run/chain cap wants the opposite: it must
+# accumulate for the whole run, so a 120s field deadline would make it forget
+# everything older than two minutes and cap nothing at all. Same Lua, same
+# reconcile path, one number per target.
+#
 # Returns {admitted, exhausted_index} — exhausted_index is 1-based into KEYS on
 # denial so the caller can attribute the denial to the right budget, or 0 when
 # admitted.
@@ -93,13 +101,11 @@ _RESERVE_SCRIPT = """
 local request_id = ARGV[1]
 local amount = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
-local deadline = ARGV[4]
-local ttl = tonumber(ARGV[5])
 
 -- Pass 1: verify every budget has room. No writes here, so a denial cannot
 -- leave a partial reservation behind.
 for i = 1, #KEYS do
-    local headroom = tonumber(ARGV[5 + i])
+    local headroom = tonumber(ARGV[2 + (i * 2)])
     local in_flight = 0
     local entries = redis.call('HGETALL', KEYS[i])
     for j = 1, #entries, 2 do
@@ -120,6 +126,8 @@ end
 
 -- Pass 2: every budget had room, so commit to all of them.
 for i = 1, #KEYS do
+    local ttl = tonumber(ARGV[3 + (i * 2)])
+    local deadline = now + ttl
     -- Prune expired fields opportunistically so the hash cannot grow without
     -- bound under sustained traffic on a long period (e.g. monthly).
     local entries = redis.call('HGETALL', KEYS[i])
@@ -155,13 +163,17 @@ return {1, 0}
 # HEXISTS alone would hand it a fresh deadline and put the spend back into the
 # live denominator. An expired field found here is pruned instead.
 #
-# ARGV = [request_id, amount, now, deadline, ttl]
+# Issue #4187: TTL is per-key here too, for the same reason as the reserve
+# script — a run/chain reservation adjusted to its real cost must keep the
+# run-lifetime deadline, not inherit the hierarchy's short one. Inheriting the
+# short one would silently drop settled run spend out of the accumulator two
+# minutes after each call, which is the cap-that-does-not-cap failure again.
+#
+# ARGV = [request_id, amount, now, ttl_1, ... ttl_N]
 _RECONCILE_SCRIPT = """
 local request_id = ARGV[1]
 local amount = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
-local deadline = ARGV[4]
-local ttl = tonumber(ARGV[5])
 local adjusted = 0
 
 for i = 1, #KEYS do
@@ -169,7 +181,8 @@ for i = 1, #KEYS do
     if existing then
         local sep = string.find(existing, ':')
         if tonumber(string.sub(existing, sep + 1)) > now then
-            redis.call('HSET', KEYS[i], request_id, amount .. ':' .. deadline)
+            local ttl = tonumber(ARGV[3 + i])
+            redis.call('HSET', KEYS[i], request_id, amount .. ':' .. (now + ttl))
             redis.call('EXPIRE', KEYS[i], ttl)
             adjusted = adjusted + 1
         else
@@ -197,6 +210,17 @@ class ReservationTarget:
     period_type: str
     period_start: str
     headroom_usd: Decimal
+
+    # Issue #4187: how long THIS budget's reservation fields live. ``None`` means
+    # "use the store's default", which is what every #4287 hierarchy target does,
+    # so their behaviour is unchanged.
+    #
+    # Run and chain scopes override it with the run lifetime. Their counter is not
+    # a SIGKILL backstop for one request — it is the cap's entire denominator,
+    # because run/chain budgets have no settled Postgres ledger to fall back on
+    # (the budget-usage-tracker Lambda writes no run rows). Expiring it on the
+    # short default would reset the run's spend to zero every two minutes.
+    ttl_seconds: int | None = None
 
     def key(self) -> str:
         """Redis key for this budget's in-flight reservations.
@@ -265,6 +289,14 @@ class ReservationStore:
         """Whether a reservation backend is configured at all."""
         return self._client is not None or bool(self._redis_url)
 
+    def _ttl_for(self, target: ReservationTarget) -> int:
+        """Resolve this target's field lifetime (Issue #4187).
+
+        Falls back to the store default, so every #4287 caller that never sets
+        ``ttl_seconds`` keeps the exact behaviour it had.
+        """
+        return target.ttl_seconds if target.ttl_seconds is not None else self._ttl_seconds
+
     def _register_scripts(self, client: redis.Redis) -> None:
         self._reserve_script = client.register_script(_RESERVE_SCRIPT)
         self._reconcile_script = client.register_script(_RECONCILE_SCRIPT)
@@ -303,7 +335,12 @@ class ReservationStore:
             return ReservationOutcome(admitted=True)
 
         now = self._clock()
-        deadline = now + self._ttl_seconds
+
+        # Interleaved (headroom, ttl) per target — the Lua indexes them in pairs.
+        per_target_args: list[str | int] = []
+        for target in targets:
+            per_target_args.append(str(target.headroom_usd))
+            per_target_args.append(self._ttl_for(target))
 
         try:
             client = await self._get_client()
@@ -313,9 +350,7 @@ class ReservationStore:
                     request_id,
                     str(amount_usd),
                     now,
-                    str(deadline),
-                    self._ttl_seconds,
-                    *[str(t.headroom_usd) for t in targets],
+                    *per_target_args,
                 ],
                 client=client,
             )
@@ -360,13 +395,12 @@ class ReservationStore:
             return
 
         now = self._clock()
-        deadline = now + self._ttl_seconds
 
         try:
             client = await self._get_client()
             await self._reconcile_script(  # type: ignore[misc]
                 keys=[t.key() for t in targets],
-                args=[request_id, str(actual_usd), now, str(deadline), self._ttl_seconds],
+                args=[request_id, str(actual_usd), now, *[self._ttl_for(t) for t in targets]],
                 client=client,
             )
         except Exception as exc:

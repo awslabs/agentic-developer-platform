@@ -23,6 +23,7 @@ from src.shared.metrics import (
     emit_budget_check_failure,
     emit_budget_grace_engaged,
     emit_budget_reservation_outcome,
+    emit_run_binding_drift,
 )
 from src.shared.models.budget import BudgetConfig, BudgetUsage
 from src.shared.schemas.auth import TokenContext
@@ -38,6 +39,7 @@ from .config import budget_config
 from .grace_window import GraceWindow
 from .pricing import PricingService, pricing_service
 from .reservations import ReservationStore, ReservationTarget
+from .run_binding import RunBinding, RunBindingError, RunBindingResolver, resolve_run_binding
 from .utils import (
     calculate_budget_utilization,
     get_period_start_end,
@@ -85,6 +87,7 @@ class BudgetEnforcementService:
         pricing: PricingService | None = None,
         grace_window: GraceWindow | None = None,
         reservations: ReservationStore | None = None,
+        run_bindings: RunBindingResolver | None = None,
     ):
         """
         Initialize the budget enforcement service.
@@ -97,11 +100,14 @@ class BudgetEnforcementService:
                 not created until a failure actually occurs.
             reservations: Optional injected reservation store (Issue #4287, for
                 testing). When omitted, one is built lazily from config.
+            run_bindings: Optional injected run-identity resolver (Issue #4187,
+                for testing). When omitted, one is built lazily from config.
         """
         self.db_session = db_session
         self._pricing = pricing or pricing_service
         self._grace_window = grace_window
         self._reservations = reservations
+        self._run_bindings = run_bindings
 
     def _get_grace_window(self) -> GraceWindow:
         """Get (or lazily build) the grace window.
@@ -136,6 +142,20 @@ class BudgetEnforcementService:
                 ttl_seconds=budget_config.budget_reservation_ttl_seconds,
             )
         return self._reservations
+
+    def _get_run_bindings(self) -> RunBindingResolver:
+        """Get (or lazily build) the server-side run-identity resolver (#4187)."""
+        if self._run_bindings is None:
+            from src.shared.config import get_settings
+
+            settings = get_settings()
+            self._run_bindings = RunBindingResolver(
+                table_name=settings.webhook_events_table,
+                aws_region=settings.aws_region,
+                redis_url=settings.redis_url,
+                cache_ttl_seconds=budget_config.budget_run_cap_ttl_seconds,
+            )
+        return self._run_bindings
 
     async def _handle_check_failure(self, exc: Exception, check_name: str) -> EnforcementResult:
         """Decide what to do when the budget check itself failed (Issue #4075).
@@ -311,11 +331,189 @@ class BudgetEnforcementService:
 
         return entities
 
+    async def _resolve_scope_cap(
+        self,
+        session: AsyncSession,
+        org_id: str,
+        entity_type: EntityType,
+    ) -> Decimal:
+        """Resolve the effective run or chain cap for a tenant (Issue #4187).
+
+        Precedence, and why:
+
+        1. The platform default (``budget_run_cap_usd`` / ``budget_chain_cap_usd``)
+           is the baseline **and a hard upper bound**.
+        2. A ``budget_configs`` row for this tenant may LOWER it.
+
+        The clamp is the security property. The issue requires that a tenant
+        cannot raise its own cap, and tenant admins can already write
+        ``budget_configs`` rows for their own org — so without ``min()`` the
+        control would be self-service. Raising a ceiling stays a platform action
+        via the internal plane.
+
+        A missing row, an unparseable amount, or a non-positive one all resolve to
+        the platform default. **Never to unlimited** — that is the specific
+        failure this issue exists to prevent, so every error path here lands on a
+        finite number.
+
+        No migration is involved: this reuses ``budget_configs`` with
+        ``entity_type`` of ``"run"``/``"chain"`` and ``period_type="run"``, all of
+        which fit the existing ``String(20)``/``String(10)`` columns, and the table
+        has only a ``UniqueConstraint`` — no CHECK pins the enum.
+        """
+        platform_default = budget_config.budget_run_cap_usd if entity_type == EntityType.RUN else budget_config.budget_chain_cap_usd
+
+        try:
+            result = await session.execute(
+                select(BudgetConfig).where(
+                    and_(
+                        BudgetConfig.org_id == org_id,
+                        BudgetConfig.entity_type == entity_type.value,
+                        # A tenant-wide override, not a per-run row: nobody
+                        # provisions a budget row per run id.
+                        BudgetConfig.entity_id == "*",
+                        BudgetConfig.period_type == PeriodType.RUN.value,
+                    )
+                )
+            )
+            override = result.scalar_one_or_none()
+        except _INFRASTRUCTURE_FAULTS:
+            # Let the caller's fail-closed handler classify a ledger fault. It is
+            # not this function's job to decide the outcome of an outage.
+            raise
+
+        if override is None:
+            return platform_default
+
+        try:
+            configured = Decimal(override.budget_amount_usd)
+        except (TypeError, ValueError, ArithmeticError):
+            logger.warning(
+                f"Unparseable {entity_type.value} cap for org {org_id} ({override.budget_amount_usd!r}) — using platform default ${platform_default}"
+            )
+            return platform_default
+
+        if configured <= 0:
+            logger.warning(f"Non-positive {entity_type.value} cap for org {org_id} (${configured}) — using platform default ${platform_default}")
+            return platform_default
+
+        # The clamp: a tenant may tighten its own ceiling, never loosen it.
+        return min(configured, platform_default)
+
+    async def _resolve_run_scope(self, context: TokenContext, run_id: str | None) -> RunBinding | None:
+        """Bind the asserted run id to the authenticated caller (Issue #4187).
+
+        Returns:
+            The verified binding, or ``None`` when no run/chain cap applies to
+            this request.
+
+        Raises:
+            RunBindingError: the run id is unknown or belongs to someone else, in
+                ``enforce`` mode. The caller converts this into a 402.
+
+        ``None`` covers four cases, all of them deliberate:
+
+        * the feature is off;
+        * no run id was asserted AND the missing-header policy exempts this caller;
+        * the binding faulted (DDB unreachable) — degrade, do not deny;
+        * shadow mode — the binding is resolved and drift is recorded, but no cap
+          is applied yet.
+        """
+        if not budget_config.budget_run_cap_enabled:
+            return None
+
+        enforcing = budget_config.budget_run_binding_mode.lower() == "enforce"
+
+        if not run_id:
+            # A missing run id is a DECLARED policy, never "absent -> unlimited".
+            require_all = budget_config.budget_run_id_required_mode.lower() == "require"
+            is_agent_caller = context.auth_source == "iam"
+            if enforcing and (require_all or is_agent_caller):
+                raise RunBindingError(
+                    "missing_run_id",
+                    "A run id is required on this path; the request carried none.",
+                )
+            # Human/JWT callers are bounded by the per-user hierarchy caps, which
+            # already ran. Nothing is uncapped here.
+            return None
+
+        try:
+            binding = await resolve_run_binding(
+                run_id=run_id,
+                caller_user_id=context.user_id,
+                caller_org_id=context.attributed_org_id,
+                resolver=self._get_run_bindings(),
+            )
+        except RunBindingError as exc:
+            # Shadow mode: record what a deny WOULD have rejected, deny nothing.
+            if not enforcing:
+                logger.warning(f"Run-binding drift (shadow mode, not denying): run={run_id} reason={exc.reason} caller={context.user_id}")
+                emit_run_binding_drift(reason=exc.reason, environment=self._get_environment())
+                return None
+            emit_run_binding_drift(reason=exc.reason, environment=self._get_environment())
+            raise
+
+        if binding is None:
+            # Lookup fault — the hierarchy caps still apply.
+            return None
+
+        return binding if enforcing else None
+
+    def _scope_targets(self, binding: RunBinding, run_cap: Decimal, chain_cap: Decimal) -> list[ReservationTarget]:
+        """Build the run and chain reservation targets for a bound run (#4187).
+
+        Both scopes are required and they fail differently: the run cap bounds one
+        runaway loop, while the chain cap bounds the aggregate of a fan-out that
+        can sit inside every per-run limit and still cost many times the intended
+        total. An implementation with only the run scope has an obvious hole.
+
+        ``headroom_usd`` is the FULL cap, not ``cap - settled_spend``: run and
+        chain scopes have no settled Postgres ledger to subtract (the
+        budget-usage-tracker Lambda writes no run rows), so the live reservation
+        total in Redis *is* the whole denominator. That is exactly why this cap
+        trips with no bridging job having run — and why a ``SUM(cost_usd)``
+        implementation would read ~0 for the run that is currently overspending.
+
+        Both targets carry the run-lifetime TTL rather than the #4287 default.
+        """
+        ttl = budget_config.budget_run_cap_ttl_seconds
+        targets = [
+            ReservationTarget(
+                org_id=binding.tenant_id or "unknown",
+                entity_type=EntityType.RUN.value,
+                entity_id=binding.run_id,
+                period_type=PeriodType.RUN.value,
+                period_start="lifetime",
+                headroom_usd=run_cap,
+                ttl_seconds=ttl,
+            )
+        ]
+
+        # A run with no correlation id is not part of a chain, so there is no
+        # aggregate to bound. Keying the chain scope on the run id as a fallback
+        # would silently apply the (larger) chain cap a second time to a single
+        # run, which is not the control anyone asked for.
+        if binding.correlation_id:
+            targets.append(
+                ReservationTarget(
+                    org_id=binding.tenant_id or "unknown",
+                    entity_type=EntityType.CHAIN.value,
+                    entity_id=binding.correlation_id,
+                    period_type=PeriodType.RUN.value,
+                    period_start="lifetime",
+                    headroom_usd=chain_cap,
+                    ttl_seconds=ttl,
+                )
+            )
+
+        return targets
+
     async def check_budget_hierarchy(
         self,
         context: TokenContext,
         estimated_cost: Decimal,
         request_id: str | None = None,
+        run_id: str | None = None,
     ) -> EnforcementResult:
         """
         Check budget constraints across the entire hierarchy.
@@ -343,6 +541,9 @@ class BudgetEnforcementService:
             estimated_cost: Estimated cost for this request
             request_id: Request identifier, used as the reservation's idempotency
                 key so completion can adjust this request's own reservation.
+            run_id: The caller's asserted run id (Issue #4187). Treated as an
+                assertion to verify, never as an identity — see
+                ``_resolve_run_scope``.
 
         Returns:
             EnforcementResult indicating if request is allowed
@@ -355,6 +556,30 @@ class BudgetEnforcementService:
                 entities = self._get_entity_hierarchy(context)
                 all_warnings = []
                 reservation_targets: list[ReservationTarget] = []
+
+                # Issue #4187: run and chain scopes go FIRST so the reservation
+                # script attributes a denial to the most specific scope that ran
+                # out — run, then chain, then the hierarchy below.
+                try:
+                    binding = await self._resolve_run_scope(context, run_id)
+                except RunBindingError as exc:
+                    # A forged or unknown run id is a denial, not a degrade.
+                    # Deliberately not routed through _handle_check_failure: this
+                    # is not a ledger fault, so it must not consume the grace
+                    # window or ever become a 503.
+                    logger.warning(f"Denying request: run id could not be bound to caller ({exc.reason})")
+                    return EnforcementResult(
+                        allowed=False,
+                        deny_reason=DenyReason.BUDGET_EXCEEDED,
+                        blocked_reason=exc.message,
+                        enforcement_mode=EnforcementMode.HARD,
+                        scope="run",
+                    )
+
+                if binding is not None:
+                    run_cap = await self._resolve_scope_cap(session, context.attributed_org_id, EntityType.RUN)
+                    chain_cap = await self._resolve_scope_cap(session, context.attributed_org_id, EntityType.CHAIN)
+                    reservation_targets.extend(self._scope_targets(binding, run_cap, chain_cap))
 
                 # Check each entity in the hierarchy
                 for entity_type, entity_id in entities:
@@ -454,6 +679,11 @@ class BudgetEnforcementService:
             f"Budget exceeded (in-flight reservations): {exhausted.entity_type} {exhausted.entity_id} "
             f"- {exhausted.period_type} settled headroom ${exhausted.headroom_usd}, request estimate ${estimated_cost}"
         )
+
+        # Issue #4187: only the two new scopes carry a discriminator. Hierarchy
+        # denials keep `scope=None`, which leaves every pre-#4187 402 body
+        # byte-identical.
+        is_scope_denial = exhausted.entity_type in (EntityType.RUN.value, EntityType.CHAIN.value)
         return EnforcementResult(
             allowed=False,
             deny_reason=DenyReason.BUDGET_EXCEEDED,
@@ -461,6 +691,10 @@ class BudgetEnforcementService:
             exceeded_entity_type=EntityType(exhausted.entity_type),
             exceeded_entity_id=exhausted.entity_id,
             enforcement_mode=EnforcementMode.HARD,
+            scope=exhausted.entity_type if is_scope_denial else None,
+            # For run/chain the headroom IS the whole cap: there is no settled
+            # ledger to subtract, so this is the cap, not a remainder.
+            scope_cap_usd=exhausted.headroom_usd if is_scope_denial else None,
         )
 
     async def reconcile_reservation(

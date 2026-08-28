@@ -15,6 +15,7 @@ import { formatDateTime, formatRelativeTime } from '@/utils/format';
 // Issue #4207: was a local formatCost with the same sub-cent convention.
 import { formatCost } from '@/utils/cost';
 import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
+import { describeStopReason, isBudgetStoppedStatus } from '@/utils/stopReason';
 import { describeLiveness } from '@/utils/liveness';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
 import type { InvocationItem, InvocationStatus } from '@/types/activity';
@@ -58,6 +59,8 @@ const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; co
   // deduplicated redelivery is correct behaviour, not an error.
   blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
   skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
+  // Issue #4187: amber, not red — the run was stopped on purpose by a spend cap.
+  budget_stopped: { glyph: '⊘', label: 'Budget stopped', colorClass: 'text-amber-600 dark:text-amber-400' },
 };
 
 // ---------------------------------------------------------------------------
@@ -118,9 +121,17 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
   const statusConfig = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.no_op;
   // Issue #4020: blocked/skipped are terminal — without them the modal would
   // claim "Active — not yet terminal" on a row that will never move again.
-  const isTerminal = ['complete', 'failed', 'rejected', 'rate_limited', 'no_op', 'blocked', 'skipped'].includes(
-    item.status
-  );
+  // Issue #4187: budget_stopped is terminal too — the run is over.
+  const isTerminal = [
+    'complete',
+    'failed',
+    'rejected',
+    'rate_limited',
+    'no_op',
+    'blocked',
+    'skipped',
+    'budget_stopped',
+  ].includes(item.status);
 
   // ---------------------------------------------------------------------------
   // Row fragments — extracted for conditional ordering (Issue #3765)
@@ -212,6 +223,31 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
       ) : (
         <span className="text-gray-400 dark:text-gray-500 italic">
           No reason recorded — this event predates reason tracking.
+        </span>
+      )}
+    </DetailRow>
+  ) : null;
+
+  /**
+   * Issue #4187: the "why did this stop early" row.
+   *
+   * Same shape and rationale as `skipReasonRow` above, and deliberately NOT
+   * `ErrorDisplay`: a spend cap firing is the control working. The operator's
+   * next action is a budget decision, not a bug hunt, and red styling points
+   * them at the wrong one.
+   */
+  const stopReasonRow = isBudgetStoppedStatus(item.status) ? (
+    <DetailRow label="Stopped because">
+      {describeStopReason(item.stop_reason) ? (
+        <div className="space-y-1">
+          <p className="text-gray-900 dark:text-white">{describeStopReason(item.stop_reason)}</p>
+          {/* The enum is what appears in logs and metrics, so showing it gives
+              the operator the exact term to search on. */}
+          <p className="text-xs font-mono text-gray-400 dark:text-gray-500">{item.stop_reason}</p>
+        </div>
+      ) : (
+        <span className="text-gray-400 dark:text-gray-500 italic">
+          A spend cap stopped this run; no specific cap was recorded.
         </span>
       )}
     </DetailRow>
@@ -423,6 +459,9 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
                     in the failed-run order — for a non-run the reason IS the
                     headline fact, so it must not be buried below the ID block. */}
                 {skipReasonRow}
+                {/* Issue #4187: same placement, same reasoning — for a run a cap
+                    stopped, why it stopped is the headline fact. */}
+                {stopReasonRow}
                 {identifierRows}
                 {timingRows}
                 {channelRow}

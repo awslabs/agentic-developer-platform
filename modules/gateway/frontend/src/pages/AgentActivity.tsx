@@ -69,6 +69,9 @@ const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; co
   // went wrong, so they must not read as red-alert states.
   blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
   skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
+  // Issue #4187: a spend cap stopped the run. Amber, not red: the cap worked as
+  // configured, so this is "needs a budget decision", not "something is broken".
+  budget_stopped: { glyph: '⊘', label: 'Budget stopped', colorClass: 'text-amber-600 dark:text-amber-400' },
 };
 
 /**
@@ -397,6 +400,8 @@ const STATUS_OPTIONS = [
   // guard stopped" directly, instead of eyeballing the full event trail.
   { value: 'blocked', label: 'Blocked' },
   { value: 'skipped', label: 'Skipped' },
+  // Issue #4187: filterable so "what did the spend caps stop?" is one click.
+  { value: 'budget_stopped', label: 'Budget stopped' },
 ];
 
 const CHANNEL_OPTIONS = [

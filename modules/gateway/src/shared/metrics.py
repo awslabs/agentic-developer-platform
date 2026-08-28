@@ -389,6 +389,43 @@ def emit_budget_check_failure(
     )
 
 
+def emit_run_binding_drift(
+    reason: str,
+    count: int = 1,
+    environment: str = "production",
+) -> None:
+    """
+    Emit BudgetRunBindingDrift metric (Issue #4187).
+
+    Counts requests whose asserted ``X-Agent-RunId`` could NOT be bound to the
+    authenticated caller — an unknown run, or one belonging to another identity or
+    tenant.
+
+    This is what makes shipping the run cap in shadow mode meaningful. In
+    ``shadow`` mode nothing is denied and this metric is the only output: it says
+    how much real traffic the deny rule would reject if enabled. Enforce only once
+    it sits at zero. In ``enforce`` mode the same signal becomes the denial rate,
+    so an unexpected spike after the flip is the rollback trigger.
+
+    Args:
+        reason: "unknown_run", "identity_mismatch", "tenant_mismatch", or
+            "missing_run_id" — which check refused the binding.
+        count: Number of occurrences (default 1)
+        environment: Environment name
+    """
+    _emit_emf(
+        metrics={
+            "BudgetRunBindingDrift": count,
+            "reason": reason,
+            "Environment": environment,
+        },
+        dimensions=[
+            ["reason", "Environment"],
+            ["Environment"],
+        ],
+    )
+
+
 def emit_budget_reservation_outcome(
     outcome: str,
     count: int = 1,

@@ -64,6 +64,58 @@ class BudgetConfig(BaseSettings):
     # reservations.py on why unavailability degrades rather than approximates.
     budget_reservation_backend: str = "redis"
 
+    # ------------------------------------------------------------------
+    # Per-run / per-chain spend caps (Issue #4187)
+    # ------------------------------------------------------------------
+
+    # Master switch. Ships as False on purpose: the issue asks for a warn-only
+    # observation period so the platform defaults below can be calibrated against
+    # real run costs rather than guessed, and a cap that surprises operators on
+    # day one is a self-inflicted incident. Flip via SSM + rollout restart, same
+    # operational shape as budget_fail_mode.
+    budget_run_cap_enabled: bool = False
+
+    # Platform default ceilings, in USD, for ONE run and for one chain (a run
+    # plus every run it spawned).
+    #
+    # These are also a HARD UPPER BOUND, not just a default: a per-tenant
+    # override may lower them but never raise them (see
+    # BudgetEnforcementService._resolve_scope_cap). Otherwise a tenant admin
+    # could raise their own cap, which defeats the control.
+    #
+    # The chain default is deliberately several times the run default rather than
+    # equal to it: a chain is expected to contain multiple runs, so an equal value
+    # would make the chain cap fire on the second run of every normal fan-out and
+    # the run cap would never be the thing that fires.
+    budget_run_cap_usd: Decimal = Decimal("25.00")
+    budget_chain_cap_usd: Decimal = Decimal("100.00")
+
+    # How long a run's spend accumulator lives. This is the run/chain reservation
+    # TTL and it is NOT the #4287 backstop TTL — see ReservationTarget.ttl_seconds.
+    # It must comfortably exceed the longest expected run, because when it expires
+    # the run's accumulated spend resets to zero and the cap stops applying.
+    # 24h matches the activity read path's ACTIVE_STALENESS_HOURS.
+    budget_run_cap_ttl_seconds: int = 86_400
+
+    # Run-identity binding mode (Issue #4187 / the #3175 pattern):
+    #   "shadow"  - resolve the binding, log + count drift, deny nothing, and
+    #               enforce no run/chain cap. The safe default: the drift metric
+    #               tells you what a deny rule WOULD have rejected first.
+    #   "enforce" - an unbindable run id (unknown, or owned by another caller)
+    #               is a 402 denial, and the caps apply.
+    # A DDB lookup FAULT degrades in both modes — a forgery is denied, an outage
+    # is not (see run_binding.resolve_run_binding).
+    budget_run_binding_mode: str = "shadow"
+
+    # Policy for a request on an enforced path that carries NO run id.
+    # Explicitly a declared policy, never "absent -> unlimited":
+    #   "exempt_human" - IAM-authenticated callers MUST carry a run id (they are
+    #                    agents, and the worker always sends one); human/JWT
+    #                    callers are exempt because the per-user hierarchy caps
+    #                    already bound them.
+    #   "require"      - every caller on an enforced path must carry one.
+    budget_run_id_required_mode: str = "exempt_human"
+
     # Grace period settings (in seconds)
     soft_enforcement_grace_period: int = 300  # 5 minutes
     budget_exceeded_notification_cooldown: int = 3600  # 1 hour

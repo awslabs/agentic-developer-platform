@@ -206,7 +206,7 @@ class TestObservedExits:
 
     @pytest.mark.parametrize(
         "status",
-        ["complete", "failed", "rejected", "rate_limited", "no_op", "blocked", "skipped"],
+        ["complete", "failed", "rejected", "rate_limited", "no_op", "blocked", "skipped", "budget_stopped"],
     )
     def test_terminal_status_is_exited_regardless_of_age(self, status):
         """Age is irrelevant once an exit was observed.
@@ -217,12 +217,19 @@ class TestObservedExits:
         assert compute_liveness(status, ago(days=400), NOW) == "exited"
 
     def test_terminal_set_matches_the_documented_vocabulary(self):
-        """The hoisted set is exactly the #4020-era terminal vocabulary.
+        """The hoisted set is exactly the current terminal vocabulary.
 
-        Pinned because `service.py` derives `completed_at` from this same set —
-        adding a status here silently changes that behaviour too.
+        Pinned because `service.py` derives `completed_at` from this same set, and
+        `stats_service._TERMINAL_STATUSES` is now an alias for it — adding a status
+        here silently changes both.
+
+        Issue #4187 added `budget_stopped`: a run the gateway stopped on a spend
+        cap is over, so it must read `exited` rather than sitting at `live` until
+        the staleness window expires.
         """
-        assert OBSERVED_TERMINAL_STATUSES == frozenset({"complete", "failed", "rejected", "rate_limited", "no_op", "blocked", "skipped"})
+        assert OBSERVED_TERMINAL_STATUSES == frozenset(
+            {"complete", "failed", "rejected", "rate_limited", "no_op", "blocked", "skipped", "budget_stopped"}
+        )
 
 
 class TestActiveRuns:

@@ -752,6 +752,44 @@ function loadRules(): string {
 const RESULT_METADATA_PATH = '/tmp/adp-result-metadata.json';
 
 /**
+ * Recognise a gateway spend-cap denial in a thrown SDK error (issue #4187).
+ *
+ * The gateway denies with HTTP 402 and a body naming the scope that ran out
+ * (`run`, `chain`, or a hierarchy entity). 402 is chosen precisely because
+ * nothing retries it, so by the time the error reaches here the run is over and
+ * the only question is how it gets recorded.
+ *
+ * Matching on the message text is unpleasant but it is the only channel
+ * available: the SDK surfaces upstream HTTP errors as an `Error` whose message
+ * embeds the status and body, with no structured status field to read. Both the
+ * status and the error code must appear, so an unrelated error that merely
+ * contains "402" is not misclassified.
+ *
+ * Returns null when this is not a budget stop, i.e. the normal path.
+ */
+function detectBudgetStop(err: Error): { stopReason: string } | null {
+  const message = err?.message || '';
+  const lower = message.toLowerCase();
+  if (!lower.includes('402') || !lower.includes('budget_exceeded')) {
+    return null;
+  }
+
+  // The scope discriminator, when the gateway included one. A bare
+  // `budget_exceeded` is a hierarchy cap (org/team/user), which predates #4187.
+  //
+  // A static enum, not a sentence — same contract as `skip_reason` (#4020), so
+  // the wording lives in the frontend and can change without redeploying the
+  // agent image (see frontend/src/utils/stopReason.ts).
+  const scope = /"scope"\s*:\s*"(run|chain)"/.exec(message)?.[1];
+  const stopReason = scope === 'run'
+    ? 'run_cap_exceeded'
+    : scope === 'chain'
+      ? 'chain_cap_exceeded'
+      : 'hierarchy_cap_exceeded';
+  return { stopReason };
+}
+
+/**
  * Merge fields into the result-metadata file, preserving anything already
  * there.
  *
@@ -1492,6 +1530,18 @@ Now, complete the assigned task.`;
   } catch (error) {
     const err = error as Error;
     log('ERROR', 'Agent execution failed', { error: err.message });
+    // Issue #4187: a budget stop is a distinct outcome, not a generic failure.
+    // The gateway already returns a non-retryable 402 with a `scope`
+    // discriminator, and resilientQuery correctly refuses to retry it — but the
+    // signal died here, at the process boundary, so the run was recorded as
+    // "failed" with a stack trace and an operator could not tell an
+    // out-of-budget stop from a crash. Persisting it lets entrypoint.py record
+    // `budget_stopped` + a stop reason instead.
+    const budgetStop = detectBudgetStop(err);
+    if (budgetStop) {
+      log('WARN', 'Run stopped by a spend cap', budgetStop);
+      writeResultMetadata({ budget_stopped: true, stop_reason: budgetStop.stopReason });
+    }
     throw error;
   }
 }

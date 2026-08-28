@@ -45,6 +45,7 @@ def update_status(
     token_mode: str | None = None,
     error_message: str | None = None,
     skip_reason: str | None = None,
+    stop_reason: str | None = None,
 ) -> None:
     """Update the invocation row's status. Fail-soft: logs and returns on error.
 
@@ -73,6 +74,11 @@ def update_status(
             non-failure skip (e.g. ``idempotency_merged_pr``). Distinct from
             ``error_message``: nothing went wrong, so the UI renders it neutrally
             rather than as an error. Truncated on the same bound for symmetry.
+        stop_reason: Issue #4187 — why a spend cap stopped this run, paired with
+            the ``budget_stopped`` status. Its own field rather than
+            ``error_message`` for the same reason ``skip_reason`` is: hitting a
+            configured cap is the control working, not a fault, and rendering it
+            as an error sends operators debugging a run that behaved correctly.
     """
     table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
     if not table:
@@ -128,6 +134,11 @@ def update_status(
             expr_parts.append("#sr = :skip_reason")
             expr_names["#sr"] = "skip_reason"
             expr_values[":skip_reason"] = {"S": skip_reason[:_MAX_ERROR_MESSAGE_CHARS]}
+
+        if stop_reason:
+            expr_parts.append("#stpr = :stop_reason")
+            expr_names["#stpr"] = "stop_reason"
+            expr_values[":stop_reason"] = {"S": stop_reason[:_MAX_ERROR_MESSAGE_CHARS]}
 
         update_expr = "SET " + ", ".join(expr_parts)
 

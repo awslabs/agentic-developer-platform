@@ -413,6 +413,8 @@ class ActivityService:
             error_message=item.get("error_message"),
             # Issue #4020: why a no_op/blocked/skipped delivery produced no run
             skip_reason=item.get("skip_reason"),
+            # Issue #4187: why a spend cap stopped a budget_stopped run
+            stop_reason=item.get("stop_reason"),
             completed_at=completed_at,
             run_log_url=item.get("check_run_url"),
             # Issue #3069: S3 transcript key

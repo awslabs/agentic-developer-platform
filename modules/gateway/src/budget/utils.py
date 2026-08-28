@@ -41,6 +41,15 @@ def get_period_start_end(period_type: PeriodType, reference_date: date = None) -
     if reference_date is None:
         reference_date = date.today()
 
+    if period_type == PeriodType.RUN:
+        # Issue #4187: a run/chain cap is lifetime-scoped, so there is no
+        # calendar period to derive. Raising is deliberate and load-bearing:
+        # silently returning today's date would make every run on a given day
+        # share one reservation key, so run A's spend would exhaust run B's cap.
+        # The run/chain id in the key is what separates the ledgers instead —
+        # see ReservationTarget.key().
+        raise ValueError("PeriodType.RUN is lifetime-scoped and has no calendar period; use the run/chain id as the ledger key")
+
     if period_type == PeriodType.DAILY:
         return reference_date, reference_date
 

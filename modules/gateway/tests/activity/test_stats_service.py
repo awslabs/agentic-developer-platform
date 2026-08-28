@@ -584,6 +584,10 @@ class TestStatusVocabularyGuard:
         "failed",  # Worker: agent exited non-zero
         "no_op",  # Lambda: event passed guards but no agent dispatched
         "rate_limited",  # Lambda: tenant rate limit exceeded
+        "rejected",  # Lambda: delivery refused
+        "blocked",  # Issue #4020: a guard stopped the spawn
+        "skipped",  # Issue #4020: the worker deduplicated a redelivery
+        "budget_stopped",  # Issue #4187: a per-run/per-chain spend cap stopped the run
     }
 
     def test_active_statuses_are_real(self):

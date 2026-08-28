@@ -32,6 +32,7 @@ const OBSERVED_TERMINAL: InvocationStatus[] = [
   'no_op',
   'blocked',
   'skipped',
+  'budget_stopped',
 ];
 
 const STALENESS_HOURS = 24;
@@ -56,6 +57,9 @@ const statuses: InvocationStatus[] = [
   // exercises the reason rendering — they were the whole point of the change.
   'blocked',
   'skipped',
+  // Issue #4187: a run a spend cap stopped, so the board exercises the amber
+  // badge and the stop-reason row.
+  'budget_stopped',
 ];
 
 /**
@@ -68,6 +72,15 @@ const skipReasons: Partial<Record<InvocationStatus, string>> = {
   no_op: 'no_mention',
   blocked: 'self_re_trigger',
   skipped: 'idempotency_merged_pr',
+};
+
+/**
+ * Issue #4187: the reason a budget_stopped run carries. Only that status ever
+ * has one — anything else must be null, or the board would claim a cap stopped a
+ * run that finished normally.
+ */
+const stopReasons: Partial<Record<InvocationStatus, string>> = {
+  budget_stopped: 'run_cap_exceeded',
 };
 
 const channels: InvocationChannel[] = ['github', 'github', 'github', 'slack', 'api'];
@@ -98,9 +111,16 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
     const repo = repos[Math.floor(Math.random() * repos.length)];
     const issueNumber = channel === 'github' && repo ? Math.floor(Math.random() * 1500) + 1 : null;
     const invokedAt = new Date(Date.now() - Math.random() * 14 * 24 * 60 * 60 * 1000);
-    const isTerminal = ['complete', 'failed', 'rejected', 'rate_limited', 'no_op', 'blocked', 'skipped'].includes(
-      status
-    );
+    const isTerminal = [
+      'complete',
+      'failed',
+      'rejected',
+      'rate_limited',
+      'no_op',
+      'blocked',
+      'skipped',
+      'budget_stopped',
+    ].includes(status);
     const correlationId = correlationIds[Math.floor(Math.random() * correlationIds.length)];
 
     // Derive trigger_kind: first few items in a chain are human, rest are agent-triggered
@@ -158,6 +178,7 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       error_message: status === 'failed' ? 'Model access error: throttled by Bedrock' : null,
       // Issue #4020: why this trigger produced no run (non-run statuses only)
       skip_reason: skipReasons[status] ?? null,
+      stop_reason: stopReasons[status] ?? null,
       // Issue #1653: run log link (Tier 2 — null until worker persists check_run_url)
       run_log_url: null,
       // Issue #3069: S3 transcript key (present for completed runs after #3061)
