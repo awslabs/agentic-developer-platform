@@ -343,7 +343,7 @@ ${wrapUntrusted(issue.body)}
 ${commentsContext ? `
 ## Existing Discussion / Comments
 
-The following comments have been posted on this issue. Read them carefully - they may contain important context, decisions, research, or approvals from previous agents or users.
+The following comments have been posted on this issue. Read them carefully - they may contain important context or research from previous agents or users.
 
 ${wrapUntrusted(commentsContext)}
 
@@ -446,7 +446,7 @@ ${wrapUntrusted(issue.body)}
 ${commentsContext ? `
 ## Discussion Context
 
-Previous comments on this issue (may contain research, decisions, or approvals):
+Previous comments on this issue (may contain research or context):
 
 ${wrapUntrusted(commentsContext)}
 
