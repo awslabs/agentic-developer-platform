@@ -1040,6 +1040,66 @@ class TestTickIAMPolicy:
 # ---------------------------------------------------------------------------
 
 
+class TestTickNetworkPath:
+    """#4316: the tick must be able to REACH the queue it is authorised to write.
+
+    The IAM tests above prove the grant; these prove the network path. Both are
+    needed — #4316 shipped with a correct IAM policy and no reachability, so every
+    dispatch hung until the Lambda timeout killed the invocation AFTER the
+    `ready -> running` commit. That produced a durable state change, dispatch
+    counters reading 0, no `tick_report` line at all, and no alarm.
+
+    Asserted against the Terraform source in the same style as `TestTickIAMPolicy`.
+    """
+
+    @staticmethod
+    def _main_tf() -> str:
+        path = Path(__file__).resolve().parents[3] / "gateway" / "infra" / "modules" / "orchestration-tick" / "main.tf"
+        assert path.exists(), f"tick module not found at {path}"
+        return path.read_text()
+
+    def test_ingress_is_opened_on_the_vpc_endpoint_sg(self):
+        # The tick's own egress already allows 443, but the SQS interface endpoint
+        # has private_dns_enabled=true, so there is no public path to fall back to
+        # and the endpoint SG must admit the tick explicitly.
+        source = self._main_tf()
+        assert 'resource "aws_security_group_rule" "tick_to_vpc_endpoints"' in source, (
+            "the tick must be granted 443 ingress on the VPC interface endpoint SG, or SQS SendMessage hangs (#4316)"
+        )
+
+    def test_the_endpoint_rule_is_scoped_to_the_tick_sg_on_443(self):
+        source = self._main_tf()
+        marker = 'resource "aws_security_group_rule" "tick_to_vpc_endpoints"'
+        assert marker in source, "endpoint ingress rule missing (see the preceding test)"
+        start = source.index(marker)
+        statement = source[start : source.index("\n}", start)]
+
+        assert "source_security_group_id = aws_security_group.tick.id" in statement, (
+            "the rule must reference the tick's SG, not a CIDR — widening the endpoint SG would grant every "
+            "workload in the VPC access to the private AWS endpoints (#4316 'what is not the fix')"
+        )
+        assert "cidr_blocks" not in statement, "the endpoint ingress must never be CIDR-scoped"
+        assert "from_port                = 443" in statement
+        assert "to_port                  = 443" in statement
+
+    def test_the_timeout_was_not_raised_instead(self):
+        # Negative check. A longer timeout only makes the hang take longer to fail;
+        # #4316 names it explicitly as not-the-fix. 120s is the documented default.
+        path = Path(__file__).resolve().parents[3] / "gateway" / "infra" / "modules" / "orchestration-tick" / "variables.tf"
+        source = path.read_text()
+        start = source.index('variable "tick_timeout"')
+        assert "default     = 120" in source[start : source.index("\n}", start)], (
+            "tick_timeout must stay at 120s — raising it masks a reachability failure instead of fixing it (#4316)"
+        )
+
+    def test_the_function_waits_for_the_endpoint_rule(self):
+        # Without this the first apply can create the function (and let a scheduled
+        # tick fire) before the path it needs exists.
+        source = self._main_tf()
+        start = source.index("depends_on = [")
+        assert "aws_security_group_rule.tick_to_vpc_endpoints" in source[start : source.index("]", start)]
+
+
 class TestModuleStructure:
     @staticmethod
     def _module_ast() -> ast.Module:

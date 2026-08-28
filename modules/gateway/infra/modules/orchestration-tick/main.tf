@@ -81,6 +81,30 @@ resource "aws_security_group_rule" "tick_to_rds" {
   source_security_group_id = aws_security_group.tick.id
 }
 
+# Reciprocal ingress on the shared VPC-interface-endpoint SG, so the tick can
+# reach SQS (and STS/Secrets Manager) over the private endpoints. Same shape and
+# rationale as `vpc_endpoints_from_eks_cluster` in platform/infra/main.tf: the
+# endpoint SG in modules/networking only admits the EKS security groups inline,
+# and it carries `lifecycle { ignore_changes = [ingress] }` precisely so that
+# standalone rules like this one and the EKS rule do not revert each other on
+# every apply. Declared here (not inline on the endpoint SG) so this module never
+# has to own a security group it did not create — identical to `tick_to_rds`.
+#
+# Scoped to this Lambda's SG on 443 only. Deliberately NOT a CIDR-wide rule and
+# NOT a timeout increase: a longer timeout would only make the hang in #4316 take
+# longer to fail, and widening the endpoint SG would grant every workload in the
+# VPC access to the private AWS endpoints to fix one Lambda. See #4316.
+resource "aws_security_group_rule" "tick_to_vpc_endpoints" {
+  count                    = var.vpc_endpoint_security_group_id != "" ? 1 : 0
+  description              = "HTTPS to interface VPC endpoints (SQS) from the orchestration tick Lambda"
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = var.vpc_endpoint_security_group_id
+  source_security_group_id = aws_security_group.tick.id
+}
+
 # =============================================================================
 # CloudWatch Log Group
 # =============================================================================
@@ -177,6 +201,7 @@ resource "aws_lambda_function" "tick" {
   depends_on = [
     aws_cloudwatch_log_group.tick,
     aws_security_group_rule.tick_to_rds,
+    aws_security_group_rule.tick_to_vpc_endpoints,
   ]
 }
 

@@ -66,6 +66,32 @@ variable "rds_security_group_id" {
   type        = string
 }
 
+# -----------------------------------------------------------------------------
+# VPC interface endpoints
+# -----------------------------------------------------------------------------
+
+variable "vpc_endpoint_security_group_id" {
+  description = <<-EOT
+    Security group ID fronting the shared VPC interface endpoints (an ingress
+    rule on 443 is added to it for this Lambda's SG). Empty disables the rule.
+
+    Issue #4316. The tick's egress already allows 443 to 0.0.0.0/0, but the SQS
+    interface endpoint has private_dns_enabled=true, so `sqs.<region>.amazonaws.com`
+    resolves to the endpoint's private ENIs INSIDE the VPC and there is no public
+    fallback path to fall back to. The endpoint's own SG only admits the EKS SGs,
+    so the tick's packets are dropped (not refused) and the SendMessage call hangs
+    until the Lambda timeout kills the whole invocation — after the dispatch pass
+    has already committed `ready -> running`. The result is a durable state change,
+    every dispatch counter reading 0, no `tick_report` line emitted at all, and no
+    alarm; #4211's stall detection dies with the same invocation.
+
+    Both directions are required: egress on the tick SG (already present, above)
+    and ingress on the endpoint SG (this rule).
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "db_host" {
   description = "RDS database hostname"
   type        = string

@@ -919,6 +919,29 @@ data "aws_ecr_image" "orchestration_tick" {
   image_tag       = var.orchestration_tick_image_tag
 }
 
+# Issue #4316: the SG fronting the shared VPC interface endpoints, so the tick can
+# be granted 443 ingress to reach SQS over the private endpoint (private DNS is
+# enabled on it, so there is no public path to fall back to — see the variable's
+# description in the module for the full failure mode).
+#
+# Read as a data source rather than added as a `terraform_remote_state.platform`
+# output on purpose: a new platform output would not exist in state until
+# platform-infra-apply.yml runs, so `gateway-infra-apply.yml` would fail at plan
+# time on a missing output key until an operator applied the two roots in the right
+# order. The SG is created unconditionally by modules/networking with a stable
+# name and Service tag, so looking it up keeps this fix inside the single apply
+# that owns the tick. Filtered on the VPC as well, since name_prefix collides
+# across VPCs in the same account (adp-dev-vpc vs adp-dev-cyber-vpc).
+data "aws_security_group" "vpc_endpoints" {
+  count  = var.enable_orchestration_tick ? 1 : 0
+  vpc_id = local.vpc_id
+
+  filter {
+    name   = "tag:Name"
+    values = ["adp-${var.environment}-sg-vpce"]
+  }
+}
+
 # The Lambda runs the existing adp-gateway container image: the tick's logic is
 # `src/orchestration/tick.py` (async SQLAlchemy/asyncpg), and that image is the
 # only artifact that already carries the async stack plus the RDS CA bundle the
@@ -951,6 +974,9 @@ module "orchestration_tick" {
   # VPC Configuration
   vpc_id             = local.vpc_id
   private_subnet_ids = local.private_subnets
+
+  # Issue #4316: reach SQS over the private interface endpoint.
+  vpc_endpoint_security_group_id = data.aws_security_group.vpc_endpoints[0].id
 
   # RDS Configuration
   rds_security_group_id = local.rds_security_group_id
