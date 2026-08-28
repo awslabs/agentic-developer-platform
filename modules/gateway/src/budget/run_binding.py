@@ -277,6 +277,14 @@ class RunBindingResolver:
             # turning a millisecond race into a run-long outage.
             return None
 
+        # Issue #4346: `correlation_id` normalizes to "" for chat-originated runs —
+        # the chat row writer (agent-factory ingest `invocation_logger`) never writes
+        # the attribute at all. That empty string must never key a CHAIN ledger, or
+        # every chat run under one org shares one chain budget. The guard lives
+        # downstream in `enforcement_service._scope_targets` (`if
+        # binding.correlation_id:`) and is pinned by
+        # `test_run_spend_cap.TestChainScopeRequiresAChainId` — do not "simplify"
+        # either away on the assumption that an empty chain id cannot occur here.
         normalized = {
             "user_id": str(row.get("user_id") or ""),
             "tenant_id": str(row.get("tenant_id") or ""),

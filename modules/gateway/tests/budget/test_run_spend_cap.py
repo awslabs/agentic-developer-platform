@@ -163,6 +163,33 @@ def _registry(**runs: str) -> _StubTable:
     )
 
 
+def _chat_registry(**runs: str) -> _StubTable:
+    """A registry of CHAT-shaped rows: the ``correlation_id`` attribute is ABSENT.
+
+    Issue #4346. This is the load-bearing difference from ``_registry``, which
+    always writes a chain id. The chat row writer
+    (``agent-factory/gateway/lambdas/ingest/invocation_logger.py``) builds its
+    item with no ``correlation_id`` key at all — not an empty one — so the
+    omission, rather than a blank string, is what production actually stores and
+    what ``run_binding.resolve``'s ``or ""`` then normalizes.
+
+    Usage: ``_chat_registry(**{"evt-chat-a": TENANT})`` — the value is the row's
+    ``tenant_id``, since for these tests the tenant (not the chain) is what
+    varies. Pass ``""`` for the blank-tenant case.
+    """
+    return _StubTable(
+        {
+            run_id: {
+                "user_id": CALLER,
+                "tenant_id": tenant_id,
+                "root_human_id": "",
+                "arrived_at": "2026-08-27T10:00:00Z",
+            }
+            for run_id, tenant_id in runs.items()
+        }
+    )
+
+
 class _Harness:
     """Drives the pure-ASGI budget middleware and records what happened.
 
@@ -440,6 +467,110 @@ class TestPerChainCap:
 
         assert other.status == 200
         assert other.app_invoked is True
+
+
+class TestChainScopeRequiresAChainId:
+    """Issue #4346: an EMPTY ``correlation_id`` must never key a chain ledger.
+
+    Chat-originated runs carry no chain id. The chat row writer
+    (``agent-factory/gateway/lambdas/ingest/invocation_logger.py``) writes no
+    ``correlation_id`` attribute at all, so ``RunBinding.correlation_id``
+    normalizes to ``""`` (``run_binding.py``'s ``or ""``). If ``_scope_targets``
+    built a ``CHAIN`` target on that empty string, every chat run sharing an
+    ``org_id`` would land on ONE key — ``...:chain::run:lifetime``, with nothing
+    between the two colons — and drain a single shared chain budget.
+
+    ``_scope_targets`` already guards this (``if binding.correlation_id:``), but
+    NOTHING pinned it: before this class, deleting that one line broke no test.
+    Per the #4068 gate an unpinned invariant is an unshipped one, and this
+    particular line is all that stands between chat traffic and a shared ledger
+    once #4187 flips to enforce.
+
+    These assert on the **Redis keyspace**, not on the returned target list. The
+    defect is a key that exists, so the absence of the key is the property; a
+    refactor that reintroduces the target by some other route still fails here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_chat_run_with_no_chain_id_creates_no_chain_ledger(self, redis_client, clock):
+        """GATE: a chat-shaped row (no ``correlation_id``) gets NO chain key.
+
+        The run scope still applies — asserted alongside, so this cannot pass
+        trivially by the request having skipped the scope path altogether (a
+        degrade, a disabled flag, or an unbound run would produce no keys at all
+        and would otherwise look identical to the fix).
+        """
+        config = _config(budget_run_cap_usd=Decimal("100.00"), budget_chain_cap_usd=Decimal("2.00"))
+        service = _service(redis_client, clock, _chat_registry(**{RUN_ID: TENANT}))
+
+        harness = await _drive(service, _no_budget_session(), config, body=_BIG_BODY, request_id="req-chat")
+
+        assert harness.status == 200, "a chat run under every cap must not be denied"
+        keys = await redis_client.keys("*")
+        assert f"budget:resv:{{{TENANT}}}:run:{RUN_ID}:run:lifetime" in keys, "the RUN scope must still apply to chat runs"
+        assert [k for k in keys if ":chain:" in k] == [], "an empty correlation_id must not key a CHAIN ledger"
+
+    @pytest.mark.asyncio
+    async def test_row_with_a_real_chain_id_still_builds_its_chain_target(self, redis_client, clock):
+        """Regression: the guard must not cost webhook/orchestration runs their chain cap.
+
+        The failure mode of an over-broad guard is silent — the chain tier simply
+        stops existing — so the positive case needs pinning next to the negative.
+        """
+        config = _config(budget_run_cap_usd=Decimal("100.00"), budget_chain_cap_usd=Decimal("2.00"))
+        service = _service(redis_client, clock, _registry(**{RUN_ID: CHAIN_ID}))
+
+        harness = await _drive(service, _no_budget_session(), config, body=_BIG_BODY, request_id="req-webhook")
+
+        assert harness.status == 200
+        keys = await redis_client.keys("*")
+        assert f"budget:resv:{{{TENANT}}}:chain:{CHAIN_ID}:run:lifetime" in keys, "a real chain id must still key its CHAIN ledger"
+
+    @pytest.mark.asyncio
+    async def test_chat_runs_in_different_tenants_never_share_chain_headroom(self, redis_client, clock):
+        """GATE: the cross-tenant collision, asserted through the cap effect.
+
+        ``ReservationTarget.key`` partitions on ``org_id``, so two chat runs in
+        two *populated* tenants would collide only within a tenant. The genuinely
+        cross-tenant case is a **blank** ``tenant_id``: ``_scope_targets`` maps it
+        to the literal ``"unknown"`` org, and the chat writer defaults
+        ``tenant_id`` to ``""``, so blank-tenant chat rows are reachable in
+        production. Two of them with a blank chain id collapse to one key —
+        ``budget:resv:{unknown}:chain::run:lifetime`` — shared by strangers.
+
+        Asserted as ADMISSION rather than key-absence: tenant A's chat run
+        reserves most of a $1.00 chain cap, and tenant B's must still be
+        admitted. Remove the guard and B is denied 402 by spend it never made,
+        which is the cross-tenant drain in the issue title.
+        """
+        config = _config(budget_run_cap_usd=Decimal("100.00"), budget_chain_cap_usd=Decimal("1.00"))
+        registry = _chat_registry(**{"evt-chat-a": "", "evt-chat-b": ""})
+        service = _service(redis_client, clock, registry)
+
+        first = await _drive(
+            service,
+            _no_budget_session(),
+            config,
+            body=_BIG_BODY,
+            request_id="req-a",
+            run_id="evt-chat-a",
+            context=_context(org_id=""),
+        )
+        second = await _drive(
+            service,
+            _no_budget_session(),
+            config,
+            body=_BIG_BODY,
+            request_id="req-b",
+            run_id="evt-chat-b",
+            context=_context(org_id=""),
+        )
+
+        assert first.status == 200
+        assert second.status == 200, "tenant B's chat run was denied by tenant A's spend — shared chain ledger"
+        assert second.app_invoked is True
+        keys = await redis_client.keys("*")
+        assert [k for k in keys if ":chain:" in k] == [], "blank-tenant chat runs must not share a chain ledger"
 
 
 class TestLifetimeAccumulator:
