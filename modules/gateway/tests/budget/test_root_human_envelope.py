@@ -78,6 +78,12 @@ HUMAN = "3f2c1b90-0000-4000-8000-00000000abcd"
 HUMAN_COGNITO_SUB = "cognito-sub-for-the-human"
 CHAIN_ID = "chain-1"
 
+# The shared registry identity every hosted agent run authenticates as
+# (agent-registry seed, `infra/modules/lambda-authorizer/main.tf`). It is what
+# `context.user_id` holds on the hosted path — never a `users.id`. See
+# TestDedupGuardReachability (Issue #4345).
+HOSTED_WORKER = "scaledjob-worker"
+
 # Issue #4344: a SERVICE-rooted root principal. This is the literal shape the
 # webhook-ingress EventBridge handler writes into `root_human_id` — a rule name, not
 # a person, with no `users.id` anywhere behind it.
@@ -1066,6 +1072,91 @@ class TestNoRootHuman:
         # An org denial carries no scope discriminator, keeping every pre-#4187
         # 402 body byte-identical.
         assert "scope" not in harness.body["details"]
+
+
+class TestDedupGuardReachability:
+    """Issue #4345: which callers the `!= user_id` dedup skip can actually fire for.
+
+    The guard at ``_get_entity_hierarchy`` skips the ROOT_USER entity when the caller
+    IS the attributed root principal. For a HOSTED agent run those two ids can never
+    be equal — ``user_id`` is the shared registry identity ``scaledjob-worker`` while
+    ``attributed_user_id`` is a canonical ``users.id`` UUID — so on the path #4300 was
+    written for the skip is a permanent no-op and the envelope line is always added.
+
+    That makes the guard easy to mis-read as protecting the hosted path, and easy to
+    delete as dead code. It is neither: two direct-caller shapes DO reach the equal
+    case (human calling the gateway directly; the service-rooted EventBridge run whose
+    row names one key as both caller and root). These tests pin both sides so the
+    guard is re-validated rather than dropped, and so the day a hosted run's caller
+    can coincide with its attributed user, the equal-ids assertion is already here.
+
+    Asserted directly against ``_get_entity_hierarchy`` rather than through the
+    middleware: the claim is about which entities the hierarchy builder emits for a
+    given pair of ids, and seeding the context is the only way to construct the equal
+    pair the live registry cannot currently produce.
+    """
+
+    @staticmethod
+    def _context(user_id: str, attributed_user_id: str, account_type: str = "service") -> TokenContext:
+        return TokenContext(
+            user_id=user_id,
+            org_id=TENANT,
+            team_id="",
+            department_id="",
+            account_type=account_type,
+            is_admin=False,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            attributed_user_id=attributed_user_id,
+        )
+
+    def test_equal_ids_add_no_root_user_entity(self):
+        """Guard FIRES when the caller is the attributed root: one line, not two.
+
+        The load-bearing assertion. Removing the ``!= user_id`` condition must break
+        this test — otherwise the guard could be deleted as dead code and a
+        human-caller run would silently debit the same person twice per request.
+        """
+        service = BudgetEnforcementService()
+
+        entities = service._get_entity_hierarchy(self._context(HUMAN, HUMAN, account_type="human"))
+
+        assert (EntityType.USER, HUMAN) in entities
+        assert not [e for e in entities if e[0] == EntityType.ROOT_USER], "caller IS the root principal — a ROOT_USER line would debit them twice"
+
+    def test_distinct_ids_add_the_root_user_entity(self):
+        """The hosted-run reality: guard is inert, the envelope line IS created.
+
+        This is the shape every hosted agent request has. If the guard ever started
+        firing here, #4300's envelope would silently stop being enforced while every
+        equal-ids test above still passed.
+        """
+        service = BudgetEnforcementService()
+
+        entities = service._get_entity_hierarchy(self._context(HOSTED_WORKER, HUMAN))
+
+        assert (EntityType.SERVICE_ACCOUNT, HOSTED_WORKER) in entities
+        assert (EntityType.ROOT_USER, HUMAN) in entities
+
+    def test_hosted_worker_identity_cannot_equal_a_canonical_users_id(self):
+        """Why the skip is structurally unreachable for hosted runs, as an invariant.
+
+        Stated as a property rather than a case: the shared worker identity is a fixed
+        registry name and a root human id is a generated UUID, so no run can make the
+        two sides of the comparison equal. This is what makes the guard inert on that
+        path — and pinning it means a future change to either identity shape (a
+        per-run agent identity, or a non-UUID root id) trips a test instead of quietly
+        making the equal case reachable and unreviewed.
+        """
+        from src.budget.enforcement_service import _unqualify_root_principal_id
+
+        assert HOSTED_WORKER != HUMAN
+        # The comparison unqualifies first (#4344); neither form can alias the worker.
+        assert _unqualify_root_principal_id(HUMAN) != HOSTED_WORKER
+        assert _unqualify_root_principal_id(SERVICE_ROOT_ID) != HOSTED_WORKER
+        # A canonical users.id is a UUID: hyphenated, hex, no colon. The worker name is
+        # none of those, so the namespaces are disjoint by construction.
+        assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", HUMAN)
+        assert not re.fullmatch(r"[0-9a-f-]+", HOSTED_WORKER)
 
 
 class TestPeriodRollover:

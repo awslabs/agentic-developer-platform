@@ -413,6 +413,21 @@ class BudgetEnforcementService:
         # (the two entity types are different Redis keys, so nothing dedupes them)
         # and consume their headroom at 2x rate.
         #
+        # Issue #4345 — WHICH callers this skip can actually fire for. It is live for
+        # direct callers and INERT for hosted agent runs; do not read it as protecting
+        # the hosted path:
+        #   * hosted agent run (the dominant path): `user_id` is the shared registry
+        #     identity `scaledjob-worker`, while `attributed_user_id` is a canonical
+        #     `users.id` UUID resolved server-side off the run-binding row. The two can
+        #     never be equal, so the skip is a no-op here and the ROOT_USER line is
+        #     always added — which is the point of #4300.
+        #   * direct human caller: `user_id` IS the initiating human's id, so the skip
+        #     fires and prevents the 2x debit above.
+        #   * service-rooted run (EventBridge): the registry row names the same service
+        #     key as both `user_id` and `root_human_id`, so the skip fires — see #4344
+        #     below for why the comparison has to unqualify first.
+        # Keep the guard: the two direct-caller cases are real and exercise it.
+        #
         # Issue #4344: the comparison runs on the UNQUALIFIED id. `attributed_user_id`
         # is namespace-qualified for a service root, while `user_id` never is, so
         # comparing the two verbatim would report "different" for a service-rooted run
