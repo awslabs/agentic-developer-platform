@@ -42,3 +42,18 @@ gitlab_webhook_enabled = true
 # it picks up `default = false` from variables.tf — safe on new accounts
 # where CI hasn't seeded the secret yet.
 enable_adversarial_e2e = true
+
+# Issue #4272 (·A-3 Phase 1): route the agent run's GitHub token through the
+# gateway gatekeeper (POST /internal/v1/github-installation-token) instead of
+# minting it in-pod from the platform GitHub App private key. When true, the
+# key is never read in the agent pod and GH_APP_PRIVATE_KEY is not exported —
+# the gateway mints a token scoped to the run's own installation + assigned
+# repo, after confirming the installation belongs to the run's tenant.
+#
+# Flipped on 2026-08-28 after the gatekeeper was verified end-to-end on embark1
+# (canary mint = HTTP 200, repo-scoped to the run's repo; worker image :latest
+# = b7ecc7fd carries the broker code). There is deliberately NO in-pod fallback:
+# a gateway that cannot mint fails the run loudly at bootstrap. Rollback is a
+# webhook-ingress apply (set back to false), not a live toggle; in-flight pods
+# keep the setting they started with.
+gh_token_broker_enabled = true
