@@ -248,7 +248,7 @@ class TestOrchestrationRouterIsOperatorPlane:
     operator-plane router, this test changes to assert it is NOT in UNIT_MODULES'
     internal set — it should not simply be deleted."
 
-    #4200 added `POST /api/orchestration/flows/{flow_id}/amendments`, so the
+    #4200 added `POST /orchestration/flows/{flow_id}/amendments`, so the
     no-router assertion is now converted rather than dropped. What has to stay
     true is narrower but is the part that actually matters: the router is reachable
     only from the Cognito-authenticated operator plane, never from `/internal/v1/*`
@@ -330,11 +330,11 @@ class TestOrchestrationRouterIsOperatorPlane:
             # Issue #4320: the engine's ingress for plan state. It CREATES flow,
             # node and edge rows, so it is promotion activity of the strongest
             # kind — PLAN_APPROVE and nothing weaker.
-            "/api/orchestration/flows": "Permission.PLAN_APPROVE",
-            "/api/orchestration/flows/{flow_id}/amendments": "Permission.PLAN_APPROVE",
-            "/api/orchestration/flows/{flow_id}/plans": "Permission.PLAN_APPROVE",
+            "/orchestration/flows": "Permission.PLAN_APPROVE",
+            "/orchestration/flows/{flow_id}/amendments": "Permission.PLAN_APPROVE",
+            "/orchestration/flows/{flow_id}/plans": "Permission.PLAN_APPROVE",
             # Read-only cost rollup. Reads usage_logs, never promotion state.
-            "/api/orchestration/flows/{flow_id}/cost": "Permission.USAGE_READ",
+            "/orchestration/flows/{flow_id}/cost": "Permission.USAGE_READ",
         }
 
         actual_paths = set()

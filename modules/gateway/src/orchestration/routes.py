@@ -2,14 +2,15 @@
 
 Issue #4200 (EPIC #4191, intent #4120).
 
-Endpoints:
-- POST /api/orchestration/flows — submit an approved plan, creating the flow
+Endpoints (paths as registered on the app; browsers reach them under `/api/...`,
+which CloudFront strips before the origin — see the prefix note below):
+- POST /orchestration/flows — submit an approved plan, creating the flow
   (issue #4320). This is the engine's only authenticated ingress for plan state;
   without it the orchestration graph cannot be populated at all.
-- POST /api/orchestration/flows/{flow_id}/amendments — supersede the accepted plan
-- GET  /api/orchestration/flows/{flow_id}/plans — read plan versions, including
+- POST /orchestration/flows/{flow_id}/amendments — supersede the accepted plan
+- GET  /orchestration/flows/{flow_id}/plans — read plan versions, including
   superseded ones
-- GET  /api/orchestration/flows/{flow_id}/cost — three-valued cost rolled up by
+- GET  /orchestration/flows/{flow_id}/cost — three-valued cost rolled up by
   graph address (issue #4207). Gated on `USAGE_READ`, not `PLAN_APPROVE`: it is a
   read of spend, and approval is a write authority over promotion state.
 
@@ -60,7 +61,17 @@ from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger("bedrockgateway.orchestration")
 
-router = APIRouter(prefix="/api/orchestration", tags=["orchestration"])
+# NOTE: prefix is "/orchestration", NOT "/api/orchestration". CloudFront fronts
+# the gateway with an /api/* behavior whose viewer-request function
+# (bedrockgw-<env>-strip-api-prefix) removes the first leading /api before
+# forwarding to the origin. So the browser calls /api/orchestration/flows and the
+# backend must serve /orchestration/flows. Issue #4330: registering this router
+# under /api/orchestration made every operator-plane call 404 through the
+# dashboard front door — the routes were only ever verified against the internal
+# ALB, which does not run the strip function. Every other operator router follows
+# this convention (/auth, /admin, /budgets); tests/test_route_prefix_convention.py
+# guards it app-wide.
+router = APIRouter(prefix="/orchestration", tags=["orchestration"])
 
 
 async def get_access_control(db: Annotated[AsyncSession, Depends(get_db)]) -> AccessControl:

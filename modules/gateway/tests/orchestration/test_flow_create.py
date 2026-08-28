@@ -1,4 +1,4 @@
-"""Tests for plan ingress: `POST /api/orchestration/flows`.
+"""Tests for plan ingress: `POST /orchestration/flows`.
 
 Issue #4320. `compile_proposal` was documented as "the engine's single ingress for
 plan state" and had no caller outside its own module, so the orchestration graph
@@ -61,7 +61,7 @@ FLOW = "delivery-loop"
 SPEC_REVISION = "issue-4120-r1"
 USER_ID = "cognito-sub-operator"
 
-ROUTE = "/api/orchestration/flows"
+ROUTE = "/orchestration/flows"
 
 
 @pytest.fixture
@@ -721,7 +721,7 @@ class TestAmendmentRegression:
         amended.edges.append(ProposedEdge(from_address=address("story-b"), to_address=address("eval")))
 
         response = client.post(
-            f"/api/orchestration/flows/{flow_id}/amendments",
+            f"/orchestration/flows/{flow_id}/amendments",
             json=amended.model_dump(mode="json"),
         )
 
@@ -736,7 +736,7 @@ class TestAmendmentRegression:
 
         flow_id = client.post(ROUTE, json=valid_proposal().model_dump(mode="json")).json()["flow_id"]
 
-        response = client.get(f"/api/orchestration/flows/{flow_id}/plans")
+        response = client.get(f"/orchestration/flows/{flow_id}/plans")
 
         assert response.status_code == 200, response.text
         versions = response.json()

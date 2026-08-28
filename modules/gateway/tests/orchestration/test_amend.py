@@ -972,7 +972,7 @@ class TestRouteAuthorization:
         client = self._client(app_with_router, permitted=False)
 
         response = client.post(
-            f"/api/orchestration/flows/{original.flow_id}/amendments",
+            f"/orchestration/flows/{original.flow_id}/amendments",
             json=amended_proposal().model_dump(mode="json"),
         )
 
@@ -988,7 +988,7 @@ class TestRouteAuthorization:
 
         client = self._client(app_with_router, permitted=False)
         client.post(
-            f"/api/orchestration/flows/{original.flow_id}/amendments",
+            f"/orchestration/flows/{original.flow_id}/amendments",
             json=amended_proposal().model_dump(mode="json"),
         )
 
@@ -1011,7 +1011,7 @@ class TestRouteAuthorization:
         client = self._client(app_with_router, permitted=True)
 
         response = client.post(
-            f"/api/orchestration/flows/{original.flow_id}/amendments",
+            f"/orchestration/flows/{original.flow_id}/amendments",
             json=amended_proposal(org_id=ORG_B).model_dump(mode="json"),
         )
 
@@ -1023,7 +1023,7 @@ class TestRouteAuthorization:
         client = self._client(app_with_router, permitted=True)
 
         response = client.post(
-            f"/api/orchestration/flows/{original.flow_id}/amendments",
+            f"/orchestration/flows/{original.flow_id}/amendments",
             json=amended_proposal().model_dump(mode="json"),
         )
 
@@ -1039,7 +1039,7 @@ class TestRouteAuthorization:
         client = self._client(app_with_router, permitted=True)
 
         response = client.post(
-            f"/api/orchestration/flows/{original.flow_id}/amendments",
+            f"/orchestration/flows/{original.flow_id}/amendments",
             json=invalid_amendment().model_dump(mode="json"),
         )
 
@@ -1055,11 +1055,11 @@ class TestRouteAuthorization:
         client = self._client(app_with_router, permitted=True)
 
         client.post(
-            f"/api/orchestration/flows/{original.flow_id}/amendments",
+            f"/orchestration/flows/{original.flow_id}/amendments",
             json=amended_proposal().model_dump(mode="json"),
         )
 
-        response = client.get(f"/api/orchestration/flows/{original.flow_id}/plans?version=1")
+        response = client.get(f"/orchestration/flows/{original.flow_id}/plans?version=1")
 
         assert response.status_code == 200, response.text
         versions = response.json()
@@ -1073,7 +1073,7 @@ class TestRouteAuthorization:
         original = await compile_original(session, approval)
         client = self._client(app_with_router, permitted=False)
 
-        response = client.get(f"/api/orchestration/flows/{original.flow_id}/plans")
+        response = client.get(f"/orchestration/flows/{original.flow_id}/plans")
 
         assert response.status_code == 403
 
@@ -1085,7 +1085,7 @@ class TestRouteAuthorization:
         client = self._client(app_with_router, permitted=True, role="platform_admin")
 
         client.post(
-            f"/api/orchestration/flows/{original.flow_id}/amendments",
+            f"/orchestration/flows/{original.flow_id}/amendments",
             json=amended_proposal().model_dump(mode="json"),
         )
 
