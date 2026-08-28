@@ -83,6 +83,35 @@ _CACHE_PREFIX = "runbind"
 # service-rooted one (EventBridge / scheduled / CI / alarm), and the two are
 # indistinguishable from the id alone. Budget attribution needs the kind to
 # namespace-qualify the id, so the flag has to come off the same row.
+#
+# ---------------------------------------------------------------------------
+# Issue #4348 (D11): TWO name collisions, both of which look like the run id.
+# ---------------------------------------------------------------------------
+#
+# **1. The row attribute named ``run_id`` is NOT the run id.** It is the KEDA
+# job/pod name, written by the worker's status updater
+# (``agent-worker-image/lib/invocation_status.py`` — "run_id: KEDA job/pod name
+# (set at in_progress)"), and the UI labels it "Run / Job ID". Real values look
+# like ``agent-gateway-worker-abc12`` / ``chat-agent-worker-xyz98``.
+#
+# The id this module binds on — the one ``X-Agent-RunId`` carries — is the
+# ``event_id``, i.e. the table's partition key, which is why ``_query_row``
+# keys on ``Key("event_id")``. ``run_id`` is deliberately ABSENT from the
+# projection below and must stay absent: binding on the pod name would compare
+# against a value no caller ever sends, denying legitimate runs as
+# ``unknown_run`` (or, worse, binding the wrong run). The identical trap on the
+# cost path already has a guard — ``orchestration/cost.py``'s
+# ``assert_join_key_is_event_id`` — and ``tests/budget/test_run_binding.py``
+# reuses it here so re-adding ``run_id`` fails CI rather than production.
+#
+# **2. ``SpawnResult.message_id`` is NOT the run id either.** It is the SQS
+# ``MessageId`` returned by ``publish_envelope``
+# (``webhook-ingress/lambda/common/sqs_publisher.py`` →
+# ``spawn_persona.py:258``). Only the ENVELOPE ``message_id``
+# (``spawn_persona.py:543``, a fresh uuid4) is the run id — it is what becomes
+# the ``event_id`` PK of this very row (``spawn_persona.py:696``) and what the
+# worker exports as ``ADP_MESSAGE_ID`` for the header. Asserting the SQS id
+# would make every call ``unknown_run``.
 _PROJECTION = "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, arrived_at"
 
 

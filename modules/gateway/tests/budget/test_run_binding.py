@@ -17,18 +17,29 @@ Harness notes, per the #4068 gate:
 * A stub DDB table that records its calls, so "``Query``, not ``GetItem``" (the
   #3376 composite-key lesson) is asserted rather than hoped for.
 * No ``MagicMock`` configs — nothing here reads config.
+
+Issue #4348 (D11) adds ``TestJoinKeyIsEventIdNotTheRowRunIdAttribute``: the
+``webhook-events`` row carries an attribute literally named ``run_id`` that is
+the KEDA pod name, not the id this module binds on. That class is a regression
+guard, not a behaviour test — the binding is already correct, and the guard is
+what keeps it correct while #4337 rewrites this path.
 """
+
+import inspect as py_inspect
+import re
 
 import fakeredis.aioredis
 import pytest
 from botocore.exceptions import ClientError
 
+from src.budget import run_binding as run_binding_module
 from src.budget.run_binding import (
     RunBindingError,
     RunBindingResolver,
     resolve_run_binding,
     verify_row_matches_caller,
 )
+from src.orchestration.cost import JoinKeyError, assert_join_key_is_event_id
 
 RUN_ID = "evt-abc123"
 CALLER = "user-123"
@@ -396,3 +407,162 @@ class TestPeriodTypeGuard:
 
         start, end = get_period_start_end(PeriodType.DAILY, date(2026, 8, 27))
         assert (start, end) == (date(2026, 8, 27), date(2026, 8, 27))
+
+
+# =============================================================================
+# GATE — Issue #4348 (D11): the two ids that are both called "run id"
+# =============================================================================
+
+
+def _executable_source(module) -> str:
+    """A module's source with docstrings and comments stripped.
+
+    Mirrors ``tests/orchestration/test_cost.py::_executable_source``, and for the
+    same reason: ``run_binding.py``'s prose deliberately *explains* the ``run_id``
+    trap at length, so a naive substring check would trip on the very
+    documentation it is enforcing. The only way to pass such a check would be to
+    delete the comment that makes the trap survivable for the next reader —
+    trading a real safeguard for a cosmetic one. Stripping prose keeps the
+    assertion about CODE.
+    """
+    source = py_inspect.getsource(module)
+    source = re.sub(r'"""(?:.|\n)*?"""', "", source)
+    source = re.sub(r"'''(?:.|\n)*?'''", "", source)
+    source = re.sub(r"#[^\n]*", "", source)
+    return source
+
+
+class TestJoinKeyIsEventIdNotTheRowRunIdAttribute:
+    """The join key is ``event_id``. The attribute *named* ``run_id`` is a pod name.
+
+    Issue #4348 / #4337 T24. The ``webhook-events`` row carries an attribute
+    literally named ``run_id``, written by the worker's status updater
+    (``agent-worker-image/lib/invocation_status.py``) — it is the KEDA job/pod
+    name, which the UI labels "Run / Job ID". The id ``X-Agent-RunId`` carries and
+    this module binds on is the ``event_id`` partition key.
+
+    So the *wrong* field has the more convincing name, and #4337's whole subject
+    ("reconcile the run identity") actively invites reaching for it. These are
+    regression guards: the binding is already correct on ``main``, and nothing
+    here changes behaviour. They exist so that re-adding ``run_id`` to the read
+    path fails CI instead of denying real runs as ``unknown_run``.
+
+    Pairs with the identical guard on the cost path
+    (``orchestration/cost.py::assert_join_key_is_event_id``), which is reused
+    below rather than reimplemented.
+    """
+
+    # The deployed KEDA ScaledJob names — the values the row's `run_id` actually
+    # holds, and the values the binding must never be handed as a run id.
+    POD_NAME = "agent-gateway-worker-abc12"
+
+    def test_binding_source_never_reads_the_row_run_id_attribute(self):
+        """GATE: no executable line in ``run_binding.py`` reads row ``run_id``.
+
+        Asserted at source level because the failure is otherwise invisible: a
+        binding keyed on the pod name compares against a value no caller ever
+        sends, so every request becomes ``unknown_run`` (fail-closed → total
+        inference outage) or, if a pod name were ever asserted, binds the wrong
+        run. Both are silent at the type level and only show up in production.
+
+        Note this forbids only the *attribute read*. The local parameter and the
+        ``RunBinding.run_id`` field are correctly named — they hold the event id.
+        """
+        body = _executable_source(run_binding_module)
+
+        for forbidden in ('row.get("run_id")', "row.get('run_id')", 'row["run_id"]', "row['run_id']"):
+            assert forbidden not in body, (
+                f"{forbidden!r} is back on the binding path. The row attribute named "
+                "`run_id` is the KEDA pod name, not the run id — bind on `event_id`."
+            )
+
+    def test_projection_does_not_request_the_row_run_id_attribute(self):
+        """The projection is the earliest place the wrong field can enter.
+
+        A ``run_id`` in ``_PROJECTION`` is not itself a bug, but it is the tell:
+        nothing needs the pod name, so its presence means someone is about to
+        read it. Keeping it out of the projection is what makes the source guard
+        above hold by construction.
+        """
+        projected = {attr.strip() for attr in run_binding_module._PROJECTION.split(",")}
+
+        assert "run_id" not in projected
+        # Positive half: the identity attributes the binding genuinely needs.
+        assert {"user_id", "tenant_id", "root_human_id", "correlation_id"} <= projected
+
+    @pytest.mark.asyncio
+    async def test_lookup_key_condition_names_event_id(self, cache):
+        """Positive assertion: the Query keys on ``event_id``, introspected.
+
+        Read off the recorded ``KeyConditionExpression`` rather than matched as a
+        string, so it asserts the key actually sent to DynamoDB.
+        """
+        table = _StubTable(items=[_row()])
+
+        await resolve_run_binding(
+            run_id=RUN_ID,
+            caller_user_id=CALLER,
+            caller_org_id=TENANT,
+            resolver=_resolver(table, cache),
+        )
+
+        expression = table.queries[0]["KeyConditionExpression"].get_expression()
+        key, value = expression["values"]
+        assert key.name == "event_id"
+        assert value == RUN_ID
+
+    @pytest.mark.asyncio
+    async def test_row_whose_run_id_differs_from_its_event_id_binds_on_event_id(self, cache):
+        """Integration-shaped: the pod name is present on the row and ignored.
+
+        This is the real production shape — the worker writes ``run_id`` at
+        ``in_progress``, so by the time a model call arrives the row carries both
+        ids and they differ. The binding must key on the ``event_id`` it was
+        asked about and carry that value through to the ledger key.
+        """
+        row = _row()
+        row["run_id"] = self.POD_NAME
+
+        binding = await resolve_run_binding(
+            run_id=RUN_ID,
+            caller_user_id=CALLER,
+            caller_org_id=TENANT,
+            resolver=_resolver(_StubTable(items=[row]), cache),
+        )
+
+        assert binding is not None
+        assert binding.run_id == RUN_ID
+        assert binding.run_id != self.POD_NAME
+
+    def test_verify_row_matches_caller_ignores_a_row_run_id_attribute(self, cache):
+        """A row's ``run_id`` must not influence the identity comparison.
+
+        ``verify_row_matches_caller`` is the check that makes the run id
+        unforgeable; a pod name on the row is irrelevant to it, and must remain
+        so even when it disagrees with the asserted run id.
+        """
+        row = _row()
+        row["run_id"] = self.POD_NAME
+
+        binding = verify_row_matches_caller(
+            run_id=RUN_ID,
+            row=row,
+            caller_user_id=CALLER,
+            caller_org_id=TENANT,
+        )
+
+        assert binding.run_id == RUN_ID
+
+    def test_shared_guard_rejects_a_pod_name_as_a_run_id(self):
+        """Reuse, not reinvention: ``cost.py``'s helper covers the binding path too.
+
+        The pod name is the value that must never reach a ledger key from either
+        direction — cost aggregation joining on it silently reports $0.00, and
+        binding on it denies real runs. One helper, one regex, both paths.
+        """
+        with pytest.raises(JoinKeyError, match="event_id"):
+            assert_join_key_is_event_id([self.POD_NAME])
+
+    def test_shared_guard_accepts_the_real_event_id_shape(self):
+        """No false positives: an ``event_id`` is a uuid4 (``spawn_persona.py:543``)."""
+        assert assert_join_key_is_event_id(["550e8400-e29b-41d4-a716-446655440000"]) is None
