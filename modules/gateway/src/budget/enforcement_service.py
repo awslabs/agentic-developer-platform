@@ -69,6 +69,73 @@ _INFRASTRUCTURE_FAULTS: tuple[type[BaseException], ...] = (
     botocore.exceptions.ClientError,
 )
 
+# Issue #4344: the namespace prefix for a SERVICE-rooted root principal.
+#
+# The lineage plane writes both kinds of root principal into one field: a human
+# chain carries a canonical `users.id`, while a service-rooted chain (EventBridge /
+# scheduled / CI / alarm) carries a service identity key such as
+# `eventbridge:adp-dev-high-error-rate` (webhook-ingress
+# `lambda/eventbridge/handler.py`). Writing both verbatim as the ROOT_USER entity id
+# puts two identifier namespaces in one column under a UniqueConstraint — the exact
+# collision the EntityType comment in `shared/schemas/budget.py` splits entity values
+# to avoid, reappearing INSIDE `root_user`.
+#
+# Only the service side is prefixed. Human ids stay BARE, which keeps every
+# human-rooted key byte-identical to #4300 — the settled `root_user` ledger rows the
+# tracker Lambda has already written stay addressable, so this needs no migration and
+# no backfill. Collision-freedom does not depend on the prefix being unguessable: a
+# canonical `users.id` is a generated UUID (`shared/models/organization.py`), which
+# contains no colon, so no bare human id can ever equal a `service:`-qualified value.
+_SERVICE_PRINCIPAL_PREFIX = "service:"
+
+
+def _qualify_root_principal_id(root_principal_id: str, *, is_human_rooted: bool | None) -> str:
+    """Namespace-qualify a root principal id by principal kind (Issue #4344).
+
+    Args:
+        root_principal_id: The raw ``root_human_id`` off the run's registry row.
+            May be a canonical ``users.id`` or a service identity key.
+        is_human_rooted: The row's flag. ``None`` means the row carried none.
+
+    Returns:
+        ``""`` for an empty input — empty stays empty, because a qualified empty
+        (``"service:"``) would be a brand-new sentinel that collapses every
+        unattributed request in a tenant into one shared bogus ledger line, which is
+        the specific outcome #4300's empty-check exists to prevent.
+
+        Otherwise the bare id when the principal is a human, or a
+        ``service:``-prefixed id when it is not.
+
+    ``None`` resolves to SERVICE, never human (D4b). That default is the whole
+    safety property: the failure this function prevents is a service key being
+    treated as a canonical ``users.id``, so an unknown kind must fall on the service
+    side. Defaulting the other way would leave every row that predates the flag —
+    and every writer that omits it — landing in exactly the namespace being
+    protected, and the bug would look fixed.
+    """
+    if not root_principal_id:
+        return ""
+    if is_human_rooted is True:
+        return root_principal_id
+    return f"{_SERVICE_PRINCIPAL_PREFIX}{root_principal_id}"
+
+
+def _unqualify_root_principal_id(entity_id: str) -> str:
+    """Strip the service namespace back off, for comparison only (Issue #4344).
+
+    Used by the ROOT_USER dedup guard, which asks "is the root principal the same
+    party as the authenticated caller?". That question is about the PRINCIPAL, not
+    about the namespace it was written in: for a service-rooted run the registry row
+    puts the same service identity key in both ``user_id`` and ``root_human_id``
+    (webhook-ingress `eventbridge/handler.py` passes it as both), so comparing the
+    qualified id against a bare ``user_id`` would find them different and add a
+    SECOND budget line for one principal — consuming its headroom at 2x rate, the
+    exact defect the guard was added to prevent.
+    """
+    if entity_id.startswith(_SERVICE_PRINCIPAL_PREFIX):
+        return entity_id[len(_SERVICE_PRINCIPAL_PREFIX) :]
+    return entity_id
+
 
 class BudgetEnforcementService:
     """
@@ -338,14 +405,21 @@ class BudgetEnforcementService:
         if context.department_id:
             entities.append((EntityType.DEPARTMENT, context.department_id))
 
-        # Root-human level (attribution — see docstring). Issue #4300.
+        # Root-principal level (attribution — see docstring). Issue #4300.
         #
-        # Gated on `!= user_id` because when the caller IS the initiating human,
-        # their spend is already covered by the USER line above. Adding a second
-        # entity would reserve the same cost twice against one person (the two
-        # entity types are different Redis keys, so nothing dedupes them) and
-        # consume their headroom at 2x rate.
-        if context.attributed_user_id and context.attributed_user_id != context.user_id:
+        # Gated on `!= user_id` because when the caller IS the initiating principal,
+        # their spend is already covered by the USER/SERVICE_ACCOUNT line above.
+        # Adding a second entity would reserve the same cost twice against one party
+        # (the two entity types are different Redis keys, so nothing dedupes them)
+        # and consume their headroom at 2x rate.
+        #
+        # Issue #4344: the comparison runs on the UNQUALIFIED id. `attributed_user_id`
+        # is namespace-qualified for a service root, while `user_id` never is, so
+        # comparing the two verbatim would report "different" for a service-rooted run
+        # whose row names the same service key as both the caller and the root — and
+        # reintroduce the 2x debit above. The entity id itself stays qualified: that is
+        # the key the ledger and the tracker Lambda agree on.
+        if context.attributed_user_id and _unqualify_root_principal_id(context.attributed_user_id) != context.user_id:
             entities.append((EntityType.ROOT_USER, context.attributed_user_id))
 
         # Organization level (attribution — see docstring)
@@ -645,10 +719,28 @@ class BudgetEnforcementService:
                     # `validate_assignment` is ever enabled on TokenContext.
                     #
                     # Empty stays empty. `run_binding.py` normalizes a missing
-                    # root_human_id to "", which is the common case (non-human-rooted
-                    # runs, and every row written before the lineage plane shipped).
+                    # root_human_id to "", which is the common case (runs with no
+                    # recorded root, and every row written before the lineage plane
+                    # shipped).
+                    #
+                    # Issue #4344: the id is namespace-qualified by principal kind
+                    # BEFORE it is published, not at the point it is read. Both
+                    # consumers of this field read the same qualified value that way —
+                    # the ROOT_USER entity below (the enforcement key) and the four
+                    # chat-log write sites in `proxy/routes.py` (which feed the settled
+                    # `root_user` ledger row via the budget-usage-tracker Lambda).
+                    # Qualifying at only one of the two would silently desync the key
+                    # enforcement reads from the key spend settles under, so the cap
+                    # would read a ledger that never rises.
+                    #
+                    # A service-rooted run puts a SERVICE IDENTITY KEY here, not a
+                    # `users.id`; see `_qualify_root_principal_id`.
                     if binding.root_human_id:
-                        object.__setattr__(context, "attributed_user_id", binding.root_human_id)
+                        object.__setattr__(
+                            context,
+                            "attributed_user_id",
+                            _qualify_root_principal_id(binding.root_human_id, is_human_rooted=binding.is_human_rooted),
+                        )
 
                 # ORDERING CONTRACT (Issue #4300): the hierarchy is built HERE,
                 # strictly after the run binding has been resolved and

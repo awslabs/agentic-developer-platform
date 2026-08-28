@@ -78,6 +78,13 @@ HUMAN = "3f2c1b90-0000-4000-8000-00000000abcd"
 HUMAN_COGNITO_SUB = "cognito-sub-for-the-human"
 CHAIN_ID = "chain-1"
 
+# Issue #4344: a SERVICE-rooted root principal. This is the literal shape the
+# webhook-ingress EventBridge handler writes into `root_human_id` — a rule name, not
+# a person, with no `users.id` anywhere behind it.
+SERVICE_KEY = "eventbridge:adp-dev-high-error-rate"
+# What the ROOT_USER entity id must become for that principal.
+SERVICE_ROOT_ID = f"service:{SERVICE_KEY}"
+
 # Roughly $0.75 of opus input plus the pricing module's output estimate. Sized so
 # a handful of these crosses a small cap while one does not.
 _BIG_BODY = b"x" * 200_000
@@ -178,12 +185,24 @@ class _StubTable:
         return {"Items": [row] if row else []}
 
 
-def _chain_registry(runs: dict[str, str], root_human_id: str = HUMAN, tenant: str = TENANT) -> _StubTable:
+def _chain_registry(
+    runs: dict[str, str],
+    root_human_id: str = HUMAN,
+    tenant: str = TENANT,
+    is_human_rooted: bool | None = True,
+) -> _StubTable:
     """Registry rows for a fan-out: ``{run_id: owning service-account user_id}``.
 
     Every row carries the SAME ``root_human_id`` — that is what makes them one
     human's chain — while each carries a DIFFERENT ``user_id``, which is what
     makes them invisible to per-user caps pre-#4300.
+
+    ``is_human_rooted`` defaults to ``True`` because that is what every row in this
+    suite models: a chain a PERSON set in motion (Issue #4344). Pass ``False`` for a
+    service-rooted run, or ``None`` to omit the attribute entirely the way a row
+    predating the lineage plane does — the flag is what distinguishes the two kinds
+    of principal that share the ``root_human_id`` field, so it is not optional
+    decoration.
     """
     return _StubTable(
         {
@@ -193,6 +212,7 @@ def _chain_registry(runs: dict[str, str], root_human_id: str = HUMAN, tenant: st
                 "root_human_id": root_human_id,
                 "correlation_id": CHAIN_ID,
                 "arrived_at": "2026-08-28T10:00:00Z",
+                **({} if is_human_rooted is None else {"is_human_rooted": is_human_rooted}),
             }
             for run_id, owner in runs.items()
         }
@@ -567,6 +587,309 @@ class TestIdentityNamespace:
         )
         assert harness.status == 402
         assert harness.body["details"]["entity_id"] == HUMAN
+
+
+class TestRootPrincipalNamespace:
+    """Issue #4344: a SERVICE root principal must never occupy the users.id namespace.
+
+    ``root_human_id`` is written by the lineage plane for BOTH kinds of chain root: a
+    canonical ``users.id`` when a person triggered it, and a service identity key
+    (``eventbridge:<rule>``) when a schedule / CI job / alarm did. #4300 wrote the
+    value verbatim as the ROOT_USER entity id with no test of which kind it was, so a
+    service string landed in a column whose own schema comment says it holds a
+    ``users.id`` — the identifier-namespace collision the EntityType comment splits
+    entity values precisely to avoid, reappearing inside ``root_user``.
+
+    The gate assertion is ``test_service_root_cannot_alias_a_human_cap``: it seeds a
+    cap under the BARE service key and requires that the request is NOT denied by it.
+    Pre-#4344 that cap binds, because the bare service key IS the entity id — which
+    is the collision, expressed as a cap applying to the wrong principal.
+    """
+
+    def test_qualifier_table(self):
+        """The one decision this fix turns on, pinned directly.
+
+        Absent (``None``) resolving to SERVICE is the load-bearing row (D4b): rows
+        predating the lineage plane, and any writer that omits the flag, must fall on
+        the service side. Defaulting them to human would put the very keys this issue
+        is about back into the protected namespace while every other test still
+        passed.
+        """
+        from src.budget.enforcement_service import _qualify_root_principal_id
+
+        # Human -> bare. Byte-identical to #4300, so already-settled ledger rows stay
+        # addressable and no migration is needed.
+        assert _qualify_root_principal_id(HUMAN, is_human_rooted=True) == HUMAN
+        # Service -> qualified.
+        assert _qualify_root_principal_id(SERVICE_KEY, is_human_rooted=False) == SERVICE_ROOT_ID
+        # Absent -> service, NEVER human.
+        assert _qualify_root_principal_id(SERVICE_KEY, is_human_rooted=None) == SERVICE_ROOT_ID
+        # Empty stays empty: a qualified empty ("service:") would be a new sentinel
+        # collapsing every unattributed request in a tenant into one bogus line.
+        for flag in (True, False, None):
+            assert _qualify_root_principal_id("", is_human_rooted=flag) == ""
+
+    def test_qualified_service_id_cannot_equal_any_canonical_users_id(self):
+        """The collision-freedom property, stated as an invariant rather than a case.
+
+        A canonical ``users.id`` is a generated UUID, so it contains no colon. The
+        qualified form always does. No amount of adversarial service-key naming can
+        therefore produce a string a bare human id could equal — which is what makes
+        one entity type safe to share.
+        """
+        from src.budget.enforcement_service import _qualify_root_principal_id
+
+        assert ":" not in HUMAN, "premise: canonical users.id is a UUID and carries no colon"
+        for key in (SERVICE_KEY, HUMAN, "codebuild:nightly", "a", ":", "service:already"):
+            qualified = _qualify_root_principal_id(key, is_human_rooted=False)
+            assert qualified.startswith("service:")
+            # Even a service key that spells out a real user's id cannot alias them.
+            assert qualified != HUMAN
+            assert qualified != key
+
+    @pytest.mark.asyncio
+    async def test_service_root_cannot_alias_a_human_cap(self, redis_client, clock):
+        """GATE (T12/T13): a cap seeded under the BARE service key must not bind.
+
+        This is the collision made observable. Pre-#4344 the ROOT_USER entity id for
+        this run IS ``eventbridge:adp-dev-high-error-rate``, so a row keyed on that
+        bare string is found and the request is denied at $0.01 — i.e. a
+        ``users.id``-namespace row governing a service principal. Post-fix the entity
+        id is ``service:...``, the bare row is never consulted, and the request
+        passes.
+
+        Driven end-to-end through the real middleware with the context seeded ONLY
+        from the registry row, so the ordering trap in the module docstring stays
+        covered: the qualification has to happen where attribution is published.
+        """
+        registry = _chain_registry({"evt-1": "svc-agent-1"}, root_human_id=SERVICE_KEY, is_human_rooted=False)
+        ledger = _Ledger(budgets={(EntityType.ROOT_USER.value, SERVICE_KEY): "0.01"})
+        service = _service(redis_client, clock, registry)
+
+        harness = await _drive(
+            service,
+            ledger,
+            _config(),
+            context=_agent_context("svc-agent-1"),
+            run_id="evt-1",
+            request_id="req-1",
+        )
+
+        assert harness.status == 200, "a cap keyed on the BARE service key must not bind — that is the namespace collision"
+        assert harness.app_invoked is True
+        # And nothing was reserved under the bare key either: a budget row is only
+        # ever consulted, and a counter only ever created, for the qualified id.
+        assert [k for k in await redis_client.keys("*") if f":{EntityType.ROOT_USER.value}:{SERVICE_KEY}:" in k] == []
+
+    @pytest.mark.asyncio
+    async def test_service_root_is_still_capped_under_its_qualified_id(self, redis_client, clock):
+        """The other half: qualifying must not mean EXEMPTING (D6d).
+
+        The cheap over-correction for this issue is to gate the entity on
+        ``is_human_rooted`` and drop it for service runs — which leaves unattended CI,
+        exactly the traffic that most needs a ceiling, with no root-principal cap at
+        all. So the same cap seeded under the QUALIFIED id must still deny, and the 402
+        must name the qualified entity because that is the id an operator has to seed a
+        budget row against.
+
+        No ``scope`` assertion: this denial comes off the settled-ledger check, which
+        carries no discriminator (see ``test_org_attribution_is_unchanged``). The
+        reservation path's ``scope=root_user`` is already covered by T1.
+        """
+        registry = _chain_registry({"evt-1": "svc-agent-1"}, root_human_id=SERVICE_KEY, is_human_rooted=False)
+        ledger = _Ledger(budgets={(EntityType.ROOT_USER.value, SERVICE_ROOT_ID): "0.01"})
+        service = _service(redis_client, clock, registry)
+
+        harness = await _drive(
+            service,
+            ledger,
+            _config(),
+            context=_agent_context("svc-agent-1"),
+            run_id="evt-1",
+            request_id="req-1",
+        )
+
+        assert harness.status == 402
+        assert harness.app_invoked is False
+        details = harness.body["details"]
+        assert details["entity_type"] == EntityType.ROOT_USER.value
+        assert details["entity_id"] == SERVICE_ROOT_ID
+
+    @pytest.mark.asyncio
+    async def test_service_root_reservation_key_is_qualified(self, redis_client, clock):
+        """The live Redis counter is keyed on the qualified id too.
+
+        Asserted with a cap generous enough to admit the request, so the reservation
+        actually lands rather than the check short-circuiting into a 402. Both halves
+        of enforcement — the settled ledger read and the in-flight counter — must agree
+        on the id, or a service principal would be metered under one key and capped
+        under another.
+        """
+        registry = _chain_registry({"evt-1": "svc-agent-1"}, root_human_id=SERVICE_KEY, is_human_rooted=False)
+        ledger = _Ledger(budgets={(EntityType.ROOT_USER.value, SERVICE_ROOT_ID): "100.00"})
+        service = _service(redis_client, clock, registry)
+
+        harness = await _drive(
+            service,
+            ledger,
+            _config(),
+            context=_agent_context("svc-agent-1"),
+            run_id="evt-1",
+            request_id="req-1",
+        )
+
+        assert harness.status == 200
+        root_keys = [k for k in await redis_client.keys("*") if f":{EntityType.ROOT_USER.value}:" in k]
+        assert root_keys, "a service-rooted run must still get a root-principal line (over-correction check, D6d)"
+        for key in root_keys:
+            assert f":{EntityType.ROOT_USER.value}:{SERVICE_ROOT_ID}:" in key, f"reservation key is not namespace-qualified: {key}"
+
+    @pytest.mark.asyncio
+    async def test_absent_flag_is_treated_as_service(self, redis_client, clock):
+        """T11: a row with NO ``is_human_rooted`` resolves to service, never human.
+
+        Rows written before the lineage plane carry no flag. Reading absence as human
+        would put their ids straight back into the canonical namespace — the same bug,
+        surviving on the majority of historical rows. Asserted the way the gate above
+        is: the bare cap must not bind, the qualified one must.
+        """
+        registry = _chain_registry({"evt-1": "svc-agent-1"}, root_human_id=SERVICE_KEY, is_human_rooted=None)
+        service = _service(redis_client, clock, registry)
+
+        bare = await _drive(
+            service,
+            _Ledger(budgets={(EntityType.ROOT_USER.value, SERVICE_KEY): "0.01"}),
+            _config(),
+            context=_agent_context("svc-agent-1"),
+            run_id="evt-1",
+            request_id="req-1",
+        )
+        assert bare.status == 200, "an absent flag must not be read as human-rooted"
+
+        qualified = await _drive(
+            _service(redis_client, clock, registry),
+            _Ledger(budgets={(EntityType.ROOT_USER.value, SERVICE_ROOT_ID): "0.01"}),
+            _config(),
+            context=_agent_context("svc-agent-1"),
+            run_id="evt-1",
+            request_id="req-2",
+        )
+        assert qualified.status == 402
+        assert qualified.body["details"]["entity_id"] == SERVICE_ROOT_ID
+
+    @pytest.mark.asyncio
+    async def test_human_root_id_stays_bare(self, redis_client, clock):
+        """No regression to #4300's human path — the ids must not move.
+
+        The settled ``root_user`` ledger rows the tracker Lambda has already written
+        are keyed on the bare canonical id. If the human side gained a prefix too, the
+        enforcement key would stop matching them and every human's settled floor would
+        silently read as $0 — a cap that never binds, with nothing failing loudly.
+        """
+        registry = _chain_registry({"evt-1": "svc-agent-1"}, root_human_id=HUMAN, is_human_rooted=True)
+        ledger = _Ledger(
+            budgets={(EntityType.ROOT_USER.value, HUMAN): "2.00"},
+            settled={(EntityType.ROOT_USER.value, HUMAN): "1.95"},
+        )
+        service = _service(redis_client, clock, registry)
+
+        harness = await _drive(
+            service,
+            ledger,
+            _config(),
+            context=_agent_context("svc-agent-1"),
+            run_id="evt-1",
+            request_id="req-1",
+        )
+
+        assert harness.status == 402
+        assert harness.body["details"]["entity_id"] == HUMAN, "the human's id must stay BARE"
+        # Proof the settled row was still found under the bare key.
+        assert Decimal(str(harness.body["details"]["spent_usd"])) == Decimal("1.95")
+        for key in [k for k in await redis_client.keys("*") if f":{EntityType.ROOT_USER.value}:" in k]:
+            assert "service:" not in key
+
+    @pytest.mark.asyncio
+    async def test_human_and_service_roots_never_share_an_id(self, redis_client, clock):
+        """Integration: two runs whose root principals collide pre-fix stay disjoint.
+
+        The adversarial case — a service key spelling out a real user's canonical id.
+        Pre-#4344 both runs produce the identical ROOT_USER entity id, so the schedule
+        spends out of that person's envelope. Post-fix the two ids share nothing.
+        """
+        # A schedule whose identity key is EXACTLY the human's canonical id, so the two
+        # principals are indistinguishable by id alone and only the KIND separates them.
+        qualified_service_id = f"service:{HUMAN}"
+        # Both envelopes are configured and generous: a target is only built for an
+        # entity that has a budget row, and only an admitted request reserves.
+        ledger = _Ledger(
+            budgets={
+                (EntityType.ROOT_USER.value, HUMAN): "100.00",
+                (EntityType.ROOT_USER.value, qualified_service_id): "100.00",
+            }
+        )
+        captured: list = []
+
+        async def run(*, human, request_id, run_id):
+            registry = _chain_registry({run_id: "svc-agent-1"}, root_human_id=HUMAN, is_human_rooted=human)
+            service = _service(redis_client, clock, registry)
+            original = service._reserve_or_degrade
+
+            async def spy(rid, cost, targets):
+                captured.extend(t for t in targets if t.entity_type == EntityType.ROOT_USER.value)
+                return await original(rid, cost, targets)
+
+            with patch.object(service, "_reserve_or_degrade", spy):
+                harness = await _drive(
+                    service,
+                    ledger,
+                    _config(),
+                    context=_agent_context("svc-agent-1"),
+                    run_id=run_id,
+                    request_id=request_id,
+                    body=b"{}",
+                )
+            assert harness.status == 200
+
+        await run(human=True, request_id="req-human", run_id="evt-1")
+        await run(human=False, request_id="req-service", run_id="evt-2")
+
+        ids = {t.entity_id for t in captured}
+        assert ids == {HUMAN, qualified_service_id}, f"root principals collided: {ids}"
+        # Keys, not just ids: the key is what Redis actually contends on.
+        human_keys = {t.key() for t in captured if t.entity_id == HUMAN}
+        service_keys = {t.key() for t in captured if t.entity_id == qualified_service_id}
+        assert human_keys and service_keys
+        assert human_keys.isdisjoint(service_keys), "distinct principals must not share a reservation key"
+
+    @pytest.mark.asyncio
+    async def test_service_root_is_charged_once_not_twice(self, redis_client, clock):
+        """The dedup guard must survive qualification.
+
+        For an EventBridge run the registry row names the SAME service key as both
+        ``user_id`` and ``root_human_id`` (the handler passes it as both), so the
+        caller IS the root principal and the SERVICE_ACCOUNT line already covers it.
+        Comparing the qualified attributed id against the bare ``user_id`` would
+        report "different" and add a second ROOT_USER line — one principal debited
+        twice per request, its headroom consumed at 2x rate. That is the
+        over-correction this asserts against.
+        """
+        registry = _chain_registry({"evt-1": SERVICE_KEY}, root_human_id=SERVICE_KEY, is_human_rooted=False)
+        ledger = _Ledger(budgets={(EntityType.SERVICE_ACCOUNT.value, SERVICE_KEY): "100.00"})
+        service = _service(redis_client, clock, registry)
+
+        harness = await _drive(
+            service,
+            ledger,
+            _config(),
+            context=_agent_context(SERVICE_KEY),
+            run_id="evt-1",
+            request_id="req-1",
+        )
+
+        assert harness.status == 200
+        root_keys = [k for k in await redis_client.keys("*") if f":{EntityType.ROOT_USER.value}:" in k]
+        assert root_keys == [], "the caller IS the root principal — a second (root_user) line would debit it twice"
 
 
 class TestForgery:

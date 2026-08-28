@@ -77,7 +77,13 @@ _CACHE_PREFIX = "runbind"
 # Attributes the binding needs off the registry row. Projected explicitly (rather
 # than fetching the whole item) because these rows carry the full webhook payload
 # and the delivery body is large, hot-path irrelevant, and often sensitive.
-_PROJECTION = "user_id, tenant_id, root_human_id, correlation_id, arrived_at"
+#
+# Issue #4344 adds ``is_human_rooted``: ``root_human_id`` holds a canonical
+# ``users.id`` for a human-rooted chain but a SERVICE IDENTITY KEY for a
+# service-rooted one (EventBridge / scheduled / CI / alarm), and the two are
+# indistinguishable from the id alone. Budget attribution needs the kind to
+# namespace-qualify the id, so the flag has to come off the same row.
+_PROJECTION = "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, arrived_at"
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,16 @@ class RunBinding:
     tenant_id: str
     user_id: str
     root_human_id: str
+    # Issue #4344: whether ``root_human_id`` names a HUMAN (canonical ``users.id``)
+    # or a SERVICE identity key (``eventbridge:<rule>`` and friends). ``None`` means
+    # the row carried no flag — rows written before the lineage plane shipped, and
+    # every row from a writer that omits it. ``None`` is NOT "human": absent is
+    # resolved as service by the budget layer, mirroring
+    # ``correlation_store.py:120-124``'s deliberate no-True-default.
+    #
+    # Attribution only, exactly like ``root_human_id`` itself. Nothing in
+    # ``verify_row_matches_caller``'s identity comparison reads it.
+    is_human_rooted: bool | None = None
 
 
 class RunBindingError(Exception):
@@ -107,6 +123,27 @@ class RunBindingError(Exception):
         super().__init__(message)
         self.reason = reason
         self.message = message
+
+
+def _normalize_is_human_rooted(raw: object) -> bool | None:
+    """Coerce a registry row's ``is_human_rooted`` attribute to ``bool | None``.
+
+    Issue #4344. ``None`` in means ``None`` out: an absent attribute is a real,
+    common state (rows predating the lineage plane) and must stay distinguishable
+    from an explicit ``false`` for logging.
+
+    Everything else resolves to ``True`` only for an unambiguous true — the bool
+    ``True`` or the string ``"true"``. Every other shape reads ``False``. The
+    asymmetry is deliberate and is the safe direction: the row is written by
+    several producers, and a value this function cannot confidently read as human
+    must not be *treated* as human, because that is what would put a service
+    identity key into the canonical-``users.id`` namespace (D4b).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() == "true"
 
 
 def _get_dynamodb_table(table_name: str, aws_region: str):
@@ -245,6 +282,12 @@ class RunBindingResolver:
             "tenant_id": str(row.get("tenant_id") or ""),
             "root_human_id": str(row.get("root_human_id") or ""),
             "correlation_id": str(row.get("correlation_id") or ""),
+            # Issue #4344: normalized to bool/None here rather than left raw so the
+            # value that goes into the cache is the value that comes back out.
+            # `json.dumps` round-trips bool and None losslessly; a DDB Decimal or a
+            # numeric string would not, and the cached read would then disagree with
+            # the uncached one about a principal's KIND.
+            "is_human_rooted": _normalize_is_human_rooted(row.get("is_human_rooted")),
         }
         await self._cache_row(run_id, normalized)
         return normalized
@@ -316,6 +359,11 @@ def verify_row_matches_caller(
         tenant_id=str(row_tenant),
         user_id=str(row_user),
         root_human_id=str(row_root_human),
+        # Issue #4344: carried through so budget attribution can tell a human root
+        # from a service root. Read AFTER the identity checks above, never as part
+        # of them — a row does not become admissible or inadmissible by claiming a
+        # principal kind.
+        is_human_rooted=_normalize_is_human_rooted(row.get("is_human_rooted")),
     )
 
 

@@ -33,13 +33,31 @@ class EntityType(str, Enum):
     # run's registry row (src/budget/run_binding.py) — never from a header.
     RUN = "run"
     CHAIN = "chain"
-    # Issue #4300: the human who set a chain in motion. Deliberately NOT a reuse
-    # of USER: that entity holds the *authenticated caller*, which for a hosted
-    # run is the agent's own service account, and its ids are Cognito `sub`s.
-    # ROOT_USER holds a canonical `users.id` — the namespace the lineage plane
-    # writes `root_human_id` in. Two id namespaces sharing one entity_type under
-    # a UniqueConstraint is an identifier collision waiting to happen, so they
-    # get separate values.
+    # Issue #4300: the principal that set a chain in motion. Deliberately NOT a
+    # reuse of USER: that entity holds the *authenticated caller*, which for a
+    # hosted run is the agent's own service account, and its ids are Cognito
+    # `sub`s. Two id namespaces sharing one entity_type under a UniqueConstraint
+    # is an identifier collision waiting to happen, so they get separate values.
+    #
+    # Issue #4344: ROOT_USER ids are NAMESPACE-QUALIFIED, because the field the
+    # lineage plane writes them from (`root_human_id`) carries two kinds of
+    # principal and the id alone cannot tell them apart:
+    #
+    #   human-rooted   -> a canonical `users.id`, BARE (unchanged from #4300, so
+    #                     the ledger rows already settled under it stay addressable)
+    #   service-rooted -> `service:<key>`, e.g. `service:eventbridge:adp-dev-high-
+    #                     error-rate` — a scheduled/CI/alarm trigger, which is not a
+    #                     person and has no `users.id`
+    #
+    # That is the SAME anti-collision reasoning as the paragraph above, applied one
+    # level down — WITHIN this entity type rather than between entity types. Writing
+    # a service key bare would let it alias a real `users.id`, so one party's spend
+    # could land in another's ledger. A single entity value is kept deliberately: a
+    # service-rooted run still needs a root-principal ceiling (unattended CI is
+    # exactly what needs one), so the fix qualifies the id rather than dropping the
+    # entity. Qualification happens once, where `attributed_user_id` is published
+    # (src/budget/enforcement_service.py), so the enforcement key and the settled
+    # ledger key are the same string by construction.
     #
     # Resolved SERVER-SIDE off the run's registry row (src/budget/run_binding.py),
     # never from a header. Unlike RUN/CHAIN this line is CUMULATIVE per calendar
