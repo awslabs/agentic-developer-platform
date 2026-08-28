@@ -1,0 +1,824 @@
+"""The caller that turns a recorded dispatch into an actual one.
+
+Issue #4313 (EPIC #4191, intent #4120), implementing the ruling in
+`docs/design-notes/4303-engine-genesis-transport.md` (spike #4303).
+
+Wave 4 shipped `genesis.py` (attribution), `dispatch.py` (state transition) and
+`deviation.py` (off-graph detection) with **no caller**, because no transport for
+the approver identity existed that did not weaken one of the EPIC's fail-closed
+controls. The ruling's answer was that the question was mis-framed: there is no
+transport, because there is no boundary to cross. The tick already holds VPC
+attachment, `rds-db:connect` and the `adp-gateway` image containing this package,
+so it resolves genesis and produces the agent envelope **in the same process, one
+function call apart**. `decision_id` never leaves the gateway.
+
+This module is that caller. Without it the engine is a bookkeeper: it advances
+nodes to `ready`, commits a dispatch record, and no run ever starts — the failure
+being invisible being worse than the failure, which is what #4077 was filed about.
+
+--------------------------------------------------------------------------------
+Why this is a new module and not a few lines in `tick.py`
+--------------------------------------------------------------------------------
+
+`tick.py`'s docstring states that "the tick performs **no dispatch**", and that
+sentence is load-bearing rather than descriptive: it is what lets the tick's tests
+pin the tick's behaviour exactly. #4211 kept `tick.py` byte-identical for the same
+reason. Adding dispatch there would make the docstring false and put two concerns
+behind one set of tests.
+
+--------------------------------------------------------------------------------
+Commit-then-publish, and why the pass is split in two
+--------------------------------------------------------------------------------
+
+`dispatch_node` does not commit, so the SQS send cannot be inside the DB
+transaction. The ordering is chosen deliberately (hazard 3 of the ruling, and the
+`knowledge/dispatch.py:7-14` row-before-publish invariant): **commit first, then
+publish.**
+
+- Commit, then publish, and the publish fails: the node is `running` with no run.
+  Recovered by the stall/halt detector from #4211, which is merged — a node stuck
+  in `running` is exactly what `stall.py` exists to find. The failure is also
+  counted (`publish_failed`) and forces a non-success report, so it is never
+  silent.
+- Publish, then commit, and the commit fails: a run exists with no `running` node,
+  which `deviation.py` correctly flags as off-graph work. Noisy but safe — and
+  strictly worse than the above, because it manufactures work the graph does not
+  know about.
+
+That ordering is why this module exposes **two** functions rather than one.
+:func:`run_dispatch_pass` does the database half and returns the envelopes it
+*intends* to publish; :func:`publish_pending` sends them and must be called by the
+handler **after** its commit. A single function could not honour the ordering
+without owning the transaction, which would break the handler's one-commit shape
+that `test_tick.py` pins.
+
+--------------------------------------------------------------------------------
+The dedup key must NOT be the webhook path's key shape (hazard 1)
+--------------------------------------------------------------------------------
+
+`sqs_publisher.py:73-74` builds `MessageDeduplicationId` as
+`f"{arrived_at}_{repo}_{issue}"`, and the queue also sets
+`content_based_deduplication = true`. The FIFO dedup window is **5 minutes** and
+the tick's schedule is `rate(5 minutes)` — the same order of magnitude, which is
+the dangerous case, not the safe one.
+
+Reusing that shape would let two nodes on the same issue collapse to one message.
+SQS accepts the duplicate and discards it, returning a MessageId, so
+`dispatch_node` commits `running` and the publish *looks* successful while no run
+ever starts. That is the worst failure available here because it is invisible.
+
+So the key derives from `node_id` + `decision_id` + the attempt number
+(:func:`message_deduplication_id`). Two distinct nodes sharing an `issue_ref`
+therefore produce two distinct ids, and a legitimate re-dispatch of the same node
+after a human resume (which increments `attempts`) is not swallowed as a
+duplicate of the original.
+
+--------------------------------------------------------------------------------
+The group id must be per node, not per issue (hazard 2)
+--------------------------------------------------------------------------------
+
+`sqs_publisher.py:70` uses `MessageGroupId = f"{tenant_id}#{repo}#{issue}"`.
+`OrchestrationNode.issue_ref` is nullable (`models.py`), so every gate and eval
+node in a tenant would share the group `tenant##` — reintroducing precisely the
+tenant-wide head-of-line blocking that `sqs_publisher.py:3-8` says the per-run
+group was chosen to avoid. :func:`message_group_id` groups per node, so no node's
+message can ever block another's.
+
+--------------------------------------------------------------------------------
+`spawn_persona` is deliberately NOT called (hazard 4)
+--------------------------------------------------------------------------------
+
+`spawn_persona` is the *webhook* path's enforcement point. It bundles self-mention
+and self-re-trigger guards, cross-persona loop detection, `MAX_CHAIN_DEPTH`
+capping and DynamoDB correlation-pointer writes. The engine either does not need
+those or must not inherit them: pointer provenance is advisory and **agent-writable**
+(#4304), so the engine must not source any authority from that store. The envelope
+is built explicitly here, and the only thing reused is the envelope *contract*.
+
+Note that `publish_envelope` itself is not importable from here either. It lives at
+`webhook-ingress/lambda/common/sqs_publisher.py`, and the gateway Dockerfile copies
+only `src/`, `alembic/` and `cli/` — so that module is absent from the image the
+tick runs. Importing it would raise `ImportError` in Lambda while passing locally,
+where the repo checkout has the file on disk. This is the same Lambda-side/gateway-side
+split `stall.py` documents for `MAX_CHAIN_DEPTH`, and the same resolution: mirror
+the small piece that is needed, and pin the shared contract with a test. The parts
+that would otherwise have been shared — the two key shapes — are exactly the parts
+the ruling forbids sharing, so nothing of substance is duplicated.
+
+--------------------------------------------------------------------------------
+What the envelope's identity fields may and may not claim
+--------------------------------------------------------------------------------
+
+The envelope carries `correlation.root_human_id` and `is_human_rooted`. This
+ruling **does** put a resolved identity in a message, and says so plainly rather
+than claiming "identity is never transported".
+
+The narrower, true claim: the producer is the same trust domain that owns the
+decision rows; agent pods cannot produce onto this queue at all
+(`scaledjob-iam.tf` grants `ReceiveMessage`/`DeleteMessage`/`GetQueueAttributes`/
+`ChangeMessageVisibility` and **no `SendMessage`**, so forging an engine dispatch
+requires an IAM change and therefore a review moment); and the pod never
+re-presents these fields to obtain anything. The authoritative record is the
+`orchestration_decisions` row written inside the committed transaction. **The
+envelope fields are attribution for the run's audit trail, not a credential.**
+
+--------------------------------------------------------------------------------
+Scope: story nodes only, and the gate is stricter than "has an issue"
+--------------------------------------------------------------------------------
+
+The ruling asks this issue to decide explicitly whether dispatch is
+story-nodes-only or whether materialising an issue is part of dispatch. It is
+**story-nodes-only**, and the reason is a hard constraint rather than a
+preference: the agent worker's `parse_envelope`
+(`agent-worker-image/entrypoint.py`) requires `source_ref.installation_id`,
+`source_ref.repo` and `source_ref.issue`. `OrchestrationNode` stores only
+`issue_ref` — an issue *number* — and carries no repo and no installation. A node
+cannot yield a complete `source_ref` from graph state alone.
+
+So a node is dispatchable only when it is a story node, has an `issue_ref` that
+parses as an issue number, sits in an org with exactly one GitHub installation,
+and the target repository is configured. Anything else is counted as
+`undispatchable` and left in `ready` — **never** published as a malformed envelope,
+because the worker would reject that *after* the node had already committed to
+`running`, which is the invisible-dispatch failure again by a different route.
+Materialising issues for gate/eval nodes is out of scope; those advance by other
+means.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.shared.models.base import utcnow
+from src.shared.models.organization import Organization
+
+from .dispatch import DispatchStatus, dispatch_node
+from .genesis import APPROVAL_DECISION_KINDS, EngineGenesis, GenesisRefusedError, resolve_engine_genesis
+from .models import NodeKind, OrchestrationDecision, OrchestrationNode
+from .state import NodeState
+
+logger = logging.getLogger("bedrockgateway.orchestration.dispatch_pass")
+
+__all__ = [
+    "DEFAULT_MAX_DISPATCHES_PER_TICK",
+    "DispatchPassConfig",
+    "DispatchPassReport",
+    "PendingPublish",
+    "message_deduplication_id",
+    "message_group_id",
+    "publish_pending",
+    "run_dispatch_pass",
+]
+
+
+# Environment variables, stamped in by Terraform. Read from the environment and
+# never hard-coded, following `notify.py`'s `TOPIC_ARN_ENV` precedent: an
+# unconfigured environment must be visible as unconfigured rather than looking
+# like a successful no-op.
+QUEUE_URL_ENV = "BG_ORCH_DISPATCH_QUEUE_URL"
+REPO_ENV = "BG_ORCH_DISPATCH_REPO"
+PERSONA_ENV = "BG_ORCH_DISPATCH_PERSONA"
+MAX_PER_TICK_ENV = "BG_ORCH_DISPATCH_MAX_PER_TICK"
+
+# The per-tick dispatch cap. The ruling names "number of dispatches per tick" as
+# the one unbounded surface to bound deliberately: every dispatch is agent
+# capacity and model spend, so dispatching every `ready` node in one pass turns a
+# large flow into an unbounded cost spike. Ten is small enough that a runaway
+# graph costs one tick's worth of runs rather than a whole wave's, and the next
+# tick picks up where this one stopped — the cap delays work, it never drops it.
+DEFAULT_MAX_DISPATCHES_PER_TICK = 10
+
+# The persona engine dispatches as. `developer` because a story node is delivery
+# work. Configurable, but NOT per-node: persona is not authority (R-O5d), so
+# nothing downstream may read it as such.
+DEFAULT_PERSONA = "developer"
+
+# SQS caps both FIFO key fields at 128 characters.
+_MAX_SQS_KEY_LEN = 128
+
+# SQS message size limit.
+MAX_SQS_MESSAGE_BYTES = 256 * 1024
+
+# Envelope schema version. Matches the webhook path's `_build_envelope` so the
+# worker parses both producers' messages with one code path — the envelope
+# contract is what is shared with the webhook path, and the only thing that is.
+_ENVELOPE_VERSION = "1.0"
+
+
+class SQSClient(Protocol):
+    """The `send_message` subset of boto3's SQS client.
+
+    A Protocol rather than a concrete client so tests inject a double, matching
+    `knowledge/dispatch.py`'s shape. Real AWS calls in unit tests would make the
+    dedup-key and group-id assertions untestable, and those are three of this
+    issue's acceptance criteria.
+    """
+
+    def send_message(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
+_sqs_client: SQSClient | None = None
+
+
+def _get_sqs_client(region: str) -> SQSClient:
+    global _sqs_client
+    if _sqs_client is None:
+        import boto3
+
+        _sqs_client = boto3.client("sqs", region_name=region)
+    return _sqs_client
+
+
+class DispatchPassConfigError(ValueError):
+    """A dispatch configuration that cannot produce a valid envelope."""
+
+
+@dataclass(frozen=True)
+class DispatchPassConfig:
+    """Where dispatches go and how many may go per tick.
+
+    Frozen: the cap and the queue are read once per invocation, so a mid-pass
+    mutation could not have a coherent meaning.
+    """
+
+    queue_url: str
+    # `owner/name` of the repository the engine dispatches into. Configuration
+    # rather than graph state because `OrchestrationNode` carries no repo — see
+    # the module docstring's scope section.
+    repo: str
+    persona: str = DEFAULT_PERSONA
+    max_dispatches_per_tick: int = DEFAULT_MAX_DISPATCHES_PER_TICK
+    aws_region: str = "us-east-1"
+
+    def __post_init__(self) -> None:
+        if self.max_dispatches_per_tick < 1:
+            raise DispatchPassConfigError(f"max_dispatches_per_tick must be at least 1; got {self.max_dispatches_per_tick}")
+
+    @property
+    def configured(self) -> bool:
+        """Whether this config can actually produce a dispatch.
+
+        Both fields are required. An empty queue url means there is nowhere to
+        publish; an empty repo means no complete `source_ref` can be built. Either
+        way the honest outcome is "nothing was dispatched and here is why", which
+        is what `undispatchable` records.
+        """
+        return bool(self.queue_url and self.repo)
+
+    @classmethod
+    def from_env(cls) -> DispatchPassConfig:
+        """Build from the process environment. Terraform stamps these in."""
+        raw_cap = (os.environ.get(MAX_PER_TICK_ENV) or "").strip()
+        try:
+            cap = int(raw_cap) if raw_cap else DEFAULT_MAX_DISPATCHES_PER_TICK
+        except ValueError:
+            # A malformed cap falls back to the default rather than raising: an
+            # unparseable number must not take the whole tick down, and the
+            # default is the conservative value anyway.
+            logger.warning(
+                "orchestration dispatch: %s=%r is not an integer; using default %d",
+                MAX_PER_TICK_ENV,
+                raw_cap,
+                DEFAULT_MAX_DISPATCHES_PER_TICK,
+            )
+            cap = DEFAULT_MAX_DISPATCHES_PER_TICK
+
+        return cls(
+            queue_url=(os.environ.get(QUEUE_URL_ENV) or "").strip(),
+            repo=(os.environ.get(REPO_ENV) or "").strip(),
+            persona=(os.environ.get(PERSONA_ENV) or "").strip() or DEFAULT_PERSONA,
+            max_dispatches_per_tick=cap,
+            aws_region=os.environ.get("AWS_REGION") or os.environ.get("BG_AWS_REGION") or "us-east-1",
+        )
+
+
+def message_group_id(*, org_id: str, node_id: str) -> str:
+    """The FIFO group for one node's dispatch. **Per node, never per issue.**
+
+    Guards hazard 2. The webhook path groups by `tenant#repo#issue`, which for a
+    node with `issue_ref = NULL` collapses to `tenant##` and serialises every
+    gate/eval node in the tenant behind one another. Grouping by node id means
+    every dispatch is in its own group, so no message can head-of-line block
+    another — and there is no ordering requirement between two nodes' runs to
+    lose by doing so.
+    """
+    return f"{org_id}#{node_id}"[:_MAX_SQS_KEY_LEN]
+
+
+def message_deduplication_id(*, node_id: str, decision_id: str, attempt: int) -> str:
+    """The FIFO dedup id for one dispatch. **Never the webhook path's key shape.**
+
+    Guards hazard 1. Derived from what actually makes a dispatch unique:
+
+    - `node_id` — so two nodes sharing an `issue_ref` never collapse into one
+      message inside the 5-minute dedup window.
+    - `decision_id` — so a re-plan that re-approves the work is a new dispatch.
+    - `attempt` — so a legitimate re-dispatch after a human resume (which
+      increments `attempts`) is not swallowed as a duplicate of the original.
+
+    Deliberately **not** derived from `arrived_at`/`repo`/`issue`: a timestamp
+    makes the key change on every attempt, which defeats dedup entirely, and
+    repo/issue are not unique per node.
+    """
+    return f"orch:{node_id}:{decision_id}:{attempt}"[:_MAX_SQS_KEY_LEN]
+
+
+@dataclass(frozen=True)
+class PendingPublish:
+    """One envelope that has been committed to the database and not yet sent.
+
+    Exists because publish happens **after** the transaction commits. Holding the
+    intent as data between the two phases is what makes the ordering explicit and
+    testable, rather than an accident of where the `await` happens.
+    """
+
+    node_id: str
+    org_id: str
+    envelope: dict[str, Any]
+    group_id: str
+    deduplication_id: str
+
+
+@dataclass
+class DispatchPassReport:
+    """What one dispatch pass did. Every field exists to be surfaced.
+
+    `dispatched` is the field an operator reads to confirm the new code is live —
+    only this code emits it — so it is not optional polish.
+    """
+
+    nodes_examined: int = 0
+    dispatches_attempted: int = 0
+    dispatched: int = 0
+    # A `GenesisRefusedError`: no approval row could root this dispatch. Fail-closed
+    # and counted, never a downgrade to an unrooted dispatch.
+    genesis_refused: int = 0
+    # A node that cannot produce a complete `source_ref` — a gate/eval node, a
+    # missing issue, an ambiguous installation, or an unconfigured target repo.
+    # Counted rather than published as a malformed envelope.
+    undispatchable: int = 0
+    # Committed to `running` but the SQS send failed. Recoverable by #4211's stall
+    # detector; forces a non-success report so it is never silent.
+    publish_failed: int = 0
+    # `transition()` refused the edge, and the refusal was recorded as a decision.
+    transitions_rejected: int = 0
+    # A concurrent pass dispatched the node first. Normal overlap, not a failure.
+    lost_races: int = 0
+    errors: int = 0
+    # True when the per-tick cap stopped the pass early. Work is delayed, not
+    # dropped — but "we ran out of budget" must never read as "there was nothing
+    # left to do", which is why this is reported rather than inferred.
+    capped: bool = False
+    # False when the queue url or target repo is unset. Surfaced so an unwired
+    # environment is visible as unwired instead of looking like an idle one.
+    enabled: bool = True
+    pending: list[PendingPublish] = field(default_factory=list)
+    per_org: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    @property
+    def success(self) -> bool:
+        """False if anything failed, including a publish that did not land.
+
+        A dispatch that committed `running` and never reached the queue is the
+        exact invisible failure this issue exists to end, so it counts against
+        success rather than being a footnote on a green pass.
+        """
+        return self.errors == 0 and self.publish_failed == 0
+
+    def _org(self, org_id: str) -> dict[str, int]:
+        return self.per_org.setdefault(
+            org_id,
+            {
+                "nodes_examined": 0,
+                "dispatches_attempted": 0,
+                "dispatched": 0,
+                "genesis_refused": 0,
+                "undispatchable": 0,
+                "publish_failed": 0,
+                "transitions_rejected": 0,
+                "lost_races": 0,
+                "errors": 0,
+            },
+        )
+
+    def record(self, org_id: str, key: str, amount: int = 1) -> None:
+        """Increment a counter both in total and for one org."""
+        setattr(self, key, getattr(self, key) + amount)
+        self._org(org_id)[key] += amount
+
+
+async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[OrchestrationNode]:
+    """The `ready` story nodes this pass may dispatch, ordered by id.
+
+    Story nodes only, filtered in SQL rather than skipped in Python — see the
+    scope section of the module docstring. `org_id` is read off each row and used
+    as the tenant for everything downstream, so it comes from this query's own
+    context and never from a message (the issue's tenant-isolation requirement).
+
+    Ordered by id for a stable, resumable sweep: the cap stops the pass partway,
+    and a deterministic order means the next tick continues rather than
+    re-examining an arbitrary subset.
+    """
+    stmt = (
+        select(OrchestrationNode)
+        .where(
+            OrchestrationNode.state == NodeState.READY.value,
+            OrchestrationNode.kind == NodeKind.STORY.value,
+        )
+        .order_by(OrchestrationNode.id)
+        .limit(limit)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def _latest_approval_decision_id(session: AsyncSession, *, org_id: str, flow_id: str) -> str | None:
+    """The most recent human approval for this flow, as an opaque id.
+
+    This is the only thing handed to `resolve_engine_genesis`, and it is a primary
+    key — the approver is read from the row **there**, server-side. Nothing here
+    reads or passes a `root_human_id`, which is what makes a caller-supplied root
+    unrepresentable rather than merely unused.
+
+    Filtered by `org_id` in SQL as well as `flow_id`, so a flow id from another
+    tenant resolves to nothing. `APPROVAL_DECISION_KINDS` is imported from
+    `genesis.py` rather than restated, so the two cannot disagree about what
+    counts as an approval.
+    """
+    stmt = (
+        select(OrchestrationDecision.id)
+        .where(
+            OrchestrationDecision.org_id == org_id,
+            OrchestrationDecision.flow_id == flow_id,
+            OrchestrationDecision.kind.in_(sorted(APPROVAL_DECISION_KINDS)),
+        )
+        .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def _resolve_installation_id(session: AsyncSession, *, org_id: str) -> int | None:
+    """The org's single GitHub installation, or None if that is not unambiguous.
+
+    Fail-closed on both zero and more than one. An org with no installation cannot
+    have work delivered to it; an org with several gives no basis to choose, and
+    guessing would dispatch into a repository nobody asked for. `None` becomes
+    `undispatchable`, which leaves the node in `ready` for a later tick once the
+    ambiguity is resolved.
+    """
+    raw = (
+        await session.execute(
+            select(Organization.github_installation_ids).where(Organization.id == org_id),
+        )
+    ).scalar_one_or_none()
+
+    ids = [str(i).strip() for i in (raw or []) if str(i).strip()]
+    if len(ids) != 1:
+        return None
+    try:
+        return int(ids[0])
+    except ValueError:
+        return None
+
+
+def _build_envelope(
+    *,
+    node: OrchestrationNode,
+    genesis: EngineGenesis,
+    graph_address: str,
+    installation_id: int,
+    issue: int,
+    config: DispatchPassConfig,
+) -> dict[str, Any]:
+    """Build the agent envelope explicitly. No `spawn_persona` (hazard 4).
+
+    The shape mirrors the webhook path's `_build_envelope` because the **envelope
+    contract** is what the worker consumes and is genuinely shared. What is not
+    reused is everything `spawn_persona` wraps around it: the self-mention guards,
+    the cross-persona loop detection, the `MAX_CHAIN_DEPTH` cap and the DynamoDB
+    correlation-pointer write. Pointer provenance there is advisory and
+    agent-writable (#4304), so the engine must not source authority from it.
+
+    `correlation.root_human_id` / `is_human_rooted` are **attribution, not a
+    credential** — see the module docstring. `is_human_rooted` reads
+    `genesis.is_human_rooted`, which is a property of the object's existence
+    rather than a settable field, so there is nothing here that could claim
+    human-rootedness without a resolved approval row behind it.
+    """
+    return {
+        "version": _ENVELOPE_VERSION,
+        # The engine is its own channel. Not "github": nothing here came from a
+        # GitHub event, and labelling it so would make an engine dispatch
+        # indistinguishable from a webhook trigger in every downstream log.
+        "channel": "orchestration",
+        "tenant_id": genesis.org_id,
+        "persona": config.persona,
+        "source_ref": {
+            "installation_id": installation_id,
+            "repo": config.repo,
+            "issue": issue,
+        },
+        "intent": {
+            "trigger": "engine_dispatch",
+            "label": None,
+            "persona": config.persona,
+        },
+        "correlation": {
+            "root_human_id": genesis.root_human_id,
+            "is_human_rooted": genesis.is_human_rooted,
+            "chain_depth": 0,
+        },
+        # The graph address the run reports cost against, and the decision that
+        # authorised it. Carried so an operator reading a message can answer "which
+        # node is this, and who approved it?" without a database query.
+        "orchestration": {
+            "node_id": node.id,
+            "flow_id": genesis.flow_id,
+            "graph_address": graph_address,
+            "root_decision_id": genesis.decision_id,
+        },
+        "payload": {},
+        "arrived_at": utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+async def _dispatch_one(
+    session: AsyncSession,
+    node: OrchestrationNode,
+    *,
+    config: DispatchPassConfig,
+    report: DispatchPassReport,
+) -> None:
+    """Resolve genesis, dispatch, and queue the envelope for publication.
+
+    Ordered so nothing is written until a complete envelope is known to be
+    buildable. A node that would produce a malformed `source_ref` is refused
+    **before** `dispatch_node` moves it to `running` — otherwise the worker would
+    reject the message after the node had already committed to running, which is
+    the invisible-dispatch failure by another route.
+    """
+    org_id = node.org_id
+    observed_attempts = node.attempts
+
+    # --- Everything needed for a valid envelope, checked before any write. ---
+    if not config.configured:
+        logger.warning(
+            "orchestration dispatch: node %s is ready but dispatch is unconfigured (%s / %s unset) — not dispatching",
+            node.id,
+            QUEUE_URL_ENV,
+            REPO_ENV,
+        )
+        report.record(org_id, "undispatchable")
+        return
+
+    if not node.issue_ref:
+        # Story nodes are expected to carry an issue. One that does not has
+        # nothing for an agent to act on, and materialising an issue is out of
+        # scope (see the module docstring).
+        logger.warning("orchestration dispatch: story node %s has no issue_ref — not dispatching", node.id)
+        report.record(org_id, "undispatchable")
+        return
+
+    try:
+        issue = int(str(node.issue_ref).lstrip("#"))
+    except ValueError:
+        logger.error("orchestration dispatch: node %s has issue_ref=%r which is not an issue number — not dispatching", node.id, node.issue_ref)
+        report.record(org_id, "undispatchable")
+        return
+
+    installation_id = await _resolve_installation_id(session, org_id=org_id)
+    if installation_id is None:
+        logger.warning(
+            "orchestration dispatch: org %s has no single unambiguous GitHub installation — not dispatching node %s",
+            org_id,
+            node.id,
+        )
+        report.record(org_id, "undispatchable")
+        return
+
+    # --- Genesis: resolved here, server-side, from a real approval row. ---
+    decision_id = await _latest_approval_decision_id(session, org_id=org_id, flow_id=node.flow_id)
+    if decision_id is None:
+        # No approval exists for this flow, so nothing human authorised this work.
+        # Refusing is the only fail-closed reading (D-R12 / AC-30).
+        logger.warning(
+            "orchestration dispatch: flow %s (org %s) has no approval decision to root node %s — refusing",
+            node.flow_id,
+            org_id,
+            node.id,
+        )
+        report.record(org_id, "genesis_refused")
+        return
+
+    report.record(org_id, "dispatches_attempted")
+
+    try:
+        genesis = await resolve_engine_genesis(session, org_id=org_id, decision_id=decision_id)
+    except GenesisRefusedError as exc:
+        # Fail-closed: the node stays in `ready` and nothing is published. The
+        # refusal is counted so "the engine is refusing to dispatch" is visible
+        # rather than looking like an idle tick.
+        logger.warning("orchestration dispatch: genesis refused for node %s: %s", node.id, exc)
+        report.record(org_id, "genesis_refused")
+        return
+
+    outcome = await dispatch_node(session, node, genesis)
+
+    if outcome.status is DispatchStatus.REJECTED:
+        # Already recorded as a `TRANSITION_REJECTED` decision row inside
+        # `dispatch_node`. Under RULING 5 that row is the primary detector for
+        # off-plan activity, so it must survive as evidence.
+        report.record(org_id, "transitions_rejected")
+        return
+
+    if outcome.status is DispatchStatus.ALREADY_RUNNING:
+        # Another pass got there first. Exactly one run in total is the correct
+        # outcome (R-NF2), so this attempt creates none.
+        report.record(org_id, "lost_races")
+        return
+
+    if outcome.status is DispatchStatus.NOT_FOUND or outcome.run is None:
+        logger.warning("orchestration dispatch: node %s could not be dispatched: %s", node.id, outcome.reason)
+        report.record(org_id, "undispatchable")
+        return
+
+    run = outcome.run
+    envelope = _build_envelope(
+        node=node,
+        genesis=genesis,
+        graph_address=run.graph_address,
+        installation_id=installation_id,
+        issue=issue,
+        config=config,
+    )
+
+    # Queued, not sent. The send happens in `publish_pending` after the caller
+    # commits — see the module docstring on commit-then-publish.
+    report.pending.append(
+        PendingPublish(
+            node_id=run.node_id,
+            org_id=org_id,
+            envelope=envelope,
+            group_id=message_group_id(org_id=org_id, node_id=run.node_id),
+            deduplication_id=message_deduplication_id(
+                node_id=run.node_id,
+                decision_id=genesis.decision_id,
+                # `dispatch_node` incremented `attempts`, so the committed value
+                # is one past what we observed. Using the committed value keeps a
+                # human resume's re-dispatch distinct from the original.
+                attempt=observed_attempts + 1,
+            ),
+        )
+    )
+    report.record(org_id, "dispatched")
+
+    logger.info(
+        "orchestration dispatch: node %s dispatched address=%s root_decision=%s org=%s — envelope queued for publish",
+        run.node_id,
+        run.graph_address,
+        genesis.decision_id,
+        org_id,
+    )
+
+
+async def run_dispatch_pass(
+    session: AsyncSession,
+    config: DispatchPassConfig | None = None,
+) -> DispatchPassReport:
+    """The database half of dispatch. **Commits nothing.**
+
+    Selects `ready` story nodes up to the per-tick cap, resolves each one's human
+    root from a real approval row, and moves it to `running`. The envelopes it
+    intends to publish are returned on the report; the caller must commit and then
+    call :func:`publish_pending`.
+
+    Never raises for a per-node failure — it records the error and continues, so
+    one bad node cannot stall every other flow. The failure is still reported:
+    `report.success` is False and the error count is non-zero (R-NF3).
+
+    Args:
+        session: Caller-owned session. Nothing is committed here, so the state
+            changes and their decision rows land atomically or not at all.
+        config: Where dispatches go. Read from the environment when omitted.
+    """
+    cfg = config if config is not None else DispatchPassConfig.from_env()
+    report = DispatchPassReport(enabled=cfg.configured)
+
+    if not cfg.configured:
+        # Not an error, but not a success story either: if there are `ready` nodes
+        # they are counted as `undispatchable` below, so an unwired environment is
+        # visible rather than reading as idle.
+        logger.warning(
+            "orchestration dispatch: pass is unconfigured (%s=%r, %s=%r); ready nodes will be reported as undispatchable",
+            QUEUE_URL_ENV,
+            cfg.queue_url,
+            REPO_ENV,
+            cfg.repo,
+        )
+
+    try:
+        # One extra row is fetched so "there was more work" is distinguishable
+        # from "that was all of it" — the cap has to be reported, not inferred.
+        candidates = await _fetch_ready_nodes(session, limit=cfg.max_dispatches_per_tick + 1)
+    except Exception:
+        logger.exception("orchestration dispatch: failed to fetch ready nodes")
+        report.errors += 1
+        return report
+
+    if len(candidates) > cfg.max_dispatches_per_tick:
+        report.capped = True
+        candidates = candidates[: cfg.max_dispatches_per_tick]
+        logger.warning(
+            "orchestration dispatch: per-tick cap of %d reached; remaining ready nodes wait for the next tick",
+            cfg.max_dispatches_per_tick,
+        )
+
+    for node in candidates:
+        report.record(node.org_id, "nodes_examined")
+        try:
+            await _dispatch_one(session, node, config=cfg, report=report)
+        except Exception:
+            # Per-node containment, matching `run_tick`: log, count, force
+            # non-success, keep going.
+            logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node.id, node.org_id)
+            report.record(node.org_id, "errors")
+
+    return report
+
+
+def publish_pending(
+    report: DispatchPassReport,
+    config: DispatchPassConfig | None = None,
+    *,
+    client: SQSClient | None = None,
+) -> DispatchPassReport:
+    """Send the committed dispatches. Call this **after** the caller commits.
+
+    Separate from :func:`run_dispatch_pass` so commit-then-publish is explicit
+    rather than incidental (hazard 3). A send that fails leaves the node `running`
+    with no run — recoverable by #4211's stall detector, and counted as
+    `publish_failed` so the pass reports non-success rather than looking green.
+
+    Mutates and returns the same report, so the caller's single object carries the
+    final counts.
+    """
+    if not report.pending:
+        return report
+
+    cfg = config if config is not None else DispatchPassConfig.from_env()
+    if not cfg.configured:
+        # Unreachable through `run_dispatch_pass`, which produces no pending
+        # publishes when unconfigured. Guarded anyway: sending to an empty queue
+        # url would raise per message rather than failing once, clearly.
+        for pending in report.pending:
+            logger.error("orchestration dispatch: cannot publish node %s — dispatch is unconfigured", pending.node_id)
+            report.record(pending.org_id, "publish_failed")
+        report.pending = []
+        return report
+
+    sqs = client if client is not None else _get_sqs_client(cfg.aws_region)
+
+    for pending in report.pending:
+        body = json.dumps(pending.envelope, default=str)
+        if len(body.encode("utf-8")) > MAX_SQS_MESSAGE_BYTES:
+            # The engine's envelope carries no raw webhook payload, so this is not
+            # reachable with today's shape. Refusing rather than truncating is
+            # still the right failure: a truncated envelope is a malformed one,
+            # and the node is already `running` and therefore stall-recoverable.
+            logger.error("orchestration dispatch: envelope for node %s exceeds the SQS size limit — not publishing", pending.node_id)
+            report.record(pending.org_id, "publish_failed")
+            continue
+
+        try:
+            response = sqs.send_message(
+                QueueUrl=cfg.queue_url,
+                MessageBody=body,
+                MessageGroupId=pending.group_id,
+                MessageDeduplicationId=pending.deduplication_id,
+            )
+        except Exception:
+            # Counted, never swallowed. The node stays `running`; #4211's stall
+            # detector is the named recovery path.
+            logger.exception(
+                "orchestration dispatch: publish failed for node %s — node remains 'running' and is recoverable by the stall detector",
+                pending.node_id,
+            )
+            report.record(pending.org_id, "publish_failed")
+            continue
+
+        logger.info(
+            "orchestration dispatch: published node %s sqs_message_id=%s group=%s",
+            pending.node_id,
+            (response or {}).get("MessageId", ""),
+            pending.group_id,
+        )
+
+    report.pending = []
+    return report

@@ -177,3 +177,85 @@ variable "alert_email_addresses" {
   type        = list(string)
   default     = []
 }
+
+# -----------------------------------------------------------------------------
+# Engine dispatch (Issue #4313)
+# -----------------------------------------------------------------------------
+# The tick produces the agent envelope directly onto the existing agent-submit
+# FIFO queue, per the ruling in
+# docs/design-notes/4303-engine-genesis-transport.md. The queue is owned by a
+# DIFFERENT Terraform state (modules/agent-factory/webhook-ingress/infra/), so its
+# ARN and URL are passed in as variables rather than referenced or hardcoded —
+# the same cross-module ARN-as-variable pattern as
+# `var.agent_context_ingestion_queue_arn` in ../../main.tf.
+
+variable "agent_submit_queue_arn" {
+  description = <<-EOT
+    ARN of the agent-submit FIFO queue the engine dispatches onto. Used to scope
+    `sqs:SendMessage` in iam.tf — never `Resource = "*"`.
+
+    Empty falls back to the conventional name `<name_prefix>-agent-submit.fifo` in
+    this account and region, so a deploy where the webhook-ingress state has not
+    been read still produces a SCOPED policy rather than a wildcard one.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "agent_submit_queue_url" {
+  description = <<-EOT
+    URL of the agent-submit FIFO queue, passed to the tick as
+    BG_ORCH_DISPATCH_QUEUE_URL.
+
+    Empty is a valid state and is the default: `dispatch_pass.py` reports
+    `dispatch_enabled=false` and counts ready nodes as `undispatchable` rather
+    than failing, so an unwired environment is VISIBLE as unwired instead of
+    looking like an idle one. Nothing is dispatched until this is set.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "dispatch_repo" {
+  description = <<-EOT
+    `owner/name` of the repository the engine dispatches work into, passed as
+    BG_ORCH_DISPATCH_REPO.
+
+    This is configuration rather than graph state because `OrchestrationNode`
+    carries no repo: it stores only `issue_ref` (an issue number), while the agent
+    worker's `parse_envelope` requires `source_ref.{installation_id, repo, issue}`.
+    See the scope section of `src/orchestration/dispatch_pass.py`.
+
+    Empty means no dispatch happens — same visible-not-silent behaviour as the
+    queue URL above.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "dispatch_persona" {
+  description = <<-EOT
+    The agent persona engine dispatches as (BG_ORCH_DISPATCH_PERSONA). `developer`
+    because a story node is delivery work.
+
+    Configurable but deliberately NOT per-node: persona is not authority (R-O5d),
+    and nothing downstream may read it as such.
+  EOT
+  type        = string
+  default     = "developer"
+}
+
+variable "dispatch_max_per_tick" {
+  description = <<-EOT
+    Maximum dispatches per tick (BG_ORCH_DISPATCH_MAX_PER_TICK).
+
+    The one unbounded surface this story bounds deliberately: every dispatch is
+    agent capacity and model spend, so dispatching every `ready` node in one pass
+    turns a large flow into an unbounded cost spike. The cap DELAYS work rather
+    than dropping it — the next tick continues from a stable ordering — and a
+    capped pass reports `dispatch_capped=true` so "we ran out of budget" never
+    reads as "there was nothing left to do".
+  EOT
+  type        = number
+  default     = 10
+}

@@ -42,6 +42,7 @@ import logging
 import os
 from typing import Any
 
+from src.orchestration.dispatch_pass import DispatchPassReport, publish_pending, run_dispatch_pass
 from src.orchestration.stall import StallReport, detect_stalls
 from src.orchestration.tick import TickReport, run_tick
 from src.shared.database import get_session_factory, reset_engine
@@ -87,10 +88,26 @@ TICK_REPORT_TOKEN = "tick_report"
 # dependency of the tick.
 _STALL_REPORT_ATTR = "stall_report"
 
+# Attribute the dispatch pass's report is carried on (issue #4313).
+#
+# Same reasoning as `_STALL_REPORT_ATTR` above, and the same constraint: `_run`
+# returns one object and `handler` reads one object, because `_TickReportStub` in
+# `tests/orchestration/test_tick.py` stubs `_run` with a minimal object carrying
+# only the tick's own attributes. That stub is what pins the `tick_report` token
+# surviving `awslambdaric`'s logging setup — the exact bug that shipped once
+# already — so this story attaches its report the same way rather than widening
+# `_run`'s return type. "Absent" is therefore a first-class case here too.
+_DISPATCH_REPORT_ATTR = "dispatch_report"
+
 
 def _attached_stall_report(report: TickReport) -> StallReport | None:
     """The detection report carried on a tick report, if one is attached."""
     return getattr(report, _STALL_REPORT_ATTR, None)
+
+
+def _attached_dispatch_report(report: TickReport) -> DispatchPassReport | None:
+    """The dispatch pass's report carried on a tick report, if one is attached."""
+    return getattr(report, _DISPATCH_REPORT_ATTR, None)
 
 
 def _emit_metrics(report: TickReport) -> None:
@@ -173,6 +190,47 @@ def _emit_metrics(report: TickReport) -> None:
                         }
                     )
 
+        # Dispatch counters (issue #4313). `Dispatched` is the metric that proves
+        # the engine is actually handing work to agents rather than only recording
+        # that it did. `PublishFailed` is the alarm-worthy one: a node committed to
+        # `running` whose envelope never reached the queue is the invisible
+        # dispatch this story exists to end, so it is its own metric and not
+        # folded into `Errors`.
+        dispatch_report = _attached_dispatch_report(report)
+        if dispatch_report is not None:
+            metric_data.extend(
+                [
+                    {"MetricName": "DispatchesAttempted", "Value": dispatch_report.dispatches_attempted, "Unit": "Count"},
+                    {"MetricName": "Dispatched", "Value": dispatch_report.dispatched, "Unit": "Count"},
+                    {"MetricName": "GenesisRefused", "Value": dispatch_report.genesis_refused, "Unit": "Count"},
+                    {"MetricName": "DispatchUndispatchable", "Value": dispatch_report.undispatchable, "Unit": "Count"},
+                    {"MetricName": "DispatchPublishFailed", "Value": dispatch_report.publish_failed, "Unit": "Count"},
+                    {"MetricName": "DispatchErrors", "Value": dispatch_report.errors, "Unit": "Count"},
+                    # A pass that hit its cap has work waiting, which is
+                    # operationally different from one that had nothing to do.
+                    {"MetricName": "DispatchCapped", "Value": 1 if dispatch_report.capped else 0, "Unit": "Count"},
+                ]
+            )
+
+            for org_id, counts in dispatch_report.per_org.items():
+                dimensions = [{"Name": "OrgId", "Value": org_id}]
+                for metric_name, key in (
+                    ("DispatchesAttempted", "dispatches_attempted"),
+                    ("Dispatched", "dispatched"),
+                    ("GenesisRefused", "genesis_refused"),
+                    ("DispatchUndispatchable", "undispatchable"),
+                    ("DispatchPublishFailed", "publish_failed"),
+                    ("DispatchErrors", "errors"),
+                ):
+                    metric_data.append(
+                        {
+                            "MetricName": metric_name,
+                            "Value": counts[key],
+                            "Unit": "Count",
+                            "Dimensions": dimensions,
+                        }
+                    )
+
         # PutMetricData caps at 1000 datums per call.
         for start in range(0, len(metric_data), 1000):
             client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=metric_data[start : start + 1000])
@@ -181,20 +239,35 @@ def _emit_metrics(report: TickReport) -> None:
 
 
 async def _run() -> TickReport:
-    """Open a session, tick, detect stalls, commit or roll back.
+    """Open a session, tick, detect stalls, dispatch, commit — then publish.
 
-    Both passes share one session and one transaction (issue #4211). The tick
-    releases nodes whose predecessors are satisfied; detection then diagnoses the
-    nodes that stopped moving. Detection runs **after** the tick so that a node the
-    tick just moved is measured from its new state, not its old one.
+    All three passes share one session and one transaction (issues #4211, #4313).
+    The tick releases nodes whose predecessors are satisfied; detection then
+    diagnoses the nodes that stopped moving; dispatch then hands the released work
+    to an agent. Ordering matters twice:
 
-    Detection lives here rather than inside `run_tick` deliberately: it is a
-    separate concern with a separate report, and keeping `tick.py` untouched means
-    the existing tick tests still pin the tick's behaviour exactly as they did
-    before this story.
+    - Detection runs **after** the tick, so a node the tick just moved is measured
+      from its new state, not its old one.
+    - Dispatch runs **after** detection, so a node detection just failed or halted
+      is not dispatched in the same invocation — detection's whole job is deciding
+      that some `running` work is not viable, and dispatching against a state it
+      just superseded would be racing our own pass.
 
-    The detection report is attached to the returned `TickReport` rather than
-    returned alongside it — see `_STALL_REPORT_ATTR` for why that shape matters.
+    Both live here rather than inside `run_tick` deliberately: they are separate
+    concerns with separate reports, and keeping `tick.py` untouched means the
+    existing tick tests still pin the tick's behaviour exactly as they did before
+    these stories.
+
+    **The SQS publish is outside the transaction, and after the commit** (#4313
+    hazard 3, the `knowledge/dispatch.py` row-before-publish invariant).
+    `run_dispatch_pass` commits nothing and returns the envelopes it intends to
+    send; they are sent only once the `running` rows are durable. A send that then
+    fails leaves a node `running` with no run, which #4211's detector above
+    recovers on a later tick — whereas publishing first and failing to commit would
+    manufacture a run the graph has no record of.
+
+    Both reports are attached to the returned `TickReport` rather than returned
+    alongside it — see `_STALL_REPORT_ATTR` for why that shape matters.
     """
     # Under IAM auth the engine caches a token that outlives a warm Lambda
     # container's usefulness; resetting gives this invocation a fresh one.
@@ -205,6 +278,7 @@ async def _run() -> TickReport:
         try:
             report = await run_tick(session)
             stall_report = await detect_stalls(session)
+            dispatch_report = await run_dispatch_pass(session)
         except Exception:
             await session.rollback()
             raise
@@ -215,7 +289,14 @@ async def _run() -> TickReport:
         # rejection rows are evidence that must survive. The failure is surfaced
         # by the non-success return, not by throwing the good work away.
         await session.commit()
+
+        # Only now, with the `running` rows durable, does anything reach the queue.
+        # `publish_pending` mutates the report in place and never raises: a failed
+        # send is counted as `publish_failed`, which forces a non-success report.
+        publish_pending(dispatch_report)
+
         setattr(report, _STALL_REPORT_ATTR, stall_report)
+        setattr(report, _DISPATCH_REPORT_ATTR, dispatch_report)
         return report
 
 
@@ -236,12 +317,16 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
         raise
 
     stall_report = _attached_stall_report(report)
+    dispatch_report = _attached_dispatch_report(report)
 
     summary = {
-        # A failed detection pass makes the whole invocation an error. An
-        # undelivered stall notification is a real failure of this Lambda's job
-        # (R-Q9d), not a footnote on an otherwise-green tick.
-        "status": "ok" if report.success and (stall_report is None or stall_report.success) else "error",
+        # A failed detection or dispatch pass makes the whole invocation an error.
+        # An undelivered stall notification is a real failure of this Lambda's job
+        # (R-Q9d), not a footnote on an otherwise-green tick — and so is a dispatch
+        # that committed `running` and never reached the queue (#4313).
+        "status": "ok"
+        if report.success and (stall_report is None or stall_report.success) and (dispatch_report is None or dispatch_report.success)
+        else "error",
         "nodes_examined": report.nodes_examined,
         "transitions_effected": report.transitions_effected,
         "transitions_rejected": report.transitions_rejected,
@@ -267,6 +352,25 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
             }
         )
 
+    # Issue #4313 — dispatch counters, on the same greppable `tick_report` line.
+    # `dispatched` is the field an operator uses to confirm the new code is live:
+    # only this code emits it, so its presence in
+    # /aws/lambda/adp-<env>-orchestration-tick is the deploy verification the
+    # issue's Deployment section calls for. Not optional polish.
+    if dispatch_report is not None:
+        summary.update(
+            {
+                "dispatches_attempted": dispatch_report.dispatches_attempted,
+                "dispatched": dispatch_report.dispatched,
+                "genesis_refused": dispatch_report.genesis_refused,
+                "dispatch_undispatchable": dispatch_report.undispatchable,
+                "dispatch_publish_failed": dispatch_report.publish_failed,
+                "dispatch_errors": dispatch_report.errors,
+                "dispatch_capped": dispatch_report.capped,
+                "dispatch_enabled": dispatch_report.enabled,
+            }
+        )
+
     # Unconditional, single-line, machine-greppable. This is the line that proves
     # the schedule fired.
     logger.info("%s %s", TICK_REPORT_TOKEN, json.dumps(summary, sort_keys=True))
@@ -284,6 +388,16 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
             "orchestration stall detection completed with %d error(s) and %d undelivered notification(s) — see preceding tracebacks",
             stall_report.errors,
             stall_report.notifications_failed,
+        )
+
+    if dispatch_report is not None and not dispatch_report.success:
+        # A publish failure names its own recovery path so an operator reading this
+        # line knows the node is not lost — #4211's detector will find it.
+        logger.error(
+            "orchestration dispatch completed with %d error(s) and %d unpublished dispatch(es) — "
+            "affected nodes remain 'running' and are recoverable by the stall detector",
+            dispatch_report.errors,
+            dispatch_report.publish_failed,
         )
 
     return summary

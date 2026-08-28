@@ -155,6 +155,16 @@ resource "aws_lambda_function" "tick" {
       # `notify()` raise, which the tick records as a failed notification rather
       # than treating an unwired environment as a delivered one.
       BG_ORCH_NOTIFY_TOPIC_ARN = aws_sns_topic.alerts.arn
+
+      # Issue #4313 — engine dispatch. The tick resolves genesis in-process and
+      # produces the agent envelope onto this queue itself; there is no transport
+      # and no other producer added. All four are read by `dispatch_pass.py` and
+      # nothing else. Empty queue URL or repo means nothing is dispatched and the
+      # tick reports `dispatch_enabled=false` — visible, not silent.
+      BG_ORCH_DISPATCH_QUEUE_URL    = var.agent_submit_queue_url
+      BG_ORCH_DISPATCH_REPO         = var.dispatch_repo
+      BG_ORCH_DISPATCH_PERSONA      = var.dispatch_persona
+      BG_ORCH_DISPATCH_MAX_PER_TICK = tostring(var.dispatch_max_per_tick)
     }
   }
 

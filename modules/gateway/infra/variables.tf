@@ -423,6 +423,66 @@ variable "orchestration_alert_email_addresses" {
   default     = []
 }
 
+# -----------------------------------------------------------------------------
+# Engine dispatch (Issue #4313 — ruling docs/design-notes/4303-engine-genesis-transport.md)
+# -----------------------------------------------------------------------------
+# The orchestration tick resolves the gate approver in-process and produces the
+# agent envelope directly onto the existing agent-submit FIFO queue. The queue is
+# owned by modules/agent-factory/webhook-ingress/infra/ — a different Terraform
+# state — so its ARN and URL come in as variables, following the
+# `agent_context_ingestion_queue_arn` pattern above. Do not hardcode either.
+
+variable "orchestration_dispatch_queue_arn" {
+  type        = string
+  description = <<-EOT
+    ARN of the agent-submit FIFO queue the engine dispatches onto. Scopes the
+    tick's `sqs:SendMessage` grant.
+
+    Empty falls back to the conventional `adp-<env>-agent-submit.fifo` name inside
+    the tick module, so the policy stays SCOPED even when this is unset — it never
+    degrades to `Resource = "*"`.
+  EOT
+  default     = ""
+}
+
+variable "orchestration_dispatch_queue_url" {
+  type        = string
+  description = <<-EOT
+    URL of the agent-submit FIFO queue, passed to the tick as
+    BG_ORCH_DISPATCH_QUEUE_URL. Read from
+    /adp/<env>/webhook-ingress/sqs-queue-url (written by the webhook-ingress
+    module's outputs.tf) or supplied per environment.
+
+    Empty is the default and is safe: nothing is dispatched, and the tick reports
+    `dispatch_enabled=false` so the unwired state is visible rather than reading as
+    an idle engine.
+  EOT
+  default     = ""
+}
+
+variable "orchestration_dispatch_repo" {
+  type        = string
+  description = <<-EOT
+    `owner/name` of the repository the engine dispatches delivery-loop work into.
+
+    Required for dispatch because the orchestration graph does not carry one:
+    `OrchestrationNode` stores only `issue_ref` (an issue number), while the agent
+    worker requires `source_ref.{installation_id, repo, issue}`. Empty means no
+    dispatch happens.
+  EOT
+  default     = ""
+}
+
+variable "orchestration_dispatch_max_per_tick" {
+  type        = number
+  description = <<-EOT
+    Maximum dispatches per tick. Bounds the one unbounded surface in engine
+    dispatch: every dispatch is agent capacity and model spend, so an uncapped pass
+    over a large flow is a cost spike. The cap delays work rather than dropping it.
+  EOT
+  default     = 10
+}
+
 variable "chat_logging_scrub_level" {
   type        = string
   description = "Chat logging scrub level: off, basic (headers+regex), or standard (headers+regex+Comprehend PII)"

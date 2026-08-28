@@ -945,6 +945,16 @@ module "orchestration_tick" {
   # description for why an unsubscribed topic is visible rather than fatal.
   alert_email_addresses = var.orchestration_alert_email_addresses
 
+  # Issue #4313: engine dispatch. The tick resolves the gate approver in-process
+  # and produces the agent envelope onto the agent-submit FIFO queue itself — no
+  # transport, no new route, no credential added to the webhook Lambda. The queue
+  # belongs to the webhook-ingress Terraform state, so it is referenced by
+  # ARN/URL variables rather than by a resource address.
+  agent_submit_queue_arn = var.orchestration_dispatch_queue_arn
+  agent_submit_queue_url = var.orchestration_dispatch_queue_url
+  dispatch_repo          = var.orchestration_dispatch_repo
+  dispatch_max_per_tick  = var.orchestration_dispatch_max_per_tick
+
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 

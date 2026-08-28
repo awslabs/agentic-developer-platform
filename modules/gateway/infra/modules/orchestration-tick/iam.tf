@@ -91,6 +91,35 @@ resource "aws_iam_role_policy" "tick" {
         ]
         Resource = aws_sns_topic.alerts.arn
       },
+      # Engine dispatch onto the agent-submit FIFO queue (Issue #4313, ruling
+      # docs/design-notes/4303-engine-genesis-transport.md).
+      #
+      # This makes the tick a SECOND producer on that queue. The safety argument
+      # is that the producer set stays closed to agent pods: `scaledjob-iam.tf`
+      # grants ReceiveMessage / DeleteMessage / GetQueueAttributes /
+      # ChangeMessageVisibility and NO sqs:SendMessage, so an agent cannot forge
+      # an engine dispatch without an IAM change — which is a review moment. The
+      # producer set after this change is exactly {webhook Lambda, tick Lambda}.
+      #
+      # Scoped to the queue ARN, never `Resource = "*"`: a wildcard here would let
+      # the tick produce onto any queue in the account, and `tests/orchestration/
+      # test_dispatch_pass.py` asserts against that. Follows the shape of
+      # `gateway_ingestion_sqs_publish` in ../../main.tf, including passing the ARN
+      # in as a variable because the queue lives in a different Terraform state
+      # (modules/agent-factory/webhook-ingress/infra/).
+      #
+      # No KMS grant: the queue is SSE-SQS (`sqs.tf` sets no kms_master_key_id).
+      # No networking change: the SQS interface VPC endpoint already exists on the
+      # private subnets with private DNS, and the tick SG already egresses 443.
+      {
+        Sid    = "PublishEngineDispatch"
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:GetQueueUrl"
+        ]
+        Resource = var.agent_submit_queue_arn != "" ? var.agent_submit_queue_arn : "arn:aws:sqs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:${var.name_prefix}-agent-submit.fifo"
+      },
       # VPC ENI management, required for any Lambda with a vpc_config. These
       # actions do not support resource-level permissions.
       {
