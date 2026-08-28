@@ -68,6 +68,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from src.shared.logging import get_logger
+from src.shared.redis_client import create_redis_client
 
 logger = get_logger(__name__)
 
@@ -155,7 +156,7 @@ class RunBindingResolver:
             return self._client
         if not self._redis_url:
             return None
-        self._client = redis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
+        self._client = create_redis_client(self._redis_url, encoding="utf-8", decode_responses=True)
         return self._client
 
     def _get_table(self):

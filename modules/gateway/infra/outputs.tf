@@ -37,6 +37,17 @@ output "redis_port" {
   value       = var.enable_redis ? module.redis[0].port : null
 }
 
+# Issue #4342: needed by the app to mint an ElastiCache IAM connect token.
+output "redis_iam_username" {
+  description = "ElastiCache IAM-auth user name (BG_REDIS_USERNAME)"
+  value       = var.enable_redis && var.enable_elasticache_iam_auth ? module.redis[0].redis_iam_user_id : null
+}
+
+output "redis_cache_name" {
+  description = "ElastiCache replication group id — the IAM token is signed against this, not the endpoint host (BG_REDIS_CACHE_NAME)"
+  value       = var.enable_redis && var.enable_elasticache_iam_auth ? module.redis[0].replication_group_id : null
+}
+
 # Frontend Outputs
 output "frontend_bucket_name" {
   description = "Name of the S3 bucket for frontend assets (for deploy workflow S3 sync)"

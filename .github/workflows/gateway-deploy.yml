@@ -176,6 +176,12 @@ jobs:
           DB_USER="bgadmin"
           REDIS_HOST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-host")
           REDIS_PORT=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-port")
+          # #4342: ElastiCache IAM auth — the app mints a connect token per
+          # connection, so it needs the provisioned IAM user name and the
+          # replication group id (the token is signed against the group id, not
+          # the endpoint host). Published by gateway-infra-apply.
+          REDIS_IAM_USERNAME=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-iam-username")
+          REDIS_CACHE_NAME=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-cache-name")
           COGNITO_USER_POOL_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id")
           COGNITO_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")
           COGNITO_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-domain")
@@ -186,7 +192,13 @@ jobs:
 
           # Fail-fast on missing required SSM params — don't silently render a broken ConfigMap.
           # If any of these are empty, gateway-infra-apply hasn't been run yet.
-          for var_name in DB_HOST DB_NAME REDIS_HOST COGNITO_USER_POOL_ID COGNITO_CLIENT_ID COGNITO_DOMAIN CF_DOMAIN; do
+          # #4342: REDIS_IAM_USERNAME / REDIS_CACHE_NAME are fail-fast on purpose.
+          # Rendering them empty is what produced the outage this fixes: ElastiCache
+          # has the `default` user disabled, so a ConfigMap without them means every
+          # Redis call is rejected and the spend cap silently degrades to "allow".
+          # An empty value here means gateway-infra-apply.yml has not published the
+          # new params yet — run it first rather than shipping a dead cache.
+          for var_name in DB_HOST DB_NAME REDIS_HOST REDIS_IAM_USERNAME REDIS_CACHE_NAME COGNITO_USER_POOL_ID COGNITO_CLIENT_ID COGNITO_DOMAIN CF_DOMAIN; do
             if [ -z "${!var_name}" ]; then
               echo "::error::Required SSM param resolves to empty for ${var_name}." >&2
               echo "::error::Run gateway-infra-apply.yml first so it publishes the missing params." >&2
@@ -238,6 +250,9 @@ jobs:
               -e "s|__DB_NAME__|${DB_NAME}|g" \
               -e "s|__REDIS_HOST__|${REDIS_HOST}|g" \
               -e "s|__REDIS_PORT__|${REDIS_PORT}|g" \
+              -e "s|__REDIS_IAM_USERNAME__|${REDIS_IAM_USERNAME}|g" \
+              -e "s|__REDIS_CACHE_NAME__|${REDIS_CACHE_NAME}|g" \
+              -e "s|__REDIS_IAM_AUTH__|true|g" \
               -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
               -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
               -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \

@@ -69,6 +69,7 @@ from decimal import Decimal
 import redis.asyncio as redis
 
 from src.shared.logging import get_logger
+from src.shared.redis_client import create_redis_client
 
 logger = get_logger(__name__)
 
@@ -306,7 +307,7 @@ class ReservationStore:
         if self._client is None:
             if not self._redis_url:
                 raise RuntimeError("no redis_url configured")
-            self._client = redis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
+            self._client = create_redis_client(self._redis_url, encoding="utf-8", decode_responses=True)
             self._register_scripts(self._client)
         return self._client
 

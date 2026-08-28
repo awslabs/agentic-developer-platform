@@ -11,6 +11,8 @@ from datetime import datetime
 
 import redis.asyncio as redis
 
+from src.shared.redis_client import create_redis_client
+
 from ..backend import RateLimitBackend
 from ..models import EntityType, LimitType, RateLimitState
 
@@ -160,7 +162,7 @@ class RedisBackend(RateLimitBackend):
     async def _get_client(self) -> redis.Redis:
         """Get or create Redis client."""
         if self._client is None:
-            self._client = redis.from_url(
+            self._client = create_redis_client(
                 self._redis_url,
                 encoding="utf-8",
                 decode_responses=True,

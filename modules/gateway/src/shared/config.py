@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     # Redis (optional)
     redis_url: str | None = None
 
+    # Redis / ElastiCache IAM authentication (Issue #4342)
+    # ElastiCache has the `default` user disabled and an IAM-auth user provisioned,
+    # so connections must present a SigV4 token as the password. Mirrors the
+    # rds_iam_auth switch above; false keeps local dev / docker-compose passwordless.
+    redis_iam_auth: bool = False
+    redis_username: str = ""  # Provisioned ElastiCache IAM-auth user name
+    redis_cache_name: str = ""  # Replication group id — what the token is signed against
+
     # AWS
     aws_region: str = "us-east-1"
 

@@ -880,6 +880,11 @@ else
   DB_USER="bgadmin"
   REDIS_HOST=$(terraform output -raw redis_endpoint 2>/dev/null || echo "localhost")
   REDIS_PORT=$(terraform output -raw redis_port 2>/dev/null || echo "6379")
+  # #4342: ElastiCache IAM auth needs the provisioned user name and the
+  # replication group id (the connect token is signed against the group id, not
+  # the endpoint host).
+  REDIS_IAM_USERNAME=$(terraform output -raw redis_iam_username 2>/dev/null || echo "")
+  REDIS_CACHE_NAME=$(terraform output -raw redis_cache_name 2>/dev/null || echo "")
   COGNITO_USER_POOL_ID=$(terraform output -raw cognito_user_pool_id 2>/dev/null || echo "")
   COGNITO_CLIENT_ID=$(terraform output -raw cognito_user_pool_client_id 2>/dev/null || echo "")
   COGNITO_DOMAIN=$(terraform output -raw cognito_domain 2>/dev/null || echo "")
@@ -990,6 +995,9 @@ else
       -e "s|__DB_NAME__|${DB_NAME}|g" \
       -e "s|__REDIS_HOST__|${REDIS_HOST:-localhost}|g" \
       -e "s|__REDIS_PORT__|${REDIS_PORT:-6379}|g" \
+      -e "s|__REDIS_IAM_USERNAME__|${REDIS_IAM_USERNAME}|g" \
+      -e "s|__REDIS_CACHE_NAME__|${REDIS_CACHE_NAME}|g" \
+      -e "s|__REDIS_IAM_AUTH__|$([ -n "$REDIS_IAM_USERNAME" ] && [ -n "$REDIS_CACHE_NAME" ] && echo true || echo false)|g" \
       -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
       -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
       -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \

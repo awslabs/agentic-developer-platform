@@ -34,7 +34,15 @@ data:
   BG_DATABASE_URL: "postgresql+asyncpg://__DB_USER__@__DB_HOST__:5432/__DB_NAME__"
 
   # Redis / ElastiCache Configuration
+  # The URL is host/port/TLS only — IAM auth means there is no password to embed.
+  # The username + short-lived token are supplied per connection by
+  # src/shared/redis_client.py (Issue #4342).
   BG_REDIS_URL: "rediss://__REDIS_HOST__:__REDIS_PORT__/0"
+  BG_REDIS_IAM_AUTH: "__REDIS_IAM_AUTH__"
+  BG_REDIS_USERNAME: "__REDIS_IAM_USERNAME__"
+  # Replication group id, NOT the endpoint host — the connect token is signed
+  # against the group id and ElastiCache rejects a token signed for the host.
+  BG_REDIS_CACHE_NAME: "__REDIS_CACHE_NAME__"
 
   # Cognito OAuth Configuration
   BG_COGNITO_USER_POOL_ID: "__COGNITO_USER_POOL_ID__"

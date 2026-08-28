@@ -1387,6 +1387,34 @@ resource "aws_ssm_parameter" "redis_port" {
   tags = local.common_tags
 }
 
+# Issue #4342: the IAM-auth username and replication-group id the app needs to
+# mint an ElastiCache connect token. The user + user group have existed in
+# modules/redis/ since IAM auth was turned on, but neither value was ever
+# published, so the gateway had no way to learn them and connected with no
+# credential at all (as the disabled `default` user). These two params close
+# that gap; gateway-deploy.yml reads them into the ConfigMap.
+resource "aws_ssm_parameter" "redis_iam_username" {
+  count = var.enable_redis && var.enable_elasticache_iam_auth ? 1 : 0
+
+  name        = "/adp/${var.environment}/gateway/redis-iam-username"
+  description = "ElastiCache IAM-auth user name for gateway ConfigMap (Issue #4342)"
+  type        = "String"
+  value       = module.redis[0].redis_iam_user_id
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "redis_cache_name" {
+  count = var.enable_redis && var.enable_elasticache_iam_auth ? 1 : 0
+
+  name        = "/adp/${var.environment}/gateway/redis-cache-name"
+  description = "ElastiCache replication group id — the IAM token is signed against this, NOT the endpoint host (Issue #4342)"
+  type        = "String"
+  value       = module.redis[0].replication_group_id
+
+  tags = local.common_tags
+}
+
 # =============================================================================
 # GitHub Auth Broker Lambda (Issue #520)
 # =============================================================================
