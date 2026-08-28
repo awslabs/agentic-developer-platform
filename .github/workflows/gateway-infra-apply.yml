@@ -31,6 +31,10 @@ on:
         description: 'Set to "yes" to authorize an apply that destroys resources. Required when terraform plan includes any destroys.'
         required: false
         default: 'no'
+      apply_targets:
+        description: 'Optional. Space-separated Terraform resource addresses to scope this run to (passed as -target to plan). Empty = full plan/apply (default). Use to publish a specific resource without dragging in unrelated pending drift, e.g. "aws_ssm_parameter.redis_iam_username[0] aws_ssm_parameter.redis_cache_name[0]".'
+        required: false
+        default: ''
 
 concurrency:
   group: tf-apply-gateway-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -402,6 +406,9 @@ jobs:
           # silently disable dispatch on every apply.
           TF_VAR_orchestration_dispatch_queue_url: ${{ steps.dispatch_pre.outputs.QUEUE_URL }}
           TF_VAR_orchestration_dispatch_queue_arn: ${{ steps.dispatch_pre.outputs.QUEUE_ARN }}
+          # Passed via env (not inlined into the script) to avoid shell injection
+          # from the free-text workflow input. Empty = full plan (default).
+          APPLY_TARGETS: ${{ inputs.apply_targets }}
         run: |
           set -e
           set -o pipefail
@@ -438,7 +445,21 @@ jobs:
             echo "ALB not found (fresh deploy) — plan/apply will defer VPC origin creation."
           fi
 
+          # Optional scoping: when apply_targets is set, plan (and therefore the
+          # saved tfplan the apply consumes) is restricted to those addresses and
+          # their dependencies. This lets an operator publish a specific resource
+          # without dragging in unrelated pending drift. Resource addresses contain
+          # glob chars ([0]) so disable pathname expansion while splitting.
+          TARGET_ARGS=()
+          if [ -n "${APPLY_TARGETS:-}" ]; then
+            set -f
+            for t in $APPLY_TARGETS; do TARGET_ARGS+=( -target="$t" ); done
+            set +f
+            echo "::warning::Scoped apply — plan restricted to targets: ${APPLY_TARGETS}"
+          fi
+
           terraform plan -var-file="../../../${{ env.VAR_FILE }}" \
+            "${TARGET_ARGS[@]}" \
             -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
           echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ "$EXIT_CODE" -eq 1 ]; then
