@@ -46,6 +46,7 @@ from src.budget.config import BudgetConfig
 from src.budget.enforcement_middleware import BudgetEnforcementMiddleware
 from src.budget.enforcement_service import BudgetEnforcementService
 from src.budget.reservations import ReservationStore, ReservationTarget
+from src.budget.utils import get_period_start_end
 from src.shared.schemas.auth import TokenContext
 
 # Cheap vs. expensive, both real entries in pricing.py's table. 60x apart on
@@ -199,12 +200,18 @@ def store(redis_client, clock):
 
 
 def _target(headroom: str, *, org_id: str = "org-456", entity_id: str = "user-123", period: str = "daily") -> ReservationTarget:
+    # `period_start` must be derived the same way production derives it, not
+    # hardcoded. `reconcile_reservation` recomputes the reservation key via
+    # `get_period_start_end(period_type)`, which is relative to `date.today()`.
+    # A literal date here agrees with that only until the next UTC rollover,
+    # after which reserve and release address different keys and the release
+    # silently misses -- so the suite passed all day and broke at midnight.
     return ReservationTarget(
         org_id=org_id,
         entity_type="user",
         entity_id=entity_id,
         period_type=period,
-        period_start="2026-08-27",
+        period_start=get_period_start_end(period)[0].isoformat(),
         headroom_usd=Decimal(headroom),
     )
 
