@@ -13,6 +13,7 @@ import json
 import hashlib
 import logging
 import os
+import re
 import time
 import uuid
 from decimal import Decimal
@@ -23,7 +24,7 @@ import boto3
 from channels.base import ChannelAdapter, ChannelType, UnifiedMessage
 from channels.slack import SlackAdapter
 from channels.webchat import WebChatAdapter
-from classifier import classify_message
+from classifier import ClassificationResult, classify_message
 from github_dispatch import create_issue_and_dispatch, label_existing_issue
 from invocation_logger import log_invocation
 from user_resolver import (
@@ -52,6 +53,28 @@ ARTIFACTS_TABLE = os.environ.get("ARTIFACTS_TABLE", "")
 # doesn't deliver synchronous Lambda responses to the client — we must
 # push them back via post_to_connection.
 WS_API_ENDPOINT = os.environ.get("WS_API_ENDPOINT", "")
+
+# ─── Persona pinning (#4208) ──────────────────────────────────
+# A client may pin the persona for a turn, bypassing the Bedrock classifier
+# (used by the intent-intake chat, which must always land on the interviewer
+# persona rather than whatever the classifier infers from the message text).
+#
+# The field arrives from the browser and is therefore UNTRUSTED: an arbitrary
+# value here would let a client select any agent type through the chat box.
+# It is validated against an explicit allowlist and a strict name pattern, and
+# a non-matching value REJECTS the message — we never fall back to the
+# classifier, because a silent fallback would mask a client bug (or an attack)
+# as a working conversation on the wrong persona.
+#
+# The worker carries its own defence-in-depth check over the personas baked
+# into the image (agent/src/complex-task-chat/persona-loader.ts). This Lambda
+# cannot read that directory, so the allowlist is duplicated here
+# deliberately; keep the two in sync when adding a pinnable persona.
+PINNABLE_PERSONAS = frozenset({"intent-refinement"})
+
+# Mirrors PERSONA_NAME_PATTERN in persona-loader.ts. Blocks path traversal
+# (e.g. "../../etc/passwd") even for values that clear the allowlist check.
+PERSONA_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 sqs = boto3.client("sqs", region_name=REGION)
 s3_client = boto3.client("s3", region_name=REGION)
@@ -498,11 +521,45 @@ def handle_upload_complete(event: dict, connection_id: str, body: dict) -> dict:
     return _respond(200, {"artifact_id": artifact_id, "deduplicated": False})
 
 
+def _validate_requested_persona(message: UnifiedMessage) -> str | None:
+    """Return the validated pinned persona, or None if the client pinned none.
+
+    Raises ValueError if the client pinned something we do not allow. Callers
+    must reject the message on that path — never fall back to the classifier,
+    or a bad pin becomes a silently-wrong conversation.
+    """
+    requested = message.platform_data.get("requested_persona", "")
+    if not isinstance(requested, str) or not requested.strip():
+        return None
+
+    requested = requested.strip()
+    if not PERSONA_NAME_PATTERN.match(requested):
+        raise ValueError("malformed persona name")
+    if requested not in PINNABLE_PERSONAS:
+        raise ValueError("persona not pinnable")
+    return requested
+
+
 def handle_unified_message(message: UnifiedMessage) -> dict:
     now = int(time.time())
     task_id = str(uuid.uuid4())
     connection_id = message.platform_data.get("connection_id", "")
     session_id = message.thread_id or message.session_key
+
+    # Issue #4208: validate any client-pinned persona BEFORE touching the
+    # session, the classifier, or the queue. A rejected pin must have no side
+    # effects at all — no history row, no Bedrock spend, no SQS message.
+    try:
+        pinned_persona = _validate_requested_persona(message)
+    except ValueError as e:
+        logger.warning(
+            "Rejected pinned persona %r for session %s: %s",
+            message.platform_data.get("requested_persona"), session_id, e,
+        )
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "invalid persona", "session_id": session_id}),
+        }
 
     # Ensure session exists
     session = get_or_create_session(session_id, connection_id, message, now)
@@ -539,16 +596,36 @@ def handle_unified_message(message: UnifiedMessage) -> dict:
         for tid, t in sorted_threads
     ]
 
-    # Classify with thread awareness
-    classification = classify_message(
-        message=message.text,
-        conversation_history=history,
-        active_threads=active_threads,
-        channel=message.channel.value,
-        user_name=message.user_name,
-    )
+    if pinned_persona:
+        # Issue #4208: the client pinned the persona, so the classifier has
+        # nothing left to decide and we skip it — it would add its own Bedrock
+        # latency to a path that already has a 10-18s cold start, and its
+        # prompt explicitly refuses to carry a persona across topics, which is
+        # exactly what an intake conversation needs it to do.
+        #
+        # Always long_running: direct_response is a tool-less, 1-2 sentence
+        # classifier reply, which cannot run the interviewer or call
+        # update_draft. Continue the most recent thread so a multi-turn intake
+        # serializes as one conversation instead of forking a thread per turn.
+        classification = ClassificationResult(
+            path="long_running",
+            persona=pinned_persona,
+            reasoning=f"persona pinned by client: {pinned_persona}",
+        )
+        if active_threads:
+            classification.thread_action = "follow_up"
+            classification.follow_up_thread_id = active_threads[0]["thread_id"]
+    else:
+        # Classify with thread awareness
+        classification = classify_message(
+            message=message.text,
+            conversation_history=history,
+            active_threads=active_threads,
+            channel=message.channel.value,
+            user_name=message.user_name,
+        )
 
-    logger.info("Route: path=%s thread_action=%s persona=%s", classification.path, classification.thread_action, classification.persona)
+    logger.info("Route: path=%s thread_action=%s persona=%s pinned=%s", classification.path, classification.thread_action, classification.persona, bool(pinned_persona))
 
     # Append message to session history (always, for all paths)
     append_message(session_id, "user", message.text, now)

@@ -29,6 +29,7 @@ import {
   type SessionMeta,
   type ToolCallInfo,
 } from '@/types/ag-ui-events';
+import { applyPatches } from '@/utils/jsonPatch';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -79,7 +80,13 @@ export interface UseAgUiEventsOptions {
 }
 
 export interface UseAgUiEventsReturn extends AgentChatState {
-  sendMessage: (text: string, attachments?: string[]) => void;
+  /**
+   * Send a user message. `persona` (#4208) pins the agent persona for the turn,
+   * bypassing the server-side classifier — used by the intent-intake flow. The
+   * ingest Lambda validates it against an allowlist and rejects anything else,
+   * so an unrecognised value fails the send rather than silently downgrading.
+   */
+  sendMessage: (text: string, attachments?: string[], persona?: string) => void;
   /** Active tool calls for the current turn. */
   activeToolCalls: ToolCallInfo[];
   /** WebSocket ref exposed for upload-token/upload-complete actions. Stage C (#186). */
@@ -399,20 +406,20 @@ export function useAgUiEvents({
 
   const handleStateDelta = useCallback(
     (event: AgUiEvent & { event_type: typeof AgUiEventType.STATE_DELTA }) => {
-      // Apply JSON Patch operations to session meta
-      setSessionMeta(prev => {
-        const meta = { ...prev } as Record<string, unknown>;
-        for (const op of event.delta) {
-          // Simple path parsing: /tokens, /turnCount, /heartbeat
-          const key = op.path.replace(/^\//, '');
-          if (op.op === 'replace' || op.op === 'add') {
-            meta[key] = op.value;
-          } else if (op.op === 'remove') {
-            delete meta[key];
-          }
-        }
-        return meta as SessionMeta;
-      });
+      // Apply JSON Patch operations to session meta.
+      //
+      // Issue #4208: pointers are resolved properly (nested paths included)
+      // instead of being flattened to a single top-level key. The old
+      // `path.replace(/^\//,'')` turned `/draft/intent` into a literal key
+      // named "draft/intent", so nested patches were silently dropped and the
+      // panel just never updated.
+      setSessionMeta(
+        prev =>
+          applyPatches(
+            { ...(prev ?? {}) } as Record<string, unknown>,
+            event.delta,
+          ) as SessionMeta,
+      );
 
       // If it's a heartbeat, keep the typing indicator alive
       const isHeartbeat = event.delta.some(op => op.path === '/heartbeat');
@@ -861,7 +868,7 @@ export function useAgUiEvents({
   // ------------------------------------------------------------------
 
   const sendMessage = useCallback(
-    (text: string, attachments?: string[]) => {
+    (text: string, attachments?: string[], persona?: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
       if (!sessionIdRef.current) return;
 
@@ -886,6 +893,14 @@ export function useAgUiEvents({
       };
       if (attachments && attachments.length > 0) {
         payload.attachments = attachments;
+      }
+      // #4208: pin the persona for this turn (e.g. 'intent-refinement'), skipping
+      // the server-side classifier. Ingest validates it against an allowlist and
+      // returns 400 for anything else — it never silently downgrades, so a typo
+      // here surfaces as a failed send rather than a conversation on the wrong
+      // persona.
+      if (persona) {
+        payload.persona = persona;
       }
       wsRef.current.send(JSON.stringify(payload));
     },

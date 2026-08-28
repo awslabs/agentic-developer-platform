@@ -26,8 +26,14 @@ Message format (client -> server):
     "action": "message",
     "text": "Hello agent",
     "session_id": "optional-session-id",
-    "attachments": [{"url": "...", "type": "image", "filename": "..."}]
+    "attachments": [{"url": "...", "type": "image", "filename": "..."}],
+    "persona": "intent-refinement"
 }
+
+`persona` (#4208) is OPTIONAL and UNTRUSTED. It pins the agent persona for the
+turn, bypassing the server-side classifier. This adapter only carries the raw
+value through to platform_data; the handler validates it against an allowlist
+and REJECTS the message if it does not match. Never treat it as safe here.
 
 The WebSocket connection is authenticated via Cognito JWT token
 passed during the $connect route.
@@ -182,6 +188,12 @@ class WebChatAdapter(ChannelAdapter):
                     a for a in body.get("attachments", [])
                     if isinstance(a, str) and a.startswith("art_")
                 ],
+                # Issue #4208: optional client-supplied persona pin. UNTRUSTED —
+                # carried through verbatim so the handler can validate it against
+                # the allowlist and reject. Absent/blank => classifier decides.
+                "requested_persona": (
+                    body.get("persona") if isinstance(body.get("persona"), str) else ""
+                ),
             },
         )
 

@@ -34,6 +34,23 @@ export interface ContextItem {
   tokens?: number;
 }
 
+/**
+ * One hydrated entry in a session's full transcript (#4208).
+ *
+ * `msg` entries carry the raw message; `sum` entries carry a summary that
+ * replaced a range of evicted turns. Consumers must handle both — a session
+ * that has been compacted has genuine summaries in its timeline, and treating
+ * them as absent loses the conversation they stand in for.
+ */
+export interface TranscriptEntry {
+  ordinal: number;
+  type: 'msg' | 'sum';
+  /** The message or summary ID this entry was hydrated from. */
+  ref: string;
+  message?: StoredMessage;
+  summary?: StoredSummary;
+}
+
 export interface SessionHeader {
   sessionId: string;
   ownerUserId: string;
@@ -77,8 +94,29 @@ export interface ContextStore {
   /** Append a summary record. Returns summaryId. */
   appendSummary(sessionId: string, sum: StoredSummary): Promise<string>;
 
-  /** Read all context items (ordered by ordinal). Includes `tokens` when the backing record carries one. */
+  /**
+   * Read context items (ordered by ordinal). Includes `tokens` when the backing
+   * record carries one.
+   *
+   * NOTE: implementations may stop at one page of results. Context assembly is
+   * token-bounded so that is fine there; use `readAllContextItems` when you
+   * need every item.
+   */
   readContextItems(sessionId: string): Promise<ContextItem[]>;
+
+  /**
+   * Read EVERY context item for a session in ordinal order, draining all pages
+   * (#4208). Optional so existing test doubles need not implement it.
+   */
+  readAllContextItems?(sessionId: string): Promise<ContextItem[]>;
+
+  /**
+   * The full ordered transcript, with messages and summaries hydrated inline
+   * (#4208). Not capped — this feeds the inception hand-off, and a truncated
+   * transcript makes inception re-ask what the intake already established.
+   * Optional so existing test doubles need not implement it.
+   */
+  getFullTranscript?(sessionId: string): Promise<TranscriptEntry[]>;
 
   /**
    * Atomically create the summary and replace the given ordinal range with a single

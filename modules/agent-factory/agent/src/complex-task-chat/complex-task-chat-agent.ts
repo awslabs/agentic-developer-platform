@@ -25,6 +25,9 @@ import {
 } from './ag-ui-events';
 import { Scrubber } from './context/scrubber';
 import { vaultToolsForTurn } from './vault/tools';
+import { buildToolSanitizers } from './tool-sanitizers';
+import { draftToolsForTurn } from './draft/tools';
+import { buildDraftStore } from './draft/dynamo-draft-store';
 import { VaultGatewayClient } from './vault/gateway-client';
 import { createCredsInjector, CredsInjector } from '../aws-creds-injector';
 import { buildPersonalContextIdentity, getPersonalContextEnvVars } from './personal-context-headers';
@@ -66,6 +69,7 @@ async function main(): Promise<void> {
   const context = buildContextManager();
   const memory = buildMemoryProvider();
   const artifacts = buildArtifactStore();
+  const draftStore = buildDraftStore();
   const sqs = new SqsClient();
 
   // KEDA ScaledJob: process one message and exit
@@ -76,7 +80,7 @@ async function main(): Promise<void> {
   }
 
   for (const msg of messages) {
-    await processOne(msg, { context, memory, artifacts, sqs });
+    await processOne(msg, { context, memory, artifacts, draftStore, sqs });
   }
 }
 
@@ -86,6 +90,8 @@ async function processOne(
     context: ReturnType<typeof buildContextManager>;
     memory: ReturnType<typeof buildMemoryProvider>;
     artifacts: ReturnType<typeof buildArtifactStore>;
+    /** Issue #4208: persistence for the intent-intake draft panel. */
+    draftStore: ReturnType<typeof buildDraftStore>;
     sqs: SqsClient;
   },
 ): Promise<void> {
@@ -364,6 +370,25 @@ async function processOne(
       { log: msg => console.log(msg) },
     );
 
+    // Issue #4208: per-turn draft tools closed over the session, mirroring the
+    // artifact-tools pattern above. `update_draft` writes the intake draft and
+    // the onUpdate callback streams it to the browser's draft panel as a
+    // top-level STATE_DELTA patch. Emitted mid-turn (not batched to the end) —
+    // the whole point is that the user watches the draft fill in while they
+    // talk. The patch path is top-level `/draft` on purpose: the frontend
+    // resolves nested pointers now, but a single whole-object op keeps the
+    // panel consistent with the "always send the complete draft" contract.
+    const draftTools = draftToolsForTurn(deps.draftStore, {
+      sessionId: session_id,
+      onUpdate: async draft => {
+        await emitAgUi({
+          event_type: AgUiEventType.STATE_DELTA,
+          delta: [{ op: 'replace', path: '/draft', value: draft }],
+          timestamp: agUiTimestamp(),
+        });
+      },
+    });
+
     const tools: AgentTool[] = [
       ...deps.context.tools(),
       // #4074: closure-inject the authenticated scope so the model cannot
@@ -374,17 +399,16 @@ async function processOne(
       ...deps.memory.tools({ user: user_id, tenant: tenant_id, persona: persona.name }),
       ...artifactTools,
       ...vaultTools,
+      ...draftTools,
     ];
 
     // Build per-tool input sanitizers for AG-UI event sanitization (#137).
     // Vault tools declare inputSummarySanitizer to strip credential-bearing fields.
-    const toolSanitizers = new Map<string, (input: Record<string, unknown>) => Record<string, unknown>>();
-    for (const t of vaultTools) {
-      const sanitizable = t as { inputSummarySanitizer?: (input: Record<string, unknown>) => Record<string, unknown> };
-      if (sanitizable.inputSummarySanitizer) {
-        toolSanitizers.set(t.name, sanitizable.inputSummarySanitizer);
-      }
-    }
+    //
+    // Issue #4208: built from the FULL tool list, not just vaultTools. The old
+    // loop only saw vault tools, so a sanitizer declared by any other tool was
+    // silently ignored and its args went unsanitized into TOOL_CALL_ARGS.
+    const toolSanitizers = buildToolSanitizers(tools);
 
     // Issue #586: Get scoped env for the agent's bash subshells. This env has
     // pod-IRSA stripped and user's assumed-role creds injected. When no injector

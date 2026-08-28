@@ -20,6 +20,7 @@ import { ConversationSidebar } from '@/components/chat/ConversationSidebar';
 import { ChatMessageRenderer } from '@/components/chat/ChatMessageRenderer';
 import { ToolCallRow } from '@/components/chat/ToolCallRow';
 import { SessionMetaPanel } from '@/components/chat/SessionMetaPanel';
+import { DraftPanel } from '@/components/chat/DraftPanel';
 import { TypingIndicator } from '@/components/chat/TypingIndicator';
 import { FileDropZone, type PendingUpload } from '@/components/chat/FileDropZone';
 import type { ChatMessage, Conversation, ConnectionStatus } from '@/types/chat';
@@ -334,6 +335,9 @@ export default function AgentChat() {
             </>
           )}
         </div>
+
+        {/* Live intent draft (#4208) — populated by update_draft via STATE_DELTA */}
+        <DraftPanel draft={sessionMeta?.draft} />
 
         {/* Session metadata (AG-UI STATE_DELTA) */}
         <SessionMetaPanel meta={sessionMeta} />
