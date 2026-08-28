@@ -596,3 +596,256 @@ class TestTransactionIsolation:
         # Good records committed individually; the bad one rolled back.
         assert mock_conn.commit.call_count >= 2
         mock_conn.rollback.assert_called_once()
+
+
+# =============================================================================
+# Issue #4300: root-human attribution in the settled ledger
+# =============================================================================
+
+
+class _LedgerCursor:
+    """A cursor that accumulates ``budget_usage`` rows the way Postgres would.
+
+    The upsert is ``INSERT ... ON CONFLICT (org_id, entity_type, entity_id,
+    period_start, period_type) DO UPDATE SET total_cost_usd = existing +
+    EXCLUDED``. Counting ``execute`` calls cannot tell "wrote a third row" from
+    "debited an existing row twice" — those are the two outcomes #4300 has to
+    keep apart — so this replays the conflict key and sums per row instead.
+    """
+
+    def __init__(self):
+        # (entity_type, entity_id, period_type) -> {"cost": Decimal, "tokens": int, "requests": int}
+        self.rows: dict[tuple[str, str, str], dict] = {}
+        self.rowcount = 1
+
+    def execute(self, sql, params=None):
+        if "INSERT INTO budget_usage" not in sql or params is None:
+            return
+        (_id, org_id, entity_type, entity_id, period_start, period_type, cost, tokens) = params
+        key = (entity_type, entity_id, period_type)
+        row = self.rows.setdefault(key, {"cost": Decimal("0"), "tokens": 0, "requests": 0, "org_id": org_id})
+        row["cost"] += Decimal(str(cost))
+        row["tokens"] += tokens
+        row["requests"] += 1
+
+    def fetchall(self):
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _LedgerConn:
+    """Connection handing out a single shared :class:`_LedgerCursor`."""
+
+    def __init__(self):
+        self.cursor_obj = _LedgerCursor()
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def _chat_log_4300(root_human_id=None, **overrides) -> dict:
+    """A minimal valid chat log, optionally carrying a root-human attribution."""
+    log = {
+        "org_id": "org-acme",
+        "user_id": "cognito-sub-of-the-agent-service-account",
+        "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "response": {"usage": {"input_tokens": 1000, "output_tokens": 500}},
+        "timestamp": "2026-08-20T12:00:00Z",
+        "request_id": "req-4300",
+    }
+    if root_human_id is not None:
+        log["root_human_id"] = root_human_id
+    log.update(overrides)
+    return log
+
+
+def _entity_types(conn: _LedgerConn) -> set[str]:
+    return {k[0] for k in conn.cursor_obj.rows}
+
+
+class TestRootHumanEntityTypeContract:
+    """T15: the writer's entity_type string must equal the reader's enum value.
+
+    This is the highest-value test in the #4300 set. The Lambda is a separate
+    deploy artifact and cannot import gateway ``src``, so the two halves of the
+    settled ledger agree only by convention. If the writer emits one string and
+    enforcement reads another, nothing raises and no log line appears — the cap
+    simply reads an empty ledger and every request passes. That silent failure
+    mode already happened once on the org line (writer ``"organization"`` vs.
+    reader ``"org"``, tracked as #4322), where it means budgets are not enforced
+    at all.
+    """
+
+    def test_writer_constant_equals_reader_enum_value(self):
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+
+        assert handler_mod._ROOT_USER_ENTITY_TYPE == EntityType.ROOT_USER.value
+
+    def test_rows_written_are_readable_by_the_enforcement_enum(self):
+        """The end-to-end shape of the contract: the string that lands in the
+        table is the string ``_get_entity_hierarchy`` will query with."""
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id="users-id-alice"), MODEL_PRICING)
+
+        written = {k[0] for k in conn.cursor_obj.rows if k[1] == "users-id-alice"}
+        assert written == {EntityType.ROOT_USER.value}
+
+
+class TestRootHumanLedgerRows:
+    """T2: the root-human row is a THIRD row, not a second debit elsewhere."""
+
+    def test_root_human_row_is_written_for_each_period(self):
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id="users-id-alice"), MODEL_PRICING)
+
+        periods = {k[2] for k in conn.cursor_obj.rows if k[0] == "root_user"}
+        assert periods == {"daily", "weekly", "monthly"}
+
+    def test_root_human_row_holds_the_cost_exactly_once(self):
+        """The root-human line must equal one request's cost, not two.
+
+        A naive implementation that reused the ``user`` entity_type — or appended
+        the same entity twice — would double the figure and deny the human at
+        half their real cap.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        log = _chat_log_4300(root_human_id="users-id-alice")
+        handler_mod.process_chat_log(conn, log, MODEL_PRICING)
+
+        expected = calculate_cost(
+            resolve_model_id(log["model"]),
+            1000,
+            500,
+            MODEL_PRICING,
+        )
+        assert expected > 0  # a zero cost would make the assertion below vacuous
+        row = conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]
+        assert row["cost"] == expected
+        assert row["requests"] == 1
+
+    def test_org_row_is_not_double_debited_by_the_new_entity(self):
+        """The org line must be unchanged by #4300 — same cost as before.
+
+        Compared against a run of the *same* chat log with no attribution, so
+        this fails if the new entity ever debits an existing row instead of
+        adding its own.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+
+        without = _LedgerConn()
+        handler_mod.process_chat_log(without, _chat_log_4300(), MODEL_PRICING)
+
+        with_root = _LedgerConn()
+        handler_mod.process_chat_log(with_root, _chat_log_4300(root_human_id="users-id-alice"), MODEL_PRICING)
+
+        for entity in ("organization", "user"):
+            key = (entity, {"organization": "org-acme", "user": "cognito-sub-of-the-agent-service-account"}[entity], "daily")
+            assert with_root.cursor_obj.rows[key]["cost"] == without.cursor_obj.rows[key]["cost"]
+            assert with_root.cursor_obj.rows[key]["requests"] == without.cursor_obj.rows[key]["requests"] == 1
+
+    def test_sub_agent_fan_out_accumulates_on_one_human_line(self):
+        """Six sub-agents on six service accounts, one shared human.
+
+        This is the ledger half of the feature: each hop writes its own ``user``
+        row, but every hop adds to the single ``root_user`` line, so the human's
+        settled floor grows with the whole chain.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        for i in range(6):
+            handler_mod.process_chat_log(
+                conn,
+                _chat_log_4300(root_human_id="users-id-alice", user_id=f"cognito-sub-agent-{i}", request_id=f"req-{i}"),
+                MODEL_PRICING,
+            )
+
+        one = calculate_cost(resolve_model_id(_chat_log_4300()["model"]), 1000, 500, MODEL_PRICING)
+        human = conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]
+        assert human["requests"] == 6
+        assert human["cost"] == one * 6
+        # Each hop's own identity carries only its own hop.
+        for i in range(6):
+            assert conn.cursor_obj.rows[("user", f"cognito-sub-agent-{i}", "daily")]["requests"] == 1
+
+
+class TestRootHumanAbsent:
+    """T18/T19: absence must be inert, and must never degrade metering."""
+
+    def test_chat_log_without_the_field_still_records_usage(self):
+        """Back-compat: every log written before #4300 shipped, and every
+        non-human-rooted request, has no ``root_human_id`` at all.
+
+        If the field had joined ``required_fields``, ``parse_chat_log`` would
+        return ``None`` for these and the Lambda would stop recording ALL budget
+        usage for them — an attribution gap would become a metering outage.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(), MODEL_PRICING)
+
+        assert _entity_types(conn) == {"user", "organization"}
+
+    def test_parse_chat_log_without_the_field_is_still_valid(self):
+        handler_mod = load_handler("budget-usage-tracker")
+
+        parsed = handler_mod.parse_chat_log(_chat_log_4300())
+
+        assert parsed is not None
+        assert parsed["root_human_id"] is None
+
+    @pytest.mark.parametrize("empty", ["", None])
+    def test_empty_attribution_writes_no_row(self, empty):
+        """An empty value must add NO row.
+
+        A row keyed on ``""`` would collapse every non-human-rooted request in
+        the tenant into one shared bogus ledger line — and the first tenant to
+        exceed it would deny everyone.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id=empty), MODEL_PRICING)
+
+        assert "root_user" not in _entity_types(conn)
+        assert not [k for k in conn.cursor_obj.rows if k[1] == ""]
+
+    def test_attribution_is_independent_of_the_agent_entity(self):
+        """A human-rooted IAM agent request writes both lines, not one or the
+        other: ``agent`` for the machine, ``root_user`` for the person."""
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", account_type="service", agent_id="agent-uuid-7"),
+            MODEL_PRICING,
+        )
+
+        assert {"agent", "root_user"} <= _entity_types(conn)
+        assert conn.cursor_obj.rows[("agent", "agent-uuid-7", "daily")]["requests"] == 1
+        assert conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]["requests"] == 1

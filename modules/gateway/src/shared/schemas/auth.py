@@ -31,6 +31,9 @@ class TokenContext(BaseModel):
       access. Internal-plane agents may point it at the tenant that triggered
       the run (Issue #747) so usage/billing lands on that tenant. It defaults
       to ``org_id``, so every non-internal caller sees the two fields agree.
+
+    ``attributed_user_id`` (Issue #4300) is the third attribution field and the
+    only one no caller can influence at all — see its own comment below.
     """
 
     user_id: str
@@ -55,6 +58,23 @@ class TokenContext(BaseModel):
     # Issue #4132: the org that usage/billing is *attributed* to. Attribution
     # only — never an authorization input. See the class docstring.
     attributed_org_id: str = ""
+    # Issue #4300: the HUMAN who set this agent chain in motion, as a canonical
+    # `users.id`. Attribution only — never an authorization input. If this is
+    # ever read as authz, a sub-agent can act as the human who triggered it.
+    #
+    # WRITTEN BY THE BUDGET MIDDLEWARE, not by token validation: the value comes
+    # off the server-resolved run row (src/budget/run_binding.py), which is only
+    # available once the budget layer has verified the binding. Read only by
+    # budget/attribution paths (the entity hierarchy and the chat-log write
+    # sites, which feed the settled ledger).
+    #
+    # NOT settable from any request header by any caller, internal-plane or
+    # otherwise — there is deliberately no header for it. Empty means "not
+    # human-rooted, or not resolvable", which adds no budget entity and writes
+    # no ledger row. Empty must never become a row keyed on "": that would
+    # collapse every non-human-rooted request in a tenant into one bogus
+    # shared ledger line.
+    attributed_user_id: str = ""
 
     @model_validator(mode="after")
     def _default_attributed_org_id(self) -> "TokenContext":

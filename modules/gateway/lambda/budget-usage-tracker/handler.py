@@ -45,6 +45,21 @@ _pricing_cache: dict[str, dict[str, Any]] = {}
 _pricing_cache_time: float = 0
 _PRICING_CACHE_TTL = 3600  # 1 hour
 
+# Issue #4300: the settled-ledger entity_type for the human who initiated an
+# agent chain.
+#
+# This MUST stay equal to `EntityType.ROOT_USER.value` in
+# src/shared/schemas/budget.py — this Lambda is a separate deploy artifact and
+# cannot import gateway `src`, so the agreement is pinned by a test rather than
+# by the type system (see tests/lambda/test_budget_usage_tracker.py::T15).
+#
+# Why a named constant and not an inline literal like the ("user", ...) /
+# ("organization", ...) entries below: those hand-written literals are exactly
+# how the org line drifted from the reader's "org" (tracked as #4322), where a
+# writer/reader mismatch means enforcement silently reads an empty ledger and
+# every cap passes. Do not inline this string.
+_ROOT_USER_ENTITY_TYPE = "root_user"
+
 
 def get_period_starts(timestamp: datetime) -> dict[str, datetime]:
     """
@@ -200,6 +215,13 @@ def parse_chat_log(chat_log: dict[str, Any]) -> dict[str, Any] | None:
         "org_id": chat_log["org_id"],
         "user_id": chat_log["user_id"],
         "team_id": chat_log.get("team_id"),
+        # Issue #4300: the initiating human. Deliberately `.get()` and
+        # deliberately NOT in `required_fields` above — it is legitimately absent
+        # on every non-human-rooted request and on every log written before #4300
+        # shipped. Requiring it would make this Lambda drop those logs entirely
+        # and stop recording ALL budget usage for them: a missing attribution
+        # field would become a total metering outage. Same handling as `agent_id`.
+        "root_human_id": chat_log.get("root_human_id"),
         "model": chat_log["model"],
         "input_tokens": int(input_tokens),
         "output_tokens": int(output_tokens),
@@ -357,6 +379,9 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     account_type = parsed.get("account_type")
     agent_id = parsed.get("agent_id")
 
+    # Issue #4300: the human who initiated this agent chain, if any.
+    root_human_id = parsed.get("root_human_id")
+
     # Resolve cross-region model ID
     resolved_model_id = resolve_model_id(model_id)
 
@@ -405,6 +430,21 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     if account_type == "service" and agent_id:
         entities.append(("agent", agent_id))
         logger.info(f"Including agent entity: {agent_id}")
+
+    # Issue #4300: attribute the spend to the human who set this chain in motion,
+    # so a person's budget is the envelope for everything they trigger and not
+    # just their own first hop.
+    #
+    # Gated on presence: an empty/absent root_human_id must add NO row. A row
+    # keyed on "" would collapse every non-human-rooted request in the tenant
+    # into one shared bogus ledger line.
+    #
+    # This is a THIRD row, not a second debit on the org's — each
+    # (entity_type, entity_id) is a distinct row under the table's
+    # UniqueConstraint, so the org line still receives exactly `cost`.
+    if root_human_id:
+        entities.append((_ROOT_USER_ENTITY_TYPE, root_human_id))
+        logger.info(f"Including root-human entity: {root_human_id}")
 
     for entity_type, entity_id in entities:
         for period_type, period_start in periods.items():

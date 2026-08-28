@@ -77,6 +77,15 @@ class ChatLog(BaseModel):
     org_id: str = Field(description="Organization ID from auth context")
     user_id: str | None = Field(default=None, description="User ID from auth context")
     team_id: str | None = Field(default=None, description="Team ID from auth context")
+    # Issue #4300: the human who set this agent chain in motion, as a canonical
+    # `users.id`. Resolved server-side from the run's registry row, never from a
+    # header. The budget-usage-tracker Lambda reads this to write the cumulative
+    # `root_user` settled ledger row, so a chain's spend debits the initiating
+    # person's budget rather than only the agent service account's.
+    #
+    # Empty for non-human-rooted requests, which is the common case. The Lambda
+    # writes NO row when it is empty — never a $0 row keyed on "".
+    root_human_id: str = Field(default="", description="Root human (users.id) who initiated this agent chain; empty if not human-rooted")
     account_type: Literal["human", "service"] = Field(description="Account type: human or service")
 
     # Request metadata

@@ -362,6 +362,10 @@ async def create_message(
                 org_id=context.attributed_org_id,
                 user_id=context.user_id,
                 team_id=context.team_id,
+                # Issue #4300: the initiating human, so an agent chain's spend
+                # debits that person's cumulative budget and not just the agent
+                # service account's. Server-resolved; empty if not human-rooted.
+                root_human_id=context.attributed_user_id,
                 account_type="service" if context.account_type == "service" else "human",
                 model=request.model,
                 api_format="anthropic",
@@ -394,6 +398,10 @@ async def create_message(
                 org_id=context.attributed_org_id,
                 user_id=context.user_id,
                 team_id=context.team_id,
+                # Issue #4300: the initiating human, so an agent chain's spend
+                # debits that person's cumulative budget and not just the agent
+                # service account's. Server-resolved; empty if not human-rooted.
+                root_human_id=context.attributed_user_id,
                 account_type="service" if context.account_type == "service" else "human",
                 model=request.model,
                 api_format="anthropic",
@@ -633,6 +641,10 @@ async def invoke_model_by_path(
             org_id=context.attributed_org_id,
             user_id=context.user_id,
             team_id=context.team_id,
+            # Issue #4300: the initiating human, so an agent chain's spend
+            # debits that person's cumulative budget and not just the agent
+            # service account's. Server-resolved; empty if not human-rooted.
+            root_human_id=context.attributed_user_id,
             account_type="service" if context.account_type == "service" else "human",
             model=model_id,
             api_format="bedrock",
@@ -707,6 +719,10 @@ async def invoke_model_stream_by_path(
             org_id=context.attributed_org_id,
             user_id=context.user_id,
             team_id=context.team_id,
+            # Issue #4300: the initiating human, so an agent chain's spend
+            # debits that person's cumulative budget and not just the agent
+            # service account's. Server-resolved; empty if not human-rooted.
+            root_human_id=context.attributed_user_id,
             account_type="service" if context.account_type == "service" else "human",
             model=model_id,
             api_format="bedrock",

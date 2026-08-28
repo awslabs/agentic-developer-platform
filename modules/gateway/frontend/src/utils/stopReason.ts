@@ -24,6 +24,8 @@ const STOP_REASON_TEXT: Record<string, string> = {
     'This run reached its per-run spend cap and was stopped. Its work so far is preserved in the transcript.',
   chain_cap_exceeded:
     'This run and the runs it spawned together reached the per-chain spend cap, so the chain was stopped.',
+  root_user_cap_exceeded:
+    'Everything you have set in motion this period — this run and the agents it spawned — reached your personal spend budget, so this run was stopped. An administrator can raise your budget.',
   hierarchy_cap_exceeded:
     'Your organization, team, or user budget is exhausted, so this run was stopped. An administrator can raise it.',
   budget_cap_exceeded: 'A spend cap was reached, so this run was stopped.',

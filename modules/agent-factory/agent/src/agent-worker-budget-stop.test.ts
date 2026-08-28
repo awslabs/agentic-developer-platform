@@ -71,6 +71,33 @@ describe('agent-worker budget-stop detection (Issue #4187)', () => {
       expect(DETECT_FN).toContain('hierarchy_cap_exceeded');
     });
 
+    it('maps the root-human scope to its own reason (Issue #4300)', () => {
+      // A per-root-human cap is a THIRD scope, and it is the one with a
+      // different remedy: not "this run overspent" but "the person who started
+      // this is out of budget for the period". Collapsing it into
+      // `hierarchy_cap_exceeded` — which is what the pre-#4300 fallback does —
+      // tells the operator to look at an org/team cap that is not the one that
+      // fired, and the discriminator is a closed regex so a new scope reaches
+      // the fallback silently unless the regex is widened too.
+      expect(DETECT_FN).toContain('root_user');
+      expect(DETECT_FN).toContain('root_user_cap_exceeded');
+      // The scope regex must actually admit the value; matching only the
+      // ternary arm would pass while the regex still rejected "root_user".
+      const scopeRegex = /\/"scope"[^/]*\//.exec(DETECT_FN)?.[0] ?? '';
+      expect(scopeRegex).toContain('root_user');
+    });
+
+    it('keeps the three scopes distinct from each other and from the fallback', () => {
+      // Four outcomes, four distinct strings. A copy-paste that reused
+      // `chain_cap_exceeded` for the new arm would still satisfy the assertions
+      // above.
+      const reasons = ['run_cap_exceeded', 'chain_cap_exceeded', 'root_user_cap_exceeded', 'hierarchy_cap_exceeded'];
+      expect(new Set(reasons).size).toBe(4);
+      for (const reason of reasons) {
+        expect(DETECT_FN).toContain(reason);
+      }
+    });
+
     it('emits static enums, never prose', () => {
       // Same contract as skip_reason (#4020): the producer ships an enum and the
       // frontend owns the wording, so changing the text does not require

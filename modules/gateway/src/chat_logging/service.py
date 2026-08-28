@@ -122,6 +122,7 @@ class ChatLoggingService:
         request_body: dict[str, Any],
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
+        root_human_id: str = "",
     ) -> None:
         """Fire-and-forget log a chat interaction.
 
@@ -141,6 +142,10 @@ class ChatLoggingService:
             request_body: Full request body
             response_body: Full response body
             headers: Request headers (for scrubbing)
+            root_human_id: Issue #4300 — the human (canonical ``users.id``) who
+                initiated this agent chain, from ``TokenContext.attributed_user_id``.
+                Empty when the request is not human-rooted. The budget-usage-tracker
+                Lambda reads it to write the cumulative ``root_user`` ledger row.
         """
         if not self.should_log(model):
             return
@@ -160,6 +165,7 @@ class ChatLoggingService:
                 request_body=request_body,
                 response_body=response_body,
                 headers=headers,
+                root_human_id=root_human_id,
             ),
             name=f"chat_log_{request_id}",
         )
@@ -178,6 +184,7 @@ class ChatLoggingService:
         request_body: dict[str, Any],
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
+        root_human_id: str = "",
     ) -> None:
         """Implementation of chat logging.
 
@@ -225,6 +232,7 @@ class ChatLoggingService:
                 org_id=org_id,
                 user_id=user_id,
                 team_id=team_id,
+                root_human_id=root_human_id,
                 account_type=account_type,
                 model=model,
                 api_format=api_format,
@@ -275,6 +283,7 @@ class ChatLoggingService:
         org_id: str,
         user_id: str | None,
         team_id: str | None,
+        root_human_id: str,
         account_type: Literal["human", "service"],
         model: str,
         api_format: Literal["bedrock", "anthropic", "openai"],
@@ -341,6 +350,7 @@ class ChatLoggingService:
             org_id=org_id,
             user_id=user_id,
             team_id=team_id,
+            root_human_id=root_human_id,
             account_type=account_type,
             model=model,
             api_format=api_format,
@@ -457,6 +467,7 @@ def create_streaming_logging_wrapper(
     request_body: dict[str, Any],
     headers: dict[str, str] | None,
     start_time: float,
+    root_human_id: str = "",
 ) -> Any:
     """Create a streaming response wrapper that buffers chunks for logging.
 
@@ -477,6 +488,8 @@ def create_streaming_logging_wrapper(
         request_body: Request body dict for logging
         headers: Request headers (optional)
         start_time: Start time from time.monotonic() for latency calculation
+        root_human_id: Issue #4300 — the human (canonical ``users.id``) who
+            initiated this agent chain. Empty when not human-rooted.
 
     Returns:
         An async generator that yields chunks and logs after completion
@@ -533,6 +546,7 @@ def create_streaming_logging_wrapper(
                 request_body=request_body,
                 response_body=reconstructed_response,
                 headers=headers,
+                root_human_id=root_human_id,
             )
 
         except Exception as e:

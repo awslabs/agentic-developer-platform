@@ -780,12 +780,18 @@ function detectBudgetStop(err: Error): { stopReason: string } | null {
   // A static enum, not a sentence — same contract as `skip_reason` (#4020), so
   // the wording lives in the frontend and can change without redeploying the
   // agent image (see frontend/src/utils/stopReason.ts).
-  const scope = /"scope"\s*:\s*"(run|chain)"/.exec(message)?.[1];
+  // `root_user` (#4300) is the initiating human's own cumulative envelope. It
+  // must be distinguishable from the hierarchy default: telling an operator to
+  // raise an org budget when the real limit was one person's cap sends them to
+  // change the wrong knob.
+  const scope = /"scope"\s*:\s*"(run|chain|root_user)"/.exec(message)?.[1];
   const stopReason = scope === 'run'
     ? 'run_cap_exceeded'
     : scope === 'chain'
       ? 'chain_cap_exceeded'
-      : 'hierarchy_cap_exceeded';
+      : scope === 'root_user'
+        ? 'root_user_cap_exceeded'
+        : 'hierarchy_cap_exceeded';
   return { stopReason };
 }
 

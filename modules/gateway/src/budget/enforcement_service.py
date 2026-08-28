@@ -303,6 +303,19 @@ class BudgetEnforcementService:
         authenticated org_id would charge every hosted run to __platform__ and
         leave per-tenant caps unenforced.
 
+        Issue #4300: the root-human level applies the same reasoning one tier
+        down. ``user_id`` for a hosted run is the agent's own service account, so
+        without this entity a human can trigger a chain of N sub-agents that each
+        sit inside their own cap and collectively blow the human's envelope, with
+        the human's budget line never registering any of it.
+
+        This entity belongs HERE rather than in ``_scope_targets`` because it is a
+        CUMULATIVE per-period budget with a settled Postgres ledger behind it (the
+        tracker Lambda writes a ``root_user`` row), so it needs
+        ``headroom = cap - settled`` — which is exactly what this path's
+        ``_check_entity_budget`` computes. ``_scope_targets`` exists for run/chain
+        precisely because those have NO settled ledger and need the full cap.
+
         Args:
             context: Token context with user hierarchy info
 
@@ -324,6 +337,16 @@ class BudgetEnforcementService:
         # Department level
         if context.department_id:
             entities.append((EntityType.DEPARTMENT, context.department_id))
+
+        # Root-human level (attribution — see docstring). Issue #4300.
+        #
+        # Gated on `!= user_id` because when the caller IS the initiating human,
+        # their spend is already covered by the USER line above. Adding a second
+        # entity would reserve the same cost twice against one person (the two
+        # entity types are different Redis keys, so nothing dedupes them) and
+        # consume their headroom at 2x rate.
+        if context.attributed_user_id and context.attributed_user_id != context.user_id:
+            entities.append((EntityType.ROOT_USER, context.attributed_user_id))
 
         # Organization level (attribution — see docstring)
         if context.attributed_org_id:
@@ -553,7 +576,6 @@ class BudgetEnforcementService:
 
         try:
             async with self._get_session() as session:
-                entities = self._get_entity_hierarchy(context)
                 all_warnings = []
                 reservation_targets: list[ReservationTarget] = []
 
@@ -580,6 +602,33 @@ class BudgetEnforcementService:
                     run_cap = await self._resolve_scope_cap(session, context.attributed_org_id, EntityType.RUN)
                     chain_cap = await self._resolve_scope_cap(session, context.attributed_org_id, EntityType.CHAIN)
                     reservation_targets.extend(self._scope_targets(binding, run_cap, chain_cap))
+
+                    # Issue #4300: publish the server-resolved root human onto the
+                    # context so (a) the hierarchy below can add its budget entity
+                    # and (b) the proxy's chat-log write sites can carry it into the
+                    # settled ledger. The binding is the ONLY forge-resistant source
+                    # for this — it comes off the webhook-events row, and
+                    # `verify_row_matches_caller` has already asserted the row
+                    # belongs to this caller's tenant and identity.
+                    #
+                    # `object.__setattr__` follows the `_default_attributed_org_id`
+                    # precedent: it dodges validator re-entry and keeps working if
+                    # `validate_assignment` is ever enabled on TokenContext.
+                    #
+                    # Empty stays empty. `run_binding.py` normalizes a missing
+                    # root_human_id to "", which is the common case (non-human-rooted
+                    # runs, and every row written before the lineage plane shipped).
+                    if binding.root_human_id:
+                        object.__setattr__(context, "attributed_user_id", binding.root_human_id)
+
+                # ORDERING CONTRACT (Issue #4300): the hierarchy is built HERE,
+                # strictly after the run binding has been resolved and
+                # `attributed_user_id` published above. Building it earlier — where
+                # this call used to live — means the ROOT_USER entity is never
+                # added, and the per-human envelope silently enforces nothing while
+                # every test that seeds the context directly still passes. If you
+                # move this line back up, #4300 becomes inert.
+                entities = self._get_entity_hierarchy(context)
 
                 # Check each entity in the hierarchy
                 for entity_type, entity_id in entities:
@@ -680,10 +729,19 @@ class BudgetEnforcementService:
             f"- {exhausted.period_type} settled headroom ${exhausted.headroom_usd}, request estimate ${estimated_cost}"
         )
 
-        # Issue #4187: only the two new scopes carry a discriminator. Hierarchy
+        # Issue #4187: only the new scopes carry a discriminator. Hierarchy
         # denials keep `scope=None`, which leaves every pre-#4187 402 body
         # byte-identical.
-        is_scope_denial = exhausted.entity_type in (EntityType.RUN.value, EntityType.CHAIN.value)
+        #
+        # Issue #4300 adds `root_user` so a personal-envelope stop is
+        # distinguishable from an org/team cap. Without it the worker's regex
+        # falls through to `hierarchy_cap_exceeded` and the operator is told to
+        # raise an org budget when the real limit was one person's envelope.
+        is_scope_denial = exhausted.entity_type in (
+            EntityType.RUN.value,
+            EntityType.CHAIN.value,
+            EntityType.ROOT_USER.value,
+        )
         return EnforcementResult(
             allowed=False,
             deny_reason=DenyReason.BUDGET_EXCEEDED,
@@ -693,7 +751,10 @@ class BudgetEnforcementService:
             enforcement_mode=EnforcementMode.HARD,
             scope=exhausted.entity_type if is_scope_denial else None,
             # For run/chain the headroom IS the whole cap: there is no settled
-            # ledger to subtract, so this is the cap, not a remainder.
+            # ledger to subtract, so this is the cap, not a remainder. For
+            # root_user (#4300) it IS a remainder — that line has a settled
+            # ledger, so this is `cap - settled_spend`, the headroom the request
+            # was denied against rather than the configured ceiling.
             scope_cap_usd=exhausted.headroom_usd if is_scope_denial else None,
         )
 

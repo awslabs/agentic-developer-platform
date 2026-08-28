@@ -33,6 +33,19 @@ class EntityType(str, Enum):
     # run's registry row (src/budget/run_binding.py) — never from a header.
     RUN = "run"
     CHAIN = "chain"
+    # Issue #4300: the human who set a chain in motion. Deliberately NOT a reuse
+    # of USER: that entity holds the *authenticated caller*, which for a hosted
+    # run is the agent's own service account, and its ids are Cognito `sub`s.
+    # ROOT_USER holds a canonical `users.id` — the namespace the lineage plane
+    # writes `root_human_id` in. Two id namespaces sharing one entity_type under
+    # a UniqueConstraint is an identifier collision waiting to happen, so they
+    # get separate values.
+    #
+    # Resolved SERVER-SIDE off the run's registry row (src/budget/run_binding.py),
+    # never from a header. Unlike RUN/CHAIN this line is CUMULATIVE per calendar
+    # period: it has a settled Postgres ledger (the budget-usage-tracker Lambda
+    # writes a "root_user" row), so it belongs in the hierarchy, not _scope_targets.
+    ROOT_USER = "root_user"
 
 
 class EnforcementMode(str, Enum):

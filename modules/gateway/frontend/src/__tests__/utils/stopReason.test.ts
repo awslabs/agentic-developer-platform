@@ -21,6 +21,33 @@ describe('describeStopReason', () => {
     expect(describeStopReason('chain_cap_exceeded')).toMatch(/per-chain spend cap/i);
   });
 
+  it('gives the root-human cap its own prose, not the hierarchy sentence (#4300)', () => {
+    // The third cap scope, and the one with a different subject: not "this run"
+    // or "this fan-out" but "everything you started this period". The generic
+    // hierarchy sentence blames an org/team budget, which sends the person to ask
+    // an admin about the wrong knob. Without an entry here the unmapped fallback
+    // renders the bare enum ("Root user cap exceeded") — legible, but it names no
+    // remedy and no owner.
+    const prose = describeStopReason('root_user_cap_exceeded');
+    expect(prose).not.toBeNull();
+    expect(prose).toMatch(/budget/i);
+    expect(prose).toMatch(/administrator/i);
+    // Must not be the fallback humanization of the enum.
+    expect(prose).not.toBe('Root user cap exceeded');
+    // Must not be the hierarchy sentence, which points at the wrong scope.
+    expect(prose).not.toBe(describeStopReason('hierarchy_cap_exceeded'));
+    expect(prose).not.toMatch(/organization/i);
+  });
+
+  it('keeps all three cap scopes distinct from one another', () => {
+    // Four enums, four sentences. A copy-paste that reused the chain wording for
+    // the new scope would still satisfy the assertions above.
+    const prose = ['run_cap_exceeded', 'chain_cap_exceeded', 'root_user_cap_exceeded', 'hierarchy_cap_exceeded'].map(
+      (r) => describeStopReason(r),
+    );
+    expect(new Set(prose).size).toBe(4);
+  });
+
   it('names the administrator for a hierarchy cap', () => {
     // The user cannot fix an exhausted org budget themselves, so the prose has to
     // point at who can — otherwise the message is a dead end.
