@@ -327,6 +327,10 @@ class TestOrchestrationRouterIsOperatorPlane:
         # LINE HERE, and that is the review moment: if the route reads or writes
         # promotion state, the answer is PLAN_APPROVE and nothing weaker.
         expected_permissions = {
+            # Issue #4320: the engine's ingress for plan state. It CREATES flow,
+            # node and edge rows, so it is promotion activity of the strongest
+            # kind — PLAN_APPROVE and nothing weaker.
+            "/api/orchestration/flows": "Permission.PLAN_APPROVE",
             "/api/orchestration/flows/{flow_id}/amendments": "Permission.PLAN_APPROVE",
             "/api/orchestration/flows/{flow_id}/plans": "Permission.PLAN_APPROVE",
             # Read-only cost rollup. Reads usage_logs, never promotion state.

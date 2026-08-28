@@ -174,6 +174,9 @@ __all__ = [
     "message_deduplication_id",
     "message_group_id",
     "publish_pending",
+    # Exported for the flow-creation route (#4320), so submission reports
+    # dispatchability by the same rule dispatch enforces. See its docstring.
+    "resolve_installation_id",
     "run_dispatch_pass",
 ]
 
@@ -464,7 +467,7 @@ async def _latest_approval_decision_id(session: AsyncSession, *, org_id: str, fl
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def _resolve_installation_id(session: AsyncSession, *, org_id: str) -> int | None:
+async def resolve_installation_id(session: AsyncSession, *, org_id: str) -> int | None:
     """The org's single GitHub installation, or None if that is not unambiguous.
 
     Fail-closed on both zero and more than one. An org with no installation cannot
@@ -472,6 +475,15 @@ async def _resolve_installation_id(session: AsyncSession, *, org_id: str) -> int
     guessing would dispatch into a repository nobody asked for. `None` becomes
     `undispatchable`, which leaves the node in `ready` for a later tick once the
     ambiguity is resolved.
+
+    Module-public (no leading underscore) because the flow-creation route calls it
+    too (issue #4320). It is shared rather than copied deliberately: the route
+    needs to tell a submitter "this plan can never dispatch" using the *same* rule
+    dispatch will later apply, and a second implementation of a fail-closed check
+    is free to drift from this one. The drift would be invisible in the worst
+    direction — the route reporting a plan as dispatchable that dispatch then
+    silently counts `undispatchable`, which is exactly the invisible-stall class
+    this EPIC exists to remove.
     """
     raw = (
         await session.execute(
@@ -593,7 +605,7 @@ async def _dispatch_one(
         report.record(org_id, "undispatchable")
         return
 
-    installation_id = await _resolve_installation_id(session, org_id=org_id)
+    installation_id = await resolve_installation_id(session, org_id=org_id)
     if installation_id is None:
         logger.warning(
             "orchestration dispatch: org %s has no single unambiguous GitHub installation — not dispatching node %s",

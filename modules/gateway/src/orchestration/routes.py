@@ -3,6 +3,9 @@
 Issue #4200 (EPIC #4191, intent #4120).
 
 Endpoints:
+- POST /api/orchestration/flows — submit an approved plan, creating the flow
+  (issue #4320). This is the engine's only authenticated ingress for plan state;
+  without it the orchestration graph cannot be populated at all.
 - POST /api/orchestration/flows/{flow_id}/amendments — supersede the accepted plan
 - GET  /api/orchestration/flows/{flow_id}/plans — read plan versions, including
   superseded ones
@@ -39,7 +42,7 @@ untestable end-to-end. It is a read, gated on the same permission.
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,8 +50,9 @@ from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.orchestration.amend import AmendmentContext, FlowNotFoundError, amend_plan
-from src.orchestration.compile import ProposalRejectedError, TenantMismatchError
+from src.orchestration.compile import ApprovalContext, ProposalRejectedError, TenantMismatchError, compile_proposal
 from src.orchestration.cost import COST_SCOPE_LABEL, get_flow_cost
+from src.orchestration.dispatch_pass import resolve_installation_id
 from src.orchestration.proposal import LoopProposal
 from src.orchestration.repository import OrchestrationRepository
 from src.shared.database import get_db
@@ -86,6 +90,36 @@ class AmendmentResponse(BaseModel):
     already_amended: bool
 
 
+class FlowCreatedResponse(BaseModel):
+    """The outcome of submitting an approved plan.
+
+    `already_compiled` is true when the identical document was already in force and
+    nothing was written — the route returns 200 rather than 201 in that case, so a
+    retried submission is distinguishable from a first one by status code alone.
+
+    `dispatchable` / `dispatch_blocked_reason` are not decoration. A flow whose org
+    has no single unambiguous GitHub installation compiles perfectly and then never
+    dispatches: every node is counted `undispatchable` by the tick and the
+    submitter is told nothing. That is the invisible-stall class this EPIC exists
+    to remove, so the condition is surfaced here, at submission, where the person
+    who can fix it is still watching. `dispatchable=False` does NOT mean the
+    submission failed — the rows are committed and are exactly what a correct
+    submission produces; it means the plan cannot yet be delivered.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    flow_id: str
+    plan_version: int
+    decision_id: str
+    plan_hash: str
+    nodes_created: int
+    edges_created: int
+    already_compiled: bool
+    dispatchable: bool
+    dispatch_blocked_reason: str | None
+
+
 class PlanVersionResponse(BaseModel):
     """One accepted-plan version. `superseded_at` null means currently in force."""
 
@@ -109,6 +143,117 @@ async def _resolve_actor_role(access: AccessControl, current_user: TokenContext)
     """
     role, _, _ = await access.get_user_role(current_user)
     return role.value
+
+
+@router.post("/flows", response_model=FlowCreatedResponse, status_code=201)
+async def create_flow(
+    proposal: LoopProposal,
+    response: Response,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    reason: Annotated[str | None, Query(max_length=2000)] = None,
+) -> FlowCreatedResponse:
+    """Submit an approved plan, creating the flow and its graph.
+
+    The engine's single authenticated ingress for plan state. `compile_proposal` is
+    the only code that creates flow, node and edge rows, and before this route it
+    had no caller outside its own module — so the graph the tick sweeps was
+    permanently empty and every capability reading it had nothing to operate on.
+
+    The body is a **full** `LoopProposal`, re-validated authoritatively inside
+    `compile_proposal` (AC-29) regardless of whether the advisory CLI ran.
+
+    Returns 201 on a first compile, 200 when the identical document was already in
+    force, 403 without `PLAN_APPROVE` (zero rows written), and 422 for a document
+    that fails validation or declares a tenant other than the caller's.
+    """
+    # Gate first, before any read or write — same ordering as `create_amendment`,
+    # so a denied caller cannot learn whether anything exists.
+    await access.check_permission(
+        current_user,
+        Permission.PLAN_APPROVE,
+        target_org_id=current_user.org_id,
+    )
+
+    # Server-resolved, every field. `org_id` is the caller's authenticated claim
+    # and is what the plan lands under; the document's declared `org_id` is only
+    # ever compared against it inside `compile_proposal` (its Gate 2). No tenant
+    # logic belongs here — a second implementation could disagree with that one.
+    # `actor_kind` is left at its `HUMAN` default: submitting a plan is a human act.
+    actor = ApprovalContext(
+        org_id=current_user.org_id,
+        actor_id=current_user.user_id,
+        actor_role=await _resolve_actor_role(access, current_user),
+        reason=reason,
+    )
+
+    try:
+        result = await compile_proposal(db, proposal, actor)
+    except TenantMismatchError as exc:
+        # Before `ProposalRejectedError`: TenantMismatchError subclasses it, so the
+        # broader clause would swallow this one if the order were reversed.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProposalRejectedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": str(exc),
+                "violations": [{"rule": violation.rule, "message": violation.message, "where": violation.where} for violation in exc.violations],
+            },
+        ) from exc
+
+    # `compile_proposal` does not commit — the caller owns the transaction, so the
+    # request boundary is where it lands.
+    await db.commit()
+
+    # Resolved AFTER the commit: this is a report on the submission, not a
+    # condition on it. A plan whose org has an ambiguous installation is still a
+    # validly approved plan, and refusing it here would make an operational data
+    # problem look like a rejected document.
+    installation_id = await resolve_installation_id(db, org_id=actor.org_id)
+    dispatch_blocked_reason = (
+        None
+        if installation_id is not None
+        else (
+            f"org {actor.org_id!r} does not resolve to exactly one GitHub installation, so no node in this flow can be "
+            "dispatched; the engine will count every node undispatchable until exactly one installation is configured"
+        )
+    )
+
+    # 200, not 201, for a resubmission: nothing was created, and a client
+    # reporting "N nodes created" must not present a retry as a fresh submission.
+    if result.already_compiled:
+        response.status_code = 200
+
+    logger.info(
+        "plan_submitted flow=%s org=%s actor=%s v%s nodes=%s edges=%s idempotent=%s dispatchable=%s",
+        result.flow_id,
+        actor.org_id,
+        actor.actor_id,
+        result.plan_version,
+        result.nodes_created,
+        result.edges_created,
+        result.already_compiled,
+        installation_id is not None,
+    )
+
+    if dispatch_blocked_reason is not None:
+        # Logged at warning as well as returned: the submitter sees the response,
+        # but whoever is watching the engine wonder why nothing moved sees this.
+        logger.warning("plan_submitted flow=%s is undispatchable: %s", result.flow_id, dispatch_blocked_reason)
+
+    return FlowCreatedResponse(
+        flow_id=result.flow_id,
+        plan_version=result.plan_version,
+        decision_id=result.decision_id,
+        plan_hash=result.plan_hash,
+        nodes_created=result.nodes_created,
+        edges_created=result.edges_created,
+        already_compiled=result.already_compiled,
+        dispatchable=installation_id is not None,
+        dispatch_blocked_reason=dispatch_blocked_reason,
+    )
 
 
 @router.post("/flows/{flow_id}/amendments", response_model=AmendmentResponse)
