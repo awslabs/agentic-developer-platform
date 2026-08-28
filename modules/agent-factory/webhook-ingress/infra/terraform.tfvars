@@ -50,10 +50,19 @@ enable_adversarial_e2e = true
 # the gateway mints a token scoped to the run's own installation + assigned
 # repo, after confirming the installation belongs to the run's tenant.
 #
-# Flipped on 2026-08-28 after the gatekeeper was verified end-to-end on embark1
-# (canary mint = HTTP 200, repo-scoped to the run's repo; worker image :latest
-# = b7ecc7fd carries the broker code). There is deliberately NO in-pod fallback:
-# a gateway that cannot mint fails the run loudly at bootstrap. Rollback is a
-# webhook-ingress apply (set back to false), not a live toggle; in-flight pods
-# keep the setting they started with.
-gh_token_broker_enabled = true
+# Flipped on 2026-08-28, then REVERTED the same day after it took down all
+# agent dispatch on dev. Root cause: the worker's broker client mints against
+# ADP_GATEWAY_ENDPOINT, which is the PUBLIC API-Gateway edge URL. The gatekeeper
+# route /internal/v1/github-installation-token is internal-only and the edge
+# refuses it with HTTP 403 "Not available from the edge". Because the design has
+# NO in-pod fallback ("fail the run loudly at bootstrap"), every worker died at
+# boot before it could clone or comment — KEDA respawned them into the same
+# crash. The pre-flip canary passed only because it hit the internal ALB via
+# curl directly, not through the edge the worker actually uses.
+#
+# DO NOT re-enable until the worker broker client targets the in-cluster gateway
+# service URL (e.g. http://bedrockgateway.adp-gateway.svc.cluster.local) for the
+# /internal route, and an end-to-end WORKER run (not a curl canary) is verified
+# to mint via the gatekeeper. Rollback is a webhook-ingress apply (this change);
+# in-flight pods keep the setting they started with.
+gh_token_broker_enabled = false
