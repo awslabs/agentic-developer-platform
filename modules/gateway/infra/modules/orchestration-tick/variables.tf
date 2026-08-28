@@ -161,3 +161,19 @@ variable "reserved_concurrency" {
   type        = number
   default     = 2
 }
+
+variable "alert_email_addresses" {
+  description = <<-EOT
+    Email addresses that receive stall/halt alerts (Issue #4211). Each address must
+    be CONFIRMED by its owner before AWS delivers to it, so adding one here is a
+    two-step operation: apply, then click the confirmation link.
+
+    Empty is a valid state and is the default: the topic still exists and the engine
+    still publishes to it successfully, so nothing fails. What it means is that the
+    alert reaches no human — which is why the tick emits `NotificationsFailed` and
+    `StallsDetected` as separate metrics, so "detection fired but nobody was
+    subscribed" is visible rather than looking healthy.
+  EOT
+  type        = list(string)
+  default     = []
+}

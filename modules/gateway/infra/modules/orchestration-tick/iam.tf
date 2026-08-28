@@ -78,6 +78,19 @@ resource "aws_iam_role_policy" "tick" {
           }
         }
       },
+      # Stall/halt alert delivery (Issue #4211, R-Q9d). Scoped to this module's own
+      # topic — the engine can notify operators about its own graph and nothing
+      # else. Without this statement the publish fails with AuthorizationError,
+      # which `stall.py` records as `notifications_failed` and surfaces as a
+      # non-success tick rather than swallowing.
+      {
+        Sid    = "PublishOrchestrationAlerts"
+        Effect = "Allow"
+        Action = [
+          "sns:Publish"
+        ]
+        Resource = aws_sns_topic.alerts.arn
+      },
       # VPC ENI management, required for any Lambda with a vpc_config. These
       # actions do not support resource-level permissions.
       {

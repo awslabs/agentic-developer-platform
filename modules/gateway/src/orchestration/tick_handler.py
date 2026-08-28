@@ -42,6 +42,7 @@ import logging
 import os
 from typing import Any
 
+from src.orchestration.stall import StallReport, detect_stalls
 from src.orchestration.tick import TickReport, run_tick
 from src.shared.database import get_session_factory, reset_engine
 
@@ -69,6 +70,27 @@ METRIC_NAMESPACE = "ADP/Orchestration"
 # The literal token the deployment smoke check greps for. Named as a constant so
 # it cannot drift out of sync with the check that depends on it.
 TICK_REPORT_TOKEN = "tick_report"
+
+# Attribute the detection pass's report is carried on (issue #4211).
+#
+# `_run` returns a single `TickReport` and `handler` reads one object — that shape
+# is depended on by an existing test which stubs `_run` with a minimal object
+# (`_TickReportStub` in `tests/orchestration/test_tick.py`) that has only the
+# tick's own attributes. Widening `_run` to a tuple, or making `_emit_metrics`
+# take a second positional argument, breaks that test. It is the test that pins
+# the `tick_report` token surviving `awslambdaric`'s logging setup — the exact bug
+# that shipped once already — so this story attaches its report to the existing
+# return value instead, and the tick's contract is unchanged.
+#
+# `_attached_stall_report` therefore treats "absent" as a first-class case, which
+# is also what makes detection optional at the boundary rather than a hard
+# dependency of the tick.
+_STALL_REPORT_ATTR = "stall_report"
+
+
+def _attached_stall_report(report: TickReport) -> StallReport | None:
+    """The detection report carried on a tick report, if one is attached."""
+    return getattr(report, _STALL_REPORT_ATTR, None)
 
 
 def _emit_metrics(report: TickReport) -> None:
@@ -115,6 +137,42 @@ def _emit_metrics(report: TickReport) -> None:
                     }
                 )
 
+        # Stall/halt counters (issue #4211). Emitted in the same call rather than
+        # from a second client so a CloudWatch failure cannot leave the tick's
+        # numbers landing while detection's silently do not.
+        #
+        # `NotificationsFailed` is the alarm-worthy one: detection working while
+        # delivery fails is indistinguishable from no detection at all (R-Q9d), so
+        # it must be visible as its own metric and not folded into `Errors`.
+        stall_report = _attached_stall_report(report)
+        if stall_report is not None:
+            metric_data.extend(
+                [
+                    {"MetricName": "StallsDetected", "Value": stall_report.stalls_detected, "Unit": "Count"},
+                    {"MetricName": "HaltsDetected", "Value": stall_report.halts_detected, "Unit": "Count"},
+                    {"MetricName": "NotificationsSent", "Value": stall_report.notifications_sent, "Unit": "Count"},
+                    {"MetricName": "NotificationsFailed", "Value": stall_report.notifications_failed, "Unit": "Count"},
+                    {"MetricName": "StallDetectionErrors", "Value": stall_report.errors, "Unit": "Count"},
+                ]
+            )
+
+            for org_id, counts in stall_report.per_org.items():
+                dimensions = [{"Name": "OrgId", "Value": org_id}]
+                for metric_name, key in (
+                    ("StallsDetected", "stalls_detected"),
+                    ("HaltsDetected", "halts_detected"),
+                    ("NotificationsSent", "notifications_sent"),
+                    ("NotificationsFailed", "notifications_failed"),
+                ):
+                    metric_data.append(
+                        {
+                            "MetricName": metric_name,
+                            "Value": counts[key],
+                            "Unit": "Count",
+                            "Dimensions": dimensions,
+                        }
+                    )
+
         # PutMetricData caps at 1000 datums per call.
         for start in range(0, len(metric_data), 1000):
             client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=metric_data[start : start + 1000])
@@ -123,7 +181,21 @@ def _emit_metrics(report: TickReport) -> None:
 
 
 async def _run() -> TickReport:
-    """Open a session, tick, commit or roll back."""
+    """Open a session, tick, detect stalls, commit or roll back.
+
+    Both passes share one session and one transaction (issue #4211). The tick
+    releases nodes whose predecessors are satisfied; detection then diagnoses the
+    nodes that stopped moving. Detection runs **after** the tick so that a node the
+    tick just moved is measured from its new state, not its old one.
+
+    Detection lives here rather than inside `run_tick` deliberately: it is a
+    separate concern with a separate report, and keeping `tick.py` untouched means
+    the existing tick tests still pin the tick's behaviour exactly as they did
+    before this story.
+
+    The detection report is attached to the returned `TickReport` rather than
+    returned alongside it — see `_STALL_REPORT_ATTR` for why that shape matters.
+    """
     # Under IAM auth the engine caches a token that outlives a warm Lambda
     # container's usefulness; resetting gives this invocation a fresh one.
     reset_engine()
@@ -132,6 +204,7 @@ async def _run() -> TickReport:
     async with factory() as session:
         try:
             report = await run_tick(session)
+            stall_report = await detect_stalls(session)
         except Exception:
             await session.rollback()
             raise
@@ -142,6 +215,7 @@ async def _run() -> TickReport:
         # rejection rows are evidence that must survive. The failure is surfaced
         # by the non-success return, not by throwing the good work away.
         await session.commit()
+        setattr(report, _STALL_REPORT_ATTR, stall_report)
         return report
 
 
@@ -161,8 +235,13 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
         logger.exception("%s status=fatal", TICK_REPORT_TOKEN)
         raise
 
+    stall_report = _attached_stall_report(report)
+
     summary = {
-        "status": "ok" if report.success else "error",
+        # A failed detection pass makes the whole invocation an error. An
+        # undelivered stall notification is a real failure of this Lambda's job
+        # (R-Q9d), not a footnote on an otherwise-green tick.
+        "status": "ok" if report.success and (stall_report is None or stall_report.success) else "error",
         "nodes_examined": report.nodes_examined,
         "transitions_effected": report.transitions_effected,
         "transitions_rejected": report.transitions_rejected,
@@ -174,6 +253,20 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
         "blocked_nodes": len(report.blocked),
     }
 
+    # Issue #4211 — detection counters, on the same greppable `tick_report` line so
+    # "did anything stall?" is answerable from the one line the smoke check already
+    # looks for, rather than needing a second query.
+    if stall_report is not None:
+        summary.update(
+            {
+                "stalls_detected": stall_report.stalls_detected,
+                "halts_detected": stall_report.halts_detected,
+                "notifications_sent": stall_report.notifications_sent,
+                "notifications_failed": stall_report.notifications_failed,
+                "stall_errors": stall_report.errors,
+            }
+        )
+
     # Unconditional, single-line, machine-greppable. This is the line that proves
     # the schedule fired.
     logger.info("%s %s", TICK_REPORT_TOKEN, json.dumps(summary, sort_keys=True))
@@ -184,6 +277,13 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
         logger.error(
             "orchestration tick completed with %d error(s) — see preceding tracebacks",
             report.errors,
+        )
+
+    if stall_report is not None and not stall_report.success:
+        logger.error(
+            "orchestration stall detection completed with %d error(s) and %d undelivered notification(s) — see preceding tracebacks",
+            stall_report.errors,
+            stall_report.notifications_failed,
         )
 
     return summary

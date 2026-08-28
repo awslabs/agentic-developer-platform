@@ -149,6 +149,12 @@ resource "aws_lambda_function" "tick" {
       BG_RDS_TLS_VERIFY = tostring(var.rds_tls_verify)
       BG_AWS_REGION     = var.aws_region
       BG_LOG_LEVEL      = "INFO"
+
+      # Issue #4211. The delivery target is configuration, never a hard-coded
+      # address — `notify.py` reads this and nothing else. An unset value makes
+      # `notify()` raise, which the tick records as a failed notification rather
+      # than treating an unwired environment as a delivered one.
+      BG_ORCH_NOTIFY_TOPIC_ARN = aws_sns_topic.alerts.arn
     }
   }
 

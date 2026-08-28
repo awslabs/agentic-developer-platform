@@ -110,6 +110,13 @@ class DecisionKind(StrEnum):
     GATE_REJECTED = "gate_rejected"  # A gate node was refused
     TRANSITION_REJECTED = "transition_rejected"  # An illegal transition attempt
     HALT_OVERRIDDEN = "halt_overridden"  # A human cleared a halt (R-Q9c)
+    # Issue #4211. Two members, not one, because a stall and a halt need different
+    # operator responses: a stall is "go find out why this node is wedged", a halt
+    # is "this defect is not converging, stop paying for it". Recording which
+    # occurred is what makes the outcome diagnosable rather than inferred from a
+    # state that would mean both. `kind` is String(32), so neither needs DDL.
+    NODE_STALLED = "node_stalled"  # Ran past the stall threshold (R-O4a)
+    NODE_HALTED = "node_halted"  # Defect-cycle bound exhausted (R-Q9c)
 
 
 class AppendOnlyViolationError(RuntimeError):

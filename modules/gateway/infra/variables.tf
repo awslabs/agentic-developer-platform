@@ -407,6 +407,22 @@ variable "orchestration_tick_image_tag" {
   default     = "latest"
 }
 
+variable "orchestration_alert_email_addresses" {
+  type        = list(string)
+  description = <<-EOT
+    Email addresses notified when the engine detects a stalled or halted node
+    (Issue #4211). Each address must be confirmed by its owner before AWS delivers
+    to it, so populating this is apply-then-confirm rather than apply-only.
+
+    Left empty the topic still exists and publishes still succeed — the alert simply
+    reaches nobody. That state is intentionally visible rather than fatal: the tick
+    reports `StallsDetected` and `NotificationsFailed` separately, so an
+    unsubscribed topic shows up as detections with no delivery instead of as a
+    healthy-looking silence.
+  EOT
+  default     = []
+}
+
 variable "chat_logging_scrub_level" {
   type        = string
   description = "Chat logging scrub level: off, basic (headers+regex), or standard (headers+regex+Comprehend PII)"

@@ -941,6 +941,10 @@ module "orchestration_tick" {
 
   tick_schedule = var.orchestration_tick_schedule
 
+  # Issue #4211: stall/halt alert delivery. Empty by default — see the variable's
+  # description for why an unsubscribed topic is visible rather than fatal.
+  alert_email_addresses = var.orchestration_alert_email_addresses
+
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 

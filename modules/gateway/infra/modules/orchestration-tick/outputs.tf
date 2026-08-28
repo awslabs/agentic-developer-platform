@@ -36,3 +36,13 @@ output "tick_role_arn" {
   description = "ARN of the orchestration tick Lambda execution role"
   value       = aws_iam_role.tick.arn
 }
+
+output "alert_topic_arn" {
+  description = "ARN of the SNS topic stall/halt alerts are published to (Issue #4211)"
+  value       = aws_sns_topic.alerts.arn
+}
+
+output "alert_topic_name" {
+  description = "Name of the stall/halt alert SNS topic"
+  value       = aws_sns_topic.alerts.name
+}
