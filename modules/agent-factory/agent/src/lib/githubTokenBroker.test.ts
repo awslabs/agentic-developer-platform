@@ -186,7 +186,7 @@ describe('githubTokenBroker', () => {
   });
 
   describe('SigV4 transport', () => {
-    it('signs the request and targets the existing /agent proxy route', async () => {
+    it('signs the request and targets the /internal proxy route, not /agent', async () => {
       withFakeCredentials();
       process.env.ADP_GATEWAY_ENDPOINT = 'https://api.execute-api.us-east-1.amazonaws.com/dev';
       mockFetch.mockResolvedValue(okResponse({ token: 'ghs_signed', expires_at: EXPIRES_AT }));
@@ -195,16 +195,34 @@ describe('githubTokenBroker', () => {
 
       expect(result.token).toBe('ghs_signed');
       const [url, init] = mockFetch.mock.calls[0];
-      // Riding /agent/{proxy+} is what avoids a new API Gateway route and a new
-      // execute-api grant — deliberately in scope for Phase 1.
+      // Issue #4343: this MUST be the API Gateway /internal/{proxy+} route,
+      // which is wired to the internal-plane ALB. The /agent/{proxy+} route
+      // integrates with the EDGE ALB, where #4010's edge-internal-deny patch
+      // answers 403 "Not available from the edge" for /internal/* — and since
+      // the broker has no local-mint fallback by design, that 403 killed every
+      // agent run at bootstrap.
       expect(url).toBe(
-        'https://api.execute-api.us-east-1.amazonaws.com/dev/agent/internal/v1/github-installation-token',
+        'https://api.execute-api.us-east-1.amazonaws.com/dev/internal/v1/github-installation-token',
       );
       expect(init.headers.authorization || init.headers.Authorization).toMatch(
         /AWS4-HMAC-SHA256.*execute-api/,
       );
       // Never the shared secret on this path.
       expect(init.headers['X-Internal-Api-Key']).toBeUndefined();
+    });
+
+    it('never routes the internal call through the edge-denied /agent prefix', async () => {
+      // The regression guard for #4343 stated as a property rather than an exact
+      // string: no /agent segment may appear anywhere in the signed URL.
+      withFakeCredentials();
+      process.env.ADP_GATEWAY_ENDPOINT = 'https://api.execute-api.us-east-1.amazonaws.com/dev';
+      mockFetch.mockResolvedValue(okResponse({ token: 'ghs_signed', expires_at: EXPIRES_AT }));
+
+      await fetchBrokeredToken(REQ);
+
+      const url = mockFetch.mock.calls[0][0] as string;
+      expect(url).not.toContain('/agent');
+      expect(new URL(url).pathname).toBe('/dev/internal/v1/github-installation-token');
     });
 
     it('prefers SigV4 when both transports are configured', async () => {
@@ -216,7 +234,11 @@ describe('githubTokenBroker', () => {
 
       await fetchBrokeredToken(REQ);
 
-      expect(mockFetch.mock.calls[0][0]).toContain('/agent/internal/v1/');
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe(
+        'https://api.execute-api.us-east-1.amazonaws.com/dev/internal/v1/github-installation-token',
+      );
+      expect(init.headers['X-Internal-Api-Key']).toBeUndefined();
     });
 
     it('tolerates a trailing slash on the endpoint', async () => {
@@ -226,7 +248,11 @@ describe('githubTokenBroker', () => {
 
       await fetchBrokeredToken(REQ);
 
-      expect(mockFetch.mock.calls[0][0]).not.toContain('//agent');
+      // A doubled slash would make the path /dev//internal/v1/... which matches
+      // no API Gateway route.
+      expect(mockFetch.mock.calls[0][0]).toBe(
+        'https://api.execute-api.us-east-1.amazonaws.com/dev/internal/v1/github-installation-token',
+      );
     });
   });
 

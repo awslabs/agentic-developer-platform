@@ -152,7 +152,22 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         Action = [
           "execute-api:Invoke"
         ]
-        Resource = "arn:aws:execute-api:us-east-1:*:*/*/*/agent/*"
+        # Two routes, deliberately enumerated rather than collapsed to `/*`:
+        #   /agent/*    — the Bedrock proxy the agent calls for chat/model work.
+        #   /internal/* — the gateway control plane (GitHub-token gatekeeper
+        #                 #4272, credential raw-read / assume-role). Added by
+        #                 issue #4343: those calls used to be addressed as
+        #                 /agent/internal/... and so were covered by the grant
+        #                 above, but that path egresses through the EDGE ALB
+        #                 where #4010's deny returns 403, so the clients now
+        #                 target /internal/{proxy+} (internal-plane ALB) and
+        #                 need this ARN to pass execute-api authz.
+        # Keep this list narrow: widening to `.../*` would let the worker SigV4
+        # any gateway route, which is privilege creep beyond what it calls.
+        Resource = [
+          "arn:aws:execute-api:us-east-1:*:*/*/*/agent/*",
+          "arn:aws:execute-api:us-east-1:*:*/*/*/internal/*"
+        ]
       },
       {
         # Primary agent logging (issue #4221). Scoped to the TF-managed,

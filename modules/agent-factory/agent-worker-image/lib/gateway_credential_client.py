@@ -8,6 +8,11 @@ AWS credentials (issue #455).
 Issue #575 / #1103: Supports two transport modes based on environment:
   - SigV4 via API Gateway (when ADP_GATEWAY_ENDPOINT is set) — IRSA-based, no shared secret
   - Shared-secret via direct URL (when VAULT_GATEWAY_URL + VAULT_INTERNAL_API_KEY are set) — legacy
+
+Issue #4343: in SigV4 mode the endpoints above are addressed as
+<ADP_GATEWAY_ENDPOINT>/internal/v1/... so they match the API Gateway
+/internal/{proxy+} route, which is wired to the internal-plane ALB. They must
+NOT go through /agent/{proxy+}: that route's edge ALB 403s /internal/* (#4010).
 """
 
 from __future__ import annotations
@@ -71,9 +76,18 @@ class GatewayCredentialClient:
 
     @property
     def _base_url(self) -> str:
-        """Return the base URL for requests based on the active mode."""
+        """Return the base URL for requests based on the active mode.
+
+        SigV4 mode returns the bare API Gateway endpoint — NO ``/agent``
+        segment. Every endpoint this client calls is under ``/internal/v1/``,
+        which must reach the API Gateway ``/internal/{proxy+}`` route (wired to
+        the internal-plane ALB). Issue #4343: ``/agent/{proxy+}`` integrates
+        with the EDGE ALB, where issue #4010's ``edge-internal-deny`` patch
+        answers ``403 "Not available from the edge"`` for any ``/internal/*``
+        path — which took down all agent dispatch. Do not re-add ``/agent``.
+        """
         if self._use_sigv4:
-            return self._gateway_endpoint.rstrip("/") + "/agent"
+            return self._gateway_endpoint.rstrip("/")
         return self._gateway_url
 
     @property
@@ -188,8 +202,10 @@ class GatewayCredentialClient:
         run's webhook-events row and refuses to mint for an installation the run
         is not bound to, so a compromised worker cannot name someone else's org.
 
-        The path rides the existing ``/agent/{proxy+}`` API Gateway route, so no
-        new route and no new execute-api grant are needed.
+        In SigV4 mode the path rides the existing ``/internal/{proxy+}`` API
+        Gateway route (internal-plane ALB), not ``/agent/{proxy+}`` — see
+        ``_base_url`` and issue #4343. No new route is needed; the worker's
+        execute-api grant covers ``/agent/*`` and ``/internal/*``.
 
         Args:
             installation_id: The run's GitHub App installation id.

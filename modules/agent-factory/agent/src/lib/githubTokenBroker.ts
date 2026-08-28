@@ -96,9 +96,13 @@ export interface BrokerRequest {
 /**
  * Mint a repo-scoped installation token via the gateway gatekeeper.
  *
- * The path `/agent/internal/v1/github-installation-token` matches the existing
- * `/agent/{proxy+}` API Gateway route, so no new route or execute-api grant is
- * involved.
+ * In SigV4 mode the call targets the API Gateway `/internal/{proxy+}` route,
+ * NOT `/agent/{proxy+}`. Issue #4343: `/agent/{proxy+}` integrates with the EDGE
+ * ALB, where issue #4010's `edge-internal-deny` Ingress patch answers any
+ * `/internal/*` path with `403 "Not available from the edge"` — so riding the
+ * `/agent` prefix killed every run at the mint step. `/internal/{proxy+}` is
+ * already wired to the separate internal-plane ALB and is not denied. Do not
+ * re-add the `/agent` segment here.
  *
  * @throws if the gateway is not configured, the call fails, or the response is
  *   missing either the token or its expiry. Loud by design: a run that cannot
@@ -114,7 +118,10 @@ export async function fetchBrokeredToken(req: BrokerRequest): Promise<BrokeredTo
 
   let baseUrl: string;
   if (useSigv4) {
-    baseUrl = `${gatewayEndpoint}/agent`;
+    // No `/agent` segment: this is an `/internal/*` endpoint and must hit the
+    // API Gateway `/internal/{proxy+}` route (internal-plane ALB). See the
+    // function doc — the `/agent` route's edge ALB 403s `/internal/*` (#4343).
+    baseUrl = gatewayEndpoint;
   } else if (gatewayUrl && apiKey) {
     baseUrl = gatewayUrl;
   } else {
