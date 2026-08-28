@@ -680,6 +680,318 @@ class TestRolloutSafety:
         assert harness.app_invoked is True
 
 
+class TestRunScopeReservationRelease:
+    """Issue #4323: a run/chain reservation must be RELEASED when the run ends.
+
+    #4187 reserved run/chain headroom with a 24h run-lifetime TTL but never
+    reconciled it: ``reconcile_reservation`` rebuilt only the
+    ``hierarchy × (DAILY, WEEKLY, MONTHLY)`` grid, so the ``lifetime`` keys were
+    never in the released key set. A failed or aborted chain therefore held its
+    headroom for the full TTL and denied fresh runs under the same cap while
+    nothing at all was spending.
+
+    These assert through the observable cap effect — the follow-up request is
+    ADMITTED — in the same style as ``test_budget_overshoot.py``'s lifecycle
+    tests, except for the key-agreement test, where inspecting the key IS the
+    property (a released key that does not byte-match the reserved key is a
+    silent no-op that looks identical to the bug).
+    """
+
+    @staticmethod
+    def _run_key(run_id: str) -> str:
+        """The reserve-time run key, spelled out independently of the source."""
+        return f"budget:resv:{{{TENANT}}}:run:{run_id}:run:lifetime"
+
+    @staticmethod
+    def _chain_key(chain_id: str) -> str:
+        """The reserve-time chain key, spelled out independently of the source."""
+        return f"budget:resv:{{{TENANT}}}:chain:{chain_id}:run:lifetime"
+
+    async def _crash(
+        self,
+        service: BudgetEnforcementService,
+        config: BudgetConfig,
+        context: TokenContext,
+        request_id: str,
+    ) -> None:
+        """The proxy's ``finally`` after a request that died: ~zero tokens logged.
+
+        This is ``_log_usage`` -> ``reconcile_budget_reservation`` with the SAME
+        ``TokenContext`` instance the middleware saw, which is how the real path
+        works: both the budget middleware and ``_log_usage`` read
+        ``scope["state"]["token_context"]``.
+        """
+        with patch("src.budget.enforcement_service.budget_config", config):
+            await service.reconcile_reservation(
+                context=context,
+                request_id=request_id,
+                model_id=OPUS,
+                input_tokens=0,
+                output_tokens=0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_failed_chain_releases_its_run_and_chain_headroom(self, redis_client, clock):
+        """GATE (fails pre-#4323): a crashed chain must not hold headroom for 24h.
+
+        Three runs in one chain each pre-charge ~$0.79 against a $2.00 chain cap,
+        then all three FAIL — so their real cost is ~$0. Pre-fix those three
+        estimates sit in the chain accumulator until the 24h TTL, and a fourth run
+        is denied. Post-fix the chain has spent nothing, so it is admitted.
+
+        The failure path is the primary leak source: a crashed chain is the common
+        case for long chains, which is exactly why this is the load-bearing test.
+        """
+        config = _config(budget_run_cap_usd=Decimal("100.00"), budget_chain_cap_usd=Decimal("2.00"))
+        registry = _registry(**{"evt-a": CHAIN_ID, "evt-b": CHAIN_ID, "evt-c": CHAIN_ID, "evt-d": CHAIN_ID})
+        service = _service(redis_client, clock, registry)
+
+        for i, run in enumerate(("evt-a", "evt-b", "evt-c")):
+            context = _context()
+            harness = await _drive(
+                service,
+                _no_budget_session(),
+                config,
+                body=_BIG_BODY,
+                request_id=f"req-{i}",
+                run_id=run,
+                context=context,
+            )
+            assert harness.status == 200, f"precondition: {run} must be admitted before it fails"
+            await self._crash(service, config, context, f"req-{i}")
+
+        fresh = await _drive(
+            service,
+            _no_budget_session(),
+            config,
+            body=_BIG_BODY,
+            request_id="req-fresh",
+            run_id="evt-d",
+            context=_context(),
+        )
+
+        assert fresh.status == 200, "a failed chain must release its headroom immediately, not at the 24h TTL"
+        assert fresh.app_invoked is True
+
+    @pytest.mark.asyncio
+    async def test_failed_run_releases_its_own_run_headroom(self, redis_client, clock):
+        """The run scope leaks the same way the chain scope does.
+
+        A run that fails partway must not keep pre-charged headroom against its
+        OWN cap either — otherwise a retry of that same run id is denied against
+        spend that never happened.
+        """
+        config = _config(budget_run_cap_usd=Decimal("2.00"), budget_chain_cap_usd=Decimal("1000.00"))
+        service = _service(redis_client, clock, _registry(**{RUN_ID: CHAIN_ID}))
+
+        for i in range(2):
+            context = _context()
+            harness = await _drive(
+                service,
+                _no_budget_session(),
+                config,
+                body=_BIG_BODY,
+                request_id=f"req-{i}",
+                run_id=RUN_ID,
+                context=context,
+            )
+            assert harness.status == 200, "precondition: two ~$0.79 calls fit under a $2.00 run cap"
+            await self._crash(service, config, context, f"req-{i}")
+
+        retried = await _drive(
+            service,
+            _no_budget_session(),
+            config,
+            body=_BIG_BODY,
+            request_id="req-retry",
+            run_id=RUN_ID,
+            context=_context(),
+        )
+
+        assert retried.status == 200, "released run headroom must be reusable by the same run"
+        assert retried.app_invoked is True
+
+    @pytest.mark.asyncio
+    async def test_released_key_byte_matches_the_reserved_key(self, redis_client, clock):
+        """The released key must be the reserved key, character for character.
+
+        This is the one test that reads Redis directly, because the failure mode
+        it guards is invisible from the outside: a reconcile that reconstructs
+        ``run:<id>:run:lifetime`` even slightly differently writes to a key nobody
+        reserved against, leaves the original estimate untouched, and reproduces
+        the exact bug while appearing to fix it.
+
+        So: assert the field under the literal expected key holds the estimate
+        after reserve, and that the SAME field is ~0 after reconcile.
+        """
+        config = _config(budget_run_cap_usd=Decimal("100.00"), budget_chain_cap_usd=Decimal("100.00"))
+        service = _service(redis_client, clock, _registry(**{RUN_ID: CHAIN_ID}))
+        context = _context()
+
+        harness = await _drive(
+            service,
+            _no_budget_session(),
+            config,
+            body=_BIG_BODY,
+            request_id="req-0",
+            run_id=RUN_ID,
+            context=context,
+        )
+        assert harness.status == 200
+
+        run_key = self._run_key(RUN_ID)
+        chain_key = self._chain_key(CHAIN_ID)
+
+        reserved_run = await redis_client.hget(run_key, "req-0")
+        reserved_chain = await redis_client.hget(chain_key, "req-0")
+        assert reserved_run is not None, f"the reserve path must write {run_key}"
+        assert reserved_chain is not None, f"the reserve path must write {chain_key}"
+        assert Decimal(reserved_run.split(":")[0]) > 0, "precondition: the estimate is holding headroom"
+        assert Decimal(reserved_chain.split(":")[0]) > 0
+
+        await self._crash(service, config, context, "req-0")
+
+        released_run = await redis_client.hget(run_key, "req-0")
+        released_chain = await redis_client.hget(chain_key, "req-0")
+        assert released_run is not None, "reconcile must adjust the field, not delete it"
+        assert Decimal(released_run.split(":")[0]) == Decimal("0"), "the reconstructed run key did not match the reserved one"
+        assert Decimal(released_chain.split(":")[0]) == Decimal("0"), "the reconstructed chain key did not match the reserved one"
+
+    @pytest.mark.asyncio
+    async def test_release_keeps_the_run_lifetime_ttl(self, redis_client, clock):
+        """A released run reservation must keep the 86400s deadline, not inherit 120s.
+
+        The reconcile script rewrites the field's deadline from the target's own
+        TTL. If the released target carried the hierarchy default, a run's SETTLED
+        spend would drop out of the accumulator two minutes after each call — the
+        cap-that-does-not-cap failure #4187's per-key TTL exists to prevent, and a
+        way this fix could break the thing it is fixing beside.
+
+        The clock advances between reserve and reconcile so the assertion pins the
+        RECONCILE-time deadline. Without that gap the reserve-time deadline is the
+        same number and the test would pass even if no reconcile ran at all.
+        """
+        config = _config(budget_run_cap_usd=Decimal("100.00"), budget_chain_cap_usd=Decimal("100.00"))
+        service = _service(redis_client, clock, _registry(**{RUN_ID: CHAIN_ID}))
+        context = _context()
+
+        await _drive(
+            service,
+            _no_budget_session(),
+            config,
+            body=_BIG_BODY,
+            request_id="req-0",
+            run_id=RUN_ID,
+            context=context,
+        )
+
+        clock[0] += 600
+
+        with patch("src.budget.enforcement_service.budget_config", config):
+            await service.reconcile_reservation(
+                context=context,
+                request_id="req-0",
+                model_id=OPUS,
+                input_tokens=1000,
+                output_tokens=500,
+            )
+
+        entry = await redis_client.hget(self._run_key(RUN_ID), "req-0")
+        deadline = float(entry.split(":")[1])
+
+        assert deadline == pytest.approx(clock[0] + RUN_TTL), "a released run reservation must keep the run-lifetime deadline"
+
+    @pytest.mark.asyncio
+    async def test_an_in_flight_sibling_reservation_is_not_released(self, redis_client, clock):
+        """No over-release: releasing run A must not release run B.
+
+        Two sibling runs share one chain cap, so they share one chain Redis key.
+        Reconciling A must leave B's contribution to that shared key fully intact
+        — releasing a live sibling's headroom would re-open the door to the
+        aggregate overshoot #4187 exists to prevent.
+        """
+        config = _config(budget_run_cap_usd=Decimal("100.00"), budget_chain_cap_usd=Decimal("100.00"))
+        registry = _registry(**{"evt-a": CHAIN_ID, "evt-b": CHAIN_ID})
+        service = _service(redis_client, clock, registry)
+
+        context_a = _context()
+        await _drive(service, _no_budget_session(), config, body=_BIG_BODY, request_id="req-a", run_id="evt-a", context=context_a)
+
+        context_b = _context()
+        await _drive(service, _no_budget_session(), config, body=_BIG_BODY, request_id="req-b", run_id="evt-b", context=context_b)
+
+        chain_key = self._chain_key(CHAIN_ID)
+        sibling_before = await redis_client.hget(chain_key, "req-b")
+
+        # Run A ends. Run B is still in flight.
+        await self._crash(service, config, context_a, "req-a")
+
+        sibling_after = await redis_client.hget(chain_key, "req-b")
+        assert sibling_after == sibling_before, "an in-flight sibling's reservation must be untouched by another run's reconcile"
+
+        own_run_b = await redis_client.hget(self._run_key("evt-b"), "req-b")
+        assert own_run_b is not None and Decimal(own_run_b.split(":")[0]) > 0, "run B must still hold its own run-scope reservation"
+
+        # Not-vacuous guard: "nothing was released" also satisfies the assertions
+        # above, and that is precisely the pre-#4323 bug. A's own field in the
+        # shared chain key must have gone to ~0, so the test proves the release is
+        # SCOPED rather than merely absent.
+        released_a = await redis_client.hget(chain_key, "req-a")
+        assert Decimal(released_a.split(":")[0]) == Decimal("0"), "run A's own contribution to the shared chain key must be released"
+
+    @pytest.mark.asyncio
+    async def test_caller_with_no_run_scope_reconciles_exactly_as_before(self, redis_client, clock):
+        """Regression: a caller that reserved no run/chain target releases none.
+
+        Human/JWT callers, the feature disabled, shadow mode, and a degraded
+        registry lookup all take no run/chain reservation. Their reconcile must
+        stay byte-identical to the pre-#4323 hierarchy-only path, and in
+        particular must not raise on the empty stash.
+        """
+        config = _config()
+        service = _service(redis_client, clock, _registry(**{RUN_ID: CHAIN_ID}))
+        context = _context()
+
+        harness = await _drive(
+            service,
+            _no_budget_session(),
+            config,
+            body=b"{}",
+            request_id="req-0",
+            run_id=None,
+            context=context,
+        )
+        assert harness.status == 200, "precondition: a human caller with no run id is admitted"
+        assert context._run_scope_reservations == [], "no run binding means no run/chain target to release"
+
+        await self._crash(service, config, context, "req-0")
+
+        assert await redis_client.keys(f"budget:resv:*{RUN_ID}*") == [], "no run-scope key may be created by a caller that reserved none"
+
+    @pytest.mark.asyncio
+    async def test_the_stash_is_not_settable_by_a_caller(self, redis_client, clock):
+        """The release key must not become a client-supplied value (#3985 class).
+
+        ``_run_scope_reservations`` is a pydantic PrivateAttr, so constructor
+        input cannot populate it. If it were a normal field, any context built
+        from caller-influenced data could name a key to release — letting a caller
+        zero out its own run accumulator on demand, which is the cap bypass with
+        extra steps.
+        """
+        forged = TokenContext(
+            user_id=CALLER,
+            org_id=TENANT,
+            team_id="",
+            department_id="",
+            account_type="human",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            **{"_run_scope_reservations": ["forged"]},
+        )
+
+        assert forged._run_scope_reservations == [], "constructor input must never populate the release target list"
+        assert "_run_scope_reservations" not in forged.model_dump(), "internal plumbing must stay out of the serialized shape"
+
+
 class TestDenialShape:
     """A cap denial must be a 402 the client will not retry."""
 

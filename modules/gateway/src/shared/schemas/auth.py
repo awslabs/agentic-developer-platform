@@ -1,6 +1,13 @@
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, PrivateAttr, model_validator
+
+if TYPE_CHECKING:
+    # Issue #4323: type-only. A real import would cycle —
+    # src.budget.reservations -> src.budget.__init__ -> src.budget.middleware ->
+    # src.shared.schemas.auth.
+    from src.budget.reservations import ReservationTarget
 
 
 class AuthExchangeRequest(BaseModel):
@@ -75,6 +82,35 @@ class TokenContext(BaseModel):
     # collapse every non-human-rooted request in a tenant into one bogus
     # shared ledger line.
     attributed_user_id: str = ""
+
+    # Issue #4323: the run/chain reservation targets this request actually
+    # reserved against, stashed by the budget check so the reconcile on the way
+    # out can RELEASE them. Without it the run/chain reservations leak for their
+    # full 24h TTL whenever a run or chain fails, and the cap reads as exhausted
+    # while nothing is spending.
+    #
+    # It carries the very ``ReservationTarget`` objects the reserve path built
+    # rather than the ids needed to rebuild them, because a released key that
+    # does not byte-match the reserved key is a silent no-op. Deriving the key
+    # once and carrying it forward has no drift surface; deriving it twice does.
+    #
+    # A PrivateAttr, not a field, on purpose:
+    #
+    # * pydantic does NOT populate private attributes from constructor input, so
+    #   no ``TokenContext(**caller_data)`` site can inject one. That closes the
+    #   #3985 class of defect by construction — this cannot become a
+    #   caller-supplied cap key the way ``X-Agent-BudgetConfigId`` was.
+    # * it stays out of ``model_dump()`` and the JSON schema, so no API response,
+    #   log line, or serialized context changes shape.
+    # * it is internal budget plumbing. Only ``enforcement_service`` writes it
+    #   and only ``enforcement_service`` reads it.
+    #
+    # Written by the budget middleware from the server-resolved ``RunBinding``
+    # (see ``src/budget/run_binding.py``), never from ``X-Agent-RunId``. Empty is
+    # the norm — human/JWT callers, the feature disabled, shadow mode, and a
+    # degraded registry lookup all reserve no run/chain target and so release
+    # none, reconciling exactly as they did before this issue.
+    _run_scope_reservations: "list[ReservationTarget]" = PrivateAttr(default_factory=list)
 
     @model_validator(mode="after")
     def _default_attributed_org_id(self) -> "TokenContext":

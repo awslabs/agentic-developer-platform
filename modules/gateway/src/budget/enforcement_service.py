@@ -601,7 +601,36 @@ class BudgetEnforcementService:
                 if binding is not None:
                     run_cap = await self._resolve_scope_cap(session, context.attributed_org_id, EntityType.RUN)
                     chain_cap = await self._resolve_scope_cap(session, context.attributed_org_id, EntityType.CHAIN)
-                    reservation_targets.extend(self._scope_targets(binding, run_cap, chain_cap))
+                    scope_targets = self._scope_targets(binding, run_cap, chain_cap)
+                    reservation_targets.extend(scope_targets)
+
+                    # Issue #4323: publish the run/chain targets so the reconcile
+                    # on the way out can release them. The hierarchy targets are
+                    # rebuilt from scratch at reconcile time (entity × period is
+                    # derivable from the context alone), but these two are not:
+                    # their keys need `binding.run_id` / `binding.correlation_id`,
+                    # which only exist here. Re-resolving the binding at reconcile
+                    # time would mean trusting `X-Agent-RunId` on a path that has
+                    # no caller to deny — exactly the forgery surface AD-1 closed.
+                    #
+                    # The SAME target objects are carried, not the ids to rebuild
+                    # them from, so the released key byte-matches the reserved key
+                    # by construction. A mismatch here is not a loud failure, it is
+                    # a silent no-op that looks exactly like the leak being fixed.
+                    #
+                    # Assigned even when reserving is later skipped or degrades:
+                    # reconcile against a field that was never written is a no-op
+                    # (the Lua only touches existing fields), which is cheaper than
+                    # reasoning about which of the two paths ran.
+                    #
+                    # Plain assignment, NOT the `object.__setattr__` the public
+                    # attribution fields below use. That idiom exists to dodge
+                    # validator re-entry, which private attributes never trigger —
+                    # and pydantic keeps them in `__pydantic_private__`, so
+                    # `object.__setattr__` would instead shadow a stale default
+                    # there with a value in `__dict__`. Two homes for one value is
+                    # a silent-divergence trap; this writes the one pydantic reads.
+                    context._run_scope_reservations = scope_targets
 
                     # Issue #4300: publish the server-resolved root human onto the
                     # context so (a) the hierarchy below can add its budget entity
@@ -779,6 +808,15 @@ class BudgetEnforcementService:
         No DB read is needed. The reconcile script only touches hash fields that
         already exist, so enumerating the full hierarchy × period grid is safe —
         entities without a reservation are no-ops.
+
+        Issue #4323: the run/chain (``lifetime``) reservations are released here
+        too. They cannot be rebuilt from ``context`` the way the hierarchy grid
+        can — their keys are derived from the server-resolved run binding — so the
+        check path stashes the exact targets it reserved and this appends them
+        verbatim. Before that they were never in this list at all, so a failed or
+        aborted chain kept holding its run/chain headroom for the full 24h run TTL
+        and fresh runs under the same cap were denied against spend that had
+        already stopped.
         """
         if not budget_config.budget_reservation_enabled:
             return
@@ -803,6 +841,17 @@ class BudgetEnforcementService:
             for entity_type, entity_id in self._get_entity_hierarchy(context)
             for period_type in (PeriodType.DAILY, PeriodType.WEEKLY, PeriodType.MONTHLY)
         ]
+
+        # Issue #4323: plus whatever run/chain scopes the check reserved for THIS
+        # request. Empty for every caller that reserved none, which keeps the
+        # pre-#4323 key set byte-identical for those paths.
+        #
+        # Per-request by construction, and that is the no-over-release property:
+        # a sibling run under the same chain cap carries its own targets, and the
+        # reconcile script keys on `request_id` as the hash FIELD — so releasing
+        # this request touches only this request's field, even in the chain key
+        # the two siblings share.
+        targets.extend(context._run_scope_reservations)
 
         await store.reconcile(request_id, actual_cost, targets)
 
