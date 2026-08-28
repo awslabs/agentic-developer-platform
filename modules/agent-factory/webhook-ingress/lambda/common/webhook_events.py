@@ -21,6 +21,7 @@ Query patterns:
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -32,6 +33,78 @@ logger = logging.getLogger(__name__)
 
 # TTL: 30 days in seconds
 EVENT_TTL_SECONDS = 30 * 24 * 60 * 60
+
+# Issue #4347: namespace/metric for a dropped row write. Namespace matches the
+# existing WebhookIngress metrics (metrics.py, correlation_store.py) so the
+# drop lands on the same dashboard as the rest of ingress observability.
+METRICS_NAMESPACE = "WebhookIngress"
+ROW_WRITE_DROPPED_METRIC = "WebhookEventRowWriteDropped"
+
+_cloudwatch = None
+
+
+def _get_cloudwatch():
+    """Return a lazily-created, module-cached CloudWatch client."""
+    global _cloudwatch
+    if _cloudwatch is None:
+        region = (
+            os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION")
+            or "us-east-1"
+        )
+        _cloudwatch = boto3.client("cloudwatch", region_name=region)
+    return _cloudwatch
+
+
+def _emit_row_write_dropped(status: str, error_kind: str) -> None:
+    """Emit ``WebhookEventRowWriteDropped`` when a row write is swallowed (#4347).
+
+    The row write below is best-effort by design so audit logging never blocks a
+    webhook response. That is correct while the row is only an audit record — but
+    under #4187 enforce the same row becomes the run's AUTHORIZATION record
+    (``run_binding.verify_row_matches_caller`` reads it on the model-call path).
+    A silently dropped write then means the run dispatches fine and is denied on
+    every model call for its whole lifetime, with no retry path: ``unknown_run``
+    is deliberately not negative-cached, but the row never appears either, so
+    re-lookup never succeeds.
+
+    This metric removes the silence. It does NOT change the best-effort
+    semantics — making the write authoritative (fail the spawn) is the separate,
+    deliberately deferred option 1.
+
+    Modelled on the gateway's ``emit_run_binding_drift`` (dimension per cause, so
+    the drop is alertable) but implemented with the in-module
+    ``put_metric_data`` pattern from ``correlation_store``: webhook-ingress is a
+    Lambda deploy unit and cannot import gateway container code.
+
+    Emitted ONLY on a drop — the happy path emits nothing, so there are no false
+    positives and no per-webhook metric cost.
+
+    Args:
+        status: The row's lifecycle status, so an operator can tell an
+            authorization-bearing ``webhook_received`` drop (the #4187 hazard)
+            from a terminal-at-ingress ``blocked``/``no_op`` drop (audit only).
+        error_kind: Exception class name of the underlying failure.
+    """
+    try:
+        _get_cloudwatch().put_metric_data(
+            Namespace=METRICS_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": ROW_WRITE_DROPPED_METRIC,
+                    "Dimensions": [
+                        {"Name": "Status", "Value": status or "unknown"},
+                        {"Name": "ErrorKind", "Value": error_kind},
+                    ],
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        # Best-effort — a metric failure must never crash the caller, or the
+        # observability fix would become a worse outage than the silence it fixes.
+        logger.debug("Failed to emit %s metric: %s", ROW_WRITE_DROPPED_METRIC, e)
 
 
 class WebhookEventLogger:
@@ -211,8 +284,21 @@ class WebhookEventLogger:
                 status,
             )
         except Exception as e:
-            # Best-effort logging — never block the webhook response
-            logger.error("Failed to log webhook event %s: %s", event_id, e)
+            # Best-effort logging — never block the webhook response.
+            # Issue #4347: but no longer SILENTLY. Under #4187 enforce this row is
+            # the run's authorization record, so a dropped write means the run
+            # dispatches and is then denied on every model call for its whole
+            # life, with no retry. Emit an alertable metric so the drop is caught
+            # before it becomes a wave of 402s.
+            logger.error(
+                "Failed to log webhook event %s (status=%s): %s — row dropped; "
+                "under #4187 enforce this row is the run's authorization record, "
+                "so this run may be denied on every model call",
+                event_id,
+                status,
+                e,
+            )
+            _emit_row_write_dropped(status=status, error_kind=type(e).__name__)
 
         return item
 
