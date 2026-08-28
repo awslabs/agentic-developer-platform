@@ -99,3 +99,25 @@ enable_lambda_reserved_concurrency = false
 # -var-file entry takes precedence over TF_VAR_* env vars, so an empty pin
 # silently overrides the workflow's SSM injection and makes every apply plan
 # the DESTRUCTION of the live GitLab VPC origin.
+
+# Issue #4313 / wave 4 (#4248): engine dispatch wiring for the orchestration tick.
+# The tick resolves gate-approver genesis in-process and publishes the agent
+# envelope itself (ruling: docs/design-notes/4303-engine-genesis-transport.md).
+#
+# Both values default to EMPTY in variables.tf, which is a deliberate fail-closed
+# default: with either unset the tick dispatches nothing and reports
+# `undispatchable`. That default is correct for a fresh/sandbox account, but it
+# also means dev silently ran the dispatch code as a no-op until these were set.
+#
+# orchestration_dispatch_repo is REQUIRED because the orchestration graph does not
+# carry a repository: OrchestrationNode stores only `issue_ref` (an issue number),
+# while the agent worker hard-requires source_ref.{installation_id, repo, issue}.
+#
+# NOT hardcoded here: the queue URL/ARN. The queue is owned by the
+# webhook-ingress Terraform state, so per the #3745 / #3440 core-vs-optional
+# coupling rule the workflow reads it from
+# /adp/<env>/webhook-ingress/sqs-queue-url at apply time and injects
+# TF_VAR_orchestration_dispatch_queue_{url,arn}. Do NOT add those keys here even
+# empty: a -var-file entry takes precedence over TF_VAR_*, so an empty pin would
+# silently override the workflow's SSM injection and re-break dispatch.
+orchestration_dispatch_repo = "aws-e/adp"

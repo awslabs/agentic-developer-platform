@@ -912,6 +912,13 @@ module "budget_lambda" {
 # matching the `adp-${var.environment}` idiom already used in kms.tf and
 # user_identity_index.tf in this same root module.
 #
+# Issue #4298: resolves the tick's image tag to a digest so a re-pushed tag
+# produces a real Terraform diff. See the image_uri comment in the module call.
+data "aws_ecr_image" "orchestration_tick" {
+  repository_name = "adp-gateway"
+  image_tag       = var.orchestration_tick_image_tag
+}
+
 # The Lambda runs the existing adp-gateway container image: the tick's logic is
 # `src/orchestration/tick.py` (async SQLAlchemy/asyncpg), and that image is the
 # only artifact that already carries the async stack plus the RDS CA bundle the
@@ -925,7 +932,21 @@ module "orchestration_tick" {
   common_tags = local.common_tags
   aws_region  = var.aws_region
 
-  image_uri = "${local.ecr_gateway_url}:${var.orchestration_tick_image_tag}"
+  # Issue #4298 / #4313: resolve the tag to an immutable DIGEST at plan time.
+  #
+  # Passing "<repo>:latest" here is a static string, so Terraform sees no diff
+  # when a new image is pushed under the same tag and never calls UpdateFunctionCode.
+  # Lambda resolves a tag to a digest exactly once (at update time), so the tick
+  # kept executing whatever image it was last pointed at — across green
+  # gateway-deploy runs, with no error and no alarm. Wave 4 hit this twice: the
+  # only reason wave 3's tick ran current code is that an operator ran a one-off
+  # CLI update by hand.
+  #
+  # `aws_ecr_image` is a data source, so the digest is re-read on every plan; when
+  # the tag moves, image_uri changes and the function is updated as part of the
+  # normal apply. Pinning `orchestration_tick_image_tag` to a specific tag still
+  # works and now also pins the digest.
+  image_uri = "${local.ecr_gateway_url}@${data.aws_ecr_image.orchestration_tick.image_digest}"
 
   # VPC Configuration
   vpc_id             = local.vpc_id
