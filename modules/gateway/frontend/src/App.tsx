@@ -36,6 +36,7 @@ const TenantOrgLinks = lazy(() => import('./pages/admin/TenantOrgLinks')); // Is
 const AgentActivity = lazy(() => import('./pages/AgentActivity')); // Issue #1457
 const AgentRunDashboard = lazy(() => import('./pages/AgentRunDashboard')); // Issue #3633
 const Knowledge = lazy(() => import('./pages/Knowledge')); // Issue #1794
+const GraphView = lazy(() => import('./pages/GraphView')); // Issue #4212
 const NotFound = lazy(() => import('./pages/NotFound'));
 
 function App() {
@@ -94,6 +95,10 @@ function App() {
               <Route path="/activity" element={<AgentActivity />} /> {/* Issue #1457 */}
               <Route path="/runs" element={<AgentRunDashboard />} /> {/* Issue #3633 */}
               <Route path="/knowledge" element={<FeatureGate feature="knowledge"><Knowledge /></FeatureGate>} /> {/* Issue #1794 */}
+              {/* Issue #4212. `orchestration_engine` is fail-CLOSED in
+                  ALL_FEATURES_ENABLED, so a pending or failed /features fetch hides
+                  this route rather than revealing the new path. */}
+              <Route path="/flows/:flowId" element={<FeatureGate feature="orchestration_engine"><GraphView /></FeatureGate>} />
             </Route>
           </Route>
 

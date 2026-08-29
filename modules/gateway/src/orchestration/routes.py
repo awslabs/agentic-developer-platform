@@ -13,6 +13,10 @@ which CloudFront strips before the origin — see the prefix note below):
 - GET  /orchestration/flows/{flow_id}/cost — three-valued cost rolled up by
   graph address (issue #4207). Gated on `USAGE_READ`, not `PLAN_APPROVE`: it is a
   read of spend, and approval is a write authority over promotion state.
+- GET  /orchestration/flows/{flow_id} — the whole flow for the graph view
+  (issue #4212): every node including ones that have never run, every edge, and
+  per-node plus rolled-up cost. Gated on `USAGE_READ` for the same reason as the
+  cost route.
 
 **This is the operator plane, not the internal plane.** The distinction is the
 EPIC's central guarantee, not a routing detail. Agent pods can reach any
@@ -52,8 +56,9 @@ from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.orchestration.amend import AmendmentContext, FlowNotFoundError, amend_plan
 from src.orchestration.compile import ApprovalContext, ProposalRejectedError, TenantMismatchError, compile_proposal
-from src.orchestration.cost import COST_SCOPE_LABEL, get_flow_cost
+from src.orchestration.cost import COST_SCOPE_LABEL, AggregateCost, CostStatus, NodeCost, UnknownReason, get_flow_cost
 from src.orchestration.dispatch_pass import resolve_installation_id
+from src.orchestration.models import DecisionKind
 from src.orchestration.proposal import LoopProposal
 from src.orchestration.repository import OrchestrationRepository
 from src.shared.database import get_db
@@ -438,6 +443,69 @@ class FlowCostResponse(BaseModel):
     nodes: list[NodeCostResponse]
 
 
+def _node_cost_response(node: NodeCost) -> NodeCostResponse:
+    """Serialise one node's cost. Shared by the cost route and the graph route.
+
+    One function rather than the same six-line projection in both places: the
+    `amount_usd`-as-string rule exists so sub-cent precision survives JSON, and a
+    second copy is a second chance for someone to "simplify" it into a float.
+    """
+    return NodeCostResponse(
+        address=node.address,
+        status=node.status.value,
+        amount_usd=str(node.amount_usd) if node.amount_usd is not None else None,
+        total_tokens=node.total_tokens,
+        call_count=node.call_count,
+        reason=node.reason.value if node.reason else None,
+        scope=node.scope,
+    )
+
+
+def _flow_cost_response(flow_id: str, aggregate: AggregateCost) -> FlowCostResponse:
+    """Serialise a flow's rolled-up cost, `partial` and `scope` included.
+
+    Both labels travel with the figure by construction here, because a total
+    rendered without them is a lower bound of one cost category presented as the
+    total cost.
+    """
+    return FlowCostResponse(
+        flow_id=flow_id,
+        address=aggregate.address,
+        status=aggregate.status.value,
+        amount_usd=str(aggregate.amount_usd) if aggregate.amount_usd is not None else None,
+        total_tokens=aggregate.total_tokens,
+        call_count=aggregate.call_count,
+        node_count=aggregate.node_count,
+        unknown_node_count=aggregate.unknown_node_count,
+        partial=aggregate.partial,
+        reason=aggregate.reason.value if aggregate.reason else None,
+        scope=COST_SCOPE_LABEL,
+        nodes=[_node_cost_response(node) for node in aggregate.nodes],
+    )
+
+
+async def _stalled_node_ids(repo: OrchestrationRepository, *, org_id: str, flow_id: str) -> set[str]:
+    """Node ids whose latest stall-or-halt decision was a **stall**.
+
+    Why this is needed at all: stall detection transitions a stalled node to
+    `failed`, not to a state of its own (`stall.py`), while halting moves it to
+    `halted`. So `halted` is readable from `state` but "stalled" is not — a stalled
+    node and a node whose work simply failed are indistinguishable by state, and
+    AC-3 requires the view to distinguish them.
+
+    Latest-wins rather than any-match: a node that stalled, was resumed, and then
+    halted must not still read as stalled. `list_decisions` returns in `created_at`
+    order, so the last of the two kinds seen for a node is the current one.
+    Decisions are append-only, which is what makes this reduction sound — no row
+    is ever rewritten behind it.
+    """
+    latest: dict[str, str] = {}
+    for decision in await repo.list_decisions(org_id=org_id, flow_id=flow_id):
+        if decision.node_id and decision.kind in (DecisionKind.NODE_STALLED.value, DecisionKind.NODE_HALTED.value):
+            latest[decision.node_id] = decision.kind
+    return {node_id for node_id, kind in latest.items() if kind == DecisionKind.NODE_STALLED.value}
+
+
 @router.get("/flows/{flow_id}/cost", response_model=FlowCostResponse)
 async def get_flow_cost_route(
     flow_id: Annotated[str, Path(min_length=1, max_length=36)],
@@ -479,28 +547,183 @@ async def get_flow_cost_route(
     nodes = await repo.list_nodes(org_id=current_user.org_id, flow_id=flow.id)
     aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
 
-    return FlowCostResponse(
-        flow_id=flow.id,
-        address=aggregate.address,
-        status=aggregate.status.value,
-        amount_usd=str(aggregate.amount_usd) if aggregate.amount_usd is not None else None,
-        total_tokens=aggregate.total_tokens,
-        call_count=aggregate.call_count,
-        node_count=aggregate.node_count,
-        unknown_node_count=aggregate.unknown_node_count,
-        partial=aggregate.partial,
-        reason=aggregate.reason.value if aggregate.reason else None,
-        scope=COST_SCOPE_LABEL,
-        nodes=[
-            NodeCostResponse(
-                address=node.address,
-                status=node.status.value,
-                amount_usd=str(node.amount_usd) if node.amount_usd is not None else None,
-                total_tokens=node.total_tokens,
-                call_count=node.call_count,
-                reason=node.reason.value if node.reason else None,
-                scope=node.scope,
+    return _flow_cost_response(flow.id, aggregate)
+
+
+class GraphNodeResponse(BaseModel):
+    """One executable node — story, eval, or gate — as the graph view reads it.
+
+    Carries the address components rather than the joined address string. The
+    view groups by EPIC and wave to derive its containers (§8.2 of the design
+    contract: container state is derived, never stored), and per item 7.2 the
+    joined address is internal and must never be rendered, so shipping the
+    components is both what the client needs and the shape that does not invite
+    displaying a path.
+
+    `cost` is inlined per node rather than left to the `/cost` route. Correlating
+    the two responses client-side would mean the SPA rebuilding the internal
+    address string as a join key — a second implementation of the address format,
+    in the layer least able to notice when it drifts.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    epic_ref: str
+    wave_ref: str
+    node_ref: str
+    kind: str
+    state: str
+    title: str
+    issue_ref: str | None
+    attempts: int
+    # True when the most recent stall/halt decision for this node was a stall.
+    #
+    # Load-bearing for AC-3, and not inferable from `state`: stall detection moves
+    # a stalled node to `failed` (`stall.py`), so a stall and an ordinary failure
+    # are the same state. Without this flag "stalled" and "failed" cannot be told
+    # apart, and the contract requires them to look different — a stall means "go
+    # find out why this is wedged", a failure means the work itself failed.
+    stalled: bool
+    cost: NodeCostResponse
+    created_at: str
+    updated_at: str | None
+
+
+class GraphEdgeResponse(BaseModel):
+    """A dependency edge. What makes look-ahead and parallel branches renderable.
+
+    Node ids, not addresses: the client already has every node keyed by id, and
+    resolving edges by id avoids reconstructing the address string (see
+    `GraphNodeResponse`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_node_id: str
+    to_node_id: str
+
+
+class FlowGraphResponse(BaseModel):
+    """A whole flow: its nodes, its edges, and what it has cost.
+
+    **Containers are deliberately absent.** No wave, EPIC or flow-level state is
+    returned beyond the flow's own row, because §8.2 of the design contract makes
+    container state derived, never stored. Returning a computed container state
+    here would publish it as authoritative and create a second source of truth for
+    a value its children already imply.
+
+    **Nodes that have never run are included, and that is the point.** A response
+    holding only what has already executed cannot answer "how much is left", which
+    is the question the view exists to answer (AC-1).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    flow_id: str
+    slug: str
+    title: str
+    intent_ref: str | None
+    state: str
+    created_at: str
+    updated_at: str | None
+    nodes: list[GraphNodeResponse]
+    edges: list[GraphEdgeResponse]
+    cost: FlowCostResponse
+
+
+@router.get("/flows/{flow_id}", response_model=FlowGraphResponse)
+async def get_flow_graph(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> FlowGraphResponse:
+    """The whole journey for one flow: nodes, edges, and three-valued cost.
+
+    Gated on `USAGE_READ` rather than `PLAN_APPROVE`, for the same reason the cost
+    route is: this is a read, and approval authority is a *write* permission over
+    promotion state. Requiring the stronger one would mean nobody could see where
+    delivery stands without also being able to accept plans.
+
+    The permission check runs before any read, so a denied caller cannot learn
+    whether the flow exists. A `flow_id` from another tenant returns **404**, not
+    403 and not an empty graph: a 403 confirms the id exists somewhere and lets a
+    caller enumerate flows by status code, while an empty graph would read as "no
+    work", which is a different and more misleading answer than "not found".
+    """
+    await access.check_permission(
+        current_user,
+        Permission.USAGE_READ,
+        target_org_id=current_user.org_id,
+    )
+
+    repo = OrchestrationRepository(db)
+
+    # Org-filtered resolution before any node, edge or ledger read, so a
+    # cross-tenant flow_id can never reach them.
+    flow = await repo.get_flow(org_id=current_user.org_id, flow_id=flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail=f"no orchestration flow {flow_id!r} in this tenant")
+
+    nodes = await repo.list_nodes(org_id=current_user.org_id, flow_id=flow.id)
+    edges = await repo.list_edges(org_id=current_user.org_id, flow_id=flow.id)
+    aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
+    stalled_node_ids = await _stalled_node_ids(repo, org_id=current_user.org_id, flow_id=flow.id)
+
+    # Keyed by address because that is what `get_flow_cost` returns them under.
+    # Built once rather than searched per node: a linear scan inside the node loop
+    # would make this quadratic in node count for no benefit.
+    cost_by_address = {node_cost.address: node_cost for node_cost in aggregate.nodes}
+
+    graph_nodes: list[GraphNodeResponse] = []
+    for node in nodes:
+        address = f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}"
+        node_cost = cost_by_address.get(address)
+        graph_nodes.append(
+            GraphNodeResponse(
+                id=node.id,
+                epic_ref=node.epic_ref,
+                wave_ref=node.wave_ref,
+                node_ref=node.node_ref,
+                kind=node.kind,
+                state=node.state,
+                title=node.title,
+                issue_ref=node.issue_ref,
+                attempts=node.attempts,
+                stalled=node.id in stalled_node_ids,
+                # `get_flow_cost` returns one entry per node passed in, so the
+                # fallback is unreachable today. It is UNKNOWN rather than a zero
+                # anyway: if that ever stops holding, the honest answer is "we do
+                # not know", and `$0.00` is the exact lie this whole cost model
+                # exists to prevent.
+                cost=(
+                    _node_cost_response(node_cost)
+                    if node_cost is not None
+                    else NodeCostResponse(
+                        address=address,
+                        status=CostStatus.UNKNOWN.value,
+                        amount_usd=None,
+                        total_tokens=0,
+                        call_count=0,
+                        reason=UnknownReason.NO_USAGE_ROWS.value,
+                        scope=COST_SCOPE_LABEL,
+                    )
+                ),
+                created_at=node.created_at.isoformat(),
+                updated_at=node.updated_at.isoformat() if node.updated_at else None,
             )
-            for node in aggregate.nodes
-        ],
+        )
+
+    return FlowGraphResponse(
+        flow_id=flow.id,
+        slug=flow.slug,
+        title=flow.title,
+        intent_ref=flow.intent_ref,
+        state=flow.state,
+        created_at=flow.created_at.isoformat(),
+        updated_at=flow.updated_at.isoformat() if flow.updated_at else None,
+        nodes=graph_nodes,
+        edges=[GraphEdgeResponse(from_node_id=edge.from_node_id, to_node_id=edge.to_node_id) for edge in edges],
+        cost=_flow_cost_response(flow.id, aggregate),
     )

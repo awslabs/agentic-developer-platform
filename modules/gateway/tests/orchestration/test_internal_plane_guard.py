@@ -335,6 +335,26 @@ class TestOrchestrationRouterIsOperatorPlane:
             "/orchestration/flows/{flow_id}/plans": "Permission.PLAN_APPROVE",
             # Read-only cost rollup. Reads usage_logs, never promotion state.
             "/orchestration/flows/{flow_id}/cost": "Permission.USAGE_READ",
+            # Issue #4212: the graph view's read. Returns the flow's nodes, edges
+            # and cost — the graph's *structure and progress*, which is what the
+            # sibling `plan_approve` guard below deliberately excludes from its
+            # acceptance-record scan.
+            #
+            # It does consult `orchestration_decisions`, via `_stalled_node_ids`,
+            # and that is worth stating out loud because the scan below would not
+            # catch it (the read is in a helper, not in the handler body). What it
+            # takes from those rows is one derived boolean per node — "was the
+            # latest stall-or-halt finding a stall?" — and nothing else: no
+            # `actor_id`, no `actor_role`, no `actor_kind`, no reason text, no
+            # approval record. That distinction is asserted directly, on the
+            # response body rather than on source text, by
+            # `test_read_api.py::TestNoApprovalRecordLeak`.
+            #
+            # If a future change surfaces attribution here, the permission must
+            # become PLAN_APPROVE: *who approved what* is the approval record,
+            # and reading it under a spend-read permission is the escalation the
+            # sibling guard exists to stop.
+            "/orchestration/flows/{flow_id}": "Permission.USAGE_READ",
         }
 
         actual_paths = set()
