@@ -481,6 +481,13 @@ export function parseIdTokenForUser(idToken: string): User | null {
     role = AdminRole.ORG_ADMIN;
   } else if (customRole === 'dept_admin') {
     role = AdminRole.DEPT_ADMIN;
+  } else if (customRole === 'member' || customRole === 'user' || customRole === 'viewer') {
+    // Issue #4389: without this branch `role` stayed undefined for a member and
+    // ROLE_PERMISSIONS[AdminRole.MEMBER] above was unreachable, so every member
+    // resolved `permissions: []` and any USAGE_READ-gated view rendered blank.
+    // The three strings are the synonym set the backend treats as MEMBER
+    // (_MEMBERSHIP_ROLE_TO_ADMIN_ROLE in src/admin/config.py) — keep in sync.
+    role = AdminRole.MEMBER;
   }
 
   // Extract GitHub identity info if present
@@ -519,7 +526,10 @@ export function parseIdTokenForUser(idToken: string): User | null {
     role,
     orgId: payload['custom:org_id'],
     deptId: payload['custom:department_id'],
-    permissions: role ? ROLE_PERMISSIONS[role] : [],
+    // Issue #4389: `?? []` keeps this total. A role present in the AdminRole enum
+    // but absent from ROLE_PERMISSIONS would otherwise yield `undefined`, and
+    // AuthContext.hasPermission does `user.permissions.includes(...)` unguarded.
+    permissions: role ? (ROLE_PERMISSIONS[role] ?? []) : [],
     createdAt: new Date(payload.auth_time * 1000).toISOString(),
     avatarUrl,
     githubLogin,
@@ -545,12 +555,15 @@ export function getCurrentUserFromToken(): User | null {
  */
 export async function getCurrentUser(): Promise<User | null> {
   try {
+    // Issue #4389: `role` and `permissions` are optional because /auth/me does not
+    // currently return them. Declaring them required was the type lie that hid the
+    // undefined-permissions bug handled below.
     const response = await apiClient.get<{
       user_id: string;
-      role: AdminRole;
+      role?: AdminRole;
       org_id?: string;
       dept_id?: string;
-      permissions: Permission[];
+      permissions?: Permission[];
       created_at: string;
       email?: string;
       name?: string;
@@ -561,7 +574,13 @@ export async function getCurrentUser(): Promise<User | null> {
       role: response.role,
       orgId: response.org_id,
       deptId: response.dept_id,
-      permissions: response.permissions || ROLE_PERMISSIONS[response.role],
+      // Issue #4389: GET /auth/me (src/auth/routes.py) returns neither `role` nor
+      // `permissions`, so the old `response.permissions || ROLE_PERMISSIONS[response.role]`
+      // evaluated to ROLE_PERMISSIONS[undefined] === undefined — which would make
+      // AuthContext.hasPermission throw on `.includes()`. Latent today only because
+      // this function has no production caller. Always resolve to an array.
+      permissions:
+        response.permissions ?? (response.role ? (ROLE_PERMISSIONS[response.role] ?? []) : []),
       createdAt: response.created_at,
       email: response.email,
       name: response.name,
