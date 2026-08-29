@@ -119,6 +119,14 @@ spec:
               value: "false"
             - name: FEATURE_LOGS_ENABLED
               value: "false"
+            # Issue #4209: orchestration engine + graph UI. Fail-closed, so absent
+            # would already mean off — set explicitly anyway, because this is the
+            # entry an operator flips to opt an environment in, and the three-place
+            # parity test reads it here. Legacy GitHub-driven mode is the default
+            # and stays fully supported (ruling D-R20); do not flip this to enable
+            # the engine for everyone.
+            - name: FEATURE_ORCHESTRATION_ENGINE_ENABLED
+              value: "false"
             # - name: FEATURE_KNOWLEDGE_ENABLED
             #   value: "false"
             # - name: FEATURE_INDEXING_ENABLED

@@ -70,5 +70,14 @@ async def get_features(_current_user=Depends(get_current_user)):
             "logs": _is_enabled("FEATURE_LOGS_ENABLED"),
             # Fail-closed: optional add-on, hidden by default (Issue #3773)
             "gitlab": _is_enabled_strict("FEATURE_GITLAB_ENABLED"),
+            # Fail-closed: the orchestration engine + graph UI are a per-flow
+            # opt-in add-on (Issue #4209). Strict, not `_is_enabled`, for two
+            # reasons: legacy mode (AIDLC emits orchestrator + evaluation issues,
+            # the operations persona drives the loop) remains the default and
+            # fully supported path indefinitely (ruling D-R20), so the new path
+            # must be invisible unless somebody asks for it; and a lookup error
+            # must resolve to *off*, because failing open here would silently
+            # enable an opt-in engine path in production.
+            "orchestration_engine": _is_enabled_strict("FEATURE_ORCHESTRATION_ENGINE_ENABLED"),
         }
     }

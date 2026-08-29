@@ -15,6 +15,7 @@ export interface FeatureFlags {
   system_dashboard: boolean;
   logs: boolean;
   gitlab: boolean;
+  orchestration_engine: boolean;
 }
 
 export interface FeaturesResponse {
@@ -22,7 +23,10 @@ export interface FeaturesResponse {
 }
 
 /** All features enabled — used as fail-open default.
- *  Exception: gitlab defaults to false (fail-closed, Issue #3773). */
+ *  Exceptions: gitlab (fail-closed, Issue #3773) and orchestration_engine
+ *  (fail-closed, Issue #4209) default to false. The engine + graph UI are a
+ *  per-flow opt-in add-on; legacy GitHub-driven mode stays the default, so a
+ *  pending or failed /features fetch must NOT reveal the new path. */
 export const ALL_FEATURES_ENABLED: FeatureFlags = {
   chat: true,
   knowledge: true,
@@ -32,6 +36,7 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   system_dashboard: true,
   logs: true,
   gitlab: false,
+  orchestration_engine: false,
 };
 
 export async function fetchFeatures(): Promise<FeatureFlags> {

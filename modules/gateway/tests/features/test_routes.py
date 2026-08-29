@@ -33,11 +33,12 @@ def client(app):
 class TestFeaturesDefaults:
     """All flags default to True when no env vars are set (fail-open).
 
-    Exception: gitlab defaults to False (fail-closed, Issue #3773).
+    Exceptions: gitlab (Issue #3773) and orchestration_engine (Issue #4209) default
+    to False — optional add-ons are fail-closed.
     """
 
     def test_all_enabled_by_default(self, client, monkeypatch):
-        """With no FEATURE_* env vars, core flags are True; gitlab is False."""
+        """With no FEATURE_* env vars, core flags are True; add-ons are False."""
         # Clear any existing feature flags
         for var in [
             "FEATURE_CHAT_ENABLED",
@@ -48,6 +49,7 @@ class TestFeaturesDefaults:
             "FEATURE_SYSTEM_DASHBOARD_ENABLED",
             "FEATURE_LOGS_ENABLED",
             "FEATURE_GITLAB_ENABLED",
+            "FEATURE_ORCHESTRATION_ENGINE_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -65,6 +67,7 @@ class TestFeaturesDefaults:
                 "system_dashboard": True,
                 "logs": True,
                 "gitlab": False,
+                "orchestration_engine": False,
             }
         }
 
