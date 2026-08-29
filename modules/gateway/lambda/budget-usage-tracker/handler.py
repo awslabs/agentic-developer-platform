@@ -53,12 +53,31 @@ _PRICING_CACHE_TTL = 3600  # 1 hour
 # cannot import gateway `src`, so the agreement is pinned by a test rather than
 # by the type system (see tests/lambda/test_budget_usage_tracker.py::T15).
 #
-# Why a named constant and not an inline literal like the ("user", ...) /
-# ("organization", ...) entries below: those hand-written literals are exactly
-# how the org line drifted from the reader's "org" (tracked as #4322), where a
+# Why a named constant and not an inline literal like the ("user", ...) entry
+# below: those hand-written literals are exactly how the org line drifted from
+# the reader's "org" (fixed in #4322, see `_ORGANIZATION_ENTITY_TYPE`), where a
 # writer/reader mismatch means enforcement silently reads an empty ledger and
 # every cap passes. Do not inline this string.
 _ROOT_USER_ENTITY_TYPE = "root_user"
+
+# Issue #4322: the settled-ledger entity_type for an organization.
+#
+# This MUST stay equal to `EntityType.ORGANIZATION.value` in
+# src/shared/schemas/budget.py — same separate-deploy-artifact reasoning as
+# `_ROOT_USER_ENTITY_TYPE` above, pinned by the same test.
+#
+# It is "org", NOT "organization". This Lambda wrote the hand-written literal
+# `"organization"` from #234 until #4322, while enforcement has always queried
+# `EntityType.ORGANIZATION.value` == "org" — so `_check_entity_budget` read the
+# org's accumulated spend as 0 on every request and the org cap never enforced
+# against the persisted period total. Nothing raised and nothing logged; the cap
+# was simply inert. Migration 032 merges the historical `"organization"` rows
+# into their `"org"` counterparts.
+#
+# Do not "tidy" this to the longer word to match `src/ratelimit/models.py`'s
+# EntityType.ORGANIZATION — that is a DIFFERENT enum keying rate_limit_configs,
+# and the two tables genuinely disagree on this string.
+_ORGANIZATION_ENTITY_TYPE = "org"
 
 
 def get_period_starts(timestamp: datetime) -> dict[str, datetime]:
@@ -256,7 +275,9 @@ def upsert_budget_usage(
     Args:
         conn: Database connection
         org_id: Organization ID
-        entity_type: Entity type (user/team/organization)
+        entity_type: Entity type (user/team/org/agent/root_user) — must be a
+            value of `EntityType` in src/shared/schemas/budget.py, which is what
+            enforcement queries this table with (#4322)
         entity_id: Entity ID
         period_start: Start of the period
         period_type: Period type (daily/weekly/monthly)
@@ -419,7 +440,8 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     # Record usage for each entity level and period type
     entities = [
         ("user", user_id),
-        ("organization", org_id),
+        # Issue #4322: the constant, never the literal — see its definition.
+        (_ORGANIZATION_ENTITY_TYPE, org_id),
     ]
 
     # Add team if present

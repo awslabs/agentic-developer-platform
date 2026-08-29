@@ -685,8 +685,9 @@ class TestRootHumanEntityTypeContract:
     enforcement reads another, nothing raises and no log line appears — the cap
     simply reads an empty ledger and every request passes. That silent failure
     mode already happened once on the org line (writer ``"organization"`` vs.
-    reader ``"org"``, tracked as #4322), where it means budgets are not enforced
-    at all.
+    reader ``"org"``, fixed in #4322 — see
+    ``TestOrganizationEntityTypeContract`` below), where it means budgets are not
+    enforced at all.
     """
 
     def test_writer_constant_equals_reader_enum_value(self):
@@ -708,6 +709,123 @@ class TestRootHumanEntityTypeContract:
 
         written = {k[0] for k in conn.cursor_obj.rows if k[1] == "users-id-alice"}
         assert written == {EntityType.ROOT_USER.value}
+
+
+# =============================================================================
+# Issue #4322: the org line's writer/reader agreement
+# =============================================================================
+
+
+class TestOrganizationEntityTypeContract:
+    """#4322: the org row's ``entity_type`` must be what enforcement queries.
+
+    T15 generalized to the org line — and the org line is where the drift
+    actually shipped. This Lambda wrote ``"organization"`` while
+    ``_check_entity_budget`` has always filtered on
+    ``EntityType.ORGANIZATION.value`` == ``"org"``, so the query matched nothing
+    and ``current_spend`` was ``Decimal("0")`` on every request. Nothing raised,
+    nothing logged: the org cap simply never enforced against accumulated spend.
+
+    These are the tests that fail on pre-#4322 code.
+    """
+
+    def test_writer_constant_equals_reader_enum_value(self):
+        """The constant, not the emitted row — this is the whole contract.
+
+        Fails if someone re-spells the constant back to the longer word, even if
+        no row is written in the failing test.
+        """
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+
+        assert handler_mod._ORGANIZATION_ENTITY_TYPE == EntityType.ORGANIZATION.value
+
+    def test_rows_written_are_readable_by_the_enforcement_enum(self):
+        """The string that lands in the table is the string enforcement reads."""
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(), MODEL_PRICING)
+
+        written = {k[0] for k in conn.cursor_obj.rows if k[1] == "org-acme"}
+        assert written == {EntityType.ORGANIZATION.value}
+
+    def test_the_stale_literal_is_never_written(self):
+        """No row anywhere carries ``"organization"``.
+
+        Explicit because the failure is one of ABSENCE: a row under the old
+        spelling is invisible to the reader, so a test that only asserts the new
+        row exists would still pass if both were written — and both being written
+        is the double-count the migration exists to prevent.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", team_id="team-7", account_type="service", agent_id="agent-9"),
+            MODEL_PRICING,
+        )
+
+        assert "organization" not in _entity_types(conn)
+
+    def test_org_row_still_holds_the_cost_exactly_once(self):
+        """Relabelling must not change the arithmetic — one request, one debit.
+
+        The rename is only correct if the org line still receives exactly
+        ``cost``. A fix that emitted both spellings, or appended the org entity
+        twice, would double the figure and deny the org at half its real cap.
+        """
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        log = _chat_log_4300()
+        handler_mod.process_chat_log(conn, log, MODEL_PRICING)
+
+        expected = calculate_cost(resolve_model_id(log["model"]), 1000, 500, MODEL_PRICING)
+        assert expected > 0  # a zero cost would make the assertion below vacuous
+        row = conn.cursor_obj.rows[(EntityType.ORGANIZATION.value, "org-acme", "daily")]
+        assert row["cost"] == expected
+        assert row["requests"] == 1
+
+    def test_org_row_is_written_for_each_period(self):
+        """All three period rows move to the new spelling, not just the daily one."""
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(), MODEL_PRICING)
+
+        periods = {k[2] for k in conn.cursor_obj.rows if k[0] == EntityType.ORGANIZATION.value}
+        assert periods == {"daily", "weekly", "monthly"}
+
+    def test_other_entity_lines_are_unaffected(self):
+        """Regression: ``user``/``team``/``agent``/``root_user`` literals already
+        agreed with the reader and must stay byte-identical (#4322 scope guard)."""
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", team_id="team-7", account_type="service", agent_id="agent-9"),
+            MODEL_PRICING,
+        )
+
+        assert _entity_types(conn) == {
+            "user",
+            "team",
+            "agent",
+            "root_user",
+            EntityType.ORGANIZATION.value,
+        }
 
 
 class TestRootHumanLedgerRows:
@@ -761,8 +879,10 @@ class TestRootHumanLedgerRows:
         with_root = _LedgerConn()
         handler_mod.process_chat_log(with_root, _chat_log_4300(root_human_id="users-id-alice"), MODEL_PRICING)
 
-        for entity in ("organization", "user"):
-            key = (entity, {"organization": "org-acme", "user": "cognito-sub-of-the-agent-service-account"}[entity], "daily")
+        # #4322 relabelled the org line "organization" -> "org"; the entity id it
+        # is keyed on is unchanged, and so is the invariant under test here.
+        for entity, entity_id in (("org", "org-acme"), ("user", "cognito-sub-of-the-agent-service-account")):
+            key = (entity, entity_id, "daily")
             assert with_root.cursor_obj.rows[key]["cost"] == without.cursor_obj.rows[key]["cost"]
             assert with_root.cursor_obj.rows[key]["requests"] == without.cursor_obj.rows[key]["requests"] == 1
 
@@ -808,7 +928,8 @@ class TestRootHumanAbsent:
 
         handler_mod.process_chat_log(conn, _chat_log_4300(), MODEL_PRICING)
 
-        assert _entity_types(conn) == {"user", "organization"}
+        # "org", not "organization", since #4322.
+        assert _entity_types(conn) == {"user", "org"}
 
     def test_parse_chat_log_without_the_field_is_still_valid(self):
         handler_mod = load_handler("budget-usage-tracker")
