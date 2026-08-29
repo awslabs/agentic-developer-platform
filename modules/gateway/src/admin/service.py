@@ -1763,8 +1763,12 @@ class AdminService:
         Returns:
             Paginated budget list with usage information
         """
-        from datetime import date
         from decimal import Decimal
+
+        # Local import, matching budget_helper.py: importing src.budget at module
+        # scope pulls in src.budget.__init__ -> routes -> src.auth.
+        from src.budget.utils import CALENDAR_PERIOD_TYPES, get_period_start_end
+        from src.shared.schemas.budget import PeriodType
 
         if page_size is None:
             page_size = self.config.default_page_size
@@ -1772,9 +1776,23 @@ class AdminService:
         page_size = min(page_size, self.config.max_page_size)
         offset = (page - 1) * page_size
 
-        # Build base query
-        query = select(BudgetConfig).where(BudgetConfig.org_id == org_id)
-        count_query = select(func.count()).select_from(BudgetConfig).where(BudgetConfig.org_id == org_id)
+        # Build base query. Issue #4328: calendar budgets only. A lifetime-scoped
+        # run/chain cap has no calendar period, and this listing used to render one
+        # as a monthly budget with a wrong current_usage_usd and utilization_pct —
+        # a quiet mislabel rather than an error, so nobody noticed. Filtering the
+        # count query too keeps `total`/`has_more` consistent with `items`.
+        query = select(BudgetConfig).where(
+            BudgetConfig.org_id == org_id,
+            BudgetConfig.period_type.in_(CALENDAR_PERIOD_TYPES),
+        )
+        count_query = (
+            select(func.count())
+            .select_from(BudgetConfig)
+            .where(
+                BudgetConfig.org_id == org_id,
+                BudgetConfig.period_type.in_(CALENDAR_PERIOD_TYPES),
+            )
+        )
 
         if entity_type:
             query = query.where(BudgetConfig.entity_type == entity_type)
@@ -1812,17 +1830,15 @@ class AdminService:
 
         # Get current usage for each budget
         items: list[BudgetListItem] = []
-        today = date.today()
 
         for config in budget_configs:
-            # Calculate period start based on period_type
-            if config.period_type == "daily":
-                period_start = today
-            elif config.period_type == "weekly":
-                # Start of the current week (Monday)
-                period_start = today - timedelta(days=today.weekday())
-            else:  # monthly
-                period_start = today.replace(day=1)
+            # Issue #4328: use the shared period helper rather than re-deriving the
+            # window inline. The previous `if daily / elif weekly / else: monthly`
+            # treated every unrecognised period type as monthly, which is what made
+            # a run cap render as a monthly budget instead of being excluded. The
+            # query above guarantees only calendar types reach here, so this cannot
+            # raise.
+            period_start, _ = get_period_start_end(PeriodType(config.period_type))
 
             # Query current usage
             usage_result = await self.db.execute(
@@ -1893,7 +1909,9 @@ class AdminService:
             raise ResourceConflictError(
                 "BudgetConfig",
                 "entity_type/entity_id/period_type",
-                f"{request.entity_type}/{request.entity_id}/{request.period_type}",
+                # .value: period_type is a PeriodType (#4328), and str()/f-string on a
+                # str-Enum renders "PeriodType.MONTHLY", not "monthly".
+                f"{request.entity_type}/{request.entity_id}/{request.period_type.value}",
             )
 
         budget = BudgetConfig(

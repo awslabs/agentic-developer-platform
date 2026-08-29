@@ -5,6 +5,24 @@ from src.shared.schemas.budget import EntityType, PeriodType
 
 from .config import budget_config
 
+# Issue #4328: the period types that have a calendar window, and the single
+# source of truth for that question. Every reader that iterates budget_configs
+# rows and derives a calendar period must filter on this.
+#
+# Deliberately an ALLOWLIST, not `!= PeriodType.RUN`. A denylist means the next
+# period type added to the enum (say QUARTERLY) is picked up by every calendar
+# reader and passed to get_period_start_end, which raises for anything it does
+# not implement — reintroducing the exact org-wide 500 this constant exists to
+# fix. An allowlist makes a new period type inert in these readers until someone
+# deliberately adds it here, and this is the one grep-able place recording that.
+CALENDAR_PERIOD_TYPES: frozenset[str] = frozenset(
+    {
+        PeriodType.DAILY.value,
+        PeriodType.WEEKLY.value,
+        PeriodType.MONTHLY.value,
+    }
+)
+
 
 def calculate_model_cost(model_name: str, tokens_in: int, tokens_out: int) -> tuple[Decimal, Decimal, Decimal]:
     """

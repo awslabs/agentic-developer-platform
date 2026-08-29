@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from src.admin.config import AdminRole, Permission
+from src.shared.schemas.budget import PeriodType
 
 
 # Organization Schemas
@@ -116,7 +117,9 @@ class BudgetConfigResponse(BaseModel):
     org_id: str
     entity_type: str
     entity_id: str
-    period_type: str
+    # Issue #4328: PeriodType, not a bare str — an unvalidated string field let any
+    # value reach budget_configs.period_type, which has no DB constraint either.
+    period_type: PeriodType
     budget_amount_usd: Decimal
     enforcement_mode: str
     updated_at: datetime
@@ -274,7 +277,8 @@ class BudgetListItem(BaseModel):
     entity_type: str
     entity_id: str
     entity_display_name: str | None = Field(None, description="Human-readable name for the entity (e.g. email, github username)")
-    period_type: str
+    # Issue #4328: PeriodType, not a bare str (see BudgetConfigResponse).
+    period_type: PeriodType
     budget_amount_usd: Decimal
     enforcement_mode: str
     current_usage_usd: Decimal = Field(default=Decimal("0.00"))
@@ -297,7 +301,8 @@ class BudgetCreateRequest(BaseModel):
 
     entity_type: Literal["org", "department", "team", "user"] = Field(..., description="Entity type: org, department, team, user")
     entity_id: str = Field(..., min_length=1, description="Entity ID")
-    period_type: str = Field(..., description="Period type: daily, weekly, monthly")
+    # Issue #4328: PeriodType, not a bare str (see BudgetConfigResponse).
+    period_type: PeriodType = Field(..., description="Period type: daily, weekly, monthly")
     budget_amount_usd: Decimal = Field(..., gt=0, description="Budget amount in USD")
     enforcement_mode: str = Field(default="hard", description="Enforcement mode: soft or hard")
 
@@ -311,7 +316,8 @@ class BudgetStatusResponse(BaseModel):
     budget_utilization_percent: float = Field(default=0.0)
     period_start: str
     period_end: str
-    period_type: str
+    # Issue #4328: PeriodType, not a bare str (see BudgetConfigResponse).
+    period_type: PeriodType
     enforcement_mode: str
     budget_exceeded: bool = False
     warnings: list[str] = Field(default_factory=list)

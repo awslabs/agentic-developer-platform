@@ -33,6 +33,7 @@ from src.shared.schemas.common import BudgetCheckResult
 
 from .config import budget_config
 from .utils import (
+    CALENDAR_PERIOD_TYPES,
     calculate_budget_utilization,
     calculate_model_cost,
     generate_budget_warnings,
@@ -587,13 +588,16 @@ class BudgetService(IBudgetService):
                 "hierarchy": [],
             }
 
-            # Get all budgets for this entity
+            # Get all budgets for this entity. Issue #4328: calendar budgets only —
+            # a run/chain cap is lifetime-scoped and has no period to report on, and
+            # asking get_period_start_end for one raises.
             budgets_result = await session.execute(
                 select(BudgetConfig).where(
                     and_(
                         BudgetConfig.org_id == org_id,
                         BudgetConfig.entity_type == entity_type,
                         BudgetConfig.entity_id == entity_id,
+                        BudgetConfig.period_type.in_(CALENDAR_PERIOD_TYPES),
                     )
                 )
             )
@@ -654,17 +658,35 @@ class BudgetService(IBudgetService):
                 "alerts": [],
             }
 
-            # Get all budgets for the organization
-            budgets_result = await session.execute(select(BudgetConfig).where(BudgetConfig.org_id == org_id))
+            # Get all budgets for the organization. Issue #4328: calendar budgets
+            # only — lifetime-scoped run/chain caps have no calendar window to
+            # render here, and deriving one for them raises.
+            budgets_result = await session.execute(
+                select(BudgetConfig).where(
+                    and_(
+                        BudgetConfig.org_id == org_id,
+                        BudgetConfig.period_type.in_(CALENDAR_PERIOD_TYPES),
+                    )
+                )
+            )
             budgets = budgets_result.scalars().all()
             overview["total_budgets"] = len(budgets)
 
-            # Get current month usage
+            # Get current month usage.
+            #
+            # Issue #4328: the entity_type predicate is required for this figure to
+            # mean "this org's spend". The usage tracker writes one row per level of
+            # the hierarchy for a single request (user + org + team + agent +
+            # root_user), so summing across all entity types counted the same dollar
+            # once per level — a 2x-4x over-report, depending on hierarchy depth.
+            # The org line receives exactly the request's cost, so it alone is the
+            # org total.
             period_start, _ = get_period_start_end(PeriodType.MONTHLY)
             usage_result = await session.execute(
                 select(func.sum(BudgetUsage.total_cost_usd)).where(
                     and_(
                         BudgetUsage.org_id == org_id,
+                        BudgetUsage.entity_type == EntityType.ORGANIZATION.value,
                         BudgetUsage.period_type == PeriodType.MONTHLY.value,
                         BudgetUsage.period_start == period_start,
                     )
@@ -681,7 +703,14 @@ class BudgetService(IBudgetService):
                     "period_type": budget.period_type,
                     "enforcement_mode": budget.enforcement_mode,
                 }
-                overview["entities"][budget.entity_type].append(entity_data)
+                # Issue #4328: setdefault, not [] — "entities" is seeded with the five
+                # hierarchy keys below, but EntityType has grown past them (agent,
+                # root_user, run, chain), and any row outside the seeded five raised
+                # KeyError here and 500'd this endpoint for the whole org. The five
+                # keys stay seeded so the response shape is unchanged for existing
+                # clients; unknown types are appended rather than dropped, because an
+                # agent budget is a real budget and must still be visible.
+                overview["entities"].setdefault(budget.entity_type, []).append(entity_data)
 
             return overview
 
@@ -690,8 +719,19 @@ class BudgetService(IBudgetService):
         async with self._get_session() as session:
             alerts = []
 
-            # Get all budgets for the organization
-            budgets_result = await session.execute(select(BudgetConfig).where(BudgetConfig.org_id == org_id))
+            # Get all budgets for the organization. Issue #4328: calendar budgets
+            # only. A lifetime-scoped run/chain cap has no calendar period, so
+            # get_period_start_end raises for it below — one such row used to turn
+            # this endpoint into an unhandled ValueError for every user in the org,
+            # which also silently stopped alert delivery on real calendar budgets.
+            budgets_result = await session.execute(
+                select(BudgetConfig).where(
+                    and_(
+                        BudgetConfig.org_id == org_id,
+                        BudgetConfig.period_type.in_(CALENDAR_PERIOD_TYPES),
+                    )
+                )
+            )
             budgets = budgets_result.scalars().all()
 
             for budget in budgets:
