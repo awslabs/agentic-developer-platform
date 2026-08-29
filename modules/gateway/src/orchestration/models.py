@@ -117,6 +117,16 @@ class DecisionKind(StrEnum):
     # state that would mean both. `kind` is String(32), so neither needs DDL.
     NODE_STALLED = "node_stalled"  # Ran past the stall threshold (R-O4a)
     NODE_HALTED = "node_halted"  # Defect-cycle bound exhausted (R-Q9c)
+    # Issue #4214. An agent's *advisory* diagnosis of a stalled or halted node —
+    # a proposal, never a verdict, and never a state change. The name says
+    # `_PROPOSED` because the record's authority is the whole question: a row
+    # named `NODE_DIAGNOSED` would read as a settled finding, and a human who
+    # reads an agent's guess as a conclusion turns the gate this EPIC exists to
+    # protect into a rubber stamp. Rows of this kind always carry
+    # `to_state = NULL`: a diagnosis proposes nowhere for the node to go, so it
+    # is structurally incapable of expressing a promotion. `kind` is String(32),
+    # so this needs no DDL.
+    NODE_DIAGNOSIS_PROPOSED = "node_diagnosis_proposed"
 
 
 class AppendOnlyViolationError(RuntimeError):
