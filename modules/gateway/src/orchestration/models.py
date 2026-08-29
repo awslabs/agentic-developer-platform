@@ -57,7 +57,7 @@ from enum import StrEnum
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, event
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from src.shared.models.base import Base, TenantMixin, new_uuid, utcnow
 
@@ -266,9 +266,14 @@ class OrchestrationDecision(Base, TenantMixin):
     decision time**), and `actor_kind` (human or service — its own column, not a
     naming convention inside `actor_id`).
 
-    Append-only is enforced two ways: the repository exposes no update method,
-    and the `before_update` hook below raises. The hook is the one that holds
-    when a caller mutates a loaded instance directly.
+    Append-only is enforced three ways: the repository exposes no update method,
+    the `before_update` hook below raises when a caller mutates a loaded instance
+    directly, and the `do_orm_execute` hook rejects a bulk `update()` statement
+    aimed at this table. All three are needed because each covers a different
+    caller: no-method stops the accidental case, `before_update` stops the unit-of
+    -work path, and only the statement-level hook sees a bulk UPDATE — which never
+    loads an instance and therefore never fires `before_update` at all
+    (issue #4213).
     """
 
     __tablename__ = "orchestration_decisions"
@@ -318,3 +323,32 @@ def _forbid_decision_update(_mapper, _connection, target: OrchestrationDecision)
         f"orchestration_decisions is append-only; UPDATE attempted on decision id={target.id!r}. "
         "Append a new decision record instead of mutating this one."
     )
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _forbid_decision_bulk_update(orm_execute_state) -> None:
+    """Block bulk `update()` statements targeting `orchestration_decisions`.
+
+    Issue #4213. `before_update` above is a *mapper* event: it fires per instance
+    during the unit-of-work flush, so it never sees
+    ``session.execute(update(OrchestrationDecision)...)`` — that statement is
+    emitted straight to the database without loading anything. So the guarantee the
+    EPIC rests on ("gate attribution cannot be rewritten") had a hole exactly the
+    width of one bulk UPDATE, which is also the cheapest way to rewrite many rows
+    at once.
+
+    Registered on `Session` rather than on the mapper because only the ORM-execute
+    event carries the statement. Delete is deliberately NOT blocked here: nothing
+    in the codebase deletes decisions, and the FK from decisions to flows is
+    ``ondelete="CASCADE"`` — blocking cascade-driven deletes would make dropping a
+    flow raise instead of tearing down its rows.
+    """
+    if not orm_execute_state.is_update:
+        return
+
+    entity = orm_execute_state.bind_mapper
+    if entity is not None and issubclass(entity.class_, OrchestrationDecision):
+        raise AppendOnlyViolationError(
+            "orchestration_decisions is append-only; a bulk UPDATE was attempted against it. "
+            "Append a new decision record instead of rewriting existing ones."
+        )

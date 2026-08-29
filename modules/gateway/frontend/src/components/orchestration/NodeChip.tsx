@@ -28,6 +28,13 @@ export interface NodeChipProps {
   node: GraphNode;
   /** Titles of unfinished predecessors, for the "waiting on" caption. */
   blockedBy?: string[];
+  /**
+   * Decision controls for this node (issue #4213), passed as a slot rather than
+   * imported here. This chip stays presentational: it has no permission check, no
+   * mutation and no query client, so it keeps rendering identically for a caller
+   * with no authority and in tests that never mount a provider.
+   */
+  controls?: React.ReactNode;
 }
 
 /**
@@ -46,7 +53,7 @@ function reasonBadge(node: GraphNode): string | null {
   return null;
 }
 
-export function NodeChip({ node, blockedBy = [] }: NodeChipProps) {
+export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
@@ -127,6 +134,8 @@ export function NodeChip({ node, blockedBy = [] }: NodeChipProps) {
               </span>
             )}
           </div>
+
+          {controls}
         </div>
       </div>
     </li>

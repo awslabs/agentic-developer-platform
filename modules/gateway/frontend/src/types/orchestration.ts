@@ -95,3 +95,42 @@ export interface FlowGraph {
   edges: GraphEdge[];
   cost: AggregateCostFigure;
 }
+
+// ---------------------------------------------------------------------------
+// Issue #4213: gate-decision and resume control results.
+// ---------------------------------------------------------------------------
+
+/**
+ * `actor_kind` — the human-vs-service discriminator, as its own field.
+ *
+ * It is a wire field rather than something inferred from `actor_id` because the
+ * older `tenant_access_requests.decided_by` column mixes real Cognito subs with
+ * synthetic values like `system:org-member-match` in one string, leaving "was
+ * this approved by a human?" unanswerable after the fact. Here it is explicit.
+ */
+export type ActorKind = 'human' | 'service';
+
+/**
+ * The outcome of answering a gate, mirroring `GateDecisionResponse`.
+ *
+ * `decision_id` is the append-only row the decision produced. It is null only for
+ * `already_answered`, where someone else's decision stands and a second row would
+ * claim the gate was answered twice.
+ */
+export interface GateDecisionResult {
+  node_id: string;
+  status: string;
+  state: NodeEngineState | null;
+  decision_id: string | null;
+  actor_kind: ActorKind | null;
+  message: string;
+}
+
+/** The outcome of a resume, mirroring `ResumeResponse`. */
+export interface ResumeResult {
+  node_id: string;
+  from_state: NodeEngineState;
+  state: NodeEngineState;
+  decision_id: string;
+  actor_kind: ActorKind;
+}

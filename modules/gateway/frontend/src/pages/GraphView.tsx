@@ -31,6 +31,7 @@ import { countByDisplayState } from '@/utils/nodeState';
 import { groupIntoEpics, blockingPredecessors } from '@/utils/flowLayout';
 import { RollupBar } from '@/components/orchestration/RollupBar';
 import { NodeChip } from '@/components/orchestration/NodeChip';
+import { GateControls } from '@/components/orchestration/GateControls';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
 import { LastUpdated } from '@/components/LastUpdated';
 import { Alert, Spinner } from '@/components/ui';
@@ -142,7 +143,12 @@ export function GraphView() {
                       className="space-y-2"
                     >
                       {branch.map((node) => (
-                        <NodeChip key={node.id} node={node} blockedBy={blockingPredecessors(data, node)} />
+                        <NodeChip
+                          key={node.id}
+                          node={node}
+                          blockedBy={blockingPredecessors(data, node)}
+                          controls={flowId ? <GateControls node={node} flowId={flowId} /> : undefined}
+                        />
                       ))}
                     </ul>
                   ))}

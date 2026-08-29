@@ -53,6 +53,12 @@ UNIT_MODULES = [
     # call any internal route with any method, so promotion state must never be
     # registered there. Guarded by tests/orchestration/test_internal_plane_guard.py.
     "src.orchestration.routes",
+    # Issue #4213: gate approval / rejection and loop-resume controls. Same
+    # operator plane and same reasoning as the router above — these WRITE
+    # promotion state, so registering them under src.internal.* would hand agent
+    # pods the ability to approve their own gates. Guarded by
+    # tests/orchestration/test_internal_plane_guard.py.
+    "src.orchestration.controls",
 ]
 
 

@@ -86,6 +86,7 @@ __all__ = [
     "GateDecisionRecord",
     "InputPath",
     "apply_gate_answer",
+    "apply_gate_answer_for_context",
     "as_dashboard_decision",
     "build_gate_decision",
 ]
@@ -281,6 +282,12 @@ class GateAnswerOutcome:
     node_id: str
     message: str
     decision: GateDecisionRecord | None = None
+    # The primary key of the appended row, when one was written. Carried on the
+    # outcome rather than on `GateDecisionRecord` deliberately: the record is the
+    # *shape* both input paths agree on, and `as_dashboard_decision`'s parity
+    # assertion compares two records for equality — a per-row id on that dataclass
+    # would make two structurally identical decisions unequal.
+    decision_id: str | None = None
 
     @property
     def applied(self) -> bool:
@@ -381,8 +388,12 @@ async def _record_refusal(
     rejection_reason: str,
     from_state: str | None,
     to_state: str | None,
-) -> GateDecisionRecord:
+) -> tuple[GateDecisionRecord, str]:
     """Persist a refused answer as `TRANSITION_REJECTED`.
+
+    Returns the record and the id of the row written, so a caller that must
+    surface the evidence (the dashboard route, which turns it into an HTTP
+    response) can point at it.
 
     Called only for principals already verified as members of `org_id`, so writing
     a row here reveals nothing to an outsider. A refusal that only logged would
@@ -404,8 +415,8 @@ async def _record_refusal(
         to_state=to_state,
     )
     repo = repository_module.OrchestrationRepository(session)
-    await repo.append_decision(**record.to_append_kwargs())
-    return record
+    appended = await repo.append_decision(**record.to_append_kwargs())
+    return record, appended.id
 
 
 async def _gate_transition(
@@ -517,6 +528,65 @@ async def apply_gate_answer(
 
     context, _team_id = resolved_identity
 
+    return await apply_gate_answer_for_context(
+        session,
+        context=context,
+        node_id=node_id,
+        approve=answer.approve,
+        reason=answer.reason,
+        access=access,
+        input_path=input_path,
+        refusal_message=_UNIFORM_REFUSAL,
+    )
+
+
+async def apply_gate_answer_for_context(
+    session: AsyncSession,
+    *,
+    context: TokenContext,
+    node_id: str,
+    approve: bool,
+    reason: str | None,
+    access: AccessControl,
+    input_path: InputPath,
+    refusal_message: str | None = None,
+) -> GateAnswerOutcome:
+    """Apply a gate answer for an **already-resolved** platform identity.
+
+    This is the shared core of both input paths, and the seam exists because the
+    two paths differ in exactly one respect: how the acting identity is
+    established. A GitHub comment carries an account id that must be resolved to a
+    platform identity server-side (:func:`apply_gate_answer` does that, then calls
+    this); the dashboard arrives with a verified Cognito context and has nothing to
+    resolve. Everything *after* identity — the permission check, the at-a-gate
+    narrowing guard, the state-conditional UPDATE, the decision append, and the
+    recording of refusals — is this function, once, for both.
+
+    That is what "one decision shape, two input paths" means operationally: the
+    dashboard is not a second implementation that agrees with the comment path
+    today, it is the same code with a different `input_path` stamped on the row.
+
+    Args:
+        session: Caller-owned session; nothing is committed here, so the state
+            change and its decision row land atomically or not at all.
+        context: The verified acting identity. `org_id` on it is the tenant, and it
+            must never be built from caller-supplied data.
+        node_id: The gate node being answered.
+        approve: True approves (`-> passed`), False rejects (`-> rejected_at_gate`).
+        reason: Operator text for the decision row.
+        access: The same access control both paths use.
+        input_path: Recorded provenance.
+        refusal_message: Overrides the message on the two isolation refusals. The
+            comment path passes `_UNIFORM_REFUSAL` so an outsider cannot tell "no
+            such node" from "not a member"; the dashboard path leaves it None and
+            gets a specific message, because its caller is an authenticated member
+            of the tenant already and the route answers 404 either way.
+
+    Returns:
+        A :class:`GateAnswerOutcome`. Only `APPLIED` moved the node.
+    """
+    org_id = context.org_id
+
     # Re-resolve the node under the resolved org, in SQL. A node id from another
     # tenant resolves to nothing and is refused with the same message as an
     # unknown identity.
@@ -538,12 +608,12 @@ async def apply_gate_answer(
         return GateAnswerOutcome(
             status=GateAnswerStatus.REFUSED_NOT_FOUND,
             node_id=node_id,
-            message=_UNIFORM_REFUSAL,
+            message=refusal_message or f"no gate node {node_id!r} in this tenant",
         )
 
     actor_role = (await access.get_user_role(context))[0].value
     observed_state = node.state
-    target_state = (NodeState.PASSED if answer.approve else NodeState.REJECTED_AT_GATE).value
+    target_state = (NodeState.PASSED if approve else NodeState.REJECTED_AT_GATE).value
 
     # The same permission, at the same strength, as the dashboard approve path.
     try:
@@ -552,7 +622,7 @@ async def apply_gate_answer(
         # In-org but unauthorized: recorded, because this is precisely the
         # off-plan-activity evidence R-N2b exists for. The commenter still gets
         # the uniform message.
-        record = await _record_refusal(
+        record, decision_id = await _record_refusal(
             session,
             org_id=org_id,
             flow_id=node.flow_id,
@@ -560,7 +630,7 @@ async def apply_gate_answer(
             actor_id=context.user_id,
             actor_role=actor_role,
             input_path=input_path,
-            reason=answer.reason,
+            reason=reason,
             rejection_reason=f"{Permission.PLAN_APPROVE.value} is required to answer a gate: {exc}",
             from_state=observed_state,
             to_state=target_state,
@@ -574,8 +644,9 @@ async def apply_gate_answer(
         return GateAnswerOutcome(
             status=GateAnswerStatus.REFUSED_NO_PERMISSION,
             node_id=node_id,
-            message=_UNIFORM_REFUSAL,
+            message=refusal_message or f"{Permission.PLAN_APPROVE.value} is required to answer a gate",
             decision=record,
+            decision_id=decision_id,
         )
 
     rows, allowed, rejection_reason = await _gate_transition(
@@ -583,14 +654,14 @@ async def apply_gate_answer(
         node_id=node_id,
         org_id=org_id,
         observed_state=observed_state,
-        approve=answer.approve,
-        reason=answer.reason,
+        approve=approve,
+        reason=reason,
     )
 
     if not allowed:
         # The node is not at a gate (or the edge is otherwise illegal). Recorded:
         # the caller was authorized, so this is a real attempt worth reading back.
-        record = await _record_refusal(
+        record, decision_id = await _record_refusal(
             session,
             org_id=org_id,
             flow_id=node.flow_id,
@@ -598,7 +669,7 @@ async def apply_gate_answer(
             actor_id=context.user_id,
             actor_role=actor_role,
             input_path=input_path,
-            reason=answer.reason,
+            reason=reason,
             rejection_reason=rejection_reason or "transition refused",
             from_state=observed_state,
             to_state=target_state,
@@ -615,6 +686,7 @@ async def apply_gate_answer(
             node_id=node_id,
             message=f"this gate is not awaiting an answer: {rejection_reason}",
             decision=record,
+            decision_id=decision_id,
         )
 
     if rows == 0:
@@ -638,12 +710,12 @@ async def apply_gate_answer(
         actor_id=context.user_id,
         actor_role=actor_role,
         input_path=input_path,
-        approve=answer.approve,
+        approve=approve,
         from_state=observed_state,
-        reason=answer.reason,
+        reason=reason,
     )
     repo = repository_module.OrchestrationRepository(session)
-    await repo.append_decision(**record.to_append_kwargs())
+    appended = await repo.append_decision(**record.to_append_kwargs())
 
     logger.info(
         "orchestration gate answer: node %s %s by %s via %s",
@@ -655,8 +727,9 @@ async def apply_gate_answer(
     return GateAnswerOutcome(
         status=GateAnswerStatus.APPLIED,
         node_id=node_id,
-        message=f"gate {'approved' if answer.approve else 'rejected'}",
+        message=f"gate {'approved' if approve else 'rejected'}",
         decision=record,
+        decision_id=appended.id,
     )
 
 

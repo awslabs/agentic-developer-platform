@@ -29,7 +29,15 @@ export enum Permission {
   USER_READ = 'user:read',
   USER_MANAGE = 'user:manage',
   METRICS_READ = 'metrics:read',
-  // Issue #4200: accepting or amending an orchestration plan.
+  // Issue #3989: agent-registry writes. Present in the backend enum
+  // (src/admin/config.py) since #3989 but never mirrored here — the drift
+  // issue #4213 found and closed. A backend permission with no member here
+  // cannot be referenced by any component, so the control it guards is
+  // unreachable from the UI. A parity test now asserts the full enum matches.
+  AGENT_REGISTER = 'agent:register',
+  // Issue #4200: accepting or amending an orchestration plan. Also the authority
+  // for approving/rejecting a gate and resuming a halted node (issue #4213) —
+  // one permission over promotion state, deliberately not several.
   PLAN_APPROVE = 'plan:approve',
 }
 

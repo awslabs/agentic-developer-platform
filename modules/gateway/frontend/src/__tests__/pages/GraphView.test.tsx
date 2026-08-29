@@ -17,7 +17,22 @@ import { resolve } from 'node:path';
 import GraphView from '@/pages/GraphView';
 import type { FlowGraph, GraphNode, NodeEngineState } from '@/types/orchestration';
 
-vi.mock('@/services/orchestration', () => ({ getFlowGraph: vi.fn() }));
+vi.mock('@/services/orchestration', () => ({
+  getFlowGraph: vi.fn(),
+  // Issue #4213: the view now renders `GateControls` per node. This suite is
+  // about layout and cost, so the controls are stubbed out at their two
+  // dependencies rather than by wrapping every case in an AuthProvider —
+  // `GateControls` has its own suite for permission and mutation behaviour.
+  approveGate: vi.fn(),
+  rejectGate: vi.fn(),
+  resumeNode: vi.fn(),
+}));
+
+// Without a permission the controls render nothing, which is the correct
+// baseline for a layout suite: no extra buttons in the chips being asserted on.
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({ hasPermission: () => false }),
+}));
 
 import { getFlowGraph } from '@/services/orchestration';
 

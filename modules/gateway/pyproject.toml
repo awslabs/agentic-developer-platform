@@ -71,6 +71,18 @@ line-length = 150
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
+[tool.coverage.run]
+# Issue #4213. SQLAlchemy's asyncio layer runs awaited ORM work inside greenlets
+# (`greenlet_spawn`), and coverage.py's default thread-only tracer does not follow
+# a greenlet switch. Without this, every line of an async route body that awaits
+# the ORM is reported as MISSING even though its tests pass and assert real
+# database state — `src/orchestration/controls.py` measured 74% against a >=90%
+# gate while genuinely being at 98%, and `src/orchestration/routes.py` measured
+# 66%. That under-reporting is the dangerous direction for a coverage gate: it
+# hides which lines are actually untested behind a wall of false negatives.
+# `greenlet` is a hard install dependency of SQLAlchemy, so this is always valid.
+concurrency = ["thread", "greenlet"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

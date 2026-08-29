@@ -26,6 +26,7 @@ from .github_comments import (
     GateDecisionRecord,
     InputPath,
     apply_gate_answer,
+    apply_gate_answer_for_context,
     build_gate_decision,
 )
 
@@ -36,5 +37,6 @@ __all__ = [
     "GateDecisionRecord",
     "InputPath",
     "apply_gate_answer",
+    "apply_gate_answer_for_context",
     "build_gate_decision",
 ]
