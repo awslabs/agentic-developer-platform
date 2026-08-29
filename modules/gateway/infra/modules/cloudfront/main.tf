@@ -133,6 +133,27 @@ resource "aws_cloudfront_function" "strip_api_prefix" {
   EOF
 }
 
+# CloudFront Function attached to the S3 default cache behavior ONLY.
+#
+# Rewrites extensionless URIs to /index.html so React Router deep links resolve
+# to the app shell. This replaces the distribution-wide `custom_error_response`
+# that used to turn any 403 into "200 + /index.html" — that rule could not be
+# scoped to an origin, so it also masked every authorization denial the API
+# origin returned (issue #4386). Doing the rewrite on viewer-request means S3 is
+# only ever asked for objects that exist, so the 403 never occurs and no error
+# rewrite is needed. Full rationale is in the function source.
+#
+# Deliberately NOT attached to /api/*, /.well-known/*, or /gitlab/* — those
+# behaviors must return their origin's real status codes.
+resource "aws_cloudfront_function" "spa_fallback" {
+  name    = "${var.name_prefix}-spa-fallback"
+  runtime = "cloudfront-js-2.0"
+  comment = "Rewrites extensionless URIs to /index.html for SPA routing (S3 behavior only)"
+  publish = true
+
+  code = file("${path.module}/functions/spa-fallback.js")
+}
+
 # =============================================================================
 # CloudFront VPC Origin for Internal ALB
 # =============================================================================
@@ -363,20 +384,29 @@ resource "aws_cloudfront_distribution" "frontend" {
     # Use response headers policy for security headers
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security_headers.id
 
+    # SPA deep-link routing: rewrite extensionless URIs to /index.html before the
+    # S3 fetch. Scoped to this behavior so API status codes are never touched.
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.spa_fallback.arn
+    }
+
     # Compress automatically
     compress = true
   }
 
-  # Custom error response for SPA routing (403 → /index.html with 200)
-  # NOTE: Only 403 is needed — S3 with OAC returns 403 (Access Denied) for
-  # non-existent objects, not 404. Removing the 404 rule ensures API endpoints
-  # can return semantic 404 responses without CloudFront rewriting them to HTML.
-  custom_error_response {
-    error_caching_min_ttl = 10
-    error_code            = 403
-    response_code         = 200
-    response_page_path    = "/index.html"
-  }
+  # NO `custom_error_response` BLOCK — this is deliberate. Do not add one.
+  #
+  # `custom_error_response` is distribution-wide: it cannot be scoped to a cache
+  # behavior or an origin. A `403 → 200 /index.html` rule here (removed in issue
+  # #4386) rewrote authorization denials from the API origin into successful-looking
+  # SPA HTML, so clients, acceptance tests, and security monitors could not tell a
+  # refused request from an allowed one. The sibling `404` rule was removed earlier
+  # for the same reason (semantic API 404s were being turned into HTML).
+  #
+  # SPA routing is handled instead by `aws_cloudfront_function.spa_fallback` on the
+  # S3 default behavior above. `tests/infra/test_cloudfront_spa_fallback.py` guards
+  # both halves of this arrangement.
 
   # Viewer certificate (custom domain or CloudFront default)
   viewer_certificate {
