@@ -16,7 +16,8 @@ import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
 import { createSpillHooks, TmpSpillStore } from './utils/spill';
-import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile } from './token-refresh';
+import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh } from './token-refresh';
+import { AuthWatchdog } from './lib/authWatchdog';
 import { fetchBrokeredToken, isBrokerEnabled } from './lib/githubTokenBroker';
 import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
@@ -122,6 +123,26 @@ const BEADS_S3_PATH = process.env.BEADS_S3_PATH || `beads/${REPO_NAME}`;
 // (Issue #3167, EPIC #3158 Decision 2). The `aidlc/` directory is the canonical
 // install marker (contains `spaces/default/memory/`).
 const AIDLC_ENABLED = fs.existsSync(path.join(CWD, 'aidlc'));
+
+// GitHub App installation tokens live ~60 min. Issue #4369: these two values are
+// load-bearing TOGETHER — the interval must be short enough that a tick reliably
+// lands inside the threshold window before expiry. A 30-min interval with a
+// 15-min threshold has no tick in the window at all, which is how >1h runs ended
+// up in an unrecoverable 401 loop. Named here so the pairing is visible and the
+// cadence is assertable from a test.
+const TOKEN_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const TOKEN_REFRESH_THRESHOLD_MS = 20 * 60 * 1000;
+
+/**
+ * Process exit code meaning "this run failed in a way a retry can fix".
+ *
+ * entrypoint.py acks (deletes) the SQS message on every other terminal exit, so
+ * a plain non-zero exit would destroy the task rather than retry it. This code is
+ * the opt-out: entrypoint.py leaves the message untouched, its visibility timeout
+ * lapses, and SQS redelivers into a pod with a fresh token (bounded by
+ * maxReceiveCount → DLQ). Keep in sync with AGENT_EXIT_RETRYABLE there.
+ */
+const EXIT_RETRYABLE = 75;
 
 // ============================================================================
 // CloudWatch Logging
@@ -436,8 +457,15 @@ async function refreshAppToken(): Promise<void> {
       process.env.GH_TOKEN = tokenData.token;
       process.env.GITHUB_TOKEN = tokenData.token;
       process.env.GH_APP_TOKEN = tokenData.token;
-      // GIT_ASKPASS reads $GITHUB_TOKEN at each git network call — no disk
-      // persistence needed; updating the env var is sufficient.
+      // Issue #4369: keep the token file in step. The old comment here claimed
+      // "GIT_ASKPASS reads $GITHUB_TOKEN at each git network call — updating the
+      // env var is sufficient", which stopped being true at #1469:
+      // git-askpass-helper and gh-wrapper both read the FILE first and only fall
+      // back to the env var when it is absent. So env-only refresh left every
+      // subprocess git/gh authenticating with the stale file — a refresh that
+      // logged success while the run kept 401ing. The broker branch above always
+      // did this; this local-mint branch was the divergence.
+      writeTokenFile(tokenData.token);
       log('INFO', 'Refreshed GitHub App token for gh CLI');
     }
   } catch (err) {
@@ -1317,6 +1345,50 @@ Now, complete the assigned task.`;
     // stream should close within seconds.
     const POST_COMPLETION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
+    // Issue #4369: watch the stream for the stale-token signature. The failing
+    // pushes happen inside the SDK subprocess, so this is the only place the
+    // worker can see them.
+    const authWatchdog = new AuthWatchdog();
+
+    /**
+     * Apply the watchdog's verdict for one chunk of stream output.
+     *
+     * Refreshing rewrites the token file that the subprocess's git/gh read at
+     * command time, so a re-mint here actually reaches the failing caller. If
+     * 401s survive that, exiting with EXIT_RETRYABLE hands the task back to SQS
+     * for redelivery into a fresh pod — the automatic form of the manual
+     * `kubectl delete job` recovery this bug required.
+     */
+    const applyAuthWatchdog = async (text: string): Promise<void> => {
+      const action = authWatchdog.observe(text);
+
+      if (action === 'force_refresh') {
+        log('WARN', 'Repeated GitHub 401s in the agent stream — forcing token refresh', {
+          phase: 'auth-watchdog',
+        });
+        try {
+          await forceRefresh();
+          log('INFO', 'Token force-refreshed after 401 cluster', { phase: 'auth-watchdog' });
+        } catch (err) {
+          log('ERROR', `Forced token refresh failed: ${(err as Error).message}`, {
+            phase: 'auth-watchdog',
+          });
+        }
+        return;
+      }
+
+      if (action === 'abort') {
+        log('ERROR', 'GitHub 401s persist after a forced token refresh — aborting for retry', {
+          phase: 'auth-watchdog',
+        });
+        // Record the cause before exiting: without it this looks like a generic
+        // crash and the operator re-runs it blind.
+        writeResultMetadata({ auth_failure: true, stop_reason: 'github_auth_401' });
+        await flushCloudWatch();
+        process.exit(EXIT_RETRYABLE);
+      }
+    };
+
     // Heartbeat: log a "still alive" message if no SDK messages arrive for 60s.
     // Also acts as a safety net: if the query already completed but the stream
     // hasn't closed, force-exit after POST_COMPLETION_TIMEOUT_MS.
@@ -1435,6 +1507,38 @@ Now, complete the assigned task.`;
                   const inputPreview = JSON.stringify(block.input ?? {}).slice(0, 80);
                   activeLiveComment.appendActivity(`turn ${turnCount}  ${block.name}  ${inputPreview}`);
                 }
+              }
+            }
+            await applyAuthWatchdog(turnText);
+            break;
+          }
+
+          // Issue #4369: tool results are where a failed `git push` / `gh pr
+          // create` actually surfaces — the assistant's own prose may never
+          // mention the 401. Not previously handled at all, which is precisely
+          // why the auth failure was invisible to the worker.
+          case 'user': {
+            const userMsg = message as unknown as {
+              message?: { content?: unknown };
+            };
+            const content = userMsg.message?.content;
+            if (typeof content === 'string') {
+              await applyAuthWatchdog(content);
+            } else if (Array.isArray(content)) {
+              for (const block of content) {
+                const b = block as { type?: string; content?: unknown };
+                if (b.type !== 'tool_result') continue;
+                // tool_result content is either a bare string or an array of
+                // {type:'text', text}. Flatten both to one string.
+                const raw = b.content;
+                const text = typeof raw === 'string'
+                  ? raw
+                  : Array.isArray(raw)
+                    ? raw
+                        .map((part) => (part as { text?: string })?.text ?? '')
+                        .join('\n')
+                    : '';
+                await applyAuthWatchdog(text);
               }
             }
             break;
@@ -1740,30 +1844,43 @@ async function main(): Promise<void> {
       // is installed on many tenants.
       installationId: process.env.GH_APP_INSTALLATION_ID || undefined,
       workDir: CWD,
-      // Broker mode refreshes earlier: a gatekeeper round-trip can fail and need
-      // retrying, and 15 min of headroom leaves too little room to recover.
-      refreshThresholdMs: brokerMode ? 20 * 60 * 1000 : 15 * 60 * 1000,
+      // Issue #4369: 20 min for BOTH modes. A gatekeeper round-trip can fail and
+      // need retrying, but a local mint can too, and the old 15-min local value
+      // was half of the reason >1h runs died: see the interval note below.
+      refreshThresholdMs: TOKEN_REFRESH_THRESHOLD_MS,
     });
 
-    // Proactively refresh token every 30 minutes
+    // Issue #4369: tick every 5 min, not 30. `getToken()` is a no-op unless the
+    // token is inside the refresh threshold, so a short interval costs nothing —
+    // but a 30-min interval against a ~60-min token and a 15-min threshold never
+    // refreshed AT ALL: the ticks landed at t≈30 (30 min left → skip) and t≈60
+    // (already expiring), straddling the window entirely. Every call in the last
+    // few minutes then 401ed for the rest of the run. 5 min / 20 min puts at
+    // least three ticks inside the window, so a re-mint always lands early.
     const tokenRefreshInterval = setInterval(async () => {
       try {
+        const before = getTokenStatus()?.refreshedAt?.getTime();
         await getToken();
         const status = getTokenStatus();
-        log('INFO', 'Token refreshed proactively', {
-          expiresInMin: status ? Math.round(status.expiresIn / 60000) : 0,
-        });
+        // Only claim a refresh when a NEW token was actually minted. This used to
+        // log unconditionally, so the logs asserted the refresh was healthy on
+        // every tick while the token silently expired.
+        if (status && status.refreshedAt.getTime() !== before) {
+          log('INFO', 'Token refreshed proactively', {
+            expiresInMin: Math.round(status.expiresIn / 60000),
+          });
+        }
       } catch (err) {
         log('WARN', `Token refresh failed: ${(err as Error).message}`);
       }
-    }, 30 * 60 * 1000); // Every 30 minutes
+    }, TOKEN_REFRESH_INTERVAL_MS);
 
     // Clean up interval on exit
     process.on('exit', () => clearInterval(tokenRefreshInterval));
     // Also store reference for cleanup in finally block
     (global as any).__tokenRefreshInterval = tokenRefreshInterval;
 
-    log('INFO', 'Token manager initialized with 30-minute refresh interval');
+    log('INFO', `Token manager initialized with ${TOKEN_REFRESH_INTERVAL_MS / 60000}-minute refresh interval`);
 
     // Write the initial token to file BEFORE the SDK query starts, so that
     // GIT_ASKPASS and the gh wrapper can read it from day one (issue #1469).

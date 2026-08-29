@@ -315,7 +315,12 @@ export function setToken(token: string, expiresInMs: number = 60 * 60 * 1000): v
 /**
  * Get token status for logging/debugging
  */
-export function getTokenStatus(): { valid: boolean; expiresIn: number; needsRefresh: boolean } | null {
+export function getTokenStatus(): {
+  valid: boolean;
+  expiresIn: number;
+  needsRefresh: boolean;
+  refreshedAt: Date;
+} | null {
   if (!currentToken) {
     return null;
   }
@@ -326,6 +331,11 @@ export function getTokenStatus(): { valid: boolean; expiresIn: number; needsRefr
     valid: expiresIn > 0,
     expiresIn,
     needsRefresh: needsRefresh(),
+    // Issue #4369: exposed so a proactive-refresh tick can tell an actual re-mint
+    // from a no-op. The worker's timer used to log "Token refreshed proactively"
+    // on every tick regardless, which read as proof the refresh was working while
+    // the token was in fact expiring — that lie cost real diagnostic time.
+    refreshedAt: currentToken.refreshedAt,
   };
 }
 

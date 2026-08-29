@@ -47,6 +47,18 @@ SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
+# Exit code by which the Node worker asks for the SQS message to be RETRIED rather
+# than acked. Step 13 below deletes the message on every other terminal exit, so a
+# plain non-zero exit would destroy the task instead of retrying it.
+#
+# Issue #4369: the worker's auth watchdog uses this when GitHub 401s survive a
+# forced token refresh — the run cannot make progress, but the task is untouched
+# and a fresh pod (with a fresh installation token) will succeed. Leaving the
+# message alone lets its visibility timeout lapse so SQS redelivers, bounded by the
+# queue's maxReceiveCount before it lands in the DLQ. Keep in sync with
+# EXIT_RETRYABLE in agent/src/agent-worker.ts.
+AGENT_EXIT_RETRYABLE = 75
+
 # Personas whose branch-bootstrap logic should NEVER delete an existing remote
 # branch. AIDLC runs multiple sequential stages on the same issue/branch, each
 # committing artifacts (problem-frame.md, requirements, design, stories, delivery
@@ -1766,6 +1778,22 @@ def main() -> int:
     # the webhook) where the operator has had a chance to fix the cause.
     # DLQ now captures the cases where the pod dies WITHOUT reaching this
     # code path (OOM, node eviction, unhandled exception before this line).
+    #
+    # Issue #4369: with ONE exception. The reasoning above assumes a retry would
+    # run identically to the first attempt, which is true for a bad prompt or a
+    # code bug — but not for an expired GitHub installation token. There the retry
+    # differs in exactly the way that matters (a fresh pod mints a fresh token),
+    # and the first attempt produced nothing at all: no commits, no PR, no useful
+    # failure comment. Acking that is losing the task. AGENT_EXIT_RETRYABLE is the
+    # worker's way of saying so, so we leave the message for redelivery.
+    if not _should_ack_message(result.returncode):
+        logger.warning(
+            "Worker requested retry (exit_code=%d) — leaving SQS message for "
+            "redelivery after the visibility timeout",
+            result.returncode,
+        )
+        return exit_code
+
     try:
         _delete_message(queue_url, region, receipt_handle)
         logger.info("SQS message acked and deleted (exit_code=%d)", exit_code)
@@ -2002,6 +2030,24 @@ def _record_session_id(message_id: str, arrived_at: str) -> str | None:
     except Exception as exc:
         logger.warning("Failed to record SDK session id (non-fatal): %s", exc)
         return None
+
+
+def _should_ack_message(worker_exit_code: int) -> bool:
+    """Should the SQS message be deleted for a worker that exited with this code?
+
+    True for every terminal outcome (issue #2117's deliberate ack-on-failure: the
+    pod already reported the outcome to GitHub, and leaving the message invisible
+    causes head-of-line blocking on the FIFO group plus duplicate failure comments).
+
+    False only for AGENT_EXIT_RETRYABLE (issue #4369). That reasoning assumes a
+    retry would behave identically to the first attempt — true for a bad prompt or
+    a code bug, false for an expired GitHub installation token, where a fresh pod
+    mints a fresh token and the first attempt produced nothing at all (no commits,
+    no PR). Acking that loses the task outright, which is strictly worse than the
+    bug being fixed, so the message is left to redeliver when its visibility
+    timeout lapses (bounded by the queue's maxReceiveCount before the DLQ).
+    """
+    return worker_exit_code != AGENT_EXIT_RETRYABLE
 
 
 def _budget_stop_reason(meta: dict | None) -> str | None:

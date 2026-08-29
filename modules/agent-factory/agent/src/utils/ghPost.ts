@@ -90,6 +90,11 @@ export async function refreshGitHubToken(): Promise<void> {
       process.env.GH_TOKEN = tokenData.token;
       process.env.GITHUB_TOKEN = tokenData.token;
       process.env.GH_APP_TOKEN = tokenData.token;
+      // Issue #4369: git-askpass-helper and gh-wrapper read the token FILE first
+      // (#1469) and only fall back to the env var, so env-only refresh leaves
+      // every subprocess git/gh on the stale token. The broker branch above
+      // already writes it; this local-mint branch was the divergence.
+      writeTokenFile(tokenData.token);
     } else {
       console.warn(`[WARN] GitHub token refresh returned no token for installation ${installationId}`);
     }

@@ -185,8 +185,10 @@ if (TOKEN_REFRESH_ENABLED && canInitTokenManager()) {
     repo: REPO_NAME,
     installationId: process.env.GH_APP_INSTALLATION_ID || undefined,
     workDir: CWD,
-    // Broker mode refreshes earlier — see initTokenManager.
-    refreshThresholdMs: GH_TOKEN_BROKER_MODE ? 20 * 60 * 1000 : 15 * 60 * 1000,
+    // Issue #4369: 20 min for both modes. The old 15-min local value left too
+    // little headroom to notice and recover a failed re-mint before the token
+    // actually died — a local mint is no more reliable than a broker round-trip.
+    refreshThresholdMs: 20 * 60 * 1000,
   });
   // Set the initial token (from workflow)
   if (GH_APP_TOKEN) {
