@@ -139,6 +139,38 @@ class BudgetConfig(BaseSettings):
     # weakening the default would quietly widen the exemption for everyone.
     budget_run_id_required_mode: str = "exempt_human"
 
+    # ------------------------------------------------------------------
+    # Platform ceiling for CALENDAR caps (Issue #4397)
+    # ------------------------------------------------------------------
+
+    # The platform-wide upper bound on a daily/weekly/monthly `budget_configs`
+    # cap, mirroring what budget_run_cap_usd / budget_chain_cap_usd are for
+    # run/chain scopes: a tenant override may LOWER it, never raise it. The read
+    # path resolves the effective cap as min(configured, this) — see
+    # `_resolve_effective_period_cap` in me_routes.py.
+    #
+    # Ships as None (= no platform ceiling) DELIBERATELY, and that default is the
+    # safe one for a specific reason. Calendar enforcement
+    # (`_check_entity_budget`) compares spend against the RAW `budget_configs`
+    # row with no clamp of its own. So while this is None, the effective cap the
+    # read path reports is byte-identical to the cap enforcement honours, and
+    # screen and enforcer agree — which is the property EPIC #4324 exists to
+    # establish.
+    #
+    # Setting it introduces a real read/enforce divergence in the OTHER
+    # direction: the read path would report the clamped (lower) figure while
+    # calendar enforcement kept honouring the higher configured row, so a user
+    # would be shown less headroom than they actually have. That is the honest
+    # direction to err (under-promising, never over-promising), but it is still a
+    # divergence and it is why this ships off rather than at a guessed number.
+    # Closing it means teaching `_check_entity_budget` the same clamp, which is an
+    # ENFORCEMENT change and out of scope for this read-only unit (NFR-2) —
+    # tracked as a follow-up.
+    #
+    # Same operational shape as budget_fail_mode: read once at container start,
+    # so changing it needs an SSM put plus a rollout restart.
+    budget_period_cap_usd: Decimal | None = None
+
     # Grace period settings (in seconds)
     soft_enforcement_grace_period: int = 300  # 5 minutes
     budget_exceeded_notification_cooldown: int = 3600  # 1 hour

@@ -40,6 +40,11 @@ UNIT_MODULES = [
     "src.admin.onboarding.handler",  # Issue #538: Self-serve onboarding flow
     "src.pool.routes",
     "src.budget.routes",
+    # Issue #4397: own-scope budget read API (GET /me/budget). A SEPARATE module
+    # from src.budget.routes on purpose — that router takes entity_type/entity_id
+    # unscoped from the request (open IDOR #4384), so this one takes identity from
+    # the token only and accepts no scope parameter at all.
+    "src.budget.me_routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
