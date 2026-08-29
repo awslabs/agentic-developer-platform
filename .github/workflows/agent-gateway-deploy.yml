@@ -92,6 +92,42 @@ jobs:
             -backend-config="bucket=${STATE_BUCKET}" \
             -input=false -reconfigure
 
+      # Issue #4378: settle pending implicit moves BEFORE the targeted apply.
+      #
+      # A `-target` plan must include every resource instance with a pending
+      # move, or Terraform refuses to plan at all:
+      #
+      #   Error: Moved resource instances excluded by targeting
+      #     -target="kubernetes_role.runner_deploy_agent_context"
+      #     -target="kubernetes_role.runner_readonly_arc_systems"
+      #     -target="kubernetes_role_binding.runner_deploy_agent_context"
+      #     -target="kubernetes_role_binding.runner_readonly_arc_systems"
+      #
+      # Those runner-RBAC resources gained `count = var.<flag> ? 1 : 0` while
+      # their state instances still carry no index key, so Terraform wants to
+      # move `X` -> `X[0]` (the #4127 condition). The narrow
+      # -target=module.gateway_lambda below doesn't cover them, so the whole
+      # job failed — and the ingest/response Lambdas silently stopped being
+      # deployed while merges still looked green.
+      #
+      # `-refresh-only` can ONLY rewrite state: it never creates, updates or
+      # destroys a remote object, so this is safe to run unconditionally on
+      # every deploy. It is left UNTARGETED on purpose — that settles any
+      # pending move, so the next resource that gains a `count` doesn't
+      # re-break Lambda delivery.
+      #
+      # Do NOT "fix" this instead by widening the -target list: with
+      # enable_github_apps / enable_agent_context_rbac unset in
+      # terraform.tfvars (both default false), targeting those four addresses
+      # evaluates count = 0 and DESTROYS the live runner RBAC
+      # (measured: "2 to add, 12 to change, 4 to destroy").
+      - name: Terraform settle pending state moves (refresh-only, no-op on remote)
+        working-directory: modules/agent-factory/infra
+        run: |
+          terraform apply -refresh-only -auto-approve \
+            -var-file=terraform.tfvars \
+            -var='gateway_deployed=true'
+
       - name: Terraform apply (module.gateway_lambda only)
         working-directory: modules/agent-factory/infra
         run: |
