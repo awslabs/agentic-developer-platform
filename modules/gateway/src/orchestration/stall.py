@@ -57,8 +57,15 @@ Two limits, and the ordering is the whole point. Exceeding the cycle bound yield
 `MAX_CHAIN_DEPTH` (8, in `webhook-ingress/lambda/common/spawn_persona.py`) yields
 an opaque dispatch-guard refusal. If the cycle bound were the looser of the two,
 **every** runaway defect would surface as the undiagnosable one. So the bound is
-configurable, defaults to 3, and a config with `bound >= MAX_CHAIN_DEPTH` is
+configurable, defaults to 5, and a config with `bound >= MAX_CHAIN_DEPTH` is
 rejected at construction rather than tolerated.
+
+The bound is also tunable per environment via `ORCH_DEFECT_CYCLE_BOUND` (issue
+#4403), read by `StallConfig.from_env`. That reader routes through this same
+constructor rather than validating separately, so an env value outside `1 <= n < 8`
+is rejected by the invariant above and falls back to the default — the knob cannot
+be used to invert the ordering, and a typo in a Deployment env var cannot disable
+halting or crash the tick.
 
 --------------------------------------------------------------------------------
 `halted` is terminal for the engine
@@ -97,6 +104,7 @@ org — a stall in one org never notifies another.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -126,9 +134,19 @@ AGENT_POD_DEADLINE_SECONDS = 21_600
 # fails a test rather than silently reordering the two limits.
 MAX_CHAIN_DEPTH = 8
 
-# Default cycle bound. Three attempts at the same defect is the point at which
-# more attempts stop being evidence of progress.
-DEFAULT_DEFECT_CYCLE_BOUND = 3
+# Default cycle bound. Five attempts at the same defect is the point at which more
+# attempts stop being evidence of progress.
+#
+# Raised from 3 by issue #4403: at 3, defects that would have converged on a 4th or
+# 5th autonomous attempt were being parked in front of a human instead, which is the
+# interruption this platform exists to avoid. 5 keeps two attempts of headroom below
+# `MAX_CHAIN_DEPTH`, so the diagnosable `halted` still wins the race described above.
+DEFAULT_DEFECT_CYCLE_BOUND = 5
+
+# Per-environment override for the bound (issue #4403). An integer in `1..7`; see
+# `StallConfig.from_env` for the fail-closed parse. Absent is the normal case — the
+# default above applies with nothing set.
+DEFECT_CYCLE_BOUND_ENV = "ORCH_DEFECT_CYCLE_BOUND"
 
 # The threshold as a fraction of the pod deadline. Strictly below 1.0 by
 # construction, which is what makes the R-O4a invariant hold for *any* deadline
@@ -229,6 +247,45 @@ class StallConfig:
         if self.threshold_seconds is not None:
             return self.threshold_seconds
         return int(self.pod_deadline_seconds * self.threshold_fraction)
+
+    @classmethod
+    def from_env(cls) -> StallConfig:
+        """Build from the process environment, falling back to the defaults (#4403).
+
+        Only `defect_cycle_bound` is env-tunable. The threshold is deliberately not:
+        it is *derived* from the pod deadline precisely so the two cannot be set
+        independently of each other, and an env knob would reintroduce the drift the
+        derivation removes.
+
+        **Never raises.** This runs on the tick path, where the alternative to a
+        usable config is no detection pass at all — so a bad value degrades to the
+        default rather than taking the tick down. Two ways it can be bad, both
+        handled the same way and both logged loudly:
+
+        - unparseable (`"x"`, `""`) — `ValueError` from `int`
+        - out of range (`0`, `9`) — `StallConfigError` from the invariants above,
+          which is why the parse routes through the real constructor instead of
+          re-checking the bounds here. There is one validation point, not two.
+
+        Falling back is safe in the direction that matters: the default is inside
+        both invariants, so a typo cannot disable halting or let the opaque
+        chain-depth guard trip first.
+        """
+        raw = (os.environ.get(DEFECT_CYCLE_BOUND_ENV) or "").strip()
+        if not raw:
+            return cls()
+
+        try:
+            return cls(defect_cycle_bound=int(raw))
+        except (ValueError, StallConfigError) as exc:
+            logger.warning(
+                "orchestration stall: %s=%r is not a usable defect cycle bound (%s); using default %d",
+                DEFECT_CYCLE_BOUND_ENV,
+                raw,
+                exc,
+                DEFAULT_DEFECT_CYCLE_BOUND,
+            )
+            return cls()
 
 
 @dataclass

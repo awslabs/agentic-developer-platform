@@ -248,8 +248,11 @@ class TestThresholdBelowPodDeadline:
 class TestBoundBelowChainDepth:
     """The cycle bound must lose to nothing and win against MAX_CHAIN_DEPTH."""
 
-    def test_default_bound_is_three(self):
-        assert StallConfig().defect_cycle_bound == DEFAULT_DEFECT_CYCLE_BOUND == 3
+    def test_default_bound_is_five(self):
+        # Raised from 3 by #4403 so the loop makes two more autonomous attempts
+        # before it interrupts a human. Pinned as a literal, not just against the
+        # constant, so a change to the default is a deliberate test edit.
+        assert StallConfig().defect_cycle_bound == DEFAULT_DEFECT_CYCLE_BOUND == 5
 
     def test_default_bound_is_strictly_below_max_chain_depth(self):
         assert StallConfig().defect_cycle_bound < MAX_CHAIN_DEPTH
@@ -384,13 +387,13 @@ class TestDefectCycleBound:
 
     async def test_the_halt_records_a_reason_naming_attempts_and_the_bound(self, session, sns, notify_config):
         flow = await _make_flow(session)
-        node = await _make_node(session, flow, node_ref="a", attempts=4)
+        node = await _make_node(session, flow, node_ref="a", attempts=5)
 
         await detect_stalls(session, NOW, notify_config=notify_config)
 
         decisions = await _decisions(session, node.id)
         assert [d.kind for d in decisions] == [DecisionKind.NODE_HALTED.value]
-        assert "4 attempt(s)" in decisions[0].reason
+        assert "5 attempt(s)" in decisions[0].reason
         assert f"bound of {DEFAULT_DEFECT_CYCLE_BOUND}" in decisions[0].reason
         assert decisions[0].to_state == NodeState.HALTED.value
 
@@ -411,6 +414,105 @@ class TestDefectCycleBound:
 
         assert report.notifications_sent == 1
         assert sns.publishes[0]["MessageAttributes"]["event"]["StringValue"] == "node_halted"
+
+    async def test_four_attempts_no_longer_halt_at_the_raised_default(self, session, sns, notify_config):
+        # #4403, stated in literals rather than against the constant: this node WAS
+        # halted under the old bound of 3 and must now be allowed to keep trying.
+        # Written this way on purpose — asserting against DEFAULT_DEFECT_CYCLE_BOUND
+        # would pass at any default and so would not pin the change at all.
+        flow = await _make_flow(session)
+        node = await _make_node(session, flow, node_ref="a", attempts=4)
+
+        report = await detect_stalls(session, NOW, notify_config=notify_config)
+
+        assert report.halts_detected == 0, "4 attempts is under the raised bound of 5"
+        assert await _state_of(session, node.id) == NodeState.RUNNING.value
+        assert len(sns.publishes) == 0, "no human is interrupted on the 4th attempt"
+
+    async def test_the_fifth_attempt_halts_at_the_raised_default(self, session, sns, notify_config):
+        # The other half of the pair above: the bump moves where the halt lands, it
+        # does not remove it.
+        flow = await _make_flow(session)
+        node = await _make_node(session, flow, node_ref="a", attempts=5)
+
+        report = await detect_stalls(session, NOW, notify_config=notify_config)
+
+        assert report.halts_detected == 1
+        assert await _state_of(session, node.id) == NodeState.HALTED.value
+
+
+class TestBoundFromEnv:
+    """`ORCH_DEFECT_CYCLE_BOUND` is the per-environment knob (#4403).
+
+    The load-bearing cases are the bad ones. `from_env` runs on the tick path, so a
+    malformed or out-of-range value must degrade to the default rather than raise —
+    the alternative to a usable config there is no detection pass at all. And it must
+    degrade *into* the invariants, never around them.
+    """
+
+    def test_unset_gives_the_default(self, monkeypatch):
+        monkeypatch.delenv(stall_module.DEFECT_CYCLE_BOUND_ENV, raising=False)
+        assert StallConfig.from_env().defect_cycle_bound == DEFAULT_DEFECT_CYCLE_BOUND
+
+    def test_a_valid_value_is_honoured(self, monkeypatch):
+        monkeypatch.setenv(stall_module.DEFECT_CYCLE_BOUND_ENV, "6")
+        assert StallConfig.from_env().defect_cycle_bound == 6
+
+    def test_the_whole_permitted_range_is_settable(self, monkeypatch):
+        # 1..7 — the range the invariant allows. If any of these fell back to the
+        # default the knob would be silently partial.
+        for bound in range(1, MAX_CHAIN_DEPTH):
+            monkeypatch.setenv(stall_module.DEFECT_CYCLE_BOUND_ENV, str(bound))
+            assert StallConfig.from_env().defect_cycle_bound == bound
+
+    def test_surrounding_whitespace_is_tolerated(self, monkeypatch):
+        # A trailing newline in a Deployment env value must not silently cost the
+        # operator their tuning.
+        monkeypatch.setenv(stall_module.DEFECT_CYCLE_BOUND_ENV, "  4\n")
+        assert StallConfig.from_env().defect_cycle_bound == 4
+
+    @pytest.mark.parametrize("bad", ["x", "", "   ", "3.5", "five", "0", "-1", "8", "9", "100"])
+    def test_a_bad_value_falls_back_to_the_default_without_raising(self, monkeypatch, bad):
+        # Unparseable AND out-of-range in one list, because they must be handled
+        # identically: never raise, always land on the default. `8`/`9` are the
+        # dangerous ones — accepting them would let the opaque chain-depth guard trip
+        # before the diagnosable halt, which is the whole ordering this module exists
+        # to protect. `0` is the other direction: it would halt everything at once.
+        monkeypatch.setenv(stall_module.DEFECT_CYCLE_BOUND_ENV, bad)
+
+        config = StallConfig.from_env()
+
+        assert config.defect_cycle_bound == DEFAULT_DEFECT_CYCLE_BOUND
+        # The fallback is inside both invariants — it cannot itself be the bad state.
+        assert 1 <= config.defect_cycle_bound < MAX_CHAIN_DEPTH
+
+    @pytest.mark.parametrize("bad", ["x", "0", "9"])
+    def test_a_bad_value_is_logged_as_a_warning(self, monkeypatch, caplog, bad):
+        # Falling back silently would leave an operator believing their knob took
+        # effect. The warning names the variable and the value.
+        monkeypatch.setenv(stall_module.DEFECT_CYCLE_BOUND_ENV, bad)
+
+        with caplog.at_level("WARNING", logger="bedrockgateway.orchestration.stall"):
+            StallConfig.from_env()
+
+        assert stall_module.DEFECT_CYCLE_BOUND_ENV in caplog.text
+        assert repr(bad) in caplog.text
+
+    def test_the_env_bound_reaches_detection(self, monkeypatch):
+        # End of the wire: the config `from_env` builds is the one a caller can hand
+        # to `detect_stalls`, so the knob is not merely parsed and dropped.
+        monkeypatch.setenv(stall_module.DEFECT_CYCLE_BOUND_ENV, "7")
+        assert StallConfig.from_env().defect_cycle_bound == 7
+
+    def test_the_threshold_invariant_is_untouched_by_the_env_path(self, monkeypatch):
+        # The knob tunes the bound only. The threshold stays derived from the pod
+        # deadline, which is what keeps R-O4a holding.
+        monkeypatch.setenv(stall_module.DEFECT_CYCLE_BOUND_ENV, "7")
+
+        config = StallConfig.from_env()
+
+        assert config.pod_deadline_seconds == AGENT_POD_DEADLINE_SECONDS
+        assert config.stall_threshold_seconds < config.pod_deadline_seconds
 
     async def test_halt_wins_over_stall_when_both_apply(self, session, sns, notify_config):
         # A node that has both exhausted its bound AND run too long must halt, not

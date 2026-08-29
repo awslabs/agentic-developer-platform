@@ -43,7 +43,7 @@ import os
 from typing import Any
 
 from src.orchestration.dispatch_pass import DispatchPassReport, publish_pending, run_dispatch_pass
-from src.orchestration.stall import StallReport, detect_stalls
+from src.orchestration.stall import StallConfig, StallReport, detect_stalls
 from src.orchestration.tick import TickReport, run_tick
 from src.shared.database import get_session_factory, reset_engine
 
@@ -277,7 +277,11 @@ async def _run() -> TickReport:
     async with factory() as session:
         try:
             report = await run_tick(session)
-            stall_report = await detect_stalls(session)
+            # `from_env` reads `ORCH_DEFECT_CYCLE_BOUND` and never raises — a bad
+            # value degrades to the default bound rather than failing the tick
+            # (#4403). Read per invocation, so retuning the knob takes effect on the
+            # next tick without waiting for a cold start.
+            stall_report = await detect_stalls(session, config=StallConfig.from_env())
             dispatch_report = await run_dispatch_pass(session)
         except Exception:
             await session.rollback()
