@@ -41,6 +41,7 @@ from .pricing import PricingService, pricing_service
 from .reservations import ReservationStore, ReservationTarget
 from .run_binding import RunBinding, RunBindingError, RunBindingResolver, resolve_run_binding
 from .utils import (
+    CALENDAR_PERIOD_TYPES,
     calculate_budget_utilization,
     get_period_start_end,
 )
@@ -1247,13 +1248,54 @@ class BudgetEnforcementService:
         """
         Get budget status info for response headers.
 
-        Returns the most restrictive (lowest remaining) budget across the hierarchy.
+        Returns the most restrictive (lowest remaining) budget across the
+        hierarchy, considering EVERY calendar period type (Issue #4392) — not
+        just monthly. A tenant whose only cap is daily or weekly used to be
+        reported as having no cap at all, which is the most reassuring possible
+        answer and the wrong one.
 
         Args:
             context: Token context with user hierarchy info
 
         Returns:
-            Dict with budget_limit, budget_remaining, budget_reset
+            One of three self-describing shapes, distinguishable by "status":
+
+              {"status": "ok", "budget_limit": float, "budget_remaining": float,
+               "budget_reset": str}   a real cap was found
+              {"status": "no_budget"}     nothing configured for any entity x
+                                          calendar period
+              {"status": "unavailable"}   the lookup FAILED; the caller must NOT
+                                          render this as "no limit"
+
+            The three used to be two, and "no budget" and "DB error" were
+            byte-identical empty dicts (Issue #4392) — so an outage rendered as
+            "you have no limit", reassuring the user exactly when it should not.
+            The "ok" shape keeps its original keys so `format_budget_for_headers`
+            (src/budget/headers.py) works unchanged; it emits no header for an
+            absent key, so `no_budget` and `unavailable` both correctly produce
+            NO X-Budget-* headers. Omission is the honest signal on the failure
+            path — never a fabricated limit.
+
+        The reported limit is the RAW configured `budget_amount_usd`, and
+        `_resolve_scope_cap` is deliberately NOT called here. That is not an
+        oversight — Issue #4392 was filed prescribing exactly that, and it would
+        be actively harmful. `_resolve_scope_cap` is RUN/CHAIN-only: its platform
+        default is a two-way branch that hands `budget_chain_cap_usd` (default
+        $100) to every non-RUN entity type, and its override query pins
+        `entity_id == "*"` / `period_type == "run"`, so it never matches a
+        hierarchy row and returns that $100 unconditionally. An org with a
+        configured $50,000 monthly cap would advertise $100. There is also
+        nothing to clamp TO: `budget_run_cap_usd`/`budget_chain_cap_usd` are the
+        only platform ceilings in the codebase and no hierarchy equivalent
+        exists, so `min(configured, platform_default)` has no second operand.
+        The raw value is already the truthful one — `_check_entity_budget`
+        enforces against this same `budget.budget_amount_usd`, so what this
+        function reports is what enforcement honours. See
+        `test_hierarchy_cap_is_not_clamped_to_run_chain_ceiling`.
+
+        Fail-OPEN is intentional and must stay: this is a reporting helper, not a
+        request gate. Turning a failure here into a denial would be an
+        enforcement change.
         """
         try:
             async with self._get_session() as session:
@@ -1264,63 +1306,79 @@ class BudgetEnforcementService:
                 corresponding_reset = None
 
                 for entity_type, entity_id in entities:
-                    # Check monthly budget (most common)
-                    period_type = PeriodType.MONTHLY
-                    period_start, period_end = get_period_start_end(period_type)
-
-                    # Get budget config. Issue #4132: same attributed-tenant
-                    # partition as the check/record paths, so the headers
-                    # describe the ledger actually being enforced.
+                    # Every calendar-period cap for this entity, not just
+                    # monthly (Issue #4392). Gated on the #4328 allowlist rather
+                    # than `!= RUN`: `get_period_start_end` RAISES for anything
+                    # it does not implement, so a denylist would let the next
+                    # period type added to the enum (say QUARTERLY) reach it and
+                    # turn this path into a 500 — and rows carry whatever string
+                    # is in the column, not necessarily a known enum member.
+                    #
+                    # Issue #4132: the org_id predicate is the attributed-tenant
+                    # partition the check/record paths use, so the headers
+                    # describe the ledger actually being enforced. It MUST stay
+                    # inside this loop body, pinned to every query below.
                     budget_result = await session.execute(
-                        select(BudgetConfig).where(
+                        select(BudgetConfig)
+                        .where(
                             and_(
                                 BudgetConfig.org_id == context.attributed_org_id,
                                 BudgetConfig.entity_type == entity_type.value,
                                 BudgetConfig.entity_id == entity_id,
-                                BudgetConfig.period_type == period_type.value,
+                                BudgetConfig.period_type.in_(CALENDAR_PERIOD_TYPES),
                             )
                         )
+                        # Deterministic tie-break: with two periods on identical
+                        # remaining, the reported reset date must not depend on
+                        # row order.
+                        .order_by(BudgetConfig.period_type)
                     )
-                    budget = budget_result.scalar_one_or_none()
+                    budgets = budget_result.scalars().all()
 
-                    if not budget:
-                        continue
+                    for budget in budgets:
+                        period_type = PeriodType(budget.period_type)
+                        period_start, period_end = get_period_start_end(period_type)
 
-                    # Get current usage
-                    usage_result = await session.execute(
-                        select(BudgetUsage).where(
-                            and_(
-                                BudgetUsage.org_id == context.attributed_org_id,
-                                BudgetUsage.entity_type == entity_type.value,
-                                BudgetUsage.entity_id == entity_id,
-                                BudgetUsage.period_type == period_type.value,
-                                BudgetUsage.period_start == period_start,
+                        # Get current usage for THIS period's window
+                        usage_result = await session.execute(
+                            select(BudgetUsage).where(
+                                and_(
+                                    BudgetUsage.org_id == context.attributed_org_id,
+                                    BudgetUsage.entity_type == entity_type.value,
+                                    BudgetUsage.entity_id == entity_id,
+                                    BudgetUsage.period_type == period_type.value,
+                                    BudgetUsage.period_start == period_start,
+                                )
                             )
                         )
-                    )
-                    usage = usage_result.scalar_one_or_none()
+                        usage = usage_result.scalar_one_or_none()
 
-                    current_spend = usage.total_cost_usd if usage else Decimal("0")
-                    remaining = budget.budget_amount_usd - current_spend
+                        current_spend = usage.total_cost_usd if usage else Decimal("0")
+                        remaining = budget.budget_amount_usd - current_spend
 
-                    # Track the most restrictive (lowest remaining)
-                    if lowest_remaining is None or remaining < lowest_remaining:
-                        lowest_remaining = remaining
-                        corresponding_limit = budget.budget_amount_usd
-                        corresponding_reset = period_end
+                        # Track the most restrictive (lowest remaining) across
+                        # the full entity x calendar-period cross product.
+                        if lowest_remaining is None or remaining < lowest_remaining:
+                            lowest_remaining = remaining
+                            corresponding_limit = budget.budget_amount_usd
+                            corresponding_reset = period_end
 
                 if lowest_remaining is not None:
                     return {
+                        "status": "ok",
                         "budget_limit": float(corresponding_limit),
                         "budget_remaining": float(max(Decimal("0"), lowest_remaining)),
                         "budget_reset": corresponding_reset.isoformat(),
                     }
 
-                return {}
+                return {"status": "no_budget"}
 
         except Exception as e:
             logger.error(f"Failed to get budget status for headers: {e}")
-            return {}
+            # NOT the same value as "no budget configured" — that ambiguity is
+            # the defect (Issue #4392). A caller seeing "unavailable" knows the
+            # ledger could not be read and must not claim the user is unlimited.
+            return {"status": "unavailable"}
 
     def estimate_request_cost(self, model_id: str, request_body: dict[str, Any]) -> Decimal:
         """
