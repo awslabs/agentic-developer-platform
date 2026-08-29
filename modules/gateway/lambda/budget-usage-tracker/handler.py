@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
 
 from db import get_db_connection
 from pricing_fallback import MODEL_PRICING, calculate_cost, resolve_model_id
+from root_principal import unqualify_root_principal_id
 
 # Configure logging
 logger = logging.getLogger()
@@ -464,7 +465,34 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     # This is a THIRD row, not a second debit on the org's — each
     # (entity_type, entity_id) is a distinct row under the table's
     # UniqueConstraint, so the org line still receives exactly `cost`.
-    if root_human_id:
+    #
+    # Issue #4391: ALSO gated on `!= user_id`, mirroring the reader's guard at
+    # `src/budget/enforcement_service.py:437`. When the root principal IS the
+    # caller, this cost is already on the ("user", user_id) row above, and
+    # `root_user` is a distinct row under `uq_budget_usage` — so writing both
+    # settles one dollar twice, x3 period types. Enforcement has always skipped
+    # the entity in that case, so before this gate existed the tracker was
+    # writing a line no cap ever read and only the spend dashboard summed: a
+    # pure write/read asymmetry (same family as #4322's org-line mismatch),
+    # surfacing as over-reported spend. The two skip conditions are now
+    # co-extensive, which is why this cannot move any cap either way.
+    #
+    # Fires for the two cases enforcement documents at `:420-429`: the
+    # service-rooted run (`user_id="k"`, `root_human_id="service:k"`) and the
+    # direct human caller (`user_id == root_human_id`, both bare). It is a
+    # no-op for the hosted agent run #4300 exists for — there `user_id` is the
+    # worker identity and `root_human_id` a canonical `users.id`, which can
+    # never be equal — so human attribution survives untouched.
+    #
+    # Issue #4344: the comparison UNQUALIFIES; the entity id stays QUALIFIED.
+    # `root_human_id` carries the `service:` prefix for a service root while
+    # `user_id` never does, so comparing them verbatim would report "different"
+    # for exactly the service-rooted run this is meant to catch. The key written
+    # to the ledger must stay the qualified one — that is the key enforcement
+    # reads.
+    #
+    # Presence gate retained deliberately: see above, a "" root must add no row.
+    if root_human_id and unqualify_root_principal_id(root_human_id) != user_id:
         entities.append((_ROOT_USER_ENTITY_TYPE, root_human_id))
         logger.info(f"Including root-human entity: {root_human_id}")
 

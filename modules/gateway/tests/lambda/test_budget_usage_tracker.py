@@ -29,6 +29,13 @@ from pricing_fallback import (  # noqa: E402
     resolve_model_id,
 )
 
+# Issue #4391: the Lambda's mirror of the root-principal helpers. `lambda/shared`
+# is on sys.path via `._handler_loader` above, same as `pricing_fallback`.
+from root_principal import (  # noqa: E402
+    SERVICE_PRINCIPAL_PREFIX,
+    unqualify_root_principal_id,
+)
+
 
 class TestResolveModelId:
     """Tests for cross-region inference profile model ID resolution."""
@@ -970,3 +977,208 @@ class TestRootHumanAbsent:
         assert {"agent", "root_user"} <= _entity_types(conn)
         assert conn.cursor_obj.rows[("agent", "agent-uuid-7", "daily")]["requests"] == 1
         assert conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]["requests"] == 1
+
+
+# =============================================================================
+# Issue #4391: the write path must skip root_user when the root IS the caller
+# =============================================================================
+
+
+_SERVICE_ROOTED_KEY = "sched-key"
+
+
+class TestRootIsCallerWritesNoRootUserRow:
+    """#4391: the equality skip, mirroring `enforcement_service.py:437`.
+
+    Enforcement has always skipped the ROOT_USER entity when the root principal
+    is the caller; the tracker was presence-gated only, so the same dollar
+    settled on both the ``user`` and the ``root_user`` line — distinct rows under
+    ``uq_budget_usage``, x3 period types. Nothing raised: enforcement never read
+    the line, so no cap moved, and only the spend dashboard (#4324) summed the
+    inflated figure.
+
+    Both tests in this class fail on the pre-#4391 handler.
+    """
+
+    def test_service_rooted_run_writes_no_root_user_row(self):
+        """The headline case: `user_id="k"`, `root_human_id="service:k"`.
+
+        #4344 qualifies the root id at publication, so the two values are not
+        byte-equal and a verbatim comparison would not catch this — the skip has
+        to unqualify first.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id=f"service:{_SERVICE_ROOTED_KEY}", user_id=_SERVICE_ROOTED_KEY),
+            MODEL_PRICING,
+        )
+
+        assert "root_user" not in _entity_types(conn)
+
+    def test_direct_human_caller_writes_no_root_user_row(self):
+        """The case the issue title omits: caller is their own root, both bare.
+
+        `enforcement_service.py:420-429` documents this as one of the two cases
+        its guard actually fires for, so the write path must cover it too.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", user_id="users-id-alice"),
+            MODEL_PRICING,
+        )
+
+        assert "root_user" not in _entity_types(conn)
+
+    def test_service_rooted_spend_is_settled_exactly_once(self):
+        """The defect stated as money: one request, one dollar on one line.
+
+        Asserts the `user` and `org` lines each carry exactly `cost` once, which
+        is what the pre-fix double-write inflated when the dashboard summed
+        `user` + `root_user` for the same principal.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        log = _chat_log_4300(root_human_id=f"service:{_SERVICE_ROOTED_KEY}", user_id=_SERVICE_ROOTED_KEY)
+        handler_mod.process_chat_log(conn, log, MODEL_PRICING)
+
+        expected = calculate_cost(resolve_model_id(log["model"]), 1000, 500, MODEL_PRICING)
+        assert expected > 0  # a zero cost would make the assertions below vacuous
+
+        # The principal's total across every row naming it is ONE cost, not two.
+        settled = sum(
+            row["cost"]
+            for key, row in conn.cursor_obj.rows.items()
+            if key[2] == "daily" and unqualify_root_principal_id(key[1]) == _SERVICE_ROOTED_KEY
+        )
+        assert settled == expected
+        assert conn.cursor_obj.rows[("org", "org-acme", "daily")]["cost"] == expected
+
+    def test_row_count_is_entities_times_period_types(self):
+        """Catches an accidental skip of the WRONG entity.
+
+        Service-rooted with a team: user + org + team = 3 entities, no root_user,
+        x3 period types = 9 rows. A fix that dropped the user or org line instead
+        would still satisfy the "no root_user" assertions above.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(
+                root_human_id=f"service:{_SERVICE_ROOTED_KEY}",
+                user_id=_SERVICE_ROOTED_KEY,
+                team_id="team-7",
+            ),
+            MODEL_PRICING,
+        )
+
+        assert _entity_types(conn) == {"user", "org", "team"}
+        assert len(conn.cursor_obj.rows) == 3 * 3
+
+
+class TestRootIsNotCallerStillWritesRootUserRow:
+    """#4300 must survive #4391: the hosted agent run keeps its attribution.
+
+    This is the case the whole root_user envelope exists for, and the case where
+    the new skip must be inert. If this regresses, per-human budgets silently
+    stop accumulating across an agent chain.
+    """
+
+    def test_agent_worker_with_distinct_human_root_writes_the_row(self):
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", user_id="worker-sa"),
+            MODEL_PRICING,
+        )
+
+        assert conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]["requests"] == 1
+
+    def test_row_is_keyed_on_the_qualified_id_not_the_unqualified_one(self):
+        """The comparison unqualifies; the KEY must not.
+
+        The qualified id is what enforcement reads and what the ledger has
+        settled under since #4344. A fix that wrote the stripped id would move
+        every service-rooted-but-distinct-caller row to a new key and desync the
+        two sides again — the #4322 failure mode, in the other direction.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="service:root-key", user_id="a-different-caller"),
+            MODEL_PRICING,
+        )
+
+        assert ("root_user", "service:root-key", "daily") in conn.cursor_obj.rows
+        assert ("root_user", "root-key", "daily") not in conn.cursor_obj.rows
+
+    def test_id_merely_containing_a_colon_is_not_mangled(self):
+        """Only an exact leading `service:` is stripped for the comparison.
+
+        An id containing a colon elsewhere must compare as-is, or an unrelated
+        principal could be mistaken for the caller and lose its row.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="tenant:alice", user_id="alice"),
+            MODEL_PRICING,
+        )
+
+        assert conn.cursor_obj.rows[("root_user", "tenant:alice", "daily")]["requests"] == 1
+
+
+class TestRootPrincipalHelperParity:
+    """T17: the Lambda's copy of the helper must not drift from `src`.
+
+    Same reasoning as T15/T16: the Lambda is a separate deploy artifact and
+    cannot import gateway `src`, so the two sides of the equality skip agree only
+    by convention. A one-sided edit has no compile-time consequence and its
+    runtime symptom is silent — the ledger quietly returns to double-counting.
+    `src` is authoritative; this test makes drift a CI failure.
+    """
+
+    def test_prefix_matches_the_authoritative_one(self):
+        from src.budget import enforcement_service
+
+        assert SERVICE_PRINCIPAL_PREFIX == enforcement_service._SERVICE_PRINCIPAL_PREFIX
+
+    @pytest.mark.parametrize(
+        "entity_id",
+        [
+            "users-id-alice",  # bare human id
+            "service:sched-key",  # service-qualified
+            "",  # empty stays empty
+            "tenant:alice",  # contains a colon, but not the prefix
+            "service:service:doubled",  # only one layer is stripped
+            "SERVICE:upper",  # prefix match is case-sensitive
+        ],
+    )
+    def test_unqualify_matches_the_authoritative_implementation(self, entity_id):
+        from src.budget import enforcement_service
+
+        assert unqualify_root_principal_id(entity_id) == enforcement_service._unqualify_root_principal_id(entity_id)
+
+    def test_handler_uses_the_shared_helper(self):
+        """Pins the sharing mechanism, not just the behaviour.
+
+        A handler that re-implemented the prefix logic inline would pass every
+        test above while being exactly the drift risk T17 exists to prevent.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+
+        assert handler_mod.unqualify_root_principal_id is unqualify_root_principal_id

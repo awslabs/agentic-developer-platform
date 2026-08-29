@@ -74,6 +74,14 @@ data "archive_file" "usage_tracker" {
     content  = file("${path.root}/../lambda/shared/pricing_fallback.py")
     filename = "pricing_fallback.py"
   }
+
+  # Issue #4391: the handler imports this at module scope. A shared module that
+  # is not listed here ships a Lambda that ImportErrors on cold start, which
+  # stops ALL budget metering — not just the fix it was added for.
+  source {
+    content  = file("${path.root}/../lambda/shared/root_principal.py")
+    filename = "root_principal.py"
+  }
 }
 
 # Archive the pricing refresh Lambda code
