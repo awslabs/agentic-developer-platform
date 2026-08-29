@@ -538,9 +538,36 @@ class BudgetEnforcementService:
 
         if not run_id:
             # A missing run id is a DECLARED policy, never "absent -> unlimited".
-            require_all = budget_config.budget_run_id_required_mode.lower() == "require"
+            policy = budget_config.budget_run_id_required_mode.lower()
+            require_all = policy == "require"
+            # Issue #4337 D10a: the declared exemption for the audited no-row dispatch
+            # paths (orchestration engine, GitLab; chat until its worker asserts an id).
+            # All three authenticate as the IAM worker, so `exempt_human` does NOT
+            # cover them — see the D10a table in `run_binding.py`.
+            exempt_missing = policy == "exempt_missing"
             is_agent_caller = context.auth_source == "iam"
-            if enforcing and (require_all or is_agent_caller):
+            deny = enforcing and not exempt_missing and (require_all or is_agent_caller)
+
+            # Issue #4337 D10a: emitted in BOTH modes, and in shadow whether or not
+            # the policy would have denied. Pre-#4337 this path returned before any
+            # drift was recorded, so the no-row dispatch paths contributed ZERO drift
+            # events in shadow and then 402'd on their first model call in enforce —
+            # invisible in shadow, fatal in enforce. A shadow window reading "0 drift"
+            # was fully consistent with those paths being wholly untested, which is
+            # what made the original acceptance gate unable to detect its own failure.
+            #
+            # `outcome` distinguishes the declared dispositions, so an operator reading
+            # the metric can tell "a path we exempted on purpose" from "a path that is
+            # about to start failing". Emitting only the deny case would leave the
+            # exemption itself unmeasured — and an exemption nobody can see is how a
+            # path silently stops being capped.
+            emit_run_binding_drift(
+                reason="missing_run_id",
+                environment=self._get_environment(),
+                outcome="deny" if deny else "exempt",
+            )
+
+            if deny:
                 raise RunBindingError(
                     "missing_run_id",
                     "A run id is required on this path; the request carried none.",
@@ -587,11 +614,23 @@ class BudgetEnforcementService:
         implementation would read ~0 for the run that is currently overspending.
 
         Both targets carry the run-lifetime TTL rather than the #4287 default.
+
+        Issue #4337 (B1): ``org_id`` is ``binding.tenant_id`` — the tenant
+        webhook-ingress wrote on the run's row — and NOT
+        ``context.attributed_org_id``, which is caller-influenced (#4132). The two
+        are equal by the time we get here (``verify_row_matches_caller`` denies
+        otherwise), so this is a provenance statement rather than a behaviour change:
+        the ledger these keys address partitions on a server-written value, so no
+        future relaxation of the assertion check can silently move a run's ledger to
+        a caller-chosen tenant. There is no ``or "unknown"`` fallback because B1
+        denies a row with no tenant, so an empty value cannot reach here — and a
+        shared ``"unknown"`` partition would have merged unrelated tenants' runs into
+        one ledger.
         """
         ttl = budget_config.budget_run_cap_ttl_seconds
         targets = [
             ReservationTarget(
-                org_id=binding.tenant_id or "unknown",
+                org_id=binding.tenant_id,
                 entity_type=EntityType.RUN.value,
                 entity_id=binding.run_id,
                 period_type=PeriodType.RUN.value,
@@ -608,7 +647,7 @@ class BudgetEnforcementService:
         if binding.correlation_id:
             targets.append(
                 ReservationTarget(
-                    org_id=binding.tenant_id or "unknown",
+                    org_id=binding.tenant_id,
                     entity_type=EntityType.CHAIN.value,
                     entity_id=binding.correlation_id,
                     period_type=PeriodType.RUN.value,
@@ -688,8 +727,13 @@ class BudgetEnforcementService:
                     )
 
                 if binding is not None:
-                    run_cap = await self._resolve_scope_cap(session, context.attributed_org_id, EntityType.RUN)
-                    chain_cap = await self._resolve_scope_cap(session, context.attributed_org_id, EntityType.CHAIN)
+                    # Issue #4337 (B1): the cap is looked up for the tenant the ROW
+                    # names, matching the partition `_scope_targets` keys on. Reading
+                    # the caller-influenced `attributed_org_id` here would mean a
+                    # tenant's per-run override could be addressed by a header, and
+                    # would desync the cap from the ledger it is applied to.
+                    run_cap = await self._resolve_scope_cap(session, binding.tenant_id, EntityType.RUN)
+                    chain_cap = await self._resolve_scope_cap(session, binding.tenant_id, EntityType.CHAIN)
                     scope_targets = self._scope_targets(binding, run_cap, chain_cap)
                     reservation_targets.extend(scope_targets)
 

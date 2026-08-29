@@ -17,18 +17,92 @@ That is not a hypothetical — it is the **exact** defect Issue #3985 removed fo
 
 So this module treats the header as an *assertion to be verified*, never as an
 identity. The run id is looked up in the ``webhook-events`` registry table — the
-row written at ingress, before any agent code ran — and the row's own
-``user_id`` / ``root_human_id`` / ``tenant_id`` must agree with the authenticated
-``TokenContext``. The ``correlation_id`` for the chain scope is read from that
-same row, so the chain ledger is equally unforgeable (the worker does send
+row written at ingress, before any agent code ran — and every value the cap keys
+on is read off that row. The ``correlation_id`` for the chain scope comes from
+there too, so the chain ledger is equally unforgeable (the worker does send
 ``x-agent-correlationid``, but nothing here reads it).
 
-## Fail closed on IDENTITY, not just on spend
+## What the binding actually proves — a CAPABILITY, not an identity (Issue #4337)
+
+This module shipped comparing the caller's ``TokenContext.user_id`` against the
+row's ``user_id`` / ``root_human_id``. **That comparison could never succeed**,
+and #4337 removed it. The two sides are drawn from disjoint identifier
+namespaces:
+
+* the caller side is an agent-registry ``agent_name`` (``auth/agent_registry.py``
+  sets ``TokenContext.user_id = entry["agent_name"]``), and **every** hosted agent
+  run on the platform authenticates as the single shared registry row
+  ``scaledjob-worker`` (agent-factory ``infra/agent-registry-seed.tf``, whose own
+  comment says all workers share one entry);
+* the row side is a canonical ``users.id`` (webhook-ingress
+  ``lambda/common/spawn_persona.py``'s ``effective_user_id``) or a service identity
+  key such as ``eventbridge:<rule>`` (``lambda/eventbridge/handler.py``, whose
+  ``service_identity`` comes from the rule's own InputTransformer in
+  ``infra/eventbridge.tf``).
+
+No value legitimately lives in both, so the equality test failed on 100% of
+legitimate traffic — a total outage the moment #4187 flipped to enforce. Nor could
+it be *repaired* by recording the executing agent identity on the row: the value
+recorded would be the constant ``scaledjob-worker`` for every run, so the check
+would reduce to "is the caller the shared worker", which every caller satisfies.
+That is the worst outcome available — zero drift over a disabled guard.
+
+So the property is **stated instead of pretended**, following the treatment
+``internal/credential_binding.py`` already gives the same table and the same
+``event_id``: the run id is an **unguessable bearer capability**, not a claim of
+identity. This is a deliberate reduction from *"the caller owns this run"* to
+*"the caller holds a live, tenant-consistent capability for this run"*, and its
+resistance rests on four independently-tested properties:
+
+1. **Unguessable** — the run id is the envelope ``message_id``, a fresh ``uuid4``
+   (``spawn_persona.py``). An invented id has no row: ``unknown_run``.
+2. **Tenant-scoped** — :func:`verify_row_matches_caller` derives the enforced
+   tenant from the row's server-written ``tenant_id`` and denies when the caller's
+   attributed org disagrees. **This is the load-bearing property**, and it is why
+   B1 below is not optional.
+3. **Non-terminal** — a finished run's id mints no fresh headroom. Without this,
+   rotating across one's OWN completed runs is an unbounded bypass, and it is the
+   residual risk the (impossible) equality check was nominally covering.
+4. **Not negative-cached** — an ``unknown_run`` verdict is never cached, so the
+   ingress-write race cannot pin "unknown" for a whole run lifetime.
+
+## The tenant guard is the guard (Issue #4337, decision B1)
+
+``attributed_org_id`` is **caller-influenced**: ``auth/middleware.py`` writes it
+from the pod's own ``X-Agent-OrgId`` header for any internal-scope agent, and
+``shared/schemas/auth.py`` states the #4132 invariant in as many words — it "MUST
+NEVER gate access". The pre-#4337 code gated on it anyway, which was a standing
+violation masked only because the identity check above fired first on all
+traffic. Relax identity while that stands and the result is worse than the
+outage it fixes: a worker that sets ``X-Agent-OrgId`` to another tenant binds
+that tenant's run and spends its cap.
+
+Using the *authenticated* ``org_id`` instead does not work either — the shared
+worker's registry ``org_id`` is the literal ``__platform__``, which equals no
+real tenant, so every legitimate run would fail instead. That is the same
+namespace disjunction, one field over.
+
+**B1 inverts the direction of trust.** The row's ``tenant_id`` is written at
+ingress by webhook-ingress (``lambda/common/webhook_events.py``) and is the
+authority; the caller's ``attributed_org_id`` is an *assertion verified against
+it*, exactly as the run id itself is. Forging the header becomes self-defeating
+rather than profitable, and the run/chain ledger partitions on a server-written
+value. This **resolves** the #4132 violation rather than inheriting it.
+
+Fail-closed means both directions: a disagreement denies, and so does an
+*unresolvable* authority (a row with no ``tenant_id``). The pre-#4337 guard was a
+three-way conjunction — ``row_tenant and caller_org_id and row_tenant !=
+caller_org_id`` — so either side being blank skipped the tenant check silently.
+Under the capability model that blank-skip IS the cross-tenant bypass, so an
+unusable authority is now a denial.
+
+## Fail closed on the CAPABILITY, not just on spend
 
 Issue #4075 made the check fail closed when *spend* is unknown. This adds the
-other half: when the run's *identity* is unknown — no such row, or a row
-belonging to someone else — the request is denied. An unverifiable run id must
-not resolve to "no cap applies", because that is the bypass restated.
+other half: when the run's capability cannot be verified — no such row, a row
+belonging to another tenant, or a row whose run has already finished — the
+request is denied. An unverifiable run id must not resolve to "no cap applies",
+because that is the bypass restated.
 
 The one deliberate exception is a **lookup fault** (DDB unreachable). See
 :func:`resolve_run_binding`: that degrades rather than denies, because the
@@ -54,7 +128,66 @@ call. Only the row lookup is cached, never the verdict.
 every mismatch is logged and counted, but nothing is denied and no cap is
 enforced. That is how #3175 shipped credential binding, and the reason is the
 same — the drift metric tells you how much real traffic a new deny rule would
-have rejected *before* it rejects any. Flip to ``"enforce"`` once drift is zero.
+have rejected *before* it rejects any.
+
+"Flip once drift is zero" is necessary but **not sufficient** — see the hardened
+gate on #4337. Zero ``identity_mismatch`` was specifically NOT evidence of
+anything, because drift measures the binding and not the reservation: with the
+gateway's Redis auth broken (#4342) every run/chain reservation degraded to
+*allow*, so the cap could read as live and enforce nothing while the gate went
+green. The gate therefore also requires ``budget_reservation_outcome=reserved``
+rather than ``degraded``, and positive controls (a forged run id and a forged
+``X-Agent-OrgId`` must both still drift in the same window) so a window with zero
+drift is distinguishable from a guard that has stopped checking.
+
+## Dispatch paths that reach the gateway with NO bindable run id (Issue #4337 D10a)
+
+The binding can only run if a row exists under the asserted id, and not every
+dispatch path produces one. Audited in code, with the recorded disposition each
+path must be held to during a shadow window — a GitHub-only window does not
+qualify as a pre-enforce gate, because the paths below cannot generate drift at
+all unless they are exercised:
+
+All three bindable paths are bindable for the SAME reason — they route through
+``lambda/common/spawn_persona.py``, which is the only module on any of them that
+both stamps an envelope ``message_id`` and writes the row keyed on it. The
+EventBridge and ``/agent/trigger`` handlers write no row of their own; they
+delegate. That single chokepoint is why the table below has only three
+dispositions and not one per handler.
+
+===================== ====== ============ =================================================
+Path                  Row?   Sends id?    Disposition
+===================== ====== ============ =================================================
+GitHub webhook        yes    yes          **bindable** — via ``common/spawn_persona``
+EventBridge/cron/CI   yes    yes          **bindable**, service-rooted;
+                                          ``eventbridge/handler.py`` delegates to
+                                          ``spawn_persona`` for both row and envelope
+``POST /agent/trigger`` yes  yes          **bindable** — same delegation
+Orchestration engine  no     no           **exempt** — ``orchestration/dispatch_pass.py``'s
+                                          ``_build_envelope`` has no ``message_id`` key and
+                                          the module makes no DDB write at all (deliberate:
+                                          it does not call ``spawn_persona``).
+GitLab webhook        no     no           **exempt** — ``lambda/gitlab/handler.py`` imports
+                                          no row writer; its uuid becomes the
+                                          ``correlation_id``, never a ``message_id``. The
+                                          ``message_id`` in its HTTP response is the SQS
+                                          one (trap #2 above), not an envelope field.
+Slack / WebChat       yes    **no**       **exempt for now** — a row exists, but from a
+                                          narrower second writer (agent-factory
+                                          ``gateway/lambdas/ingest/invocation_logger.py``,
+                                          same table, fewer attributes, written AFTER the
+                                          SQS publish rather than before), and
+                                          ``agent/k8s/chat-scaledjob.yaml`` sets no
+                                          ``ADP_MESSAGE_ID`` — the var is exported only by
+                                          the GitHub worker's ``entrypoint.py``. Bindable
+                                          once the chat worker asserts an id.
+===================== ====== ============ =================================================
+
+Every one of these authenticates as the shared IAM worker, so the
+``exempt_human`` policy does **not** cover them (it keys on
+``auth_source == "iam"``, which is true for all of them). The exemption is
+declared explicitly via ``budget_run_id_required_mode="exempt_missing"`` rather
+than left to be discovered at enforce time as a 402 on the first model call.
 """
 
 from __future__ import annotations
@@ -67,6 +200,7 @@ import redis.asyncio as redis
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
+from src.activity.liveness import OBSERVED_TERMINAL_STATUSES
 from src.shared.logging import get_logger
 from src.shared.redis_client import create_redis_client
 
@@ -112,7 +246,20 @@ _CACHE_PREFIX = "runbind"
 # the ``event_id`` PK of this very row (``spawn_persona.py:696``) and what the
 # worker exports as ``ADP_MESSAGE_ID`` for the header. Asserting the SQS id
 # would make every call ``unknown_run``.
-_PROJECTION = "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, arrived_at"
+#
+# Issue #4337 adds ``status``: capability property 3 (non-terminal). A finished
+# run's id must mint no fresh headroom, which is the residual bypass the removed
+# identity equality was nominally covering — rotation across one's OWN completed
+# runs. The attribute is written at ingress (webhook-ingress
+# ``lambda/common/webhook_events.py``) and advanced on every transition by the
+# worker's status updater (``agent-worker-image/lib/invocation_status.py``).
+_PROJECTION = "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, status, arrived_at"
+
+# The two principal kinds ``root_human_id`` can name. Issue #4337 D4: DERIVED from
+# the row's ``is_human_rooted`` flag, never a new column and never a value any
+# caller supplies.
+ROOT_PRINCIPAL_HUMAN = "human"
+ROOT_PRINCIPAL_SERVICE = "service"
 
 
 @dataclass(frozen=True)
@@ -136,8 +283,33 @@ class RunBinding:
     # ``correlation_store.py:120-124``'s deliberate no-True-default.
     #
     # Attribution only, exactly like ``root_human_id`` itself. Nothing in
-    # ``verify_row_matches_caller``'s identity comparison reads it.
+    # ``verify_row_matches_caller``'s admissibility checks reads it — a row does
+    # not become bindable or unbindable by claiming a principal kind.
     is_human_rooted: bool | None = None
+
+    @property
+    def root_principal_type(self) -> str:
+        """Whether ``root_human_id`` names a human or a service (Issue #4337 D4c).
+
+        ``"human"`` only for an explicit ``is_human_rooted is True``; ``"service"``
+        for an explicit false AND for absent (D4b — mirroring
+        ``correlation_store.py``'s deliberate no-True-default, and
+        ``_qualify_root_principal_id``'s). Absent must not read as human: that is
+        what would attribute machine spend to a person's envelope and put a service
+        identity key into the canonical-``users.id`` namespace.
+
+        DERIVED rather than stored, deliberately. The kind is already fully
+        determined by ``is_human_rooted``, and a second field holding the same fact
+        is two homes for one value — the divergence trap the cache-normalization
+        note on ``resolve`` describes, where a cached read and an uncached read can
+        disagree about a principal's KIND. A property cannot desync.
+
+        Consumers must read the TYPE from here and the ID from ``root_human_id``,
+        and must never flatten a service key through a field typed as a canonical
+        ``users.id``. ``enforcement_service._qualify_root_principal_id`` is what
+        keeps the two namespaces apart downstream (Issue #4344).
+        """
+        return ROOT_PRINCIPAL_HUMAN if self.is_human_rooted is True else ROOT_PRINCIPAL_SERVICE
 
 
 class RunBindingError(Exception):
@@ -325,6 +497,22 @@ class RunBindingResolver:
             # numeric string would not, and the cached read would then disagree with
             # the uncached one about a principal's KIND.
             "is_human_rooted": _normalize_is_human_rooted(row.get("is_human_rooted")),
+            # Issue #4337: capability property 3. Normalized to "" when absent so the
+            # non-terminal check below sees a consistent shape from both the cached
+            # and the uncached path.
+            #
+            # NOTE the cache TTL interaction, which is the one place this attribute
+            # differs from every other value here: the rest are immutable (written
+            # once at ingress), while `status` ADVANCES over a run's life. So a row
+            # cached while `in_progress` keeps binding after the run reaches a
+            # terminal status, for up to `cache_ttl_seconds`. That is acceptable and
+            # is the right direction of error: the window is bounded by the run's own
+            # cache entry, the reservation TTL bounds the headroom it could mint, and
+            # the alternative — re-querying DDB per model call to catch a transition —
+            # is exactly the hot-path cost the cache exists to remove. What the check
+            # closes is the unbounded case: rotating across ids from runs that
+            # finished long ago, whose rows are read cold and read terminal.
+            "status": str(row.get("status") or ""),
         }
         await self._cache_row(run_id, normalized)
         return normalized
@@ -343,63 +531,105 @@ def verify_row_matches_caller(
     caller_user_id: str,
     caller_org_id: str,
 ) -> RunBinding:
-    """Assert a registry row belongs to the authenticated caller.
+    """Verify the caller holds a live, tenant-consistent capability for this run.
 
     This is the check that makes the run id unforgeable. Without it the lookup
     would merely confirm that *some* run has that id — which a caller can satisfy
     by naming any run they have ever seen, including another tenant's.
 
-    A caller matches when EITHER identity on the row agrees:
+    Issue #4337 replaced a caller-identity equality test that could never succeed
+    with the bearer-capability model the module docstring states in full. Read that
+    section before changing anything here; the short version is that the caller side
+    of the old comparison was always the shared registry name ``scaledjob-worker``
+    while the row side was a canonical ``users.id``, so the test denied 100% of
+    legitimate traffic and could not be repaired without reducing to "is the caller
+    the shared worker" — a check every caller passes.
 
-    * ``user_id`` — the direct case: the run was dispatched for this caller.
-    * ``root_human_id`` — the chain case: an agent-spawned child run carries the
-      bot as ``user_id`` but the originating human as ``root_human_id`` (Issue
-      #3705). Both must be accepted or every chain run would be denied.
+    Two properties are asserted here. The other two live elsewhere by construction:
+    unguessability is the ``uuid4`` run id (an invented one has no row, so
+    :func:`resolve_run_binding` raises ``unknown_run``), and not-negative-caching is
+    :meth:`RunBindingResolver.resolve` declining to cache a miss.
 
-    ``tenant_id`` is checked independently and is non-negotiable: a run whose
-    tenant disagrees with the caller's org is a cross-tenant reference, and
-    admitting it would let one tenant spend against another's cap.
+    **1. Tenant-scoped (B1) — the load-bearing property.** The enforced tenant is
+    DERIVED from the row's server-written ``tenant_id``; ``caller_org_id`` is only
+    an assertion checked against it. Both failure directions deny:
+
+    * the caller asserts a tenant that disagrees with the row → ``tenant_mismatch``.
+      Forging ``X-Agent-OrgId`` to reach another tenant's run is therefore
+      self-defeating: the row it names is the row that convicts it.
+    * the row carries no ``tenant_id`` → ``tenant_mismatch``. There is no authority
+      to enforce against, and a capability with no tenant scope is not tenant-scoped.
+      The pre-#4337 conjunction skipped the check when either side was blank, which
+      under this model is the cross-tenant bypass itself.
+
+    A blank ``caller_org_id`` is NOT special-cased into an allow, for the same
+    reason: an unasserted tenant cannot equal a real one, so it denies.
+
+    **2. Non-terminal.** A run whose row reports an observed-terminal status is
+    finished, and its id must mint no fresh headroom. Terminality is read from
+    ``activity.liveness.OBSERVED_TERMINAL_STATUSES`` — the platform's existing
+    single definition, reused rather than restated so the binding and the activity
+    read path cannot drift about whether a run is over.
+
+    An absent or unrecognised status is **not** terminal. That follows the same
+    module's rule — "loss of contact is not evidence of exit" — and is the safe
+    direction here too: denying on absent would deny every row whose writer never
+    advanced it (the chat writer leaves rows at ``webhook_received``) and every row
+    from a future producer using a status this build has not heard of.
 
     Args:
-        run_id: The asserted run id.
+        run_id: The asserted run id (the row's ``event_id``, never its ``run_id``
+            attribute — see the projection comment and Issue #4348).
         row: The registry row from :meth:`RunBindingResolver.resolve`.
-        caller_user_id: ``TokenContext.user_id`` — authenticated, never a header.
-        caller_org_id: ``TokenContext.attributed_org_id`` — the tenant whose
-            ledger is being enforced (#4132).
+        caller_user_id: ``TokenContext.user_id``. Authenticated, but on the hosted
+            path it is the shared worker name for every run, so it is recorded for
+            the drift log and is deliberately NOT compared against the row. See the
+            module docstring.
+        caller_org_id: ``TokenContext.attributed_org_id`` — caller-influenced
+            (#4132), so it is verified against the row rather than trusted.
 
     Returns:
-        The verified :class:`RunBinding`.
+        The verified :class:`RunBinding`. Its ``tenant_id`` is the ROW's value,
+        which is what the run/chain ledger must partition on.
 
     Raises:
-        RunBindingError: on any mismatch.
+        RunBindingError: ``tenant_mismatch`` or ``terminal_run``.
     """
-    row_tenant = row.get("tenant_id") or ""
-    row_user = row.get("user_id") or ""
-    row_root_human = row.get("root_human_id") or ""
+    row_tenant = str(row.get("tenant_id") or "")
+    row_user = str(row.get("user_id") or "")
+    row_root_human = str(row.get("root_human_id") or "")
+    row_status = str(row.get("status") or "")
 
-    if row_tenant and caller_org_id and row_tenant != caller_org_id:
+    # Property 2 (B1): the row is the authority, the caller merely asserts.
+    if not row_tenant or row_tenant != caller_org_id:
         raise RunBindingError(
             "tenant_mismatch",
-            f"Run {run_id} belongs to a different tenant than the authenticated caller.",
+            f"Run {run_id} could not be bound to the caller's attributed tenant.",
         )
 
-    identity_matches = caller_user_id and caller_user_id in (row_user, row_root_human)
-    if not identity_matches:
+    # Property 3: a finished run's capability is spent.
+    if row_status in OBSERVED_TERMINAL_STATUSES:
         raise RunBindingError(
-            "identity_mismatch",
-            f"Run {run_id} was not dispatched for the authenticated caller.",
+            "terminal_run",
+            f"Run {run_id} has already finished; its id mints no further headroom.",
         )
 
     return RunBinding(
         run_id=run_id,
         correlation_id=str(row.get("correlation_id") or ""),
-        tenant_id=str(row_tenant),
-        user_id=str(row_user),
-        root_human_id=str(row_root_human),
-        # Issue #4344: carried through so budget attribution can tell a human root
-        # from a service root. Read AFTER the identity checks above, never as part
-        # of them — a row does not become admissible or inadmissible by claiming a
-        # principal kind.
+        # The SERVER-WRITTEN tenant, not the asserted one. They are equal by the
+        # check above, so this is not a behavioural difference today — it is the
+        # provenance that matters: everything downstream (the run/chain reservation
+        # keys, the scope-cap lookup) partitions on a value webhook-ingress wrote,
+        # so a future relaxation of the assertion check cannot silently move a
+        # ledger to a caller-chosen tenant.
+        tenant_id=row_tenant,
+        user_id=row_user,
+        root_human_id=row_root_human,
+        # Issue #4344 / #4337: carried through so budget attribution can tell a human
+        # root from a service root (see ``RunBinding.root_principal_type``). Read
+        # AFTER the checks above, never as part of them — a row does not become
+        # admissible or inadmissible by claiming a principal kind.
         is_human_rooted=_normalize_is_human_rooted(row.get("is_human_rooted")),
     )
 
@@ -422,8 +652,8 @@ async def resolve_run_binding(
     request. That asymmetry is deliberate and worth being explicit about, since
     the issue rightly insists on failing closed:
 
-    * An unknown or mismatched run is a **forgery shape** → ``RunBindingError``
-      → deny. This is the bypass the cap exists to prevent.
+    * An unknown run, a cross-tenant one, or a finished one is a **forgery shape**
+      → ``RunBindingError`` → deny. This is the bypass the cap exists to prevent.
     * An unreachable DynamoDB is an **outage shape** → degrade. Denying here
       would convert a DDB blip into a total inference outage, and it buys nothing:
       a caller cannot induce it selectively to escape their cap, and the
@@ -431,7 +661,7 @@ async def resolve_run_binding(
       Redis, for the same reason.
 
     Raises:
-        RunBindingError: unknown run, or a run belonging to someone else.
+        RunBindingError: ``unknown_run``, ``tenant_mismatch``, or ``terminal_run``.
     """
     try:
         row = await resolver.resolve(run_id)

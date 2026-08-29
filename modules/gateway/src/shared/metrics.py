@@ -393,33 +393,54 @@ def emit_run_binding_drift(
     reason: str,
     count: int = 1,
     environment: str = "production",
+    outcome: str = "deny",
 ) -> None:
     """
     Emit BudgetRunBindingDrift metric (Issue #4187).
 
-    Counts requests whose asserted ``X-Agent-RunId`` could NOT be bound to the
-    authenticated caller — an unknown run, or one belonging to another identity or
-    tenant.
+    Counts requests whose asserted ``X-Agent-RunId`` could NOT be bound to a live,
+    tenant-consistent run capability — an unknown run, a cross-tenant one, an
+    already-finished one, or no run id at all.
 
     This is what makes shipping the run cap in shadow mode meaningful. In
     ``shadow`` mode nothing is denied and this metric is the only output: it says
-    how much real traffic the deny rule would reject if enabled. Enforce only once
-    it sits at zero. In ``enforce`` mode the same signal becomes the denial rate,
-    so an unexpected spike after the flip is the rollback trigger.
+    how much real traffic the deny rule would reject if enabled. In ``enforce``
+    mode the same signal becomes the denial rate, so an unexpected spike after the
+    flip is the rollback trigger.
+
+    "Enforce once it sits at zero" is necessary but NOT sufficient, and Issue #4337
+    is the reason the gate says so explicitly. This metric measures the BINDING, not
+    the reservation: while the gateway's Redis auth was broken every run/chain
+    reservation degraded to *allow*, so a zero reading here was compatible with a
+    cap that could not deny anything. The gate therefore also requires
+    ``BudgetReservationOutcome=reserved`` and positive controls — a forged run id and
+    a forged ``X-Agent-OrgId`` must both still register here in the same window, or
+    "zero drift" is indistinguishable from a guard that has stopped checking.
 
     Args:
-        reason: "unknown_run", "identity_mismatch", "tenant_mismatch", or
-            "missing_run_id" — which check refused the binding.
+        reason: "unknown_run", "tenant_mismatch", "terminal_run", or
+            "missing_run_id" — which check refused the binding. (Issue #4337
+            removed "identity_mismatch": the caller-identity equality it named was
+            comparing disjoint namespaces and could never succeed — see
+            ``budget/run_binding.py``.)
         count: Number of occurrences (default 1)
         environment: Environment name
+        outcome: "deny" (the default — the binding was refused) or "exempt" (Issue
+            #4337 D10a: a DECLARED policy let the request through without a
+            binding). The split exists because the no-row dispatch paths used to
+            emit nothing at all, so an exempted path was indistinguishable from a
+            path nobody had exercised. An exemption nobody can see is how a path
+            silently stops being capped.
     """
     _emit_emf(
         metrics={
             "BudgetRunBindingDrift": count,
             "reason": reason,
+            "outcome": outcome,
             "Environment": environment,
         },
         dimensions=[
+            ["reason", "outcome", "Environment"],
             ["reason", "Environment"],
             ["Environment"],
         ],

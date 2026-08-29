@@ -33,7 +33,7 @@ Harness notes (inherited from ``test_budget_overshoot.py``, the #4287 suite):
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import pytest
@@ -527,24 +527,33 @@ class TestChainScopeRequiresAChainId:
         assert f"budget:resv:{{{TENANT}}}:chain:{CHAIN_ID}:run:lifetime" in keys, "a real chain id must still key its CHAIN ledger"
 
     @pytest.mark.asyncio
-    async def test_chat_runs_in_different_tenants_never_share_chain_headroom(self, redis_client, clock):
-        """GATE: the cross-tenant collision, asserted through the cap effect.
+    async def test_unrelated_chat_runs_never_share_chain_headroom(self, redis_client, clock):
+        """GATE: the collision, asserted through the cap effect rather than the keyspace.
 
-        ``ReservationTarget.key`` partitions on ``org_id``, so two chat runs in
-        two *populated* tenants would collide only within a tenant. The genuinely
-        cross-tenant case is a **blank** ``tenant_id``: ``_scope_targets`` maps it
-        to the literal ``"unknown"`` org, and the chat writer defaults
-        ``tenant_id`` to ``""``, so blank-tenant chat rows are reachable in
-        production. Two of them with a blank chain id collapse to one key —
-        ``budget:resv:{unknown}:chain::run:lifetime`` — shared by strangers.
+        Two chat conversations with no chain id between them collapse to one key if
+        the guard is removed — ``budget:resv:{org}:chain::run:lifetime``, with nothing
+        between the two colons — so one user's conversation drains the headroom of
+        every other conversation in the org.
 
-        Asserted as ADMISSION rather than key-absence: tenant A's chat run
-        reserves most of a $1.00 chain cap, and tenant B's must still be
-        admitted. Remove the guard and B is denied 402 by spend it never made,
-        which is the cross-tenant drain in the issue title.
+        Asserted as ADMISSION, which is the strictly stronger check: run A reserves
+        most of a $1.00 chain cap and run B must still be admitted. Remove the guard
+        and B is denied 402 by spend it never made. Key-absence alone would pass for a
+        request that never reached the scope path at all (a degrade, a disabled flag,
+        an unbound run), so both halves are asserted.
+
+        **Issue #4337 note.** This case used to be driven with a BLANK ``tenant_id``
+        on both rows, on the reasoning that ``_scope_targets`` mapped blank to the
+        literal ``"unknown"`` org and so made the collision cross-tenant. #4337's B1
+        removed that premise from both ends: a row with no ``tenant_id`` has no
+        authority to enforce against and is now refused by the binding
+        (``tenant_mismatch`` — see ``test_run_binding`` and the companion test
+        below), and the ``"unknown"`` fallback is gone with it. The #4346 invariant
+        this class exists for is unchanged and still entirely load-bearing — it is now
+        pinned within a populated tenant, which is where the reachable collision
+        lives.
         """
         config = _config(budget_run_cap_usd=Decimal("100.00"), budget_chain_cap_usd=Decimal("1.00"))
-        registry = _chat_registry(**{"evt-chat-a": "", "evt-chat-b": ""})
+        registry = _chat_registry(**{"evt-chat-a": TENANT, "evt-chat-b": TENANT})
         service = _service(redis_client, clock, registry)
 
         first = await _drive(
@@ -554,7 +563,6 @@ class TestChainScopeRequiresAChainId:
             body=_BIG_BODY,
             request_id="req-a",
             run_id="evt-chat-a",
-            context=_context(org_id=""),
         )
         second = await _drive(
             service,
@@ -563,14 +571,42 @@ class TestChainScopeRequiresAChainId:
             body=_BIG_BODY,
             request_id="req-b",
             run_id="evt-chat-b",
-            context=_context(org_id=""),
         )
 
         assert first.status == 200
-        assert second.status == 200, "tenant B's chat run was denied by tenant A's spend — shared chain ledger"
+        assert second.status == 200, "conversation B was denied by conversation A's spend — shared chain ledger"
         assert second.app_invoked is True
         keys = await redis_client.keys("*")
-        assert [k for k in keys if ":chain:" in k] == [], "blank-tenant chat runs must not share a chain ledger"
+        assert [k for k in keys if ":chain:" in k] == [], "an empty correlation_id must not key a CHAIN ledger"
+
+    @pytest.mark.asyncio
+    async def test_a_blank_tenant_row_is_refused_rather_than_pooled(self, redis_client, clock):
+        """Issue #4337 B1: why the blank-tenant premise above is unreachable.
+
+        Recorded as its own test rather than left implicit, because it is a
+        behavioural CHANGE and the class docstring above now depends on it. Pre-#4337
+        a blank ``tenant_id`` skipped the tenant check (the guard was a three-way
+        conjunction) and the row bound into an ``"unknown"`` org bucket shared by
+        every other blank-tenant run on the platform. Under the capability model a
+        run with no tenant scope is not tenant-scoped, so it is denied — and no
+        ledger, run or chain, is created for it.
+        """
+        config = _config(budget_run_cap_usd=Decimal("100.00"), budget_chain_cap_usd=Decimal("1.00"))
+        service = _service(redis_client, clock, _chat_registry(**{"evt-chat-blank": ""}))
+
+        harness = await _drive(
+            service,
+            _no_budget_session(),
+            config,
+            body=_BIG_BODY,
+            request_id="req-blank",
+            run_id="evt-chat-blank",
+            context=_context(org_id=""),
+        )
+
+        assert harness.status == 402
+        assert harness.app_invoked is False
+        assert [k for k in await redis_client.keys("*") if ":run:" in k] == [], "an unbindable run must mint no ledger at all, in either scope"
 
 
 class TestLifetimeAccumulator:
@@ -700,7 +736,23 @@ class TestCapResolution:
 
 
 class TestMissingRunId:
-    """ "No run id" must be a declared policy, never "unlimited"."""
+    """ "No run id" must be a declared policy, never "unlimited".
+
+    Issue #4337 D10a audited every dispatch path that reaches the gateway and found
+    three that carry no bindable run id at all: the orchestration engine and GitLab
+    write no ``webhook-events`` row, and chat writes a row but its ScaledJob exports
+    no ``ADP_MESSAGE_ID`` for the worker to assert. All three authenticate as the IAM
+    worker, so ``exempt_human`` — which keys on ``auth_source == "iam"`` — does NOT
+    cover them: under the shipped policy they 402 on their first model call the
+    moment the binding flips to enforce.
+
+    The tests below pin both halves of the resulting requirement. Each of those paths
+    must reach a DECLARED outcome (``exempt_missing`` is the recorded lever), and the
+    outcome must be VISIBLE in shadow — pre-#4337 this path returned before emitting
+    any drift, so a shadow window reading "zero drift" was fully consistent with the
+    no-row paths being wholly unexercised. That is what made the original "flip once
+    drift is zero" gate unable to detect its own failure.
+    """
 
     @pytest.mark.asyncio
     async def test_agent_caller_without_a_run_id_is_denied(self, redis_client, clock):
@@ -742,6 +794,94 @@ class TestMissingRunId:
 
         assert harness.status == 200
         assert harness.app_invoked is True
+
+    @pytest.mark.asyncio
+    async def test_exempt_missing_lets_the_no_row_dispatch_paths_through(self, redis_client, clock):
+        """T20/T21: the D10a lever, exercised with an IAM caller.
+
+        The orchestration-engine and GitLab paths look exactly like this at the
+        gateway: ``auth_source == "iam"``, no run id, no row to bind. Under
+        ``exempt_human`` that is a 402 (asserted above); ``exempt_missing`` is the
+        declared exemption that keeps them serving while they remain rowless.
+
+        Pinned because the alternative to a lever is a discovery: without it the only
+        way to run those paths under an enforcing binding is to relax the policy for
+        HUMAN callers too, which widens the exemption for the entire platform.
+        """
+        config = _config(budget_run_id_required_mode="exempt_missing")
+        service = _service(redis_client, clock, _registry(**{RUN_ID: CHAIN_ID}))
+        agent_context = _context()
+        object.__setattr__(agent_context, "auth_source", "iam")
+
+        harness = await _drive(
+            service,
+            _no_budget_session(),
+            config,
+            body=b"{}",
+            request_id="req-0",
+            run_id=None,
+            context=agent_context,
+        )
+
+        assert harness.status == 200
+        assert harness.app_invoked is True
+
+    @pytest.mark.asyncio
+    async def test_exempt_missing_still_caps_a_caller_that_does_send_an_id(self, redis_client, clock):
+        """The exemption must be about the ABSENT header, not about IAM callers.
+
+        An ``exempt_missing`` that also stopped binding the ids it was given would
+        turn the D10a lever into a platform-wide opt-out of the run cap — every agent
+        could simply drop the header. So the GitHub path, which does send an id, must
+        still be bound and still be denied at its cap under the same setting.
+        """
+        config = _config(budget_run_id_required_mode="exempt_missing", budget_run_cap_usd=Decimal("1.00"))
+        service = _service(redis_client, clock, _registry(**{RUN_ID: CHAIN_ID}))
+        agent_context = _context()
+        object.__setattr__(agent_context, "auth_source", "iam")
+
+        first = await _drive(service, _no_budget_session(), config, body=_BIG_BODY, request_id="req-0", context=agent_context)
+        second = await _drive(service, _no_budget_session(), config, body=_BIG_BODY, request_id="req-1", context=agent_context)
+
+        assert first.status == 200
+        assert second.status == 402, "an asserted run id is still bound and still capped under exempt_missing"
+
+    @pytest.mark.asyncio
+    async def test_the_declared_outcome_is_visible_as_drift_in_shadow(self, redis_client, clock):
+        """GATE: a no-run-id request emits drift in SHADOW, with its disposition.
+
+        This is the observability hole #4337 found, and it is the reason "flip once
+        drift is zero" was not a sufficient gate. Pre-#4337 this path returned
+        ``None`` before any metric was emitted, so the D10a dispatch paths generated
+        no drift datapoints at all — a green shadow window said nothing about them,
+        and they then failed immediately on the flip.
+
+        Both dispositions are asserted, because emitting only the deny case would
+        leave the exemption itself unmeasured: an exemption nobody can see is how a
+        path silently stops being capped.
+        """
+        service = _service(redis_client, clock, _registry(**{RUN_ID: CHAIN_ID}))
+        agent_context = _context()
+        object.__setattr__(agent_context, "auth_source", "iam")
+
+        for mode, policy, expected in [
+            ("shadow", "exempt_human", "exempt"),
+            ("enforce", "exempt_human", "deny"),
+            ("enforce", "exempt_missing", "exempt"),
+        ]:
+            config = _config(budget_run_binding_mode=mode, budget_run_id_required_mode=policy)
+            with patch("src.budget.enforcement_service.emit_run_binding_drift") as emit:
+                await _drive(
+                    service,
+                    _no_budget_session(),
+                    config,
+                    body=b"{}",
+                    request_id=f"req-{mode}-{policy}",
+                    run_id=None,
+                    context=agent_context,
+                )
+
+            emit.assert_called_once_with(reason="missing_run_id", environment=ANY, outcome=expected)
 
 
 class TestRolloutSafety:

@@ -101,19 +101,42 @@ class BudgetConfig(BaseSettings):
     #   "shadow"  - resolve the binding, log + count drift, deny nothing, and
     #               enforce no run/chain cap. The safe default: the drift metric
     #               tells you what a deny rule WOULD have rejected first.
-    #   "enforce" - an unbindable run id (unknown, or owned by another caller)
-    #               is a 402 denial, and the caps apply.
+    #   "enforce" - an unbindable run id (unknown, cross-tenant, or already
+    #               finished) is a 402 denial, and the caps apply.
     # A DDB lookup FAULT degrades in both modes — a forgery is denied, an outage
     # is not (see run_binding.resolve_run_binding).
+    #
+    # Issue #4337: flipping this is gated on more than "drift is zero" — the run
+    # cap enforces purely through Redis reservations that fail OPEN, so it also
+    # needs BudgetReservationOutcome reading `reserved` rather than `degraded`
+    # (i.e. #4342 live in this environment), every dispatch path in the D10a table
+    # exercised, and both forgery positive controls still drifting. Otherwise a
+    # green window is over an inert cap. Per environment; the flip stays manual.
     budget_run_binding_mode: str = "shadow"
 
     # Policy for a request on an enforced path that carries NO run id.
     # Explicitly a declared policy, never "absent -> unlimited":
-    #   "exempt_human" - IAM-authenticated callers MUST carry a run id (they are
-    #                    agents, and the worker always sends one); human/JWT
-    #                    callers are exempt because the per-user hierarchy caps
-    #                    already bound them.
-    #   "require"      - every caller on an enforced path must carry one.
+    #   "exempt_human"   - IAM-authenticated callers MUST carry a run id (they are
+    #                      agents, and the GitHub-dispatched worker always sends
+    #                      one); human/JWT callers are exempt because the per-user
+    #                      hierarchy caps already bound them.
+    #   "require"        - every caller on an enforced path must carry one.
+    #   "exempt_missing" - nobody is denied merely for carrying no run id; a
+    #                      request that DOES carry one is still bound and capped
+    #                      exactly as before.
+    #
+    # Issue #4337 D10a adds "exempt_missing" as the recorded lever for the three
+    # audited no-row dispatch paths (orchestration engine and GitLab write no row
+    # at all; chat has a row but its worker asserts no id — see the D10a table in
+    # run_binding.py). All three authenticate as the IAM worker, so `exempt_human`
+    # does NOT cover them: under "exempt_human" + enforce they 402 on their first
+    # model call. Either set this to "exempt_missing" for an environment carrying
+    # that traffic, or give those paths rows and ids — but it must be a decision,
+    # not a discovery. Both dispositions are now visible in shadow via the
+    # `missing_run_id` drift metric's `outcome` dimension.
+    #
+    # Default unchanged: the GitHub path (the dominant one) does send an id, and
+    # weakening the default would quietly widen the exemption for everyone.
     budget_run_id_required_mode: str = "exempt_human"
 
     # Grace period settings (in seconds)

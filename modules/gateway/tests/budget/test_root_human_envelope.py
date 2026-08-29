@@ -183,11 +183,13 @@ class _StubTable:
     """The ``webhook-events`` registry, holding one row per run id."""
 
     def __init__(self, rows: dict[str, dict]):
-        self._rows = rows
+        # Public so a test can mutate one row's mutable attributes (Issue #4337 added
+        # `status`, the only attribute on these rows that advances over a run's life).
+        self.rows = rows
 
     def query(self, **kwargs):
         run_id = kwargs["KeyConditionExpression"]._values[1]
-        row = self._rows.get(run_id)
+        row = self.rows.get(run_id)
         return {"Items": [row] if row else []}
 
 
@@ -932,13 +934,84 @@ class TestForgery:
         assert harness.status == 200
 
     @pytest.mark.asyncio
-    async def test_run_owned_by_another_human_is_denied(self, redis_client, clock):
-        """A run whose row names a different human is a binding failure (402).
+    async def test_run_from_another_tenant_is_denied(self, redis_client, clock):
+        """A run whose row belongs to another TENANT is a binding failure (402).
 
-        #4187's ``verify_row_matches_caller`` rejects it before attribution
-        happens, so spend can never be redirected onto the real initiator.
+        Issue #4337 replaced the binding's caller-identity equality (which compared
+        disjoint namespaces and denied all legitimate traffic) with a bearer-capability
+        model whose load-bearing property is tenant scoping. So this is the case that
+        now carries the forge resistance: the enforced tenant is derived from the row's
+        server-written ``tenant_id``, and a caller whose attributed org disagrees is
+        refused before attribution happens.
+
+        Both forgery directions are covered — see
+        ``test_run_binding.TestTenantCapabilityScope``, which also forges
+        ``X-Agent-OrgId`` to the victim's org and shows the ledger still partitions on
+        the row.
         """
-        registry = _chain_registry({"evt-1": "some-other-service-account"}, root_human_id="a-different-human")
+        registry = _chain_registry(
+            {"evt-1": "some-other-service-account"},
+            root_human_id="a-different-human",
+            tenant="org-somebody-else",
+        )
+        ledger = _Ledger(budgets={})
+        service = _service(redis_client, clock, registry)
+
+        harness = await _drive(
+            service,
+            ledger,
+            _config(),
+            context=_agent_context("svc-agent-1"),
+            run_id="evt-1",
+            request_id="req-1",
+        )
+
+        assert harness.status == 402
+        assert harness.app_invoked is False
+
+    @pytest.mark.asyncio
+    async def test_naming_a_same_tenant_humans_run_charges_that_human_not_the_caller(self, redis_client, clock):
+        """The #4337 reduction, on the record — and why it is not a spend dodge.
+
+        Under the capability model a worker CAN bind a live run of another human in
+        its own tenant (the reduction is from "the caller owns this run" to "the
+        caller holds a live, tenant-consistent capability for it"). What that does
+        NOT buy is escape from a cap: attribution follows the ROW, so naming
+        somebody else's run charges *their* envelope, and here that envelope is
+        capped at $0.01 and denies.
+
+        So the reachable outcomes are "charged to the row's human" or "denied by the
+        row's human's cap". There is no id an agent can assert that yields uncapped
+        headroom, which is the property the cap actually needs.
+        """
+        other_human = "another-human-in-my-tenant"
+        registry = _chain_registry({"evt-1": "some-other-service-account"}, root_human_id=other_human)
+        ledger = _Ledger(budgets={(EntityType.ROOT_USER.value, other_human): "0.01"})
+        service = _service(redis_client, clock, registry)
+
+        harness = await _drive(
+            service,
+            ledger,
+            _config(),
+            context=_agent_context("svc-agent-1"),
+            run_id="evt-1",
+            request_id="req-1",
+        )
+
+        assert harness.status == 402
+        assert harness.app_invoked is False
+
+    @pytest.mark.asyncio
+    async def test_a_finished_run_mints_no_further_headroom(self, redis_client, clock):
+        """Issue #4337 property 3, end-to-end through the middleware.
+
+        The residual bypass the removed equality was nominally covering: rotate across
+        ids from one's OWN completed runs. Those ids pass every other property — real,
+        unguessable, same tenant — so without the liveness check the rotation is
+        unbounded in the one direction an agent genuinely controls.
+        """
+        registry = _chain_registry({"evt-1": "svc-agent-1"})
+        registry.rows["evt-1"]["status"] = "complete"
         ledger = _Ledger(budgets={})
         service = _service(redis_client, clock, registry)
 

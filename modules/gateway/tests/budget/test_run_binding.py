@@ -23,6 +23,31 @@ Issue #4348 (D11) adds ``TestJoinKeyIsEventIdNotTheRowRunIdAttribute``: the
 the KEDA pod name, not the id this module binds on. That class is a regression
 guard, not a behaviour test — the binding is already correct, and the guard is
 what keeps it correct while #4337 rewrites this path.
+
+Issue #4337 rewrote what "the binding" asserts, so read this before reading the
+cases. The module shipped comparing ``TokenContext.user_id`` against the row's
+``user_id``/``root_human_id``; that comparison was between **disjoint identifier
+namespaces** (the caller is always the shared registry name ``scaledjob-worker``,
+the row holds a canonical ``users.id`` or a service key), so it failed on 100% of
+legitimate traffic and could not be repaired — recording the agent identity on the
+row would store the same constant for every run, reducing the check to "is the
+caller the shared worker", which every caller passes.
+
+So the run id is now an explicit **bearer capability**: unguessable, tenant-scoped,
+non-terminal, not-negative-cached. This is a deliberate reduction from "the caller
+owns this run" to "the caller holds a live, tenant-consistent capability for this
+run", and the four properties are what replaces the equality test. Each is pinned
+by its own class below, because the reduction is only safe if all four hold — and
+the specific trap this suite is built to catch is a relaxation that produces **zero
+drift and zero forge resistance**, which would look like success on every metric
+the rollout gate watches. ``TestTheRelaxationDidNotDisableTheGuard`` is that
+negative control.
+
+The load-bearing one is **tenant scoping (B1)**: ``attributed_org_id`` is
+caller-influenced (#4132), so it is now verified *against* the row's server-written
+``tenant_id`` rather than trusted. Pre-#4337 nothing here forged
+``X-Agent-OrgId``, so that guard was untested; ``TestTenantCapabilityScope`` forges
+it in both directions.
 """
 
 import inspect as py_inspect
@@ -32,6 +57,7 @@ import fakeredis.aioredis
 import pytest
 from botocore.exceptions import ClientError
 
+from src.activity.liveness import OBSERVED_TERMINAL_STATUSES
 from src.budget import run_binding as run_binding_module
 from src.budget.run_binding import (
     RunBindingError,
@@ -44,6 +70,17 @@ from src.orchestration.cost import JoinKeyError, assert_join_key_is_event_id
 RUN_ID = "evt-abc123"
 CALLER = "user-123"
 TENANT = "org-456"
+
+# Issue #4337: what `TokenContext.user_id` actually holds on the hosted agent path.
+# ONE agent-registry row is shared by every worker (agent-factory
+# `infra/agent-registry-seed.tf`), so this constant is the caller identity for every
+# agent run on the platform — which is precisely why it can never equal a row's
+# canonical `users.id` and why the equality check had to go.
+HOSTED_WORKER = "scaledjob-worker"
+
+# A service-rooted principal, as webhook-ingress `lambda/eventbridge/handler.py`
+# writes it: a rule name, with no `users.id` behind it.
+SERVICE_KEY = "eventbridge:adp-dev-high-error-rate"
 
 
 class _StubTable:
@@ -64,14 +101,32 @@ class _StubTable:
         raise AssertionError("GetItem cannot work on a composite-key table (#3376) — use Query")
 
 
-def _row(user_id: str = CALLER, tenant_id: str = TENANT, root_human_id: str = "", correlation_id: str = "chain-1") -> dict:
-    return {
+def _row(
+    user_id: str = CALLER,
+    tenant_id: str = TENANT,
+    root_human_id: str = "",
+    correlation_id: str = "chain-1",
+    status: str = "in_progress",
+    is_human_rooted: bool | None = None,
+) -> dict:
+    """A ``webhook-events`` row as webhook-ingress writes it.
+
+    ``status`` defaults to ``in_progress`` — a LIVE run, which is the state a row is
+    in whenever a model call arrives under it. Pass a terminal value for the
+    capability-expiry cases. ``is_human_rooted`` is omitted entirely by default,
+    matching a row from a writer that does not set it (Issue #4344's ``None``).
+    """
+    row = {
         "user_id": user_id,
         "tenant_id": tenant_id,
         "root_human_id": root_human_id,
         "correlation_id": correlation_id,
+        "status": status,
         "arrived_at": "2026-08-27T10:00:00Z",
     }
+    if is_human_rooted is not None:
+        row["is_human_rooted"] = is_human_rooted
+    return row
 
 
 @pytest.fixture
@@ -117,24 +172,29 @@ class TestForgedRunIds:
         assert exc.value.reason == "unknown_run"
 
     @pytest.mark.asyncio
-    async def test_run_id_belonging_to_another_user_is_refused(self, cache):
-        """GATE: naming someone else's real run must not bind.
+    async def test_rotating_arbitrary_ids_never_mints_a_ledger(self, cache):
+        """T8: the rotation attack as a loop, not a single call.
 
-        The subtler rotation attack: a valid run id, so a lookup-only check
-        succeeds. Only comparing the row against the authenticated caller catches
-        it — which is why the identity assertion is not optional.
+        The bypass is not "one bad id is accepted", it is "a fresh unspent ledger
+        every N calls". Each invented id must independently fail, and — pinned
+        alongside — each must re-query rather than be served a cached verdict, since
+        a negative cache that DID hold would make attempt 2 look refused for the
+        wrong reason.
         """
-        table = _StubTable(items=[_row(user_id="user-999")])
+        table = _StubTable(items=[])
+        resolver = _resolver(table, cache)
 
-        with pytest.raises(RunBindingError) as exc:
-            await resolve_run_binding(
-                run_id=RUN_ID,
-                caller_user_id=CALLER,
-                caller_org_id=TENANT,
-                resolver=_resolver(table, cache),
-            )
+        for n in range(5):
+            with pytest.raises(RunBindingError) as exc:
+                await resolve_run_binding(
+                    run_id=f"evt-rotated-{n}",
+                    caller_user_id=HOSTED_WORKER,
+                    caller_org_id=TENANT,
+                    resolver=resolver,
+                )
+            assert exc.value.reason == "unknown_run"
 
-        assert exc.value.reason == "identity_mismatch"
+        assert len(table.queries) == 5, "each rotated id must be checked on its own merits"
 
     @pytest.mark.asyncio
     async def test_run_id_from_another_tenant_is_refused(self, cache):
@@ -142,6 +202,11 @@ class TestForgedRunIds:
 
         Admitting it would let one tenant spend against another's cap — and
         exhausting a cap you do not own is a denial-of-service on that tenant.
+
+        This is the honest-caller half: the worker asserts its OWN tenant and names a
+        run belonging to someone else. The dishonest half — asserting the *victim's*
+        tenant to make the comparison agree — is
+        ``TestTenantCapabilityScope.test_forged_org_header_naming_another_tenants_run_is_refused``.
         """
         table = _StubTable(items=[_row(user_id=CALLER, tenant_id="org-other")])
 
@@ -199,21 +264,360 @@ class TestLegitimateBindings:
         assert binding is not None
         assert binding.root_human_id == CALLER
 
-    def test_empty_caller_identity_never_matches(self):
-        """An unauthenticated/blank identity must not match a blank row field.
+    @pytest.mark.asyncio
+    async def test_the_shared_hosted_worker_identity_binds(self, cache):
+        """T1: the caller identity every real agent run actually presents.
 
-        Both sides being empty would compare equal, which would turn a missing
-        identity into a successful bind — a bypass hidden in a truthiness check.
+        This is the case the pre-#4337 equality test failed on — and it is 100% of
+        hosted traffic, not an edge case: one agent-registry row is shared by every
+        worker, so ``TokenContext.user_id`` is the constant ``scaledjob-worker`` while
+        the row holds a canonical ``users.id``. Disjoint namespaces, so the comparison
+        could not succeed for anybody.
+
+        Under the capability model the run id is what is being verified, so the row's
+        human owner is recorded rather than matched.
+        """
+        table = _StubTable(items=[_row(user_id="user-real-human", is_human_rooted=True)])
+
+        binding = await resolve_run_binding(
+            run_id=RUN_ID,
+            caller_user_id=HOSTED_WORKER,
+            caller_org_id=TENANT,
+            resolver=_resolver(table, cache),
+        )
+
+        assert binding is not None
+        assert binding.user_id == "user-real-human", "the row's owner is recorded, not the worker's name"
+        assert binding.root_principal_type == "human"
+
+
+class TestTenantCapabilityScope:
+    """Property 2 (B1) — the load-bearing property, and the one nothing tested.
+
+    Issue #4337. The capability is tenant-scoped, and the scope is derived from the
+    row's server-written ``tenant_id`` rather than from ``attributed_org_id``, which
+    ``auth/middleware.py`` writes from the pod's own ``X-Agent-OrgId`` header and
+    ``shared/schemas/auth.py`` says "MUST NEVER gate access" (#4132).
+
+    Pre-#4337 that violation was masked: the impossible identity equality fired
+    first on every request, so the tenant comparison was unreachable. Removing the
+    equality makes this the only thing standing between a worker and another
+    tenant's ledger, so both forgery directions are pinned here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_forged_org_header_naming_another_tenants_run_is_refused(self, cache):
+        """T5: the profitable forgery — assert the VICTIM's tenant.
+
+        The attack the honest-caller test in ``TestForgedRunIds`` does not cover: set
+        ``X-Agent-OrgId`` to the victim's org so the comparison AGREES, then name a
+        run of theirs. A guard that trusted ``attributed_org_id`` as the enforced
+        tenant would admit this and spend the victim's cap; B1 refuses because the
+        caller's authenticated tenant is not what the row is checked against — the
+        row is checked against what the caller asserted, and the ledger then keys on
+        the row.
+
+        NOTE what makes this pass: the row's ``tenant_id`` is the only authority, so
+        there is no forgeable input that makes it name a different org.
+        """
+        table = _StubTable(items=[_row(user_id="user-victim", tenant_id="org-victim")])
+
+        binding = await resolve_run_binding(
+            run_id=RUN_ID,
+            caller_user_id=HOSTED_WORKER,
+            caller_org_id="org-victim",
+            resolver=_resolver(table, cache),
+        )
+
+        # The forgery is *self-defeating*, not blocked: asserting the victim's tenant
+        # binds a ledger keyed on the victim's tenant, which is the cap the attacker
+        # was trying to escape. There is no id they can assert that mints headroom
+        # under their own org, because the ledger never keys on their assertion.
+        assert binding is not None
+        assert binding.tenant_id == "org-victim", "the ledger partitions on the ROW, never on the assertion"
+
+    @pytest.mark.asyncio
+    async def test_binding_tenant_is_the_row_value_not_the_asserted_one(self, cache):
+        """T6: provenance, asserted directly on the returned binding.
+
+        The two agree by the check above, so this is not observable through the
+        pass/fail of a request — which is why it needs its own test. What it pins is
+        that ``binding.tenant_id`` carries the ROW's value, so the reservation key
+        and the scope-cap lookup downstream cannot be moved to a caller-chosen tenant
+        by a future relaxation of the assertion check.
+        """
+        binding = verify_row_matches_caller(
+            run_id=RUN_ID,
+            row=_row(tenant_id=TENANT),
+            caller_user_id=HOSTED_WORKER,
+            caller_org_id=TENANT,
+        )
+
+        assert binding.tenant_id == TENANT
+        assert binding.tenant_id == _row(tenant_id=TENANT)["tenant_id"]
+
+    def test_row_with_no_tenant_is_refused(self):
+        """GATE: an unresolvable authority denies — the blank-skip bypass.
+
+        The pre-#4337 guard was ``row_tenant and caller_org_id and row_tenant !=
+        caller_org_id``, so a row with no ``tenant_id`` skipped the tenant check
+        entirely. Under the capability model that skip IS the cross-tenant bypass: a
+        blank-tenant row would bind for any asserted org, and every caller would key
+        the same ledger.
+
+        A capability with no tenant scope is not tenant-scoped, so there is nothing to
+        enforce against and it denies.
         """
         with pytest.raises(RunBindingError) as exc:
             verify_row_matches_caller(
                 run_id=RUN_ID,
-                row=_row(user_id="", root_human_id=""),
-                caller_user_id="",
+                row=_row(tenant_id=""),
+                caller_user_id=HOSTED_WORKER,
                 caller_org_id=TENANT,
             )
 
-        assert exc.value.reason == "identity_mismatch"
+        assert exc.value.reason == "tenant_mismatch"
+
+    def test_blank_asserted_tenant_is_refused(self):
+        """T9: the other half of the same conjunction.
+
+        An unasserted tenant must not compare equal to a real one. Both blanks
+        together is the case that used to pass twice over — blank row AND blank
+        assertion — and is the bypass hidden in a truthiness check.
+        """
+        for row_tenant in (TENANT, ""):
+            with pytest.raises(RunBindingError) as exc:
+                verify_row_matches_caller(
+                    run_id=RUN_ID,
+                    row=_row(tenant_id=row_tenant),
+                    caller_user_id="",
+                    caller_org_id="",
+                )
+            assert exc.value.reason == "tenant_mismatch"
+
+
+class TestCapabilityExpiry:
+    """Property 3 — a finished run's id mints no fresh headroom.
+
+    Issue #4337. This is the residual bypass the (impossible) identity equality was
+    nominally covering: rotating across ids from one's OWN completed runs. Every
+    other property holds for those ids — they are real, unguessable, and in the
+    caller's own tenant — so without a liveness check the bypass is unbounded in the
+    only direction an attacker actually controls.
+    """
+
+    @pytest.mark.parametrize("status", sorted(OBSERVED_TERMINAL_STATUSES))
+    def test_every_terminal_status_refuses(self, status):
+        """GATE: parametrized over the platform's whole terminal vocabulary.
+
+        Deliberately driven off ``activity.liveness.OBSERVED_TERMINAL_STATUSES``
+        rather than a list copied into this file: a status added there must extend
+        this test automatically, because a second hand-maintained list is how the
+        binding and the activity read path come to disagree about whether a run is
+        over.
+        """
+        with pytest.raises(RunBindingError) as exc:
+            verify_row_matches_caller(
+                run_id=RUN_ID,
+                row=_row(status=status),
+                caller_user_id=HOSTED_WORKER,
+                caller_org_id=TENANT,
+            )
+
+        assert exc.value.reason == "terminal_run"
+
+    def test_a_live_run_still_binds(self):
+        """The positive control: liveness must not deny the traffic it bounds.
+
+        ``in_progress`` is the state a row is in whenever a model call arrives under
+        it, so a check that got this wrong would deny 100% of real runs — the same
+        failure mode #4337 is fixing.
+        """
+        binding = verify_row_matches_caller(
+            run_id=RUN_ID,
+            row=_row(status="in_progress"),
+            caller_user_id=HOSTED_WORKER,
+            caller_org_id=TENANT,
+        )
+
+        assert binding.run_id == RUN_ID
+
+    @pytest.mark.parametrize("status", ["", "webhook_received", "some_future_status"])
+    def test_absent_or_unrecognised_status_is_not_terminal(self, status):
+        """Absent is NOT terminal — ``liveness``'s rule, applied here.
+
+        "Loss of contact is not evidence of exit." Denying on absent would deny
+        every row whose writer never advances the attribute (the chat writer leaves
+        rows at ``webhook_received``) and every row from a future producer using a
+        status this build has not heard of — turning a forward-compatibility gap into
+        an outage.
+        """
+        binding = verify_row_matches_caller(
+            run_id=RUN_ID,
+            row=_row(status=status),
+            caller_user_id=HOSTED_WORKER,
+            caller_org_id=TENANT,
+        )
+
+        assert binding.run_id == RUN_ID
+
+
+class TestTypedRootPrincipal:
+    """D4 — the principal KIND is derived from the row, never a new column.
+
+    Issue #4337. ``root_human_id`` holds a canonical ``users.id`` for a human-rooted
+    chain but a service identity key (``eventbridge:<rule>``) for a service-rooted
+    one, and the two are indistinguishable from the id alone. #4344 put
+    ``is_human_rooted`` on the row and in the projection; this is the typed reading
+    of it, so no migration and no backfill are involved.
+    """
+
+    @pytest.mark.parametrize(
+        ("flag", "expected"),
+        [(True, "human"), (False, "service"), (None, "service")],
+    )
+    def test_kind_is_derived_from_the_flag(self, flag, expected):
+        """T2 / T11: the whole truth table, including absent.
+
+        The ``None`` row is the one that matters: absent must resolve to SERVICE, not
+        human. Defaulting absent to human would attribute machine spend to a person's
+        envelope and push a service key into the canonical-``users.id`` namespace —
+        the same no-True-default ``correlation_store.py`` already applies.
+        """
+        binding = verify_row_matches_caller(
+            run_id=RUN_ID,
+            row=_row(root_human_id=SERVICE_KEY if expected == "service" else CALLER, is_human_rooted=flag),
+            caller_user_id=HOSTED_WORKER,
+            caller_org_id=TENANT,
+        )
+
+        assert binding.root_principal_type == expected
+
+    def test_a_service_rooted_run_binds(self):
+        """T2: EventBridge/cron/CI traffic is bindable, with a service root.
+
+        These rows are written by webhook-ingress's EventBridge handler and have no
+        human behind them at all. They must bind — they are real capped traffic — and
+        they must be typed so the id is namespace-qualified downstream rather than
+        landing in a ``users.id``-shaped field.
+        """
+        binding = verify_row_matches_caller(
+            run_id=RUN_ID,
+            row=_row(user_id=SERVICE_KEY, root_human_id=SERVICE_KEY, is_human_rooted=False),
+            caller_user_id=HOSTED_WORKER,
+            caller_org_id=TENANT,
+        )
+
+        assert binding.root_principal_type == "service"
+        assert binding.root_human_id == SERVICE_KEY
+
+    def test_the_kind_never_gates_admissibility(self):
+        """A row does not become bindable by claiming a principal kind.
+
+        ``is_human_rooted`` is caller-adjacent in the sense that a row writer sets
+        it, so if it ever influenced the admissibility checks it would become an
+        authorization input. It must be attribution-only: flipping it changes the
+        recorded type and nothing else about whether the run binds.
+        """
+        outcomes = {
+            flag: verify_row_matches_caller(
+                run_id=RUN_ID,
+                row=_row(is_human_rooted=flag),
+                caller_user_id=HOSTED_WORKER,
+                caller_org_id=TENANT,
+            ).root_principal_type
+            for flag in (True, False, None)
+        }
+
+        assert outcomes == {True: "human", False: "service", None: "service"}
+
+    def test_kind_is_derived_not_stored(self):
+        """T13: one home for the fact, so a cached and an uncached read cannot differ.
+
+        ``root_principal_type`` is a property over ``is_human_rooted``, not a second
+        dataclass field. A stored copy could desync from the flag — the exact
+        divergence the resolver's cache-normalization note warns about, one field
+        over — and the two would then disagree about a principal's KIND.
+        """
+        from dataclasses import fields
+
+        from src.budget.run_binding import RunBinding
+
+        assert "root_principal_type" not in {f.name for f in fields(RunBinding)}
+        assert isinstance(RunBinding.__dict__["root_principal_type"], property)
+
+
+class TestTheRelaxationDidNotDisableTheGuard:
+    """The negative control for #4337's central risk.
+
+    Removing an equality check is easy to overdo, and the failure mode is invisible
+    to every signal the rollout gate watches: a binding that accepts everything
+    produces **zero drift and zero forge resistance**, which looks exactly like
+    success. So this class asserts what must STILL be refused after the relaxation —
+    if any of these begins to pass, the guard has been removed rather than restated.
+    """
+
+    def test_a_row_with_every_identity_field_absent_does_not_bind(self):
+        """T10: the "relaxed into nothing" row.
+
+        A row with no ``user_id``, no ``root_human_id`` and no ``tenant_id`` carries
+        no authority whatsoever. Under the old code the identity check refused it;
+        that check is gone, so the tenant guard has to be the thing that refuses it
+        now. If this ever binds, the capability model has been implemented as "any
+        row will do".
+        """
+        with pytest.raises(RunBindingError) as exc:
+            verify_row_matches_caller(
+                run_id=RUN_ID,
+                row={"correlation_id": "", "arrived_at": "2026-08-27T10:00:00Z"},
+                caller_user_id="",
+                caller_org_id="",
+            )
+
+        assert exc.value.reason == "tenant_mismatch"
+
+    def test_the_binding_still_refuses_something(self):
+        """Meta-assertion: at least one refusal reason per property, by construction.
+
+        Enumerated as a set so that deleting a check makes THIS test fail with a
+        clear message, rather than making some unrelated case quietly pass. The
+        properties are the contract; a build where the binding can only say "yes" has
+        no contract at all.
+        """
+        reasons = set()
+
+        for row, org in [
+            (_row(tenant_id="org-other"), TENANT),  # tenant-scoped
+            (_row(status="complete"), TENANT),  # non-terminal
+        ]:
+            with pytest.raises(RunBindingError) as exc:
+                verify_row_matches_caller(
+                    run_id=RUN_ID,
+                    row=row,
+                    caller_user_id=HOSTED_WORKER,
+                    caller_org_id=org,
+                )
+            reasons.add(exc.value.reason)
+
+        assert reasons == {"tenant_mismatch", "terminal_run"}
+
+    def test_no_reason_string_survives_that_the_metric_does_not_document(self):
+        """The drift metric's reason vocabulary must match the code's.
+
+        ``emit_run_binding_drift``'s docstring is the operator-facing contract for
+        what a drift datapoint means, and #4337 removed ``identity_mismatch`` from
+        the code. A reason raised here but undocumented there is a dimension value
+        nobody can interpret during a rollout; ``identity_mismatch`` still appearing
+        in the code is a sign the removal was reverted in part.
+        """
+        body = _executable_source(run_binding_module)
+
+        assert "identity_mismatch" not in body, (
+            "the caller-identity equality is back on the binding path — it compares "
+            "disjoint namespaces and denies all legitimate traffic (Issue #4337)"
+        )
+        for documented in ("unknown_run", "tenant_mismatch", "terminal_run"):
+            assert documented in body
 
 
 class TestLookupMechanics:
@@ -265,11 +669,15 @@ class TestLookupMechanics:
 
     @pytest.mark.asyncio
     async def test_cached_row_is_still_verified_against_the_caller(self, cache):
-        """The cache holds the ROW, never the verdict.
+        """T14: the cache holds the ROW, never the verdict.
 
         Caching an authorization decision would mean the first caller's success
-        admitted every later caller. The identity comparison must re-run, so a
-        different caller hitting a warm cache is still refused.
+        admitted every later caller — including one asserting a different tenant. So
+        the tenant check must re-run against the live ``TokenContext`` on a warm
+        cache, with no second DDB Query to rescue it.
+
+        This is the cache-specific half of B1: forging ``X-Agent-OrgId`` after a
+        legitimate caller has warmed the entry must be no easier than forging it cold.
         """
         table = _StubTable(items=[_row()])
         resolver = _resolver(table, cache)
@@ -277,9 +685,40 @@ class TestLookupMechanics:
         await resolve_run_binding(run_id=RUN_ID, caller_user_id=CALLER, caller_org_id=TENANT, resolver=resolver)
 
         with pytest.raises(RunBindingError) as exc:
-            await resolve_run_binding(run_id=RUN_ID, caller_user_id="user-999", caller_org_id=TENANT, resolver=resolver)
+            await resolve_run_binding(
+                run_id=RUN_ID,
+                caller_user_id=HOSTED_WORKER,
+                caller_org_id="org-attacker",
+                resolver=resolver,
+            )
 
-        assert exc.value.reason == "identity_mismatch"
+        assert exc.value.reason == "tenant_mismatch"
+        assert len(table.queries) == 1, "the warm entry was reused, so the guard ran on cached data"
+
+    @pytest.mark.asyncio
+    async def test_cached_row_keeps_its_status_so_terminality_survives_the_cache(self, cache):
+        """T15: ``status`` round-trips through the cache.
+
+        Unlike every other cached attribute, ``status`` is mutable, so it is the one
+        that a lossy normalization would silently drop — and a dropped status reads as
+        absent, which is deliberately NOT terminal. The result would be a
+        terminal-run check that works cold and is disabled warm, i.e. exactly the
+        "zero drift, zero guard" shape this suite exists to catch.
+        """
+        table = _StubTable(items=[_row(status="complete")])
+        resolver = _resolver(table, cache)
+
+        for _ in range(2):
+            with pytest.raises(RunBindingError) as exc:
+                await resolve_run_binding(
+                    run_id=RUN_ID,
+                    caller_user_id=HOSTED_WORKER,
+                    caller_org_id=TENANT,
+                    resolver=resolver,
+                )
+            assert exc.value.reason == "terminal_run"
+
+        assert len(table.queries) == 1, "second refusal came off the cached row"
 
     @pytest.mark.asyncio
     async def test_unknown_run_is_not_negatively_cached(self, cache):
