@@ -11,6 +11,7 @@ Endpoints:
 
 import logging
 import os
+import re
 from typing import Annotated, Literal
 
 import boto3
@@ -55,6 +56,26 @@ async def get_access_control(db: Annotated[AsyncSession, Depends(get_db)]) -> Ac
 def get_stats_service() -> StatsService:
     """Get stats service instance (singleton-ish; boto3 handles connection pooling)."""
     return StatsService()
+
+
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _expand_date_bound(value: str | None, *, end: bool) -> str | None:
+    """Widen a bare YYYY-MM-DD to a full-day ISO-8601 instant.
+
+    Issue #4390: `since`/`until` are compared *lexicographically* against the
+    `arrived_at` DynamoDB sort key, which stores a full ISO-8601 instant
+    (e.g. "2026-06-13T22:00:00Z"). A bare date is therefore a broken bound:
+    "2026-06-13" < "2026-06-13T22:00:00Z", so as an upper bound it silently
+    excludes the whole end day, and since == until returns zero rows.
+
+    Callers that already send a timed value (and malformed values) pass through
+    untouched — malformed input stays rejected downstream exactly as before.
+    """
+    if value and _DATE_ONLY.match(value):
+        return f"{value}T23:59:59.999Z" if end else f"{value}T00:00:00Z"
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +376,9 @@ async def get_my_invocations(
     Default view=runs preserves the flat list behavior.
     """
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    # Issue #4390: widen bare YYYY-MM-DD bounds to full-day instants
+    since = _expand_date_bound(since, end=False)
+    until = _expand_date_bound(until, end=True)
     try:
         if view == "chains":
             chain_result = service.query_chains_by_user(
@@ -433,6 +457,10 @@ async def get_admin_invocations(
     else:
         # Org admins are pinned to their own org (org_id == tenant_id in this product)
         effective_tenant_id = current_user.org_id
+
+    # Issue #4390: widen bare YYYY-MM-DD bounds to full-day instants
+    since = _expand_date_bound(since, end=False)
+    until = _expand_date_bound(until, end=True)
 
     try:
         result = service.query_by_tenant(

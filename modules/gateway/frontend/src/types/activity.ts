@@ -163,9 +163,15 @@ export interface InvocationQueryParams {
   status?: InvocationStatus;
   channel?: InvocationChannel;
   persona?: string;
-  start_date?: string;
-  end_date?: string;
-  limit?: number;
+  /**
+   * Issue #4390: these three mirror the backend query-param names exactly
+   * (`src/activity/routes.py`). They were previously named start_date/end_date/
+   * limit, which FastAPI silently dropped — the filters were inert.
+   * A bare YYYY-MM-DD is fine: the server widens it to a full-day instant.
+   */
+  since?: string;
+  until?: string;
+  page_size?: number;
   last_key?: string;
   /**
    * Issue #1658: When false (default), exclude non-triggering rows —

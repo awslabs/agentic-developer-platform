@@ -10,14 +10,33 @@ import { http, HttpResponse } from 'msw';
 import { mockInvocations } from '../data/activity';
 import type { InvocationItem, InvocationChainItem, InvocationChainResponse } from '@/types/activity';
 
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Mirror of the server's `_expand_date_bound` (`src/activity/routes.py`).
+ *
+ * Issue #4390: bounds are compared lexicographically against a full ISO-8601
+ * timestamp, so a bare YYYY-MM-DD upper bound would exclude the whole end day
+ * (and since == until would return zero rows). Kept in step with the server on
+ * purpose — this mock previously implemented the *broken* contract, which is
+ * why the component tests stayed green while the real filters did nothing.
+ */
+function expandDateBound(value: string | null, end: boolean): string | null {
+  if (value && DATE_ONLY.test(value)) {
+    return end ? `${value}T23:59:59.999Z` : `${value}T00:00:00Z`;
+  }
+  return value;
+}
+
 function filterAndPaginate(request: Request, items: InvocationItem[]) {
   const url = new URL(request.url);
   const status = url.searchParams.get('status');
   const channel = url.searchParams.get('channel');
   const persona = url.searchParams.get('persona');
-  const startDate = url.searchParams.get('start_date');
-  const endDate = url.searchParams.get('end_date');
-  const limit = parseInt(url.searchParams.get('limit') || '20');
+  // Issue #4390: these mirror the backend param names (since/until/page_size).
+  const startDate = expandDateBound(url.searchParams.get('since'), false);
+  const endDate = expandDateBound(url.searchParams.get('until'), true);
+  const limit = parseInt(url.searchParams.get('page_size') || '20');
   const lastKey = url.searchParams.get('last_key');
 
   let filtered = [...items];

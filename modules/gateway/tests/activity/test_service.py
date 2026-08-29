@@ -9,9 +9,12 @@ Covers:
 - Phase 6 (#1461): trigger_kind derivation, chain query, depth cap
 """
 
+import boto3
 import pytest
 from botocore.exceptions import ClientError
+from moto import mock_aws
 
+from src.activity.routes import _expand_date_bound
 from src.activity.service import (
     ActivityService,
     _build_chain_tree,
@@ -3492,3 +3495,101 @@ class TestLivenessOnMappedItems:
         assert children["child"].liveness == "live"
         # A stalled child is indeterminate, not finished.
         assert children["stalled"].liveness == "unverifiable"
+
+
+class TestDateBoundZeroRowRegression:
+    """Issue #4390: end-to-end proof against a real (moto) DynamoDB table.
+
+    The mock-based tests above assert the shape of the KeyConditionExpression.
+    This class asserts the thing the user actually complained about: that a
+    single-day filter returns the day's rows instead of nothing. It needs a real
+    query engine because the bug lives in DynamoDB's lexicographic comparison of
+    the `arrived_at` sort key, which a MagicMock cannot reproduce.
+    """
+
+    TABLE = "test-webhook-events"
+    USER = "user-zero-row"
+    # A run that arrived late in the day — the row that a bare-date upper bound
+    # silently excludes.
+    ARRIVED_AT = "2026-06-13T22:00:00Z"
+
+    @pytest.fixture
+    def seeded_table(self):
+        with mock_aws():
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            ddb.create_table(
+                TableName=self.TABLE,
+                KeySchema=[
+                    {"AttributeName": "event_id", "KeyType": "HASH"},
+                    {"AttributeName": "arrived_at", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "event_id", "AttributeType": "S"},
+                    {"AttributeName": "arrived_at", "AttributeType": "S"},
+                    {"AttributeName": "user_id", "AttributeType": "S"},
+                ],
+                GlobalSecondaryIndexes=[
+                    {
+                        "IndexName": "user-index",
+                        "KeySchema": [
+                            {"AttributeName": "user_id", "KeyType": "HASH"},
+                            {"AttributeName": "arrived_at", "KeyType": "RANGE"},
+                        ],
+                        "Projection": {"ProjectionType": "ALL"},
+                    }
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            ddb.Table(self.TABLE).put_item(
+                Item={
+                    "event_id": "inv-late-in-day",
+                    "arrived_at": self.ARRIVED_AT,
+                    "user_id": self.USER,
+                    "status": "complete",
+                    "topic": "Late run",
+                }
+            )
+            yield ddb
+
+    def _query(self, ddb, since, until):
+        service = ActivityService(table_name=self.TABLE, dynamodb_resource=ddb)
+        return service.query_by_user(user_id=self.USER, since=since, until=until)
+
+    def test_single_day_expanded_bounds_return_the_row(self, seeded_table):
+        """since == until == the run's day returns the run (the headline bug).
+
+        With the route's expansion this passes; with the raw bare dates that the
+        UI sends it returns zero rows.
+        """
+        result = self._query(
+            seeded_table,
+            _expand_date_bound("2026-06-13", end=False),
+            _expand_date_bound("2026-06-13", end=True),
+        )
+        assert [i.invocation_id for i in result.items] == ["inv-late-in-day"]
+
+    def test_unexpanded_single_day_returns_nothing(self, seeded_table):
+        """Documents the defect: bare dates collapse to an empty result.
+
+        This is what the page did before the fix, and what it would still do if
+        only the param names were renamed.
+        """
+        result = self._query(seeded_table, "2026-06-13", "2026-06-13")
+        assert result.items == []
+
+    def test_until_only_includes_late_in_day_row(self, seeded_table):
+        """A bare-date upper bound must not drop the end day."""
+        expanded = self._query(seeded_table, None, _expand_date_bound("2026-06-13", end=True))
+        assert [i.invocation_id for i in expanded.items] == ["inv-late-in-day"]
+        # Unexpanded, the same request excludes the whole day
+        assert self._query(seeded_table, None, "2026-06-13").items == []
+
+    def test_day_before_and_after_are_excluded(self, seeded_table):
+        """The expansion widens to exactly one day — it must not leak neighbours."""
+        for day in ("2026-06-12", "2026-06-14"):
+            result = self._query(
+                seeded_table,
+                _expand_date_bound(day, end=False),
+                _expand_date_bound(day, end=True),
+            )
+            assert result.items == [], f"{day} should not match the 06-13 run"

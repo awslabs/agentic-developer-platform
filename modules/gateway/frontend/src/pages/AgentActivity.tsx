@@ -552,9 +552,9 @@ export default function AgentActivity() {
     status: (statusFilter || undefined) as InvocationStatus | undefined,
     channel: (channelFilter || undefined) as InvocationChannel | undefined,
     persona: personaFilter || undefined,
-    start_date: startDate || undefined,
-    end_date: endDate || undefined,
-    limit: 20,
+    since: startDate || undefined,
+    until: endDate || undefined,
+    page_size: 20,
     last_key: currentCursor,
     include_non_triggering: shouldIncludeNonTriggering ? true : undefined,
   };
