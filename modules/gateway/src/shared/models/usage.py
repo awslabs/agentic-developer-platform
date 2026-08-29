@@ -40,6 +40,14 @@ class UsageLog(Base, TenantMixin):
     # (ADP_BEDROCK_VIA=direct|user writes no row at all). A default would stamp a
     # fabricated address onto historical rows and land them in some EPIC's total.
     graph_address: Mapped[str | None] = mapped_column(String(512), index=True)
+    # Issue #4398: which client tool made the request (claude_code, codex_cli,
+    # cursor, web_chat, sdk — the closed set in src/proxy/client_tool.py).
+    # Nullable with NO default, and never backfilled: NULL means "NOT CAPTURED",
+    # never "unknown tool". That distinction is the whole contract (FR-6.2) —
+    # every pre-migration row is NULL, and a default or sentinel here would make
+    # those rows read as a real tool and corrupt any future per-tool breakdown.
+    # Never holds a raw User-Agent; only a normalised member of that closed set.
+    client_tool: Mapped[str | None] = mapped_column(String(32), index=True)
 
 
 class RateLimitConfig(Base, TenantMixin):

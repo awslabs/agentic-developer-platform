@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 
 from src.auth.middleware import validate_cognito_jwt
 from src.chat_logging.service import ChatLoggingService, create_streaming_logging_wrapper
+from src.proxy.client_tool import normalize_client_tool
 from src.proxy.mantle_service import MantlePassthroughService, MantleUpstreamError
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.schemas import (
@@ -42,7 +43,7 @@ from src.proxy.schemas import (
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,
 )
-from src.proxy.service import ProxyService, _current_agent_run_id
+from src.proxy.service import ProxyService, _current_agent_run_id, _current_client_tool
 from src.shared.config import get_settings
 from src.shared.exceptions import BedrockGatewayError, ModelNotAllowedError
 from src.shared.schemas.auth import TokenContext
@@ -144,6 +145,44 @@ def set_agent_run_id_from_header(request: Request) -> str | None:
     else:
         _current_agent_run_id.set(None)
     return agent_run_id
+
+
+async def set_client_tool_from_header(request: Request) -> str | None:
+    """Derive the normalised client tool from User-Agent and set the contextvar.
+
+    Issue #4398 (FR-6.1): capture WHICH tool made each proxied request — Claude
+    Code, Codex CLI, Cursor, the web chat — onto the cost record. Mirrors the
+    ``agent_run_id`` precedent above (capture in the route, read at the
+    ``_log_usage`` write site) with two deliberate differences:
+
+    1. **This is `async def`, and that is load-bearing.** A contextvar set inside
+       a SYNC dependency is lost before the endpoint body runs: Starlette executes
+       sync dependencies in a threadpool, which copies the context, so the
+       mutation lands on a throwaway copy. That is exactly why ``agent_run_id``
+       — set by the sync ``set_agent_run_id_from_header`` — read as NULL on 100%
+       of rows until #1755 worked around it by threading the value explicitly
+       through eight call sites. Declaring this dependency ``async`` makes the
+       contextvar reliable at the write site with no new parameter on any
+       signature, so the workaround is unnecessary rather than repeated. Do not
+       "simplify" this to ``def``: that silently reintroduces the #1755 bug, and
+       the row just goes quietly NULL with no error anywhere.
+
+    2. **The value is normalised here, never raw.** Only a member of the closed
+       set in ``client_tool.py`` (or ``None``) is ever persisted, so a future
+       breakdown cannot fragment across version/platform spellings.
+
+    The contextvar is set **unconditionally**, including to ``None``. ContextVars
+    can carry a previous request's value into a task that did not set one, so a
+    conditional ``if tool:`` would let a UA-less request inherit the last request's
+    tool and mis-attribute it. Always writing makes each request self-contained.
+
+    Never raises: ``normalize_client_tool`` is total, so an absent, malformed or
+    novel User-Agent yields ``None`` ("not captured") rather than failing a
+    request on the hot path. A reporting field must not be an availability risk.
+    """
+    client_tool = normalize_client_tool(request.headers.get("user-agent"))
+    _current_client_tool.set(client_tool)
+    return client_tool
 
 
 async def get_token_context(
@@ -259,6 +298,10 @@ async def create_chat_completion(
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
     _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
+    # Issue #4398: capture the client tool onto usage_logs (FR-6.1). Attached to
+    # exactly the routes that already carry the agent_run_id dependency — i.e. the
+    # routes that write a usage_logs row.
+    _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
     """Create a chat completion (OpenAI-compatible).
@@ -322,6 +365,10 @@ async def create_message(
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
     _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
+    # Issue #4398: capture the client tool onto usage_logs (FR-6.1). Attached to
+    # exactly the routes that already carry the agent_run_id dependency — i.e. the
+    # routes that write a usage_logs row.
+    _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
     anthropic_version: Annotated[str | None, Header(alias="anthropic-version")] = None,
@@ -476,6 +523,10 @@ async def invoke_model(
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
     _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
+    # Issue #4398: capture the client tool onto usage_logs (FR-6.1). Attached to
+    # exactly the routes that already carry the agent_run_id dependency — i.e. the
+    # routes that write a usage_logs row.
+    _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
     """Invoke Bedrock model (pass-through).
@@ -515,6 +566,10 @@ async def invoke_model_with_response_stream(
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
     _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
+    # Issue #4398: capture the client tool onto usage_logs (FR-6.1). Attached to
+    # exactly the routes that already carry the agent_run_id dependency — i.e. the
+    # routes that write a usage_logs row.
+    _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
     """Invoke Bedrock model with streaming response (pass-through).
@@ -574,6 +629,10 @@ async def invoke_model_by_path(
     # invoke routes but MISSED this path — so agent_run_id was NULL on 100% of
     # usage_logs rows and per-run cost never linked. Add the dependency here.
     _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
+    # Issue #4398: capture the client tool onto usage_logs (FR-6.1). Attached to
+    # exactly the routes that already carry the agent_run_id dependency — i.e. the
+    # routes that write a usage_logs row.
+    _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
 ) -> Response:
@@ -676,6 +735,10 @@ async def invoke_model_stream_by_path(
     # Bedrock URL pattern must read x-agent-runid so usage_logs.agent_run_id
     # is populated and per-run cost links.
     _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
+    # Issue #4398: capture the client tool onto usage_logs (FR-6.1). Attached to
+    # exactly the routes that already carry the agent_run_id dependency — i.e. the
+    # routes that write a usage_logs row.
+    _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
 ) -> StreamingResponse:
@@ -776,6 +839,10 @@ async def create_openai_response(
     mantle_service: Annotated[MantlePassthroughService, Depends(get_mantle_service)],
     model_resolver: Annotated[ModelResolver, Depends(get_model_resolver)],
     _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
+    # Issue #4398: capture the client tool onto usage_logs (FR-6.1). Attached to
+    # exactly the routes that already carry the agent_run_id dependency — i.e. the
+    # routes that write a usage_logs row.
+    _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
 ) -> Response:

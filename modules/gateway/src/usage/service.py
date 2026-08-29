@@ -53,6 +53,7 @@ class UsageService(IUsageService):
         agent_run_id: str | None = None,
         cache_read_input_tokens: int | None = None,
         cache_creation_input_tokens: int | None = None,
+        client_tool: str | None = None,
     ) -> None:
         """
         Log a Bedrock API request.
@@ -74,6 +75,12 @@ class UsageService(IUsageService):
                 the cache hit-rate query meaningful.
             cache_creation_input_tokens: Prompt-cache write tokens, same
                 None-means-unreported contract.
+            client_tool: Normalised client tool that made the request (issue
+                #4398), from ``src/proxy/client_tool.py``. Pass None for "not
+                captured" — never a placeholder like "unknown". The column is
+                not back-fillable, so None is the honest value for an
+                unrecognised client and must stay distinguishable from a real
+                tool name.
         """
         log_entry = UsageLog(
             # Issue #4132: usage_logs is an ATTRIBUTION surface — a hosted run
@@ -95,6 +102,7 @@ class UsageService(IUsageService):
             agent_run_id=agent_run_id,
             cache_read_input_tokens=cache_read_input_tokens,
             cache_creation_input_tokens=cache_creation_input_tokens,
+            client_tool=client_tool,
         )
 
         self.db.add(log_entry)

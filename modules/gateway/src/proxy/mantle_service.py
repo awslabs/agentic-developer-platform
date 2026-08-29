@@ -34,6 +34,7 @@ import httpx
 from src.budget.enforcement_service import reconcile_budget_reservation
 from src.budget.pricing import pricing_service
 from src.proxy.mantle_auth import MantleAuth
+from src.proxy.service import _current_client_tool
 from src.shared.database import get_session_factory
 from src.shared.schemas.auth import TokenContext
 from src.usage.service import UsageService
@@ -394,6 +395,11 @@ class MantlePassthroughService:
         every mantle passthrough would hold its pre-charge until the reservation
         expired — so a burst of them would be denied against their own stale
         estimates instead of their real cost.
+
+        Issue #4398: for the same "second call-site" reason, client_tool is read
+        here too. Wiring only the Bedrock path would leave client_tool NULL on
+        100% of OpenAI passthrough rows — indistinguishable from "not captured",
+        so a future breakdown would under-report this route with nothing saying so.
         """
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
@@ -424,6 +430,9 @@ class MantlePassthroughService:
                     status_code=status_code,
                     request_id=request_id,
                     agent_run_id=agent_run_id,
+                    # Issue #4398: already normalised (or None) by the route
+                    # dependency; None persists as NULL = "not captured".
+                    client_tool=_current_client_tool.get(),
                 )
         except Exception as exc:  # noqa: BLE001 - metering must not break the proxy
             logger.warning("Failed to write mantle usage_logs row", extra={"error": str(exc), "model": model})

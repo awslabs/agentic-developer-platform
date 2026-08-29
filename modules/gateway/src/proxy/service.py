@@ -44,6 +44,22 @@ _current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar
 # so _log_usage can write it to usage_logs for per-run cost traceability.
 _current_agent_run_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_agent_run_id", default=None)
 
+# Issue #4398: Context variable for the normalised client tool (derived from the
+# User-Agent by `src/proxy/client_tool.py`) so _log_usage can stamp it onto
+# usage_logs without threading a new parameter through every proxy signature.
+#
+# Set by the ASYNC route dependency `set_client_tool_from_header`. The async-ness
+# is load-bearing, not stylistic: a contextvar set inside a SYNC (`def`)
+# dependency is lost before the endpoint body runs, because Starlette executes
+# sync dependencies in a threadpool via `run_in_threadpool`, which copies the
+# context — so the mutation lands on a throwaway copy. That is precisely why
+# `agent_run_id` (set by the sync `set_agent_run_id_from_header`) read as NULL on
+# 100% of rows until #1755 patched around it by threading the value explicitly
+# through eight call sites. An async dependency runs on the request's own task
+# context, so the value survives to _log_usage — including into a
+# StreamingResponse generator's `finally`, which is where the streaming paths log.
+_current_client_tool: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_client_tool", default=None)
+
 
 class ProxyService(IProxyService):
     """Service for proxying requests to Bedrock.
@@ -375,6 +391,10 @@ class ProxyService(IProxyService):
         pass None (not 0) when the provider did not report them — see
         ``_cache_tokens_from_usage``.
 
+        Issue #4398: Now includes client_tool (from contextvar, set by the async
+        route dependency from the User-Agent). None is written as NULL and means
+        "not captured", never "unknown tool".
+
         Issue #4287: also reconciles this request's budget reservation. Every
         caller invokes this from a ``finally``, so it is the one point that runs
         on success AND on failure — which makes it both the "charge the real
@@ -388,6 +408,12 @@ class ProxyService(IProxyService):
 
         # Issue #1616: Pick up agent_run_id from contextvar
         agent_run_id = _current_agent_run_id.get()
+
+        # Issue #4398: Pick up the normalised client tool from its contextvar.
+        # Already normalised to the closed set (or None) by the route dependency,
+        # so nothing here can raise and no raw User-Agent can reach the column.
+        # None means "not captured" and is written as NULL — never a placeholder.
+        client_tool = _current_client_tool.get()
 
         await reconcile_budget_reservation(
             context=context,
@@ -413,6 +439,7 @@ class ProxyService(IProxyService):
                     agent_run_id=agent_run_id,
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_creation_input_tokens=cache_creation_input_tokens,
+                    client_tool=client_tool,
                 )
         except Exception as exc:
             logger.warning(
