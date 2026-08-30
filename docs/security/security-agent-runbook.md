@@ -5,6 +5,29 @@ against this platform: static **code review** first (Phase 1), then on-demand
 **penetration testing** (Phase 2). Every step below is a CLI call — the console
 is only a wrapper over the same API.
 
+> ## ⚠️ Corrections — read this first
+>
+> This runbook was written from one manual session and **12 of its statements
+> have since been proven wrong or incomplete** against the live API (2026-08-30,
+> issue #4439). The corrections live in
+> **[`security-agent-pentest-validated.md`](security-agent-pentest-validated.md)
+> §8 (drift table)**, which supersedes this document wherever they disagree.
+>
+> The highest-impact ones, because they fail *silently* or *hard*:
+>
+> | This document says | Reality |
+> |---|---|
+> | `aws securityagent help` verifies availability (§0) | Fails with a `groff or mandoc` error on our runner images. Use `--generate-cli-skeleton`. |
+> | `list-findings --query 'findings[]...'` (§4) | Real response key is **`findingsSummaries`**. As printed this returns `null` with **exit code 0**. |
+> | polling / stop / findings commands without `--agent-space-id` (§4, §5) | **`agentSpaceId` is required** on all of them; these commands fail as printed. |
+> | `"excludeRiskTypes": []` + `"maxTaskHours": 20` (§5.3) | An unbounded, maximally-aggressive profile. **Do not copy this example.** Use the validated profile instead. |
+> | `excludeRiskTypes` has 9 values "and more" (§1) | **28 values**, of which 7 are destructive-action classes rather than vulnerability classes. |
+> | *(nothing about traffic fencing)* | `networkTrafficConfig` provides an ALLOW/DENY URL fence — the strongest blast-radius control available, and absent from this doc. |
+>
+> Machine-readable literals for automation:
+> [`.github/security/security-agent-profile.json`](../../.github/security/security-agent-profile.json).
+> **Automation must read that file, not transcribe from this prose.**
+
 > **Placeholders.** Replace every `<ANGLE_BRACKET>` token with your own value.
 > `111122223333` is a stand-in AWS account ID. Nothing in this doc is tied to a
 > specific deployment, region, bucket, or identity — supply your own.

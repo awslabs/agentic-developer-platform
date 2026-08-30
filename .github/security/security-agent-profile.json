@@ -1,0 +1,302 @@
+{
+  "$schema": "./security-agent-profile.schema.json",
+  "profile_version": 1,
+  "generated_by": "U0 live-validation spike (issue #4439)",
+  "validated_against": {
+    "deploy_target": "adp-dev-embark1",
+    "api_version": "2025-09-06",
+    "service_id": "SecurityAgent",
+    "endpoint_prefix": "securityagent",
+    "protocol": "rest-json",
+    "operation_count": 92,
+    "observed_on": "2026-08-30"
+  },
+
+  "runtime": {
+    "provisioning": "self_upgradable",
+    "install_command": "pip3 install -U --break-system-packages 'boto3>=1.42.80'",
+    "observed": {
+      "aws_cli": "2.36.34",
+      "botocore": "1.43.83",
+      "boto3": "1.43.83",
+      "python": "/usr/local/bin/python3",
+      "python_version": "3.13.15",
+      "observed_on_runtime": "agent-scaledjob pod (agent-worker image)",
+      "note": "The agent-scaledjob image already resolves securityagent. The arc-runner-org image — where the nightly actually runs — hard-pins boto3==1.35.99, which was PROVEN not to carry the service. See residual_risk."
+    },
+    "min_cli_version": "2.36.34",
+    "min_cli_version_is_bisected": false,
+    "min_botocore_version": "1.42.80",
+    "min_botocore_version_is_bisected": true,
+    "min_boto3_version": "1.42.80",
+    "evidence": {
+      "baked_pin_lacks_service": "boto3==1.35.99 (platform/arc-runner/Dockerfile) installed into a clean venv -> 'securityagent' absent from Session().get_available_services()",
+      "bisected_boundary": "botocore 1.42.79 -> absent; botocore 1.42.80 -> present (data/securityagent/2025-09-06)",
+      "upgrade_proven": "clean venv at 1.35.99 upgraded to 1.42.80 -> boto3.client('securityagent') constructs successfully",
+      "cli_probe_that_works": "aws securityagent create-pentest --generate-cli-skeleton"
+    },
+    "residual_risk": "SP-1 asked for execution on arc-runner-org. This spike executed on the agent-scaledjob pod (a different image). The boto3 pin on arc-runner-org is proven insufficient and the in-session upgrade is proven to work, so self_upgradable is the correct decision — but U4 must run the preflight assertion on arc-runner-org and fail closed if the upgrade does not take.",
+    "preflight_assertion": "python3 -c \"import boto3,sys; sys.exit(0 if 'securityagent' in boto3.Session().get_available_services() else 1)\" || pip3 install -U --break-system-packages 'boto3>=1.42.80'",
+    "do_not_use_as_probe": {
+      "command": "aws securityagent help",
+      "reason": "The runbook's own readiness check. Fails on this image with 'Could not find executable named \"groff or mandoc\"' — an unrelated docs-tooling error that is indistinguishable from a missing service. Use --generate-cli-skeleton instead."
+    }
+  },
+
+  "agent_space": {
+    "existing_id": "as-984b0721-375d-44f2-9e64-e0ff4c8111f8",
+    "existing_name": "adp-embark1-secreview",
+    "service_role": "arn:aws:iam::879318057152:role/adp-securityagent-codereview",
+    "staging_bucket": "adp-dev-security-scans-879318057152",
+    "reuse": true,
+    "note": "Created by the manual 2026-08-20 session. Already has the service role and staging bucket registered under awsResources, and codeReviewSettings enabled. The nightly reuses it; it does not create one."
+  },
+
+  "code_review": {
+    "verbs": [
+      "CreateAgentSpace",
+      "UpdateAgentSpace",
+      "CreateCodeReview",
+      "StartCodeReviewJob",
+      "BatchGetCodeReviewJobs",
+      "ListCodeReviewJobsForCodeReview",
+      "ListFindings",
+      "BatchGetFindings",
+      "StopCodeReviewJob"
+    ],
+    "required_params": {
+      "CreateAgentSpace": ["name"],
+      "UpdateAgentSpace": ["agentSpaceId"],
+      "CreateCodeReview": ["title", "agentSpaceId", "assets"],
+      "StartCodeReviewJob": ["agentSpaceId", "codeReviewId"],
+      "BatchGetCodeReviewJobs": ["agentSpaceId", "codeReviewJobIds"],
+      "ListFindings": ["agentSpaceId"],
+      "BatchGetFindings": ["agentSpaceId", "findingIds"],
+      "StopCodeReviewJob": ["agentSpaceId", "codeReviewJobId"]
+    },
+    "pinned_modes": {
+      "validationMode": "DISABLED",
+      "codeRemediationStrategy": "DISABLED"
+    },
+    "enums": {
+      "validationMode": ["DISABLED", "SIMULATED"],
+      "codeRemediationStrategy": ["AUTOMATIC", "DISABLED"],
+      "job_status": ["IN_PROGRESS", "STOPPING", "STOPPED", "FAILED", "COMPLETED"]
+    },
+    "title_charset": "^[A-Za-z0-9_-]{1,100}$",
+    "source_must_be_zip": true
+  },
+
+  "findings": {
+    "list_response_key": "findingsSummaries",
+    "batch_get_response_key": "findings",
+    "list_requires_job_scope": true,
+    "list_job_scope_params": ["codeReviewJobId", "pentestJobId"],
+    "id_format": "^f-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    "finding_id_stable": false,
+    "finding_id_stability_evidence": "Two completed code-review jobs over overlapping source produced 57 and 43 findings with ZERO shared findingId and zero identical names. The same underlying defect (budget caps not binding on /v1/chat/completions) appears as f-79066a5c... (BUSINESS_LOGIC_VULNERABILITIES) in one run and f-8ac415ea... (BUSINESS_LOGIC_VULNERABILITIES) in the other; the GitHub install-callback defect appears as f-fce18a52... with riskType INSECURE_DIRECT_OBJECT_REFERENCE and as f-77ab0636... with riskType PRIVILEGE_ESCALATION. IDs are per-job UUIDs, names are LLM-authored prose, and riskType is not stable either.",
+    "dedup_implication": "Dedup MUST use content fingerprinting. It must NOT key on findingId, and it must NOT key on riskType alone. codeLocations[].filePath (+ lineStart) is the most stable available signal.",
+    "revalidation_linkage_fields": ["originalFindingId", "revalidationJobIds"],
+    "schema_fields": [
+      "findingId", "agentSpaceId", "pentestId", "pentestJobId", "codeReviewId",
+      "codeReviewJobId", "taskId", "name", "description", "status", "riskType",
+      "riskLevel", "riskScore", "reasoning", "confidence", "validationStatus",
+      "attackScript", "codeRemediationTask", "lastUpdatedBy", "customerNote",
+      "codeLocations", "verificationScript", "alignmentRationale",
+      "revalidationJobIds", "originalFindingId", "createdAt", "updatedAt"
+    ],
+    "enums": {
+      "status": ["ACTIVE", "RESOLVED", "ACCEPTED", "FALSE_POSITIVE"],
+      "riskLevel": ["UNKNOWN", "INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL"],
+      "confidence": ["FALSE_POSITIVE", "UNCONFIRMED", "LOW", "MEDIUM", "HIGH"],
+      "validationStatus": ["CONFIRMED", "NOT_REPRODUCED", "VALIDATION_FAILED", "VALIDATING", "NOT_VALIDATED"]
+    },
+    "risk_type_is_open_set": true,
+    "risk_type_open_set_evidence": "finding.riskType carries NO enum in the API model, and 5 observed values (AUTHENTICATION_BYPASS, BROKEN_OBJECT_PROPERTY_AUTHORIZATION, SECURITY_MISCONFIGURATION, SESSION_TOKEN_VULNERABILITIES, UNRESTRICTED_RESOURCE_CONSUMPTION) do not appear in the excludeRiskTypes enum at all. Consumers must not switch exhaustively on riskType."
+  },
+
+  "target_domain": {
+    "verification_method": "HTTP_ROUTE",
+    "verification_is_mandatory": true,
+    "target_domain_name": "d1g6cal2ts4iis.cloudfront.net",
+    "chosen_because": "The dev entry point is d1g6cal2ts4iis.cloudfront.net with zero CNAME aliases and cloudfront_default_certificate=true — an AWS-owned domain, so we cannot publish a TXT record for it and DNS_TXT is impossible. There is no Route53 public hosted zone and no custom domain/ACM cert in the active dev config. All five dev ALBs are scheme=internal (CloudFront reaches the gateway through a VPC Origin; direct public ALB access is intentionally disallowed), so the only externally reachable surface is CloudFront. HTTP_ROUTE is therefore the only feasible method for the real public edge.",
+    "rejected": {
+      "DNS_TXT": "We do not control DNS for *.cloudfront.net and no custom domain/alias is configured on the dev distribution.",
+      "PRIVATE_VPC": "Viable fallback (would target internal-k8s-adpgatew-bedrockg-8c0085afd5), but requires CreatePrivateConnection and attacks a surface real users never reach, so it under-tests the actual edge."
+    },
+    "verification_artifact": "verificationDetails.httpRoute -> {token, routePath}; publish token at routePath, then call VerifyTargetDomain.",
+    "verification_artifact_caveat": "CloudFront routes /.well-known/* to the API origin, NOT to the S3 frontend origin. If the service-issued routePath falls under /.well-known/, the token must be served by the gateway app rather than uploaded to S3. An extensioned path outside /.well-known/ passes through the SPA-fallback function untouched to S3 (spa-fallback.js only rewrites extensionless paths). The operator must read the returned routePath before choosing where to publish.",
+    "coverage_caveat": "HTTP_ROUTE on CloudFront exercises only the externally-routed endpoints. The SigV4 /agent/* and /internal/* planes sit behind API Gateway, not CloudFront, and a documented ~52 endpoints are not exposed through the distribution at all. Full coverage would need a second PRIVATE_VPC target against the internal ALB; run 1 knowingly covers the CloudFront edge only.",
+    "bootstrap_owner": "Named human operator, one-time, out of band. The nightly path MUST NOT call CreateTargetDomain or VerifyTargetDomain (C-6).",
+    "durability": "verificationStatus persists on the target-domain resource (PENDING|VERIFIED|FAILED|UNREACHABLE) with a verifiedAt timestamp; re-verification is not per-job. The nightly asserts verificationStatus==VERIFIED via BatchGetTargetDomains and fails closed otherwise.",
+    "exists_today": false,
+    "exists_today_evidence": "ListTargetDomains returns an empty list and the agent space's targetDomainIds is []. No pentest has ever been created in this account (ListPentests is empty).",
+    "enums": {
+      "verificationMethod": ["DNS_TXT", "HTTP_ROUTE", "PRIVATE_VPC"],
+      "verificationStatus": ["PENDING", "VERIFIED", "FAILED", "UNREACHABLE"]
+    },
+    "required_params": {
+      "CreateTargetDomain": ["targetDomainName", "verificationMethod"],
+      "VerifyTargetDomain": ["targetDomainId"],
+      "BatchGetTargetDomains": ["targetDomainIds"]
+    }
+  },
+
+  "pentest": {
+    "maxTaskHours": 2,
+    "verbs": [
+      "CreateTargetDomain",
+      "VerifyTargetDomain",
+      "BatchGetTargetDomains",
+      "CreatePentest",
+      "UpdatePentest",
+      "StartPentestJob",
+      "BatchGetPentestJobs",
+      "StopPentestJob",
+      "ListFindings",
+      "BatchGetFindings"
+    ],
+    "required_params": {
+      "CreatePentest": ["title", "agentSpaceId"],
+      "UpdatePentest": ["agentSpaceId", "pentestId"],
+      "StartPentestJob": ["agentSpaceId", "pentestId"],
+      "BatchGetPentestJobs": ["agentSpaceId", "pentestJobIds"],
+      "StopPentestJob": ["agentSpaceId", "pentestJobId"]
+    },
+    "enums": {
+      "jobType": ["FULL", "REVALIDATION"],
+      "job_status": ["IN_PROGRESS", "STOPPING", "STOPPED", "FAILED", "COMPLETED"],
+      "actor_providerType": ["SECRETS_MANAGER", "AWS_LAMBDA", "AWS_IAM_ROLE", "AWS_INTERNAL"],
+      "networkTrafficRule_effect": ["ALLOW", "DENY"],
+      "networkTrafficRuleType": ["URL"],
+      "disableManagedSkills": ["FINDING_PERSONALIZATION", "LOGIN_OPTIMIZATION"]
+    },
+
+    "destructiveness_axis_exists": false,
+    "destructiveness_finding": "There is NO intensity, aggressiveness, read-only or non-mutating flag anywhere on CreatePentest/UpdatePentest. The full 28-value excludeRiskTypes enum is the only content lever, and it is a denylist of risk CLASSES. However — correcting the premise in the spike spec — the enum is NOT purely vulnerability classes: it contains 6 genuinely action-shaped values (FILE_DELETION, FILE_CREATION, FILE_ACCESS, DATABASE_MODIFICATION, DATABASE_ACCESS, OUTBOUND_SERVICE_REQUEST) plus DENIAL_OF_SERVICE. So a narrow, honest destructiveness exclusion IS expressible; a broad 'gentler run' is not.",
+    "real_scope_levers": [
+      "networkTrafficConfig.rules[] — ALLOW/DENY on URL patterns; an undocumented allow/deny path list that bounds which URLs are touched at all",
+      "assets.endpoints[].uri — endpoint/path scoping",
+      "vpcConfig — confines traffic to named VPC/subnets/security groups",
+      "maxTaskHours — hard metered ceiling",
+      "StopPentestJob — abort",
+      "assets.actors[] — identity scoping"
+    ],
+    "excludeRiskTypes": [
+      {
+        "value": "FILE_DELETION",
+        "classification": "destructive_action",
+        "coverage_cost": "We will not learn whether an attacker can delete files through the gateway (e.g. arbitrary-path unlink via an upload or artifact endpoint). Accepted for run 1: deletion against a shared dev environment is not reliably reversible."
+      },
+      {
+        "value": "DATABASE_MODIFICATION",
+        "classification": "destructive_action",
+        "coverage_cost": "We will not learn whether an attacker can write or corrupt rows (e.g. tamper with budget ledgers or membership rows). This is a real and relevant risk for this platform, and excluding it is the single largest coverage sacrifice in this profile. Revisit once the pentest runs against a disposable environment rather than shared dev."
+      },
+      {
+        "value": "DENIAL_OF_SERVICE",
+        "classification": "destructive_action",
+        "coverage_cost": "We will not learn whether the gateway can be exhausted or stalled. Accepted because a DoS against shared dev takes the environment away from every other developer, and UNRESTRICTED_RESOURCE_CONSUMPTION findings from the static review already cover much of this ground."
+      }
+    ],
+    "deliberately_not_excluded": [
+      "PRIVILEGE_ESCALATION",
+      "INSECURE_DIRECT_OBJECT_REFERENCE",
+      "SERVER_SIDE_REQUEST_FORGERY",
+      "JSON_WEB_TOKEN_VULNERABILITIES",
+      "SQL_INJECTION",
+      "COMMAND_INJECTION",
+      "CODE_INJECTION",
+      "SERVER_SIDE_TEMPLATE_INJECTION",
+      "PATH_TRAVERSAL",
+      "INSECURE_DESERIALIZATION",
+      "CROSS_SITE_SCRIPTING",
+      "INFORMATION_DISCLOSURE",
+      "BUSINESS_LOGIC_VULNERABILITIES",
+      "CRYPTOGRAPHIC_VULNERABILITIES",
+      "DEFAULT_CREDENTIALS",
+      "LOCAL_FILE_INCLUSION",
+      "XML_EXTERNAL_ENTITY",
+      "GRAPHQL_VULNERABILITIES",
+      "ARBITRARY_FILE_UPLOAD",
+      "FILE_CREATION",
+      "FILE_ACCESS",
+      "DATABASE_ACCESS",
+      "OUTBOUND_SERVICE_REQUEST",
+      "OTHER",
+      "UNKNOWN"
+    ],
+    "not_excluded_rationale": "PRIVILEGE_ESCALATION and IDOR are exactly what the actor matrix exists to detect (N-3). The read-shaped action classes (FILE_ACCESS, DATABASE_ACCESS, OUTBOUND_SERVICE_REQUEST, FILE_CREATION, ARBITRARY_FILE_UPLOAD) are retained because they are non-destructive and the static review already flagged cross-tenant read exposure that a pentest should confirm or refute.",
+
+    "request_shape": {
+      "title": "adp-dev-nightly-pentest-YYYYMMDD",
+      "agentSpaceId": "as-984b0721-375d-44f2-9e64-e0ff4c8111f8",
+      "assets": {
+        "endpoints": [{ "uri": "https://d1g6cal2ts4iis.cloudfront.net/api" }],
+        "actors": [
+          {
+            "identifier": "regular_user",
+            "authentication": {
+              "providerType": "SECRETS_MANAGER",
+              "value": "arn:aws:secretsmanager:us-east-1:879318057152:secret:adp/dev/gateway/test-user-credentials"
+            },
+            "description": "Baseline authenticated tenant user."
+          },
+          {
+            "identifier": "platform_admin",
+            "authentication": {
+              "providerType": "SECRETS_MANAGER",
+              "value": "arn:aws:secretsmanager:us-east-1:879318057152:secret:adp/dev/gateway/test-admin-credentials"
+            },
+            "description": "Elevated identity; pairing with regular_user gives escalation-ceiling coverage."
+          }
+        ]
+      },
+      "excludeRiskTypes": ["FILE_DELETION", "DATABASE_MODIFICATION", "DENIAL_OF_SERVICE"],
+      "serviceRole": "arn:aws:iam::879318057152:role/adp-securityagent-codereview",
+      "networkTrafficConfig": {
+        "rules": [
+          { "effect": "ALLOW", "networkTrafficRuleType": "URL", "pattern": "https://d1g6cal2ts4iis.cloudfront.net/*" },
+          { "effect": "DENY", "networkTrafficRuleType": "URL", "pattern": "*" }
+        ]
+      },
+      "codeRemediationStrategy": "DISABLED",
+      "maxTaskHours": 2
+    },
+    "field_justification": {
+      "title": "Charset-legal (letters/digits/hyphen only); date-stamped so runs are distinguishable. Must never be built from an issue title — spaces and colons are rejected.",
+      "agentSpaceId": "Reuses the existing space, which already carries the service role and bucket registrations.",
+      "assets.endpoints": "Single CloudFront origin path; the only externally reachable dev surface.",
+      "assets.actors": "SECRETS_MANAGER against the two dev credentials that actually exist today. Reduced from the runbook's four — see actor_matrix.",
+      "excludeRiskTypes": "The three destructive-action classes only. Every vulnerability class stays in scope.",
+      "serviceRole": "Pre-registered on the agent space; the call fails without it.",
+      "networkTrafficConfig": "Explicit ALLOW for the dev host followed by DENY * — a fail-closed URL fence so the job cannot wander to another host. This lever is absent from the runbook entirely.",
+      "codeRemediationStrategy": "DISABLED — a pentest must not open PRs against this repo.",
+      "maxTaskHours": "2, per decision D-18. The runbook's worked example ships 20."
+    },
+    "what_this_job_will_try_to_do": "Authenticate as two dev identities against the dev CloudFront edge and attempt privilege escalation, IDOR/cross-tenant access, injection (SQL/command/code/template), SSRF, JWT and session-token attacks, path traversal, XSS, and business-logic abuse — reading and creating data but never deleting files, never modifying the database, and never attempting resource exhaustion. All traffic is fenced to the dev host and hard-capped at 2 task-hours.",
+    "what_this_job_will_never_find": "File-deletion paths, database write/corruption paths, and denial-of-service capacity limits. Additionally, with only two actors it cannot prove cross-TENANT isolation (that needs two same-privilege admins in different orgs), so horizontal cross-tenant IDOR remains unproven by this run."
+  },
+
+  "actor_matrix": {
+    "decision": "SECRETS_MANAGER",
+    "decision_rationale": "AWS_LAMBDA is the runbook's preferred mechanism, but the token-minting Lambda does not exist — no function matching actor/pentest/securityagent is deployed in the account. SECRETS_MANAGER is deliverable today against two credentials that already exist, so run 1 uses it rather than blocking on net-new infrastructure.",
+    "required_identities": ["platform_admin", "org_admin_a", "org_admin_b", "regular_user"],
+    "identities_that_exist_today": ["regular_user", "platform_admin"],
+    "identities_missing": ["org_admin_a", "org_admin_b"],
+    "existing_credential_secrets": [
+      "adp/dev/gateway/test-user-credentials",
+      "adp/dev/gateway/test-admin-credentials"
+    ],
+    "four_distinct_identities_in_two_orgs_exist": false,
+    "evidence": "Only two gateway test-credential secrets exist in dev. Per-tenant GitHub App secrets exist for several test tenants, but those are app installations, not user identities with login credentials.",
+    "coverage_reduction_accepted": "Run 1 ships a 2-actor matrix. It retains privilege-escalation-ceiling coverage (admin vs user) and loses cross-tenant/IDOR coverage (which needs two same-privilege admins in different orgs). This reduction is knowingly accepted and stated, per N-4.",
+    "net_new_component_scope": "To reach the full 4-actor matrix: seed two org_admin identities in two distinct dev tenants and store their credentials as two new Secrets Manager secrets. A token-minting Lambda (AWS_LAMBDA) is the longer-term option and removes static credentials, but is not required for run 1. This is the candidate additional child issue SP-6 anticipated."
+  },
+
+  "drift_summary": {
+    "runbook": "docs/security/security-agent-runbook.md",
+    "companion": "docs/security/security-agent-pentest-validated.md",
+    "drift_row_count": 12
+  }
+}
