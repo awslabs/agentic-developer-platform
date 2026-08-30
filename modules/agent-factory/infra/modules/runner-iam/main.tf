@@ -691,6 +691,12 @@ resource "aws_iam_policy" "runner_services" {
           "s3:DeleteObjectVersion",
           "s3:GetBucketLocation",
           "s3:GetBucketPolicy",
+          # Read-only. Needed by the nightly's findings-bucket privacy
+          # assertion (#4533), which runs as this role because the code-review
+          # job has no configure-aws-credentials step. Without it the step fails
+          # AccessDenied for a permissions reason rather than reporting on the
+          # bucket.
+          "s3:GetBucketPolicyStatus",
           "s3:GetBucketPublicAccessBlock",
           "s3:GetBucketTagging",
           "s3:GetBucketVersioning",

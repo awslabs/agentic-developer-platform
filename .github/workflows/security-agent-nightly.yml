@@ -186,8 +186,15 @@ jobs:
 
       # Reuses the existing rendezvous action rather than adding a second
       # upload path. The bucket is private (a public findings object would make
-      # whole-repo security findings world-readable), which the smoke test
-      # confirms with `aws s3api get-bucket-policy-status`.
+      # whole-repo security findings world-readable), which the step below
+      # asserts with `.github/scripts/assert_findings_bucket_private.py`.
+      #
+      # That script, and NOT `aws s3api get-bucket-policy-status`. The latter
+      # reports the public-ness of a bucket *policy* and is only defined for
+      # buckets that have one; this bucket deliberately has none and is locked
+      # down with a public-access-block instead, so the call raises
+      # NoSuchBucketPolicy on every run and its pass condition is unreachable
+      # (#4533).
       #
       # dest-prefix is REQUIRED here, not cosmetic. This job runs as
       # adp-<env>-securityagent-nightly, whose inline policy grants s3:PutObject
@@ -207,3 +214,40 @@ jobs:
           tool-name: securityagent-code-review
           bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
           dest-prefix: security-agent/runs/${{ env.RUN_DATE }}/
+
+      # Ordered AFTER publish, and `if: always()` to mirror it: the property
+      # worth asserting is that the bucket the findings just landed in is not
+      # world-readable, so this must run on exactly the runs that wrote to it.
+      #
+      # The assertion is a script, not an inline `aws` one-liner, so that
+      # "NoSuchBucketPolicy means no policy, therefore private" is an asserted
+      # branch rather than a comment, and so the four public-access-block flags
+      # are checked individually. It exits non-zero on AccessDenied, throttling,
+      # a missing bucket and an absent public-access-block: an unknown is not a
+      # pass, and there is deliberately no `|| true` here (a check that is green
+      # regardless of the bucket's state is the vacuous gate of #4517).
+      #
+      # The bucket is passed from the same env as the publish step rather than
+      # rebuilt, so the two cannot drift onto different buckets. Because
+      # `if: always()` also reaches runs where "Resolve account ID" never ran,
+      # an empty ACCOUNT_ID is named explicitly: otherwise the bucket resolves
+      # to a trailing-dash name and the step reports NoSuchBucket, blaming the
+      # bucket for an upstream failure. It still exits non-zero — the privacy of
+      # the real bucket is genuinely unverified in that case.
+      #
+      # This runs as the ARC runner identity (this job has no
+      # configure-aws-credentials step), which needs
+      # s3:GetBucketPublicAccessBlock and s3:GetBucketPolicyStatus — both are in
+      # the runner role's S3Combined statement
+      # (modules/agent-factory/infra/modules/runner-iam/main.tf).
+      - name: Assert the findings bucket is not public
+        if: always()
+        run: |
+          if [ -z "${ACCOUNT_ID}" ]; then
+            echo "::error title=Findings bucket privacy::ACCOUNT_ID is empty, so \
+          the findings bucket cannot be named and its privacy is unverified. An \
+          earlier step in this job failed before 'Resolve account ID' ran." >&2
+            exit 1
+          fi
+          $SECURITYAGENT_PYTHON .github/scripts/assert_findings_bucket_private.py \
+            --bucket "adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}"

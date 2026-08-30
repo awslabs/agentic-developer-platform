@@ -24,6 +24,7 @@ on:
       - '.github/scripts/render_security_report.py'
       - '.github/scripts/securityagent_preflight.py'
       - '.github/scripts/code_review_request.py'
+      - '.github/scripts/assert_findings_bucket_private.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -47,6 +48,7 @@ on:
       - '.github/scripts/render_security_report.py'
       - '.github/scripts/securityagent_preflight.py'
       - '.github/scripts/code_review_request.py'
+      - '.github/scripts/assert_findings_bucket_private.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -99,4 +101,5 @@ jobs:
             tests/test_umbrella_epic_idempotency.py \
             tests/test_securityagent_preflight.py \
             tests/test_code_review_request.py \
+            tests/test_assert_findings_bucket_private.py \
             -v --tb=short --timeout=60
