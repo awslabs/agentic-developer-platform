@@ -12,7 +12,7 @@ import { useState, useEffect } from 'react';
 import { Select } from '@/components/ui/Select';
 import { Input } from '@/components/ui/Input';
 import {
-  getCognitoUsers,
+  getOrgUsers,
   getCognitoTeams,
   getCognitoDepartments,
 } from '@/services/admin';
@@ -21,6 +21,8 @@ import { EntityType } from '@/types';
 interface EntityOption {
   value: string;
   label: string;
+  /** Rendered but unselectable — see the NULL-sub case in the user branch below. */
+  disabled?: boolean;
 }
 
 interface EntitySelectorProps {
@@ -98,14 +100,29 @@ export function EntitySelector({
           }
 
           case EntityType.USER: {
-            const usersResponse = await getCognitoUsers(orgId, { pageSize: 100 });
+            // Issue #4511: this MUST send the Cognito sub. Budgets, rate limits
+            // and the usage ledger all key `user` entities by the sub, so an id
+            // in any other namespace produces a record the engine can never
+            // match — a cap that appears configured but never enforces and never
+            // shows spend. The previous source (`getCognitoUsers`) supplied the
+            // Cognito *username*, which is `GitHub_<github_id>` for anyone
+            // onboarded through GitHub and only coincidentally equals the sub for
+            // email-signup users, which is why this survived testing.
+            const usersResponse = await getOrgUsers(orgId, { pageSize: 100 });
             if (cancelled) return;
-            options = usersResponse.items.map((user) => ({
-              value: user.username,
-              label: user.name
-                ? `${user.name} (${user.email || user.username})`
-                : user.email || user.username,
-            }));
+            options = usersResponse.items.map((user) => {
+              const displayName = user.name ? `${user.name} (${user.email})` : user.email;
+              // Members who have never signed in have no sub, so no budget for
+              // them could ever be enforced. Show them disabled rather than
+              // omitting them, so the absence is explained rather than confusing.
+              return user.cognitoSub
+                ? { value: user.cognitoSub, label: displayName }
+                : {
+                    value: user.id,
+                    label: `${displayName} — has not signed in yet`,
+                    disabled: true,
+                  };
+            });
             break;
           }
 
@@ -176,7 +193,10 @@ export function EntitySelector({
             error={error || undefined}
             helperText={
               entityType === EntityType.USER
-                ? 'Enter the user ID (e.g., user-123 or user email)'
+                ? // Issue #4511: the old copy suggested `user-123 or user email`,
+                  // neither of which can ever be a valid user key. Name the forms
+                  // the server actually accepts.
+                  "Enter the user's Cognito sub, their ADP user ID, or their Cognito username (GitHub_<id>). Email is not accepted."
                 : entityOptions.length === 0 && !error
                   ? 'No entities found. Enter the ID manually.'
                   : undefined
@@ -227,7 +247,9 @@ function getPlaceholderForEntityType(entityType: string): string {
     case EntityType.TEAM:
       return 'e.g., team-001 or platform-team';
     case EntityType.USER:
-      return 'e.g., user-123 or user@example.com';
+      // Issue #4511: a Cognito sub is a UUID. The old `user-123 or
+      // user@example.com` hint named two forms that can never be valid keys.
+      return 'e.g., 8a41f2c0-1b7d-4e5a-9c33-... or GitHub_20402445';
     default:
       return 'Enter entity ID';
   }

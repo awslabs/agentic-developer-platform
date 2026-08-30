@@ -279,7 +279,22 @@ class TestBudgetConfigEndpoints:
 
     def test_update_budget_config(self, client, mock_admin_service):
         """Test PUT /admin/organizations/{org_id}/budget/{entity_type}/{entity_id}."""
-        mock_admin_service.update_budget_config = AsyncMock(return_value=None)
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetConfigResponse
+
+        mock_admin_service.update_budget_config = AsyncMock(
+            return_value=BudgetConfigResponse(
+                org_id="org-1",
+                entity_type="org",
+                entity_id="org-1",
+                period_type="monthly",
+                budget_amount_usd=Decimal("1000.00"),
+                enforcement_mode="hard",
+                updated_at=datetime.now(UTC),
+            )
+        )
 
         response = client.put(
             "/admin/organizations/org-1/budget/org/org-1",
@@ -287,6 +302,67 @@ class TestBudgetConfigEndpoints:
         )
 
         assert response.status_code == 200
+        assert response.json()["entity_id"] == "org-1"
+
+    def test_update_budget_config_missing_returns_404(self, client, mock_admin_service):
+        """Issue #4511: a miss is a 404, not HTTP 200 with a null body.
+
+        This endpoint previously declared `BudgetConfigResponse | None` and the
+        service returned `None` on every miss, so an operator editing a budget
+        that could not be found got a success response and no change — a silent
+        no-op edit. This test pins the replacement contract.
+        """
+        from src.admin.exceptions import ResourceNotFoundError
+
+        mock_admin_service.update_budget_config = AsyncMock(side_effect=ResourceNotFoundError("BudgetConfig", "org/no-such-entity"))
+
+        response = client.put(
+            "/admin/organizations/org-1/budget/org/no-such-entity",
+            json={"budget_amount_usd": 1000.00},
+        )
+
+        assert response.status_code == 404
+
+    def test_update_budget_config_unresolvable_user_returns_422(self, client, mock_admin_service):
+        """Issue #4511: an unresolvable `user` id is refused with guidance."""
+        from src.shared.identity import UnresolvableUserEntityError
+
+        mock_admin_service.update_budget_config = AsyncMock(
+            side_effect=UnresolvableUserEntityError("someone@example.com", "no user in this organization matches this id")
+        )
+
+        response = client.put(
+            "/admin/organizations/org-1/budget/user/someone@example.com",
+            json={"budget_amount_usd": 1000.00},
+        )
+
+        assert response.status_code == 422
+
+    def test_create_budget_unresolvable_user_returns_422(self, client, mock_admin_service):
+        """Issue #4511: creating a cap for an unmatchable user is refused.
+
+        The whole point of the fix: rather than persisting a row the budget
+        engine can never match, the API says so.
+        """
+        from src.shared.identity import UnresolvableUserEntityError
+
+        mock_admin_service.create_budget = AsyncMock(
+            side_effect=UnresolvableUserEntityError("GitHub_20402445", "no GitHub identity is linked to a user in this organization")
+        )
+
+        response = client.post(
+            "/admin/organizations/org-1/budgets",
+            json={
+                "entity_type": "user",
+                "entity_id": "GitHub_20402445",
+                "period_type": "monthly",
+                "budget_amount_usd": 100.00,
+                "enforcement_mode": "hard",
+            },
+        )
+
+        assert response.status_code == 422
+        assert "accepted_forms" in response.json()["details"]
 
 
 class TestRateLimitConfigEndpoints:

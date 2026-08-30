@@ -32,6 +32,7 @@ from src.admin.schemas import (
     RateLimitListItem,
     RateLimitListResponse,
 )
+from src.shared.identity import resolve_user_entity_id
 from src.shared.interfaces.budget import IBudgetService
 from src.shared.interfaces.ratelimit import IRateLimitService
 from src.shared.models.budget import BudgetConfig, BudgetUsage
@@ -621,47 +622,66 @@ class AdminService:
         entity_type: str,
         entity_id: str,
         request: BudgetConfigUpdateRequest,
-    ) -> BudgetConfigResponse | None:
+    ) -> BudgetConfigResponse:
         """
         Update budget configuration for an entity.
 
         Args:
             org_id: Organization ID
             entity_type: Entity type
-            entity_id: Entity ID
+            entity_id: Entity ID (from the route path; resolved for `user` — #4511)
             request: Update request
 
         Returns:
             Updated budget configuration
+
+        Raises:
+            ResourceNotFoundError: 404, if no budget exists for this entity
+            UnresolvableUserEntityError: 422, if a ``user`` entity id cannot be
+                resolved to a Cognito sub (#4511)
+
+        Issue #4511: this used to ``return None`` on every miss, which the route
+        rendered as **HTTP 200 with a null body** — an operator editing a budget
+        got a success response and no change. Every miss is now a 404. The same
+        `user` id resolution as ``create_budget`` is applied, so editing a budget
+        cannot re-introduce a mis-keyed row.
         """
-        if self.budget_service:
-            from src.shared.schemas.budget import BudgetUpdateRequest, EntityType
+        if not self.budget_service:
+            raise ResourceNotFoundError("BudgetConfig", f"{entity_type}/{entity_id}")
 
-            try:
-                entity = EntityType(entity_type)
-            except ValueError:
-                return None
+        from src.shared.schemas.budget import BudgetUpdateRequest, EntityType
 
-            # Get existing budget
-            budgets = await self.budget_service.get_budgets_for_entity(entity, entity_id, org_id)
-            if budgets:
-                budget_id = budgets[0].id
-                update_request = BudgetUpdateRequest(
-                    budget_amount_usd=request.budget_amount_usd,
-                    enforcement_mode=request.enforcement_mode,
-                )
-                updated = await self.budget_service.update_budget(budget_id, update_request, org_id)
-                if updated:
-                    return BudgetConfigResponse(
-                        org_id=updated.org_id,
-                        entity_type=updated.entity_type.value,
-                        entity_id=updated.entity_id,
-                        period_type=updated.period_type.value,
-                        budget_amount_usd=updated.budget_amount_usd,
-                        enforcement_mode=updated.enforcement_mode.value,
-                        updated_at=updated.updated_at,
-                    )
-        return None
+        try:
+            entity = EntityType(entity_type)
+        except ValueError:
+            raise ResourceNotFoundError("BudgetConfig", f"{entity_type}/{entity_id}") from None
+
+        if entity_type == "user":
+            entity_id = await resolve_user_entity_id(self.db, org_id, entity_id)
+
+        # Get existing budget
+        budgets = await self.budget_service.get_budgets_for_entity(entity, entity_id, org_id)
+        if not budgets:
+            raise ResourceNotFoundError("BudgetConfig", f"{entity_type}/{entity_id}")
+
+        budget_id = budgets[0].id
+        update_request = BudgetUpdateRequest(
+            budget_amount_usd=request.budget_amount_usd,
+            enforcement_mode=request.enforcement_mode,
+        )
+        updated = await self.budget_service.update_budget(budget_id, update_request, org_id)
+        if not updated:
+            raise ResourceNotFoundError("BudgetConfig", f"{entity_type}/{entity_id}")
+
+        return BudgetConfigResponse(
+            org_id=updated.org_id,
+            entity_type=updated.entity_type.value,
+            entity_id=updated.entity_id,
+            period_type=updated.period_type.value,
+            budget_amount_usd=updated.budget_amount_usd,
+            enforcement_mode=updated.enforcement_mode.value,
+            updated_at=updated.updated_at,
+        )
 
     # Rate Limit Configuration
 
@@ -1895,13 +1915,24 @@ class AdminService:
 
         Raises:
             ResourceConflictError: If budget already exists for this entity/period
+            UnresolvableUserEntityError: 422, if a ``user`` entity id cannot be
+                resolved to a Cognito sub (#4511)
         """
+        # Issue #4511: normalise a `user` entity id to the Cognito sub BEFORE the
+        # conflict probe, so the duplicate check and the persisted row agree with
+        # each other and with the key enforcement matches on. Resolving after the
+        # probe would let `GitHub_123` and its own sub both insert, colliding on
+        # uq_budget_config.
+        entity_id = request.entity_id
+        if request.entity_type == "user":
+            entity_id = await resolve_user_entity_id(self.db, org_id, entity_id)
+
         # Check for existing budget with same entity and period
         existing = await self.db.execute(
             select(BudgetConfig).where(
                 BudgetConfig.org_id == org_id,
                 BudgetConfig.entity_type == request.entity_type,
-                BudgetConfig.entity_id == request.entity_id,
+                BudgetConfig.entity_id == entity_id,
                 BudgetConfig.period_type == request.period_type,
             )
         )
@@ -1911,13 +1942,13 @@ class AdminService:
                 "entity_type/entity_id/period_type",
                 # .value: period_type is a PeriodType (#4328), and str()/f-string on a
                 # str-Enum renders "PeriodType.MONTHLY", not "monthly".
-                f"{request.entity_type}/{request.entity_id}/{request.period_type.value}",
+                f"{request.entity_type}/{entity_id}/{request.period_type.value}",
             )
 
         budget = BudgetConfig(
             org_id=org_id,
             entity_type=request.entity_type,
-            entity_id=request.entity_id,
+            entity_id=entity_id,
             period_type=request.period_type,
             budget_amount_usd=request.budget_amount_usd,
             enforcement_mode=request.enforcement_mode,

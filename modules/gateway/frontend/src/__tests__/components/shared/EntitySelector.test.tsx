@@ -11,19 +11,20 @@ import userEvent from '@testing-library/user-event';
 import { EntitySelector } from '@/components/shared/EntitySelector';
 import { EntityType } from '@/types';
 
-// Mock the admin service. EntitySelector fetches org entities from Cognito via
-// the backend, using the getCognito{Users,Teams,Departments} helpers.
+// Mock the admin service. Teams and departments come from Cognito; users come
+// from Postgres via getOrgUsers, because that is the only source that carries the
+// Cognito sub — the value budgets and rate limits are keyed by (issue #4511).
 vi.mock('@/services/admin', () => ({
-  getCognitoUsers: vi.fn(),
+  getOrgUsers: vi.fn(),
   getCognitoTeams: vi.fn(),
   getCognitoDepartments: vi.fn(),
 }));
 
-import { getCognitoUsers, getCognitoTeams, getCognitoDepartments } from '@/services/admin';
+import { getOrgUsers, getCognitoTeams, getCognitoDepartments } from '@/services/admin';
 
 const mockGetDepartments = getCognitoDepartments as ReturnType<typeof vi.fn>;
 const mockGetTeams = getCognitoTeams as ReturnType<typeof vi.fn>;
-const mockGetUsers = getCognitoUsers as ReturnType<typeof vi.fn>;
+const mockGetUsers = getOrgUsers as ReturnType<typeof vi.fn>;
 
 const defaultProps = {
   orgId: 'org-001',
@@ -97,6 +98,88 @@ describe('EntitySelector', () => {
         // User type shows text input
         const inputs = screen.getAllByRole('textbox');
         expect(inputs.length).toBeGreaterThan(0);
+      });
+    });
+
+    // Issue #4511: the picker must supply the Cognito sub. It previously supplied
+    // the Cognito Username (`GitHub_<github_id>`), which the budget engine never
+    // matches, so a cap created for a real member silently never enforced.
+    describe('#4511 — option values are Cognito subs', () => {
+      const members = [
+        {
+          id: 'user-operator',
+          email: 'operator@test.com',
+          name: 'Operator',
+          cognitoSub: '8a41f2c0-1b7d-4e5a-9c33-000000000001',
+          role: 'org_admin',
+        },
+        {
+          id: 'user-invited',
+          email: 'invited@test.com',
+          name: 'Invited Person',
+          cognitoSub: null,
+          role: 'member',
+        },
+      ];
+
+      beforeEach(() => {
+        mockGetUsers.mockResolvedValue({
+          items: members,
+          total: members.length,
+          page: 1,
+          pageSize: 100,
+          hasMore: false,
+        });
+      });
+
+      it('reads members from the org users endpoint, not the Cognito one', async () => {
+        renderComponent({ entityType: EntityType.USER });
+
+        await waitFor(() => {
+          expect(mockGetUsers).toHaveBeenCalledWith('org-001', { pageSize: 100 });
+        });
+      });
+
+      it('uses the Cognito sub as the option value', async () => {
+        renderComponent({ entityType: EntityType.USER });
+
+        const option = await waitFor(() =>
+          screen.getByRole('option', { name: /Operator/ })
+        );
+        expect(option).toHaveValue('8a41f2c0-1b7d-4e5a-9c33-000000000001');
+      });
+
+      it('never emits a GitHub-style username as the value', async () => {
+        renderComponent({ entityType: EntityType.USER });
+
+        const option = await waitFor(() =>
+          screen.getByRole('option', { name: /Operator/ })
+        );
+        expect(option).not.toHaveValue(expect.stringContaining('GitHub_'));
+      });
+
+      it('renders members with no Cognito sub as disabled rather than hiding them', async () => {
+        renderComponent({ entityType: EntityType.USER });
+
+        const option = await waitFor(() =>
+          screen.getByRole('option', { name: /Invited Person/ })
+        );
+        // Shown, so the operator can see why they cannot pick this person, but
+        // unselectable, because a budget for them could never be enforced.
+        expect(option).toBeDisabled();
+      });
+
+      it('selecting a member reports the sub to the parent form', async () => {
+        const user = userEvent.setup();
+        const onEntityIdChange = vi.fn();
+        renderComponent({ entityType: EntityType.USER, onEntityIdChange });
+
+        await waitFor(() => expect(screen.getByRole('option', { name: /Operator/ })).toBeInTheDocument());
+
+        const selects = screen.getAllByRole('combobox');
+        await user.selectOptions(selects[1], '8a41f2c0-1b7d-4e5a-9c33-000000000001');
+
+        expect(onEntityIdChange).toHaveBeenCalledWith('8a41f2c0-1b7d-4e5a-9c33-000000000001');
       });
     });
   });

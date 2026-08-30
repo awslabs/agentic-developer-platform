@@ -482,6 +482,66 @@ export async function getCognitoUsers(
 }
 
 /**
+ * Get the organization's members from Postgres, including their Cognito sub.
+ *
+ * Issue #4511: `getCognitoUsers` above returns a Cognito-shaped record whose
+ * `username` is `GitHub_<github_id>` for GitHub-onboarded users — NOT the sub.
+ * Budget and usage records key `user` entities by the Cognito sub, so anything
+ * that needs a usable user key must read it from here, where `cognito_sub` is
+ * carried explicitly. `cognitoSub` is nullable: members who have never signed
+ * in have no sub, and callers must not treat them as selectable.
+ */
+export async function getOrgUsers(
+  orgId: string,
+  params?: { page?: number; pageSize?: number }
+): Promise<{
+  items: Array<{
+    id: string;
+    email: string;
+    name: string | null;
+    cognitoSub: string | null;
+    role: string | null;
+  }>;
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}> {
+  const query = buildQueryString({
+    page: params?.page || 1,
+    page_size: params?.pageSize || 50,
+  });
+  const response = await apiClient.get<{
+    items: Array<{
+      id: string;
+      email: string;
+      name: string | null;
+      cognito_sub: string | null;
+      role: string | null;
+    }>;
+    total: number;
+    page: number;
+    page_size: number;
+    has_more: boolean;
+  }>(`/admin/organizations/${orgId}/users${query}`);
+
+  const items = Array.isArray(response?.items) ? response.items : [];
+  return {
+    items: items.map((user) => ({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      cognitoSub: user.cognito_sub,
+      role: user.role,
+    })),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
+  };
+}
+
+/**
  * Get teams (Cognito groups) for an organization.
  *
  * Issue #226: Cognito groups represent teams.

@@ -1,6 +1,7 @@
 """Unit tests for AdminService."""
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.exceptions import PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
 from src.admin.schemas import (
@@ -10,7 +11,8 @@ from src.admin.schemas import (
     RateLimitConfigUpdateRequest,
 )
 from src.admin.service import AdminService
-from src.shared.models.organization import Organization
+from src.shared.identity import UnresolvableUserEntityError
+from src.shared.models.organization import Organization, User
 from src.shared.models.usage import BedrockPoolAccount
 
 
@@ -378,11 +380,27 @@ class TestAdminServiceBudgetList:
         assert len(result.items) == 3
 
     @pytest.mark.asyncio
-    async def test_get_budgets_list_filter_by_entity_type(self, admin_service: AdminService, sample_organizations: list[Organization]):
+    async def test_get_budgets_list_filter_by_entity_type(
+        self, admin_service: AdminService, db_session: AsyncSession, sample_organizations: list[Organization]
+    ):
         """Test filtering budget list by entity type."""
         from decimal import Decimal
 
         from src.admin.schemas import BudgetCreateRequest
+
+        # Issue #4511: a `user` budget now requires a resolvable member, so this
+        # needs a real users row rather than a fabricated id. The row's
+        # cognito_sub is what gets persisted as the budget's entity_id.
+        db_session.add(
+            User(
+                id="user-1",
+                org_id="org-001",
+                team_id="team-001",
+                email="user1@test.com",
+                cognito_sub="sub-user-1",
+            )
+        )
+        await db_session.commit()
 
         # Create budgets for different entity types
         for entity_type, entity_id in [("team", "team-1"), ("user", "user-1"), ("team", "team-2")]:
@@ -467,6 +485,305 @@ class TestAdminServiceBudgetList:
         """Test deleting non-existent budget fails."""
         with pytest.raises(ResourceNotFoundError):
             await admin_service.delete_budget("org-001", "team", "non-existent", "monthly")
+
+
+# Issue #4511: user-scoped budgets must be keyed on the Cognito sub, because that
+# is the key enforcement and the /api/me/budget read path match on. A budget
+# keyed on anything else is inert: visible in Budget Management, invisible to its
+# owner, and never enforced.
+
+
+class TestUserBudgetKeyResolution:
+    """Tests that `user` budget keys are resolved to the Cognito sub (#4511)."""
+
+    GITHUB_USER_ID = "20402445"
+    COGNITO_SUB = "8a41f2c0-1b7d-4e5a-9c33-000000000001"
+    CANONICAL_ID = "user-operator"
+
+    @pytest.fixture
+    async def github_member(self, db_session: AsyncSession, sample_organizations: list[Organization]) -> User:
+        """A GitHub-onboarded member of org-001: sub set, no cognito_username.
+
+        This is the shape that produced the incident — the broker mints a
+        Cognito Username of `GitHub_<github_id>` and never populates
+        `users.cognito_username`.
+        """
+        from src.shared.models.vault import UserIdentity
+
+        user = User(
+            id=self.CANONICAL_ID,
+            org_id="org-001",
+            team_id="team-001",
+            email="operator@test.com",
+            name="Operator",
+            cognito_sub=self.COGNITO_SUB,
+        )
+        db_session.add(user)
+        await db_session.flush()
+        db_session.add(
+            UserIdentity(
+                id="identity-operator",
+                org_id="org-001",
+                team_id="team-001",
+                user_id=self.CANONICAL_ID,
+                provider="github",
+                provider_user_id=self.GITHUB_USER_ID,
+                provider_username="operator",
+                verification_method="oauth",
+            )
+        )
+        await db_session.commit()
+        return user
+
+    def _request(self, entity_id: str):
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetCreateRequest
+
+        return BudgetCreateRequest(
+            entity_type="user",
+            entity_id=entity_id,
+            period_type="monthly",
+            budget_amount_usd=Decimal("100.00"),
+            enforcement_mode="hard",
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_with_sub_persists_unchanged(self, admin_service: AdminService, github_member: User):
+        """A sub is already the right key, so it is persisted as supplied."""
+        result = await admin_service.create_budget("org-001", self._request(self.COGNITO_SUB))
+        assert result.entity_id == self.COGNITO_SUB
+
+    @pytest.mark.asyncio
+    async def test_create_with_canonical_id_persists_sub(self, admin_service: AdminService, github_member: User):
+        """A canonical users.id is resolved before persisting."""
+        result = await admin_service.create_budget("org-001", self._request(self.CANONICAL_ID))
+        assert result.entity_id == self.COGNITO_SUB
+
+    @pytest.mark.asyncio
+    async def test_create_with_cognito_username_persists_sub(self, admin_service: AdminService, github_member: User):
+        """The exact incident input: `GitHub_<id>` must land as the sub.
+
+        Before #4511 this persisted verbatim, producing a row that Budget
+        Management displayed with a friendly name and that nothing enforced.
+        """
+        result = await admin_service.create_budget("org-001", self._request(f"GitHub_{self.GITHUB_USER_ID}"))
+        assert result.entity_id == self.COGNITO_SUB
+
+    @pytest.mark.asyncio
+    async def test_create_with_lowercase_github_prefix_persists_sub(self, admin_service: AdminService, github_member: User):
+        """Prefix matching is case-insensitive (the broker writes capital G)."""
+        result = await admin_service.create_budget("org-001", self._request(f"github_{self.GITHUB_USER_ID}"))
+        assert result.entity_id == self.COGNITO_SUB
+
+    @pytest.mark.asyncio
+    async def test_create_with_email_rejected_and_persists_nothing(self, admin_service: AdminService, github_member: User):
+        """Email is not a key (no uniqueness constraint) — 422, nothing written."""
+        with pytest.raises(UnresolvableUserEntityError) as exc:
+            await admin_service.create_budget("org-001", self._request("operator@test.com"))
+        assert exc.value.status_code == 422
+
+        budgets = await admin_service.get_budgets_list("org-001")
+        assert budgets.total == 0
+
+    @pytest.mark.asyncio
+    async def test_create_with_unmappable_id_rejected(self, admin_service: AdminService, github_member: User):
+        """An id that matches nothing is refused rather than silently persisted."""
+        with pytest.raises(UnresolvableUserEntityError):
+            await admin_service.create_budget("org-001", self._request("user-123"))
+
+        budgets = await admin_service.get_budgets_list("org-001")
+        assert budgets.total == 0
+
+    @pytest.mark.asyncio
+    async def test_create_for_user_without_sub_rejected(
+        self, admin_service: AdminService, db_session: AsyncSession, sample_organizations: list[Organization]
+    ):
+        """A member who has never signed in cannot be given an enforceable cap.
+
+        This is the case that would recreate the bug: persisting here yields a
+        budget nothing can ever match.
+        """
+        db_session.add(
+            User(
+                id="user-invited",
+                org_id="org-001",
+                team_id="team-001",
+                email="invited@test.com",
+                cognito_sub=None,
+            )
+        )
+        await db_session.commit()
+
+        with pytest.raises(UnresolvableUserEntityError):
+            await admin_service.create_budget("org-001", self._request("user-invited"))
+
+    @pytest.mark.asyncio
+    async def test_create_does_not_resolve_across_tenants(self, admin_service: AdminService, github_member: User):
+        """org-001's member must not resolve when creating a budget in org-002."""
+        with pytest.raises(UnresolvableUserEntityError):
+            await admin_service.create_budget("org-002", self._request(f"GitHub_{self.GITHUB_USER_ID}"))
+
+    @pytest.mark.asyncio
+    async def test_non_user_entity_types_are_untouched(self, admin_service: AdminService, sample_organizations: list[Organization]):
+        """Regression guard: org/team/department ids bypass resolution entirely."""
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetCreateRequest
+
+        for entity_type, entity_id in (("org", "org-001"), ("team", "platform-team"), ("department", "engineering")):
+            result = await admin_service.create_budget(
+                "org-001",
+                BudgetCreateRequest(
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    period_type="monthly",
+                    budget_amount_usd=Decimal("50.00"),
+                    enforcement_mode="hard",
+                ),
+            )
+            assert result.entity_id == entity_id
+
+    @pytest.mark.asyncio
+    async def test_username_and_sub_collide_as_duplicates(self, admin_service: AdminService, github_member: User):
+        """Two spellings of one person are one budget, not two.
+
+        Resolution happens before the conflict probe, so creating with the
+        username after creating with the sub is a 409 — not a second row that
+        would violate uq_budget_config.
+        """
+        await admin_service.create_budget("org-001", self._request(self.COGNITO_SUB))
+        with pytest.raises(ResourceConflictError):
+            await admin_service.create_budget("org-001", self._request(f"GitHub_{self.GITHUB_USER_ID}"))
+
+    @pytest.mark.asyncio
+    async def test_create_key_matches_enforcement_read_key(self, admin_service: AdminService, github_member: User):
+        """Guard test (I6): the create key and the read key derive identically.
+
+        `_read_cap` (src/budget/me_routes.py) is the query the owner's Budget &
+        Spend page runs, keyed on `(EntityType.USER, context.user_id)` where
+        `context.user_id` is the Cognito sub. This test drives the real read path
+        against a budget created through the real create path: if a future change
+        lets create persist a non-sub key, this fails rather than shipping
+        another inert cap. That closes the class, not just the instance.
+        """
+        from src.budget.me_routes import _read_cap
+        from src.shared.schemas.budget import EntityType, PeriodType
+
+        # Create the way the UI does — using the Cognito username, the form that
+        # caused the incident.
+        await admin_service.create_budget("org-001", self._request(f"GitHub_{self.GITHUB_USER_ID}"))
+
+        # Read the way the owner's own page does — keyed on their token's sub.
+        cap = await _read_cap(
+            admin_service.db,
+            "org-001",
+            EntityType.USER,
+            self.COGNITO_SUB,
+            PeriodType.MONTHLY,
+        )
+
+        assert cap is not None, "budget created via the admin path is invisible to the owner's read path"
+        assert cap.entity_id == self.COGNITO_SUB
+
+
+class TestUpdateBudgetConfigMiss:
+    """Update-path fail-open fixes (#4511 I1): 404 on miss, same resolution."""
+
+    @pytest.mark.asyncio
+    async def test_update_nonexistent_budget_raises_404(self, admin_service: AdminService, sample_organizations: list[Organization]):
+        """A miss must be a 404, not HTTP 200 with a null body.
+
+        Previously every miss fell through to `return None`, which the route
+        rendered as a 200 — an operator's edit silently did nothing.
+        """
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetConfigUpdateRequest
+
+        with pytest.raises(ResourceNotFoundError):
+            await admin_service.update_budget_config(
+                "org-001",
+                "team",
+                "no-such-team",
+                BudgetConfigUpdateRequest(budget_amount_usd=Decimal("10.00"), enforcement_mode="hard"),
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_unknown_entity_type_raises_404(self, admin_service: AdminService, sample_organizations: list[Organization]):
+        """An unparseable entity type is a miss, not a silent 200."""
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetConfigUpdateRequest
+
+        with pytest.raises(ResourceNotFoundError):
+            await admin_service.update_budget_config(
+                "org-001",
+                "not-an-entity-type",
+                "whatever",
+                BudgetConfigUpdateRequest(budget_amount_usd=Decimal("10.00"), enforcement_mode="hard"),
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_resolves_user_entity_id_from_path(
+        self, admin_service: AdminService, db_session: AsyncSession, sample_organizations: list[Organization]
+    ):
+        """The path param gets the same resolution as the create body.
+
+        Without this, editing a budget re-introduces a mis-keyed lookup: the
+        operator's `GitHub_<id>` would miss the sub-keyed row they meant to edit.
+        """
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetConfigUpdateRequest
+        from src.shared.models.vault import UserIdentity
+
+        sub = "8a41f2c0-1b7d-4e5a-9c33-000000000009"
+        db_session.add(
+            User(id="user-upd", org_id="org-001", team_id="team-001", email="upd@test.com", cognito_sub=sub),
+        )
+        await db_session.flush()
+        db_session.add(
+            UserIdentity(
+                id="identity-upd",
+                org_id="org-001",
+                team_id="team-001",
+                user_id="user-upd",
+                provider="github",
+                provider_user_id="777",
+                provider_username="upd",
+                verification_method="oauth",
+            )
+        )
+        await db_session.commit()
+
+        # The budget service is mocked in this fixture, so assert on the id the
+        # service looked the budget up by — that is the behaviour under test.
+        with pytest.raises(ResourceNotFoundError):
+            await admin_service.update_budget_config(
+                "org-001",
+                "user",
+                "GitHub_777",
+                BudgetConfigUpdateRequest(budget_amount_usd=Decimal("10.00"), enforcement_mode="hard"),
+            )
+
+        lookup_entity_id = admin_service.budget_service.get_budgets_for_entity.await_args.args[1]
+        assert lookup_entity_id == sub, "update looked the budget up by an id enforcement never uses"
+
+    @pytest.mark.asyncio
+    async def test_update_with_unresolvable_user_raises_422(self, admin_service: AdminService, sample_organizations: list[Organization]):
+        """An unresolvable user id on the update path is a 422, not a 404."""
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetConfigUpdateRequest
+
+        with pytest.raises(UnresolvableUserEntityError):
+            await admin_service.update_budget_config(
+                "org-001",
+                "user",
+                "someone@example.com",
+                BudgetConfigUpdateRequest(budget_amount_usd=Decimal("10.00"), enforcement_mode="hard"),
+            )
 
 
 # Issue #185: Rate Limit List/Create/Delete Tests

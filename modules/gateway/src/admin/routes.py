@@ -265,7 +265,7 @@ async def get_budget_status(
     return await service.get_budget_status(org_id, entity_type, entity_id)
 
 
-@router.put("/organizations/{org_id}/budget/{entity_type}/{entity_id}", response_model=BudgetConfigResponse | None)
+@router.put("/organizations/{org_id}/budget/{entity_type}/{entity_id}", response_model=BudgetConfigResponse)
 async def update_budget_config(
     org_id: str,
     entity_type: str,
@@ -274,8 +274,13 @@ async def update_budget_config(
     service: Annotated[AdminService, Depends(get_admin_service)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     current_user: Annotated[TokenContext, Depends(get_current_user)],
-) -> BudgetConfigResponse | None:
-    """Update budget configuration for an entity."""
+) -> BudgetConfigResponse:
+    """Update budget configuration for an entity.
+
+    Issue #4511: a miss is a 404. This previously declared
+    ``BudgetConfigResponse | None`` and returned HTTP 200 with a null body when
+    no budget matched, so a no-op edit looked like a successful one.
+    """
     await access.check_permission(current_user, Permission.BUDGET_UPDATE, target_org_id=org_id)
     return await service.update_budget_config(org_id, entity_type, entity_id, request)
 
