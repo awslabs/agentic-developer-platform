@@ -13,6 +13,12 @@ on:
       - '.github/scripts/diff_security_findings.py'
       - '.github/scripts/discover_dockerfiles.py'
       - '.github/scripts/post_security_pr_comment.py'
+      - '.github/scripts/ensure_umbrella_epic.py'
+      - '.github/scripts/security_agent_ledger.py'
+      - '.github/scripts/render_security_report.py'
+      # Artifacts the profile suite asserts against
+      - '.github/security/security-agent-profile.json'
+      - '.github/security/security-agent-profile.schema.json'
       # This workflow
       - '.github/workflows/script-tests.yml'
     branches:
@@ -47,4 +53,8 @@ jobs:
             tests/test_diff_security_findings.py \
             tests/test_discover_dockerfiles.py \
             tests/test_post_security_pr_comment.py \
+            tests/test_security_agent_profile.py \
+            tests/test_security_agent_ledger.py \
+            tests/test_render_security_report.py \
+            tests/test_umbrella_epic_idempotency.py \
             -v --tb=short --timeout=60
