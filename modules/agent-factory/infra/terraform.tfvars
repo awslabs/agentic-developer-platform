@@ -23,3 +23,15 @@ github_app_dev_installation_id = "124731131"
 # authorizer Lambda. When false, Terraform destroys the authorizer, which then
 # fails with ConflictException because $connect still references it.
 gateway_deployed = true
+
+# Issue: agent-factory applies have been failing on aws_dynamodb_table_item.
+# scaledjob_worker_agent — the canonical seed lives in gateway infra (#3085,
+# lambda-authorizer module) and already wrote the item, this root's copy then
+# fails CREATE with ConditionalCheckFailedException on every apply (the item
+# type does not support terraform import, and ignore_changes only tolerates
+# drift on a state-tracked item). Per the resource's own doc comment, pipeline
+# deploys where gateway infra applies first should turn the duplicate seed off.
+# Verified failing in apply run 33304480047 (2026-08-30); the repeated failed
+# applies are also what left helm_release.arc_runner_set tainted and queued
+# for destroy/recreate.
+seed_agent_registry = false
