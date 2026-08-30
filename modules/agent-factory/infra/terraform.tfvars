@@ -35,3 +35,13 @@ gateway_deployed = true
 # applies are also what left helm_release.arc_runner_set tainted and queued
 # for destroy/recreate.
 seed_agent_registry = false
+
+# The ARC runner module (controller + scale set) is a live, load-bearing part
+# of this environment — ALL CI jobs run on it. It was originally created by a
+# manual apply that passed -var enable_github_apps=true, but that flag never
+# made it into this var-file, so every pipeline apply since has PLANNED THE
+# MODULE'S DESTRUCTION (count 0 → destroy) and only failed on the runner-set
+# uninstall timeout. On 2026-08-30 two apply attempts (runs 33304480047 /
+# 33305019328) pushed the destroy through and took down the CI listener.
+# Declaring it here makes the pipeline's desired state match reality.
+enable_github_apps = true
