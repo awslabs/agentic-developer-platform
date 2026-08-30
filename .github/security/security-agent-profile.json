@@ -84,7 +84,27 @@
       "job_status": ["IN_PROGRESS", "STOPPING", "STOPPED", "FAILED", "COMPLETED"]
     },
     "title_charset": "^[A-Za-z0-9_-]{1,100}$",
-    "source_must_be_zip": true
+    "source_must_be_zip": true,
+    "observed_job_durations": [
+      {
+        "job_title": "adp-full-codebase-static-security-review-20260822",
+        "scope": "whole repo",
+        "created_at": "2026-08-22T19:47:45Z",
+        "terminal_at": "2026-08-22T23:18:44Z",
+        "terminal_status": "COMPLETED",
+        "duration_seconds": 12659
+      },
+      {
+        "job_title": "adp-gateway-static-security-review-20260820",
+        "scope": "gateway only",
+        "created_at": "2026-08-20T19:27:34Z",
+        "terminal_at": "2026-08-20T21:56:21Z",
+        "terminal_status": "COMPLETED",
+        "duration_seconds": 8927
+      }
+    ],
+    "observed_job_durations_note": "The only two code-review jobs ever run to a terminal state on this agent space, measured created -> terminal. They are the sole basis for code_review_request.py's DEFAULT_POLL_TIMEOUT_SECONDS: the first bound (3600) predates any measurement and aborted every run about 2.5h early, paying for an hour of metered review and retaining no findings (#4526). Recorded here rather than in the script so the bound has one derivable source. Append to this list as further runs complete; the gate in test_code_review_request.py fails if the bound ever drops to or below the longest entry.",
+    "observed_job_durations_schedule_implication": "A whole-repo review takes ~3.5h end to end, so arming the nightly `schedule:` needs a window of at least the poll bound (5h) that does not collide with the three existing nightly suites on shared dev. This is the run duration whose absence was one of the two stated blockers on the schedule; arming it remains a separate decision (#4526 does not add a schedule key)."
   },
 
   "findings": {

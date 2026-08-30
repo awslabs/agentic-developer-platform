@@ -131,7 +131,34 @@ ARCHIVE_SUFFIX = ".zip"
 # the gate rather than being silently polled forever.
 TERMINAL_JOB_STATUSES = ("COMPLETED", "FAILED", "STOPPED")
 
-DEFAULT_POLL_TIMEOUT_SECONDS = 3600
+# Derived from measurement, not chosen. The profile's
+# `code_review.observed_job_durations` records the only two code-review jobs
+# ever run to a terminal state on this agent space:
+#
+#   whole repo    3h 30m 59s  (12659s)
+#   gateway only  2h 28m 47s  ( 8927s)
+#
+# 5h is ~1.4x the slowest observed run. The previous value (3600) predates both
+# measurements, and being below them was not a near miss: every night aborted a
+# healthy job about 2.5 hours early via StopCodeReviewJob, having paid for an
+# hour of metered review, and published an empty findings document -- with an
+# error reading "did not reach a terminal state", which looks like a degraded
+# service rather than an impatient caller (#4526).
+#
+# Two invariants bind this number, and `test_code_review_request.py` enforces
+# both by parsing the profile and the workflow rather than trusting a literal:
+#
+#   1. bound > the longest duration in `observed_job_durations`. Dropping back
+#      below observed reality reintroduces #4526.
+#   2. bound < the review step's `timeout-minutes` in
+#      security-agent-nightly.yml. The script's timeout must fire FIRST so the
+#      job is *stopped*; a runner kill that lands first leaves a metered job
+#      running with nothing holding its id -- unabortable in practice, which is
+#      the failure the abort path exists to prevent.
+#
+# Raising this is cost-reducing, not cost-increasing: today's spend buys
+# nothing. Append to the profile's list as further runs complete.
+DEFAULT_POLL_TIMEOUT_SECONDS = 18000
 DEFAULT_POLL_INTERVAL_SECONDS = 30
 
 # Conservative request-size bound for BatchGetFindings. The spike did not

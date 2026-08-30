@@ -159,8 +159,26 @@ jobs:
       # timeout-minutes is above the poll bound on purpose: the script's own
       # timeout must fire first so the job is *stopped*, not merely abandoned
       # to a runner kill that leaves it running and unabortable.
+      #
+      # Both numbers are derived from the two measured whole-repo runs recorded
+      # in the validated profile's `code_review.observed_job_durations` (the
+      # slowest took about three and a half hours). The original pair — a 1h
+      # poll bound under a 75m step — predated any measurement and aborted every
+      # healthy run roughly 2.5h early, billing an hour of review for an empty
+      # findings document (#4526). The bound itself lives only in
+      # code_review_request.py; it is not retyped here.
+      #
+      # The escalation is strictly ordered, each level above the one below:
+      #   script poll bound   300m  (stops the job -- the abortable path)
+      #   this step           330m  (kills the step if the script itself hangs)
+      #   job default         360m  (GitHub's implicit ceiling; left implicit,
+      #                              and deliberately not crowded -- the step
+      #                              plus its provisioning overhead must stay
+      #                              under it or the default becomes the killer)
+      # A gate parses this value and the script's bound and fails if the two
+      # ever cross, so neither can be raised alone.
       - name: Run the whole-repo code review
-        timeout-minutes: 75
+        timeout-minutes: 330
         run: |
           $SECURITYAGENT_PYTHON .github/scripts/code_review_request.py \
             --run-date "$RUN_DATE" \

@@ -20,6 +20,14 @@ in the unit's impact analysis:
                                         broken IAM and is not
   - a timeout that merely returns    -> a metered job keeps running with nothing
                                         holding its id: unabortable in practice
+  - a bound below measured reality   -> every night bills an hour of review,
+                                        aborts a healthy job ~2.5h early and
+                                        retains zero findings, with an error
+                                        that reads like a service outage
+  - a bound above the runner's       -> the runner kills the step before the
+                                        abort fires, leaving the job running
+                                        and unabortable: the exact failure the
+                                        abort exists to prevent
   - findings outside the IAM prefix  -> PutObject AccessDenied after the review
                                         has been polled to completion and
                                         billed: full cost, zero findings
@@ -51,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from code_review_request import (  # noqa: E402
     ARCHIVE_SUFFIX,
+    DEFAULT_POLL_TIMEOUT_SECONDS,
     EXCLUDED_DIRS,
     EXCLUDED_FILE_PATTERNS,
     TERMINAL_JOB_STATUSES,
@@ -516,6 +525,106 @@ def test_poll_timeout_stops_the_job_and_raises():
         "codeReviewJobId": "job-test",
     }
     assert "did not reach a terminal state" in str(excinfo.value)
+
+
+def _review_step_timeout_minutes():
+    """The `timeout-minutes` on the nightly step that runs the driver.
+
+    Located by finding the step whose `run` invokes the driver rather than by
+    index or name: a step reordered or renamed would otherwise silently move
+    these gates onto the wrong timeout, which is exactly the drift they exist to
+    catch.
+    """
+    yaml = pytest.importorskip("yaml", reason="PyYAML required to parse the workflow")
+    workflow = yaml.safe_load(NIGHTLY_WORKFLOW.read_text(encoding="utf-8"))
+
+    steps = [
+        step
+        for step in workflow["jobs"]["code-review"]["steps"]
+        if "code_review_request.py" in (step.get("run") or "")
+    ]
+    assert len(steps) == 1, (
+        "expected exactly one step invoking the driver; found "
+        f"{len(steps)}, so the timeout these gates check is ambiguous"
+    )
+
+    timeout = steps[0].get("timeout-minutes")
+    assert timeout is not None, (
+        "the review step has no timeout-minutes at all. Without it the job's "
+        "implicit 360m ceiling becomes the killer, and a runner kill leaves the "
+        "metered job running with nothing holding its id"
+    )
+    return int(timeout)
+
+
+def test_the_poll_bound_fires_before_the_runner_kills_the_step():
+    """The ordering invariant, parsed from both files rather than asserted as
+    literals -- so it fails if either value is later changed alone.
+
+    The script's bound MUST expire first. If the runner kills the step first the
+    job is abandoned rather than stopped: nothing is left holding its id, so it
+    is unabortable in practice and keeps metering. That is the failure
+    ``test_poll_timeout_stops_the_job_and_raises`` proves the code prevents, and
+    this gate proves the configuration does not undo it.
+    """
+    runner_bound_seconds = _review_step_timeout_minutes() * 60
+
+    assert DEFAULT_POLL_TIMEOUT_SECONDS < runner_bound_seconds, (
+        f"the driver's poll bound ({DEFAULT_POLL_TIMEOUT_SECONDS}s) must be "
+        f"STRICTLY less than the review step's timeout-minutes "
+        f"({runner_bound_seconds}s) so StopCodeReviewJob is reached before the "
+        "runner kills the step. Raising one without the other abandons a "
+        "metered, unabortable job"
+    )
+
+
+def test_the_poll_bound_exceeds_every_measured_run(profile):
+    """A bound below observed reality aborts healthy jobs and retains nothing.
+
+    This is defect #4526 itself: the original 3600s bound was set before any
+    whole-repo review had been timed, so every night paid for an hour of metered
+    review, called StopCodeReviewJob about 2.5h early, and published an empty
+    findings document. Reading the durations from the profile means a future
+    reduction below what has actually been measured fails here.
+    """
+    measured = profile["code_review"]["observed_job_durations"]
+    assert measured, (
+        "no measured durations recorded, so this gate would pass vacuously and "
+        "the bound would be an invented number again"
+    )
+
+    longest = max(measured, key=lambda run: run["duration_seconds"])
+
+    assert DEFAULT_POLL_TIMEOUT_SECONDS > longest["duration_seconds"], (
+        f"the poll bound ({DEFAULT_POLL_TIMEOUT_SECONDS}s) does not exceed the "
+        f"longest measured run ({longest['duration_seconds']}s, "
+        f"{longest['job_title']}). A bound below observed reality aborts a "
+        "healthy job after paying for it and retains zero findings (#4526)"
+    )
+
+
+def test_the_measured_durations_are_derived_from_their_own_timestamps(profile):
+    """Guards the gate above from a mistyped duration.
+
+    ``duration_seconds`` is what the bound is checked against, but the
+    timestamps are the evidence. If they disagree, the recorded number is not a
+    measurement of anything and the bound rests on a typo.
+    """
+    from datetime import datetime  # noqa: PLC0415
+
+    for run in profile["code_review"]["observed_job_durations"]:
+        created = run.get("created_at")
+        terminal = run.get("terminal_at")
+        if not (created and terminal):
+            continue
+        span = (
+            datetime.fromisoformat(terminal.replace("Z", "+00:00"))
+            - datetime.fromisoformat(created.replace("Z", "+00:00"))
+        ).total_seconds()
+        assert span == run["duration_seconds"], (
+            f"{run['job_title']}: recorded duration {run['duration_seconds']}s "
+            f"does not match its own timestamps ({span:.0f}s)"
+        )
 
 
 @pytest.mark.parametrize("terminal", ["COMPLETED", "FAILED", "STOPPED"])
