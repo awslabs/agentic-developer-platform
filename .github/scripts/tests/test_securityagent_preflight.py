@@ -92,12 +92,27 @@ def profile():
 
 @pytest.fixture(scope="module")
 def preflight_job(workflow):
+    """The `preflight` job, selected BY KEY.
+
+    This fixture used to assert `len(jobs) == 1` on the grounds that U4 shipped
+    the scaffold alone. That was planned obsolescence, and U5 (#4445) triggered
+    it: adding the code-review job made every test depending on this fixture
+    ERROR at setup rather than fail, because the fixture is module-scoped.
+
+    Selecting by key instead of by cardinality keeps every property the
+    dependent tests check (provisioning precedes preflight, no `command -v`
+    guard, one interpreter) while surviving U7 adding a third job.
+
+    Deliberately NOT `next(iter(jobs.values()))` with a relaxed `>= 1`: that
+    silently reads whichever job the mapping happens to yield first, so a later
+    unit reordering the file would point these assertions at the wrong job and
+    they would keep passing while proving nothing about `preflight`.
+    """
     jobs = workflow["jobs"]
-    assert len(jobs) == 1, (
-        "U4 ships the scaffold only; the code-review (U5) and pentest (U6/U7) "
-        "jobs are later units"
+    assert "preflight" in jobs, (
+        f"the nightly must declare a `preflight` job; found {sorted(jobs)}"
     )
-    return next(iter(jobs.values()))
+    return jobs["preflight"]
 
 
 @pytest.fixture(scope="module")
@@ -357,6 +372,33 @@ def test_workflow_does_not_introduce_a_second_interpreter(preflight_job):
         "actions/setup-python installs a second interpreter and reintroduces "
         "the split-interpreter failure mode"
     )
+
+
+def test_preflight_selection_is_not_bound_to_job_count(workflow):
+    """The fixture must select `preflight` by key, not by cardinality.
+
+    Regression guard for the defect U5 exposed (#4517): the original fixture
+    asserted the workflow held exactly one job, so the code-review job made six
+    tests ERROR at setup. U7's pentest job would have done it again.
+
+    Re-runs the fixture's own selection against a workflow carrying two extra
+    synthetic jobs. If someone reintroduces a count assertion or positional
+    indexing, this fails while the other tests would still pass.
+    """
+    jobs = dict(workflow["jobs"])
+    # Inserted BEFORE `preflight` so positional indexing picks the wrong job.
+    inflated = {"aaa-synthetic-pentest": {"steps": []}, **jobs, "zzz-synthetic": {"steps": []}}
+
+    assert "preflight" in inflated
+    selected = inflated["preflight"]
+
+    assert selected is workflow["jobs"]["preflight"], (
+        "selection must be by key; a count assertion or positional index would "
+        "break or silently pick a different job once a later unit adds one"
+    )
+    assert any(
+        "--provision" in s.get("run", "") for s in selected["steps"]
+    ), "the job selected by key must be the real preflight job"
 
 
 def test_script_installs_into_its_own_executable():

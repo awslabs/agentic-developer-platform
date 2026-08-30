@@ -13,6 +13,20 @@ inputs:
   bucket:
     description: 'S3 bucket name (account-suffixed security-scans bucket)'
     required: true
+  dest-prefix:
+    description: >
+      Optional destination prefix within the bucket, e.g.
+      'security-agent/runs/2026-08-30/'. A trailing slash is added if absent.
+      Leave unset to keep the legacy 'findings/<run_id>/<tool-name>/' layout the
+      Security Summary and baseline-update jobs read.
+
+      Exists because a caller's IAM role may be confined to a prefix that the
+      legacy layout falls outside of. The nightly security-agent role
+      (adp-<env>-securityagent-nightly-policy) grants s3:PutObject only under
+      'security-agent/*', so publishing there under 'findings/...' fails
+      AccessDenied AFTER the metered review has run and been paid for (#4517).
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -22,7 +36,21 @@ runs:
           echo "::warning::findings path '${{ inputs.path }}' not found for ${{ inputs.tool-name }} — scanner may have crashed; nothing to publish"
           exit 0
         fi
-        DEST="s3://${{ inputs.bucket }}/findings/${{ github.run_id }}/${{ inputs.tool-name }}/"
+        # Unset dest-prefix reproduces the legacy destination exactly. The 8
+        # security-scan.yml callers pass no dest-prefix, so their behaviour is
+        # unchanged -- which is itself an asserted regression check (#4517).
+        PREFIX='${{ inputs.dest-prefix }}'
+        if [ -z "$PREFIX" ]; then
+          PREFIX="findings/${{ github.run_id }}/${{ inputs.tool-name }}/"
+        fi
+        # `aws s3 cp` treats a destination without a trailing slash as an object
+        # key, which would silently write the findings to a KEY named after the
+        # prefix instead of into it.
+        case "$PREFIX" in
+          */) ;;
+          *) PREFIX="$PREFIX/" ;;
+        esac
+        DEST="s3://${{ inputs.bucket }}/$PREFIX"
         if [ -d "${{ inputs.path }}" ]; then
           aws s3 cp "${{ inputs.path }}" "$DEST" --recursive \
             --metadata "commit=${{ github.sha }},run-attempt=${{ github.run_attempt }}"

@@ -81,3 +81,111 @@ jobs:
 
       - name: Preflight — assert the client resolves on this runner
         run: $SECURITYAGENT_PYTHON .github/scripts/securityagent_preflight.py
+
+  # ---------------------------------------------------------------------------
+  # Whole-repo code review (U5, issue #4445)
+  # ---------------------------------------------------------------------------
+  # Gated on `preflight`: the driver constructs a `securityagent` client, and
+  # without the preflight's provisioning that fails with an opaque botocore
+  # error rather than the preflight's named cause and fix.
+  #
+  # The provision/assert pair is repeated here rather than inherited. Jobs do
+  # not share a filesystem or an interpreter, so `needs: preflight` proves the
+  # client resolved on *that* runner, not on this one. Dropping the pair here
+  # would make this job depend on a property of a different machine.
+  #
+  # Two settings are deliberately absent from every line below, and their
+  # absence is the safety content of this unit:
+  #
+  #   * the live-validation mode — its permissive member stops this being a
+  #     code review and starts exercising real endpoints, giving this job the
+  #     blast radius of the pentest half
+  #   * the remediation strategy — its permissive member makes the service open
+  #     its own fix pull requests, racing the fix pipeline this EPIC builds
+  #
+  # Neither is an input, an env var, or a script flag. They are constants read
+  # from the validated profile inside code_review_request.py, with no parameter
+  # threading them, so reaching a permissive value requires editing that file —
+  # a reviewable diff rather than a workflow tweak. The gate asserts that
+  # unreachability, not merely today's value.
+  #
+  # There is still no `schedule:` key in this file, and this unit does not add
+  # one: arming the schedule needs a measured run duration and a non-colliding
+  # window, neither of which this unit produces.
+  code-review:
+    name: Code Review
+    needs: preflight
+    runs-on: arc-runner-org
+    env:
+      # Same single-source-of-interpreter-truth discipline as `preflight`:
+      # provisioning and use must land in the same Python.
+      SECURITYAGENT_PYTHON: python3
+      # `dev` is the only option this dispatch-only workflow offers, so the
+      # fallback is correct today. It is written as an explicit default rather
+      # than a bare `||` chain because the empty-string case is silent: on any
+      # invocation without a dispatch input, `inputs.environment` is empty and
+      # findings would route to the dev bucket with nothing in the log saying
+      # so. Once a second environment exists that is a misrouting bug (#4517).
+      ENVIRONMENT: ${{ inputs.environment == '' && 'dev' || inputs.environment }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Resolved ONCE, and FIRST. Once, because calling `date` in both the review
+      # step and the publish prefix can straddle UTC midnight on a long run and
+      # file the findings under a different day than the review they came from.
+      # First, because the publish step is `if: always()`: resolving this after
+      # the preflight would leave it empty on any earlier failure.
+      - name: Resolve run date
+        run: echo "RUN_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+
+      - name: Provision the Security Agent client
+        run: $SECURITYAGENT_PYTHON .github/scripts/securityagent_preflight.py --provision
+
+      - name: Preflight — assert the client resolves on this runner
+        run: $SECURITYAGENT_PYTHON .github/scripts/securityagent_preflight.py
+
+      - name: Resolve account ID
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+      # Packages the repo as a zip, registers the service role and staging
+      # bucket on the existing agent space, creates and starts the review,
+      # polls to a terminal state, and aborts the job via StopCodeReviewJob if
+      # the bound is hit. The agent space, service role and staging bucket are
+      # read from .github/security/security-agent-profile.json — retyping any
+      # of them here would create a second source of truth.
+      #
+      # timeout-minutes is above the poll bound on purpose: the script's own
+      # timeout must fire first so the job is *stopped*, not merely abandoned
+      # to a runner kill that leaves it running and unabortable.
+      - name: Run the whole-repo code review
+        timeout-minutes: 75
+        run: |
+          $SECURITYAGENT_PYTHON .github/scripts/code_review_request.py \
+            --run-date "$RUN_DATE" \
+            --output code-review-findings.json
+
+      # Reuses the existing rendezvous action rather than adding a second
+      # upload path. The bucket is private (a public findings object would make
+      # whole-repo security findings world-readable), which the smoke test
+      # confirms with `aws s3api get-bucket-policy-status`.
+      #
+      # dest-prefix is REQUIRED here, not cosmetic. This job runs as
+      # adp-<env>-securityagent-nightly, whose inline policy grants s3:PutObject
+      # only under `security-agent/*` (securityagent-nightly-iam.tf sets
+      # securityagent_staging_prefix = "security-agent"). The action's default
+      # `findings/<run_id>/<tool>/` layout is OUTSIDE that prefix, so without
+      # this the publish fails AccessDenied after the review has been polled to
+      # completion and billed — full cost, zero retained findings (#4517).
+      #
+      # The action defaults this input, so the 8 security-scan.yml callers that
+      # omit it keep the legacy layout unchanged.
+      - name: Publish findings to the private S3 rendezvous
+        if: always()
+        uses: ./.github/actions/publish-findings-s3
+        with:
+          path: code-review-findings.json
+          tool-name: securityagent-code-review
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          dest-prefix: security-agent/runs/${{ env.RUN_DATE }}/

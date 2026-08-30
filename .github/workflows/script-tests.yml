@@ -23,10 +23,12 @@ on:
       - '.github/scripts/security_agent_ledger.py'
       - '.github/scripts/render_security_report.py'
       - '.github/scripts/securityagent_preflight.py'
+      - '.github/scripts/code_review_request.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
       - 'platform/infra/securityagent-nightly-iam.tf'
+      - '.github/actions/publish-findings-s3/action.yml'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -44,10 +46,12 @@ on:
       - '.github/scripts/security_agent_ledger.py'
       - '.github/scripts/render_security_report.py'
       - '.github/scripts/securityagent_preflight.py'
+      - '.github/scripts/code_review_request.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
       - 'platform/infra/securityagent-nightly-iam.tf'
+      - '.github/actions/publish-findings-s3/action.yml'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -94,4 +98,5 @@ jobs:
             tests/test_render_security_report.py \
             tests/test_umbrella_epic_idempotency.py \
             tests/test_securityagent_preflight.py \
+            tests/test_code_review_request.py \
             -v --tb=short --timeout=60
