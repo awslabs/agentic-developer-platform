@@ -108,6 +108,7 @@ SERVICE_ROOT_ID = "service:ci-bot-4401"
 COLLEAGUE_SPEND = Decimal("777.777777")
 FOREIGN_SPEND = Decimal("888.888888")
 MEMBER_SPEND = Decimal("12.500000")
+OTHER_DEPT_SPEND = Decimal("55.555555")
 TEAM_A_SPEND = Decimal("250.000000")
 SERVICE_SPEND = Decimal("99.990000")
 
@@ -198,6 +199,17 @@ async def seeded(session: AsyncSession) -> None:
                 period_type=PeriodType.MONTHLY.value,
                 period_start=PERIOD_START,
                 total_cost_usd=MEMBER_SPEND,
+            ),
+            # A DEPT_B member's ledger row — same org, different department. This
+            # is the row a container rollup must NOT surface to a DEPT_A-scoped
+            # reader (T9d/T9e): its distinctive figure makes the leak unmistakable.
+            BudgetUsage(
+                org_id=ORG_ID,
+                entity_type=EntityType.USER.value,
+                entity_id=OTHER_DEPT_SUB,
+                period_type=PeriodType.MONTHLY.value,
+                period_start=PERIOD_START,
+                total_cost_usd=OTHER_DEPT_SPEND,
             ),
             BudgetUsage(
                 org_id=ORG_ID,
@@ -1208,6 +1220,66 @@ async def test_t9b_rollup_excludes_other_tenants_principals(session, seeded):
     ids = {row["entity_id"] for row in response.json()["rollup"]}
     assert FOREIGN_SUB not in ids
     assert str(FOREIGN_SPEND) not in response.text
+
+
+async def test_t9d_department_rollup_contains_only_that_departments_members(session, seeded):
+    """A department target's rollup is confined to that department's members.
+
+    The intra-tenant counterpart of T9b, and the sharper one: the caller is a
+    ``dept_admin`` making a read they are GENUINELY authorised for — their own
+    department — so the authorisation gate passes, and only the rollup's own
+    membership filter stands between them and the rest of the org. An org-scoped
+    rollup here hands a DEPT_A admin DEPT_B's per-member spend, which is exactly
+    the scope T3 denies when asked for directly.
+    """
+    async with client_for(session, context_for(DEPT_ADMIN_SUB, department_id=DEPT_A)) as client:
+        response = await client.get(f"/budget/scope/department/{DEPT_A}?period_type=monthly")
+
+    assert response.status_code == 200, response.text
+    ids = {row["entity_id"] for row in response.json()["rollup"]}
+
+    # DEPT_A's members (TEAM_A) are present...
+    assert MEMBER_SUB in ids
+    assert COLLEAGUE_SUB in ids
+    # ...and DEPT_B's member is not — by id or by figure.
+    assert OTHER_DEPT_SUB not in ids
+    assert str(OTHER_DEPT_SPEND) not in response.text
+    # The `service:` root principal has no `users` row, so it cannot be placed in
+    # any department and must not surface in one (fail closed on placement).
+    assert SERVICE_ROOT_ID not in ids
+
+
+async def test_t9e_team_rollup_contains_only_that_teams_members(session, seeded):
+    """A team target's rollup is confined to that team's members.
+
+    Same property as T9d one level down, exercised through an org_admin caller so
+    the filter is proven to be the ROLLUP's, not a side effect of the caller's
+    department scope: an org_admin may read every team in the org, yet each team's
+    rollup must still describe only that team.
+    """
+    async with client_for(session, context_for(ORG_ADMIN_SUB)) as client:
+        response = await client.get(f"/budget/scope/team/{TEAM_A}?period_type=monthly")
+
+    assert response.status_code == 200, response.text
+    ids = {row["entity_id"] for row in response.json()["rollup"]}
+
+    assert MEMBER_SUB in ids
+    assert COLLEAGUE_SUB in ids
+    # TEAM_B's member is absent even though the caller could read TEAM_B directly.
+    assert OTHER_DEPT_SUB not in ids
+    assert str(OTHER_DEPT_SPEND) not in response.text
+    assert SERVICE_ROOT_ID not in ids
+
+
+async def test_t9f_org_rollup_remains_org_wide(session, seeded):
+    """An org target still rolls up every principal in the org — T9d/T9e narrow
+    containers, they must not narrow the org, whose membership is the org."""
+    async with client_for(session, context_for(ORG_ADMIN_SUB)) as client:
+        response = await client.get(f"/budget/scope/org/{ORG_ID}?period_type=monthly")
+
+    assert response.status_code == 200, response.text
+    ids = {row["entity_id"] for row in response.json()["rollup"]}
+    assert {MEMBER_SUB, COLLEAGUE_SUB, OTHER_DEPT_SUB, SERVICE_ROOT_ID} <= ids
 
 
 async def test_t9c_individual_target_has_no_rollup(session, seeded):

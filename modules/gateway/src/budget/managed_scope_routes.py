@@ -447,10 +447,43 @@ async def _authorize_scope(
     return target_org, normalized_id
 
 
+async def _container_member_ledger_ids(
+    db: AsyncSession,
+    org_id: str,
+    entity_type: str,
+    entity_id: str,
+) -> set[str]:
+    """Resolve which ledger ids belong to a ``team``/``department`` container.
+
+    ``budget_usage`` is keyed by principal id alone — it carries no team or
+    department edge — so the container's membership has to come from the ``users``
+    table: ``User.team_id`` for a team, and the team→department edge for a
+    department (the same edge ``_check_department_scope`` walks).
+
+    Both id namespaces are returned per member: a ``user`` ledger row is keyed by
+    Cognito sub while a ``root_user`` row is keyed by canonical ``users.id``
+    (#4300), and a member's spend can land in either.
+
+    A ``service:``-qualified root principal has no ``users`` row, so it cannot be
+    placed in a team or department and is therefore ABSENT from these sets — it
+    appears only in an ``org`` rollup, whose membership needs no placement. That is
+    the fail-closed direction: an unplaceable principal must not surface in a
+    container it was never proven to belong to.
+    """
+    stmt = select(User.cognito_sub, User.id).where(User.org_id == org_id)
+    if entity_type == EntityType.TEAM.value:
+        stmt = stmt.where(User.team_id == entity_id)
+    else:  # department: members are the users of the department's teams
+        stmt = stmt.where(User.team_id.in_(select(Team.id).where(Team.department_id == entity_id, Team.org_id == org_id)))
+    rows = (await db.execute(stmt)).all()
+    return {value for row in rows for value in row if value}
+
+
 async def _read_rollup_rows(
     db: AsyncSession,
     org_id: str,
     entity_type: str,
+    entity_id: str,
     period_type: PeriodType,
     period_start: date,
 ) -> list[ScopeRollupRow]:
@@ -474,35 +507,34 @@ async def _read_rollup_rows(
     aggregates across entity types the way ``get_organization_budget_overview``
     does (#4328).
 
-    Membership scoping note: the rows are scoped to the target's **org**, so for a
-    ``team`` or ``department`` target this lists the org's principals rather than
-    only that container's members. Narrowing it needs a per-principal
-    team/department edge that the ledger row does not carry — ``budget_usage`` is
-    keyed by principal id alone. The read is authorised at org level before it
-    runs, so no caller sees a principal outside an org they already administer;
-    the narrowing is filed as a follow-up rather than faked with a join the data
-    model does not support.
+    **Membership scoping** (T9d/T9e): a ``team`` or ``department`` target's rollup
+    is additionally confined to **that container's members**, resolved through
+    ``users`` (see ``_container_member_ledger_ids``). Without it, a dept_admin who
+    legitimately reads their own department would receive every principal in the
+    org — other departments' per-member spend included — which is exactly the scope
+    ``_check_department_scope`` exists to deny. The authorisation gate says the
+    caller may read the *container*; this filter is what makes the response contain
+    only the container.
     """
     if entity_type not in _CONTAINER_ENTITY_TYPES:
         return []
 
-    per_principal = (EntityType.USER.value, EntityType.ROOT_USER.value)
-    usage_rows = (
-        (
-            await db.execute(
-                select(BudgetUsage)
-                .where(
-                    BudgetUsage.org_id == org_id,
-                    BudgetUsage.entity_type.in_(per_principal),
-                    BudgetUsage.period_type == period_type.value,
-                    BudgetUsage.period_start == period_start,
-                )
-                .order_by(BudgetUsage.entity_type, BudgetUsage.entity_id)
-            )
-        )
-        .scalars()
-        .all()
+    rollup_query = select(BudgetUsage).where(
+        BudgetUsage.org_id == org_id,
+        BudgetUsage.entity_type.in_((EntityType.USER.value, EntityType.ROOT_USER.value)),
+        BudgetUsage.period_type == period_type.value,
+        BudgetUsage.period_start == period_start,
     )
+    if entity_type != EntityType.ORGANIZATION.value:
+        member_ids = await _container_member_ledger_ids(db, org_id, entity_type, entity_id)
+        if not member_ids:
+            # A container with no resolvable members has nothing to roll up. An
+            # empty list, not the org-wide fallthrough — "no members" must never
+            # widen into "everyone".
+            return []
+        rollup_query = rollup_query.where(BudgetUsage.entity_id.in_(member_ids))
+
+    usage_rows = (await db.execute(rollup_query.order_by(BudgetUsage.entity_type, BudgetUsage.entity_id))).scalars().all()
 
     rows: list[ScopeRollupRow] = []
     for usage in usage_rows:
@@ -566,7 +598,7 @@ async def get_managed_scope_budget(
     try:
         cap_row = await _read_cap(db, target_org, resolved_entity_type, target_id, resolved_period)
         spend = await _read_settled_spend(db, target_org, resolved_entity_type, target_id, resolved_period, period_start)
-        rollup = await _read_rollup_rows(db, target_org, entity_type, resolved_period, period_start)
+        rollup = await _read_rollup_rows(db, target_org, entity_type, target_id, resolved_period, period_start)
     except _INFRASTRUCTURE_FAULTS as exc:
         # Same rule as U-1: a failed ledger read must not render as "$0 spent".
         logger.error("Failed to read managed-scope budget; returning 503 rather than a zeroed budget", exc_info=True)
