@@ -32,6 +32,7 @@ from fastapi.responses import StreamingResponse
 from src.auth.middleware import validate_cognito_jwt
 from src.chat_logging.service import ChatLoggingService, create_streaming_logging_wrapper
 from src.proxy.client_tool import normalize_client_tool
+from src.proxy.eventstream_codec import EVENTSTREAM_CONTENT_TYPE, sse_to_eventstream
 from src.proxy.mantle_service import MantlePassthroughService, MantleUpstreamError
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.schemas import (
@@ -794,9 +795,28 @@ async def invoke_model_stream_by_path(
             start_time=t0,
         )
 
+        # This is the Bedrock-native URL pattern, so the default wire format is
+        # Bedrock's binary eventstream — what every Bedrock-flavored client
+        # (the Claude Code SDK on the agent workers, most of all) decodes.
+        # Serving text SSE here made claude-cli consume the whole stream, fail
+        # to decode it, and silently retry the request non-streaming: every
+        # agent turn generated (and billed) twice. Clients that explicitly ask
+        # for SSE via Accept keep the old behaviour (curl debugging, tests).
+        accept = (request.headers.get("accept") or "").lower()
+        if "text/event-stream" in accept:
+            return StreamingResponse(
+                wrapped_stream,
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
         return StreamingResponse(
-            wrapped_stream,
-            media_type="text/event-stream",
+            sse_to_eventstream(wrapped_stream),
+            media_type=EVENTSTREAM_CONTENT_TYPE,
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
