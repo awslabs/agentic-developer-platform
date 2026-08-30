@@ -47,3 +47,10 @@ output "public_cfn_bucket_url" {
   description = "Base URL for CloudFormation template downloads"
   value       = var.enable_public_cfn_bucket ? "https://${aws_s3_bucket.public_cfn[0].bucket}.s3.amazonaws.com" : ""
 }
+
+# Issue #4444 (U6): the pentest reads the matrix through this function. Empty
+# when not in dev or the gateway is not deployed.
+output "pentest_actor_token_function_name" {
+  description = "Name of the dev-only pentest actor-token minting Lambda"
+  value       = local.pentest_actor_token_enabled ? module.pentest_actor_token[0].function_name : ""
+}

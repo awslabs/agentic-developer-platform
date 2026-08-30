@@ -291,7 +291,23 @@
     "four_distinct_identities_in_two_orgs_exist": false,
     "evidence": "Only two gateway test-credential secrets exist in dev. Per-tenant GitHub App secrets exist for several test tenants, but those are app installations, not user identities with login credentials.",
     "coverage_reduction_accepted": "Run 1 ships a 2-actor matrix. It retains privilege-escalation-ceiling coverage (admin vs user) and loses cross-tenant/IDOR coverage (which needs two same-privilege admins in different orgs). This reduction is knowingly accepted and stated, per N-4.",
-    "net_new_component_scope": "To reach the full 4-actor matrix: seed two org_admin identities in two distinct dev tenants and store their credentials as two new Secrets Manager secrets. A token-minting Lambda (AWS_LAMBDA) is the longer-term option and removes static credentials, but is not required for run 1. This is the candidate additional child issue SP-6 anticipated."
+    "net_new_component_scope": "To reach the full 4-actor matrix: seed two org_admin identities in two distinct dev tenants and store their credentials as two new Secrets Manager secrets. A token-minting Lambda (AWS_LAMBDA) is the longer-term option and removes static credentials, but is not required for run 1. This is the candidate additional child issue SP-6 anticipated.",
+
+    "lambda_provider": {
+      "status": "BUILT_NOT_ADOPTED",
+      "unit": "U6 (issue #4444)",
+      "note": "U6 built the AWS_LAMBDA minting path that net_new_component_scope names as the better long-term answer. It is deliberately ADDITIVE: the `decision` field above still reads SECRETS_MANAGER because that is what run 1 was validated against, and flipping a recorded decision retroactively would misstate what actually ran. Adopting AWS_LAMBDA is a separate, deliberate change to `decision` plus `pentest.request_shape.assets.actors[].providerType`.",
+      "function_name_pattern": "adp-<env>-agent-pentest-actor-token",
+      "terraform": "modules/agent-factory/infra/pentest-actor-token.tf",
+      "handler": "modules/agent-factory/gateway/lambdas/pentest-actor-token/handler.py",
+      "identities": ["platform_admin", "org_admin_a", "org_admin_b", "regular_user"],
+      "org_admins_in_distinct_orgs": true,
+      "credential_lifetime_minutes": 5,
+      "credential_lifetime_note": "5 minutes is Cognito's floor for access_token_validity and is set per app-client, not per request. It is the shortest obtainable here, not a chosen value.",
+      "environment_scope": "dev",
+      "invocation_shape": "{\"actor\": \"<identifier>\"} -> {\"access_token\", \"expires_in\", \"actor\", \"tier\", \"org_id\"}",
+      "authority_caveat": "An org admin's authority comes from an is_active tenant_memberships row, NOT from the custom:role claim: AccessControl.get_user_role demotes a claim-only org_admin to MEMBER. The handler fails closed when an org admin's provisioning is incomplete, because minting there would yield a matrix that silently under-tests the cross-tenant class."
+    }
   },
 
   "drift_summary": {

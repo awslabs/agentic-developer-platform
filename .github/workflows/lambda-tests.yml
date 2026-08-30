@@ -1,0 +1,81 @@
+name: Lambda Tests
+
+# Runs the Python test suites under modules/agent-factory/tests/lambda/, which
+# no other workflow executes. Before this workflow that directory held 166
+# passing tests with ZERO CI coverage, so any quality gate citing "Lambda Tests"
+# was vacuous — the check simply did not exist. Issue #4444 cited it as an
+# existing check; this makes it real rather than assumed.
+#
+# Modelled on script-tests.yml, including its reasoning about triggers and
+# explicit file pinning.
+
+on:
+  # Both PR and post-merge push to main. The push trigger is not redundant: a
+  # pull_request-only workflow never attaches a check-run to a main commit, so
+  # "does this gate exist on main?" is unanswerable via the commit check-runs
+  # API — and any gate citing this check cannot verify it.
+  push:
+    branches:
+      - main
+    paths:
+      - 'modules/agent-factory/tests/lambda/**'
+      - 'modules/agent-factory/tests/conftest.py'
+      - 'modules/agent-factory/gateway/lambdas/**'
+      - 'modules/agent-factory/pyproject.toml'
+      - '.github/workflows/lambda-tests.yml'
+  pull_request:
+    paths:
+      - 'modules/agent-factory/tests/lambda/**'
+      - 'modules/agent-factory/tests/conftest.py'
+      - 'modules/agent-factory/gateway/lambdas/**'
+      - 'modules/agent-factory/pyproject.toml'
+      - '.github/workflows/lambda-tests.yml'
+    branches:
+      - main
+
+concurrency:
+  group: lambda-tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  lambda-tests:
+    name: Lambda Tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            'pytest>=8.0' \
+            pytest-timeout \
+            pytest-cov \
+            'pytest-asyncio>=0.23' \
+            'moto[sqs,dynamodb,secretsmanager]>=5.0' \
+            'boto3>=1.34' \
+            pyjwt
+
+      # The whole directory is run (not pinned files): unlike .github/scripts,
+      # tests/lambda/ is the canonical home for every gateway-lambda suite, so a
+      # new file here should be picked up automatically rather than silently
+      # skipped until someone remembers to add it.
+      - name: Run lambda tests
+        working-directory: modules/agent-factory
+        run: python3 -m pytest tests/lambda/ -v --tb=short --timeout=120
+
+      # Coverage gate for the pentest actor-token handler (issue #4444 requires
+      # >= 85%). Scoped to this handler rather than the whole directory because
+      # the other lambdas predate any coverage requirement; widening the scope
+      # would fail on pre-existing debt this issue did not ask us to fix.
+      - name: Coverage gate — pentest actor-token handler (>= 85%)
+        working-directory: modules/agent-factory
+        run: |
+          python3 -m pytest tests/lambda/test_pentest_actor_token.py -q \
+            --cov=gateway/lambdas/pentest-actor-token \
+            --cov-report=term-missing \
+            --cov-fail-under=85
