@@ -78,8 +78,8 @@ resource "helm_release" "arc_runner_set" {
       # 20: deploy + security-scan + agent runs contend for the pool; at 10 the
       # deploy pipeline sat queued behind Security Scan bursts (live-patched
       # 2026-07-03, codified here so the next apply doesn't revert it).
-      maxRunners         = 20
-      minRunners         = 0
+      maxRunners = 20
+      minRunners = 0
       # Pod template. Always supply the full container spec (image, command,
       # resources) — the chart has no image-only override and overriding
       # `containers` without setting `command` would make pods run the
@@ -93,20 +93,31 @@ resource "helm_release" "arc_runner_set" {
         # packs multiple runners onto a single c6a.large; their concurrent
         # npm ci / setup-node bursts saturate the node's gp3 EBS IOPS
         # baseline (3000), stalling processes in D-state and causing 5+ min
-        # "hangs". Mirrors AISuperPlane's sizing — requests push Karpenter
-        # to right-size the node, limits prevent one runner starving others.
+        # "hangs". Requests push Karpenter to right-size the node, limits
+        # prevent one runner starving others.
         #
-        # cpu=1 request is KEPT deliberately: it is the runner-density guard
-        # (≈ one runner per vCPU) that prevents the EBS-IOPS-saturation hang
-        # described above. Do not lower it.
+        # Sizing history — two data-driven revisions, keep both in mind:
         #
-        # memory request lowered 4Gi -> 1Gi: observed steady-state usage is
-        # ~16-140Mi (peak ~3.5% of the old 4Gi reservation, via Container
-        # Insights over 2h). At 4Gi, memory was the binding constraint that
-        # forced ~2 runners/xlarge (7.5Gi) and inflated node count; at 1Gi,
-        # cpu=1 becomes the density cap (~4 runners/xlarge) — the intended
-        # IOPS guard — while freeing ~3Gi of phantom reservation per runner.
-        # Limit stays 8Gi so a heavy build can still burst without OOM.
+        # 1) 2026-07: memory request lowered 4Gi -> 1Gi because observed
+        #    steady-state usage was ~16-140Mi (Container Insights, 2h window)
+        #    and 4Gi phantom reservation inflated node count. cpu=1 request
+        #    kept as the density guard (≈ one runner per vCPU) against the
+        #    EBS-IOPS hang above.
+        #
+        # 2) 2026-08-30: that 2h window turned out to miss the heavy jobs.
+        #    Measured under real CI load: one runner at 3.7 cores, another at
+        #    2.7Gi; three runners packed on one node drove it to 104% CPU and
+        #    a second node to 97% memory, and a job died with "runner lost
+        #    communication ... starves it for CPU/Memory" (PR #4476 npm
+        #    audit). Requests raised to cpu=2 / memory=4Gi so scheduling
+        #    reflects real burst usage: density drops to ~2 runners per
+        #    4-vCPU node by CPU and memory overcommit is bounded at 2x
+        #    (limit 8Gi vs 4Gi request) instead of 8x. This STRENGTHENS the
+        #    IOPS density guard — do not lower either request below this
+        #    without node-level CPU/memory data over a window that includes
+        #    heavy workflows (full pytest suites, security scans, npm audit).
+        #
+        # Limits stay 4 CPU / 8Gi so a heavy build can still burst.
         spec = {
           serviceAccountName = kubernetes_service_account.runner.metadata[0].name
           containers = [
@@ -115,7 +126,7 @@ resource "helm_release" "arc_runner_set" {
               image   = var.runner_image == "" ? "ghcr.io/actions/actions-runner:latest" : var.runner_image
               command = ["/home/runner/run.sh"]
               resources = {
-                requests = { cpu = "1", memory = "1Gi" }
+                requests = { cpu = "2", memory = "4Gi" }
                 limits   = { cpu = "4", memory = "8Gi" }
               }
             }
