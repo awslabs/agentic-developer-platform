@@ -44,6 +44,16 @@ Contract rules (each one is a test in `tests/budget/test_me_budget_routes.py`):
    returning this model with zeroes, so no field here can encode "the database
    was unreachable" (FR-1.7). ``get_budget_status_for_headers`` returns ``{}``
    for both "no budget" and "DB error" and is deliberately not reused.
+
+Rules 6-8 arrived with the multi-line envelope (U-2, #4399) and are stated on
+``BudgetLine`` / ``CombinedInformational`` next to the fields they constrain:
+
+6. **An uncapped line can never be the binding line** — see ``BudgetLine``.
+7. **``principal_kind`` is structural**: ``service:``-rooted lines are excluded
+   from per-person rollups — see ``BudgetLine``.
+8. **The headline is never the sum of the lines**, and the combined figure carries
+   no cap denominator — see ``CombinedInformational`` and ``MyBudgetResponse``.
+   This is the hard acceptance gate of U-2.
 """
 
 from datetime import date
@@ -68,6 +78,31 @@ CapStatus = Literal["capped", "uncapped"]
 # Whether the caller's canonical `users.id` could be resolved from their Cognito
 # sub. See `MyBudgetResponse.identity_status` for why this is on the wire.
 IdentityStatus = Literal["resolved", "unresolved", "not_applicable"]
+
+# Which of the caller's two spend paths a line describes (Issue #4399, FR-2.1).
+# `direct` is traffic they originated themselves (`entity_type="user"`, keyed by
+# Cognito sub); `cloud` is the agent chains they triggered (`root_user`, keyed by
+# canonical `users.id`). `None` for shared ancestors — a team/department/org line
+# is neither, and labelling one "direct" would attribute a colleague's spend to
+# the caller's own machine.
+BudgetSource = Literal["direct", "cloud"]
+
+# Whether a root principal is a person or an unattended trigger (FR-2.5).
+# Derived from the `service:` id qualifier that `_qualify_root_principal_id`
+# (`enforcement_service.py:93`) writes, NOT from a new sentinel — the qualifier
+# is applied once where `attributed_user_id` is published, so the enforcement key
+# and the settled ledger key are the same string by construction (#4344).
+PrincipalKind = Literal["human", "service"]
+
+# The `service:` namespace qualifier on a ROOT_USER entity id (#4344). A canonical
+# `users.id` is a generated UUID and contains no colon, so no bare human id can
+# ever equal a qualified value — which is what makes prefix matching a sound test
+# of principal kind rather than a guess.
+#
+# Deliberately duplicated as a public constant rather than imported from
+# `enforcement_service._SERVICE_PRINCIPAL_PREFIX`: that name is private, and this
+# module is the contract of record that U-4 reads. Pinned equal to it by a test.
+SERVICE_PRINCIPAL_QUALIFIER = "service:"
 
 
 # Serialisation precision per column, so a caller reading these strings gets
@@ -114,21 +149,145 @@ class BudgetPeriod(BaseModel):
     )
 
 
+class BudgetLine(BaseModel):
+    """One separately-capped line in the caller's envelope — Issue #4399 (U-2).
+
+    A line is **one ledger row's worth of truth**: a single
+    ``(org_id, entity_type, entity_id, period_type, period_start)`` read, its own
+    cap, and the headroom that follows. Two lines are never added together to
+    produce anything a client may present as a budget (FR-2.3) — that is the
+    single hard gate of this unit.
+
+    **Why the caller's direct and cloud lines cannot merge into one** (do not
+    "fix" this): the ``user`` entity is keyed by Cognito **sub**, ``root_user`` by
+    canonical **``users.id``**, and ``attributed_user_id`` is published only from a
+    resolved run binding (``enforcement_service.py:797-802``) — so direct
+    interactive traffic, which has no run binding, never writes a ``root_user``
+    row. There is no ledger row and no cap anywhere in the data model equal to
+    "everything this person set in motion". A fused envelope is therefore governed
+    by no cap and is tracked separately as #4396; see
+    ``requirements-analysis/envelope-composition.md`` for the full trace.
+
+    Field rules beyond ``MyBudgetResponse``'s (each one is a test in
+    ``tests/budget/test_envelope_composition.py``):
+
+    6. **An uncapped line can never be the binding line.** With no cap it has no
+       headroom to compare, so it cannot be the thing that stops anyone.
+       Selecting one would render a ``null`` headroom as the headline, or let an
+       unlimited line mask a genuinely constrained one.
+    7. **``principal_kind`` is structural, not cosmetic.** A ``service:``-rooted
+       line is an unattended trigger (CI, EventBridge, an alarm), not a person, so
+       it is excluded from per-person rollups (FR-2.5). Rendering one as a human
+       makes per-person cost truth wrong.
+    """
+
+    entity_type: str = Field(
+        description=("Which ledger this line was read from — `user`, `root_user`, `team`, `department`, `org` or `service_account`.")
+    )
+    label: str = Field(
+        description="Human-readable line name, e.g. `Direct usage (my machine)`. Server-supplied so two surfaces cannot word it differently."
+    )
+    source: BudgetSource | None = Field(
+        description=(
+            "`direct` for the caller's own traffic, `cloud` for chains they "
+            "triggered, `null` for a shared ancestor (team/department/org), which "
+            "is neither. See `BudgetSource`."
+        ),
+    )
+    principal_kind: PrincipalKind = Field(
+        description=(
+            "`human` or `service`, from the `service:` id qualifier (#4344). A `service` line is excluded from per-person rollups — see field rule 7."
+        ),
+    )
+
+    cap_usd: str | None = Field(description="The EFFECTIVE cap after the platform-ceiling clamp, at 2dp. `None` when `cap_status` is `uncapped`.")
+    spend_usd: str = Field(
+        description=(
+            "Settled spend for this entity and period at 6dp, from the full "
+            "5-filter predicate. Always present; with no usage row it is a true "
+            "`0.000000`."
+        )
+    )
+    remaining_usd: str | None = Field(
+        description="Headroom (`cap - spend`) at 6dp. May be NEGATIVE when settled spend has passed the cap. `None` when uncapped."
+    )
+    utilization_pct: float | None = Field(
+        description="Spend as a percentage of cap, to 1dp. `None` when uncapped, and `None` for a `$0` cap where no percentage is defined."
+    )
+    band: BudgetBand | None = Field(
+        description="Warning band from the server-side 80/95 thresholds. `None` when uncapped. A `$0` cap is always `exceeded`."
+    )
+    cap_status: CapStatus = Field(
+        description="`capped` if a budget row governs this line, `uncapped` if none does. Never collapsible into `cap_usd is None`."
+    )
+    enforcement_mode: str | None = Field(
+        description=(
+            "How this cap behaves when exceeded, straight off the `budget_configs` row: `hard` blocks, `soft` warns and allows. `None` when uncapped."
+        ),
+    )
+
+
+class CombinedInformational(BaseModel):
+    """The direct+cloud dollar total — **informational only, never a budget**.
+
+    This model's **shape** is the guarantee, not its docstring. It carries a
+    ``spend_usd`` and nothing else numeric: there is deliberately **no**
+    ``cap_usd``, no ``remaining_usd``, no ``utilization_pct`` and no ``band``
+    field *anywhere on it*. A frontend cannot bind a progress bar to a
+    denominator that does not exist on the wire, so the "no `x / y` bar" rule
+    (FR-2.4) is enforced by the type rather than by reviewer vigilance.
+
+    ``is_budget`` is a ``Literal[False]`` for the same reason — it is unsettable,
+    so no future code path can flip it true and start presenting this figure as a
+    ceiling. **No cap governs this number and no ledger row contains it.**
+
+    Two exclusions are baked into how the total is summed, both from
+    ``envelope-composition.md``:
+
+    * **Shared ancestors are excluded.** Team, department and org lines are not
+      the caller's personal spend; folding them in would count colleagues' spend
+      as the caller's.
+    * **``service:``-rooted lines are excluded** (§5). The usage tracker gates the
+      ``root_user`` write on ``if root_human_id:`` with no equality skip
+      (``handler.py:467``), whereas enforcement *does* skip the root entity when
+      the root is the caller (``enforcement_service.py:437``). For a service-rooted
+      run the same dollar therefore lands on **both** the ``user`` and
+      ``root_user`` rows, so summing across entity types would double-count it.
+      Excluding service roots removes the double-count at the same time as it
+      keeps unattended CI spend out of a person's envelope (FR-2.5).
+    """
+
+    spend_usd: str = Field(
+        description=(
+            "Sum of the caller's own capped/uncapped per-person lines (direct + "
+            "cloud) at 6dp. NOT a budget and NOT enforced: no cap governs this "
+            "figure and no ledger row equals it. Excludes shared ancestors and "
+            "`service:`-rooted lines."
+        )
+    )
+    is_budget: Literal[False] = Field(
+        default=False,
+        description=("Always `false`, and typed so it cannot be anything else. Present so a client cannot mistake this total for a cap (FR-2.4)."),
+    )
+    note: str = Field(description="Plain-language restatement of `is_budget` for surfaces that render the figure with a caption.")
+
+
 class MyBudgetResponse(BaseModel):
     """The signed-in caller's own cap, settled spend and headroom for one period.
 
-    This is the **single-line** form: it reports the one *binding* line — the
-    lowest-remaining capped entity across the caller's hierarchy, which is the
-    line that will actually stop them first. U-2 (#4324) adds the multi-line
-    envelope (`binding` + `lines` + `combined_informational`) on top of this
-    shape; it does not replace it.
+    The top-level cap/spend/headroom fields are the **headline**, and the headline
+    is the *binding* line — the lowest-remaining capped entity across the caller's
+    hierarchy, which is the line that will actually stop them first. U-2 (#4399)
+    adds the multi-line envelope (``binding`` + ``lines`` +
+    ``combined_informational``) **on top of** this shape rather than replacing it,
+    so every U-1 client keeps working.
 
-    Why the binding line rather than a sum: enforcement evaluates each entity in
-    the hierarchy **separately**, each against its own cap
-    (``_check_entity_budget``). A summed headline would be a number that exists
-    in no ledger row and is enforced by no cap, so the screen would say
-    "exhausted" while enforcement stopped nothing — the precise screen-vs-enforcer
-    disagreement EPIC #4324 exists to eliminate.
+    **The headline is NEVER the sum of the lines** (FR-2.3) — the one hard
+    acceptance gate of U-2. Enforcement evaluates each entity in the hierarchy
+    separately, each against its own cap (``_check_entity_budget``). A summed
+    headline would be a number that exists in no ledger row and is enforced by no
+    cap, so the screen would say "exhausted" while enforcement stopped nothing —
+    the precise screen-vs-enforcer disagreement EPIC #4324 exists to eliminate.
     """
 
     period: BudgetPeriod
@@ -192,5 +351,48 @@ class MyBudgetResponse(BaseModel):
             "and is therefore ABSENT from these figures — it must not be read as "
             "'no cloud spend'. `not_applicable` for service-account callers, "
             "which have no canonical user row by design."
+        ),
+    )
+
+    # -----------------------------------------------------------------------
+    # The multi-line envelope — Issue #4399 (U-2)
+    # -----------------------------------------------------------------------
+
+    binding: BudgetLine | None = Field(
+        default=None,
+        description=(
+            "The line that will stop the caller first — the lowest-remaining "
+            "CAPPED line across their hierarchy, the same selection "
+            "`get_budget_status_for_headers` makes. This is the headline, and it "
+            "carries the same figures as the top-level `cap_usd`/`spend_usd`/"
+            "`remaining_usd` fields. `None` when nothing in the hierarchy is "
+            "capped, since an uncapped line cannot bind — NOT an error, and not "
+            "the same as a `$0` cap."
+        ),
+    )
+
+    lines: list[BudgetLine] = Field(
+        default_factory=list,
+        description=(
+            "The caller's per-person lines, most specific first: their `direct` "
+            "line and — when their identity resolved — their `cloud` line. Each "
+            "carries its OWN cap, spend, headroom, utilisation and band, because "
+            "enforcement checks each separately (FR-2.1). Shared ancestors "
+            "(team/department/org) are NOT listed here even though they can bind, "
+            "since they are not the caller's personal spend; when one of them "
+            "binds it appears as `binding` and the client should render it as the "
+            "headline alongside these lines."
+        ),
+    )
+
+    combined_informational: CombinedInformational | None = Field(
+        default=None,
+        description=(
+            "The direct+cloud dollar total, INFORMATIONAL ONLY — no cap governs "
+            "it and no ledger row equals it. Carries no denominator field by "
+            "design, so no progress bar can be bound to it (FR-2.4). `None` when "
+            "there is nothing to combine (fewer than two per-person lines). The "
+            "fused per-person ENVELOPE, with a real cap, is #4396 and is "
+            "deliberately not built here."
         ),
     )

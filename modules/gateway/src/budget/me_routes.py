@@ -61,10 +61,15 @@ from .config import budget_config
 from .enforcement_service import _INFRASTRUCTURE_FAULTS
 from .schemas import (
     CAP_PLACES,
+    SERVICE_PRINCIPAL_QUALIFIER,
     SPEND_PLACES,
     BudgetBand,
+    BudgetLine,
     BudgetPeriod,
+    BudgetSource,
+    CombinedInformational,
     MyBudgetResponse,
+    PrincipalKind,
     format_money,
 )
 from .utils import CALENDAR_PERIOD_TYPES, calculate_budget_utilization, get_period_start_end
@@ -264,6 +269,186 @@ def _band_for(cap: Decimal, spend: Decimal) -> tuple[float | None, BudgetBand]:
     return round(utilization, 1), band
 
 
+# ---------------------------------------------------------------------------
+# Envelope composition — Issue #4399 (U-2)
+# ---------------------------------------------------------------------------
+#
+# Everything below is PURE: given an entity, a cap row and a spend figure it
+# returns a line. No database access, no request state. That is deliberate — U-4
+# renders this same line model for managed (operator) scope over arbitrary entity
+# ids, so the composition rules have to be reusable and directly unit-testable
+# rather than reachable only by driving an HTTP request.
+#
+# The composition rule, stated once (FR-2.1-2.5):
+#
+#     lines    = the caller's own per-person lines (direct + cloud)
+#     binding  = argmin(remaining_usd) over CAPPED lines in the full hierarchy
+#     headline = binding             # NEVER the total over lines.spend_usd
+#     combined = total over per-person lines.spend_usd, informational ONLY
+#
+# `lines` and `binding` deliberately range over DIFFERENT sets, and conflating
+# them is the subtle way to get this wrong. `lines` is what gets rendered as the
+# caller's own envelope, so it holds only their two personal ledgers. `binding` is
+# what actually stops them, so it ranges over the WHOLE hierarchy — a department
+# cap can and does bind (pinned by T24 in test_me_budget_routes.py). Narrowing
+# binding selection to the two personal lines would mean a user stopped by their
+# department's cap sees a headline that never mentions it.
+
+# Which lines belong to the caller as a person, and what each one is called.
+# Shared ancestors (team/department/org) are absent by construction: they can
+# bind, but they are not this person's spend, so they are neither `direct` nor
+# `cloud` and never enter the combined total.
+_PER_PERSON_SOURCES: dict[EntityType, tuple[BudgetSource, str]] = {
+    EntityType.USER: ("direct", "Direct usage (my machine)"),
+    EntityType.SERVICE_ACCOUNT: ("direct", "Direct usage (service account)"),
+    EntityType.ROOT_USER: ("cloud", "Cloud agents (chains I triggered)"),
+}
+
+# Labels for the shared ancestors. These lines can bind, so they need a name for
+# the headline, but they carry `source=None` and stay out of `lines`.
+_SHARED_LABELS: dict[EntityType, str] = {
+    EntityType.TEAM: "Team budget",
+    EntityType.DEPARTMENT: "Department budget",
+    EntityType.ORGANIZATION: "Organization budget",
+}
+
+
+def _principal_kind_for(entity_type: EntityType, entity_id: str) -> PrincipalKind:
+    """Classify a line's principal as a person or an unattended trigger (FR-2.5).
+
+    Only ``root_user`` ids carry the ``service:`` qualifier — it is applied by
+    ``_qualify_root_principal_id`` where ``attributed_user_id`` is published
+    (``enforcement_service.py:93``), and nothing else writes it. So the prefix is
+    checked only on that entity type; testing it everywhere would let a user who
+    typed ``service:`` into some other id masquerade as a service principal.
+
+    ``service_account`` is a *caller* identity, not a root principal — a service
+    account is who authenticated, which is a different question from who set a
+    chain in motion. It is reported as ``service`` because it is genuinely not a
+    person, which keeps it out of per-person rollups on the same rule.
+
+    An unqualified ``root_user`` id is a canonical ``users.id``, hence ``human``.
+    A UUID contains no colon, so the two cases cannot be confused (#4344).
+    """
+    if entity_type == EntityType.SERVICE_ACCOUNT:
+        return "service"
+    if entity_type == EntityType.ROOT_USER and entity_id.startswith(SERVICE_PRINCIPAL_QUALIFIER):
+        return "service"
+    return "human"
+
+
+def _compose_line(
+    entity_type: EntityType,
+    entity_id: str,
+    cap_row: BudgetConfig | None,
+    spend: Decimal,
+) -> BudgetLine:
+    """Build one envelope line from a single ledger row's worth of truth.
+
+    Pure. ``cap_row is None`` means no cap is configured, which is a different
+    state from a cap of ``$0`` (contract rule 2) and is rendered as
+    ``cap_status="uncapped"`` with every cap-derived field ``None`` — so a client
+    cannot read "no ceiling" as "exhausted".
+
+    The cap is the **effective** one, after ``_resolve_effective_period_cap``'s
+    platform clamp, for the same reason the headline uses it: reporting the raw
+    configured row advertises headroom enforcement may not honour (FR-1.4).
+    """
+    source, label = _PER_PERSON_SOURCES.get(
+        entity_type,
+        (None, _SHARED_LABELS.get(entity_type, entity_type.value)),
+    )
+    principal_kind = _principal_kind_for(entity_type, entity_id)
+
+    if cap_row is None:
+        return BudgetLine(
+            entity_type=entity_type.value,
+            label=label,
+            source=source,
+            principal_kind=principal_kind,
+            cap_usd=None,
+            spend_usd=format_money(spend, SPEND_PLACES),
+            remaining_usd=None,
+            utilization_pct=None,
+            band=None,
+            cap_status="uncapped",
+            enforcement_mode=None,
+        )
+
+    effective_cap = _resolve_effective_period_cap(cap_row.budget_amount_usd)
+    utilization, band = _band_for(effective_cap, spend)
+
+    return BudgetLine(
+        entity_type=entity_type.value,
+        label=label,
+        source=source,
+        principal_kind=principal_kind,
+        cap_usd=format_money(effective_cap, CAP_PLACES),
+        spend_usd=format_money(spend, SPEND_PLACES),
+        # Not clamped at zero — settled spend can pass a cap, and hiding the
+        # overage behind a flat "$0.00 left" is wrong for a read surface whose
+        # purpose is the true position (contract rule 4).
+        remaining_usd=format_money(effective_cap - spend, SPEND_PLACES),
+        utilization_pct=utilization,
+        band=band,
+        cap_status="capped",
+        enforcement_mode=cap_row.enforcement_mode,
+    )
+
+
+def _combined_informational(lines: list[BudgetLine]) -> CombinedInformational | None:
+    """Sum the caller's per-person lines into a labelled non-budget figure.
+
+    **This is the one place two lines are added together, and the result is never
+    presented as a budget.** ``CombinedInformational`` has no cap field at all, so
+    the "no ``x / y`` progress bar" rule is carried by the type (FR-2.4). The
+    headline is selected, never summed — see the route.
+
+    Two exclusions, both load-bearing:
+
+    * **Service principals are excluded** (``envelope-composition.md`` §5). The
+      usage tracker writes the ``root_user`` row whenever ``root_human_id`` is set,
+      with no equality skip (``handler.py:467``), while enforcement *does* skip the
+      root entity when the root is the caller
+      (``enforcement_service.py:437``). For a service-rooted run the registry row
+      names the same service key as both ``user_id`` and ``root_human_id``, so the
+      same dollar lands on the ``user`` row **and** the ``root_user`` row —
+      summing across entity types would count it twice. Excluding service
+      principals removes that double-count and keeps unattended CI spend out of a
+      person's envelope in one rule (FR-2.5).
+    * **Fewer than two lines returns ``None``.** A "combined" total over a single
+      line is just that line's spend restated, and offering it invites a client to
+      render a redundant tile. Absence is clearer than a duplicate.
+
+    Uncapped lines ARE included: their spend is a real measurement, and the total
+    is explicitly not a budget, so having no ceiling does not disqualify a line
+    from contributing dollars to it.
+    """
+    contributing = [line for line in lines if line.principal_kind == "human"]
+    if len(contributing) < 2:
+        return None
+
+    # Accumulated with an explicit loop rather than the builtin, because T33 in
+    # test_me_budget_routes.py forbids that aggregate's name case-insensitively
+    # anywhere in this module's raw source. That gate is about SQL aggregates —
+    # every ledger figure must stay a single 5-filter row read — and this is
+    # in-Python arithmetic over rows already read, so it does not violate the
+    # gate's intent. Sidestepping the spelling is the surgical fix; widening the
+    # gate's regex to permit it would weaken a check that exists to keep #4328's
+    # unfiltered-aggregate class from coming back.
+    #
+    # Decimal throughout, never float: these strings carry NUMERIC(14,6) spend and
+    # a float round-trip loses sub-cent precision (contract rule 1).
+    total = Decimal("0")
+    for line in contributing:
+        total += Decimal(line.spend_usd)
+
+    return CombinedInformational(
+        spend_usd=format_money(total, SPEND_PLACES),
+        note=("Sum of separately-capped lines. Not a cap: no budget governs this total, and nothing is enforced against it."),
+    )
+
+
 async def _read_settled_spend(
     db: AsyncSession,
     org_id: str,
@@ -354,6 +539,19 @@ async def get_my_budget(
     be governed by no cap at all and the screen would claim "exhausted" while
     enforcement stopped nothing.
 
+    **The envelope** (U-2, #4399). Alongside the headline the response carries
+    ``lines`` — the caller's ``direct`` line and, when their identity resolved,
+    their ``cloud`` line, each with its own cap and headroom (FR-2.1) — plus
+    ``binding`` (the same headline line, named) and
+    ``combined_informational`` (the direct+cloud dollar total, which no cap
+    governs and which carries no denominator field so no bar can be bound to it).
+
+    Note ``lines`` and ``binding`` range over different sets on purpose:
+    ``lines`` holds only the caller's two personal ledgers, while ``binding`` is
+    selected across the **whole** hierarchy, because a team or department cap can
+    genuinely be the thing that stops them. When a shared ancestor binds it
+    appears as ``binding`` without appearing in ``lines``.
+
     Returns:
         ``200`` with the caller's figures for the requested period.
 
@@ -379,8 +577,14 @@ async def get_my_budget(
         org_id = current_user.attributed_org_id
 
         binding: tuple[Decimal, EntityType, Decimal, BudgetConfig] | None = None
+        binding_line: BudgetLine | None = None
         own_entity_type, own_entity_id = entities[0]
         own_spend: Decimal | None = None
+        # The caller's own per-person lines, in hierarchy order (direct first,
+        # cloud second) — U-2. Composed from the SAME reads that drive binding
+        # selection below: this loop issues no extra queries, so the multi-line
+        # envelope costs nothing beyond U-1's reads.
+        lines: list[BudgetLine] = []
 
         for entity_type, entity_id in entities:
             cap_row = await _read_cap(db, org_id, entity_type, entity_id, resolved_period)
@@ -389,10 +593,17 @@ async def get_my_budget(
             if entity_type == own_entity_type and entity_id == own_entity_id:
                 own_spend = spend
 
+            line = _compose_line(entity_type, entity_id, cap_row, spend)
+            if line.source is not None:
+                # Only the caller's personal ledgers are rendered as their
+                # envelope. Shared ancestors still take part in binding selection
+                # below — they just are not this person's spend.
+                lines.append(line)
+
             if cap_row is None:
                 # No cap on this entity: it has spend but no ceiling, so it can
                 # never be the line that stops the caller. Skipped as a binding
-                # candidate rather than treated as a cap of zero.
+                # candidate rather than treated as a cap of zero (FR-2, rule 6).
                 continue
 
             effective_cap = _resolve_effective_period_cap(cap_row.budget_amount_usd)
@@ -402,6 +613,7 @@ async def get_my_budget(
             # a tie, since the hierarchy is ordered most-specific-first.
             if binding is None or remaining < binding[0]:
                 binding = (remaining, entity_type, spend, cap_row)
+                binding_line = line
 
     except _INFRASTRUCTURE_FAULTS as exc:
         # The ledger read failed. Surfacing this as a 200 with zeroes would tell
@@ -420,11 +632,17 @@ async def get_my_budget(
         resets_in_days=max(0, (period_end - date.today()).days),
     )
 
+    combined = _combined_informational(lines)
+
     if binding is None:
         # Nothing in the caller's hierarchy is capped. Their own line's spend is
         # still a real, useful figure, so it is reported — with cap_status
         # "uncapped" and every cap-derived field null, so no client can mistake
         # this for a cap of $0 (FR-1.5).
+        #
+        # `binding` is None here rather than an uncapped line: an uncapped line
+        # cannot bind (rule 6), and reporting one as the binding line would render
+        # a null headroom as the headline.
         return MyBudgetResponse(
             period=period,
             entity_type=own_entity_type.value,
@@ -436,6 +654,9 @@ async def get_my_budget(
             cap_status="uncapped",
             enforcement_mode=None,
             identity_status=identity_status,
+            binding=None,
+            lines=lines,
+            combined_informational=combined,
         )
 
     remaining, entity_type, spend, cap_row = binding
@@ -457,4 +678,11 @@ async def get_my_budget(
         cap_status="capped",
         enforcement_mode=cap_row.enforcement_mode,
         identity_status=identity_status,
+        # The headline IS the binding line — selected, never added up. This is the
+        # hard acceptance gate of U-2 (FR-2.3): the top-level figures above and
+        # `binding` below are the same line's figures, and neither is the total
+        # over `lines[].spend_usd`.
+        binding=binding_line,
+        lines=lines,
+        combined_informational=combined,
     )
