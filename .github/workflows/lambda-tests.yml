@@ -22,6 +22,15 @@ on:
       - 'modules/agent-factory/tests/conftest.py'
       - 'modules/agent-factory/gateway/lambdas/**'
       - 'modules/agent-factory/pyproject.toml'
+      # Issue #4507: test_pentest_actor_identities.py asserts that the Terraform
+      # actually DECLARES the four identities the actor matrix names, and that the
+      # membership-seeding script exists and is dev-fenced. Those subjects live
+      # outside tests/ and gateway/lambdas/, so without these paths a change that
+      # deletes an identity resource (the #4507 defect itself) would not run the
+      # suite that catches it.
+      - 'modules/agent-factory/infra/modules/lambda-pentest-actor-token/**'
+      - 'modules/agent-factory/infra/pentest-actor-token.tf'
+      - 'modules/agent-factory/scripts/seed-pentest-org-admins.sh'
       - '.github/workflows/lambda-tests.yml'
   pull_request:
     paths:
@@ -29,6 +38,15 @@ on:
       - 'modules/agent-factory/tests/conftest.py'
       - 'modules/agent-factory/gateway/lambdas/**'
       - 'modules/agent-factory/pyproject.toml'
+      # Issue #4507: test_pentest_actor_identities.py asserts that the Terraform
+      # actually DECLARES the four identities the actor matrix names, and that the
+      # membership-seeding script exists and is dev-fenced. Those subjects live
+      # outside tests/ and gateway/lambdas/, so without these paths a change that
+      # deletes an identity resource (the #4507 defect itself) would not run the
+      # suite that catches it.
+      - 'modules/agent-factory/infra/modules/lambda-pentest-actor-token/**'
+      - 'modules/agent-factory/infra/pentest-actor-token.tf'
+      - 'modules/agent-factory/scripts/seed-pentest-org-admins.sh'
       - '.github/workflows/lambda-tests.yml'
     branches:
       - main
