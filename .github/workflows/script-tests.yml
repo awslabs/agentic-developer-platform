@@ -1,0 +1,50 @@
+name: Script Tests
+
+# Runs the test suites under .github/scripts/tests/, which no other workflow
+# executes. Without this binding those suites can rot silently and any quality
+# gate citing them is vacuous.
+
+on:
+  pull_request:
+    paths:
+      # Test suites
+      - '.github/scripts/tests/**'
+      # Subject scripts under test
+      - '.github/scripts/diff_security_findings.py'
+      - '.github/scripts/discover_dockerfiles.py'
+      - '.github/scripts/post_security_pr_comment.py'
+      # This workflow
+      - '.github/workflows/script-tests.yml'
+    branches:
+      - main
+
+concurrency:
+  group: script-tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  script-tests:
+    name: Script Tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pytest pytest-timeout
+
+      # Test files are pinned explicitly rather than globbed: a glob silently
+      # stops covering a file that is moved or renamed, which is the same
+      # silent-coverage-loss this workflow exists to prevent.
+      - name: Run script tests
+        working-directory: .github/scripts
+        run: |
+          pytest \
+            tests/test_diff_security_findings.py \
+            tests/test_discover_dockerfiles.py \
+            tests/test_post_security_pr_comment.py \
+            -v --tb=short --timeout=60
