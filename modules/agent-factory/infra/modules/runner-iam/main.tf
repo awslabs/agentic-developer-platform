@@ -43,6 +43,21 @@ resource "aws_iam_policy" "runner_boundary" {
           "secretsmanager:*",
           "ssm:*",
 
+          # securityagent — the nightly whole-repo code review (#4443/#4445)
+          # runs on arc-runner-org under this role. A boundary caps the role's
+          # effective permissions regardless of its attached policies, so
+          # omitting this namespace denied UpdateAgentSpace with "because no
+          # permissions boundary allows the securityagent:UpdateAgentSpace
+          # action" even though AdministratorAccess is attached (#4470).
+          #
+          # This grants only the ability to CALL the service. It does not
+          # widen the blast radius of what a review can do: the two dangerous
+          # settings (live-validation mode, auto-remediation) are pinned off in
+          # code_review_request.py with no caller parameter, and the service
+          # itself acts through adp-<env>-securityagent-nightly, whose own
+          # least-privilege policy is unchanged by this.
+          "securityagent:*",
+
           # KMS — encrypt/decrypt for data, key management for Terraform
           # create/destroy, plus wildcarded reads for Terraform refresh.
           "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*",
