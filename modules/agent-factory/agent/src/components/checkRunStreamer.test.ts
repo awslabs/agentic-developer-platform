@@ -18,7 +18,7 @@ function makeConfig(overrides: Partial<CheckRunStreamerConfig> = {}): CheckRunSt
   return {
     checkRunId: 42,
     repo: 'acme/adp',
-    token: 'ghs_test',
+    tokenProvider: () => 'ghs_test',
     persona: 'developer',
     issueNumber: 411,
     model: 'global.anthropic.claude-sonnet-4-6',

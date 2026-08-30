@@ -1287,20 +1287,31 @@ Now, complete the assigned task.`;
   // Instantiate only when CHECK_RUN_ID is present (pod environment with #417
   // entrypoint baseline). Absent in ARC-runner flows → complete no-op.
   let checkRunStreamer: CheckRunStreamer | null = null;
+  // Sink for streamer PATCH errors; assigned once the auth watchdog exists
+  // inside the query loop below (#4430). Until then, errors are just logged.
+  let checkRunPatchErrorSink: ((msg: string) => void) | null = null;
   const checkRunIdEnv = process.env.CHECK_RUN_ID;
   if (checkRunIdEnv) {
     const crId = parseInt(checkRunIdEnv, 10);
+    // One-shot PRESENCE check only — don't start a streamer with no token at
+    // all. The value itself must never be captured for PATCHes: a run outlives
+    // its ~60-min installation token, so the streamer resolves the token at
+    // patch time via tokenProvider (#4430).
     const crToken = process.env.GITHUB_TOKEN || '';
     const crRepo = `${REPO_OWNER}/${REPO_NAME}`;
     if (!isNaN(crId) && crToken && crRepo !== '/') {
       checkRunStreamer = new CheckRunStreamer({
         checkRunId: crId,
         repo: crRepo,
-        token: crToken,
+        // Same precedence ladder as ghPost.ts — read fresh on every PATCH so
+        // the token manager's re-mints actually reach the streamer.
+        tokenProvider: () =>
+          process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '',
         persona: AGENT_TYPE,
         issueNumber: parseInt(ISSUE_NUMBER) || 0,
         model: MODEL,
         log: (msg) => log('WARN', msg),
+        onPatchError: (msg) => checkRunPatchErrorSink?.(msg),
       });
       log('INFO', `CheckRunStreamer active for check run ${crId}`);
     }
@@ -1387,6 +1398,15 @@ Now, complete the assigned task.`;
         await flushCloudWatch();
         process.exit(EXIT_RETRYABLE);
       }
+    };
+
+    // Route check-run PATCH failures into the watchdog (#4430): a PATCH failing
+    // every cycle against a dead token is the highest-signal 401 in the run,
+    // and previously it was swallowed into a WARN log the watchdog never saw.
+    checkRunPatchErrorSink = (msg) => {
+      void applyAuthWatchdog(msg).catch(() => {
+        // fail-soft: a watchdog error must never break the streamer
+      });
     };
 
     // Heartbeat: log a "still alive" message if no SDK messages arrive for 60s.

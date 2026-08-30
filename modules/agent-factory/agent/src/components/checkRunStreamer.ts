@@ -28,8 +28,14 @@ export interface CheckRunStreamerConfig {
   checkRunId: number;
   /** Full repo name, e.g. "acme-corp/adp". */
   repo: string;
-  /** GitHub installation access token with checks:write scope. */
-  token: string;
+  /**
+   * Resolve the GitHub installation access token (checks:write scope) AT PATCH
+   * TIME. Never a captured string: a run outlives its installation token
+   * (~60 min), so a value captured at construction 401s for the rest of the run
+   * while the token manager re-mints into env/file that this class never
+   * re-reads (#4430).
+   */
+  tokenProvider: () => string;
   /** Agent persona name, e.g. "developer". */
   persona: string;
   /** Issue number being worked on. */
@@ -38,6 +44,14 @@ export interface CheckRunStreamerConfig {
   model: string;
   /** Optional logger function (defaults to console.warn). */
   log?: (msg: string) => void;
+  /**
+   * Optional fail-soft hook invoked with the error message when a PATCH fails
+   * (#4430). Lets the worker feed streamer 401s into the auth watchdog — a
+   * PATCH failing every cycle against a dead token is the highest-signal auth
+   * evidence in the run. Must never throw into the streamer; errors are
+   * swallowed.
+   */
+  onPatchError?: (message: string) => void;
 }
 
 interface ToolSummary {
@@ -527,7 +541,15 @@ export class CheckRunStreamer {
       : `Cost: $${this.totalCostUsd.toFixed(4)} · Elapsed: ${elapsedSec}s`;
 
     this._doPatch(turnLabel, summaryLine, md).catch((err: unknown) => {
-      this.warn(`PATCH failed (${this.patchCount}/${MAX_PATCHES}): ${(err as Error).message}`);
+      const message = (err as Error).message;
+      this.warn(`PATCH failed (${this.patchCount}/${MAX_PATCHES}): ${message}`);
+      // Surface the failure to the watchdog hook (#4430), fail-soft: PATCH
+      // errors must never propagate into the worker loop.
+      try {
+        this.cfg.onPatchError?.(message);
+      } catch {
+        // best-effort
+      }
     });
   }
 
@@ -544,7 +566,7 @@ export class CheckRunStreamer {
     const resp = await fetch(url, {
       method: 'PATCH',
       headers: {
-        Authorization: `Bearer ${this.cfg.token}`,
+        Authorization: `Bearer ${this.cfg.tokenProvider()}`,
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         'Content-Type': 'application/json',
