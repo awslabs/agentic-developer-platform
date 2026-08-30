@@ -76,6 +76,14 @@ resource "aws_iam_policy" "runner_boundary" {
           "iam:UntagRole", "iam:UpdateRole",
           "sts:AssumeRole", "sts:GetCallerIdentity",
           "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
+          # Read/agreement APIs for platform/scripts/enable-bedrock-models.sh,
+          # a prerequisite step of platform-infra-apply.yml. The boundary caps
+          # the runner's effective permissions, so omitting these here denies
+          # them regardless of the services policy.
+          "bedrock:ListFoundationModels", "bedrock:GetFoundationModel",
+          "bedrock:GetFoundationModelAvailability",
+          "bedrock:ListFoundationModelAgreementOffers",
+          "bedrock:CreateFoundationModelAgreement",
           "events:*", "stepfunctions:*",
           "cognito-idp:*", "cognito-identity:*",
           "elasticache:*", "eks:*",
@@ -532,6 +540,23 @@ resource "aws_iam_policy" "runner_services" {
           "arn:aws:bedrock:*:*:inference-profile/*",
           "arn:aws:bedrock:*::foundation-model/anthropic.*"
         ]
+      },
+      # Model-access enablement, used by platform/scripts/enable-bedrock-models.sh
+      # which runs as a prerequisite step in platform-infra-apply.yml. Without
+      # these the script fails before Terraform is ever reached, so the whole
+      # platform apply is unrunnable. These are account-level read/agreement
+      # APIs that take no resource qualifier, hence Resource = "*".
+      {
+        Sid    = "BedrockModelAccessEnablement"
+        Effect = "Allow"
+        Action = [
+          "bedrock:ListFoundationModels",
+          "bedrock:GetFoundationModel",
+          "bedrock:GetFoundationModelAvailability",
+          "bedrock:ListFoundationModelAgreementOffers",
+          "bedrock:CreateFoundationModelAgreement"
+        ]
+        Resource = ["*"]
       },
       {
         Sid    = "CloudFrontDistribution"
