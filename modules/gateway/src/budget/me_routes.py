@@ -38,11 +38,14 @@ natural to just call:
 
 Spend figures are settled totals written asynchronously by the budget-usage
 tracker Lambda, so very recent spend may not be included yet. That is a property
-of the ledger, not of this read.
+of the ledger, not of this read — but it is not left implicit either: the response
+signals it per request via ``freshness.cost_backfill_lag`` (#4477, NFR-5), so a
+client can say "recent spend may be incomplete" rather than presenting an
+understated figure as final truth.
 """
 
 import logging
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -58,6 +61,7 @@ from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.identity import resolve_canonical_user_id
 from src.shared.models.budget import BudgetConfig, BudgetUsage
+from src.shared.models.usage import UsageLog
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import EntityType, PeriodType
 
@@ -74,6 +78,7 @@ from .schemas import (
     BudgetSource,
     CombinedInformational,
     CostFigure,
+    Freshness,
     MyBudgetResponse,
     MyBudgetRunsResponse,
     PrincipalKind,
@@ -89,6 +94,18 @@ logger = logging.getLogger("bedrockgateway.budget")
 # (issue #4330, guarded by tests/test_route_prefix_convention.py). The browser
 # calls `/api/me/budget`; this router serves `/me/budget`.
 router = APIRouter(tags=["budget"])
+
+# How recently a request must have been logged for its missing price to count as
+# back-fill lag rather than a permanently-unpriced row (#4477, NFR-5). See
+# `_has_pending_cost_backfill` for why the bound exists at all.
+#
+# Sized well above the tracker Lambda's normal S3-event-to-accumulator latency
+# (seconds to a couple of minutes) so genuine lag is caught with margin, and well
+# below a period, so a never-bridged row from an error path ages out instead of
+# pinning the affordance on forever. Not a config setting: it is a property of one
+# derivation, and an operator lever here would let the field be tuned into always
+# saying `false` — which is the exact defect #4477 was filed for.
+_BACKFILL_LAG_WINDOW = timedelta(minutes=15)
 
 
 def _resolve_period_bounds(period_type: str, reference_date: date | None = None) -> tuple[PeriodType, date, date]:
@@ -532,6 +549,88 @@ async def _read_cap(
     )
 
 
+async def _has_pending_cost_backfill(
+    db: AsyncSession,
+    org_id: str,
+    user_id: str,
+    period_start: date,
+) -> bool:
+    """Is any of the caller's recent spend logged but not yet priced? (NFR-5, #4477)
+
+    **The rule, stated once here because it is the whole contract of the field:**
+    ``True`` iff at least one ``usage_logs`` row exists for this caller, inside the
+    reported period, written within ``_BACKFILL_LAG_WINDOW``, whose ``cost_usd`` is
+    still ``0``.
+
+    **Why that is the right observation and not a proxy for one.** The gateway
+    writes a ``usage_logs`` row the instant a request finishes, priced ``0``
+    (``proxy/service.py:_log_usage``). The budget-usage-tracker Lambda later prices
+    that row and accumulates the ``budget_usage`` row ``_read_settled_spend`` reads
+    — and its own write predicate is ``cost_usd = 0``, i.e. "not yet bridged"
+    (``bridge_cost_to_usage_logs``, the ``handler.py:316`` bridge NFR-5 cites). So
+    an unpriced row is not *evidence of* pending settlement; it is the very row the
+    writer is still going to act on, and its dollars are provably absent from
+    ``spend_usd``. Deriving from the writer's own predicate is what keeps the two
+    from drifting: a second, independent notion of "pending" would be a guess that
+    silently diverges the first time the bridge changes.
+
+    Two bounds, each load-bearing rather than defensive:
+
+    * **The recency window.** Several proxy error paths write ``cost_usd=0.0``
+      permanently and are never bridged. Unbounded, one of those rows would pin the
+      affordance ``true`` forever — and a warning that is always on is one users
+      learn to ignore, which costs more than not having it (the issue's own
+      blast-radius table names this as a distinct defect from the field being
+      absent).
+    * **The period bound.** ``spend_usd`` describes one calendar window. An
+      unpriced row from last month says nothing about whether *this* month's figure
+      is complete, and on the 1st of the month it would raise a warning about a
+      figure that is in fact fully settled.
+
+    **Known incompleteness, deliberately not papered over.** ``usage_logs.user_id``
+    holds the Cognito sub of whoever made the call, so an agent chain's rows are
+    keyed by the agent's service account, not by the human who triggered it. This
+    probe therefore observes the caller's **direct** lag only; lag on their
+    ``cloud`` line is invisible to it. Detecting that needs the cross-store DynamoDB
+    lineage walk ``/me/budget/runs`` performs, which this endpoint must not take on
+    (the field must add no unbounded query). The consequence is one-directional and
+    safe: this can under-report lag, never over-report it — it never claims settled
+    figures are stale. Widening it to the cloud path is follow-up work.
+
+    Returns:
+        ``True`` when recent spend is still settling, ``False`` when every recent
+        request of the caller's has been priced. A read failure is NOT caught here:
+        it propagates to the route's existing handler and becomes a ``503``, the
+        same as any other ledger read, because guessing ``False`` during an outage
+        would assert the figures are complete at exactly the moment we cannot know.
+    """
+    # `timestamp` is a full instant while `period_start` is a date, so the period
+    # floor is widened to that day's first instant. `max` of the two bounds keeps
+    # this a single indexed range scan: whichever is later is the only one that
+    # constrains, and applying both would be redundant work.
+    window_floor = datetime.now(UTC) - _BACKFILL_LAG_WINDOW
+    period_floor = datetime.combine(period_start, time.min, tzinfo=UTC)
+    floor = max(window_floor, period_floor)
+
+    # `LIMIT 1` on the row's own id: the question is existence, not how many or how
+    # much. No aggregate appears here — every figure in this module stays a single
+    # row read (T33), and a COUNT would additionally scan rows whose answer cannot
+    # change once the first match is found.
+    pending = await db.scalar(
+        select(UsageLog.id)
+        .where(
+            and_(
+                UsageLog.org_id == org_id,
+                UsageLog.user_id == user_id,
+                UsageLog.timestamp >= floor,
+                UsageLog.cost_usd == 0,
+            )
+        )
+        .limit(1)
+    )
+    return pending is not None
+
+
 @router.get("/me/budget", response_model=MyBudgetResponse)
 async def get_my_budget(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
@@ -563,6 +662,13 @@ async def get_my_budget(
     ``binding`` (the same headline line, named) and
     ``combined_informational`` (the direct+cloud dollar total, which no cap
     governs and which carries no denominator field so no bar can be bound to it).
+
+    **Settlement completeness** (#4477, NFR-5). Every spend figure here is a
+    *settled* total and settlement is asynchronous, so the response also carries
+    ``freshness.cost_backfill_lag`` — ``true`` when the caller has recent requests
+    that are logged but not yet priced, making ``spend_usd`` a lower bound. Always
+    present, so the client needs no null guard. See
+    ``_has_pending_cost_backfill`` for the exact rule and its known limits.
 
     Note ``lines`` and ``binding`` range over different sets on purpose:
     ``lines`` holds only the caller's two personal ledgers, while ``binding`` is
@@ -633,6 +739,14 @@ async def get_my_budget(
                 binding = (remaining, entity_type, spend, cap_row)
                 binding_line = line
 
+        # Inside the same `try` on purpose: a failure to determine settlement
+        # completeness degrades identically to a failed ledger read (503), rather
+        # than defaulting to "settled" and telling the caller their figures are
+        # complete at the one moment we cannot know that (NFR-5).
+        freshness = Freshness(
+            cost_backfill_lag=await _has_pending_cost_backfill(db, org_id, current_user.user_id, period_start),
+        )
+
     except _INFRASTRUCTURE_FAULTS as exc:
         # The ledger read failed. Surfacing this as a 200 with zeroes would tell
         # the user they have spent nothing during an outage — silent, and
@@ -675,6 +789,12 @@ async def get_my_budget(
             binding=None,
             lines=lines,
             combined_informational=combined,
+            # Present on the uncapped path too. A caller with no cap still reads
+            # this screen to see what they have spent, and that figure is exactly
+            # as incomplete as a capped caller's — so the caveat is exactly as
+            # necessary. It is also why the field is non-nullable: the frontend
+            # reads it without knowing which path produced the response.
+            freshness=freshness,
         )
 
     remaining, entity_type, spend, cap_row = binding
@@ -703,6 +823,9 @@ async def get_my_budget(
         binding=binding_line,
         lines=lines,
         combined_informational=combined,
+        # The caveat matters most here: this is the path where a cap is in play, so
+        # an understated `spend_usd` reads as headroom the caller does not have.
+        freshness=freshness,
     )
 
 

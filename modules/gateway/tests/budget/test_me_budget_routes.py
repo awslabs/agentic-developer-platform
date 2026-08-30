@@ -25,7 +25,7 @@ Harness notes:
 """
 
 import re
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -40,12 +40,14 @@ from src.auth.dependencies import get_current_user
 from src.budget.config import BudgetConfig as BudgetSettings
 from src.budget.config import budget_config
 from src.budget.enforcement_service import BudgetEnforcementService
+from src.budget.me_routes import _BACKFILL_LAG_WINDOW
 from src.budget.me_routes import router as me_budget_router
 from src.budget.schemas import format_money
 from src.shared.database import get_db
 from src.shared.models.base import Base
 from src.shared.models.budget import BudgetConfig, BudgetUsage
 from src.shared.models.organization import User
+from src.shared.models.usage import UsageLog
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import EntityType, PeriodType
 
@@ -1039,6 +1041,246 @@ class TestBandsAndPrecision:
             body = (await client.get("/me/budget")).json()
 
         assert body["enforcement_mode"] == "soft"
+
+
+# ===========================================================================
+# NFR-5 — async cost back-fill is surfaced honestly (#4477)
+# ===========================================================================
+
+
+async def seed_usage_log(
+    session: AsyncSession,
+    *,
+    cost_usd: str,
+    user_id: str = CALLER_SUB,
+    org_id: str = ORG_ID,
+    age: timedelta = timedelta(minutes=1),
+) -> None:
+    """Insert a real ``usage_logs`` row, priced or not.
+
+    ``cost_usd="0"`` is the **unpriced** shape the gateway writes the instant a
+    request finishes, before the budget-usage-tracker Lambda bridges the real cost.
+    A non-zero value is a settled row. That distinction is the entire input to the
+    freshness probe, so these rows are inserted as raw models — the point is what
+    the endpoint reports when such a row is already in the table, however it got
+    there.
+
+    ``age`` places the row relative to now, which is what makes the recency bound
+    testable without patching the clock.
+    """
+    session.add(
+        UsageLog(
+            org_id=org_id,
+            department_id="",
+            team_id="",
+            user_id=user_id,
+            model="anthropic.claude-sonnet-4",
+            input_tokens=100,
+            output_tokens=200,
+            cost_usd=Decimal(cost_usd),
+            latency_ms=1200,
+            status_code=200,
+            timestamp=datetime.now(UTC) - age,
+        )
+    )
+    await session.commit()
+
+
+class TestFreshnessSignal:
+    """The response must say when recent spend is still settling (NFR-5, #4477).
+
+    Settlement is asynchronous: the gateway logs a request immediately at
+    ``cost_usd=0`` and the tracker Lambda prices it minutes later, so for that
+    window ``spend_usd`` is a lower bound. A screen that renders the understated
+    figure as final lets someone keep working under a cap they have already passed.
+
+    The two dishonest answers are asserted against separately and deliberately:
+    hardcoded ``false`` (the defect this issue was filed for) and hardcoded ``true``
+    (a permanent banner users learn to ignore, which destroys the signal just as
+    thoroughly). A test suite that only proved the field *exists* would pass on
+    either.
+    """
+
+    async def test_freshness_is_present_and_non_null_on_the_uncapped_dev_shape(self, session):
+        """The frontend may read the field unconditionally, with no null guard.
+
+        Asserted on the hardest shape rather than the happy path: no cap, no spend,
+        no ``users`` row (so ``identity_status`` is ``unresolved``) — the shape a
+        fresh dev environment actually returns, and the one where
+        ``binding``/``combined_informational`` are legitimately ``null``. If
+        ``freshness`` were merely defaulted-and-optional it could arrive ``null``
+        here, the client's ``freshness.cost_backfill_lag`` would throw, and the
+        affordance would never render (#3675's closed-loop failure).
+        """
+        app = build_app(session, caller_context())
+        async with client_for(app) as client:
+            response = await client.get("/me/budget")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["cap_status"] == "uncapped"
+        assert body["identity_status"] == "unresolved"
+        assert body["binding"] is None, "wave-2 invariant: null by design on this shape, not a bug"
+        assert body["freshness"] is not None
+        assert body["freshness"]["cost_backfill_lag"] is False
+
+    async def test_freshness_is_a_nested_object_not_a_bare_boolean(self, session, caller_user_row):
+        """Locks the contract shape against being flattened.
+
+        ``api-contract.md`` specifies ``{"cost_backfill_lag": bool}`` and
+        ``BudgetEnvelopeResponse`` (#4402) declares an object. Flattening it to a
+        bare boolean would make the frontend read ``undefined`` — falsy, so the
+        affordance silently never renders while every mock-based test still passes.
+        """
+        app = build_app(session, caller_context())
+        async with client_for(app) as client:
+            body = (await client.get("/me/budget")).json()
+
+        assert isinstance(body["freshness"], dict), f"freshness must be an object, got {type(body['freshness'])}"
+        assert set(body["freshness"]) == {"cost_backfill_lag"}
+        assert isinstance(body["freshness"]["cost_backfill_lag"], bool)
+
+    async def test_lag_is_true_when_a_recent_request_is_not_yet_priced(self, session, caller_user_row):
+        """The signal tracks reality: an unpriced row means spend is a lower bound.
+
+        A ``usage_logs`` row at ``cost_usd=0`` is exactly the row the tracker
+        Lambda's bridge has yet to act on, so its dollars are provably absent from
+        the ``budget_usage`` figure reported as ``spend_usd``.
+        """
+        await seed_cap(session, EntityType.USER, CALLER_SUB, PeriodType.MONTHLY, "100.00")
+        await seed_usage(session, EntityType.USER, CALLER_SUB, PeriodType.MONTHLY, "10.00")
+        await seed_usage_log(session, cost_usd="0")
+
+        app = build_app(session, caller_context())
+        async with client_for(app) as client:
+            body = (await client.get("/me/budget")).json()
+
+        assert body["freshness"]["cost_backfill_lag"] is True
+        assert Decimal(body["spend_usd"]) == Decimal("10.00"), "the settled figure itself must be unchanged by the signal"
+
+    async def test_lag_is_false_when_every_recent_request_is_priced(self, session, caller_user_row):
+        """Proves the field is not hardcoded ``true``.
+
+        A permanent warning is its own defect: users learn to ignore it, so the
+        signal stops meaning anything on the day it is genuinely true.
+        """
+        await seed_cap(session, EntityType.USER, CALLER_SUB, PeriodType.MONTHLY, "100.00")
+        await seed_usage(session, EntityType.USER, CALLER_SUB, PeriodType.MONTHLY, "10.00")
+        await seed_usage_log(session, cost_usd="0.500000")
+
+        app = build_app(session, caller_context())
+        async with client_for(app) as client:
+            body = (await client.get("/me/budget")).json()
+
+        assert body["freshness"]["cost_backfill_lag"] is False
+
+    async def test_a_stale_unpriced_row_ages_out_of_the_window(self, session, caller_user_row):
+        """A never-bridged row must not pin the affordance on forever.
+
+        Several proxy error paths write ``cost_usd=0.0`` and are never bridged.
+        Without the recency bound one of those rows would make every subsequent
+        response claim lag for the rest of the period.
+        """
+        await seed_cap(session, EntityType.USER, CALLER_SUB, PeriodType.MONTHLY, "100.00")
+        await seed_usage_log(session, cost_usd="0", age=_BACKFILL_LAG_WINDOW + timedelta(minutes=5))
+
+        app = build_app(session, caller_context())
+        async with client_for(app) as client:
+            body = (await client.get("/me/budget")).json()
+
+        assert body["freshness"]["cost_backfill_lag"] is False
+
+    async def test_another_members_unpriced_row_is_not_the_callers_lag(self, session, caller_user_row):
+        """The probe is own-scope, like every other read on this endpoint.
+
+        A colleague's in-flight request says nothing about whether the caller's
+        figures are complete, and reporting it would both mislead and leak that
+        somebody else is mid-request.
+        """
+        await seed_cap(session, EntityType.USER, CALLER_SUB, PeriodType.MONTHLY, "100.00")
+        await seed_usage_log(session, cost_usd="0", user_id=OTHER_SUB)
+
+        app = build_app(session, caller_context())
+        async with client_for(app) as client:
+            body = (await client.get("/me/budget")).json()
+
+        assert body["freshness"]["cost_backfill_lag"] is False
+
+    async def test_another_tenants_unpriced_row_is_never_read(self, session, caller_user_row):
+        """Tenant isolation holds on this read too (#4132 attribution partition).
+
+        Same sub, different org: without the ``org_id`` filter this row would leak
+        across the tenant boundary, which is the class of bug the decoy-ordering
+        note at the top of this module exists to keep observable.
+        """
+        await seed_cap(session, EntityType.USER, CALLER_SUB, PeriodType.MONTHLY, "100.00")
+        await seed_usage_log(session, cost_usd="0", org_id="org-someone-else")
+
+        app = build_app(session, caller_context())
+        async with client_for(app) as client:
+            body = (await client.get("/me/budget")).json()
+
+        assert body["freshness"]["cost_backfill_lag"] is False
+
+    async def test_an_unpriced_row_from_before_the_period_is_excluded(self, session, caller_user_row):
+        """Lag is scoped to the period whose figures are being reported.
+
+        ``spend_usd`` describes one calendar window, so an unpriced row from a
+        *previous* period says nothing about whether this period's figure is
+        complete. In production the two bounds overlap heavily and this one only
+        decides the answer during the first minutes of a new period — precisely
+        when a row from moments ago belongs to the period that just ended.
+
+        The recency window is widened for the duration so the **period** bound is
+        the thing under test: at the shipped 15 minutes a 2-day-old row is excluded
+        by recency alone, and the assertion would pass with the period filter
+        deleted (verified by mutation). Patched with a real ``timedelta``, never a
+        mock — the module's harness convention.
+        """
+        await seed_cap(session, EntityType.USER, CALLER_SUB, PeriodType.DAILY, "100.00")
+        await seed_usage_log(session, cost_usd="0", age=timedelta(days=2))
+
+        app = build_app(session, caller_context())
+        with patch("src.budget.me_routes._BACKFILL_LAG_WINDOW", timedelta(days=30)):
+            async with client_for(app) as client:
+                body = (await client.get("/me/budget?period_type=daily")).json()
+
+        assert body["freshness"]["cost_backfill_lag"] is False, "an unpriced row from a previous period must not flag this period as lagging"
+
+    async def test_lag_within_the_period_survives_a_widened_window(self, session, caller_user_row):
+        """The period bound must not swallow lag that genuinely belongs to it.
+
+        The mirror of the test above, and the reason it cannot simply assert
+        ``False`` everywhere: with the same widened window, a row from *inside*
+        today's period still reports lag. Without this pair, clamping the floor to
+        "now" would pass the exclusion test while reporting ``false`` forever.
+        """
+        await seed_cap(session, EntityType.USER, CALLER_SUB, PeriodType.DAILY, "100.00")
+        await seed_usage_log(session, cost_usd="0", age=timedelta(minutes=2))
+
+        app = build_app(session, caller_context())
+        with patch("src.budget.me_routes._BACKFILL_LAG_WINDOW", timedelta(days=30)):
+            async with client_for(app) as client:
+                body = (await client.get("/me/budget?period_type=daily")).json()
+
+        assert body["freshness"]["cost_backfill_lag"] is True
+
+    async def test_a_probe_failure_is_a_503_not_a_claim_of_settled_figures(self, session, caller_user_row):
+        """A read failure must not degrade to "your figures are complete".
+
+        Same reasoning as T16 for the ledger reads (FR-1.7): defaulting to ``false``
+        during an outage asserts completeness at exactly the moment it cannot be
+        known, and that claim is silent and trusted.
+        """
+        await seed_cap(session, EntityType.USER, CALLER_SUB, PeriodType.MONTHLY, "100.00")
+
+        app = build_app(session, caller_context())
+        with patch("src.budget.me_routes._has_pending_cost_backfill", side_effect=OperationalError("SELECT 1", {}, Exception("boom"))):
+            async with client_for(app) as client:
+                response = await client.get("/me/budget")
+
+        assert response.status_code == 503
+        assert "spend_usd" not in response.json()
 
 
 # ===========================================================================

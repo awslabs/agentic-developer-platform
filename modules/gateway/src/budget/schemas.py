@@ -279,6 +279,46 @@ class CombinedInformational(BaseModel):
     note: str = Field(description="Plain-language restatement of `is_budget` for surfaces that render the figure with a caption.")
 
 
+class Freshness(BaseModel):
+    """How complete the settled figures alongside this are — Issue #4477 (NFR-5).
+
+    Every spend figure in this response is a **settled** total, and settlement is
+    asynchronous: the gateway writes a ``usage_logs`` row the moment a request
+    finishes, but the price on that row and the ``budget_usage`` accumulator this
+    endpoint reads are both written later by the budget-usage-tracker Lambda
+    (``bridge_cost_to_usage_logs``). For the minutes in between, a caller's real
+    spend is genuinely higher than ``spend_usd`` says.
+
+    NFR-5 requires that gap be surfaced rather than smoothed over: "recent spend
+    may be incomplete, so the UI carries a freshness affordance rather than
+    implying real-time truth". Someone who reads an understated figure as final
+    keeps working under a cap they have already passed, which is the same
+    screen-vs-reality disagreement EPIC #4324 exists to eliminate — just displaced
+    in time rather than in scope.
+
+    **Why an object rather than a bare boolean on the response.** The contract
+    (``requirements-analysis/api-contract.md``) specifies an object, and
+    ``BudgetEnvelopeResponse`` in ``frontend/src/types/budget.ts`` (#4402) declares
+    one. Flattening it to ``freshness: true`` would make the frontend read
+    ``undefined``, the affordance would silently never render, and tests written
+    against mocks would still pass — the #3675 closed-loop failure. It is also the
+    extension point: any further completeness caveat about these figures belongs
+    here as a sibling field, not as another top-level boolean.
+    """
+
+    cost_backfill_lag: bool = Field(
+        description=(
+            "`true` when at least one of the caller's recent requests has been "
+            "logged but not yet priced, so `spend_usd` is a LOWER BOUND and their "
+            "real spend is higher. `false` means every recent request has settled "
+            "— a positive statement that the figures are complete, not merely an "
+            "absence of evidence. Never a permanent `true`: the probe behind it is "
+            "bounded to a recent window, so a stale unpriced row cannot pin the "
+            "affordance on until users learn to ignore it."
+        )
+    )
+
+
 class MyBudgetResponse(BaseModel):
     """The signed-in caller's own cap, settled spend and headroom for one period.
 
@@ -401,6 +441,22 @@ class MyBudgetResponse(BaseModel):
             "there is nothing to combine (fewer than two per-person lines). The "
             "fused per-person ENVELOPE, with a real cap, is #4396 and is "
             "deliberately not built here."
+        ),
+    )
+
+    # -----------------------------------------------------------------------
+    # Settlement completeness — Issue #4477 (NFR-5)
+    # -----------------------------------------------------------------------
+
+    freshness: Freshness = Field(
+        description=(
+            "Whether asynchronous cost back-fill may have left the spend figures "
+            "above incomplete — see `Freshness`. ALWAYS present and never `null`, "
+            "unlike `binding`/`combined_informational`, so a client may read "
+            "`freshness.cost_backfill_lag` unconditionally without a null guard. "
+            "Deliberately NOT defaulted: a construction site that forgets it must "
+            "fail loudly at composition rather than serve a fabricated 'settled' "
+            "claim, which is the one wrong answer this field can give."
         ),
     )
 
