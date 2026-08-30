@@ -1002,6 +1002,19 @@ module "orchestration_tick" {
   dispatch_repo          = var.orchestration_dispatch_repo
   dispatch_max_per_tick  = var.orchestration_dispatch_max_per_tick
 
+  # Issue #4527: the GitHub engine-command bridge. The webhook Lambda marks an
+  # `@agent-engine` comment on the event row it already writes — no queue message,
+  # no gateway call — and the tick consumes the mark on its next wake. The table,
+  # its KMS key and the per-tenant App secrets live in other Terraform states, so
+  # they arrive as variables for the same reason the dispatch queue does.
+  #
+  # All four default to empty/false, which leaves the bridge inert: the pass reads
+  # nothing and reports `commands_enabled=false`.
+  engine_enabled                = var.orchestration_engine_enabled
+  webhook_events_table_name     = var.orchestration_webhook_events_table
+  webhook_events_kms_key_arn    = var.orchestration_webhook_events_kms_key_arn
+  github_app_secret_arn_pattern = var.orchestration_github_app_secret_arn_pattern
+
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 

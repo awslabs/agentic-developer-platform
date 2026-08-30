@@ -57,6 +57,16 @@ INSTALLATION_EVENT = "installation_event"
 #: The event type / action pair has no handler at all (e.g. ``check_run``).
 EVENT_TYPE_UNHANDLED = "event_type_unhandled"
 
+#: ``@agent-engine <command>`` comment (#4527). Addressed to the orchestration
+#: engine, not to a persona, so this Lambda spawns NO pod and enqueues nothing:
+#: it marks the event row and the engine tick consumes it on its next wake.
+#:
+#: This is a no-op *for this Lambda*, not a no-op for the platform — the row it
+#: marks is the whole delivery mechanism. It is a skip reason rather than an
+#: ``Intent`` because an ``Intent`` means "spawn an agent pod", and the engine
+#: path deliberately spawns none.
+ENGINE_COMMAND = "engine_command"
+
 # --- Worker-side skips (agent-worker-image/entrypoint.py) --------------------
 
 #: SQS redelivery for work that already landed: the issue's agent branch has a

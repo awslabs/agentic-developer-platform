@@ -40,7 +40,12 @@ resource "aws_iam_role_policy" "tick" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    # `concat` rather than one literal list because the engine-command bridge's
+    # three statements are conditional on the webhook-ingress state having been
+    # wired (#4527). An unwired environment must get NO statement rather than one
+    # with an empty resource, which is an invalid policy — so the bridge being
+    # inert is expressible in IAM, not just in code.
+    Statement = concat([
       # RDS IAM database authentication, scoped to one dbuser. When the resource
       # id is known the ARN is fully qualified; the wildcard fallback still pins
       # the dbuser so this can never become "connect as anyone".
@@ -144,6 +149,79 @@ resource "aws_iam_role_policy" "tick" {
         ]
         Resource = "*"
       }
-    ]
+      ],
+      # -----------------------------------------------------------------------
+      # GitHub engine-command bridge (Issue #4527)
+      # -----------------------------------------------------------------------
+      # The tick reads outstanding `@agent-engine` comments from the webhook-events
+      # table's sparse `engine-command-index` and conditionally flips each marker to
+      # consumed. The table is owned by the webhook-ingress Terraform state, hence
+      # the ARN is built from a passed-in NAME rather than a resource reference — the
+      # same cross-state pattern as `agent_submit_queue_arn` above.
+      #
+      # No networking change is needed: the tick SG already egresses 443 to
+      # 0.0.0.0/0 for the RDS IAM token and CloudWatch, which covers DynamoDB,
+      # Secrets Manager and api.github.com.
+      var.webhook_events_table_name != "" ? [
+        {
+          Sid    = "EngineCommandEventsRead"
+          Effect = "Allow"
+          Action = [
+            # Query only, on the index. NOT Scan and NOT GetItem: the bridge's
+            # access pattern is "outstanding commands, oldest first", which the
+            # sparse index answers exactly, and a Scan grant would let the tick read
+            # 30 days of every tenant's webhook deliveries.
+            "dynamodb:Query"
+          ]
+          Resource = [
+            "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/${var.webhook_events_table_name}/index/engine-command-index"
+          ]
+        },
+        {
+          Sid    = "EngineCommandConsume"
+          Effect = "Allow"
+          Action = [
+            # UpdateItem on the base table, for the conditional pending -> consumed
+            # flip that makes consumption idempotent. No PutItem and no DeleteItem:
+            # the tick must never be able to create a command row or destroy the
+            # audit record of one, only mark the one it just applied.
+            "dynamodb:UpdateItem"
+          ]
+          Resource = [
+            "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/${var.webhook_events_table_name}"
+          ]
+        }
+      ] : [],
+      # The table is encrypted with a customer-managed key, so Query and UpdateItem
+      # both fail at RUNTIME without this — not at plan time, which is why it is
+      # called out rather than assumed. Mirrors `WebhookEventsKMSDecrypt` on the
+      # gateway service role in the webhook-ingress state.
+      var.webhook_events_kms_key_arn != "" ? [
+        {
+          Sid    = "EngineCommandEventsKMSDecrypt"
+          Effect = "Allow"
+          Action = [
+            "kms:Decrypt",
+            "kms:DescribeKey"
+          ]
+          Resource = [var.webhook_events_kms_key_arn]
+        }
+      ] : [],
+      # Per-tenant GitHub App credentials, used ONLY to mint an installation token
+      # for the acknowledgement comment. Scoped to the environment's tenant prefix,
+      # so this cannot reach the platform's own secrets. Without it the tick still
+      # applies commands and reports `command_acks_failed`, which forces a
+      # non-success tick — visibly degraded rather than silently unacknowledged.
+      var.github_app_secret_arn_pattern != "" ? [
+        {
+          Sid    = "EngineCommandAckCredentials"
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:GetSecretValue"
+          ]
+          Resource = [var.github_app_secret_arn_pattern]
+        }
+      ] : []
+    )
   })
 }

@@ -36,6 +36,7 @@ resource "aws_dynamodb_table" "tenant_registry" {
 # PK: event_id (X-GitHub-Delivery header)
 # SK: arrived_at (ISO 8601 timestamp)
 # GSI: tenant_id for per-tenant queries
+# GSI: engine_command_status (sparse) for the engine-command bridge (#4527)
 # -----------------------------------------------------------------------------
 resource "aws_dynamodb_table" "webhook_events" {
   name         = "${local.name_prefix}-webhook-events"
@@ -73,6 +74,11 @@ resource "aws_dynamodb_table" "webhook_events" {
     type = "S"
   }
 
+  attribute {
+    name = "engine_command_status"
+    type = "S"
+  }
+
   # correlation-index powers the Agent Activity chain view (#1616): retrieve all
   # invocations sharing a correlation_id via a Query (was a full-table Scan,
   # which is costly and required a dynamodb:Scan grant the gateway role lacks).
@@ -105,6 +111,28 @@ resource "aws_dynamodb_table" "webhook_events" {
   global_secondary_index {
     name            = "root-human-index"
     hash_key        = "root_human_id"
+    range_key       = "arrived_at"
+    projection_type = "ALL"
+  }
+
+  # engine-command-index: sparse GSI carrying only `@agent-engine` comments that
+  # the orchestration tick has not yet consumed (#4527). The webhook Lambda writes
+  # engine_command_status = "pending"; the tick Queries this index oldest-first,
+  # applies each command and conditionally flips the attribute to "consumed".
+  #
+  # Sparse is the point, not a side effect: the table holds 30 days of every
+  # webhook delivery, and only rows carrying this attribute are projected, so the
+  # tick reads a handful of outstanding commands per wake instead of paginating the
+  # whole table. Rows that were never engine commands are invisible here.
+  #
+  # Hash key is the STATUS rather than the tenant deliberately — the tick is a
+  # single scheduled process serving all tenants, and a tenant-keyed index would
+  # force it to know the tenant list before it could find any work. Tenant
+  # isolation is enforced where the command is applied (org resolved server-side
+  # from the installation), never by the shape of this index.
+  global_secondary_index {
+    name            = "engine-command-index"
+    hash_key        = "engine_command_status"
     range_key       = "arrived_at"
     projection_type = "ALL"
   }

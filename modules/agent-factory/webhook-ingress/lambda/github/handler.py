@@ -1681,6 +1681,16 @@ def handler(event: dict, context) -> dict:
     # 11. If no actionable intent → log + return 200 (no-op)
     # IMPORTANT: Do NOT write pointer or provenance here — prevents channel poisoning
     if intent is None:
+        from common import skip_reasons as skip_reasons_mod
+
+        # Issue #4527: an `@agent-engine` comment is a no-op for THIS Lambda but not
+        # for the platform. Marking the row is the entire delivery mechanism: the
+        # engine tick queries for pending engine commands on its next wake, parses
+        # the body and acts. Nothing is enqueued and no gateway is called from here —
+        # this component holds no VPC, no DB and no gateway reach, and must never
+        # gain any (#4303 closed-routes table).
+        is_engine_command = skip_reason == skip_reasons_mod.ENGINE_COMMAND
+
         _log_outcome(
             event_type=event_type,
             action=action,
@@ -1710,6 +1720,13 @@ def handler(event: dict, context) -> dict:
             chain_depth=correlation_ctx.get("chain_depth") if correlation_ctx else None,
             # Issue #4020: the reason the intent parser declined to dispatch.
             skip_reason=skip_reason,
+            # Issue #4527: the command text and the commenter's numeric GitHub id
+            # travel ONLY on the engine path. The tick has no other way to reach
+            # them; every other no-op row would be paying storage for a body
+            # nothing reads.
+            engine_command=is_engine_command,
+            comment_body=payload.get("comment", {}).get("body") if is_engine_command else None,
+            sender_github_id=str(sender_id) if is_engine_command and sender_id else None,
         )
         # Echo the reason in the body for parity with the guard-block response
         # below, which has always included it.
@@ -1856,6 +1873,9 @@ def _capture_invocation_event(
     root_human_id: str | None = None,
     is_human_rooted: bool | None = None,
     skip_reason: str | None = None,
+    engine_command: bool = False,
+    comment_body: str | None = None,
+    sender_github_id: str | None = None,
 ) -> None:
     """Write enriched invocation row to DynamoDB (best-effort).
 
@@ -1865,6 +1885,13 @@ def _capture_invocation_event(
 
     Issue #4020: ``skip_reason`` carries WHY a non-dispatching status happened,
     so the Activity UI can explain a no_op row rather than showing a bare badge.
+
+    Issue #4527: ``engine_command`` marks the row for the orchestration engine's
+    tick to consume. ``comment_body`` and ``sender_github_id`` are forwarded ONLY
+    on that path — they are the command text and the identity to resolve, and the
+    tick has no other way to reach them. They are deliberately not written on
+    every row: a comment body on every no-op would balloon the table and put
+    arbitrary user text on rows nothing reads.
     """
     try:
         event_logger = _get_webhook_event_logger()
@@ -1912,6 +1939,9 @@ def _capture_invocation_event(
             root_human_id=root_human_id,
             is_human_rooted=is_human_rooted,
             skip_reason=skip_reason,
+            engine_command=engine_command,
+            comment_body=comment_body,
+            sender_github_id=sender_github_id,
         )
     except Exception as e:
         # Best-effort — never block the webhook response

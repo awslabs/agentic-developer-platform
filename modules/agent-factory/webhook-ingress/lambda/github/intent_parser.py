@@ -276,6 +276,43 @@ def _extract_aws_label_directive(body: str) -> str | None:
     return raw_label
 
 
+# Issue #4527: the orchestration engine's own comment tag. NOT in
+# MENTION_TO_PERSONA, and deliberately so — every entry in that dict names an
+# agent persona to spawn a pod for, and this tag spawns nothing. Putting it there
+# would make `spawn_persona` the consumer, which is the exact bug the issue's
+# impact table calls out ("wasted agent pod per command; command lost").
+#
+# The tag as a TOKEN: not followed by a word character or a hyphen, so
+# `@agent-engineering-team` and `@agent-engine-v2` in prose are not commands. Note
+# `\b` alone would be wrong — it treats a hyphen as a boundary, so
+# `@agent-engine-v2` would be marked here. Case-insensitive because GitHub renders
+# @-mentions case-insensitively, so a user typing `@Agent-Engine` reasonably
+# expects it to work.
+#
+# CHARACTER-FOR-CHARACTER identical to `_TAG_RE` in the gateway's
+# `orchestration/adapters/github_commands.py`, which decides which marked rows mean
+# anything. This component decides which events are marked; a disagreement between
+# the two is a command that is stored and never acted on. The two live in separate
+# deploy units and cannot import each other (same constraint that forces
+# `webhook_events._emit_row_write_dropped` to re-implement the gateway's metric
+# helper), so the pair is pinned by a test on each side rather than shared as code.
+ENGINE_TAG = "@agent-engine"
+_ENGINE_TAG_RE = re.compile(re.escape(ENGINE_TAG) + r"(?![\w-])", re.IGNORECASE)
+
+
+def _has_engine_tag(body: str) -> bool:
+    """Whether this comment addresses the orchestration engine (issue #4527).
+
+    Recognition only — this Lambda never parses the command itself. Parsing needs
+    the graph, the tenant and the approval record, none of which this component
+    can see (#4303's closed-routes table), so the body travels to the tick on the
+    event row and is parsed there.
+    """
+    if not body:
+        return False
+    return _ENGINE_TAG_RE.search(body) is not None
+
+
 def _extract_mention_persona(body: str) -> str | None:
     """Extract the first @agent-X persona mention from comment body.
 
@@ -397,6 +434,28 @@ def _handle_issue_comment(
     """
     sender = payload.get("sender", {})
     body = payload.get("comment", {}).get("body", "")
+
+    # Issue #4527: the engine tag is checked FIRST, before any persona scan.
+    #
+    # Order is load-bearing, not stylistic. `_extract_mention_persona` is a
+    # dict-order first-match substring scan, so a comment reading
+    # "@agent-engine halt — cc @agent-developer" would otherwise route to the
+    # developer persona: the command would be lost AND an agent pod would be paid
+    # for. Returning here means the handler takes its existing `intent is None`
+    # branch, which enqueues nothing and calls no gateway — the engine path's
+    # whole delivery mechanism is the marked event row, written by the caller.
+    #
+    # Bot senders included: a bot comment carrying the tag is marked the same way.
+    # That is safe because the tag alone grants nothing — the tick resolves the
+    # commenter to a platform identity server-side and applies `PLAN_APPROVE`, so
+    # a bot with no linked identity is refused there rather than trusted here.
+    if _has_engine_tag(body):
+        logger.info(
+            "issue_comment addresses @agent-engine (issue #%s) — marking for the "
+            "engine tick, spawning nothing",
+            payload.get("issue", {}).get("number", "?"),
+        )
+        return None, skip_reasons.ENGINE_COMMAND
 
     # Human sender: parse @-mention, always allow (no chain-aware gating needed)
     if not _is_bot_sender(sender):

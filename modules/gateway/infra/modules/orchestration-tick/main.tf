@@ -189,6 +189,20 @@ resource "aws_lambda_function" "tick" {
       BG_ORCH_DISPATCH_REPO         = var.dispatch_repo
       BG_ORCH_DISPATCH_PERSONA      = var.dispatch_persona
       BG_ORCH_DISPATCH_MAX_PER_TICK = tostring(var.dispatch_max_per_tick)
+
+      # Issue #4527 — the GitHub engine-command bridge. NOT BG_-prefixed: both are
+      # read with a bare `os.environ.get`, the flag because `engine_commands.py`
+      # hand-rolls the platform's fail-closed flag semantics rather than importing
+      # the route module onto the tick path, and the table name because it is the
+      # same variable the gateway's activity and stats services already read for
+      # the same table.
+      #
+      # Flag off, or table name empty, means the pass reads nothing, writes nothing
+      # and — deliberately — acknowledges nothing: it reports
+      # `commands_enabled=false` instead. A "the engine is disabled" reply would
+      # advertise the bridge to anyone who can comment on an issue.
+      FEATURE_ORCHESTRATION_ENGINE_ENABLED = tostring(var.engine_enabled)
+      WEBHOOK_EVENTS_TABLE                 = var.webhook_events_table_name
     }
   }
 

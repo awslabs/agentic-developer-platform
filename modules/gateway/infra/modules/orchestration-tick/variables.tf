@@ -285,3 +285,81 @@ variable "dispatch_max_per_tick" {
   type        = number
   default     = 10
 }
+
+# -----------------------------------------------------------------------------
+# GitHub engine-command bridge (Issue #4527)
+# -----------------------------------------------------------------------------
+
+variable "engine_enabled" {
+  description = <<-EOT
+    Whether the orchestration engine's feature flag is on for this environment
+    (FEATURE_ORCHESTRATION_ENGINE_ENABLED).
+
+    Gates the GitHub engine-command bridge, which is the first path that lets an
+    input from outside the platform change promotion state — so it must be
+    fail-closed, and it is: `EngineCommandConfig.from_env` treats anything other
+    than the literal "true" as off, and an off pass reads nothing, writes nothing
+    and posts nothing.
+
+    Default false. This is the same three-place flag the gateway deployment
+    manifest and the frontend catalogue carry, and the committed value must stay
+    false in every one of them (test_feature_flag_parity enforces it); turning the
+    bridge on in an environment is a deliberate per-environment override.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "webhook_events_table_name" {
+  description = <<-EOT
+    Name of the webhook-events DynamoDB table (WEBHOOK_EVENTS_TABLE). The tick
+    Queries its sparse `engine-command-index` for outstanding `@agent-engine`
+    comments and conditionally flips each marker to consumed.
+
+    The table is owned by the webhook-ingress Terraform state, so the name arrives
+    as a variable rather than a resource reference — the same cross-state
+    ARN-as-variable pattern as `agent_submit_queue_arn` above, and the same reason:
+    a data source would couple a gateway apply to a webhook-ingress apply having
+    already run.
+
+    Empty is a valid state and is the default: `EngineCommandConfig.configured` is
+    false, so the pass reports `commands_enabled=false` rather than failing the
+    tick. The bridge is simply inert until the name is wired.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "webhook_events_kms_key_arn" {
+  description = <<-EOT
+    ARN of the KMS key encrypting the webhook-events table. Required for the tick
+    to read or update rows at all: the table is encrypted with a customer-managed
+    key, so a dynamodb:Query grant without kms:Decrypt fails at runtime, not at
+    plan time.
+
+    Also owned by the webhook-ingress state, hence a variable. Empty omits the KMS
+    statement, which is correct for an environment where the bridge is not wired
+    (no table name either) and avoids a policy statement with an empty resource,
+    which is invalid.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "github_app_secret_arn_pattern" {
+  description = <<-EOT
+    Secrets Manager ARN pattern for the per-tenant GitHub App credentials the tick
+    uses to post a command acknowledgement (`adp/<env>/tenants/*/github-app`).
+
+    A pattern rather than a concrete ARN because tenants are created at runtime and
+    each holds its own App key; scoping to the environment's tenant prefix is
+    narrower than the alternative of `Resource = "*"` on secretsmanager, and it
+    cannot reach the platform's own secrets.
+
+    Empty omits the statement, leaving the tick able to apply commands but not to
+    acknowledge them — reported as `command_acks_failed`, which forces a
+    non-success tick rather than failing silently.
+  EOT
+  type        = string
+  default     = ""
+}

@@ -160,6 +160,45 @@ class GitHubAppClient:
         resp.raise_for_status()
         return resp.json().get("token", "")
 
+    async def create_issue_comment(
+        self,
+        *,
+        installation_id: int,
+        repo: str,
+        issue_number: int,
+        body: str,
+    ) -> None:
+        """Post a comment on an issue or PR. Issue #4527.
+
+        The engine-command bridge's acknowledgement path: every `@agent-engine`
+        command gets a visible confirmation or a visible refusal reason, and this is
+        how that reply is delivered.
+
+        Authenticated with an installation token rather than the App JWT, because a
+        JWT identifies the App and cannot write to a repository — the same
+        `Authorization: token` shape `check_org_membership` uses.
+
+        Args:
+            installation_id: The tenant's installation, resolved server-side. Never
+                taken from a webhook payload.
+            repo: Full name, ``owner/name``.
+            issue_number: The issue or PR the command arrived on.
+            body: The comment text.
+
+        Raises on HTTP errors, so a caller that must not fail because of an
+        undelivered comment has to contain it (the tick's flush counts it).
+        """
+        token = await self.get_installation_token(installation_id)
+        resp = await self._http_client.post(
+            f"/repos/{repo}/issues/{issue_number}/comments",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            },
+            json={"body": body},
+        )
+        resp.raise_for_status()
+
     async def check_org_membership(
         self,
         installation_id: int,

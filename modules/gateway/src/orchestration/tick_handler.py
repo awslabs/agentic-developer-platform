@@ -43,6 +43,7 @@ import os
 from typing import Any
 
 from src.orchestration.dispatch_pass import DispatchPassReport, publish_pending, run_dispatch_pass
+from src.orchestration.engine_commands import EngineCommandReport, flush_engine_commands, run_engine_command_pass
 from src.orchestration.stall import StallConfig, StallReport, detect_stalls
 from src.orchestration.tick import TickReport, run_tick
 from src.shared.database import get_session_factory, reset_engine
@@ -99,6 +100,16 @@ _STALL_REPORT_ATTR = "stall_report"
 # `_run`'s return type. "Absent" is therefore a first-class case here too.
 _DISPATCH_REPORT_ATTR = "dispatch_report"
 
+# Attribute the engine-command pass's report is carried on (issue #4527).
+#
+# Same constraint again, and for the same reason: `_TickReportStub` in
+# `tests/orchestration/test_tick.py` stubs `_run` with a minimal object carrying
+# only the tick's own attributes, and that stub is what pins the `tick_report`
+# token surviving `awslambdaric`'s logging setup. So the bridge attaches its
+# report rather than widening `_run`'s return type, and "absent" stays a
+# first-class case.
+_ENGINE_COMMAND_REPORT_ATTR = "engine_command_report"
+
 
 def _attached_stall_report(report: TickReport) -> StallReport | None:
     """The detection report carried on a tick report, if one is attached."""
@@ -108,6 +119,11 @@ def _attached_stall_report(report: TickReport) -> StallReport | None:
 def _attached_dispatch_report(report: TickReport) -> DispatchPassReport | None:
     """The dispatch pass's report carried on a tick report, if one is attached."""
     return getattr(report, _DISPATCH_REPORT_ATTR, None)
+
+
+def _attached_engine_command_report(report: TickReport) -> EngineCommandReport | None:
+    """The engine-command pass's report carried on a tick report, if one is attached."""
+    return getattr(report, _ENGINE_COMMAND_REPORT_ATTR, None)
 
 
 def _emit_metrics(report: TickReport) -> None:
@@ -231,6 +247,47 @@ def _emit_metrics(report: TickReport) -> None:
                         }
                     )
 
+        # Engine-command counters (issue #4527). `CommandsApplied` is what proves a
+        # human can drive the plan from GitHub at all. `AcksFailed` is the
+        # alarm-worthy one and is deliberately not folded into `Errors`: a command
+        # that was applied and never acknowledged is the invisible outcome this
+        # bridge exists to remove, and it is indistinguishable to the commenter from
+        # a bridge that is simply broken.
+        engine_command_report = _attached_engine_command_report(report)
+        if engine_command_report is not None:
+            metric_data.extend(
+                [
+                    {"MetricName": "CommandsRead", "Value": engine_command_report.commands_read, "Unit": "Count"},
+                    {"MetricName": "CommandsApplied", "Value": engine_command_report.commands_applied, "Unit": "Count"},
+                    {"MetricName": "CommandsRefused", "Value": engine_command_report.commands_refused, "Unit": "Count"},
+                    {"MetricName": "CommandConsumesFailed", "Value": engine_command_report.consumes_failed, "Unit": "Count"},
+                    {"MetricName": "CommandAcksPosted", "Value": engine_command_report.acks_posted, "Unit": "Count"},
+                    {"MetricName": "CommandAcksFailed", "Value": engine_command_report.acks_failed, "Unit": "Count"},
+                    {"MetricName": "CommandErrors", "Value": engine_command_report.errors, "Unit": "Count"},
+                    {"MetricName": "CommandsCapped", "Value": 1 if engine_command_report.capped else 0, "Unit": "Count"},
+                ]
+            )
+
+            for org_id, counts in engine_command_report.per_org.items():
+                dimensions = [{"Name": "OrgId", "Value": org_id}]
+                for metric_name, key in (
+                    ("CommandsRead", "commands_read"),
+                    ("CommandsApplied", "commands_applied"),
+                    ("CommandsRefused", "commands_refused"),
+                    ("CommandConsumesFailed", "consumes_failed"),
+                    ("CommandAcksPosted", "acks_posted"),
+                    ("CommandAcksFailed", "acks_failed"),
+                    ("CommandErrors", "errors"),
+                ):
+                    metric_data.append(
+                        {
+                            "MetricName": metric_name,
+                            "Value": counts[key],
+                            "Unit": "Count",
+                            "Dimensions": dimensions,
+                        }
+                    )
+
         # PutMetricData caps at 1000 datums per call.
         for start in range(0, len(metric_data), 1000):
             client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=metric_data[start : start + 1000])
@@ -239,13 +296,21 @@ def _emit_metrics(report: TickReport) -> None:
 
 
 async def _run() -> TickReport:
-    """Open a session, tick, detect stalls, dispatch, commit — then publish.
+    """Apply GitHub commands, tick, detect stalls, dispatch, commit — then send.
 
-    All three passes share one session and one transaction (issues #4211, #4313).
-    The tick releases nodes whose predecessors are satisfied; detection then
-    diagnoses the nodes that stopped moving; dispatch then hands the released work
-    to an agent. Ordering matters twice:
+    All four passes share one session and one transaction (issues #4211, #4313,
+    #4527). The engine-command pass applies what humans asked for; the tick
+    releases nodes whose predecessors are satisfied; detection then diagnoses the
+    nodes that stopped moving; dispatch then hands the released work to an agent.
+    Ordering matters three times:
 
+    - Engine commands run **first**, before the tick. A human who commented
+      `@agent-engine halt` expects the plan to stop, and a tick that ran first
+      would release and dispatch nodes the human had already asked not to be
+      started — spending money on work that is halted moments later. Conversely
+      an `accept` or `approve gate` applied before the tick is picked up by the
+      *same* invocation, so a plan advances on the wake the human's approval
+      arrives on rather than the one after it.
     - Detection runs **after** the tick, so a node the tick just moved is measured
       from its new state, not its old one.
     - Dispatch runs **after** detection, so a node detection just failed or halted
@@ -253,10 +318,10 @@ async def _run() -> TickReport:
       that some `running` work is not viable, and dispatching against a state it
       just superseded would be racing our own pass.
 
-    Both live here rather than inside `run_tick` deliberately: they are separate
-    concerns with separate reports, and keeping `tick.py` untouched means the
-    existing tick tests still pin the tick's behaviour exactly as they did before
-    these stories.
+    All three extra passes live here rather than inside `run_tick` deliberately:
+    they are separate concerns with separate reports, and keeping `tick.py`
+    untouched means the existing tick tests still pin the tick's behaviour exactly
+    as they did before these stories.
 
     **The SQS publish is outside the transaction, and after the commit** (#4313
     hazard 3, the `knowledge/dispatch.py` row-before-publish invariant).
@@ -266,8 +331,14 @@ async def _run() -> TickReport:
     recovers on a later tick — whereas publishing first and failing to commit would
     manufacture a run the graph has no record of.
 
-    Both reports are attached to the returned `TickReport` rather than returned
-    alongside it — see `_STALL_REPORT_ATTR` for why that shape matters.
+    The engine-command pass is post-commit in the same way and for the same
+    reason (#4527): it returns the markers to consume and the acks to post, and
+    those happen only once the decisions they acknowledge are durable. Acking a
+    command whose transaction then rolled back would tell a human their plan had
+    halted when it had not.
+
+    All three reports are attached to the returned `TickReport` rather than
+    returned alongside it — see `_STALL_REPORT_ATTR` for why that shape matters.
     """
     # Under IAM auth the engine caches a token that outlives a warm Lambda
     # container's usefulness; resetting gives this invocation a fresh one.
@@ -276,6 +347,10 @@ async def _run() -> TickReport:
     factory = get_session_factory()
     async with factory() as session:
         try:
+            # First: what humans asked for in GitHub comments. `from_env` is
+            # fail-closed and never raises — with the engine flag off this is an
+            # immediate, silent no-op that reads nothing (#4527).
+            engine_command_report = await run_engine_command_pass(session)
             report = await run_tick(session)
             # `from_env` reads `ORCH_DEFECT_CYCLE_BOUND` and never raises — a bad
             # value degrades to the default bound rather than failing the tick
@@ -299,8 +374,16 @@ async def _run() -> TickReport:
         # send is counted as `publish_failed`, which forces a non-success report.
         publish_pending(dispatch_report)
 
+        # And only now, with the decisions durable, is each command's marker
+        # consumed and its author told what happened. Async (unlike
+        # `publish_pending`) because posting a comment is an awaited HTTP call.
+        # Mutates the report in place and never raises: a failed consume or ack is
+        # counted, which forces a non-success report.
+        await flush_engine_commands(engine_command_report)
+
         setattr(report, _STALL_REPORT_ATTR, stall_report)
         setattr(report, _DISPATCH_REPORT_ATTR, dispatch_report)
+        setattr(report, _ENGINE_COMMAND_REPORT_ATTR, engine_command_report)
         return report
 
 
@@ -322,14 +405,19 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
 
     stall_report = _attached_stall_report(report)
     dispatch_report = _attached_dispatch_report(report)
+    engine_command_report = _attached_engine_command_report(report)
 
     summary = {
-        # A failed detection or dispatch pass makes the whole invocation an error.
-        # An undelivered stall notification is a real failure of this Lambda's job
-        # (R-Q9d), not a footnote on an otherwise-green tick — and so is a dispatch
-        # that committed `running` and never reached the queue (#4313).
+        # A failed detection, dispatch or engine-command pass makes the whole
+        # invocation an error. An undelivered stall notification is a real failure
+        # of this Lambda's job (R-Q9d), not a footnote on an otherwise-green tick —
+        # and so is a dispatch that committed `running` and never reached the queue
+        # (#4313), or a command that was applied and never acknowledged (#4527).
         "status": "ok"
-        if report.success and (stall_report is None or stall_report.success) and (dispatch_report is None or dispatch_report.success)
+        if report.success
+        and (stall_report is None or stall_report.success)
+        and (dispatch_report is None or dispatch_report.success)
+        and (engine_command_report is None or engine_command_report.success)
         else "error",
         "nodes_examined": report.nodes_examined,
         "transitions_effected": report.transitions_effected,
@@ -375,6 +463,26 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
             }
         )
 
+    # Issue #4527 — engine-command counters, on the same greppable `tick_report`
+    # line. `commands_applied` is what an operator reads to confirm the bridge is
+    # live, and `command_acks_failed` is what tells them a human was left without a
+    # reply; neither is discoverable anywhere else, because a refusal is only ever
+    # shown to the commenter.
+    if engine_command_report is not None:
+        summary.update(
+            {
+                "commands_read": engine_command_report.commands_read,
+                "commands_applied": engine_command_report.commands_applied,
+                "commands_refused": engine_command_report.commands_refused,
+                "command_consumes_failed": engine_command_report.consumes_failed,
+                "command_acks_posted": engine_command_report.acks_posted,
+                "command_acks_failed": engine_command_report.acks_failed,
+                "command_errors": engine_command_report.errors,
+                "commands_capped": engine_command_report.capped,
+                "commands_enabled": engine_command_report.enabled,
+            }
+        )
+
     # Unconditional, single-line, machine-greppable. This is the line that proves
     # the schedule fired.
     logger.info("%s %s", TICK_REPORT_TOKEN, json.dumps(summary, sort_keys=True))
@@ -402,6 +510,20 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
             "affected nodes remain 'running' and are recoverable by the stall detector",
             dispatch_report.errors,
             dispatch_report.publish_failed,
+        )
+
+    if engine_command_report is not None and not engine_command_report.success:
+        # Names both failure modes, because they need different responses: an
+        # unconsumed marker re-applies (harmlessly) next wake, while an undelivered
+        # ack means a human is waiting on a reply that will never arrive.
+        logger.error(
+            "orchestration engine commands completed with %d error(s), %d unconsumed marker(s) "
+            "and %d undelivered acknowledgement(s) — unconsumed markers are retried on the next "
+            "wake and re-application is a no-op, but the commenters of the undelivered acks were "
+            "never told what happened",
+            engine_command_report.errors,
+            engine_command_report.consumes_failed,
+            engine_command_report.acks_failed,
         )
 
     return summary

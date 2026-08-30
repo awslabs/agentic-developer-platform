@@ -12,10 +12,14 @@ Table schema:
   GSI2SK: arrived_at
   TTL: expires_at (arrived_at + 30 days)
 
+  engine-command-index (sparse, #4527):
+    PK: engine_command_status  SK: arrived_at
+
 Query patterns:
   - All events for a tenant in the last 24h via tenant-index
   - All events for a user via user-index
   - Single event lookup by event_id + arrived_at
+  - Outstanding `@agent-engine` commands, oldest first, via engine-command-index
 """
 
 from __future__ import annotations
@@ -33,6 +37,31 @@ logger = logging.getLogger(__name__)
 
 # TTL: 30 days in seconds
 EVENT_TTL_SECONDS = 30 * 24 * 60 * 60
+
+# --- Engine-command bridge (issue #4527) -------------------------------------
+# An `@agent-engine` comment produces no agent pod and no SQS message. The ROW is
+# the delivery mechanism: this Lambda marks it pending, and the gateway-side
+# orchestration tick queries the sparse `engine-command-index` on its next wake,
+# applies the command and flips the marker to consumed.
+#
+# `engine_command_status` is the index's hash key, which makes the index sparse:
+# only rows carrying this attribute are projected, so the tick's Query scans the
+# handful of outstanding commands rather than every webhook of the last 30 days.
+#
+# The tick lives in the gateway container and CANNOT import this module (separate
+# deploy units — same constraint that forces `_emit_row_write_dropped` to
+# re-implement the gateway's metric helper). It re-declares these two values; the
+# pair is asserted equal by a test on each side.
+ENGINE_COMMAND_STATUS_PENDING = "pending"
+ENGINE_COMMAND_STATUS_CONSUMED = "consumed"
+
+#: Cap on the stored comment body. Commands are one line; a `replan:` directive
+#: may be a paragraph. GitHub allows 65536-char comments, and this row is written
+#: from unauthenticated-until-verified webhook input, so it is bounded here rather
+#: than trusted to be small. Generous enough that no realistic command is cut, far
+#: enough under DynamoDB's 400 KB item limit that a body can never be what makes a
+#: write fail.
+ENGINE_COMMAND_BODY_MAX_CHARS = 4000
 
 # Issue #4347: namespace/metric for a dropped row write. Namespace matches the
 # existing WebhookIngress metrics (metrics.py, correlation_store.py) so the
@@ -162,6 +191,9 @@ class WebhookEventLogger:
         root_human_id: str | None = None,
         is_human_rooted: bool | None = None,
         authorized_user_id: str = "",
+        engine_command: bool = False,
+        comment_body: str | None = None,
+        sender_github_id: str | None = None,
     ) -> dict[str, Any]:
         """Record a webhook event in DynamoDB.
 
@@ -202,6 +234,20 @@ class WebhookEventLogger:
             authorized_user_id: Canonical user whose credentials this run
                 may access (#3174). Set at spawn from chain policy; empty
                 string means no vault access. Written but unread until S2.
+            engine_command: Issue #4527 — this delivery is an ``@agent-engine``
+                comment. Marks the row ``engine_command_status=pending`` so the
+                orchestration tick picks it up. Nothing else about the row
+                changes: no queue message, no gateway call.
+            comment_body: The raw comment text, stored ONLY when
+                ``engine_command`` is true and truncated to
+                ``ENGINE_COMMAND_BODY_MAX_CHARS``. The tick parses the command
+                from it — this Lambda deliberately does not, because parsing needs
+                the graph and the tenant, which it cannot see (#4303).
+            sender_github_id: The commenter's NUMERIC GitHub id as a string, again
+                only on the engine path. Numeric rather than the login because
+                logins are renameable, so a login would let a renamed account
+                inherit another user's approvals. The tick resolves it to a
+                platform identity server-side and never trusts it as authority.
 
         Returns:
             The DDB item that was written.
@@ -273,6 +319,16 @@ class WebhookEventLogger:
         # user whose credentials this run may access (ships dark until S2).
         if authorized_user_id:
             item["authorized_user_id"] = authorized_user_id
+        # Issue #4527: mark the row for the orchestration tick. The three
+        # attributes are written together or not at all — a pending marker with no
+        # body would make the tick wake up to a command it cannot parse, and a body
+        # with no marker would never be found (the index is sparse on the marker).
+        if engine_command:
+            item["engine_command_status"] = ENGINE_COMMAND_STATUS_PENDING
+            item["engine_command_body"] = (comment_body or "")[
+                :ENGINE_COMMAND_BODY_MAX_CHARS
+            ]
+            item["engine_command_sender_github_id"] = sender_github_id or ""
 
         try:
             self._table.put_item(Item=item)

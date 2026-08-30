@@ -483,6 +483,67 @@ variable "orchestration_dispatch_max_per_tick" {
   default     = 10
 }
 
+# -----------------------------------------------------------------------------
+# GitHub engine-command bridge (Issue #4527)
+# -----------------------------------------------------------------------------
+# The tick consumes `@agent-engine` comments that the webhook Lambda marked on the
+# webhook-events row. The table, its KMS key and the per-tenant GitHub App secrets
+# are owned by other Terraform states, so all three arrive as variables — the same
+# pattern as the dispatch queue above. Every one defaults to empty, which leaves
+# the bridge inert rather than half-wired.
+
+variable "orchestration_engine_enabled" {
+  type        = bool
+  description = <<-EOT
+    Whether the orchestration engine's feature flag is on for this environment
+    (FEATURE_ORCHESTRATION_ENGINE_ENABLED on the tick).
+
+    Default false, and the committed value must STAY false: this is the same
+    three-place flag the gateway's k8s manifest and frontend catalogue carry, and
+    `tests/orchestration/test_feature_flag_parity.py` enforces the parity. Enabling
+    the engine in an environment is a deliberate per-environment override, not a
+    committed change.
+  EOT
+  default     = false
+}
+
+variable "orchestration_webhook_events_table" {
+  type        = string
+  description = <<-EOT
+    Name of the webhook-events DynamoDB table the tick Queries for outstanding
+    `@agent-engine` commands (WEBHOOK_EVENTS_TABLE). Conventionally
+    `adp-<env>-webhook-events`; owned by the webhook-ingress state.
+
+    Empty is the default and is safe: the pass reports `commands_enabled=false`, so
+    an unwired bridge is visible rather than reading as "nobody has commented".
+  EOT
+  default     = ""
+}
+
+variable "orchestration_webhook_events_kms_key_arn" {
+  type        = string
+  description = <<-EOT
+    ARN of the KMS key encrypting the webhook-events table. Required for the tick's
+    Query and UpdateItem to succeed at runtime — a missing grant here fails at call
+    time, not at plan time.
+  EOT
+  default     = ""
+}
+
+variable "orchestration_github_app_secret_arn_pattern" {
+  type        = string
+  description = <<-EOT
+    Secrets Manager ARN pattern for per-tenant GitHub App credentials
+    (`adp/<env>/tenants/*/github-app`), used ONLY to mint an installation token for
+    a command acknowledgement comment.
+
+    A pattern because tenants are created at runtime. Empty means the tick applies
+    commands but cannot acknowledge them, which it reports as
+    `command_acks_failed` — a non-success tick rather than a silent one.
+  EOT
+  default     = ""
+}
+
 variable "chat_logging_scrub_level" {
   type        = string
   description = "Chat logging scrub level: off, basic (headers+regex), or standard (headers+regex+Comprehend PII)"

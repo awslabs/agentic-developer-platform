@@ -127,6 +127,14 @@ class DecisionKind(StrEnum):
     # is structurally incapable of expressing a promotion. `kind` is String(32),
     # so this needs no DDL.
     NODE_DIAGNOSIS_PROPOSED = "node_diagnosis_proposed"
+    # Issue #4527. A human asked, in words, for the plan to be re-planned. Like a
+    # diagnosis this row carries `to_state = NULL`, and for the same structural
+    # reason: a replan request proposes *nowhere* for any node to go, so the record
+    # is incapable of expressing a promotion. v1 records the request and notifies;
+    # the authoring loop that turns it into an amended plan is a separate story, so
+    # a row of this kind is deliberately the whole of the effect. `kind` is
+    # String(32), so this needs no DDL.
+    REPLAN_REQUESTED = "replan_requested"
 
 
 class AppendOnlyViolationError(RuntimeError):
