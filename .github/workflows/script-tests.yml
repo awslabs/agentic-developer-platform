@@ -5,6 +5,28 @@ name: Script Tests
 # gate citing them is vacuous.
 
 on:
+  # Runs on both PR and post-merge push to main. The push trigger is not
+  # redundant: a pull_request-only workflow never attaches a check-run to a
+  # main commit, so "does this gate exist on main?" is unanswerable via the
+  # commit check-runs API — and any gate citing this check cannot verify it.
+  push:
+    branches:
+      - main
+    paths:
+      # Test suites
+      - '.github/scripts/tests/**'
+      # Subject scripts under test
+      - '.github/scripts/diff_security_findings.py'
+      - '.github/scripts/discover_dockerfiles.py'
+      - '.github/scripts/post_security_pr_comment.py'
+      - '.github/scripts/ensure_umbrella_epic.py'
+      - '.github/scripts/security_agent_ledger.py'
+      - '.github/scripts/render_security_report.py'
+      # Artifacts the profile suite asserts against
+      - '.github/security/security-agent-profile.json'
+      - '.github/security/security-agent-profile.schema.json'
+      # This workflow
+      - '.github/workflows/script-tests.yml'
   pull_request:
     paths:
       # Test suites
