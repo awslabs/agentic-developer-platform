@@ -573,6 +573,31 @@ resource "aws_eks_addon" "cloudwatch_observability" {
   })
 }
 
+# Metrics API for HPA (issue: gateway had no pod autoscaling).
+# EKS Auto Mode scales nodes, not pods — pod scale-out needs an HPA
+# (modules/gateway/k8s/hpa.yaml), and an HPA needs the Metrics API, which
+# Auto Mode does NOT bundle. This is the managed community addon; it runs
+# in-cluster and needs no IAM role.
+#
+# NOTE: first installed out-of-band via `aws eks create-addon` on 2026-08-30
+# to unblock the gateway HPA; resolve_conflicts_on_create = "OVERWRITE"
+# adopts that existing install on the next platform apply instead of erroring.
+resource "aws_eks_addon" "metrics_server" {
+  cluster_name = aws_eks_cluster.main.name
+  addon_name   = "metrics-server"
+
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [aws_eks_cluster.main]
+
+  tags = merge(var.common_tags, {
+    Name    = "${var.name_prefix}-addon-metrics-server"
+    Service = "eks"
+    Purpose = "metrics-api-for-hpa"
+  })
+}
+
 # CI runner EKS access is managed in the workflow pre-apply step
 # to avoid chicken-and-egg: runner needs access to run Terraform,
 # but Terraform would create the access entry

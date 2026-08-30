@@ -1,0 +1,67 @@
+# Horizontal Pod Autoscaler for the gateway.
+#
+# Why this exists: EKS Auto Mode scales NODES (it provisions capacity for
+# pods that cannot schedule) — it never changes a Deployment's replica count.
+# Without an HPA the gateway was pinned at 2 pods regardless of load: a
+# traffic surge would queue on 2 pods and a memory spike would OOM-kill a pod
+# rather than scale anything. The chain is HPA adds pods → Auto Mode adds
+# nodes if they don't fit.
+#
+# Metric choice: MEMORY leads. The gateway is an async proxy that spends its
+# life awaiting Bedrock — measured CPU under full agent traffic is 8-17m
+# (1-2% of the limit), so a CPU-based HPA would never trigger. Memory is what
+# actually climbs (streaming buffers + chat-logging copies across 4 uvicorn
+# workers; 769Mi observed under normal load). CPU is included anyway as a
+# cheap backstop against a future CPU-bound regression.
+#
+# Utilization targets are computed against REQUESTS (1Gi / 250m — see
+# deployment.yaml), not limits: memory 75% ≈ 768Mi average, the level normal
+# agent load already reaches, so scale-out starts exactly where today's
+# ceiling was.
+#
+# Requires the Metrics API: the metrics-server EKS addon (codified in
+# platform/infra/modules/eks/main.tf) must be installed or this HPA sits at
+# ScalingActive=False and does nothing.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bedrockgateway
+  namespace: adp-gateway
+  labels:
+    app.kubernetes.io/name: bedrockgateway
+    app.kubernetes.io/part-of: bedrock-gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: bedrockgateway
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Python workers rarely return memory to the OS, so a scaled-up fleet
+      # reads "high memory" long after the burst — don't flap on it.
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60

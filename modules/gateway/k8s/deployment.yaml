@@ -7,6 +7,13 @@ metadata:
     app.kubernetes.io/name: bedrockgateway
     app.kubernetes.io/part-of: bedrock-gateway
 spec:
+  # Baseline replica count; scale-out beyond this is owned by the HPA
+  # (k8s/hpa.yaml, min 2). Kept in the manifest (rather than removed, the
+  # usual HPA practice) because the deploy workflow client-side-applies this
+  # file — dropping the field would prune it and default the Deployment to 1
+  # replica for a window on every deploy. The cost of keeping it: a deploy
+  # momentarily resets scale to 2 and the HPA re-raises it within a sync
+  # period (~15s).
   replicas: 2
   selector:
     matchLabels:
@@ -25,13 +32,20 @@ spec:
           ports:
             - containerPort: 8080
               protocol: TCP
+          # Memory sized for 4 uvicorn workers + streaming/chat-logging buffers:
+          # pods were observed at 769Mi under normal agent load, i.e. 75% of the
+          # old 1Gi limit — one busy burst away from an OOM-kill mid-stream.
+          # Requests raised with limits so the HPA's utilization math (which is
+          # computed against REQUESTS) stays meaningful: 75% of 1Gi ≈ the level
+          # we already reach today. CPU is untouched — the gateway is async
+          # I/O-bound and idles at 1-2% even under full agent traffic.
           resources:
             requests:
               cpu: 250m
-              memory: 512Mi
+              memory: 1Gi
             limits:
               cpu: 1000m
-              memory: 1Gi
+              memory: 2Gi
           # Startup delay sized for 4 uvicorn workers each registering all
           # routes from scratch. New modules (vault, internal, connections)
           # have added ~5-8s to cold start since the last probe tuning.
