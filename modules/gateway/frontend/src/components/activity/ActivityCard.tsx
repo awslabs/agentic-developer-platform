@@ -10,32 +10,16 @@
  */
 
 import { useState, useCallback } from 'react';
-import type { InvocationItem, InvocationStatus, TriggerKind } from '@/types/activity';
+import type { InvocationItem, TriggerKind } from '@/types/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
 // Issue #4207: the local formatCost closed over item.status; formatRunCost takes
 // it as an argument so the same no-data/pending policy is shared, not copied.
 import { formatRunCost } from '@/utils/cost';
+// Issue #4400: this card carried the second of three copies of STATUS_CONFIG.
+// `compact` is the card's variant — the same short labels the table uses.
+import { describeStatus } from '@/utils/status';
 import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
-
-// ---------------------------------------------------------------------------
-// Status rendering (mirrors AgentActivity.tsx STATUS_CONFIG)
-// ---------------------------------------------------------------------------
-
-const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; colorClass: string }> = {
-  webhook_received: { glyph: '∘', label: 'Webhook recv', colorClass: 'text-gray-500 dark:text-gray-400' },
-  in_progress: { glyph: '●', label: 'In progress', colorClass: 'text-blue-600 dark:text-blue-400' },
-  complete: { glyph: '✓', label: 'Complete', colorClass: 'text-green-600 dark:text-green-400' },
-  failed: { glyph: '✗', label: 'Failed', colorClass: 'text-red-600 dark:text-red-400' },
-  rejected: { glyph: '✗', label: 'Rejected', colorClass: 'text-orange-600 dark:text-orange-400' },
-  rate_limited: { glyph: '✗', label: 'Rate limited', colorClass: 'text-yellow-600 dark:text-yellow-400' },
-  no_op: { glyph: '✗', label: 'No-op', colorClass: 'text-gray-500 dark:text-gray-400' },
-  // Issue #4020: non-run statuses, neutral-coloured like no_op.
-  blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
-  skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
-  // Issue #4187: a spend cap stopped the run — amber, not red.
-  budget_stopped: { glyph: '⊘', label: 'Budget stopped', colorClass: 'text-amber-600 dark:text-amber-400' },
-};
 
 const TRIGGER_CONFIG: Record<TriggerKind, { label: string; icon: string }> = {
   human: { label: 'Started by you', icon: '👤' },
@@ -60,7 +44,7 @@ export interface ActivityCardProps {
 export function ActivityCard({ item, onDetailClick, onTranscriptClick }: ActivityCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const statusConfig = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.no_op;
+  const statusConfig = describeStatus(item.status);
   // Issue #4020: on a non-run the reason is the only informative thing on the
   // card, so it goes in the always-visible area rather than behind "More".
   const skipReasonText = isNonRunStatus(item.status) ? describeSkipReason(item.skip_reason) : null;

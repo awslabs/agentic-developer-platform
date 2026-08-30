@@ -17,8 +17,12 @@ import { formatCost } from '@/utils/cost';
 import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
 import { describeStopReason, isBudgetStoppedStatus } from '@/utils/stopReason';
 import { describeLiveness } from '@/utils/liveness';
+// Issue #4400: this modal had its own STATUS_CONFIG, one of three near-identical
+// copies. `describeStatus` is the single map; the `'full'` variant preserves this
+// surface's longer `webhook_received` label, which the narrow table cannot fit.
+import { describeStatus } from '@/utils/status';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
-import type { InvocationItem, InvocationStatus } from '@/types/activity';
+import type { InvocationItem } from '@/types/activity';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,22 +50,6 @@ function formatDuration(startIso: string, endIso: string): string {
 
 /** Max characters to show for error_message before truncation. */
 const ERROR_TRUNCATE_LENGTH = 200;
-
-const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; colorClass: string }> = {
-  webhook_received: { glyph: '∘', label: 'Webhook received', colorClass: 'text-gray-500 dark:text-gray-400' },
-  in_progress: { glyph: '●', label: 'In progress', colorClass: 'text-blue-600 dark:text-blue-400' },
-  complete: { glyph: '✓', label: 'Complete', colorClass: 'text-green-600 dark:text-green-400' },
-  failed: { glyph: '✗', label: 'Failed', colorClass: 'text-red-600 dark:text-red-400' },
-  rejected: { glyph: '✗', label: 'Rejected', colorClass: 'text-orange-600 dark:text-orange-400' },
-  rate_limited: { glyph: '✗', label: 'Rate limited', colorClass: 'text-yellow-600 dark:text-yellow-400' },
-  no_op: { glyph: '✗', label: 'No-op', colorClass: 'text-gray-500 dark:text-gray-400' },
-  // Issue #4020: non-runs, deliberately neutral-coloured — a guard block or a
-  // deduplicated redelivery is correct behaviour, not an error.
-  blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
-  skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
-  // Issue #4187: amber, not red — the run was stopped on purpose by a spend cap.
-  budget_stopped: { glyph: '⊘', label: 'Budget stopped', colorClass: 'text-amber-600 dark:text-amber-400' },
-};
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -118,7 +106,7 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
 
   if (!item) return null;
 
-  const statusConfig = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.no_op;
+  const statusConfig = describeStatus(item.status, 'full');
   // Issue #4020: blocked/skipped are terminal — without them the modal would
   // claim "Active — not yet terminal" on a row that will never move again.
   // Issue #4187: budget_stopped is terminal too — the run is over.

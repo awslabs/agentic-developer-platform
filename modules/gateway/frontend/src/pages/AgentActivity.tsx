@@ -35,7 +35,13 @@ import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationDetail
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
 // Issue #4207: CostBadge/ChainCostBadge each had their own copy of the 4/2-decimal
 // split and the null policy. Formatting is shared now; these only style it.
-import { formatAmount, formatCost, formatRunCost, NO_DATA_INDICATOR, COST_SCOPE_LABEL } from '@/utils/cost';
+// Issue #4400: and the badges themselves are shared, so the budget drill-down
+// renders cost identically instead of adding a third styling of the same policy.
+import { formatAmount } from '@/utils/cost';
+import { CostBadge, ChainCostBadge } from '@/components/shared/CostBadge';
+// Issue #4400: STATUS_CONFIG lived here and was copied into ActivityCard and
+// InvocationDetail. One map now, with `compact`/`full` label variants.
+import { describeStatus, statusLabel } from '@/utils/status';
 import {
   describeSkipReason,
   skipReasonLabel,
@@ -52,28 +58,6 @@ import type {
   ChainSummary,
 } from '@/types/activity';
 
-// ---------------------------------------------------------------------------
-// Status rendering config
-// ---------------------------------------------------------------------------
-
-const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; colorClass: string }> = {
-  webhook_received: { glyph: '∘', label: 'Webhook recv', colorClass: 'text-gray-500 dark:text-gray-400' },
-  in_progress: { glyph: '●', label: 'In progress', colorClass: 'text-blue-600 dark:text-blue-400' },
-  complete: { glyph: '✓', label: 'Complete', colorClass: 'text-green-600 dark:text-green-400' },
-  failed: { glyph: '✗', label: 'Failed', colorClass: 'text-red-600 dark:text-red-400' },
-  rejected: { glyph: '✗', label: 'Rejected', colorClass: 'text-orange-600 dark:text-orange-400' },
-  rate_limited: { glyph: '✗', label: 'Rate limited', colorClass: 'text-yellow-600 dark:text-yellow-400' },
-  no_op: { glyph: '✗', label: 'No-op', colorClass: 'text-gray-500 dark:text-gray-400' },
-  // Issue #4020: a guard stopped the spawn / the worker deduplicated a redelivery.
-  // Both are non-runs, styled like no_op rather than like a failure — nothing
-  // went wrong, so they must not read as red-alert states.
-  blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
-  skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
-  // Issue #4187: a spend cap stopped the run. Amber, not red: the cap worked as
-  // configured, so this is "needs a budget decision", not "something is broken".
-  budget_stopped: { glyph: '⊘', label: 'Budget stopped', colorClass: 'text-amber-600 dark:text-amber-400' },
-};
-
 /**
  * Issue #4020: the badge now carries the reason.
  *
@@ -83,7 +67,7 @@ const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; co
  * hover-only for keyboard and screen-reader users.
  */
 function StatusBadge({ status, skipReason }: { status: InvocationStatus; skipReason?: string | null }) {
-  const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.no_op;
+  const config = describeStatus(status);
   const reasonText = isNonRunStatus(status) ? skipReasonLabel(skipReason) : null;
   return (
     <span
@@ -149,48 +133,6 @@ function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Cost rendering (Issue #1616)
-// ---------------------------------------------------------------------------
-
-function CostBadge({ item }: { item: InvocationItem }) {
-  // Issue #4207: formatting (including the no-data and pending policies) now
-  // lives in utils/cost. This component decides only how to STYLE the result —
-  // the three cases used to be three copies of the same conditional.
-  const formatted = formatRunCost(item.total_cost_usd, item.status);
-  if (formatted === NO_DATA_INDICATOR) {
-    // Not metered (non-gateway-mode run) or no usage_logs rows yet.
-    return <span className="text-gray-400 dark:text-gray-500 text-sm" title={COST_SCOPE_LABEL}>{formatted}</span>;
-  }
-  if (formatted === 'pending') {
-    return <span className="text-gray-400 dark:text-gray-500 text-sm italic">{formatted}</span>;
-  }
-  return (
-    <span
-      className="text-sm text-gray-900 dark:text-white font-mono"
-      title={`${item.call_count ?? 0} calls, ${item.total_tokens ?? 0} tokens — ${COST_SCOPE_LABEL}`}
-    >
-      {formatted}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Chain cost badge (aggregate for a chain)
-// ---------------------------------------------------------------------------
-
-function ChainCostBadge({ cost }: { cost: number | null }) {
-  const formatted = formatCost(cost);
-  if (formatted === NO_DATA_INDICATOR) {
-    return <span className="text-gray-400 dark:text-gray-500 text-sm" title={COST_SCOPE_LABEL}>{formatted}</span>;
-  }
-  return (
-    <span className="text-sm text-gray-900 dark:text-white font-mono" title={COST_SCOPE_LABEL}>
-      {formatted}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Chain row component (Issue #1662)
 // ---------------------------------------------------------------------------
 
@@ -205,7 +147,7 @@ interface ChainRowProps {
 
 function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick }: ChainRowProps) {
   const { root } = chain;
-  const statusConfig = STATUS_CONFIG[root.status as InvocationStatus] ?? STATUS_CONFIG.no_op;
+  const statusConfig = describeStatus(root.status);
   const isSingleton = chain.descendant_count === 0;
 
   return (
@@ -301,7 +243,7 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
       {isExpanded && !isSingleton && (
         <div className="bg-gray-50 dark:bg-gray-900/50 border-t border-gray-100 dark:border-gray-700 px-6 py-2">
           {chain.descendants.map((desc) => {
-            const descStatus = STATUS_CONFIG[desc.status as InvocationStatus] ?? STATUS_CONFIG.no_op;
+            const descStatus = describeStatus(desc.status);
             return (
               <button
                 key={desc.invocation_id}
@@ -1205,7 +1147,7 @@ export default function AgentActivity() {
                             setDetailItem(item);
                           }
                         }}
-                        aria-label={`Run: ${item.topic || 'untitled'}, Status: ${STATUS_CONFIG[item.status]?.label || item.status}, ${formatRelativeTime(item.invoked_at)}`}
+                        aria-label={`Run: ${item.topic || 'untitled'}, Status: ${statusLabel(item.status)}, ${formatRelativeTime(item.invoked_at)}`}
                       >
                         <td
                           className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white"

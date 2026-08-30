@@ -54,6 +54,15 @@ export interface CostFigure {
   amount_usd?: string | null;
   reason?: string | null;
   scope?: string | null;
+  /**
+   * Issue #4400: set on an AGGREGATE figure when at least one contributor is
+   * `unknown`, so the amount is a **lower bound**. `costTooltip` already took
+   * this as an option; the API now sends it on the figure itself
+   * (`CostFigure.partial` in `src/budget/schemas.py`), so the caller no longer
+   * has to know to pass it — which is how a partial total would get rendered as
+   * an exact one.
+   */
+  partial?: boolean | null;
 }
 
 /**

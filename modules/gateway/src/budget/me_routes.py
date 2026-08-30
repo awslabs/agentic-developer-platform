@@ -50,6 +50,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.activity.cost_service import get_cost_by_run_ids
+from src.activity.routes import _expand_date_bound, get_activity_service
+from src.activity.schemas import InvocationItem
+from src.activity.service import ActivityService
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.identity import resolve_canonical_user_id
@@ -66,10 +70,14 @@ from .schemas import (
     BudgetBand,
     BudgetLine,
     BudgetPeriod,
+    BudgetRunItem,
     BudgetSource,
     CombinedInformational,
+    CostFigure,
     MyBudgetResponse,
+    MyBudgetRunsResponse,
     PrincipalKind,
+    RunAttribution,
     format_money,
 )
 from .utils import CALENDAR_PERIOD_TYPES, calculate_budget_utilization, get_period_start_end
@@ -83,7 +91,7 @@ logger = logging.getLogger("bedrockgateway.budget")
 router = APIRouter(tags=["budget"])
 
 
-def _resolve_period_bounds(period_type: str) -> tuple[PeriodType, date, date]:
+def _resolve_period_bounds(period_type: str, reference_date: date | None = None) -> tuple[PeriodType, date, date]:
     """Validate a period type is a calendar period and return its bounds.
 
     ``run``/``chain`` caps are lifetime-scoped: they accumulate for as long as
@@ -99,6 +107,16 @@ def _resolve_period_bounds(period_type: str) -> tuple[PeriodType, date, date]:
     instead of a ``500`` from the raise. ``CALENDAR_PERIOD_TYPES`` is the
     allowlist both layers agree on (#4328).
 
+    Args:
+        period_type: The requested period type, as it arrived on the request.
+        reference_date: Any day inside the period to report. ``None`` (the
+            ``/me/budget`` case) means the *current* period. U-3's drill-down
+            accepts a caller-supplied ``period_start``, and this normalises it to
+            the containing period's real bounds rather than trusting the client
+            to have sent the exact first day — a Wednesday sent as a weekly
+            ``period_start`` must select Monday-to-Sunday, or the run list and the
+            settled figure would describe different windows.
+
     Raises:
         HTTPException: ``422`` for any non-calendar period type.
     """
@@ -112,7 +130,7 @@ def _resolve_period_bounds(period_type: str) -> tuple[PeriodType, date, date]:
         )
 
     resolved = PeriodType(period_type)
-    period_start, period_end = get_period_start_end(resolved)
+    period_start, period_end = get_period_start_end(resolved, reference_date)
     return resolved, period_start, period_end
 
 
@@ -685,4 +703,333 @@ async def get_my_budget(
         binding=binding_line,
         lines=lines,
         combined_informational=combined,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Run drill-down — Issue #4400 (U-3)
+# ---------------------------------------------------------------------------
+#
+# `/me/budget` answers "how much have I spent". This answers "what spent it".
+#
+# **The cross-store boundary is the whole difficulty.** Run lineage lives in
+# DynamoDB (the `webhook-events` table, owned by agent-factory); cost lives in
+# Postgres (`usage_logs`). There is no join to write — the stores are different
+# engines. So: resolve lineage first, then batch ONE cost lookup for the run ids
+# on that page. Exactly the shape `activity/routes.py:_enrich_with_cost` already
+# uses, and the shape the issue bounds this endpoint to (one DDB query plus one
+# batched Postgres lookup, both limited by period and page size).
+#
+# Three failure modes of that boundary are handled distinctly, because collapsing
+# any two of them produces a number that is not a measurement:
+#
+#   * A run with no `usage_logs` row      -> that run's cost is `unknown`.
+#     NOT `$0.00`. Back-fill is asynchronous, so this is the COMMON path for a
+#     recent run, not an edge case.
+#   * The whole cost lookup fails         -> every run's cost is `unknown` and the
+#     response is still a `200`. Degrading rather than erroring is the
+#     `activity/routes.py:176-206` precedent: the run list is still true and
+#     useful without cost, and one missing cost row must not 500 the drill-down.
+#   * The lineage read fails              -> `503`. There are no runs to report,
+#     and an empty list would say "nothing ran", which is a claim we cannot make.
+#
+# The `unknown`-vs-zero distinction is enforced by `CostFigure`'s validator rather
+# than by care at each call site here — see its docstring.
+
+
+def _figure_from_cost_row(cost_row: dict | None, *, absent_reason: str) -> CostFigure:
+    """Turn one row of ``get_cost_by_run_ids`` output into a three-valued figure.
+
+    ``cost_row is None`` means the run id was **absent from the result dict**,
+    which is how ``get_cost_by_run_ids`` reports "no ``usage_logs`` rows"
+    (``cost_service.py:39``). That absence is the only available signal, and it is
+    load-bearing: ``usage_logs.cost_usd`` is ``NOT NULL``, so a missing cost is
+    never a NULL — it is row-nonexistence — and ``SUM`` over zero rows returns
+    ``0``, indistinguishable from a genuine zero. The **row count** is what
+    separates "no measurement" from "measured zero", which is why
+    ``call_count == 0`` is treated as absence too rather than as a zero-dollar
+    run. Same rule as ``src/orchestration/cost.py:_classify``.
+
+    Args:
+        cost_row: The ``{total_cost_usd, total_tokens, call_count}`` mapping for
+            this run, or ``None`` when the run has no rows.
+        absent_reason: Which ``unknown`` reason to report when there is no
+            measurement — ``no_usage_rows`` when the ledger was read and had
+            nothing, ``cost_store_unavailable`` when the ledger could not be read
+            at all. Reporting the second as the first would assert something about
+            the ledger that was never observed.
+    """
+    if cost_row is None or cost_row["call_count"] == 0:
+        return CostFigure(status="unknown", reason=absent_reason)
+
+    # `get_cost_by_run_ids` returns a float (it is shared with the activity
+    # surface, which serialises floats). Converted via `str` rather than passed to
+    # `Decimal` directly: `Decimal(0.0523)` is 0.05229999999999999926…, which
+    # `format_money` would then render with fabricated trailing digits, whereas
+    # `Decimal(str(0.0523))` is exactly `0.0523`. The float itself already carries
+    # a precision loss this cannot undo, which is why the AMOUNT is re-rendered at
+    # the column's 6dp and not treated as more precise than it is.
+    amount = Decimal(str(cost_row["total_cost_usd"]))
+    return CostFigure(
+        # Rows exist and total zero: a VERIFIED zero, so `$0.00` is the honest
+        # rendering — the opposite claim from `unknown` above.
+        status="none_incurred" if amount == 0 else "known",
+        amount_usd=format_money(amount, SPEND_PLACES),
+    )
+
+
+def _subtotal_figure(items: list[BudgetRunItem]) -> CostFigure:
+    """Total the page's runs, flagging the total as partial when it is a lower bound.
+
+    ``partial`` is the aggregate-level counterpart of ``unknown``: a total that
+    excludes an unmeasured contribution is a **lower bound**, and presenting it as
+    exact is how a decision gets made on a wrong number. Mirrors
+    ``AggregateCost.partial`` (``src/orchestration/cost.py``) and is rendered by
+    ``costTooltip(..., {partial: true})``.
+
+    Three outcomes:
+
+    * **Every run unknown** — there is no measured contribution at all, so the
+      subtotal is itself ``unknown`` and carries no amount. Reporting ``$0.00``
+      here would be the EPIC's headline failure in miniature.
+    * **Some unknown** — the measured part is reported, ``partial=True``.
+    * **None unknown** — an exact total. An empty page is this case: no runs cost
+      nothing, which is a measurement about the page.
+
+    Accumulated with an explicit loop rather than the builtin aggregate, for the
+    same reason ``_combined_informational`` does — T33 in
+    ``test_me_budget_routes.py`` forbids that aggregate's name anywhere in this
+    module's source, a gate about keeping unfiltered SQL aggregates (#4328) out of
+    the ledger reads. Decimal throughout, never float.
+    """
+    total = Decimal("0")
+    unknown_count = 0
+    for item in items:
+        if item.cost.status == "unknown":
+            unknown_count += 1
+            continue
+        total += Decimal(item.cost.amount_usd or "0")
+
+    if items and unknown_count == len(items):
+        # Nothing on this page was measured. The reason is carried up from the
+        # runs so a whole-store outage is not reported as "the ledger had no rows".
+        return CostFigure(status="unknown", reason=items[0].cost.reason or "no_usage_rows", partial=True)
+
+    return CostFigure(
+        status="none_incurred" if total == 0 else "known",
+        amount_usd=format_money(total, SPEND_PLACES),
+        partial=unknown_count > 0,
+    )
+
+
+def _run_attribution(item: InvocationItem) -> RunAttribution:
+    """Which of the caller's envelope lines this run counts against.
+
+    Always ``cloud``, and that is a structural fact rather than a placeholder.
+    Every row in `webhook-events` is a hosted agent run, and a hosted run's spend
+    lands on the caller's ``root_user`` ledger — the ``cloud`` line — because the
+    ``user`` row it also writes is keyed by the *worker's* identity, not the
+    caller's Cognito sub.
+
+    The caller's ``direct`` line is their own interactive traffic (their machine,
+    straight through the proxy). That traffic has no run binding, so it writes no
+    lineage row at all (``BudgetLine``'s docstring, #4396) and therefore cannot
+    appear in this list. ``direct`` stays in the union because the field's meaning
+    is "which line does this belong to" and U-5 reads it against
+    ``BudgetLine.source``; a run list that could only ever say ``cloud`` is
+    honest, whereas deriving a ``direct``/``cloud`` split from
+    ``trigger_kind`` would invent a distinction the ledger does not make and
+    attribute cloud spend to the caller's machine.
+
+    Takes the item so the derivation has somewhere to live if the ledger ever
+    gains a direct-attributed lineage row (#4396).
+    """
+    return "cloud"
+
+
+def _period_bounds_as_instants(period_start: date, period_end: date) -> tuple[str, str]:
+    """Widen the period's dates to the full-day ISO-8601 instants DDB compares against.
+
+    ``arrived_at`` is a full instant (``2026-08-29T09:14:00Z``) and the DynamoDB
+    sort-key comparison is **lexicographic**, so a bare date is a broken bound:
+    ``"2026-08-31" < "2026-08-31T09:14:00Z"``, which as an upper bound silently
+    drops the whole last day of the period — every run on the 31st missing from an
+    August drill-down, with nothing saying so.
+
+    ``_expand_date_bound`` is reused rather than reimplemented because it is the
+    fix for exactly that bug (#4390) and a second copy of the convention is how
+    the two drift apart. It is module-private in ``activity/routes.py``; the
+    import is deliberate and preferred over duplicating the literals.
+    """
+    since = _expand_date_bound(period_start.isoformat(), end=False)
+    until = _expand_date_bound(period_end.isoformat(), end=True)
+    # `_expand_date_bound` returns None only for a None input; both arguments here
+    # are real dates, so these are always strings. Asserted for the type checker's
+    # benefit rather than as a runtime claim.
+    assert since is not None and until is not None
+    return since, until
+
+
+@router.get("/me/budget/runs", response_model=MyBudgetRunsResponse)
+async def get_my_budget_runs(
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    activity: Annotated[ActivityService, Depends(get_activity_service)],
+    period_type: Annotated[
+        Literal["daily", "weekly", "monthly"], Query(description="Calendar period to list runs from. Run/chain caps are not calendar periods.")
+    ] = "monthly",
+    period_start: Annotated[
+        date | None,
+        Query(description="Any day inside the period to report; normalised to that period's real bounds. Defaults to the current period."),
+    ] = None,
+    page_size: Annotated[int, Query(ge=1, le=100, description="Maximum runs per page.")] = 20,
+    cursor: Annotated[str | None, Query(description="Opaque pagination cursor from a previous response's `next_cursor`.")] = None,
+) -> MyBudgetRunsResponse:
+    """List the agent runs that contributed to the caller's spend in one period.
+
+    **Scoping.** Identity comes exclusively from the validated token. The endpoint
+    accepts no ``user_id`` or ``entity_id`` param, so one naming a colleague is
+    simply not read, and the caller always receives their own runs (FR-3.3). That
+    is structural rather than a check: the lineage query is *partitioned* on the
+    caller's own canonical id, so another member's or another tenant's runs are
+    not merely filtered out — they are in a different partition and are never
+    read. Reading somebody else's runs is a managed-scope operation and lives
+    behind an explicit permission check in a separate router (U-4).
+
+    **Chain-inclusive** (FR-3.2). ``query_by_user`` queries both the
+    ``user-index`` (runs the caller triggered directly) and the
+    ``root-human-index`` (runs attributed to them as the chain's root human,
+    #3705) and merges with dedup, so a fan-out that cost $264 appears under the
+    person who set it in motion rather than under an opaque worker identity.
+
+    **Cost is three-valued** (FR-3.4/3.5). A run with no ``usage_logs`` row is
+    ``{"status": "unknown", "reason": "no_usage_rows"}`` — never ``0``. Cost
+    back-fill is asynchronous, so that is the ordinary state of a recent run. The
+    ``subtotal`` is a ``CostFigure`` too, flagged ``partial`` when any contributor
+    is unknown, because a total missing an unmeasured contribution is a lower
+    bound.
+
+    **Page-scoped totals.** ``subtotal`` and ``total_run_count`` describe this
+    page, not the period — see ``MyBudgetRunsResponse``. The period-wide settled
+    figure is what ``GET /me/budget`` reports.
+
+    Returns:
+        ``200`` with the caller's runs for the requested period. Also ``200``,
+        with every cost ``unknown``, when the cost store cannot be read — the run
+        list is still true without it.
+
+    Raises:
+        HTTPException:
+            ``401`` when unauthenticated (from ``get_current_user``);
+            ``400`` for a malformed ``cursor``;
+            ``422`` for a non-calendar ``period_type``;
+            ``503`` when the lineage store is unreadable — never a ``200`` with an
+            empty list, which would say "nothing ran" (FR-1.7's rule applied to
+            this surface).
+    """
+    resolved_period, resolved_start, resolved_end = _resolve_period_bounds(period_type, period_start)
+    period = BudgetPeriod(
+        period_type=resolved_period.value,
+        period_start=resolved_start,
+        period_end=resolved_end,
+        resets_in_days=max(0, (resolved_end - date.today()).days),
+    )
+
+    try:
+        canonical_user_id, identity_status = await _resolve_root_principal(db, current_user)
+    except _INFRASTRUCTURE_FAULTS as exc:
+        logger.error("Failed to resolve the caller's identity for the run drill-down; returning 503", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="Run history is temporarily unavailable. This is a backend failure, not a report of zero runs.",
+        ) from exc
+
+    if not canonical_user_id:
+        # No canonical id, so there is no lineage partition to read: either the
+        # identity did not resolve, or the caller is a service account with no
+        # `users` row by design. Returning an empty list with a ZERO subtotal here
+        # would say "you ran nothing" when the truth is "we could not look" — the
+        # exact false-$0 failure this EPIC exists to end. So the subtotal is
+        # `unknown`, and `identity_status` says which of the two cases it is.
+        logger.warning(
+            "No canonical user id for the run drill-down; reporting unknown rather than an empty run list with a $0 subtotal",
+            extra={"org_id": current_user.org_id, "identity_status": identity_status},
+        )
+        return MyBudgetRunsResponse(
+            items=[],
+            subtotal=CostFigure(status="unknown", reason="lineage_unavailable", partial=True),
+            total_run_count=0,
+            next_cursor=None,
+            period=period,
+            identity_status=identity_status,
+        )
+
+    since, until = _period_bounds_as_instants(resolved_start, resolved_end)
+
+    try:
+        lineage = activity.query_by_user(
+            user_id=canonical_user_id,
+            page_size=page_size,
+            last_key=cursor,
+            since=since,
+            until=until,
+        )
+    except ValueError as exc:
+        # A malformed cursor is a bad request, not a server error (the
+        # `activity/routes.py` precedent).
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except _INFRASTRUCTURE_FAULTS as exc:
+        # The lineage store is unreadable. An empty list would read as "no runs
+        # contributed to your spend", which is a claim we cannot make.
+        logger.error("Failed to read run lineage for the drill-down; returning 503 rather than an empty run list", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="Run history is temporarily unavailable. This is a backend failure, not a report of zero runs.",
+        ) from exc
+
+    # The join key is `invocation_id`, which is the DynamoDB `event_id` and equals
+    # `usage_logs.agent_run_id`. NOT `InvocationItem.run_id` — that field carries
+    # the KEDA job/pod name, which matches no usage row, so joining on the
+    # more-plausible-sounding name returns zero rows and reports every run as free
+    # (`src/orchestration/cost.py`).
+    run_ids = [item.invocation_id for item in lineage.items if item.invocation_id]
+
+    absent_reason = "no_usage_rows"
+    cost_map: dict[str, dict] = {}
+    if run_ids:
+        try:
+            cost_map = await get_cost_by_run_ids(db, run_ids)
+        except Exception:
+            # Graceful degradation, mirroring `activity/routes.py:176-206`: the run
+            # list is still true and useful without cost, so this returns 200 with
+            # every figure `unknown` rather than failing the whole drill-down. The
+            # reason distinguishes "the ledger had no rows for this run" from "the
+            # ledger could not be read", which are different claims.
+            logger.warning(
+                "Failed to enrich the run drill-down with cost; returning runs with unknown cost rather than failing the request",
+                exc_info=True,
+            )
+            absent_reason = "cost_store_unavailable"
+
+    items = [
+        BudgetRunItem(
+            run_id=item.invocation_id,
+            correlation_id=item.correlation_id,
+            persona=item.persona,
+            started_at=item.invoked_at,
+            status=item.status,
+            cost=_figure_from_cost_row(cost_map.get(item.invocation_id), absent_reason=absent_reason),
+            attribution=_run_attribution(item),
+        )
+        for item in lineage.items
+        if item.invocation_id
+    ]
+
+    return MyBudgetRunsResponse(
+        items=items,
+        subtotal=_subtotal_figure(items),
+        total_run_count=len(items),
+        next_cursor=lineage.last_key,
+        period=period,
+        identity_status=identity_status,
     )

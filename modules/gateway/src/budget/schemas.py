@@ -54,13 +54,20 @@ Rules 6-8 arrived with the multi-line envelope (U-2, #4399) and are stated on
 8. **The headline is never the sum of the lines**, and the combined figure carries
    no cap denominator — see ``CombinedInformational`` and ``MyBudgetResponse``.
    This is the hard acceptance gate of U-2.
+
+Rule 9 arrived with the run drill-down (U-3, #4400) and is stated on
+``CostFigure`` next to the fields it constrains:
+
+9. **A run's cost is three-valued, never a bare number.** A lineage row with no
+   matching ``usage_logs`` row is ``unknown``, never ``0`` — see ``CostFigure``.
+   Cost back-fill is asynchronous, so that is the common case, not the edge case.
 """
 
 from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # The warning band a utilisation figure falls in. Derived server-side from
 # `budget_config.budget_warning_threshold_percent` / `_critical_threshold_percent`
@@ -395,4 +402,253 @@ class MyBudgetResponse(BaseModel):
             "fused per-person ENVELOPE, with a real cap, is #4396 and is "
             "deliberately not built here."
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Run drill-down — Issue #4400 (U-3)
+# ---------------------------------------------------------------------------
+#
+# The envelope above answers "how much have I spent". This answers "what spent
+# it": the individual agent runs that contributed, each with its own cost.
+#
+# The models below carry ONE idea that the envelope models do not have to: a
+# per-run cost may be genuinely **unknown**. Settled period spend is always a
+# number (a missing `budget_usage` row is a true zero for that period — nothing
+# has settled yet). A per-run figure is different: the run demonstrably exists,
+# it demonstrably did work, and the ledger simply has no row for it yet, because
+# cost back-fill is asynchronous. Rendering that as `$0.00` says the work was
+# free. So cost gets a status, and `unknown` is structurally prevented from
+# carrying an amount.
+
+
+# The three-valued cost status. Pinned equal to `CostStatus` in
+# `src/orchestration/cost.py` by a test, and duplicated here deliberately rather
+# than imported: that module's enums live behind `OrchestrationFlow`/
+# `OrchestrationNode` model imports, and this file is the contract of record that
+# U-5 reads — the same reasoning as `SERVICE_PRINCIPAL_QUALIFIER` above.
+#
+# `none_incurred` and `unknown` both total zero dollars and mean opposite things,
+# which is exactly why the status is on the wire instead of inferred from the
+# amount (`frontend/src/utils/cost.ts`).
+CostStatusValue = Literal["known", "none_incurred", "unknown"]
+
+# Why a figure is `unknown`. Required — a bare "unknown" with no explanation
+# reads as a UI bug, and `describeUnknownReason` (`frontend/src/utils/cost.ts`)
+# maps each of these to a sentence.
+#
+# A SUPERSET of `UnknownReason` in `src/orchestration/cost.py`, pinned as one by a
+# test: every reason that module can produce must be expressible here, because
+# both describe the same three-valued contract to the same client. The extra
+# member is `cost_store_unavailable` — the cross-store read this endpoint performs
+# can fail as a whole (DDB lineage resolved, Postgres cost did not), and reporting
+# that as `no_usage_rows` would assert something about the ledger that was never
+# observed. `describeUnknownReason` degrades unmapped reasons to "Cost data
+# unavailable for this item.", which is exactly right for it.
+#
+# The second extra is `lineage_unavailable`: the runs themselves could not be
+# enumerated (the caller's canonical identity did not resolve), so there is no set
+# of runs to have a cost. Reporting that as a `$0.00` subtotal would be the
+# EPIC's headline failure — a screen saying "you have spent nothing" when the
+# truth is "we could not look".
+UnknownReasonValue = Literal[
+    "no_usage_rows",
+    "not_started",
+    "not_costable",
+    "non_gateway_path",
+    "cost_store_unavailable",
+    "lineage_unavailable",
+]
+
+# Stamped onto every cost figure. A total that silently excludes CodeBuild, EKS,
+# NAT and storage reads as "what this cost", and someone will make a budget
+# decision on it. Pinned equal to `COST_SCOPE_LABEL` in
+# `src/orchestration/cost.py` and `frontend/src/utils/cost.ts` by a test.
+COST_SCOPE_LABEL = "agent run costs only; excludes build/infra"
+
+# Which of the caller's two spend paths a run is attributed through — the same
+# distinction `BudgetSource` draws for envelope lines, reported per run so the
+# drill-down can be read against the line it belongs to.
+RunAttribution = Literal["direct", "cloud"]
+
+
+class CostFigure(BaseModel):
+    """A three-valued cost — **the status is authoritative over the number**.
+
+    ``unknown`` is not a formatting concern; it is a different claim. The two
+    zero-dollar states mean opposite things:
+
+    * ``none_incurred`` — usage rows exist and they total zero. A *measured*
+      zero, and ``$0.00`` is the honest rendering.
+    * ``unknown`` — **no usage rows at all**. We do not know what this cost. It
+      is emphatically not a claim that the work was free.
+
+    Distinguishing them requires the **row count**, not the sum: ``SUM`` over
+    zero rows is ``0``, indistinguishable from a real zero
+    (``src/orchestration/cost.py``). ``get_cost_by_run_ids`` omits run ids with
+    no rows from its result dict entirely, and that absence is the signal.
+
+    **``unknown`` cannot carry an amount, and cannot omit its reason.** Both are
+    enforced by a validator rather than left to callers, because an ``unknown``
+    carrying ``0`` is precisely the shape that becomes ``$0.00`` three layers
+    away — and this model is what U-5 renders. ``formatCostFigure``
+    (``frontend/src/utils/cost.ts``) defends the same seam on the client; having
+    the invariant on both sides is deliberate, since the API and the SPA deploy
+    independently.
+
+    ``partial`` applies to a figure that AGGREGATES others (the subtotal). A
+    total missing an unmeasured contribution is a **lower bound**, and presenting
+    it as exact is how decisions get made on wrong numbers. It is the
+    aggregate-level counterpart of ``unknown``, mirroring ``AggregateCost.partial``
+    in ``src/orchestration/cost.py`` and consumed by
+    ``costTooltip(..., {partial: true})``.
+    """
+
+    status: CostStatusValue = Field(
+        description=(
+            "`known` (rows exist, total > 0), `none_incurred` (rows exist, total "
+            "== 0 — a VERIFIED zero), or `unknown` (no rows — we do not know, and "
+            "this is NOT a claim the work was free). Authoritative over "
+            "`amount_usd`."
+        )
+    )
+    amount_usd: str | None = Field(
+        default=None,
+        description=(
+            "The amount at 6dp as a STRING, preserving `usage_logs.cost_usd`'s "
+            "`NUMERIC(10,6)` precision — most individual agent calls are sub-cent, "
+            "so a float round-trip or a 2dp render loses the figure entirely. "
+            'ALWAYS `null` when `status` is `unknown`; never `"0"`.'
+        ),
+    )
+    reason: UnknownReasonValue | None = Field(
+        default=None,
+        description=(
+            "Why the figure is `unknown`. REQUIRED whenever it is, and `null` "
+            "otherwise. `no_usage_rows` is the common one and means cost back-fill "
+            "has not caught up — not that the run was free."
+        ),
+    )
+    scope: str = Field(
+        default=COST_SCOPE_LABEL,
+        description="What the figure covers. Agent-run Bedrock spend only: it excludes CodeBuild, EKS compute, NAT and storage.",
+    )
+    partial: bool = Field(
+        default=False,
+        description=(
+            "Only meaningful on an AGGREGATE figure (the subtotal). `true` means "
+            "at least one contributing run is `unknown`, so the amount is a LOWER "
+            "BOUND and must not be presented as an exact total."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _unknown_carries_no_amount(self) -> "CostFigure":
+        """Keep absence from ever serialising as a number.
+
+        Enforced here rather than trusted to call sites: this model is the wire
+        shape U-5 renders, and an ``unknown`` carrying ``0`` is the one shape that
+        silently becomes ``$0.00``. Same invariant as ``NodeCost.__post_init__``
+        (``src/orchestration/cost.py``).
+        """
+        if self.status == "unknown":
+            if self.amount_usd is not None:
+                raise ValueError("an unknown cost must not carry an amount — that is how absence becomes $0.00")
+            if self.reason is None:
+                raise ValueError("an unknown cost must carry a reason; bare 'unknown' reads as a bug")
+        elif self.amount_usd is None:
+            raise ValueError(f"a {self.status} cost must carry an amount")
+        return self
+
+
+class BudgetRunItem(BaseModel):
+    """One agent run that contributed to the caller's spend.
+
+    Identity fields come from the DynamoDB lineage row; ``cost`` comes from
+    Postgres ``usage_logs``. The two stores are joined **in Python, on run id**,
+    never in SQL — see the route.
+
+    ``run_id`` is the DynamoDB ``event_id`` (the agent-worker's ``message_id``),
+    which is also ``usage_logs.agent_run_id``. It is deliberately NOT the
+    DynamoDB attribute *named* ``run_id``, which is the KEDA job/pod name and
+    matches no usage row at all — joining on that plausible-sounding field
+    returns zero rows and reports every run as free
+    (``src/orchestration/cost.py``, ``assert_join_key_is_event_id``).
+    """
+
+    run_id: str = Field(
+        description=(
+            "The run's id — the DynamoDB `event_id`, which is the join key into "
+            "`usage_logs.agent_run_id`. NOT the KEDA job name that the DynamoDB "
+            "`run_id` attribute holds."
+        )
+    )
+    correlation_id: str | None = Field(
+        default=None,
+        description="The chain this run belongs to. Runs sharing one are one fan-out; `null` for a run with no chain context.",
+    )
+    persona: str | None = Field(default=None, description="Which agent persona ran, e.g. `developer`. `null` when the lineage row records none.")
+    started_at: str | None = Field(default=None, description="ISO-8601 instant the run arrived (`arrived_at` on the lineage row).")
+    status: str | None = Field(
+        default=None,
+        description="The run's last known status, e.g. `in_progress`, `complete`, `budget_stopped`. Rendered from the shared status config.",
+    )
+    cost: CostFigure = Field(
+        description=(
+            "Three-valued cost for this run. `unknown` when no `usage_logs` row "
+            "exists yet — the common case for a recent run, since back-fill is "
+            "asynchronous. Never `$0.00` for a missing row."
+        )
+    )
+    attribution: RunAttribution = Field(
+        description=(
+            "Which of the caller's lines this run counts against: `direct` for "
+            "their own traffic, `cloud` for a chain they triggered. Matches "
+            "`BudgetLine.source` so a run can be read against the line it "
+            "belongs to."
+        )
+    )
+
+
+class MyBudgetRunsResponse(BaseModel):
+    """The runs that contributed to the caller's spend in one period — U-3 (#4400).
+
+    Scoped to the caller by construction: the lineage query is partitioned on
+    their own canonical id, and the endpoint accepts **no** ``user_id`` or
+    ``entity_id`` param, so there is no parameter to abuse (FR-3.3).
+
+    **``subtotal`` and ``total_run_count`` describe THIS PAGE, not the period.**
+    The issue bounds the request to one lineage query plus one batched cost
+    lookup, both limited by page size, so a period-wide total is not available
+    without reading every page — and a page figure silently labelled as a period
+    total is the kind of wrong number this EPIC exists to eliminate. The
+    period-wide settled total is what ``GET /me/budget`` reports.
+    """
+
+    items: list[BudgetRunItem] = Field(description="The runs on this page, newest first.")
+    subtotal: CostFigure = Field(
+        description=(
+            "Total cost of the runs ON THIS PAGE — not the period. `partial` is "
+            "`true` when any run on the page has `unknown` cost, in which case "
+            "this is a LOWER BOUND. `unknown` when every run on the page is "
+            "unknown, and `none_incurred` for an empty page (nothing on it cost "
+            "anything, which is a measurement about the page)."
+        )
+    )
+    total_run_count: int = Field(description="Number of runs on this page (`len(items)`). Not a period-wide count — see the class docstring.")
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Opaque cursor for the next page; `null` means no more pages. A "
+            "non-null cursor with few or zero items is normal — DynamoDB applies "
+            "filters after the page read — so keep following it until it is null."
+        ),
+    )
+    period: BudgetPeriod = Field(description="The calendar window these runs were selected from — the same window `GET /me/budget` reports.")
+    identity_status: IdentityStatus = Field(
+        description=(
+            "Whether the caller's canonical `users.id` resolved. `unresolved` "
+            "means chain-attributed runs could NOT be looked up and are therefore "
+            "ABSENT from `items` — it must not be read as 'no cloud runs'."
+        )
     )
