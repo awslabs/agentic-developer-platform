@@ -148,3 +148,8 @@ output "security_scans_bucket_name" {
   description = "Name of the security scans S3 bucket"
   value       = module.security_scans.bucket_name
 }
+
+output "securityagent_nightly_role_arn" {
+  description = "Least-privilege service role ARN for the nightly Security Agent jobs (#4443)"
+  value       = aws_iam_role.securityagent_nightly.arn
+}

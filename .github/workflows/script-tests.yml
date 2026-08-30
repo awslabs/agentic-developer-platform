@@ -22,6 +22,11 @@ on:
       - '.github/scripts/ensure_umbrella_epic.py'
       - '.github/scripts/security_agent_ledger.py'
       - '.github/scripts/render_security_report.py'
+      - '.github/scripts/securityagent_preflight.py'
+      # Artifacts the securityagent preflight suite asserts against (#4443)
+      - '.github/workflows/security-agent-nightly.yml'
+      - 'platform/infra/policies/securityagent-nightly-policy.json'
+      - 'platform/infra/securityagent-nightly-iam.tf'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -38,6 +43,11 @@ on:
       - '.github/scripts/ensure_umbrella_epic.py'
       - '.github/scripts/security_agent_ledger.py'
       - '.github/scripts/render_security_report.py'
+      - '.github/scripts/securityagent_preflight.py'
+      # Artifacts the securityagent preflight suite asserts against (#4443)
+      - '.github/workflows/security-agent-nightly.yml'
+      - 'platform/infra/policies/securityagent-nightly-policy.json'
+      - 'platform/infra/securityagent-nightly-iam.tf'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -63,7 +73,11 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install pytest pytest-timeout
+        # PyYAML: the securityagent preflight suite (#4443) parses the nightly
+        # workflow to assert it carries no `schedule:` key. Without the
+        # dependency those gates importorskip and the check goes green
+        # having asserted nothing.
+        run: pip install pytest pytest-timeout pyyaml
 
       # Test files are pinned explicitly rather than globbed: a glob silently
       # stops covering a file that is moved or renamed, which is the same
@@ -79,4 +93,5 @@ jobs:
             tests/test_security_agent_ledger.py \
             tests/test_render_security_report.py \
             tests/test_umbrella_epic_idempotency.py \
+            tests/test_securityagent_preflight.py \
             -v --tb=short --timeout=60

@@ -104,3 +104,9 @@ variable "state_bucket" {
   default     = ""
 }
 
+
+variable "securityagent_log_retention_days" {
+  description = "Retention for the nightly Security Agent log group (#4443)."
+  type        = number
+  default     = 30
+}

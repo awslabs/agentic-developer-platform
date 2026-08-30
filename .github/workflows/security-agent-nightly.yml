@@ -1,0 +1,83 @@
+name: Security Agent Nightly
+
+# The host workflow for the nightly security run (intent #4290, unit U4,
+# issue #4443). This unit ships the skeleton only: provisioning + preflight.
+# The code-review job (U5) and pentest job (U6/U7) land as further jobs here.
+#
+# ---------------------------------------------------------------------------
+# THERE IS DELIBERATELY NO `schedule:` KEY. DO NOT ADD ONE HERE.
+# ---------------------------------------------------------------------------
+# Arming the schedule needs two things this unit does not have:
+#   1. A measured run duration. Nothing has timed a full run yet, so any cron
+#      expression would be arming an unmeasured job.
+#   2. A window that does not collide with the three other nightly suites
+#      already hitting the same shared dev environment.
+# Adding `schedule:` before both exist is the specific failure this unit's
+# quality gate blocks (the gate parses this YAML and fails on a schedule key).
+# The schedule is a separate, later decision.
+#
+# ---------------------------------------------------------------------------
+# Why provisioning is unconditional, and why there is no setup-python
+# ---------------------------------------------------------------------------
+# This repo contains ~20 CLI-install steps shaped `command -v x || install x`.
+# On this runner image every one of them is a no-op. Copying that idiom here
+# would produce a step that looks like provisioning and provisions nothing,
+# and every downstream unit would then fail on a runtime the plan believed was
+# fixed. So the install step below has no `command -v` guard and no `|| true`.
+#
+# It matters on THIS runner specifically. The U0 spike ran on the
+# agent-scaledjob pod, whose image already resolves the service; the nightly
+# runs on arc-runner-org, whose image hard-pins an older boto3 release that
+# the spike proved does NOT carry `securityagent`. The upgrade here is real
+# work, not a formality. (Concrete versions are deliberately absent from this
+# file: the floor lives only in the validated profile, and the gate enforces
+# that by searching this workflow for version literals.)
+#
+# `actions/setup-python` is deliberately absent. It would introduce a second
+# interpreter, and the classic form of this bug is the package landing in one
+# Python while the assertion runs in another. Both steps below invoke the same
+# `$SECURITYAGENT_PYTHON`, and securityagent_preflight.py installs into its own
+# `sys.executable` — so interpreter identity is structural, not a convention.
+#
+# The install command and the botocore version floor are READ from
+# .github/security/security-agent-profile.json (U0, #4439) and appear as
+# literals neither here nor in the preflight script. That artifact is the
+# interface; retyping either value would create a second source of truth.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (dev only for now)'
+        type: choice
+        options:
+          - dev
+        default: dev
+
+concurrency:
+  # Serialised, never cancelled: a partially-completed security run against
+  # shared dev is worse than a queued one.
+  group: security-agent-nightly-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: arc-runner-org
+    env:
+      # Single source of interpreter truth for every step in this job.
+      SECURITYAGENT_PYTHON: python3
+    steps:
+      - uses: actions/checkout@v7
+
+      # Ordered BEFORE preflight, and asserted to be so by the quality gate:
+      # an assertion that runs before provisioning would pass or fail on the
+      # image's state rather than on the state this job creates.
+      - name: Provision the Security Agent client
+        run: $SECURITYAGENT_PYTHON .github/scripts/securityagent_preflight.py --provision
+
+      - name: Preflight — assert the client resolves on this runner
+        run: $SECURITYAGENT_PYTHON .github/scripts/securityagent_preflight.py
