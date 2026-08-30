@@ -141,6 +141,16 @@ spec:
             # the engine for everyone.
             - name: FEATURE_ORCHESTRATION_ENGINE_ENABLED
               value: "false"
+            # Issue #4402 (U-5 of EPIC #4324): the Budget & Spend screen. Fail-closed
+            # like the entry above, so absent already means off — but it has to be set
+            # HERE rather than with `kubectl set env`, because gateway-deploy.yml
+            # re-applies this file on every run and would silently revert an
+            # out-of-band change on the next deploy. Enabled in dev so the wave-3
+            # evaluation can observe the screen; the rollback is to flip this to
+            # "false", which removes the route and the nav entry with no redeploy of
+            # the SPA.
+            - name: FEATURE_BUDGET_SPEND_ENABLED
+              value: "true"
             # - name: FEATURE_KNOWLEDGE_ENABLED
             #   value: "false"
             # - name: FEATURE_INDEXING_ENABLED
