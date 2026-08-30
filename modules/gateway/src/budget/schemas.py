@@ -708,3 +708,140 @@ class MyBudgetRunsResponse(BaseModel):
             "ABSENT from `items` — it must not be read as 'no cloud runs'."
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Managed (operator) scope — Issue #4401 (U-4)
+# ---------------------------------------------------------------------------
+#
+# Everything above describes the SIGNED-IN CALLER. The models below describe a
+# TARGET the caller named, which is the entire difference: U-4 is the only unit in
+# the EPIC that accepts an entity other than the caller, so it is the only one
+# carrying cross-tenant risk.
+#
+# The shapes deliberately REUSE `BudgetLine`, `CostFigure` and `BudgetPeriod`
+# rather than restating them. An operator's view and a user's own view of the same
+# entity must be the same numbers rendered the same way — a second set of
+# money/cap/band fields for the operator surface is exactly how the two drift
+# apart (the read/write asymmetry class of #4322).
+#
+# What is NOT on these models, and must not be added: any field describing the
+# target beyond the id the caller already supplied — no name, no email, no member
+# count, no "exists" flag. A denial reveals nothing (see the router), so a SUCCESS
+# must not be the thing that reveals it either; a response shape carrying a
+# display name would make a 200-vs-403 comparison an enumeration oracle by
+# another route.
+
+
+class ScopeRollupRow(BaseModel):
+    """One member's contribution inside a container target — Issue #4401 (U-4).
+
+    Emitted only for CONTAINER targets (team, department, org). A ``user`` or
+    ``root_user`` target is a single principal and has no members to roll up, so
+    it carries no rows at all rather than one row describing itself.
+
+    **``principal_kind`` is required, and that is the point of this model.** The
+    mockup's member table renders these rows as people; a ``service:``-rooted
+    entry is CI, EventBridge or an alarm, not a person (FR-2.5). Rendering
+    ``ci-bot`` as a colleague makes per-person cost truth wrong — and it is per
+    person cost truth that a team lead opens this screen to get. The field is
+    non-optional so a row cannot be constructed without answering the question;
+    it is derived from the ``service:`` id qualifier (#4344), never from a
+    display name, because a human can be *called* anything.
+
+    The figures are a ``BudgetLine`` — the same model, from the same composition
+    helpers, as the caller's own envelope lines. A rollup row is one ledger row's
+    worth of truth exactly as an envelope line is.
+    """
+
+    entity_type: str = Field(description="Which ledger this member's row was read from — `user` or `root_user`.")
+    entity_id: str = Field(
+        description=(
+            "The member's id, as it is keyed in the ledger: a Cognito `sub` for a "
+            "`user` row, a canonical `users.id` (possibly `service:`-qualified) "
+            "for a `root_user` row. Echoed rather than resolved to a name — see "
+            "the module comment on why no display metadata is on this shape."
+        )
+    )
+    principal_kind: PrincipalKind = Field(
+        description=(
+            "`human` or `service`, from the `service:` id qualifier (#4344). "
+            "REQUIRED: a `service` row is an unattended trigger, not a person, and "
+            "rendering one as a colleague is the FR-2.5 defect this field exists "
+            "to prevent."
+        )
+    )
+    line: BudgetLine = Field(
+        description=("This member's cap, settled spend, headroom, utilisation and band — the SAME `BudgetLine` model the caller's own envelope uses.")
+    )
+
+
+class ManagedScopeBudgetResponse(BaseModel):
+    """A target entity's cap, settled spend and headroom, for an operator — U-4.
+
+    Same line model as ``MyBudgetResponse`` (U-2), read through the same helpers,
+    so an operator's view of a user and that user's own view of themselves cannot
+    disagree. What is added is a *target* and, for containers, per-member
+    ``rollup``; what is deliberately NOT added is any second rendering of money.
+
+    ``binding`` is the line that will stop the target first — the lowest-remaining
+    CAPPED line for the entity. For a single principal there is one candidate
+    line; the field is still present and still selected rather than summed,
+    because the "headline is never a sum" rule (FR-2.3) is a property of the
+    contract, not of how many lines happen to exist.
+    """
+
+    period: BudgetPeriod
+
+    entity_type: str = Field(description="The target's entity type, echoed from the request path after allow-list validation.")
+    entity_id: str = Field(description="The target's id, echoed from the request path. Never a resolved display name — see the module comment.")
+
+    line: BudgetLine = Field(description="The target entity's own cap/spend/headroom, composed by the SAME helper as the caller's own lines.")
+    binding: BudgetLine | None = Field(
+        default=None,
+        description=(
+            "The lowest-remaining CAPPED line for this target, or `null` when it "
+            "is uncapped — an uncapped line cannot bind (contract rule 6). "
+            "Selected, never summed (FR-2.3)."
+        ),
+    )
+
+    rollup: list[ScopeRollupRow] = Field(
+        default_factory=list,
+        description=(
+            "Per-member contributions, for CONTAINER targets (team/department/org) "
+            "only. Empty for a `user`/`root_user` target, which is a single "
+            "principal with no members. Each row carries `principal_kind` so a "
+            "service account is not rendered as a person (FR-2.5)."
+        ),
+    )
+
+
+class ManagedScopeRunsResponse(BaseModel):
+    """The runs that contributed to a TARGET's spend in one period — U-4.
+
+    U-3's run list, rendered for an operator-named target instead of the caller.
+    Identical shape and identical three-valued cost rules, because an operator
+    reading a run's cost and the run's owner reading it must see the same figure.
+
+    ``subtotal`` and ``total_run_count`` describe **this page**, not the period —
+    the same bound U-3 carries, for the same reason: the request is one lineage
+    query plus one batched cost lookup, so a period-wide total is not available
+    without reading every page, and a page figure labelled as a period total is
+    the class of wrong number this EPIC exists to eliminate.
+    """
+
+    items: list[BudgetRunItem] = Field(description="The target's runs on this page, newest first.")
+    subtotal: CostFigure = Field(
+        description=(
+            "Total cost of the runs ON THIS PAGE — not the period. `partial` is "
+            "`true` when any run on the page is `unknown`, making this a LOWER "
+            "BOUND. `unknown` when every run on the page is unknown."
+        )
+    )
+    total_run_count: int = Field(description="Number of runs on this page (`len(items)`). Not a period-wide count.")
+    next_cursor: str | None = Field(default=None, description="Opaque cursor for the next page; `null` means no more pages.")
+    period: BudgetPeriod = Field(description="The calendar window these runs were selected from.")
+
+    entity_type: str = Field(description="The target's entity type, echoed from the request path after allow-list validation.")
+    entity_id: str = Field(description="The target's id, echoed from the request path.")

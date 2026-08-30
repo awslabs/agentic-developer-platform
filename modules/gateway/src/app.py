@@ -45,6 +45,14 @@ UNIT_MODULES = [
     # unscoped from the request (open IDOR #4384), so this one takes identity from
     # the token only and accepts no scope parameter at all.
     "src.budget.me_routes",
+    # Issue #4401: managed-scope (operator) budget read API
+    # (GET /budget/scope/{entity_type}/{entity_id}). A THIRD budget router, and
+    # again separate on purpose: this is the only one that accepts a target other
+    # than the caller, so it is the only one carrying cross-tenant risk. Every
+    # route on it is explicitly permission-gated and scope-verified server-side
+    # from tenant_memberships. Deliberately NOT added to src.budget.routes, whose
+    # unscoped entity_type/entity_id pattern is open IDOR #4384 (NFR-1).
+    "src.budget.managed_scope_routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
