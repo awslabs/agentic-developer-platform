@@ -35,6 +35,7 @@ const IndexingStatus = lazy(() => import('./pages/admin/IndexingStatus')); // Is
 const TenantOrgLinks = lazy(() => import('./pages/admin/TenantOrgLinks')); // Issue #2954
 const AgentActivity = lazy(() => import('./pages/AgentActivity')); // Issue #1457
 const AgentRunDashboard = lazy(() => import('./pages/AgentRunDashboard')); // Issue #3633
+const BudgetSpend = lazy(() => import('./pages/BudgetSpend')); // Issue #4402
 const Knowledge = lazy(() => import('./pages/Knowledge')); // Issue #1794
 const GraphView = lazy(() => import('./pages/GraphView')); // Issue #4212
 const NotFound = lazy(() => import('./pages/NotFound'));
@@ -94,6 +95,11 @@ function App() {
               <Route path="/admin/tenant-links" element={<TenantOrgLinks />} /> {/* Issue #2954 */}
               <Route path="/activity" element={<AgentActivity />} /> {/* Issue #1457 */}
               <Route path="/runs" element={<AgentRunDashboard />} /> {/* Issue #3633 */}
+              {/* Issue #4402. Reachable by a MEMBER: no permission guard, because the
+                  endpoints behind it are scoped to the caller server-side and accept no
+                  entity parameter. Gating on a permission members lack would ship the
+                  screen invisible to exactly the people it was built for (#4389). */}
+              <Route path="/budget" element={<FeatureGate feature="budget_spend"><BudgetSpend /></FeatureGate>} />
               <Route path="/knowledge" element={<FeatureGate feature="knowledge"><Knowledge /></FeatureGate>} /> {/* Issue #1794 */}
               {/* Issue #4212. `orchestration_engine` is fail-CLOSED in
                   ALL_FEATURES_ENABLED, so a pending or failed /features fetch hides

@@ -85,6 +85,18 @@ export function Navigation() {
   // Agent Activity for all authenticated users (Issue #1457)
   navItems.push({ to: '/activity', label: 'Agent Activity', icon: '📋' });
 
+  // Budget & Spend for all authenticated users (Issue #4402).
+  //
+  // Deliberately UNGATED by permission, unlike /budgets above. That entry is the admin
+  // CRUD surface for other people's caps; this one shows the caller their own figures,
+  // from endpoints scoped to them server-side that accept no entity parameter. There is
+  // nothing to authorise client-side, and gating on a permission a MEMBER lacks
+  // (MEMBER maps to USAGE_READ only, and resolves to [] on the ID-token path — #4389)
+  // would hide the screen from exactly the users it exists for.
+  if (features.budget_spend) {
+    navItems.push({ to: '/budget', label: 'Budget & Spend', icon: '💵' });
+  }
+
   // Agent Chat for all authenticated users (Issue #97)
   if (features.chat) {
     navItems.push({ to: '/chat', label: 'Agent Chat', icon: '🤖' });

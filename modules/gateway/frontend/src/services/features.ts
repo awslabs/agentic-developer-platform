@@ -16,6 +16,8 @@ export interface FeatureFlags {
   logs: boolean;
   gitlab: boolean;
   orchestration_engine: boolean;
+  /** Budget & Spend screen — Issue #4402. Fail-closed while the EPIC lands. */
+  budget_spend: boolean;
 }
 
 export interface FeaturesResponse {
@@ -23,10 +25,11 @@ export interface FeaturesResponse {
 }
 
 /** All features enabled — used as fail-open default.
- *  Exceptions: gitlab (fail-closed, Issue #3773) and orchestration_engine
- *  (fail-closed, Issue #4209) default to false. The engine + graph UI are a
- *  per-flow opt-in add-on; legacy GitHub-driven mode stays the default, so a
- *  pending or failed /features fetch must NOT reveal the new path. */
+ *  Exceptions: gitlab (fail-closed, Issue #3773), orchestration_engine
+ *  (fail-closed, Issue #4209) and budget_spend (fail-closed, Issue #4402)
+ *  default to false. The engine + graph UI are a per-flow opt-in add-on;
+ *  legacy GitHub-driven mode stays the default, so a pending or failed
+ *  /features fetch must NOT reveal the new path. */
 export const ALL_FEATURES_ENABLED: FeatureFlags = {
   chat: true,
   knowledge: true,
@@ -37,6 +40,11 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   logs: true,
   gitlab: false,
   orchestration_engine: false,
+  // Fail-closed: the rollback plan for #4402 is "flip the flag off", which only
+  // works if a pending or failed /features fetch also resolves to off. A fail-open
+  // default would make the screen reappear during exactly the outage it was
+  // switched off for.
+  budget_spend: false,
 };
 
 export async function fetchFeatures(): Promise<FeatureFlags> {

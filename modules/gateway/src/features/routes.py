@@ -79,5 +79,11 @@ async def get_features(_current_user=Depends(get_current_user)):
             # must resolve to *off*, because failing open here would silently
             # enable an opt-in engine path in production.
             "orchestration_engine": _is_enabled_strict("FEATURE_ORCHESTRATION_ENGINE_ENABLED"),
+            # Fail-closed: the Budget & Spend screen (Issue #4402) ships behind a flag
+            # whose documented rollback is "flip it off — screen and nav vanish, no
+            # redeploy". That only holds if absence resolves to *off*: with
+            # `_is_enabled` the screen would be live in every environment the moment
+            # the SPA deployed, and unsetting the var would not turn it off again.
+            "budget_spend": _is_enabled_strict("FEATURE_BUDGET_SPEND_ENABLED"),
         }
     }

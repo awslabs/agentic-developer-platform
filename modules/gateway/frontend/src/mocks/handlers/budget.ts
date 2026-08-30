@@ -1,4 +1,5 @@
 import { http, HttpResponse } from 'msw';
+import { mockBudgetEnvelope, mockBudgetRuns } from '../data/budgetSpend';
 
 const mockBudgets = [
   {
@@ -179,4 +180,14 @@ export const budgetHandlers = [
     }));
     return HttpResponse.json(data);
   }),
+
+  // ---------------------------------------------------------------------------
+  // The caller's own budget read surface — Issue #4402 (U-5).
+  //
+  // Fixtures come from `mocks/data/budgetSpend.ts`, which is transcribed from
+  // `src/budget/schemas.py`. See that file's header for why provenance matters here.
+  // ---------------------------------------------------------------------------
+  http.get('/api/me/budget', () => HttpResponse.json(mockBudgetEnvelope)),
+
+  http.get('/api/me/budget/runs', () => HttpResponse.json(mockBudgetRuns)),
 ];

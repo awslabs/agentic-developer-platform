@@ -55,6 +55,16 @@ export enum EntityType {
   TEAM = 'team',
   USER = 'user',
   SERVICE_ACCOUNT = 'service_account',
+  /**
+   * The cloud-agent ledger (Issue #4402) — spend from agent chains a person
+   * triggered, as opposed to `USER`, which is traffic they originated themselves.
+   *
+   * A separate entity type because it is keyed differently: `USER` rows are keyed by
+   * Cognito sub, `ROOT_USER` rows by canonical `users.id`. The two are therefore
+   * separate ledger rows with separate caps, which is why they render as separate
+   * budget lines and are never summed into one governed figure.
+   */
+  ROOT_USER = 'root_user',
 }
 
 // Enforcement modes

@@ -18,9 +18,10 @@ export const featuresHandlers = [
         system_dashboard: true,
         logs: true,
         // Fail-closed add-ons: mocked as the real endpoint ships them (Issues
-        // #3773, #4209), so no test silently exercises an opted-in engine path.
+        // #3773, #4209, #4402), so no test silently exercises an opted-in path.
         gitlab: false,
         orchestration_engine: false,
+        budget_spend: false,
       },
     });
   }),
