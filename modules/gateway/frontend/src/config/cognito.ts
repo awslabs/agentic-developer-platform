@@ -46,7 +46,18 @@ export function getCognitoConfig(): CognitoConfig {
  */
 export function getCognitoHostedUiUrl(): string {
   const config = getCognitoConfig();
-  return `https://${config.domain}.auth.${config.region}.amazoncognito.com`;
+  // VITE_COGNITO_DOMAIN carries either form of Cognito domain:
+  //   - a prefix, e.g. "bedrockgw-dev-auth", which needs the regional suffix
+  //   - a custom domain FQDN, e.g. "auth.example.com", which is already complete
+  // A prefix domain is a single DNS label — alphanumeric and hyphens only — so a
+  // dot distinguishes the two unambiguously rather than by guesswork. Appending
+  // the suffix to an FQDN produces a hostname that does not resolve, and because
+  // this value is baked into the bundle at build time the failure ships to every
+  // user and needs another rebuild to undo.
+  const isCustomDomain = config.domain.includes('.');
+  return isCustomDomain
+    ? `https://${config.domain}`
+    : `https://${config.domain}.auth.${config.region}.amazoncognito.com`;
 }
 
 /**

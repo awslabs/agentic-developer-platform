@@ -76,7 +76,16 @@ class AgentService:
 
         # Build token endpoint
         cognito_domain = settings.cognito_domain or ""
-        self.token_endpoint = f"https://{cognito_domain}.auth.{self.region}.amazoncognito.com/oauth2/token"
+        # cognito_domain is either a prefix ("bedrockgw-dev-auth") or a custom
+        # domain FQDN ("auth.example.com"). A prefix is a single DNS label, so a
+        # dot tells them apart. Appending the regional suffix to an FQDN yields a
+        # host that does not exist, and the failure surfaces only when a token
+        # exchange is attempted.
+        if "." in cognito_domain:
+            token_base = f"https://{cognito_domain}"
+        else:
+            token_base = f"https://{cognito_domain}.auth.{self.region}.amazoncognito.com"
+        self.token_endpoint = f"{token_base}/oauth2/token"
 
         if not self.user_pool_id:
             logger.warning("Cognito User Pool ID not configured")

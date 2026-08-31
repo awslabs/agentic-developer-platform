@@ -37,7 +37,13 @@ class Settings(BaseSettings):
     # Cognito OAuth Configuration
     cognito_user_pool_id: str = ""  # e.g., "us-east-1_5rYm3yrrY"
     cognito_client_id: str = ""  # Cognito app client ID
-    cognito_domain: str = ""  # Cognito hosted UI domain prefix (e.g., "bedrockgw-dev-auth")
+    # Either a hosted-UI domain PREFIX ("bedrockgw-dev-auth") or a custom-domain
+    # FQDN ("auth.example.com"). Consumers distinguish them on the presence of a
+    # dot, since a prefix is a single DNS label — see agent_service.py, which
+    # builds the agent M2M token endpoint from this value. Setting a prefix once a
+    # custom domain has replaced it yields a host that no longer exists, and the
+    # failure surfaces only when an agent attempts a token exchange.
+    cognito_domain: str = ""
 
     # Server
     host: str = "0.0.0.0"
