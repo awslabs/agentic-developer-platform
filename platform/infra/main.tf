@@ -110,11 +110,19 @@ locals {
   # InvalidParameterException when the principal doesn't exist.
   ci_runner_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-runner-role"
 
-  cluster_admin_principal_arns = distinct(concat(
-    [local.deployer_role_arn],
-    length(data.aws_iam_roles.ci_runner.arns) > 0 ? [local.ci_runner_role_arn] : [],
-    var.extra_cluster_admin_principal_arns,
-  ))
+  # Downstream patch T5: when manage_ci_runner_cluster_admin is false the runner is
+  # excluded however it arrives — filtering the concat alone is not enough, because
+  # on a CI-run apply the runner *is* the deployer. Without this, platform and
+  # agent-factory each revert the other's view of the same access entry and the two
+  # states fight indefinitely.
+  cluster_admin_principal_arns = [
+    for arn in distinct(concat(
+      [local.deployer_role_arn],
+      var.manage_ci_runner_cluster_admin && length(data.aws_iam_roles.ci_runner.arns) > 0 ? [local.ci_runner_role_arn] : [],
+      var.extra_cluster_admin_principal_arns,
+    )) : arn
+    if var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn
+  ]
 }
 
 provider "aws" {

@@ -63,6 +63,29 @@ variable "eks_node_max_size" {
   default     = 10
 }
 
+variable "manage_ci_runner_cluster_admin" {
+  description = <<-EOT
+    Whether platform/infra grants the ARC runner role cluster-admin via an EKS
+    access entry.
+
+    Set false when modules/agent-factory/infra owns that principal's access
+    entry (aws_eks_access_entry.runner), which is the case in any deployment
+    where agent-factory has been applied. Leaving it true there makes
+    platform/infra try to create an access entry that already exists — one entry
+    per principal, so the apply fails — and, if it succeeded, would additively
+    re-grant cluster-wide admin alongside agent-factory's deliberately
+    namespace-scoped AmazonEKSEditPolicy (issue #1204).
+
+    Trade-off when false: CI-run platform applies lose cluster-scope Kubernetes
+    permissions, so the kubernetes_* resources in this module (namespaces,
+    cluster roles) will fail. Platform applies then have to be run by a human
+    operator holding cluster-admin. Defaults to true to preserve prior
+    behaviour.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "eks_public_access_cidrs" {
   description = "CIDR blocks allowed to reach the EKS public API endpoint. Set via TF_VAR_eks_public_access_cidrs in the deploy scripts to the operator's current public IP (/32)."
   type        = list(string)

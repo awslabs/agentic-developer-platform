@@ -238,13 +238,11 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.eks.id]
   }
 
-  egress {
-    description = "No outbound traffic allowed"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = []
-  }
+  # No egress block, deliberately. aws_security_group revokes AWS's default
+  # allow-all egress when no egress block is declared, so omitting it *is* the
+  # deny. Do not "restore" this as an empty egress block with
+  # `cidr_blocks = []`: a rule with no destinations cannot be created, so AWS
+  # silently creates nothing and every subsequent plan re-proposes it forever.
 
   tags = merge(var.common_tags, {
     Name     = "${var.name_prefix}-sg-rds"
@@ -276,13 +274,11 @@ resource "aws_security_group" "redis" {
     security_groups = [aws_security_group.eks.id]
   }
 
-  egress {
-    description = "No outbound traffic allowed"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = []
-  }
+  # No egress block, deliberately. aws_security_group revokes AWS's default
+  # allow-all egress when no egress block is declared, so omitting it *is* the
+  # deny. Do not "restore" this as an empty egress block with
+  # `cidr_blocks = []`: a rule with no destinations cannot be created, so AWS
+  # silently creates nothing and every subsequent plan re-proposes it forever.
 
   tags = merge(var.common_tags, {
     Name     = "${var.name_prefix}-sg-redis"
