@@ -121,3 +121,10 @@ enable_lambda_reserved_concurrency = false
 # empty: a -var-file entry takes precedence over TF_VAR_*, so an empty pin would
 # silently override the workflow's SSM injection and re-break dispatch.
 orchestration_dispatch_repo = "aws-e/adp"
+
+# Issue #4527: the orchestration engine (and its GitHub command bridge) is ON
+# in dev — first live @agent-engine command proven 2026-08-31 on issue #4552.
+# Without this pin every gateway-infra apply resets the tick Lambda's
+# FEATURE_ORCHESTRATION_ENGINE_ENABLED back to the inert default (false) and
+# silently disables the bridge until an operator re-sets the env var by hand.
+orchestration_engine_enabled = true
