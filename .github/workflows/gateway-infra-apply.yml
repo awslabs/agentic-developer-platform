@@ -376,6 +376,46 @@ jobs:
           echo "QUEUE_URL=$QUEUE_URL" >> "$GITHUB_OUTPUT"
           echo "QUEUE_ARN=$QUEUE_ARN" >> "$GITHUB_OUTPUT"
 
+      # Issue #4527: pre-resolve the webhook-events table for the engine's GitHub
+      # command bridge. Same core-vs-optional rule as the queue above: the table,
+      # its KMS key, and the per-tenant GitHub App secrets are all owned by the
+      # webhook-ingress state, so none of them may be pinned in gateway.tfvars.
+      # The tick's grants (dynamodb:Query on engine-command-index, UpdateItem for
+      # the consume flip, kms:Decrypt, ack-secret reads) are all conditioned on
+      # these vars — without them the bridge deploys inert and every tick fails
+      # its command pass with AccessDenied once the env var alone is set (which is
+      # exactly what happened on dev). When the SSM param is absent all three stay
+      # empty and the tick reports `commands_enabled=false`.
+      - name: Pre-resolve engine command bridge (SSM)
+        id: bridge_pre
+        run: |
+          EVENTS_TABLE=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT:-dev}/webhook-ingress/webhook-events-table" \
+            --query "Parameter.Value" --output text \
+            --region "$AWS_REGION" 2>/dev/null || echo "")
+          if [ -z "$EVENTS_TABLE" ] || [ "$EVENTS_TABLE" = "None" ]; then
+            echo "No webhook-events table in SSM — engine command bridge stays disabled (tick reports commands_enabled=false)."
+            echo "EVENTS_TABLE=" >> "$GITHUB_OUTPUT"
+            echo "EVENTS_KMS_ARN=" >> "$GITHUB_OUTPUT"
+            echo "APP_SECRET_PATTERN=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The table is CMK-encrypted; Query/UpdateItem fail at runtime without
+          # kms:Decrypt. Resolve the key from the table itself rather than adding
+          # a second SSM parameter.
+          EVENTS_KMS_ARN=$(aws dynamodb describe-table --table-name "$EVENTS_TABLE" \
+            --query "Table.SSEDescription.KMSMasterKeyArn" --output text \
+            --region "$AWS_REGION" 2>/dev/null || echo "")
+          [ "$EVENTS_KMS_ARN" = "None" ] && EVENTS_KMS_ARN=""
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          APP_SECRET_PATTERN="arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:adp/${ENVIRONMENT:-dev}/tenants/*"
+          echo "Engine command bridge resolved from SSM."
+          echo "  table: $EVENTS_TABLE"
+          echo "  kms:   $EVENTS_KMS_ARN"
+          echo "EVENTS_TABLE=$EVENTS_TABLE" >> "$GITHUB_OUTPUT"
+          echo "EVENTS_KMS_ARN=$EVENTS_KMS_ARN" >> "$GITHUB_OUTPUT"
+          echo "APP_SECRET_PATTERN=$APP_SECRET_PATTERN" >> "$GITHUB_OUTPUT"
+
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -406,6 +446,13 @@ jobs:
           # silently disable dispatch on every apply.
           TF_VAR_orchestration_dispatch_queue_url: ${{ steps.dispatch_pre.outputs.QUEUE_URL }}
           TF_VAR_orchestration_dispatch_queue_arn: ${{ steps.dispatch_pre.outputs.QUEUE_ARN }}
+          # Issue #4527: engine command bridge (webhook-events table + its CMK +
+          # tenant App secrets for acks), resolved from SSM above. TF_VAR_* for the
+          # same reason as the queue: an empty tfvars pin would win over the
+          # injection and silently disable the bridge's IAM grants.
+          TF_VAR_orchestration_webhook_events_table: ${{ steps.bridge_pre.outputs.EVENTS_TABLE }}
+          TF_VAR_orchestration_webhook_events_kms_key_arn: ${{ steps.bridge_pre.outputs.EVENTS_KMS_ARN }}
+          TF_VAR_orchestration_github_app_secret_arn_pattern: ${{ steps.bridge_pre.outputs.APP_SECRET_PATTERN }}
           # Passed via env (not inlined into the script) to avoid shell injection
           # from the free-text workflow input. Empty = full plan (default).
           APPLY_TARGETS: ${{ inputs.apply_targets }}
