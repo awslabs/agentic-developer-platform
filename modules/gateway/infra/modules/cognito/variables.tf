@@ -44,6 +44,22 @@ variable "custom_domain" {
   default     = ""
 }
 
+variable "certificate_arn" {
+  type        = string
+  description = <<-EOT
+    ACM certificate ARN for a Cognito custom domain. Required by AWS whenever
+    custom_domain is a fully-qualified domain name; must live in us-east-1
+    regardless of the pool's region. Leave empty (the default) to keep using a
+    Cognito-prefix domain.
+
+    NOTE: switching an existing pool from a prefix domain to a custom domain
+    replaces aws_cognito_user_pool_domain, which briefly interrupts hosted-UI
+    authentication. AWS also requires the parent domain to have a resolvable
+    A record before it will accept the custom domain.
+  EOT
+  default     = ""
+}
+
 variable "access_token_validity" {
   type        = number
   description = "Access token validity in minutes"

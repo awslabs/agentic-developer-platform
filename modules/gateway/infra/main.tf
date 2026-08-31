@@ -653,6 +653,7 @@ module "cognito" {
     ["https://${module.cloudfront.distribution_domain_name}"]
   )
   custom_domain          = var.cognito_custom_domain
+  certificate_arn        = var.cognito_custom_domain_certificate_arn
   access_token_validity  = var.cognito_access_token_validity
   refresh_token_validity = var.cognito_refresh_token_validity
   id_token_validity      = var.cognito_id_token_validity
@@ -703,6 +704,43 @@ module "s3_cloudfront_logs" {
 # CloudFront Module for Frontend CDN
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# Broker origin for CloudFront (see enable_broker_cloudfront_route)
+# -----------------------------------------------------------------------------
+# Resolved from the published invoke URL rather than from module.api_gateway
+# outputs, which would create a dependency cycle:
+#
+#   cloudfront -> api_gateway (origin id/stage)
+#             api_gateway -> github_auth_broker (broker_lambda_invoke_arn)
+#                        github_auth_broker -> cloudfront (frontend_url)
+#
+# Terraform builds the graph from both branches of a ternary, so making
+# frontend_url conditional does not remove that last edge. Issue #2708 hit the
+# same cycle from the other direction and solved it the same way — by not
+# referencing across the loop.
+#
+# Reading a parameter this stack also writes is safe here because the data source
+# only exists when the flag is on, and the flag is a second pass by definition:
+# the route cannot be enabled until the API Gateway it points at exists. This is
+# the same shape as enable_vpc_origin, which likewise depends on a value from an
+# earlier apply.
+data "aws_ssm_parameter" "apigw_invoke_url_for_broker_origin" {
+  count = var.enable_broker_cloudfront_route ? 1 : 0
+
+  name = "/adp/${var.environment}/gateway/apigw-invoke-url"
+}
+
+locals {
+  # https://<id>.execute-api.<region>.amazonaws.com/<stage>
+  broker_origin_match = var.enable_broker_cloudfront_route ? regexall(
+    "https://([a-z0-9]+)\\.execute-api\\.[a-z0-9-]+\\.amazonaws\\.com/(.+)$",
+    nonsensitive(data.aws_ssm_parameter.apigw_invoke_url_for_broker_origin[0].value)
+  ) : []
+
+  broker_origin_domain_name = length(local.broker_origin_match) > 0 ? "${local.broker_origin_match[0][0]}.execute-api.${var.aws_region}.amazonaws.com" : ""
+  broker_origin_path        = length(local.broker_origin_match) > 0 ? "/${local.broker_origin_match[0][1]}" : ""
+}
+
 module "cloudfront" {
   source = "./modules/cloudfront"
 
@@ -713,8 +751,20 @@ module "cloudfront" {
   s3_bucket_id                   = module.frontend_s3.bucket_id
   custom_domain_name             = var.frontend_domain_name
   acm_certificate_arn            = var.frontend_acm_certificate_arn
-  waf_web_acl_arn                = ""
-  log_bucket_domain_name         = var.enable_cloudfront_logging ? module.s3_cloudfront_logs[0].bucket_domain_name : ""
+  additional_connect_src         = var.frontend_additional_connect_src
+
+  # Route /auth/github/* through the distribution to the broker, so the OAuth
+  # flow stays on the frontend hostname. Gated on its own variable rather than on
+  # enable_api_gateway: the origin is additive and inert until
+  # VITE_GITHUB_AUTH_BROKER_URL and the broker's CALLBACK_URL point at it, so
+  # enabling it should be a deliberate step rather than a side effect of having
+  # an API Gateway.
+  broker_origin_domain_name = local.broker_origin_domain_name
+  broker_origin_path        = local.broker_origin_path
+
+  waf_web_acl_arn        = var.cloudfront_waf_web_acl_arn
+  enable_ipv6            = var.cloudfront_enable_ipv6
+  log_bucket_domain_name = var.enable_cloudfront_logging ? module.s3_cloudfront_logs[0].bucket_domain_name : ""
   # ALB domain is set dynamically by backend-deploy workflow after Ingress ALB is created
   # Pass empty string here — CloudFront will only have the S3 origin initially
   alb_domain_name = ""
@@ -1042,6 +1092,11 @@ module "api_gateway" {
   count  = var.enable_api_gateway ? 1 : 0
   source = "./modules/api-gateway"
 
+  # EAA runbook 5.1 — per-path source restrictions at the API edge. Empty by
+  # default, in which case no resource policy is created at all.
+  agent_route_source_cidrs    = var.agent_route_source_cidrs
+  internal_route_source_cidrs = var.internal_route_source_cidrs
+
   environment = var.environment
   name_prefix = local.name_prefix
   common_tags = local.common_tags
@@ -1122,6 +1177,9 @@ module "lambda_authorizer" {
   # API Gateway Configuration
   api_gateway_id            = module.api_gateway[0].api_gateway_id
   api_gateway_execution_arn = module.api_gateway[0].api_gateway_execution_arn
+
+  # Optional source-IP allowlist for the JWT/browser path (empty = disabled)
+  ip_allowlist_ssm_parameter = var.authorizer_ip_allowlist_ssm_parameter
 
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
@@ -1322,6 +1380,24 @@ resource "aws_ssm_parameter" "cognito_domain" {
   tags = local.common_tags
 }
 
+# The user-facing origin of the platform: the custom domain when there is one,
+# otherwise the distribution's default hostname.
+#
+# Published because both callers of the backend deploy previously composed this
+# from `cloudfront-domain`, which is the wrong value once an alias exists — and
+# it is not a cosmetic wrongness. BG_GATEWAY_BASE_URL builds the GitHub App
+# Setup URL that the register flow *sends to GitHub*, and the magic-link URLs
+# that are sent to users. So a stale value propagates outside the deployment and
+# silently reverts an org-admin change to the App.
+resource "aws_ssm_parameter" "frontend_url" {
+  name        = "/adp/${var.environment}/gateway/frontend-url"
+  description = "User-facing origin of the platform (custom domain if set, else the CloudFront default). Consumed by the backend deploy for BG_GATEWAY_BASE_URL and CORS."
+  type        = "String"
+  value       = var.frontend_domain_name != "" ? "https://${var.frontend_domain_name}" : "https://${module.cloudfront.distribution_domain_name}"
+
+  tags = local.common_tags
+}
+
 resource "aws_ssm_parameter" "github_auth_broker_url" {
   count = var.enable_github_auth_broker ? 1 : 0
 
@@ -1329,7 +1405,14 @@ resource "aws_ssm_parameter" "github_auth_broker_url" {
   description = "GitHub auth broker API Gateway invoke URL"
   type        = "String"
   # Issue #1011: Append /auth/github so the frontend can construct /start and /callback
-  value = "${module.api_gateway[0].api_gateway_invoke_url}/auth/github"
+  #
+  # When the broker is served through CloudFront, this must be the distribution's
+  # hostname, not the API Gateway's. The frontend builds /start from this value,
+  # and the broker sets its OAuth state cookie on whatever host serves /start —
+  # so if this and the broker's CALLBACK_URL name different hosts, the callback
+  # never receives that cookie and every login fails `missing_state`. The two are
+  # a matched pair; this is the half the frontend sees.
+  value = var.enable_broker_cloudfront_route && var.frontend_domain_name != "" ? "https://${var.frontend_domain_name}/auth/github" : "${module.api_gateway[0].api_gateway_invoke_url}/auth/github"
 
   tags = local.common_tags
 }
@@ -1456,7 +1539,14 @@ module "github_auth_broker" {
   cognito_user_pool_arn   = module.cognito.cognito_user_pool_arn
   cognito_client_id       = module.cognito.cognito_user_pool_client_id
   github_oauth_secret_arn = data.aws_secretsmanager_secret.github_oauth_for_broker[0].arn
-  frontend_url            = "https://${module.cloudfront.distribution_domain_name}"
+  # The user-facing origin, which is the custom domain when there is one: the
+  # broker redirects the browser here after auth (FRONTEND_URL in
+  # lambda/github-auth-broker/handler.py). Pinned to the distribution's default
+  # domain, a deployment with an alias sends users who signed in at their own
+  # hostname back to the *.cloudfront.net one — a working login that visibly
+  # lands on the wrong URL, and a second origin for cookies and CSP to disagree
+  # about.
+  frontend_url            = var.frontend_domain_name != "" ? "https://${var.frontend_domain_name}" : "https://${module.cloudfront.distribution_domain_name}"
   allowlist_mode          = var.github_auth_allowlist_mode
   allowed_orgs            = var.github_auth_allowed_orgs
   allow_open_signup       = var.github_auth_allow_open_signup

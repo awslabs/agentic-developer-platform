@@ -1,4 +1,22 @@
 # Data sources
+locals {
+  # Base URL of the Cognito hosted UI, in whichever form this pool uses.
+  #
+  # aws_cognito_user_pool_domain.main.domain returns the PREFIX for a
+  # Cognito-hosted domain and the FQDN for a custom one, and only the first needs
+  # `.auth.<region>.amazoncognito.com` appended. A prefix is a single DNS label —
+  # alphanumeric and hyphens — so a dot distinguishes them exactly.
+  #
+  # Expressed once because it was previously inlined ten times across this module,
+  # and one of those ten writes the token endpoint that agents authenticate
+  # against (aws_secretsmanager_secret_version.agent_cognito_creds). A custom
+  # domain silently produced "<fqdn>.auth.<region>.amazoncognito.com" in all of
+  # them.
+  cognito_domain_is_custom = length(regexall("\\.", aws_cognito_user_pool_domain.main.domain)) > 0
+
+  hosted_ui_base = local.cognito_domain_is_custom ? "https://${aws_cognito_user_pool_domain.main.domain}" : "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com"
+}
+
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
@@ -256,6 +274,10 @@ resource "aws_cognito_user_pool_domain" "main" {
   # accounts don't collide. Override via var.custom_domain for a vanity domain.
   domain       = var.custom_domain != "" ? var.custom_domain : "${var.name_prefix}-auth-${substr(data.aws_caller_identity.current.account_id, 4, 8)}"
   user_pool_id = aws_cognito_user_pool.main.id
+
+  # Null unless an ACM certificate is supplied, so the prefix-domain form is
+  # unchanged for callers that don't set certificate_arn.
+  certificate_arn = var.certificate_arn != "" ? var.certificate_arn : null
 }
 
 # Cognito Identity Pool
@@ -513,7 +535,7 @@ resource "aws_secretsmanager_secret_version" "agent_cognito_creds" {
   secret_string = jsonencode({
     client_id      = aws_cognito_user_pool_client.agent.id
     client_secret  = aws_cognito_user_pool_client.agent.client_secret
-    token_endpoint = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/oauth2/token"
+    token_endpoint = "${local.hosted_ui_base}/oauth2/token"
     scope          = "${aws_cognito_resource_server.gateway.identifier}/invoke"
   })
 

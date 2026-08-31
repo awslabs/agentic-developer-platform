@@ -366,12 +366,19 @@ resource "aws_lambda_function" "authorizer" {
   }
 
   environment {
-    variables = {
-      COGNITO_USER_POOL_ID = var.cognito_user_pool_id
-      COGNITO_REGION       = var.aws_region
-      AGENT_REGISTRY_TABLE = aws_dynamodb_table.agent_registry.name
-      AUTHORIZER_CACHE_TTL = tostring(var.authorizer_cache_ttl)
-    }
+    # The allowlist key is merged in only when configured, so deployments that
+    # leave ip_allowlist_ssm_parameter empty see no change to this resource.
+    variables = merge(
+      {
+        COGNITO_USER_POOL_ID = var.cognito_user_pool_id
+        COGNITO_REGION       = var.aws_region
+        AGENT_REGISTRY_TABLE = aws_dynamodb_table.agent_registry.name
+        AUTHORIZER_CACHE_TTL = tostring(var.authorizer_cache_ttl)
+      },
+      var.ip_allowlist_ssm_parameter != "" ? {
+        IP_ALLOWLIST_SSM_PARAM = var.ip_allowlist_ssm_parameter
+      } : {}
+    )
   }
 
   tags = merge(var.common_tags, {
@@ -418,7 +425,9 @@ resource "aws_iam_role_policy" "authorizer" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    # concat with an empty list when unconfigured, so the rendered policy is
+    # unchanged for deployments that don't set ip_allowlist_ssm_parameter.
+    Statement = concat([
       # DynamoDB read access for agent registry (Issue #248: added Query for GSI)
       {
         Sid    = "DynamoDBReadAgentRegistry"
@@ -454,7 +463,16 @@ resource "aws_iam_role_policy" "authorizer" {
         ]
         Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.name_prefix}-api-authorizer:*"
       }
-    ]
+      ],
+      var.ip_allowlist_ssm_parameter != "" ? [
+        {
+          Sid      = "ReadIpAllowlistParameter"
+          Effect   = "Allow"
+          Action   = ["ssm:GetParameter"]
+          Resource = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${startswith(var.ip_allowlist_ssm_parameter, "/") ? "" : "/"}${var.ip_allowlist_ssm_parameter}"
+        }
+      ] : []
+    )
   })
 }
 

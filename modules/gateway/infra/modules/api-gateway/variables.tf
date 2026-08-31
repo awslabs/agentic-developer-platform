@@ -211,3 +211,34 @@ variable "cloudwatch_kms_key_arn" {
   type        = string
   default     = ""
 }
+
+# -----------------------------------------------------------------------------
+# Edge authorisation (resource policy)
+# -----------------------------------------------------------------------------
+# Both default to empty, which creates no resource policy at all — unchanged
+# behaviour. Populate them to restrict at the API Gateway edge; the IAM
+# authorization on /agent/* and the internal API key on /internal/* remain the
+# primary controls either way.
+#
+# These take CIDRs, not VPC endpoint ids. `aws:SourceVpce` looks like the natural
+# key for "only callers inside the VPC" and is not available: it requires an
+# execute-api interface endpoint, which serves only PRIVATE-type APIs and, with
+# private DNS on, breaks in-VPC calls to REGIONAL ones. On a REGIONAL API an
+# in-VPC caller egresses to the public endpoint and presents its NAT address.
+#
+# Deliberately NOT applied to /auth/github/* or /{proxy+}. The OAuth routes are
+# reached through CloudFront, whose edge addresses are neither a browser's nor the
+# NAT's and cannot be expressed here — API Gateway resource policies do not
+# support managed prefix lists.
+
+variable "agent_route_source_cidrs" {
+  type        = list(string)
+  description = "CIDRs permitted to call /agent and /agent/* — normally the NAT EIPs the VPC egresses from, since agent workers reach this REGIONAL API over the internet. Empty (default) means no source restriction."
+  default     = []
+}
+
+variable "internal_route_source_cidrs" {
+  type        = list(string)
+  description = "CIDRs permitted to call /internal/* — normally the NAT EIPs. This is the busiest path on the API (the webhook Lambda's identity resolution), so a stale value here fails agent invocation at the resolve step, which presents as a GitHub or tenant problem rather than a networking one."
+  default     = []
+}

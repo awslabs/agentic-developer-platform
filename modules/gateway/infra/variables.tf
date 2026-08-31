@@ -172,6 +172,12 @@ variable "cognito_custom_domain" {
   default     = ""
 }
 
+variable "cognito_custom_domain_certificate_arn" {
+  type        = string
+  description = "ACM certificate ARN (us-east-1) for the Cognito custom domain. Required when cognito_custom_domain is an FQDN; empty by default."
+  default     = ""
+}
+
 variable "cognito_access_token_validity" {
   type        = number
   description = "Access token validity in minutes (default: 60 = 1 hour)"
@@ -276,6 +282,24 @@ variable "frontend_acm_certificate_arn" {
   type        = string
   description = "ACM certificate ARN for custom domain (required if frontend_domain_name is set)"
   default     = ""
+}
+
+variable "cloudfront_waf_web_acl_arn" {
+  type        = string
+  description = "ARN of a WAFv2 web ACL (scope CLOUDFRONT, created in us-east-1) to associate with the frontend distribution. Empty string (the default) leaves the distribution unassociated, which is the prior behaviour."
+  default     = ""
+}
+
+variable "enable_broker_cloudfront_route" {
+  type        = bool
+  description = "Serve the GitHub auth broker through CloudFront at /auth/github/* instead of sending the browser to the API Gateway hostname. Additive and inert until VITE_GITHUB_AUTH_BROKER_URL and the broker's CALLBACK_URL are repointed at the distribution, so it can be enabled ahead of the cutover. Requires enable_api_gateway."
+  default     = false
+}
+
+variable "frontend_additional_connect_src" {
+  type        = list(string)
+  description = "Extra CSP connect-src sources for the CloudFront response headers policy, e.g. [\"wss://ws.example.com\"] when the agent WebSocket API is fronted by a custom domain. The directive's `https:` source does not cover `wss:`, so without this the browser blocks the chat WebSocket with a console-only CSP error and no Network-tab entry. Empty (default) leaves the policy unchanged."
+  default     = []
 }
 
 variable "enable_frontend_waf" {
@@ -610,6 +634,18 @@ variable "alb_arn_suffix" {
 # API Gateway Configuration (Issue #236)
 # =============================================================================
 
+variable "agent_route_source_cidrs" {
+  type        = list(string)
+  description = "CIDRs permitted to call the gateway API's /agent and /agent/* routes — normally the NAT EIPs, since agent workers reach this REGIONAL API over the internet. Empty (default) creates no resource policy. See docs/security/eaa-deployment-runbook.md 5.1."
+  default     = []
+}
+
+variable "internal_route_source_cidrs" {
+  type        = list(string)
+  description = "CIDRs permitted to call the gateway API's /internal/* routes — normally the NAT EIPs. Busiest path on the API; a stale value fails agent invocation at identity resolution, which looks like a GitHub or tenant fault. Empty (default) creates no resource policy."
+  default     = []
+}
+
 variable "enable_api_gateway" {
   type        = bool
   description = "Enable API Gateway REST API as alternate route to ALB (with streaming support)"
@@ -632,6 +668,12 @@ variable "api_gateway_log_retention_days" {
   type        = number
   description = "CloudWatch log retention in days for API Gateway access logs"
   default     = 30
+}
+
+variable "authorizer_ip_allowlist_ssm_parameter" {
+  type        = string
+  description = "SSM String parameter name holding a comma-separated CIDR allowlist for the API authorizer's JWT/browser path. Empty by default (no restriction)."
+  default     = ""
 }
 
 # =============================================================================
@@ -679,4 +721,10 @@ variable "create_test_users" {
   type        = bool
   description = "Create Cognito test users (admins group, test user, test admin) with Secrets Manager credentials. For dev/test only — never enable in production."
   default     = false
+}
+
+variable "cloudfront_enable_ipv6" {
+  description = "Publish AAAA records for the frontend distribution. Set false when an IPv4-only tunnel (e.g. a ZTNA client) fronts the distribution and its web ACL allowlists IPv4 addresses only — otherwise IPv6 clients bypass the tunnel and are blocked by the ACL's default action. Default true preserves prior behaviour."
+  type        = bool
+  default     = true
 }

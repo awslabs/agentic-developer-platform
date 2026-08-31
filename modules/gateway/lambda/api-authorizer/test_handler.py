@@ -10,6 +10,7 @@ import sys
 from unittest import mock
 
 import pytest
+from botocore.exceptions import ClientError
 
 # Set environment variables before importing handler
 os.environ["COGNITO_USER_POOL_ID"] = "us-east-1_TestPool"
@@ -19,12 +20,14 @@ os.environ["AGENT_REGISTRY_TABLE"] = "test-agent-registry"
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
 
+import handler  # noqa: E402
 from handler import (  # noqa: E402
     extract_bearer_token,
     generate_policy,
     lambda_handler,
     lookup_agent_in_registry,
     parse_role_arn_from_user_arn,
+    source_ip_allowed,
 )
 
 # =============================================================================
@@ -449,6 +452,152 @@ def test_handler_jwt_defaults_for_missing_claims(api_gateway_event):
         assert result["context"]["X-Agent-OrgId"] == "default"
         assert result["context"]["X-Agent-TeamId"] == ""
         assert result["context"]["X-Agent-AccountType"] == "user"
+
+
+# =============================================================================
+# Test: source_ip_allowed / optional IP allowlist
+# =============================================================================
+
+
+@pytest.fixture
+def ip_allowlist(monkeypatch):
+    """
+    Configure the optional IP allowlist and reset its cache.
+
+    Yields a setter taking the allowlist string as SSM would return it; the
+    cache is cleared before and after so tests don't leak state into each other.
+    """
+
+    def _configure(value: str | None):
+        handler._ip_allowlist_cache = None
+        handler._ip_allowlist_cached_at = 0.0
+        if value is None:
+            monkeypatch.setattr(handler, "IP_ALLOWLIST_SSM_PARAM", "")
+            return None
+        monkeypatch.setattr(handler, "IP_ALLOWLIST_SSM_PARAM", "/adp/test/ws-ip-allowlist")
+        fake_ssm = mock.Mock()
+        fake_ssm.get_parameter.return_value = {"Parameter": {"Value": value}}
+        monkeypatch.setattr(handler, "get_ssm_client", lambda: fake_ssm)
+        return fake_ssm
+
+    yield _configure
+    handler._ip_allowlist_cache = None
+    handler._ip_allowlist_cached_at = 0.0
+
+
+def _event_from(event, source_ip):
+    event["requestContext"]["identity"]["sourceIp"] = source_ip
+    return event
+
+
+def test_source_ip_allowed_when_not_configured(api_gateway_event, ip_allowlist):
+    """No allowlist parameter configured means every source IP is allowed."""
+    ip_allowlist(None)
+    assert source_ip_allowed(_event_from(api_gateway_event, "203.0.113.9")) is True
+
+
+def test_source_ip_allowed_in_range(api_gateway_event, ip_allowlist):
+    """An address inside a configured CIDR is allowed."""
+    ip_allowlist("52.3.162.184/32,10.0.0.0/8")
+    assert source_ip_allowed(_event_from(api_gateway_event, "52.3.162.184")) is True
+
+
+def test_source_ip_denied_out_of_range(api_gateway_event, ip_allowlist):
+    """An address outside every configured CIDR is denied."""
+    ip_allowlist("52.3.162.184/32")
+    assert source_ip_allowed(_event_from(api_gateway_event, "203.0.113.9")) is False
+
+
+def test_source_ip_denied_when_missing(api_gateway_event, ip_allowlist):
+    """A configured allowlist with no sourceIp in the event fails closed."""
+    ip_allowlist("52.3.162.184/32")
+    assert source_ip_allowed(api_gateway_event) is False
+
+
+def test_source_ip_allowed_when_ssm_unreadable(api_gateway_event, ip_allowlist, monkeypatch):
+    """
+    An unreadable parameter is treated as unconfigured, not as deny-all.
+
+    This is the property that makes the change safe to adopt without the
+    matching IAM grant: taking the code alone must not break authorization.
+    """
+    ip_allowlist("52.3.162.184/32")
+    failing = mock.Mock()
+    failing.get_parameter.side_effect = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "denied"}}, "GetParameter")
+    monkeypatch.setattr(handler, "get_ssm_client", lambda: failing)
+    handler._ip_allowlist_cache = None
+    handler._ip_allowlist_cached_at = 0.0
+
+    assert source_ip_allowed(_event_from(api_gateway_event, "203.0.113.9")) is True
+
+
+def test_handler_jwt_denied_from_disallowed_ip(api_gateway_event, valid_jwt_claims, ip_allowlist):
+    """A valid JWT from outside the allowlist is denied."""
+    ip_allowlist("52.3.162.184/32")
+    api_gateway_event["headers"]["Authorization"] = "Bearer valid-token"
+    _event_from(api_gateway_event, "203.0.113.9")
+
+    with mock.patch("handler.validate_jwt") as mock_validate:
+        mock_validate.return_value = valid_jwt_claims
+        result = lambda_handler(api_gateway_event, None)
+
+    assert result["policyDocument"]["Statement"][0]["Effect"] == "Deny"
+
+
+def test_handler_jwt_allowed_from_allowed_ip(api_gateway_event, valid_jwt_claims, ip_allowlist):
+    """A valid JWT from inside the allowlist still succeeds."""
+    ip_allowlist("52.3.162.184/32")
+    api_gateway_event["headers"]["Authorization"] = "Bearer valid-token"
+    _event_from(api_gateway_event, "52.3.162.184")
+
+    with mock.patch("handler.validate_jwt") as mock_validate:
+        mock_validate.return_value = valid_jwt_claims
+        result = lambda_handler(api_gateway_event, None)
+
+    assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+
+
+def test_handler_iam_path_ignores_ip_allowlist(api_gateway_event, ip_allowlist):
+    """
+    The IAM branch is never subject to the allowlist.
+
+    Agents and in-cluster callers arrive from a VPC endpoint or NAT address,
+    never a corporate egress IP, so a blanket check would break them. This is
+    the regression guard for that scoping decision.
+
+    The registry lookup is mocked rather than using the moto fixture so this
+    asserts only the scoping property.
+    """
+    ip_allowlist("52.3.162.184/32")
+    api_gateway_event["requestContext"]["identity"]["userArn"] = "arn:aws:sts::123456789012:assumed-role/test-agent-role/session"
+    _event_from(api_gateway_event, "10.0.42.7")
+
+    with mock.patch("handler.lookup_agent_in_registry") as mock_lookup:
+        mock_lookup.return_value = {
+            "agent_id": {"S": "test-agent"},
+            "enabled": {"BOOL": True},
+            "org_id": {"S": "test-org"},
+        }
+        result = lambda_handler(api_gateway_event, None)
+
+    assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+    assert result["context"]["X-Auth-Source"] == "iam"
+
+
+def test_handler_iam_path_does_not_read_allowlist(api_gateway_event, ip_allowlist, monkeypatch):
+    """The allowlist is not even consulted on the IAM branch."""
+    ip_allowlist("52.3.162.184/32")
+    api_gateway_event["requestContext"]["identity"]["userArn"] = "arn:aws:sts::123456789012:assumed-role/test-agent-role/session"
+    _event_from(api_gateway_event, "10.0.42.7")
+
+    spy = mock.Mock(return_value=False)
+    monkeypatch.setattr(handler, "source_ip_allowed", spy)
+
+    with mock.patch("handler.lookup_agent_in_registry") as mock_lookup:
+        mock_lookup.return_value = {"agent_id": {"S": "a"}, "enabled": {"BOOL": True}}
+        lambda_handler(api_gateway_event, None)
+
+    spy.assert_not_called()
 
 
 if __name__ == "__main__":

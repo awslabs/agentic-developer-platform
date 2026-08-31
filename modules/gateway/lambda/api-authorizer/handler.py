@@ -17,10 +17,12 @@
 # - X-Agent-AllowedModels: comma-separated list of allowed models
 # =============================================================================
 
+import ipaddress
 import json
 import logging
 import os
 import re
+import time
 from typing import Any
 from urllib.error import URLError
 
@@ -37,8 +39,17 @@ COGNITO_REGION = os.environ.get("COGNITO_REGION", "us-east-1")
 AGENT_REGISTRY_TABLE = os.environ.get("AGENT_REGISTRY_TABLE", "")
 AUTHORIZER_CACHE_TTL = int(os.environ.get("AUTHORIZER_CACHE_TTL", "300"))
 
+# Optional SSM parameter holding a comma-separated CIDR allowlist for the
+# JWT/browser path. Unset (the default) disables the check entirely.
+IP_ALLOWLIST_SSM_PARAM = os.environ.get("IP_ALLOWLIST_SSM_PARAM", "")
+
 # DynamoDB client
 _dynamodb_client = None
+
+# SSM client + allowlist cache (see _load_ip_allowlist)
+_ssm_client = None
+_ip_allowlist_cache: list[Any] | None = None
+_ip_allowlist_cached_at = 0.0
 
 
 def get_dynamodb_client() -> "boto3.client":
@@ -195,6 +206,87 @@ def lookup_agent_in_registry(role_arn: str) -> dict[str, Any] | None:
         return None
 
 
+def get_ssm_client() -> "boto3.client":
+    """Get or create SSM client."""
+    global _ssm_client
+    if _ssm_client is None:
+        _ssm_client = boto3.client("ssm", region_name=COGNITO_REGION)
+    return _ssm_client
+
+
+def _load_ip_allowlist() -> list[Any] | None:
+    """
+    Load the optional source-IP allowlist from SSM.
+
+    Returns a list of ip_network objects, or None when no allowlist applies.
+
+    Fail direction is deliberate and asymmetric:
+
+    - **Unconfigured means allow.** If IP_ALLOWLIST_SSM_PARAM is unset, or the
+      parameter does not exist, or the role lacks ssm:GetParameter, we return
+      None and the caller skips the check. An operator who takes this code
+      without the matching IAM/parameter changes therefore sees no behaviour
+      change, rather than a total authorization outage.
+    - **Configured means keep enforcing.** Once a list has been read
+      successfully it is cached and reused if a later read fails, so a transient
+      SSM error cannot silently switch the control off.
+
+    Cached for AUTHORIZER_CACHE_TTL so allowlist edits take effect without a
+    redeploy.
+    """
+    global _ip_allowlist_cache, _ip_allowlist_cached_at
+
+    if not IP_ALLOWLIST_SSM_PARAM:
+        return None
+
+    now = time.monotonic()
+    if _ip_allowlist_cache is not None and (now - _ip_allowlist_cached_at) < AUTHORIZER_CACHE_TTL:
+        return _ip_allowlist_cache
+
+    try:
+        response = get_ssm_client().get_parameter(Name=IP_ALLOWLIST_SSM_PARAM)
+        raw = response["Parameter"]["Value"]
+        networks = [ipaddress.ip_network(entry.strip(), strict=False) for entry in raw.split(",") if entry.strip()]
+        _ip_allowlist_cache = networks or None
+        _ip_allowlist_cached_at = now
+        return _ip_allowlist_cache
+    except (ClientError, ValueError, KeyError) as e:
+        # Stale value if we have one, otherwise treat as unconfigured.
+        logger.warning(
+            "Could not read IP allowlist %s (%s) - %s",
+            IP_ALLOWLIST_SSM_PARAM,
+            e,
+            "reusing cached value" if _ip_allowlist_cache else "treating as unconfigured",
+        )
+        return _ip_allowlist_cache
+
+
+def source_ip_allowed(event: dict[str, Any]) -> bool:
+    """
+    Check the request's source IP against the optional allowlist.
+
+    Returns True when no allowlist is configured. When one is configured, a
+    missing or unparseable source IP is denied — if we cannot tell where a
+    request came from, we cannot honour the allowlist.
+    """
+    networks = _load_ip_allowlist()
+    if networks is None:
+        return True
+
+    source_ip = ((event.get("requestContext") or {}).get("identity") or {}).get("sourceIp", "")
+    if not source_ip:
+        logger.warning("IP allowlist configured but request has no sourceIp - denying")
+        return False
+
+    try:
+        address = ipaddress.ip_address(source_ip)
+    except ValueError:
+        logger.warning("Unparseable sourceIp - denying")
+        return False
+
+    return any(address in network for network in networks)
+
+
 def generate_policy(
     principal_id: str,
     effect: str,
@@ -278,6 +370,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # Check for Bearer token first
     token = extract_bearer_token(auth_header)
     if token:
+        # Optional network allowlist, scoped to this branch on purpose. The IAM
+        # branch below serves agents and in-cluster callers whose source address
+        # is a VPC endpoint or NAT gateway, never a corporate egress IP, so a
+        # blanket check here would break them.
+        if not source_ip_allowed(event):
+            logger.warning("JWT request from disallowed source IP - denying")
+            return generate_policy(
+                principal_id="unauthorized",
+                effect="Deny",
+                resource=method_arn,
+            )
+
         # JWT Authentication
         claims = validate_jwt(token)
         if claims:

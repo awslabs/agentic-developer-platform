@@ -889,6 +889,20 @@ else
   COGNITO_CLIENT_ID=$(terraform output -raw cognito_user_pool_client_id 2>/dev/null || echo "")
   COGNITO_DOMAIN=$(terraform output -raw cognito_domain 2>/dev/null || echo "")
   CF_DOMAIN=$(terraform output -raw frontend_cloudfront_domain_name 2>/dev/null || echo "")
+  # The user-facing origin. Published by gateway-infra as the custom domain when
+  # one is configured; falls back to the distribution default so this is a no-op
+  # for deployments without an alias. Used for BG_GATEWAY_BASE_URL — which builds
+  # the GitHub App Setup URL sent to GitHub and the magic links sent to users —
+  # and for CORS.
+  FRONTEND_URL=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-url" \
+    --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  [ -n "$FRONTEND_URL" ] && [ "$FRONTEND_URL" != "None" ] || FRONTEND_URL="https://${CF_DOMAIN}"
+  # Keep the distribution default in CORS while both hostnames serve the app.
+  if [ "$FRONTEND_URL" = "https://${CF_DOMAIN}" ]; then
+    CORS_ORIGINS="${FRONTEND_URL},http://localhost:5173"
+  else
+    CORS_ORIGINS="${FRONTEND_URL},https://${CF_DOMAIN},http://localhost:5173"
+  fi
   AGENT_REGISTRY_TABLE=$(terraform output -raw agent_registry_table_name 2>/dev/null || echo "")
   # Gateway IRSA role ARN lives in the platform layer; read it from IAM rather
   # than cross-layer terraform_remote_state. Deterministic given name_prefix.
@@ -1001,8 +1015,8 @@ else
       -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
       -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
       -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
-      -e "s|__CORS_ALLOWED_ORIGINS__|https://${CF_DOMAIN},http://localhost:5173|g" \
-      -e "s|__GATEWAY_BASE_URL__|https://${CF_DOMAIN}|g" \
+      -e "s|__CORS_ALLOWED_ORIGINS__|${CORS_ORIGINS}|g" \
+      -e "s|__GATEWAY_BASE_URL__|${FRONTEND_URL}|g" \
       -e "s|__CFN_TEMPLATE_BUCKET__|${CFN_TEMPLATE_BUCKET}|g" \
       -e "s|__GATEWAY_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
       -e "s|__CHAT_LOGGING_ENABLED__|${CHAT_LOGGING_ENABLED}|g" \

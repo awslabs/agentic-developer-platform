@@ -118,3 +118,9 @@ variable "enable_reserved_concurrency" {
   type        = bool
   default     = true
 }
+
+variable "ip_allowlist_ssm_parameter" {
+  description = "Name of an SSM String parameter holding a comma-separated CIDR allowlist applied to the authorizer's JWT/browser path. Empty (the default) omits the environment variable and the IAM grant, leaving behaviour unchanged. The IAM branch (agents, in-cluster callers) is never subject to this check."
+  type        = string
+  default     = ""
+}

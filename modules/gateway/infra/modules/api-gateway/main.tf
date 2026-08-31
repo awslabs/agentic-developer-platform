@@ -415,14 +415,100 @@ resource "aws_cloudwatch_log_group" "api_gateway" {
 }
 
 # =============================================================================
+# API Gateway Resource Policy — per-path source restrictions
+# =============================================================================
+# Created only when at least one CIDR list is populated, so a deployment that
+# sets neither has no resource policy and behaves exactly as before.
+#
+# Shape: one blanket Allow, then scoped explicit Denies. Not a narrowed Allow —
+# an explicit Deny always wins, so the restriction cannot be nullified by a
+# broader Allow appearing later in the same policy. Same construction as the
+# webhook API's policy.
+#
+# The Denies are per-path on purpose. `/auth/github/*` is excluded because
+# CloudFront proxies it here from edge addresses, which are neither a browser's
+# nor the NAT's and cannot be expressed in a resource policy — API Gateway does
+# not support managed prefix lists. Its EAA restriction is applied by the
+# CloudFront web ACL instead. `/{proxy+}` and `/status` are excluded because
+# their callers are not enumerated; restricting them is a separate decision.
+#
+# `/agent` is listed as well as `/agent/*`: the sigv4 proxy target is
+# <invoke_url>/agent with no trailing segment, so a policy covering only
+# /agent/* would miss the calls that matter most.
+
+locals {
+  api_policy_enabled = length(var.agent_route_source_cidrs) > 0 || length(var.internal_route_source_cidrs) > 0
+
+  api_policy_statements = concat(
+    [
+      {
+        Sid       = "AllowInvokeByDefault"
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "execute-api:Invoke"
+        Resource  = "${aws_api_gateway_rest_api.main.execution_arn}/*"
+      }
+    ],
+    length(var.agent_route_source_cidrs) > 0 ? [
+      {
+        Sid       = "DenyAgentRoutesOutsideAllowedSources"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "execute-api:Invoke"
+        Resource = [
+          "${aws_api_gateway_rest_api.main.execution_arn}/*/*/agent",
+          "${aws_api_gateway_rest_api.main.execution_arn}/*/*/agent/*",
+        ]
+        Condition = {
+          NotIpAddress = { "aws:SourceIp" = var.agent_route_source_cidrs }
+        }
+      }
+    ] : [],
+    length(var.internal_route_source_cidrs) > 0 ? [
+      {
+        Sid       = "DenyInternalRoutesOutsideAllowedSources"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "execute-api:Invoke"
+        Resource  = "${aws_api_gateway_rest_api.main.execution_arn}/*/*/internal/*"
+        Condition = {
+          NotIpAddress = { "aws:SourceIp" = var.internal_route_source_cidrs }
+        }
+      }
+    ] : [],
+  )
+}
+
+resource "aws_api_gateway_rest_api_policy" "main" {
+  count = local.api_policy_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.main.id
+
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = local.api_policy_statements
+  })
+}
+
+# =============================================================================
 # API Gateway Deployment
 # =============================================================================
 
 resource "aws_api_gateway_deployment" "main" {
   rest_api_id = aws_api_gateway_rest_api.main.id
 
+  # The policy is part of the trigger deliberately. A resource-policy change does
+  # not take effect until the stage is redeployed, and without it here the apply
+  # succeeds, the plan looks right, and nothing is actually restricted — the
+  # failure mode the runbook flags for the console revert path.
   triggers = {
-    redeployment = sha1(jsonencode(coalesce(aws_api_gateway_rest_api.main.body, "initial")))
+    # jsonencode the statements to a string before the conditional: a ternary
+    # requires both branches to unify, and a populated tuple will not unify with
+    # an empty one. Two strings always do.
+    redeployment = sha1(jsonencode([
+      coalesce(aws_api_gateway_rest_api.main.body, "initial"),
+      local.api_policy_enabled ? jsonencode(local.api_policy_statements) : "",
+    ]))
   }
 
   lifecycle {

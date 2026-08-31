@@ -186,6 +186,19 @@ jobs:
           COGNITO_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")
           COGNITO_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-domain")
           CF_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cloudfront-domain")
+          # User-facing origin: the custom domain when gateway-infra published one,
+          # else the distribution default. Feeds BG_GATEWAY_BASE_URL, which builds
+          # the GitHub App Setup URL sent to GitHub and the magic links sent to
+          # users — so a stale value leaves the deployment and reverts an
+          # org-admin change to the App.
+          FRONTEND_URL=$(get_ssm "/adp/${ENVIRONMENT}/gateway/frontend-url")
+          [ -n "$FRONTEND_URL" ] || FRONTEND_URL="https://${CF_DOMAIN}"
+          # Keep the distribution default in CORS while both hostnames serve the app.
+          if [ "$FRONTEND_URL" = "https://${CF_DOMAIN}" ]; then
+            CORS_ORIGINS="${FRONTEND_URL},http://localhost:5173"
+          else
+            CORS_ORIGINS="${FRONTEND_URL},https://${CF_DOMAIN},http://localhost:5173"
+          fi
           AGENT_REGISTRY_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agent-registry-table")
           CHAT_LOGS_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-logs-bucket")
           FRONTEND_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/frontend-bucket")
@@ -256,8 +269,8 @@ jobs:
               -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
               -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
               -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
-              -e "s|__CORS_ALLOWED_ORIGINS__|https://${CF_DOMAIN},http://localhost:5173|g" \
-              -e "s|__GATEWAY_BASE_URL__|https://${CF_DOMAIN}|g" \
+              -e "s|__CORS_ALLOWED_ORIGINS__|${CORS_ORIGINS}|g" \
+              -e "s|__GATEWAY_BASE_URL__|${FRONTEND_URL}|g" \
               -e "s|__CFN_TEMPLATE_BUCKET__|${FRONTEND_BUCKET}|g" \
               -e "s|__GATEWAY_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
               -e "s|__CHAT_LOGGING_ENABLED__|$([ -n "$CHAT_LOGS_BUCKET" ] && echo true || echo false)|g" \
