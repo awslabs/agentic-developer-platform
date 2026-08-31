@@ -21,6 +21,10 @@ on:
         required: false
         type: boolean
         default: false
+      plan_issue_ref:
+        description: 'Issue number to bind a scratch running plan to in the target org (empty = skip plan seeding)'
+        required: false
+        default: ''
 
 env:
   AWS_REGION: us-east-1
@@ -33,6 +37,8 @@ env:
   GH_LOGIN: PranavSharma1000
   SEED_USER_ID: 1fb07e6f-8108-41a2-964d-5f76d63895fe
   SEED_IDENTITY_ID: 58250791-8973-47ce-a97f-583c1b3252e0
+  SEED_FLOW_ID: c0febcf7-b448-48c3-a4e7-f7f04156bea8
+  SEED_NODE_ID: 2ae2310d-d678-4d00-bca5-d3708de02186
 
 jobs:
   run:
@@ -104,3 +110,36 @@ jobs:
           SQL
           echo "=== verify ==="
           psql -c "SELECT id, org_id, user_id, team_id FROM user_identities WHERE provider='github' AND provider_user_id='${GH_USER_ID}' AND org_id='${ORG_ID}';"
+
+      # A `halt` is flow-scoped and only moves nodes in running/awaiting_gate
+      # (engine_commands._HALTABLE_STATES), and the command's flow is resolved by
+      # the commented issue's number — so the smoke needs one RUNNING story node
+      # in the target org bound to the scratch issue. Freshly seeded, it sits far
+      # below the stall threshold (hours, derived from the pod deadline).
+      - name: Seed scratch plan bound to issue
+        if: inputs.do_seed == true && inputs.plan_issue_ref != ''
+        run: |
+          set -euo pipefail
+          if [[ ! "${{ inputs.plan_issue_ref }}" =~ ^[0-9]+$ ]]; then
+            echo "::error::plan_issue_ref must be a positive integer"
+            exit 1
+          fi
+          ISSUE_REF='${{ inputs.plan_issue_ref }}'
+          psql -v ON_ERROR_STOP=1 <<SQL
+          INSERT INTO orchestration_flows (id, org_id, slug, title, intent_ref, state, created_at)
+          VALUES ('${SEED_FLOW_ID}', '${ORG_ID}', 'bridge-smoke-4527',
+                  'Engine bridge smoke (#4527)', NULL, 'pending', now())
+          ON CONFLICT (id) DO NOTHING;
+
+          INSERT INTO orchestration_nodes (id, org_id, flow_id, epic_ref, wave_ref, node_ref,
+                  kind, state, title, issue_ref, attempts, created_at)
+          VALUES ('${SEED_NODE_ID}', '${ORG_ID}', '${SEED_FLOW_ID}', 'e1', 'w1', 'n1',
+                  'story', 'running', 'Bridge smoke story', '${ISSUE_REF}', 0, now())
+          ON CONFLICT (id) DO NOTHING;
+
+          -- Re-arm on re-dispatch: a prior smoke may have left the node halted.
+          UPDATE orchestration_nodes SET state='running', issue_ref='${ISSUE_REF}', updated_at=now()
+          WHERE id='${SEED_NODE_ID}';
+          SQL
+          echo "=== verify plan ==="
+          psql -c "SELECT id, org_id, kind, state, issue_ref FROM orchestration_nodes WHERE flow_id='${SEED_FLOW_ID}';"
