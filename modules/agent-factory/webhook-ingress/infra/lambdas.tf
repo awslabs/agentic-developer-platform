@@ -17,6 +17,49 @@ data "aws_s3_object" "github_lambda_zip" {
   key    = "lambda-artifacts/webhook-ingress/github.zip"
 }
 
+# -----------------------------------------------------------------------------
+# VPC attachment source (see variables.tf)
+# -----------------------------------------------------------------------------
+# The subnet and security-group ids can come from either the variables or SSM.
+# SSM is the default because this module is applied from more than one place —
+# deploy-webhook-ingress.sh passes only -var overrides, and
+# webhook-ingress-deploy.yml passes only this directory's terraform.tfvars — so a
+# value that lives in a per-environment tfvars file is read by some callers and
+# silently ignored by others. A Lambda that quietly leaves the VPC on the next
+# unrelated CI apply is a bad failure: it keeps working until whatever restricted
+# the gateway API starts rejecting it.
+#
+# Same reasoning as Issue #575 for gateway_api_url and internal_api_key_arn,
+# which resolve from SSM at apply time for exactly this reason.
+#
+# aws_ssm_parameters_by_path returns an empty result rather than erroring when
+# the path holds nothing, so deployments that never create these parameters are
+# unaffected — no count guard or try() needed.
+data "aws_ssm_parameters_by_path" "webhook_lambda_vpc_config" {
+  path = "/adp/${var.environment}/webhook-ingress/vpc-config/"
+}
+
+locals {
+  # nonsensitive() because the provider marks SSM values sensitive as a class.
+  # Subnet and security-group ids are not secrets, and leaving them marked
+  # redacts the whole vpc_config block in every plan — hiding the one thing a
+  # reviewer of this change needs to see.
+  ssm_vpc_config = zipmap(
+    [for name in data.aws_ssm_parameters_by_path.webhook_lambda_vpc_config.names : basename(name)],
+    nonsensitive(data.aws_ssm_parameters_by_path.webhook_lambda_vpc_config.values)
+  )
+
+  # Explicit variables win, so an operator can override or force-detach without
+  # touching SSM.
+  webhook_lambda_subnet_ids = length(var.webhook_lambda_subnet_ids) > 0 ? var.webhook_lambda_subnet_ids : (
+    contains(keys(local.ssm_vpc_config), "subnet-ids") ? split(",", local.ssm_vpc_config["subnet-ids"]) : []
+  )
+
+  webhook_lambda_security_group_ids = length(var.webhook_lambda_security_group_ids) > 0 ? var.webhook_lambda_security_group_ids : (
+    contains(keys(local.ssm_vpc_config), "security-group-ids") ? split(",", local.ssm_vpc_config["security-group-ids"]) : []
+  )
+}
+
 resource "aws_lambda_function" "github_webhook" {
   function_name                  = "${local.name_prefix}-github-webhook"
   description                    = "GitHub webhook ingress - validates and queues events"
@@ -33,6 +76,17 @@ resource "aws_lambda_function" "github_webhook" {
 
   tracing_config {
     mode = "Active"
+  }
+
+  # Optional VPC attachment. Omitted entirely when no subnets are given, so the
+  # default remains a non-VPC Lambda rather than one attached to an empty subnet
+  # list (which would fail).
+  dynamic "vpc_config" {
+    for_each = length(local.webhook_lambda_subnet_ids) > 0 ? [1] : []
+    content {
+      subnet_ids         = local.webhook_lambda_subnet_ids
+      security_group_ids = local.webhook_lambda_security_group_ids
+    }
   }
 
   environment {
@@ -90,6 +144,17 @@ resource "aws_lambda_function" "github_webhook" {
   # code publisher (no full TF apply needed for a code-only change); its
   # updates are idempotent with Terraform's view because they write to the
   # same S3 source.
+
+  # Checked here rather than as a variable validation: cross-variable validation
+  # needs Terraform >= 1.9 and this module declares >= 1.5. Subnets without
+  # security groups is the failure worth catching early — AWS rejects it, but
+  # only after the plan has been approved.
+  lifecycle {
+    precondition {
+      condition     = length(local.webhook_lambda_subnet_ids) == 0 || length(local.webhook_lambda_security_group_ids) > 0
+      error_message = "Security groups must be set when subnets are: set webhook_lambda_security_group_ids, or publish security-group-ids under /adp/<env>/webhook-ingress/vpc-config/."
+    }
+  }
 
   depends_on = [aws_cloudwatch_log_group.lambda]
 }

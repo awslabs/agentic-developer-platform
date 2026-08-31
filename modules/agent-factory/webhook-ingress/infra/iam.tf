@@ -28,6 +28,16 @@ resource "aws_iam_role_policy_attachment" "lambda_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# ENI management, only when the Lambda is VPC-attached. Without this the
+# function is created but every invocation fails to initialise, because Lambda
+# cannot create the ENI it needs — a failure that looks like a code problem in
+# the logs, not a permissions one.
+resource "aws_iam_role_policy_attachment" "lambda_vpc_access" {
+  count      = length(local.webhook_lambda_subnet_ids) > 0 ? 1 : 0
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 # SQS SendMessage
 resource "aws_iam_policy" "lambda_sqs" {
   name        = "${local.name_prefix}-webhook-lambda-sqs"

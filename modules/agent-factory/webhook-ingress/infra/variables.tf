@@ -355,3 +355,59 @@ variable "enable_adversarial_e2e" {
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
 # from SSM (published by modules/gateway/infra/) rather than passed in as a
 # tfvar. Keeps new environments repeatable — no per-env hardcoding.
+
+# -----------------------------------------------------------------------------
+# Edge authorisation (resource policy)
+# -----------------------------------------------------------------------------
+# Both default to empty, which reproduces the previous allow-all policy exactly
+# — same JSON, so no stage redeployment is triggered for existing deployments.
+# Populate them to restrict at the API Gateway edge; HMAC signature
+# verification in the Lambda remains the primary control either way.
+
+variable "github_webhook_source_cidrs" {
+  description = "CIDRs permitted to call POST /github, normally GitHub's published `hooks` ranges from https://api.github.com/meta. Include the IPv6 prefixes as well as IPv4 — a v4-only list denies v6 deliveries. Empty (default) means no source restriction."
+  type        = list(string)
+  default     = []
+}
+
+variable "internal_route_source_cidrs" {
+  description = "CIDRs permitted to call the IAM-authenticated internal routes (POST /agent/trigger) — normally the NAT EIPs the VPC egresses from, because in-VPC callers reach this REGIONAL API over the internet. aws:SourceVpce is not an option: it requires an execute-api interface endpoint, which serves only PRIVATE APIs. Empty (default) means no source restriction."
+  type        = list(string)
+  default     = []
+}
+
+# -----------------------------------------------------------------------------
+# Webhook Lambda VPC attachment (optional)
+# -----------------------------------------------------------------------------
+# Both unset by default, and with no SSM parameters present the Lambda runs
+# outside any VPC and reaches the gateway over the public internet — the existing
+# behaviour. These variables are the explicit override; the normal source is
+# /adp/<env>/webhook-ingress/vpc-config/ (see lambdas.tf for why).
+#
+# Setting either places the Lambda in private subnets. The reason to want that is that the
+# Lambda calls the gateway's API Gateway (GATEWAY_API_URL, e.g.
+# /internal/v1/resolve-user). Attached to the VPC with an `execute-api` interface
+# endpoint present, that call resolves to the endpoint and arrives with an
+# `aws:SourceVpce` context key — which lets the gateway API's resource policy be
+# written in terms of the endpoint instead of leaving a public door open for this
+# one caller.
+#
+# Two consequences worth knowing before setting them:
+#   - A VPC-attached Lambda loses default internet egress. Anything public it
+#     calls (the GitHub API, Secrets Manager and DynamoDB without their own
+#     endpoints) then needs a NAT route from the chosen subnets. Use private
+#     subnets with a NAT route, not isolated ones.
+#   - First invocations after attachment pay ENI setup. Hyperplane ENIs make this
+#     far cheaper than it once was, but watch the first few deliveries.
+
+variable "webhook_lambda_subnet_ids" {
+  description = "Override for the private subnet ids to place the GitHub webhook Lambda in. Normally left empty and resolved from /adp/<env>/webhook-ingress/vpc-config/subnet-ids instead. Empty with no SSM parameter leaves the Lambda outside the VPC. Subnets must have a NAT route — a VPC-attached Lambda has no default internet egress."
+  type        = list(string)
+  default     = []
+}
+
+variable "webhook_lambda_security_group_ids" {
+  description = "Override for the security groups of the VPC-attached GitHub webhook Lambda. Normally resolved from /adp/<env>/webhook-ingress/vpc-config/security-group-ids. Must permit egress to the execute-api endpoint (443) and to anything else the handler calls."
+  type        = list(string)
+  default     = []
+}
