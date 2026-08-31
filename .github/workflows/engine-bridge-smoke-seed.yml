@@ -39,6 +39,7 @@ env:
   SEED_IDENTITY_ID: 58250791-8973-47ce-a97f-583c1b3252e0
   SEED_FLOW_ID: c0febcf7-b448-48c3-a4e7-f7f04156bea8
   SEED_NODE_ID: 2ae2310d-d678-4d00-bca5-d3708de02186
+  SEED_MEMBERSHIP_ID: 40439edf-3ad2-45d2-9f19-ec6ed80c9960
 
 jobs:
   run:
@@ -107,6 +108,15 @@ jobs:
           VALUES ('${SEED_IDENTITY_ID}', '${ORG_ID}', '${SEED_USER_ID}', '${TEAM_ID}',
                   'github', '${GH_USER_ID}', '${GH_LOGIN}', 'admin_manual', now(), now())
           ON CONFLICT (provider, provider_user_id, org_id) DO NOTHING;
+
+          -- Authority comes from tenant_memberships, not users.role (#3987):
+          -- without an active membership row the role lookup demotes to MEMBER
+          -- (least-privilege default), which lacks plan:approve and refuses
+          -- every engine command. Upsert so a re-run repairs role/is_active.
+          INSERT INTO tenant_memberships (id, user_id, tenant_id, role, is_active, joined_via, created_at)
+          VALUES ('${SEED_MEMBERSHIP_ID}', '${SEED_USER_ID}', '${ORG_ID}', 'org_admin', true, 'org_membership', now())
+          ON CONFLICT (user_id, tenant_id)
+          DO UPDATE SET role='org_admin', is_active=true, updated_at=now();
           SQL
           echo "=== verify ==="
           psql -c "SELECT id, org_id, user_id, team_id FROM user_identities WHERE provider='github' AND provider_user_id='${GH_USER_ID}' AND org_id='${ORG_ID}';"
