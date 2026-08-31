@@ -200,12 +200,25 @@ resource "aws_cloudwatch_log_group" "usage_tracker" {
 }
 
 # S3 Event Permission for Usage Tracker Lambda
+#
+# source_account is REQUIRED here, not defence in depth. An S3 bucket ARN carries
+# no account id — `arn:aws:s3:::name` is globally namespaced — so source_arn alone
+# does not bind this permission to our account. If the chat-logs bucket were ever
+# deleted, anyone could create a bucket with the same name in their own account and
+# its notifications would satisfy our source_arn, invoking this function with
+# attacker-controlled objects. That is the confused-deputy case, and it is why AWS
+# requires both conditions for the S3 principal specifically.
+#
+# Every other aws_lambda_permission in this repo is already sufficient with
+# source_arn alone, because execute-api, cognito-idp, events and logs ARNs all embed
+# the account id. Do not "fix" those to match this one.
 resource "aws_lambda_permission" "usage_tracker_s3" {
-  statement_id  = "AllowS3Invoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.usage_tracker.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = var.chat_logs_bucket_arn
+  statement_id   = "AllowS3Invoke"
+  action         = "lambda:InvokeFunction"
+  function_name  = aws_lambda_function.usage_tracker.function_name
+  principal      = "s3.amazonaws.com"
+  source_arn     = var.chat_logs_bucket_arn
+  source_account = data.aws_caller_identity.current.account_id
 }
 
 # S3 Bucket Notification for Usage Tracker
