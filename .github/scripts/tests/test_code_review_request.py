@@ -10,6 +10,11 @@ in the unit's impact analysis:
   - a reachable remediation strategy -> the service opens its own fix PRs,
                                         racing the fix pipeline this EPIC
                                         builds: two competing fixes per finding
+  - a selectable profile SOURCE      -> the same two settings, reached by a
+                                        longer route: whoever names the profile
+                                        file names the values it records, with
+                                        no schema check at load time and no
+                                        diff to the driver (#4524)
   - an illegal title                 -> the create call is rejected and the
                                         night produces nothing, with an error
                                         that reads like a service outage
@@ -45,6 +50,19 @@ function takes either setting as a parameter and no CLI flag sets one. That is
 the actual safety property -- a keyword argument defaulting to the safe value is
 still reachable by a later caller, whereas a constant with no parameter cannot be
 reached without editing the file, which is a reviewable diff.
+
+Why the profile SOURCE is a forbidden lever too
+-----------------------------------------------
+The structural check above models only *direct* levers, and that made it weaker
+than it read (#4524). The driver used to read both values out of the profile
+while ``--profile`` chose which file the profile was; the file is parsed with a
+bare ``json.loads`` and validated against no schema at load time. So neither
+setting appeared as a parameter -- the gate passed -- yet both were reachable
+from a workflow edit, which is exactly the class of change this unit exists to
+prevent. A lever that selects the *source* of a pinned value is a lever on the
+value, so this file treats it as forbidden alongside the setting names
+themselves. The values now live in the driver as constants and the profile is
+asserted against them, so there is no file to point anywhere.
 """
 
 import ast
@@ -62,6 +80,7 @@ from code_review_request import (  # noqa: E402
     DEFAULT_POLL_TIMEOUT_SECONDS,
     EXCLUDED_DIRS,
     EXCLUDED_FILE_PATTERNS,
+    PINNED_MODES,
     TERMINAL_JOB_STATUSES,
     CodeReviewError,
     assert_title_is_legal,
@@ -90,7 +109,7 @@ SECURITYAGENT_IAM_TF = (
 # The two settings whose permissive members change what the service DOES.
 # Spelled in both the API's camelCase and the snake_case a Python parameter
 # would plausibly use, because either spelling would be a reachable path.
-FORBIDDEN_PARAM_NAMES = {
+FORBIDDEN_MODE_NAMES = {
     "validation_mode",
     "validationMode",
     "remediation_strategy",
@@ -98,6 +117,52 @@ FORBIDDEN_PARAM_NAMES = {
     "code_remediation_strategy",
     "codeRemediationStrategy",
 }
+
+# Levers that select which file the profile is read FROM. Forbidden for the same
+# reason as the names above and with the same blast radius: the profile records
+# the pinned modes, is parsed with a bare `json.loads`, and is validated by no
+# schema at load time -- so choosing the file chooses the values (#4524).
+#
+# Note the asymmetry between the two gates that consume this set, which is not an
+# oversight:
+#
+#   * As a CLI FLAG, bare `--profile` is forbidden. A flag can only ever carry a
+#     path, so the name is unambiguous -- and `--profile` is the exact flag this
+#     defect was about.
+#   * As a FUNCTION PARAMETER, bare `profile` is legitimate and pervasive: it is
+#     the already-loaded dict that `pinned_modes(profile)` and friends take, and
+#     that dict is checked against the driver's constants rather than trusted.
+#     Only the path-shaped spellings are forbidden there, via
+#     FORBIDDEN_PROFILE_PATH_PARAMS below.
+#
+# Neither list can enumerate every synonym, so they are a ratchet against
+# reintroducing the known shape, not a proof. The general case is closed by
+# `test_load_profile_takes_no_path_argument`: the one function that reads the
+# file accepts no path at all, so there is nothing for a flag to feed.
+FORBIDDEN_PROFILE_SOURCE_FLAGS = {
+    "profile",
+    "profile_path",
+    "profile_file",
+    "profile_json",
+    "profile_source",
+}
+
+# The path-shaped spellings, forbidden as parameters. Bare `profile` is
+# deliberately absent -- see the comment above.
+FORBIDDEN_PROFILE_PATH_PARAMS = {
+    "profile_path",
+    "profilePath",
+    "profile_file",
+    "profileFile",
+    "profile_json",
+    "profile_source",
+}
+
+# What the parameter-level ast gate forbids.
+FORBIDDEN_PARAM_NAMES = FORBIDDEN_MODE_NAMES | FORBIDDEN_PROFILE_PATH_PARAMS
+
+# What the CLI-level ast gate forbids.
+FORBIDDEN_FLAG_NAMES = FORBIDDEN_MODE_NAMES | FORBIDDEN_PROFILE_SOURCE_FLAGS
 
 # The prefix the nightly role's inline policy confines s3:PutObject to.
 # Read from Terraform rather than retyped -- see the test that asserts this.
@@ -194,6 +259,11 @@ def test_no_function_accepts_either_pinned_setting_as_a_parameter(module_ast):
     parameters: a keyword argument defaulting to the safe value is STILL
     reachable, because a later caller can pass the other value and nothing in
     the driver would notice.
+
+    Also covers path-shaped ``profile_path``-style parameters, which reach the
+    same two settings indirectly (#4524). Bare ``profile`` is excluded and must
+    stay excluded: that is the already-loaded dict, which the driver checks
+    against its own constants rather than trusting.
     """
     offenders = []
     for node in ast.walk(module_ast):
@@ -212,19 +282,24 @@ def test_no_function_accepts_either_pinned_setting_as_a_parameter(module_ast):
                 offenders.append(f"{node.name}(... {arg.arg} ...) at line {node.lineno}")
 
     assert not offenders, (
-        "no function may accept the live-validation mode or the remediation "
-        "strategy as a parameter -- a parameter is reachable from a caller, and "
-        "the permissive member of either turns this code review into something "
-        f"with the pentest's blast radius. Offenders: {offenders}"
+        "no function may accept the live-validation mode, the remediation "
+        "strategy, or a path to the profile that records them as a parameter -- a "
+        "parameter is reachable from a caller, and the permissive member of "
+        "either setting turns this code review into something with the pentest's "
+        f"blast radius. Offenders: {offenders}"
     )
 
 
 def test_no_cli_flag_can_set_either_pinned_setting(module_ast):
-    """No argparse flag reaches either setting.
+    """No argparse flag reaches either setting, directly or via the profile file.
 
     A flag is the cheapest possible path to a permissive value: it needs only a
     workflow edit, not a diff to this file. Inspects every
     ``parser.add_argument`` call's option strings and its ``dest``.
+
+    ``--profile`` counts (#4524). It never named a mode, so this gate used to
+    pass with it present -- but it named the file the modes were read out of,
+    which is the same reachability with an extra hop.
     """
     offenders = []
     for node in ast.walk(module_ast):
@@ -239,23 +314,24 @@ def test_no_cli_flag_can_set_either_pinned_setting(module_ast):
                 continue
             # --validation-mode -> validation_mode
             normalised = arg.value.lstrip("-").replace("-", "_")
-            if normalised in FORBIDDEN_PARAM_NAMES or normalised.replace(
+            if normalised in FORBIDDEN_FLAG_NAMES or normalised.replace(
                 "_", ""
-            ).lower() in {n.replace("_", "").lower() for n in FORBIDDEN_PARAM_NAMES}:
+            ).lower() in {n.replace("_", "").lower() for n in FORBIDDEN_FLAG_NAMES}:
                 offenders.append(f"{arg.value} at line {node.lineno}")
 
         for kw in node.keywords:
             if (
                 kw.arg == "dest"
                 and isinstance(kw.value, ast.Constant)
-                and kw.value.value in FORBIDDEN_PARAM_NAMES
+                and kw.value.value in FORBIDDEN_FLAG_NAMES
             ):
                 offenders.append(f"dest={kw.value.value!r} at line {node.lineno}")
 
     assert not offenders, (
         "no CLI flag may set the live-validation mode or the remediation "
-        f"strategy; a flag makes the permissive value reachable from a workflow "
-        f"edit rather than a reviewable diff to the driver. Offenders: {offenders}"
+        "strategy, or select the profile file that records them; a flag makes the "
+        "permissive value reachable from a workflow edit rather than a reviewable "
+        f"diff to the driver. Offenders: {offenders}"
     )
 
 
@@ -270,8 +346,8 @@ def test_the_parser_really_is_the_one_under_test():
     parser = build_parser()
     known = {action.dest for action in parser._actions}
 
-    assert not known & FORBIDDEN_PARAM_NAMES, (
-        f"parser exposes a forbidden destination: {known & FORBIDDEN_PARAM_NAMES}"
+    assert not known & FORBIDDEN_FLAG_NAMES, (
+        f"parser exposes a forbidden destination: {known & FORBIDDEN_FLAG_NAMES}"
     )
     # Sanity: the parser is real and does carry the flags the workflow passes.
     assert {"run_date", "output"} <= known, (
@@ -283,11 +359,67 @@ def test_the_parser_really_is_the_one_under_test():
             parser.parse_args([flag, "SIMULATED"])
 
 
-def test_pinned_modes_takes_only_the_profile(profile):
-    """``pinned_modes`` has no lever: its only input is the profile, and the
-    profile's own gate holds both values at their disabled member."""
+def test_no_flag_can_select_an_alternate_profile(capsys):
+    """The indirection this defect was about, closed at the parser (#4524).
+
+    ``--profile`` carried no mode name, so the ast gates passed while the pinned
+    values were still selectable: point the driver at another JSON file and the
+    "pinned" value is whatever that file says. The parser must now reject it.
+
+    Asserted on the built parser rather than only on the ast, because this is the
+    behaviour that matters -- an argparse prefix match or a re-added alias would
+    make the source-level check pass while the flag still parsed.
+    """
+    parser = build_parser()
+
+    for flag in ("--profile", "--profile-path", "--profile-file"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([flag, "/tmp/attacker-profile.json"])  # nosec B108
+        capsys.readouterr()  # argparse writes usage to stderr on reject
+
+    # And the driver's real invocation still parses: the nightly passes exactly
+    # these two flags, so closing the indirection must not break the caller.
+    args = parser.parse_args(["--run-date", "2026-08-30", "--output", "out.json"])
+    assert args.run_date == "2026-08-30"
+    assert args.output == "out.json"
+
+
+def test_load_profile_takes_no_path_argument():
+    """The general case behind the flag gate: nothing to feed a path to.
+
+    The named-flag lists above are a ratchet against the known shape and cannot
+    enumerate every synonym. This closes the class instead: the single function
+    that reads the profile off disk accepts no path at all, so re-adding a flag
+    would not be enough to redirect it -- ``load_profile`` itself would have to
+    change, in the same reviewable diff.
+    """
+    import inspect  # noqa: PLC0415
+
+    parameters = inspect.signature(load_profile).parameters
+    assert not parameters, (
+        "load_profile must take no arguments: a path parameter is a lever on "
+        f"every value the profile supplies, including the two pinned modes. "
+        f"Found {sorted(parameters)}"
+    )
+
+
+def test_pinned_modes_returns_the_disabled_members_for_the_shipped_profile(profile):
+    """``pinned_modes`` has no lever, and the shipped profile agrees with it."""
     modes = pinned_modes(profile)
     assert modes == {
+        "validationMode": "DISABLED",
+        "codeRemediationStrategy": "DISABLED",
+    }
+
+
+def test_the_pinned_constants_are_the_disabled_members():
+    """The values are constants in the driver now, not profile data (#4524).
+
+    Asserted directly so the pin is checked even if `pinned_modes` were later
+    rewritten: these two literals ARE the safety property, and the module they
+    live in is the only place a diff can change them.
+    """
+    assert PINNED_MODES == {
         "validationMode": "DISABLED",
         "codeRemediationStrategy": "DISABLED",
     }
@@ -300,6 +432,51 @@ def test_pinned_modes_refuses_to_omit_either_setting():
     with pytest.raises(CodeReviewError) as excinfo:
         pinned_modes({"code_review": {"pinned_modes": {"validationMode": "DISABLED"}}})
     assert "codeRemediationStrategy" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "permissive"),
+    [
+        ("validationMode", "SIMULATED"),
+        ("codeRemediationStrategy", "AUTOMATIC"),
+    ],
+)
+def test_a_profile_disagreeing_with_the_constants_fails_closed(field, permissive):
+    """The fail-closed half of the fix (#4524).
+
+    The driver's constants are authority and the profile is record. If a profile
+    records the permissive member, the run must FAIL rather than quietly sending
+    the safe constant: a profile that disagrees means the artifact has stopped
+    describing what the service receives, and which of the two is wrong is not
+    something this driver can decide.
+    """
+    modes = dict(PINNED_MODES)
+    modes[field] = permissive
+
+    with pytest.raises(CodeReviewError) as excinfo:
+        pinned_modes({"code_review": {"pinned_modes": modes}})
+
+    message = str(excinfo.value)
+    assert field in message
+    assert permissive in message, (
+        "the error must name the value it refused, or the operator cannot tell "
+        "which field drifted"
+    )
+
+
+def test_the_sent_values_come_from_the_constants_not_the_profile():
+    """A profile cannot influence the returned values, only whether it raises.
+
+    This is what makes the removed ``--profile`` flag harmless even if some other
+    path ever loads a different file: the values are not taken from it.
+    """
+    agreeing = {"code_review": {"pinned_modes": dict(PINNED_MODES)}}
+    returned = pinned_modes(agreeing)
+
+    assert returned == PINNED_MODES
+    # Returned dict must be a copy: a caller mutating it must not edit the pin.
+    returned["validationMode"] = "MUTATED"
+    assert PINNED_MODES["validationMode"] == "DISABLED"
 
 
 def test_create_review_sends_both_settings_disabled(profile):

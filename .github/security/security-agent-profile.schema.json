@@ -88,11 +88,12 @@
         },
         "required_params": { "type": "object" },
         "pinned_modes": {
+          "description": "The two settings whose permissive members change what the service DOES: SIMULATED validation exercises live endpoints, and AUTOMATIC remediation opens fix PRs against this repo. Both enums are single-valued on purpose (#4524) — the schema previously admitted the permissive member, so a schema-valid profile could still record a dangerous value. The driver pins these as constants and fails closed if this file disagrees; narrowing the enums makes the artifact itself unable to record the disagreement.",
           "type": "object",
           "required": ["validationMode", "codeRemediationStrategy"],
           "properties": {
-            "validationMode": { "type": "string", "enum": ["DISABLED", "SIMULATED"] },
-            "codeRemediationStrategy": { "type": "string", "enum": ["AUTOMATIC", "DISABLED"] }
+            "validationMode": { "type": "string", "enum": ["DISABLED"] },
+            "codeRemediationStrategy": { "type": "string", "enum": ["DISABLED"] }
           }
         },
         "title_charset": { "type": "string", "minLength": 1 },

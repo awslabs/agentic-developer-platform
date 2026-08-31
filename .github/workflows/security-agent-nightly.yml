@@ -103,11 +103,15 @@ jobs:
   #   * the remediation strategy — its permissive member makes the service open
   #     its own fix pull requests, racing the fix pipeline this EPIC builds
   #
-  # Neither is an input, an env var, or a script flag. They are constants read
-  # from the validated profile inside code_review_request.py, with no parameter
-  # threading them, so reaching a permissive value requires editing that file —
-  # a reviewable diff rather than a workflow tweak. The gate asserts that
-  # unreachability, not merely today's value.
+  # Neither is an input, an env var, or a script flag. They are constants in
+  # code_review_request.py, with no parameter threading them and no flag naming
+  # the file they are read from, so reaching a permissive value requires editing
+  # that file — a reviewable diff rather than a workflow tweak. The validated
+  # profile still records both values and the driver fails closed if it
+  # disagrees, but the profile is the record, not the authority: while the values
+  # were read out of it, `--profile` made them reachable from a workflow edit
+  # after all (#4524). The gate asserts that unreachability, including the
+  # profile-source route, not merely today's value.
   #
   # There is still no `schedule:` key in this file, and this unit does not add
   # one: arming the schedule needs a measured run duration and a non-colliding

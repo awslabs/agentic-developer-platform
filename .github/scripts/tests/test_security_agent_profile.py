@@ -256,6 +256,50 @@ def test_pentest_never_opens_remediation_prs(profile):
     )
 
 
+# ------------------------------------------------------- code_review pinned modes
+
+
+def test_pinned_modes_are_the_disabled_members(profile):
+    """The two settings whose permissive members change what the service DOES.
+
+    SIMULATED validation stops being a code review and starts exercising live
+    endpoints; AUTOMATIC remediation makes the service open its own fix PRs,
+    racing the fix pipeline. The driver pins both as constants and fails closed
+    if this file disagrees, so a wrong value here is a broken nightly rather than
+    a dangerous one -- but it should fail here first, with the cause named.
+    """
+    modes = profile["code_review"]["pinned_modes"]
+    assert modes["validationMode"] == "DISABLED"
+    assert modes["codeRemediationStrategy"] == "DISABLED"
+
+
+@pytest.mark.parametrize(
+    ("field", "permissive"),
+    [
+        ("validationMode", "SIMULATED"),
+        ("codeRemediationStrategy", "AUTOMATIC"),
+    ],
+)
+def test_schema_rejects_the_permissive_pinned_modes(profile, schema, field, permissive):
+    """The schema itself must not admit either permissive member (#4524).
+
+    Both enums used to list the dangerous value, so a profile recording it was
+    schema-VALID: the artifact could document a permissive mode and nothing in
+    this suite would object. Narrowing the enums to a single member makes the
+    file structurally unable to record it, which is a stronger guarantee than a
+    value assertion because it survives someone editing the value.
+    """
+    jsonschema = pytest.importorskip("jsonschema", reason="jsonschema not installed")
+
+    import copy  # noqa: PLC0415
+
+    mutated = copy.deepcopy(profile)
+    mutated["code_review"]["pinned_modes"][field] = permissive
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=mutated, schema=schema)
+
+
 def test_destructiveness_answer_is_explicit(profile):
     """SP-4's real question gets a boolean plus a stated finding."""
     pentest = profile["pentest"]

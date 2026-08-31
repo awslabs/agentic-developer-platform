@@ -20,25 +20,38 @@ changes what the service *does*:
     pull requests, which race the fix pipeline this EPIC is building: two
     competing fixes per finding, both plausible.
 
-So they are module-level constants read from the validated profile's
-``code_review.pinned_modes``, and **no function in this module accepts either
-as an argument and no CLI flag sets either**. That distinction is the whole
-safety property. A keyword argument defaulting to the safe value is still
-reachable -- some later caller passes the other value and nothing here would
-notice. A constant with no parameter is not reachable without editing this
-file, which is a reviewable diff. ``test_code_review_request.py`` asserts the
-*unreachability* structurally -- it parses this module with ``ast`` and checks
-that no function parameter and no CLI flag can carry either setting -- rather
+So both values are module-level constants *in this file* (``PINNED_MODES``), and
+**no function in this module accepts either as an argument, no CLI flag sets
+either, and no CLI flag chooses which file the profile is read from**. That last
+clause is not padding: it closes an indirection the gate previously missed
+(#4524). Reading the values out of the profile while also letting ``--profile``
+name the file made both settings reachable from a workflow edit -- point the
+driver at a different JSON and the "pinned" value is whatever that file says,
+with no reviewable diff to this module and no schema check at load time. The
+profile remains the source of *record*: :func:`pinned_modes` asserts the
+constants and ``code_review.pinned_modes`` agree and raises on any mismatch, so
+the recorded value cannot drift away from the sent value in either direction.
+
+A keyword argument defaulting to the safe value is still reachable -- some later
+caller passes the other value and nothing here would notice. A constant with no
+parameter is not reachable without editing this file, which is a reviewable
+diff. ``test_code_review_request.py`` asserts the *unreachability* structurally
+-- it parses this module with ``ast`` and checks that no function parameter and
+no CLI flag can carry either setting, or select the profile source -- rather
 than grepping for the permissive literals. The literals DO appear in this file,
 in the explanatory comments above and below; a textual-absence test would fail
 on the very prose that records why they are dangerous.
 
-Why every value comes from the profile
---------------------------------------
+Why every OTHER value comes from the profile
+--------------------------------------------
 ``.github/security/security-agent-profile.json`` (U0, #4439) is the interface,
-and the U4 precedent is that its values are read and never retyped. That
-matters more than usual here: the runbook and the API disagree in ways that
-produce failures which read like something else entirely.
+and the U4 precedent is that its values are read and never retyped. The two
+pinned settings above are the one deliberate exception, for the reason given
+there: a value read from a nameable file is a value a caller can choose. Every
+field below is read, because being wrong about them costs a failed night rather
+than a change in what the service does. That matters more than usual here: the
+runbook and the API disagree in ways that produce failures which read like
+something else entirely.
 
   * ``serviceRole`` is passed on every create call and treated as required.
     The published synopsis marks it optional; the API rejects the call
@@ -78,16 +91,30 @@ PROFILE_PATH = (
 # --------------------------------------------------------------------------
 # the two pinned settings
 #
-# Names, not values. The values are read from the profile's
-# `code_review.pinned_modes` at load time so this file cannot drift from the
-# artifact that recorded them. The permissive members of each enum
-# (validationMode=SIMULATED, codeRemediationStrategy=AUTOMATIC) appear in this
-# source ONLY in explanatory comments like this one -- never as a value that any
-# code path can send. What the gate checks is that structural unreachability
-# (no function parameter, no CLI flag), not the absence of the strings.
+# The values live HERE, as constants, and the profile is checked against them --
+# not the other way round (#4524). Reading them out of the profile made them
+# reachable through `--profile`, because whoever names the file names the value:
+# no parameter carried either setting, so the gate passed, while a workflow edit
+# could still send the permissive member. Constants in this module are reachable
+# only by editing this module, which is a reviewable diff.
+#
+# The profile stays the source of record: `pinned_modes` asserts these constants
+# equal `code_review.pinned_modes` and fails closed on mismatch, so the artifact
+# that documents the values cannot drift from the values actually sent.
+#
+# The permissive members of each enum (validationMode=SIMULATED,
+# codeRemediationStrategy=AUTOMATIC) appear in this source ONLY in explanatory
+# comments like this one -- never as a value that any code path can send. What
+# the gate checks is that structural unreachability (no function parameter, no
+# CLI flag, no profile-source flag), not the absence of the strings.
 # --------------------------------------------------------------------------
 VALIDATION_MODE_FIELD = "validationMode"
 REMEDIATION_STRATEGY_FIELD = "codeRemediationStrategy"
+
+PINNED_MODES = {
+    VALIDATION_MODE_FIELD: "DISABLED",
+    REMEDIATION_STRATEGY_FIELD: "DISABLED",
+}
 
 # --------------------------------------------------------------------------
 # packaging
@@ -177,18 +204,24 @@ class CodeReviewError(RuntimeError):
 # --------------------------------------------------------------------------
 
 
-def load_profile(path: Path | str = PROFILE_PATH) -> dict:
-    """Load the U0 validated profile. Absence is fatal: every request field
-    below comes from it, and inventing them is how a night produces a
-    rejected call that reads like a service outage."""
-    profile_path = Path(path)
-    if not profile_path.is_file():
+def load_profile() -> dict:
+    """Load the U0 validated profile from :data:`PROFILE_PATH`. Absence is fatal:
+    every request field below comes from it, and inventing them is how a night
+    produces a rejected call that reads like a service outage.
+
+    Takes no argument, deliberately (#4524). A path parameter here is a lever on
+    everything the profile supplies, and the file is parsed with a bare
+    ``json.loads`` against no schema -- so "which profile" was effectively "which
+    values", reachable without a diff to this module. The gate asserts this
+    function stays parameterless.
+    """
+    if not PROFILE_PATH.is_file():
         raise CodeReviewError(
-            f"validated profile not found at {profile_path}. It is the source of "
+            f"validated profile not found at {PROFILE_PATH}. It is the source of "
             "the agent space, service role, staging bucket and pinned modes; "
             "refusing to invent any of them."
         )
-    return json.loads(profile_path.read_text(encoding="utf-8"))
+    return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
 
 
 def _require(profile: dict, section: str, field: str) -> str:
@@ -202,28 +235,46 @@ def _require(profile: dict, section: str, field: str) -> str:
 
 
 def pinned_modes(profile: dict) -> dict[str, str]:
-    """The two pinned settings, read from the profile.
+    """The two pinned settings: :data:`PINNED_MODES`, asserted against the profile.
 
-    Returns the exact keyword fragment added to every create call. There is
-    deliberately no argument that can influence the result: the only input is
-    the profile, and the profile's own gate
-    (``test_security_agent_profile.py``) holds those two values at their
-    disabled members.
+    Returns the exact keyword fragment added to every create call. The returned
+    values are the module constants, never the profile's -- so the result cannot
+    be influenced by which file the profile was loaded from. The profile is
+    checked, not trusted: if it records anything other than the constants this
+    raises, because a profile that disagrees means the recorded value has
+    stopped describing the sent value and one of the two is wrong.
+
+    Fail closed on disagreement rather than preferring the constant silently:
+    the mismatch itself is the signal worth surfacing, and a nightly that fails
+    loudly is the safe outcome (the alternative is a profile that documents
+    something the service never received).
     """
     modes = (profile.get("code_review") or {}).get("pinned_modes") or {}
-    validation = modes.get(VALIDATION_MODE_FIELD)
-    remediation = modes.get(REMEDIATION_STRATEGY_FIELD)
-    if not validation or not remediation:
+    missing = [field for field in PINNED_MODES if not modes.get(field)]
+    if missing:
         raise CodeReviewError(
             "code_review.pinned_modes must record both "
             f"{VALIDATION_MODE_FIELD} and {REMEDIATION_STRATEGY_FIELD}; "
-            "refusing to send a create call that omits either, because the "
-            "service-side default for both is the permissive member."
+            f"missing or empty: {', '.join(missing)}. The profile is the record "
+            "of what this driver sends, and a record that omits either field "
+            "documents nothing."
         )
-    return {
-        VALIDATION_MODE_FIELD: validation,
-        REMEDIATION_STRATEGY_FIELD: remediation,
-    }
+
+    disagreements = [
+        f"{field}: profile records {modes[field]!r}, driver pins {pinned!r}"
+        for field, pinned in PINNED_MODES.items()
+        if modes[field] != pinned
+    ]
+    if disagreements:
+        raise CodeReviewError(
+            "the validated profile disagrees with the driver's pinned modes: "
+            f"{'; '.join(disagreements)}. These are pinned in "
+            "code_review_request.py and only a reviewable diff to that file may "
+            "change them; refusing to run against a profile that records a "
+            "different value."
+        )
+
+    return dict(PINNED_MODES)
 
 
 def title_charset(profile: dict) -> str:
@@ -657,11 +708,16 @@ def _default_run_date() -> str:
 def build_parser() -> argparse.ArgumentParser:
     """Note what is NOT here: no --validation-mode and no --remediation-strategy.
     A flag for either would make the permissive value reachable from a workflow
-    edit, which is precisely what this unit pins shut."""
+    edit, which is precisely what this unit pins shut.
+
+    And no --profile either (#4524). Naming the profile file is naming the pinned
+    values indirectly -- the profile is loaded with a bare ``json.loads`` and
+    validated by no schema at load time, so a flag selecting it was the same
+    workflow-edit path by a longer route. The profile is read from the
+    module-level ``PROFILE_PATH`` and nowhere else."""
     parser = argparse.ArgumentParser(
         description="Run one nightly whole-repo Security Agent code review."
     )
-    parser.add_argument("--profile", default=str(PROFILE_PATH))
     parser.add_argument(
         "--repo-root",
         default=str(Path(__file__).resolve().parents[2]),
@@ -685,7 +741,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     try:
-        profile = load_profile(args.profile)
+        profile = load_profile()
 
         import boto3  # noqa: PLC0415 - imported late so --help works unprovisioned
 
