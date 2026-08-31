@@ -341,9 +341,45 @@ See `.github/workflows/gateway-agent-test.yml` for a complete working example.
 | `Not logged in` | No saved tokens | Run `bg-cognito-auth.sh login` |
 | `Token expired` | Refresh token expired (30 days) | Run `bg-cognito-auth.sh login` again |
 | `Token refresh failed` | Cognito user disabled or password changed | Re-login |
+## Authenticating when the user pool is behind a WAF
+
+If the deployment protects its Cognito user pool with an AWS WAF web ACL — an IP
+allowlist, typically because access is fronted by a ZTNA product — `login` and
+`refresh` use the **admin** auth flow (`admin-initiate-auth`,
+`ADMIN_USER_PASSWORD_AUTH`) rather than the public one.
+
+The reason is not cosmetic. A web ACL on a user pool covers the pool's *public*
+API operations as well as the hosted UI, and those are served from
+`cognito-idp.<region>.amazonaws.com`. That is an AWS-owned hostname, so it cannot
+be published through a corporate tunnel: the request leaves your machine directly
+and arrives from your own address, which the allowlist does not contain.
+`initiate-auth` then fails `ForbiddenException`. SigV4-signed `Admin*` operations
+are outside that surface, so they keep working.
+
+This is automatic whenever a `user_pool_id` is present in
+`~/.bedrock-gateway/config.json`. It requires:
+
+- `cognito-idp:AdminInitiateAuth` (and `AdminRespondToAuthChallenge` for a first
+  login) on your IAM identity
+- `ALLOW_ADMIN_USER_PASSWORD_AUTH` in the app client's `explicit_auth_flows`
+
+To force the public flow — a deployment whose users have no admin IAM and whose
+pool has no web ACL:
+
+```bash
+BG_COGNITO_PUBLIC_AUTH=1 ./bg-cognito-auth.sh login --gateway-url https://<DOMAIN>/api
+```
+
+`<CLOUDFRONT_DOMAIN>` throughout this document means whatever hostname serves the
+dashboard. If the deployment has a custom domain, use that rather than the
+distribution's default name — a WAF or ZTNA policy is usually written against the
+custom hostname, and the default `*.cloudfront.net` name may be retired.
+
 | `Refresh token invalid or expired` (on `import`) | Copied token is stale or from another deployment | Sign in again and re-copy from Settings → Connect CLI |
 | `Could not determine Cognito client_id` (on `import`) | Gateway discovery unreachable | Check `<gateway_url>/.well-known/cognito-config`, or pass `--client-id` + `--region` |
 | `401 missing_token` | Claude Code not sending auth header | Check `apiKeyHelper` path in settings.json |
+| `ForbiddenException` from Cognito | A WAF web ACL on the user pool refused the request | Unset `BG_COGNITO_PUBLIC_AUTH` so the admin flow is used — see above |
+| `AccessDeniedException` on `AdminInitiateAuth` | Your IAM identity lacks the admin Cognito permission | Grant it, or set `BG_COGNITO_PUBLIC_AUTH=1` if the pool has no web ACL |
 | `401 invalid_token` | JWT expired or wrong audience | Run `bg-cognito-auth.sh refresh` |
 | `503 auth_not_configured` | Gateway can't reach Cognito | Check gateway pod logs |
 

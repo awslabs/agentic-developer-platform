@@ -43,6 +43,37 @@ print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# ---------------------------------------------------------------------------
+# Cognito auth flow selection
+# ---------------------------------------------------------------------------
+# Two ways to authenticate a username/password against a user pool:
+#
+#   initiate-auth       USER_PASSWORD_AUTH        unauthenticated, public API
+#   admin-initiate-auth ADMIN_USER_PASSWORD_AUTH  SigV4-signed, admin API
+#
+# They are equivalent for our purposes, and normally the public one is correct
+# because it needs no AWS credentials. But when the user pool is protected by an
+# AWS WAF web ACL — as it is here, from runbook 5.4 — the ACL covers the pool's
+# PUBLIC API operations, and those are served from
+# cognito-idp.<region>.amazonaws.com. That is an AWS-owned hostname, so it cannot
+# be published through the corporate ZTNA tunnel and the request arrives from the
+# developer's own address, which the ACL does not allow. `initiate-auth` then
+# fails with ForbiddenException.
+#
+# SigV4-signed Admin* operations are outside that surface — verified twice on
+# 2026-08-27, by the github-auth-broker's admin_get_user surviving the ACL and by
+# ws_roundtrip.py authenticating from a laptop. So preferring the admin flow keeps
+# this script working from a developer machine.
+#
+# It needs two things the public flow does not: a user pool id (already in the
+# config file) and cognito-idp:AdminInitiateAuth on the caller's IAM identity.
+# BG_COGNITO_PUBLIC_AUTH=1 forces the public flow for deployments whose users have
+# no admin IAM and whose pool has no web ACL.
+_use_admin_auth() {
+    [ "${BG_COGNITO_PUBLIC_AUTH:-0}" = "1" ] && return 1
+    [ -n "${USER_POOL_ID:-}" ] && [ "${USER_POOL_ID}" != "null" ]
+}
+
 # Check for required dependencies
 check_dependencies() {
     local missing_deps=()
@@ -168,15 +199,45 @@ authenticate_user() {
 
     # Initiate authentication with Cognito
     local auth_result
-    auth_result=$(aws cognito-idp initiate-auth \
-        --auth-flow USER_PASSWORD_AUTH \
-        --client-id "${CLIENT_ID}" \
-        --auth-parameters "USERNAME=${username},PASSWORD=${password}" \
-        --region "${REGION}" \
-        2>&1) || {
-        print_error "Authentication failed: ${auth_result}"
-        return 1
-    }
+    if _use_admin_auth; then
+        auth_result=$(aws cognito-idp admin-initiate-auth \
+            --auth-flow ADMIN_USER_PASSWORD_AUTH \
+            --user-pool-id "${USER_POOL_ID}" \
+            --client-id "${CLIENT_ID}" \
+            --auth-parameters "USERNAME=${username},PASSWORD=${password}" \
+            --region "${REGION}" \
+            2>&1) || {
+            print_error "Authentication failed: ${auth_result}"
+            case "${auth_result}" in
+                *AccessDenied*|*not\ authorized*)
+                    print_warning "The admin auth flow needs cognito-idp:AdminInitiateAuth."
+                    print_warning "Set BG_COGNITO_PUBLIC_AUTH=1 to use the public flow instead —"
+                    print_warning "but note it is blocked if the user pool has a WAF web ACL and"
+                    print_warning "you are not on an allowlisted address."
+                    ;;
+            esac
+            return 1
+        }
+    else
+        auth_result=$(aws cognito-idp initiate-auth \
+            --auth-flow USER_PASSWORD_AUTH \
+            --client-id "${CLIENT_ID}" \
+            --auth-parameters "USERNAME=${username},PASSWORD=${password}" \
+            --region "${REGION}" \
+            2>&1) || {
+            print_error "Authentication failed: ${auth_result}"
+            case "${auth_result}" in
+                *ForbiddenException*)
+                    print_warning "ForbiddenException means a WAF web ACL on the user pool refused"
+                    print_warning "this request — the public Cognito API is served from an AWS-owned"
+                    print_warning "hostname that cannot be tunnelled, so you arrive from your own"
+                    print_warning "address. Unset BG_COGNITO_PUBLIC_AUTH to use the admin flow,"
+                    print_warning "which is SigV4-signed and outside that surface."
+                    ;;
+            esac
+            return 1
+        }
+    fi
 
     # Check if we need to respond to a challenge (e.g., NEW_PASSWORD_REQUIRED)
     local challenge_name
@@ -199,16 +260,33 @@ authenticate_user() {
                 local session
                 session=$(echo "${auth_result}" | jq -r '.Session')
 
-                auth_result=$(aws cognito-idp respond-to-auth-challenge \
-                    --client-id "${CLIENT_ID}" \
-                    --challenge-name NEW_PASSWORD_REQUIRED \
-                    --session "${session}" \
-                    --challenge-responses "USERNAME=${username},NEW_PASSWORD=${new_password}" \
-                    --region "${REGION}" \
-                    2>&1) || {
-                    print_error "Password change failed: ${auth_result}"
-                    return 1
-                }
+                # Must match the flow that produced the session: an admin session
+                # is not valid for the public respond-to-auth-challenge, and the
+                # error names neither flow.
+                if _use_admin_auth; then
+                    auth_result=$(aws cognito-idp admin-respond-to-auth-challenge \
+                        --user-pool-id "${USER_POOL_ID}" \
+                        --client-id "${CLIENT_ID}" \
+                        --challenge-name NEW_PASSWORD_REQUIRED \
+                        --session "${session}" \
+                        --challenge-responses "USERNAME=${username},NEW_PASSWORD=${new_password}" \
+                        --region "${REGION}" \
+                        2>&1) || {
+                        print_error "Password change failed: ${auth_result}"
+                        return 1
+                    }
+                else
+                    auth_result=$(aws cognito-idp respond-to-auth-challenge \
+                        --client-id "${CLIENT_ID}" \
+                        --challenge-name NEW_PASSWORD_REQUIRED \
+                        --session "${session}" \
+                        --challenge-responses "USERNAME=${username},NEW_PASSWORD=${new_password}" \
+                        --region "${REGION}" \
+                        2>&1) || {
+                        print_error "Password change failed: ${auth_result}"
+                        return 1
+                    }
+                fi
                 ;;
             *)
                 print_error "Unsupported challenge: ${challenge_name}"
@@ -247,16 +325,29 @@ refresh_tokens() {
     print_info "Refreshing tokens..."
 
     local auth_result
-    auth_result=$(aws cognito-idp initiate-auth \
-        --auth-flow REFRESH_TOKEN_AUTH \
-        --client-id "${CLIENT_ID}" \
-        --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
-        --region "${REGION}" \
-        2>&1) || {
-        print_error "Token refresh failed: ${auth_result}"
-        print_warning "Please run 'login' to re-authenticate."
-        return 1
-    }
+    if _use_admin_auth; then
+        auth_result=$(aws cognito-idp admin-initiate-auth \
+            --auth-flow REFRESH_TOKEN_AUTH \
+            --user-pool-id "${USER_POOL_ID}" \
+            --client-id "${CLIENT_ID}" \
+            --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
+            --region "${REGION}" \
+            2>&1) || {
+            print_error "Token refresh failed: ${auth_result}"
+            return 1
+        }
+    else
+        auth_result=$(aws cognito-idp initiate-auth \
+            --auth-flow REFRESH_TOKEN_AUTH \
+            --client-id "${CLIENT_ID}" \
+            --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
+            --region "${REGION}" \
+            2>&1) || {
+            print_error "Token refresh failed: ${auth_result}"
+            print_warning "Please run 'login' to re-authenticate."
+            return 1
+        }
+    fi
 
     local id_token access_token expires_in
     id_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.IdToken')
