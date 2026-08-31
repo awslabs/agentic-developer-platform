@@ -1,0 +1,106 @@
+name: Engine Bridge Smoke Seed (one-shot)
+
+# One-shot dev helper for the #4527 GitHub command bridge smoke.
+#
+# The bridge resolves a commenter's GitHub account to a platform identity
+# INSIDE the org that owns the repo's installation (aws-e). The operator's
+# GitHub account is linked only in their personal org, so every command is
+# refused with the uniform message. Same ad-hoc-onboarding class as
+# seed-hosted-tenant.yml (pre-admin-API); idempotent, dev only.
+#
+# probe: read-only dump of orchestration flows/nodes per org + the relevant
+#        identity rows, to see which plans a GitHub command could reach.
+# seed:  INSERT a users row + github user_identities row for the operator in
+#        the target org (ON CONFLICT DO NOTHING).
+
+on:
+  workflow_dispatch:
+    inputs:
+      do_seed:
+        description: 'Actually run the seed INSERTs (false = probe only)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  PGSSLMODE: require
+  # Target org + operator identity (dev constants for the #4527 smoke).
+  ORG_ID: aws-e
+  TEAM_ID: 62be86b8-4f72-485b-8547-5dae539d921e
+  GH_USER_ID: "20402445"
+  GH_LOGIN: PranavSharma1000
+  SEED_USER_ID: 1fb07e6f-8108-41a2-964d-5f76d63895fe
+  SEED_IDENTITY_ID: 58250791-8973-47ce-a97f-583c1b3252e0
+
+jobs:
+  run:
+    name: Probe and (optionally) seed
+    runs-on: arc-runner-org
+    steps:
+      - name: Install psql + jq
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client jq
+
+      # Same IAM-auth sequence as postgres-schema-check.yml: the master user is
+      # IAM-auth-only, the secret is read for the username only.
+      - name: Resolve RDS connection (IAM auth token)
+        run: |
+          set -euo pipefail
+          PGHOST=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/rds-host" \
+            --region "$AWS_REGION" \
+            --query Parameter.Value --output text)
+          PGDATABASE=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/rds-database-name" \
+            --region "$AWS_REGION" \
+            --query Parameter.Value --output text)
+          SECRET_ARN=$(aws secretsmanager list-secrets \
+            --region "$AWS_REGION" \
+            --filters Key=name,Values="rds!db-" \
+            --query 'SecretList[0].ARN' --output text)
+          PGUSER=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_ARN" \
+            --region "$AWS_REGION" \
+            --query SecretString --output text | jq -r .username)
+          PGPASSWORD=$(aws rds generate-db-auth-token \
+            --hostname "$PGHOST" --port 5432 \
+            --username "$PGUSER" --region "$AWS_REGION")
+          echo "::add-mask::$PGPASSWORD"
+          echo "PGHOST=$PGHOST" >> "$GITHUB_ENV"
+          echo "PGDATABASE=$PGDATABASE" >> "$GITHUB_ENV"
+          echo "PGUSER=$PGUSER" >> "$GITHUB_ENV"
+          echo "PGPASSWORD=$PGPASSWORD" >> "$GITHUB_ENV"
+
+      - name: Probe (read-only)
+        run: |
+          set -euo pipefail
+          echo "=== orchestration_flows by org ==="
+          psql -c "SELECT id, org_id, slug, state, intent_ref, left(title,50) AS title FROM orchestration_flows ORDER BY org_id, created_at;"
+          echo "=== orchestration_nodes by org ==="
+          psql -c "SELECT id, org_id, flow_id, kind, state, issue_ref, left(title,50) AS title FROM orchestration_nodes ORDER BY org_id, created_at;"
+          echo "=== operator identity rows (github ${GH_USER_ID}) ==="
+          psql -c "SELECT id, org_id, user_id, team_id, provider_username FROM user_identities WHERE provider='github' AND provider_user_id='${GH_USER_ID}';"
+          echo "=== users in org ${ORG_ID} ==="
+          psql -c "SELECT id, email, team_id, role FROM users WHERE org_id='${ORG_ID}';"
+
+      - name: Seed operator identity in target org
+        if: inputs.do_seed == true
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 <<SQL
+          INSERT INTO users (id, org_id, team_id, email, name, role, is_shadow, created_at)
+          VALUES ('${SEED_USER_ID}', '${ORG_ID}', '${TEAM_ID}',
+                  '${GH_LOGIN}@github.onboard', '${GH_LOGIN}', 'org_admin', false, now())
+          ON CONFLICT (id) DO NOTHING;
+
+          INSERT INTO user_identities (id, org_id, user_id, team_id, provider,
+                  provider_user_id, provider_username, verification_method, verified_at, created_at)
+          VALUES ('${SEED_IDENTITY_ID}', '${ORG_ID}', '${SEED_USER_ID}', '${TEAM_ID}',
+                  'github', '${GH_USER_ID}', '${GH_LOGIN}', 'admin_manual', now(), now())
+          ON CONFLICT (provider, provider_user_id, org_id) DO NOTHING;
+          SQL
+          echo "=== verify ==="
+          psql -c "SELECT id, org_id, user_id, team_id FROM user_identities WHERE provider='github' AND provider_user_id='${GH_USER_ID}' AND org_id='${ORG_ID}';"
