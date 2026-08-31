@@ -27,7 +27,10 @@ env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
   E2E_CHAT_ENABLED: '1'
-  E2E_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url || 'https://d1g6cal2ts4iis.cloudfront.net' }}
+  # Resolved from SSM at runtime by the "Resolve dashboard URL" step below, so it
+  # cannot drift from the deployed distribution. The workflow_dispatch input still
+  # overrides it for one-off runs against another environment.
+  E2E_CLOUDFRONT_URL: ''
 
 jobs:
   e2e-chat:
@@ -38,6 +41,37 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      # This workflow previously hardcoded a distribution domain, and it had drifted
+      # from the deployed one — so it was either failing or exercising a different
+      # account. It must go through CloudFront rather than the internal ALB, because
+      # Playwright drives a browser against the SPA and S3 is only reachable via the
+      # distribution (OAC). That is also why runbook 6.1 cannot drop the NAT EIPs
+      # from the CloudFront allowlist: this workflow needs them.
+      - name: Resolve dashboard URL
+        run: |
+          set -e
+          if [ -n "${{ github.event.inputs.cloudfront_url }}" ]; then
+            URL="${{ github.event.inputs.cloudfront_url }}"
+            echo "Using dispatch override: $URL"
+          else
+            DOMAIN=$(aws ssm get-parameter \
+              --name "/adp/${ENVIRONMENT}/gateway/frontend-url" \
+              --query Parameter.Value --output text 2>/dev/null || echo "")
+            if [ -z "$DOMAIN" ]; then
+              DOMAIN=$(aws ssm get-parameter \
+                --name "/adp/${ENVIRONMENT}/gateway/cloudfront-domain" \
+                --query Parameter.Value --output text 2>/dev/null || echo "")
+              [ -n "$DOMAIN" ] && DOMAIN="https://${DOMAIN}"
+            fi
+            if [ -z "$DOMAIN" ]; then
+              echo "::error::Could not resolve a dashboard URL from SSM (/adp/${ENVIRONMENT}/gateway/frontend-url or .../cloudfront-domain)."
+              exit 1
+            fi
+            URL="$DOMAIN"
+            echo "Resolved from SSM: $URL"
+          fi
+          echo "E2E_CLOUDFRONT_URL=${URL}" >> "$GITHUB_ENV"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
