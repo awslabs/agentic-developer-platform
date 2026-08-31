@@ -235,7 +235,7 @@ resource "aws_ssm_parameter" "gateway_ws_endpoint" {
   name        = "/adp/${var.environment}/gateway/agent-ws-url"
   description = "WebSocket API Gateway endpoint for agent streaming"
   type        = "String"
-  value       = module.gateway_apigw[0].stage_invoke_url
+  value       = var.agent_ws_public_url != "" ? var.agent_ws_public_url : module.gateway_apigw[0].stage_invoke_url
 
   tags = { Component = "agent-gateway" }
 }

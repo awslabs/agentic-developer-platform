@@ -80,3 +80,35 @@ variable "seed_agent_registry" {
   type        = bool
   default     = true
 }
+
+# -----------------------------------------------------------------------------
+# Published WebSocket URL override
+# -----------------------------------------------------------------------------
+# The value of /adp/<env>/gateway/agent-ws-url is what the frontend build bakes
+# into VITE_AGENT_WS_URL, so it is the browser's view of the WebSocket API — not
+# necessarily the API's own invoke URL. Those differ as soon as the API is
+# fronted by a custom domain, and the parameter is the only place that can say so:
+# it is written from here, and a deployment that put the API behind a custom
+# domain would otherwise have to overwrite another state's parameter to correct
+# it.
+#
+# Two things this does NOT do, both of which fail as a browser-side error with no
+# server-side signal:
+#   - It does not create the custom domain or its API mapping. Set this only once
+#     `wss://<host>` actually resolves and is mapped, or chat cannot connect.
+#   - It does not update the CloudFront CSP. connect-src must list the new origin
+#     (`https:` does not cover `wss:`), or the browser refuses the handshake.
+#
+# Note a custom domain with a root API mapping has no stage segment, so the value
+# is `wss://ws.example.com`, not `wss://ws.example.com/<stage>`.
+
+variable "agent_ws_public_url" {
+  description = "Overrides the WebSocket URL published to /adp/<env>/gateway/agent-ws-url, which the frontend build reads into VITE_AGENT_WS_URL. Set to wss://<host> when the WebSocket API is fronted by a custom domain. Empty (default) publishes the API's own stage invoke URL."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.agent_ws_public_url == "" || startswith(var.agent_ws_public_url, "wss://")
+    error_message = "agent_ws_public_url must start with wss:// — the frontend uses it as a WebSocket URL verbatim."
+  }
+}
