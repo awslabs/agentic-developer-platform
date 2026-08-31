@@ -66,6 +66,7 @@ asserted against them, so there is no file to point anywhere.
 """
 
 import ast
+import copy
 import re
 import sys
 import zipfile
@@ -80,6 +81,7 @@ from code_review_request import (  # noqa: E402
     DEFAULT_POLL_TIMEOUT_SECONDS,
     EXCLUDED_DIRS,
     EXCLUDED_FILE_PATTERNS,
+    MANAGED_SERVICE_ROLE_PATTERN,
     PINNED_MODES,
     TERMINAL_JOB_STATUSES,
     CodeReviewError,
@@ -92,6 +94,7 @@ from code_review_request import (  # noqa: E402
     pinned_modes,
     poll_until_terminal,
     run_code_review,
+    service_role,
     staging_object_key,
     write_findings,
 )
@@ -651,6 +654,209 @@ def test_registration_precedes_creation(tmp_path, profile):
     )
 
 
+# --------------------------------------------------------------------------
+# the service role is the Terraform-managed one (#4525)
+#
+# The identity the SERVICE acts through is the identity whose blast radius a
+# reviewer is reasoning about when they read the least-privilege policy. Before
+# this fix the profile named a role created in a manual session and defined in
+# no Terraform here, so the reviewed policy governed nothing and the effective
+# permissions were unreadable from the repo. These gates keep the reviewed
+# identity and the effective identity the same object.
+# --------------------------------------------------------------------------
+
+
+def _terraform_managed_role_name() -> str:
+    """The role name Terraform builds, read out of the Terraform.
+
+    Not retyped: the point of these gates is that the profile agrees with what
+    ``platform/infra/securityagent-nightly-iam.tf`` creates, and a hardcoded
+    copy here would let both drift together while the gate stayed green.
+    """
+    tf = SECURITYAGENT_IAM_TF.read_text(encoding="utf-8")
+    match = re.search(
+        r'securityagent_role_name\s*=\s*"\$\{local\.name_prefix\}-([a-z-]+)"', tf
+    )
+    assert match, (
+        "could not read securityagent_role_name out of "
+        f"{SECURITYAGENT_IAM_TF}; the Terraform shape changed and this gate is "
+        "no longer checking anything"
+    )
+    return match.group(1)
+
+
+def test_the_profile_names_the_role_terraform_actually_creates(profile):
+    """The profile's ARN must name the Terraform-managed role.
+
+    Read from the Terraform rather than compared against a literal, so renaming
+    the role in ``securityagent-nightly-iam.tf`` fails this gate loudly instead
+    of leaving the profile pointing at a role that no longer exists.
+    """
+    suffix = _terraform_managed_role_name()
+    arn = profile["agent_space"]["service_role"]
+    role_name = arn.rsplit("/", 1)[-1]
+
+    assert role_name.endswith(f"-{suffix}"), (
+        f"profile service_role {arn!r} names role {role_name!r}, which is not the "
+        f"role Terraform creates (<name_prefix>-{suffix}). The reviewed policy in "
+        "securityagent-nightly-policy.json would govern an identity the service "
+        "does not use"
+    )
+
+
+def test_the_profile_service_role_satisfies_the_managed_pattern(profile):
+    """The live profile passes the driver's own fail-closed assertion.
+
+    Belt and braces with the test above: that one proves the name matches
+    Terraform, this one proves the full ARN is one the driver will accept, so a
+    profile edit cannot pass review and then abort the nightly at runtime.
+    """
+    assert service_role(profile) == profile["agent_space"]["service_role"]
+
+
+def test_an_unmanaged_service_role_is_refused(profile):
+    """The manual role must be rejected, not silently used.
+
+    This is the fail-closed half of the fix: if the profile ever drifts back to
+    an identity this repo does not define, the run stops rather than proceeding
+    with permissions nobody in review can see.
+    """
+    drifted = copy.deepcopy(profile)
+    drifted["agent_space"]["service_role"] = (
+        "arn:aws:iam::879318057152:role/adp-securityagent-codereview"
+    )
+
+    with pytest.raises(CodeReviewError) as excinfo:
+        service_role(drifted)
+
+    message = str(excinfo.value)
+    assert "securityagent-nightly-policy.json" in message, (
+        "the error must name the reviewed policy the drifted role bypasses"
+    )
+    assert "securityagent-nightly-iam.tf" in message, (
+        "the error must name the Terraform that defines the expected role"
+    )
+
+
+def test_an_empty_service_role_is_refused(profile):
+    """An absent field must fail like a drifted one, not fall through.
+
+    A missing service_role would otherwise reach the API as a rejected create
+    call whose error reads like a service problem.
+    """
+    drifted = copy.deepcopy(profile)
+    drifted["agent_space"]["service_role"] = ""
+
+    with pytest.raises(CodeReviewError):
+        service_role(drifted)
+
+
+def test_the_managed_pattern_pins_no_account_or_environment():
+    """The pattern must not hardcode the dev account or the dev environment.
+
+    A literal account id or environment here would be a second source of truth
+    for a deploy property and would refuse a correct role in any other account.
+    """
+    assert "879318057152" not in MANAGED_SERVICE_ROLE_PATTERN, (
+        "the pattern must not pin an account id"
+    )
+    assert re.fullmatch(
+        MANAGED_SERVICE_ROLE_PATTERN,
+        "arn:aws:iam::000000000000:role/adp-prod-securityagent-nightly",
+    ), "the pattern must accept the managed role in another account/environment"
+    assert not re.fullmatch(
+        MANAGED_SERVICE_ROLE_PATTERN,
+        "arn:aws:iam::879318057152:role/adp-securityagent-codereview",
+    ), "the pattern must reject the unmanaged manual role"
+
+
+def test_the_drift_check_runs_before_anything_metered(tmp_path, profile):
+    """A drifted role must stop the run before the service is touched at all.
+
+    Ordering is the whole value here. Catching this at CreateCodeReview time
+    would already have uploaded a repo archive; catching it at
+    StartCodeReviewJob time would already be billable.
+    """
+    drifted = copy.deepcopy(profile)
+    drifted["agent_space"]["service_role"] = (
+        "arn:aws:iam::879318057152:role/adp-securityagent-codereview"
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _seed_repo(repo)
+    client = _RecordingClient(statuses=["COMPLETED"])
+    s3 = _RecordingS3()
+
+    with pytest.raises(CodeReviewError):
+        run_code_review(
+            client,
+            s3,
+            drifted,
+            repo_root=repo,
+            archive_path=tmp_path / "src.zip",
+            output_path=tmp_path / "out.json",
+            run_date="2026-08-30",
+            clock=lambda: 0.0,
+            sleeper=lambda _s: None,
+        )
+
+    assert client.calls == [], (
+        f"a drifted service role must reach no service call; got {client.calls}"
+    )
+    assert s3.uploads == [], "a drifted service role must not upload the source archive"
+
+
+def test_the_managed_role_is_what_gets_registered_and_created_with(tmp_path, profile):
+    """The asserted role is the one that reaches both calls.
+
+    Registration and creation read the role through the same accessor, so they
+    cannot name different identities -- the failure mode being that the space
+    registers one role while the review is created with another, which surfaces
+    as "Service role ... not found in agent instance IAM roles".
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _seed_repo(repo)
+    client = _RecordingClient(statuses=["COMPLETED"])
+
+    run_code_review(
+        client,
+        _RecordingS3(),
+        profile,
+        repo_root=repo,
+        archive_path=tmp_path / "src.zip",
+        output_path=tmp_path / "out.json",
+        run_date="2026-08-30",
+        clock=lambda: 0.0,
+        sleeper=lambda _s: None,
+    )
+
+    expected = profile["agent_space"]["service_role"]
+    assert client.kwargs["update_agent_space"]["awsResources"]["iamRoles"] == [expected]
+    assert client.kwargs["create_code_review"]["serviceRole"] == expected
+
+
+def test_the_terraform_output_exporting_the_role_is_consumed(profile):
+    """The role's ARN must be exported, and the profile must point at it.
+
+    ``securityagent_nightly_role_arn`` had no consumer at all, which is what
+    made the reviewed policy dead code. The profile is now the consumer: it
+    records which output supplies the ARN, so an operator applying Terraform
+    knows where the value in the profile comes from.
+    """
+    outputs = (REPO_ROOT / "platform" / "infra" / "outputs.tf").read_text(
+        encoding="utf-8"
+    )
+    recorded = profile["agent_space"]["service_role_terraform_output"]
+    assert f'output "{recorded}"' in outputs, (
+        f"the profile names Terraform output {recorded!r}, which platform/infra/"
+        "outputs.tf does not declare"
+    )
+    assert (
+        REPO_ROOT / profile["agent_space"]["service_role_terraform"]
+    ).is_file(), "the profile points at a Terraform file that does not exist"
+
+
 def test_findings_are_scoped_to_this_job(profile):
     """ListFindings unscoped returns the agent space's whole history rather than
     this night's findings, which would silently mix old findings into the
@@ -860,6 +1066,34 @@ def test_the_nightly_publishes_inside_the_iam_permitted_prefix():
     assert dest_prefix.endswith("/"), (
         "a destination without a trailing slash is treated by `aws s3 cp` as an "
         "object key, writing the findings TO the prefix rather than into it"
+    )
+
+
+def test_the_nightly_does_not_claim_to_run_as_the_service_role():
+    """#4525: the workflow must not state an identity it does not run under.
+
+    The job has no configure-aws-credentials step, so it runs as the ARC
+    runner's ambient IRSA identity. The nightly role is a service role trusted
+    only by securityagent.amazonaws.com and is not assumable by the runner. A
+    comment asserting otherwise is not cosmetic: the dest-prefix fix was
+    designed against that wrong premise. Either the claim goes or a
+    role-to-assume step makes it true -- this asserts one of the two holds.
+    """
+    yaml = pytest.importorskip("yaml", reason="PyYAML required to parse the workflow")
+    text = NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+
+    steps = workflow["jobs"]["code-review"]["steps"]
+    assumes_a_role = any(
+        "configure-aws-credentials" in (step.get("uses") or "") for step in steps
+    )
+    claims_to_run_as_the_service_role = re.search(
+        r"[Tt]his job runs as\s+adp-<env>-securityagent-nightly", text
+    )
+
+    assert not claims_to_run_as_the_service_role or assumes_a_role, (
+        "the workflow claims to run as adp-<env>-securityagent-nightly but has no "
+        "configure-aws-credentials step; it runs as the ARC runner's IRSA identity"
     )
 
 

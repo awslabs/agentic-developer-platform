@@ -70,9 +70,28 @@
 
     "agent_space": {
       "type": "object",
-      "required": ["service_role", "staging_bucket"],
+      "required": [
+        "service_role",
+        "service_role_terraform",
+        "service_role_terraform_output",
+        "staging_bucket"
+      ],
       "properties": {
-        "service_role": { "type": "string", "minLength": 1 },
+        "service_role": {
+          "description": "Must be the Terraform-managed nightly role, so the reviewed least-privilege policy is the one actually in force (#4525). The pattern rejects the hand-made role the manual 2026-08-20 session created, which is defined in no Terraform in this repo.",
+          "type": "string",
+          "pattern": "^arn:aws:iam::[0-9]{12}:role/adp-[a-z0-9-]+-securityagent-nightly$"
+        },
+        "service_role_terraform": {
+          "description": "Repo-relative path to the Terraform that defines service_role, so a reviewer can get from this artifact to the governing policy.",
+          "type": "string",
+          "minLength": 1
+        },
+        "service_role_terraform_output": {
+          "description": "Name of the Terraform output that exports the role ARN.",
+          "type": "string",
+          "minLength": 1
+        },
         "staging_bucket": { "type": "string", "minLength": 1 }
       }
     },

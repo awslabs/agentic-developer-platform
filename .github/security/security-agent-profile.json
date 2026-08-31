@@ -46,10 +46,12 @@
   "agent_space": {
     "existing_id": "as-984b0721-375d-44f2-9e64-e0ff4c8111f8",
     "existing_name": "adp-embark1-secreview",
-    "service_role": "arn:aws:iam::879318057152:role/adp-securityagent-codereview",
+    "service_role": "arn:aws:iam::879318057152:role/adp-dev-securityagent-nightly",
+    "service_role_terraform": "platform/infra/securityagent-nightly-iam.tf",
+    "service_role_terraform_output": "securityagent_nightly_role_arn",
     "staging_bucket": "adp-dev-security-scans-879318057152",
     "reuse": true,
-    "note": "Created by the manual 2026-08-20 session. Already has the service role and staging bucket registered under awsResources, and codeReviewSettings enabled. The nightly reuses it; it does not create one."
+    "note": "The agent space itself was created by the manual 2026-08-20 session and is reused; the nightly does not create one. The service role is NOT the manual one that session made (adp-securityagent-codereview, defined in no Terraform here) — it is the least-privilege role this repo defines and manages, so the policy a reviewer reads in platform/infra/policies/securityagent-nightly-policy.json is the policy actually in force (#4525). UpdateAgentSpace re-registers it on the space on every run, so the switch needs no manual console step — but the role must exist in the account first (terraform apply in platform/infra/, or platform-infra-apply.yml)."
   },
 
   "code_review": {
@@ -273,7 +275,7 @@
         ]
       },
       "excludeRiskTypes": ["FILE_DELETION", "DATABASE_MODIFICATION", "DENIAL_OF_SERVICE"],
-      "serviceRole": "arn:aws:iam::879318057152:role/adp-securityagent-codereview",
+      "serviceRole": "arn:aws:iam::879318057152:role/adp-dev-securityagent-nightly",
       "networkTrafficConfig": {
         "rules": [
           { "effect": "ALLOW", "networkTrafficRuleType": "URL", "pattern": "https://d1g6cal2ts4iis.cloudfront.net/*" },
@@ -289,7 +291,7 @@
       "assets.endpoints": "Single CloudFront origin path; the only externally reachable dev surface.",
       "assets.actors": "SECRETS_MANAGER against the two dev credentials that actually exist today. Reduced from the runbook's four — see actor_matrix.",
       "excludeRiskTypes": "The three destructive-action classes only. Every vulnerability class stays in scope.",
-      "serviceRole": "Pre-registered on the agent space; the call fails without it.",
+      "serviceRole": "The Terraform-managed least-privilege role (platform/infra/securityagent-nightly-iam.tf), same as agent_space.service_role — one identity, and the one whose policy is under review (#4525). Registered on the agent space by UpdateAgentSpace; the call fails without it.",
       "networkTrafficConfig": "Explicit ALLOW for the dev host followed by DENY * — a fail-closed URL fence so the job cannot wander to another host. This lever is absent from the runbook entirely.",
       "codeRemediationStrategy": "DISABLED — a pentest must not open PRs against this repo.",
       "maxTaskHours": "2, per decision D-18. The runbook's worked example ships 20."

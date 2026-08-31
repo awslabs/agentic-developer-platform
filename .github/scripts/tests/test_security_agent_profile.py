@@ -309,6 +309,23 @@ def test_destructiveness_answer_is_explicit(profile):
     )
 
 
+def test_pentest_service_role_agrees_with_the_agent_space(profile):
+    """#4525: one identity, named once.
+
+    ``pentest.request_shape.serviceRole`` and ``agent_space.service_role`` are
+    the same identity described twice. Letting them diverge would put the
+    pentest half back on an identity the code-review half no longer uses, which
+    is the two-identities problem this fix collapses.
+    """
+    assert (
+        profile["pentest"]["request_shape"]["serviceRole"]
+        == profile["agent_space"]["service_role"]
+    ), (
+        "request_shape.serviceRole disagrees with agent_space.service_role; the "
+        "pentest and code-review halves must act through the same reviewed role"
+    )
+
+
 def test_sp4_acceptance_questions_are_answered(profile):
     """A reviewer must be able to answer both SP-4 questions from the profile."""
     pentest = profile["pentest"]
@@ -439,6 +456,63 @@ def test_every_downstream_verb_appears_in_the_companion_doc(profile):
     verbs = set(profile["code_review"]["verbs"]) | set(profile["pentest"]["verbs"])
     missing = sorted(v for v in verbs if v not in doc)
     assert not missing, f"verbs absent from the companion doc: {missing}"
+
+
+def _string_values(node):
+    """Every string value in the profile, recursively. Keys are excluded."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _string_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _string_values(item)
+
+
+def test_no_iam_role_arn_in_the_profile_is_unmanaged(profile):
+    """#4525: every IAM role ARN the profile carries must be one this repo defines.
+
+    ``adp-securityagent-codereview`` was created in a manual 2026-08-20 session
+    and is defined in no Terraform here, so while the profile named it the
+    service acted through permissions no reviewer could read.
+
+    Asserted over every role ARN anywhere in the artifact rather than just the
+    two fields that carried it, because a third field naming an unmanaged role
+    would resurrect the same gap. Matched on ARN *values* rather than a
+    substring of the serialised profile, so the prose recording what this
+    replaced -- which necessarily names the old role -- stays allowed.
+    """
+    managed = re.compile(r"arn:aws:iam::\d{12}:role/adp-[a-z0-9-]+-securityagent-nightly")
+    unmanaged = sorted(
+        {
+            value
+            for value in _string_values(profile)
+            if value.startswith("arn:aws:iam::") and ":role/" in value
+            if not managed.fullmatch(value)
+        }
+    )
+    assert not unmanaged, (
+        f"the profile carries role ARNs this repo does not define: {unmanaged}. The "
+        "service would act through permissions defined nowhere in the repo (#4525)"
+    )
+
+
+def test_the_service_role_records_where_terraform_defines_it(profile):
+    """A reviewer must be able to get from the profile to the governing policy.
+
+    The ARN alone does not say what the role may do. These two fields are the
+    pointer that makes the reviewed policy findable from the artifact that
+    selects it.
+    """
+    agent_space = profile["agent_space"]
+    assert (
+        agent_space["service_role_terraform"]
+        == "platform/infra/securityagent-nightly-iam.tf"
+    ), "service_role_terraform must point at the Terraform that defines the role"
+    assert agent_space["service_role_terraform_output"] == (
+        "securityagent_nightly_role_arn"
+    ), "service_role_terraform_output must name the output that exports the ARN"
 
 
 def test_profile_ships_no_secret_material(profile):

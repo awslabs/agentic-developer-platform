@@ -200,13 +200,28 @@ jobs:
       # NoSuchBucketPolicy on every run and its pass condition is unreachable
       # (#4533).
       #
-      # dest-prefix is REQUIRED here, not cosmetic. This job runs as
-      # adp-<env>-securityagent-nightly, whose inline policy grants s3:PutObject
-      # only under `security-agent/*` (securityagent-nightly-iam.tf sets
+      # dest-prefix is REQUIRED here, not cosmetic — but not for the reason an
+      # earlier version of this comment gave, and the difference matters to
+      # anyone reasoning about this job's blast radius (#4525).
+      #
+      # This job has NO configure-aws-credentials step, so every step in it —
+      # including this publish — runs as the ARC runner's ambient IRSA identity
+      # (adp-<env>-agent-runner-role), NOT as adp-<env>-securityagent-nightly.
+      # The nightly role is a SERVICE role: its trust policy admits only
+      # securityagent.amazonaws.com, so the runner cannot assume it and there is
+      # deliberately no role-to-assume step here. The write below succeeds on the
+      # runner role's s3:PutObject over `arn:aws:s3:::adp-*/*`
+      # (modules/agent-factory/infra/modules/runner-iam/main.tf, S3Combined).
+      #
+      # So dest-prefix is not what keeps this step from failing AccessDenied —
+      # the runner could write anywhere in the bucket. It is what keeps the
+      # findings INSIDE the one prefix the reviewed service-role policy is bounded
+      # to (`security-agent/*`; securityagent-nightly-iam.tf sets
       # securityagent_staging_prefix = "security-agent"). The action's default
-      # `findings/<run_id>/<tool>/` layout is OUTSIDE that prefix, so without
-      # this the publish fails AccessDenied after the review has been polled to
-      # completion and billed — full cost, zero retained findings (#4517).
+      # `findings/<run_id>/<tool>/` layout is outside it, which would scatter the
+      # nightly's output across a prefix the audited identity cannot read and
+      # leave the ledger and every downstream consumer looking in the wrong
+      # place. The dated layout below is also what #4445's Validation asserts.
       #
       # The action defaults this input, so the 8 security-scan.yml callers that
       # omit it keep the legacy layout unchanged.

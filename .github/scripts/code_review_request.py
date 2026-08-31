@@ -70,6 +70,19 @@ something else entirely.
 
 This module never calls ``CreateAgentSpace``: the profile records
 ``agent_space.reuse`` and the space already carries the registrations.
+
+Why the service role is asserted rather than merely read
+-------------------------------------------------------
+``agent_space.service_role`` is the identity the *service* acts through, so it
+is the identity whose blast radius a reviewer is reasoning about when they read
+``platform/infra/policies/securityagent-nightly-policy.json``. Until #4525 the
+profile named a hand-made role that exists in no Terraform in this repo, so the
+reviewed policy applied to nothing and the effective permissions were
+unreadable from the repo alone -- an audit-integrity gap, not a live failure.
+:func:`service_role` therefore does not just read the field: it requires the
+ARN to name the Terraform-managed role, and raises otherwise. It is called once
+at the top of :func:`run_code_review`, before any metered work, so drift back to
+an unmanaged identity stops the run instead of quietly widening it.
 """
 
 from __future__ import annotations
@@ -193,6 +206,20 @@ DEFAULT_POLL_INTERVAL_SECONDS = 30
 # than an observed limit -- named as such so nobody reads it as an API fact.
 BATCH_GET_CHUNK_SIZE = 25
 
+# The shape of a Terraform-managed nightly service role ARN. Matches what
+# platform/infra/securityagent-nightly-iam.tf builds:
+# "${local.name_prefix}-securityagent-nightly", where name_prefix is
+# "adp-<environment>" by default -- so the environment segment is a pattern, not
+# a literal, and this file does not pin an account or an environment.
+#
+# A pattern rather than the exact expected ARN because the account id and
+# environment are properties of the deploy, not of this repo; what this repo can
+# assert is that the role is one it defines. `test_code_review_request.py`
+# closes the remaining gap by reading the role name out of the Terraform and
+# checking the profile's ARN against it, so a Terraform rename fails the gate
+# instead of leaving this pattern matching a role that no longer exists.
+MANAGED_SERVICE_ROLE_PATTERN = r"arn:aws:iam::\d{12}:role/adp-[a-z0-9-]+-securityagent-nightly"
+
 
 class CodeReviewError(RuntimeError):
     """The review could not be driven to a terminal state, or the inputs the
@@ -232,6 +259,37 @@ def _require(profile: dict, section: str, field: str) -> str:
             "the nightly cannot proceed without it."
         )
     return value
+
+
+def service_role(profile: dict) -> str:
+    """The service role ARN, asserted to be the Terraform-managed one.
+
+    Reads ``agent_space.service_role`` and requires it to name the role
+    ``platform/infra/securityagent-nightly-iam.tf`` builds -- ``<name_prefix>``
+    plus ``-securityagent-nightly``, where ``name_prefix`` defaults to
+    ``adp-<environment>``. Anything else raises, because anything else is an
+    identity whose permissions cannot be read from this repo: the reviewed
+    least-privilege policy would apply to nothing while the service acted
+    through a document nobody in review can see (#4525).
+
+    This fails closed on drift in either direction. If Terraform's role naming
+    changes, this raises rather than silently accepting an ARN that no longer
+    corresponds to the audited policy -- a loud failure at the start of a run,
+    not a quiet widening of it.
+    """
+    import re  # noqa: PLC0415 - only needed on this path
+
+    arn = _require(profile, "agent_space", "service_role")
+    if not re.fullmatch(MANAGED_SERVICE_ROLE_PATTERN, arn):
+        raise CodeReviewError(
+            f"agent_space.service_role={arn!r} is not the Terraform-managed "
+            f"nightly role (expected {MANAGED_SERVICE_ROLE_PATTERN!r}, built by "
+            "platform/infra/securityagent-nightly-iam.tf). Refusing to run: the "
+            "service would act through an identity whose permissions are not the "
+            "reviewed ones in "
+            "platform/infra/policies/securityagent-nightly-policy.json."
+        )
+    return arn
 
 
 def pinned_modes(profile: dict) -> dict[str, str]:
@@ -425,19 +483,24 @@ def register_agent_space(client, profile: dict) -> str:
     IAM roles" at create time -- which reads like a permissions problem and is
     not one.
 
+    This registration is also what makes the #4525 switch to the
+    Terraform-managed role take effect with no manual console step: the role
+    registered here is whatever :func:`service_role` returns, re-asserted on
+    every run.
+
     ``name`` is passed back unchanged because the update call requires it even
     when only ``awsResources`` is changing.
     """
     agent_space_id = _require(profile, "agent_space", "existing_id")
     name = _require(profile, "agent_space", "existing_name")
-    service_role = _require(profile, "agent_space", "service_role")
+    role_arn = service_role(profile)
     bucket = _require(profile, "agent_space", "staging_bucket")
 
     client.update_agent_space(
         agentSpaceId=agent_space_id,
         name=name,
         awsResources={
-            "iamRoles": [service_role],
+            "iamRoles": [role_arn],
             "s3Buckets": [f"arn:aws:s3:::{bucket}"],
         },
         codeReviewSettings={
@@ -460,7 +523,9 @@ def create_review(client, profile: dict, agent_space_id: str, title: str, source
         agentSpaceId=agent_space_id,
         assets={"sourceCode": [{"s3Location": source_uri}]},
         # Required in practice even though the synopsis marks it optional.
-        serviceRole=_require(profile, "agent_space", "service_role"),
+        # Same asserted accessor the registration uses, so the role created on
+        # the review cannot differ from the role registered on the space.
+        serviceRole=service_role(profile),
         **pinned_modes(profile),
     )
     code_review_id = response["codeReviewId"]
@@ -650,6 +715,12 @@ def run_code_review(
     """
     title = nightly_title(run_date)
     assert_title_is_legal(title, profile)
+
+    # Asserted here, before the archive is built and before anything metered
+    # starts, so a drifted service role costs nothing. The two call sites below
+    # re-read it through the same accessor; this call is what makes the failure
+    # land at the start of the run rather than partway through it.
+    service_role(profile)
 
     build_source_archive(repo_root, archive_path)
     bucket = _require(profile, "agent_space", "staging_bucket")
