@@ -147,7 +147,22 @@ jobs:
       - name: Smoke test — /start endpoint should return 302 to github.com
         run: |
           set -e
-          API_URL="https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/auth/github/start"
+          # Resolve the broker's public base from SSM rather than hardcoding an
+          # API Gateway URL. The hardcoded value stopped being correct twice over:
+          # the broker is served through the distribution, and once delivery moved
+          # to the broker's own function URL the API Gateway no longer carries an
+          # /auth/github route at all — so the old URL now returns 403 and this
+          # step failed for a reason unrelated to the code it is testing. Same
+          # treatment as the Playwright target.
+          BROKER_URL=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/github-auth-broker-url" \
+            --query Parameter.Value --output text --region "${AWS_REGION}" 2>/dev/null || echo "")
+          if [ -z "$BROKER_URL" ] || [ "$BROKER_URL" = "None" ]; then
+            echo "❌ SSM /adp/${ENVIRONMENT}/gateway/github-auth-broker-url is empty."
+            echo "   gateway-infra publishes it; apply that stack before deploying the broker."
+            exit 1
+          fi
+          API_URL="${BROKER_URL%/}/start"
           echo "Hitting: $API_URL"
           HTTP_CODE=$(curl -sS -o /tmp/resp.out -w "%{http_code}" --max-redirs 0 "$API_URL" || true)
           echo "HTTP code: $HTTP_CODE"
