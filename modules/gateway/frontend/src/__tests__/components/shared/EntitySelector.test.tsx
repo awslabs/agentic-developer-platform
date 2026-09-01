@@ -35,7 +35,9 @@ const defaultProps = {
   disabled: false,
 };
 
-const renderComponent = (props: Partial<typeof defaultProps> = {}) => {
+// Typed from the component's own props rather than `defaultProps`, so opt-in props
+// the defaults do not set (e.g. `allowCloudAgentScope`, #4536) are passable.
+const renderComponent = (props: Partial<Parameters<typeof EntitySelector>[0]> = {}) => {
   return render(<EntitySelector {...defaultProps} {...props} />);
 };
 
@@ -181,6 +183,120 @@ describe('EntitySelector', () => {
 
         expect(onEntityIdChange).toHaveBeenCalledWith('8a41f2c0-1b7d-4e5a-9c33-000000000001');
       });
+    });
+  });
+
+  // Issue #4536: the cloud-agent ledger is keyed by canonical `users.id`, not by
+  // Cognito sub. Submitting the sub here would be #4511 one ledger over — a cap
+  // that exists and matches nothing the usage tracker ever writes.
+  describe('Entity ID Selection - Cloud agents (#4536)', () => {
+    const members = [
+      {
+        id: 'user-operator',
+        email: 'operator@test.com',
+        name: 'Operator',
+        cognitoSub: '8a41f2c0-1b7d-4e5a-9c33-000000000001',
+        role: 'org_admin',
+      },
+      {
+        id: 'user-invited',
+        email: 'invited@test.com',
+        name: 'Invited Person',
+        cognitoSub: null,
+        role: 'member',
+      },
+    ];
+
+    beforeEach(() => {
+      mockGetUsers.mockResolvedValue({
+        items: members,
+        total: members.length,
+        page: 1,
+        pageSize: 100,
+        hasMore: false,
+      });
+    });
+
+    it('offers the cloud-agent scope only when the caller opts in', async () => {
+      // Shared with the rate-limit form, which has no `root_user` enforcement —
+      // offering it there would configure a limit that silently does nothing.
+      renderComponent({ entityType: EntityType.TEAM });
+      expect(screen.queryByRole('option', { name: 'User — cloud agents' })).not.toBeInTheDocument();
+    });
+
+    it('keeps the plain "User" wording where the cloud-agent kind is not on offer', async () => {
+      // "User — direct use" on the rate-limit form would imply a cloud-agents
+      // counterpart exists there; nothing enforces one.
+      renderComponent({ entityType: EntityType.USER });
+      expect(screen.getByRole('option', { name: 'User' })).toBeInTheDocument();
+      expect(screen.queryByRole('option', { name: 'User — direct use' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/traffic this person sends while signed in/i)).not.toBeInTheDocument();
+    });
+
+    it('offers both person-scoped kinds in plain language when opted in', async () => {
+      renderComponent({ entityType: EntityType.TEAM, allowCloudAgentScope: true });
+
+      expect(screen.getByRole('option', { name: 'User — direct use' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'User — cloud agents' })).toBeInTheDocument();
+    });
+
+    it('never renders the internal entity-type name', async () => {
+      renderComponent({ entityType: EntityType.ROOT_USER, allowCloudAgentScope: true });
+
+      await waitFor(() => expect(mockGetUsers).toHaveBeenCalled());
+      expect(document.body.textContent).not.toContain('root_user');
+    });
+
+    it('uses the SAME person picker as direct use', async () => {
+      renderComponent({ entityType: EntityType.ROOT_USER, allowCloudAgentScope: true });
+
+      await waitFor(() => {
+        expect(mockGetUsers).toHaveBeenCalledWith('org-001', { pageSize: 100 });
+      });
+    });
+
+    it('uses the canonical user id as the option value, not the sub', async () => {
+      renderComponent({ entityType: EntityType.ROOT_USER, allowCloudAgentScope: true });
+
+      const option = await waitFor(() => screen.getByRole('option', { name: /Operator/ }));
+      expect(option).toHaveValue('user-operator');
+      expect(option).not.toHaveValue('8a41f2c0-1b7d-4e5a-9c33-000000000001');
+    });
+
+    it('leaves members with no Cognito sub selectable', async () => {
+      // The one asymmetry with direct use: agent spend is attributed from the run's
+      // lineage, not a signed-in session, so a never-signed-in member's canonical id
+      // is a real enforceable key.
+      renderComponent({ entityType: EntityType.ROOT_USER, allowCloudAgentScope: true });
+
+      const option = await waitFor(() => screen.getByRole('option', { name: 'Invited Person (invited@test.com)' }));
+      expect(option).toBeEnabled();
+      expect(option).toHaveValue('user-invited');
+    });
+
+    it('selecting a member reports the canonical id to the parent form', async () => {
+      const user = userEvent.setup();
+      const onEntityIdChange = vi.fn();
+      renderComponent({ entityType: EntityType.ROOT_USER, allowCloudAgentScope: true, onEntityIdChange });
+
+      await waitFor(() => expect(screen.getByRole('option', { name: /Operator/ })).toBeInTheDocument());
+
+      const selects = screen.getAllByRole('combobox');
+      await user.selectOptions(selects[1], 'user-operator');
+
+      expect(onEntityIdChange).toHaveBeenCalledWith('user-operator');
+    });
+
+    it('explains which spend bucket each person-scoped kind governs', async () => {
+      // The labels alone do not say which of a person's dollars land where, and
+      // capping the wrong bucket while believing the other is bounded is the
+      // failure mode the help text exists to prevent.
+      const { unmount } = renderComponent({ entityType: EntityType.ROOT_USER, allowCloudAgentScope: true });
+      expect(screen.getByText(/agent runs this person triggers/i)).toBeInTheDocument();
+      unmount();
+
+      renderComponent({ entityType: EntityType.USER, allowCloudAgentScope: true });
+      expect(screen.getByText(/traffic this person sends while signed in/i)).toBeInTheDocument();
     });
   });
 

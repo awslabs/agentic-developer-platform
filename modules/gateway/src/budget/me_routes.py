@@ -333,10 +333,16 @@ def _band_for(cap: Decimal, spend: Decimal) -> tuple[float | None, BudgetBand]:
 # Shared ancestors (team/department/org) are absent by construction: they can
 # bind, but they are not this person's spend, so they are neither `direct` nor
 # `cloud` and never enter the combined total.
+#
+# Issue #4536 aligned the two person-scoped nouns — "direct use" and "cloud
+# agents" — with the words Budget Management now uses to *author* these caps
+# (frontend/src/utils/entityLabels.ts). Someone who sets a cloud-agent cap on one
+# screen must recognise the line it governs on the other; two different phrasings
+# for one ledger is how a person caps one bucket believing they capped the other.
 _PER_PERSON_SOURCES: dict[EntityType, tuple[BudgetSource, str]] = {
-    EntityType.USER: ("direct", "Direct usage (my machine)"),
-    EntityType.SERVICE_ACCOUNT: ("direct", "Direct usage (service account)"),
-    EntityType.ROOT_USER: ("cloud", "Cloud agents (chains I triggered)"),
+    EntityType.USER: ("direct", "Direct use (my machine)"),
+    EntityType.SERVICE_ACCOUNT: ("direct", "Direct use (service account)"),
+    EntityType.ROOT_USER: ("cloud", "Cloud agents (runs I triggered)"),
 }
 
 # Labels for the shared ancestors. These lines can bind, so they need a name for

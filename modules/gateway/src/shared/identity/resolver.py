@@ -21,6 +21,14 @@ semantics: ``resolve_canonical_user_id`` degrades to the raw input so a read
 path never 500s, whereas ``resolve_user_entity_id`` raises, because its callers
 are *write* paths where persisting an unresolvable id is precisely the bug
 (#4511: a budget keyed on something enforcement can never match).
+
+``resolve_root_user_entity_id`` (issue #4536) is that same write-path resolver
+aimed one ledger over. A person's spend lands in two id namespaces: their
+**direct** traffic under ``entity_type="user"`` keyed by Cognito sub, and the
+spend of agent chains they triggered under ``entity_type="root_user"`` keyed by
+canonical ``users.id`` (#4300). Both resolvers therefore accept the *same* input
+forms and differ only in which key they return — one shared lookup, two targets,
+so a form that resolves for one kind of person-budget cannot fail for the other.
 """
 
 import logging
@@ -45,6 +53,12 @@ _GITHUB_USERNAME_PREFIX = "github_"
 # Named in the 422 so an operator who typed the wrong thing is told what the
 # right thing is, rather than being left to guess.
 _ACCEPTED_FORMS = "a Cognito sub, a canonical ADP user id, or a Cognito username of the form GitHub_<github_user_id>"
+
+# Mirrors `src.budget.schemas.SERVICE_PRINCIPAL_QUALIFIER` (#4344). Duplicated
+# rather than imported: importing src.budget from src.shared would invert the
+# dependency direction (src.budget.__init__ pulls in routes -> src.auth). Pinned
+# equal to the canonical constant by a test.
+_SERVICE_PRINCIPAL_QUALIFIER = "service:"
 
 
 async def resolve_canonical_user_id(db: AsyncSession, cognito_sub: str) -> str:
@@ -85,7 +99,7 @@ async def resolve_canonical_user_id(db: AsyncSession, cognito_sub: str) -> str:
 
 
 class UnresolvableUserEntityError(BedrockGatewayError):
-    """A supplied ``user`` entity id cannot be resolved to a Cognito sub.
+    """A supplied person-scoped entity id cannot be resolved to a real user.
 
     422 rather than 400: the value is syntactically fine, it just does not
     identify an enforceable user in this organization. The message names the
@@ -118,21 +132,13 @@ async def resolve_user_entity_id(db: AsyncSession, org_id: str, supplied_id: str
     unenforceable. This function is the single chokepoint that guarantees a
     written key is one the engine can match.
 
-    Accepted forms, tried in order:
-
-    1. **Cognito sub** — passed through, but only after confirming a ``users``
-       row with that sub exists *in this org*. A sub with no local row would
-       still produce an inert budget, so it is rejected, not trusted.
-    2. **Canonical ``users.id``** — mapped to that row's ``cognito_sub``.
-    3. **Cognito username** ``GitHub_<github_user_id>`` (case-insensitive
-       prefix) — the prefix is stripped and the remainder resolved through
-       ``user_identities``, which is the only bridge actually populated for
-       GitHub-onboarded users. ``users.cognito_username`` is deliberately NOT
-       consulted: it is only ever set on the admin-invite path (to the email),
-       so it is NULL for precisely the population this bug affects.
-
-    Anything else raises. So does any form that resolves to a user whose
-    ``cognito_sub`` is NULL.
+    Accepted forms are :func:`_resolve_user_row`'s — a Cognito sub, a canonical
+    ``users.id``, or a ``GitHub_<github_user_id>`` Cognito username — each scoped
+    to ``org_id``. Anything else raises. So does any form that resolves to a user
+    whose ``cognito_sub`` is NULL: they have no identity the budget engine can
+    ever present, so a direct-use budget for them could only ever be inert. (The
+    cloud-agent ledger has no such restriction — see
+    :func:`resolve_root_user_entity_id`.)
 
     Args:
         db: Async session bound to the gateway DB.
@@ -150,19 +156,100 @@ async def resolve_user_entity_id(db: AsyncSession, org_id: str, supplied_id: str
     Raises:
         UnresolvableUserEntityError: 422; nothing is persisted.
     """
+    user_row = await _resolve_user_row(db, org_id, supplied_id)
+    return _require_sub(user_row, supplied_id)
+
+
+async def resolve_root_user_entity_id(db: AsyncSession, org_id: str, supplied_id: str) -> str:
+    """Resolve a supplied ``root_user`` entity id to its canonical ``users.id``.
+
+    Issue #4536. The cloud-agent ledger is keyed by canonical ``users.id``, not by
+    Cognito sub: the budget-usage tracker writes ``root_user`` rows from the
+    lineage plane's ``root_human_id`` (#4300), and the ``/api/me/budget`` read
+    path derives the same key by resolving the caller's sub through ``users``
+    (``me_routes._resolve_root_principal``). A ``root_user`` cap written in any
+    other namespace is inert in exactly the way #4511 was one ledger over.
+
+    Accepts the same input forms as :func:`resolve_user_entity_id` — one shared
+    lookup, so the person picker can offer both budget kinds without a form
+    resolving for one and failing for the other. Two deliberate differences:
+
+    * The return value is the canonical id rather than the sub.
+    * A member whose ``cognito_sub`` is NULL **is** resolvable. A canonical id
+      always exists, and cloud-agent spend is attributed from the run's lineage
+      rather than from a signed-in session, so such a cap is enforceable — unlike
+      a direct-use cap for the same person.
+
+    ``service:``-qualified root principals (unattended CI/EventBridge triggers,
+    #4344) are passed through unchanged: they are already canonical ``root_user``
+    keys and have no ``users`` row to resolve against, by design.
+
+    Args:
+        db: Async session bound to the gateway DB.
+        org_id: The **target** org from the route path, already authorized by the
+            caller — see :func:`resolve_user_entity_id` for why it is not the
+            caller's own org.
+        supplied_id: The raw id from the request body or path.
+
+    Returns:
+        The canonical ``users.id`` to persist and match on.
+
+    Raises:
+        UnresolvableUserEntityError: 422; nothing is persisted.
+    """
+    # Checked before the lookup: a qualified service key is not a person and must
+    # not be run through a `users` search that could only ever miss.
+    candidate = supplied_id.strip()
+    if candidate.startswith(_SERVICE_PRINCIPAL_QUALIFIER):
+        principal = candidate[len(_SERVICE_PRINCIPAL_QUALIFIER) :]
+        # Enforcement only ever writes ``service:<non-empty registry id>``, so a
+        # blank or whitespace-padded principal is a key no ledger row will ever
+        # carry — an inert cap of exactly the #4511 class this resolver blocks.
+        if not principal or principal != principal.strip():
+            raise UnresolvableUserEntityError(
+                supplied_id,
+                f"the id after '{_SERVICE_PRINCIPAL_QUALIFIER}' must be a non-empty service principal id without surrounding whitespace",
+            )
+        return candidate
+
+    user_row = await _resolve_user_row(db, org_id, supplied_id)
+    return user_row.id
+
+
+async def _resolve_user_row(db: AsyncSession, org_id: str, supplied_id: str) -> User:
+    """Find the ``users`` row a supplied person-scoped id names, or raise.
+
+    The single lookup behind both resolvers, so the accepted input forms cannot
+    drift apart between the two person-scoped budget kinds. It returns the row
+    rather than a key: which column becomes the ledger key is the caller's
+    decision, and it differs per ledger.
+
+    Forms, tried in order:
+
+    1. **Cognito sub** — matched against a ``users`` row *in this org*. A sub with
+       no local row would still produce an inert budget, so it is rejected, not
+       trusted.
+    2. **Canonical ``users.id``**.
+    3. **Cognito username** ``GitHub_<github_user_id>`` (case-insensitive prefix)
+       — the prefix is stripped and the remainder resolved through
+       ``user_identities``, which is the only bridge actually populated for
+       GitHub-onboarded users. ``users.cognito_username`` is deliberately NOT
+       consulted: it is only ever set on the admin-invite path (to the email), so
+       it is NULL for precisely the population #4511 affected.
+    """
     candidate = supplied_id.strip()
     if not candidate:
         raise UnresolvableUserEntityError(supplied_id, "the id is empty")
 
-    # 1. Already a sub? Confirm it names a real user in this org before trusting
-    #    it — an unknown sub is as inert as a username.
-    if await db.scalar(select(User.id).where(User.org_id == org_id, User.cognito_sub == candidate)):
-        return candidate
+    # 1. Already a sub?
+    user_row = (await db.execute(select(User).where(User.org_id == org_id, User.cognito_sub == candidate))).scalar_one_or_none()
+    if user_row is not None:
+        return user_row
 
     # 2. Canonical users.id.
     user_row = (await db.execute(select(User).where(User.org_id == org_id, User.id == candidate))).scalar_one_or_none()
     if user_row is not None:
-        return _require_sub(user_row, supplied_id)
+        return user_row
 
     # 3. Cognito username of the form GitHub_<github_user_id>.
     if candidate.lower().startswith(_GITHUB_USERNAME_PREFIX):
@@ -177,8 +264,8 @@ async def resolve_user_entity_id(db: AsyncSession, org_id: str, supplied_id: str
     raise UnresolvableUserEntityError(supplied_id, "no user in this organization matches this id")
 
 
-async def _resolve_via_github_identity(db: AsyncSession, org_id: str, github_user_id: str, supplied_id: str) -> str:
-    """Bridge a GitHub numeric user id to a Cognito sub via ``user_identities``.
+async def _resolve_via_github_identity(db: AsyncSession, org_id: str, github_user_id: str, supplied_id: str) -> User:
+    """Bridge a GitHub numeric user id to its ``users`` row via ``user_identities``.
 
     The ``org_id`` filter is in SQL and non-optional. Since migration 021
     (#2961) ``user_identities`` is unique per ``(provider, provider_user_id,
@@ -209,22 +296,23 @@ async def _resolve_via_github_identity(db: AsyncSession, org_id: str, github_use
     if user_row is None:
         raise UnresolvableUserEntityError(supplied_id, "the linked GitHub identity points at a user outside this organization")
 
-    resolved = _require_sub(user_row, supplied_id)
     logger.warning(
-        "Resolved user entity id %r to cognito_sub %r via user_identities (org_id=%s)",
+        "Resolved person-scoped entity id %r to users.id %r via user_identities (org_id=%s)",
         supplied_id,
-        resolved,
+        user_row.id,
         org_id,
     )
-    return resolved
+    return user_row
 
 
 def _require_sub(user_row: User, supplied_id: str) -> str:
     """Return the row's ``cognito_sub``, or raise if it has none.
 
     ``users.cognito_sub`` is nullable (shadow users, invited-but-never-logged-in
-    users). Such a user has no identity the budget engine can ever present, so a
-    budget for them can only ever be inert — 422 is the honest answer.
+    users). Such a user has no identity the budget engine can ever present for
+    their *direct* traffic, so a ``user`` budget for them can only ever be inert —
+    422 is the honest answer. Deliberately NOT applied on the ``root_user`` path,
+    where the canonical id is the key and always exists (#4536).
     """
     if not user_row.cognito_sub:
         raise UnresolvableUserEntityError(

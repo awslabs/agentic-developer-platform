@@ -299,7 +299,15 @@ class BudgetListResponse(BaseModel):
 class BudgetCreateRequest(BaseModel):
     """Request schema for creating a new budget."""
 
-    entity_type: Literal["org", "department", "team", "user"] = Field(..., description="Entity type: org, department, team, user")
+    # Issue #4536: `root_user` is the cloud-agent ledger — spend by agent runs a
+    # person triggered, keyed by canonical `users.id` (#4300). The dashboard has
+    # always displayed its caps; without this value they could only be created by
+    # hand-crafted API calls. Presented to users as "cloud agents", never by this
+    # name. The rate-limit schema deliberately does NOT gain it: nothing enforces a
+    # `root_user` rate limit, so offering one would configure a no-op.
+    entity_type: Literal["org", "department", "team", "user", "root_user"] = Field(
+        ..., description="Entity type: org, department, team, user, root_user"
+    )
     entity_id: str = Field(..., min_length=1, description="Entity ID")
     # Issue #4328: PeriodType, not a bare str (see BudgetConfigResponse).
     period_type: PeriodType = Field(..., description="Period type: daily, weekly, monthly")

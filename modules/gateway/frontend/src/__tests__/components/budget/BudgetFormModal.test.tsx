@@ -149,9 +149,33 @@ describe('BudgetFormModal', () => {
         expect(screen.getByRole('dialog')).toBeInTheDocument();
       });
 
-      // In edit mode, entity type and ID are shown as static text
-      expect(screen.getByText('team')).toBeInTheDocument();
+      // In edit mode, entity type and ID are shown as static text. Issue #4536:
+      // the type renders as its friendly label rather than the raw wire value —
+      // the read-only edit view is otherwise where `root_user` would leak.
+      expect(screen.getByText('Team')).toBeInTheDocument();
       expect(screen.getByText('team-001')).toBeInTheDocument();
+    });
+
+    // Issue #4536: the concept must never be named by its schema value. This is
+    // the surface that renders `entityType` directly, so it is the one that would
+    // print `root_user` if the label lookup were dropped.
+    it('names a cloud-agent budget in plain language when editing', async () => {
+      renderComponent({
+        editData: {
+          entityType: EntityType.ROOT_USER,
+          entityId: 'user-operator',
+          periodType: PeriodType.MONTHLY,
+          budgetAmountUsd: 500,
+          enforcementMode: EnforcementMode.HARD,
+        },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+      });
+
+      expect(screen.getByText('User — cloud agents')).toBeInTheDocument();
+      expect(screen.getByRole('dialog').textContent).not.toContain('root_user');
     });
   });
 

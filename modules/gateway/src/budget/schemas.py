@@ -192,7 +192,7 @@ class BudgetLine(BaseModel):
         description=("Which ledger this line was read from — `user`, `root_user`, `team`, `department`, `org` or `service_account`.")
     )
     label: str = Field(
-        description="Human-readable line name, e.g. `Direct usage (my machine)`. Server-supplied so two surfaces cannot word it differently."
+        description="Human-readable line name, e.g. `Direct use (my machine)`. Server-supplied so two surfaces cannot word it differently."
     )
     source: BudgetSource | None = Field(
         description=(

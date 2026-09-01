@@ -15,6 +15,7 @@ import { EntitySelector } from '@/components/shared/EntitySelector';
 import { useToast } from '@/contexts/ToastContext';
 import { createBudget, updateBudget } from '@/services/budget';
 import { EntityType, PeriodType, EnforcementMode } from '@/types';
+import { formatEntityType } from '@/utils/entityLabels';
 
 interface BudgetFormData {
   entityType: string;
@@ -146,8 +147,10 @@ export function BudgetFormModal({
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Entity Type
               </label>
+              {/* The friendly label, not the raw wire value — editing a cloud-agent
+                  budget must not be where `root_user` leaks onto the screen (#4536). */}
               <div className="w-full px-3 py-2 border rounded-lg border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
-                {formData.entityType}
+                {formatEntityType(formData.entityType)}
               </div>
             </div>
             <div>
@@ -167,6 +170,10 @@ export function BudgetFormModal({
             onEntityTypeChange={(entityType) => setFormData((prev) => ({ ...prev, entityType, entityId: '' }))}
             onEntityIdChange={(entityId) => setFormData((prev) => ({ ...prev, entityId }))}
             disabled={false}
+            // Issue #4536: budgets are the one surface where a per-person cloud-agent
+            // cap is real — the create/update path resolves and persists the type, and
+            // the /budget dashboard already displays it.
+            allowCloudAgentScope
           />
         )}
 

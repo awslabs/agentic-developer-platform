@@ -1,5 +1,7 @@
 """Unit tests for AdminService."""
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -784,6 +786,297 @@ class TestUpdateBudgetConfigMiss:
                 "someone@example.com",
                 BudgetConfigUpdateRequest(budget_amount_usd=Decimal("10.00"), enforcement_mode="hard"),
             )
+
+
+# Issue #4536: cloud-agent (`root_user`) budgets are keyed on the canonical
+# `users.id` — what the usage tracker writes (#4300) and what the /api/me/budget
+# read path derives. This is #4511's invariant one ledger over: the same accepted
+# input forms, resolved to a DIFFERENT key, because the two person-scoped ledgers
+# live in different id namespaces.
+
+
+class TestRootUserBudgetKeyResolution:
+    """Tests that `root_user` budget keys resolve to the canonical id (#4536)."""
+
+    GITHUB_USER_ID = "31513556"
+    COGNITO_SUB = "8a41f2c0-1b7d-4e5a-9c33-000000000042"
+    CANONICAL_ID = "user-cloud-operator"
+
+    @pytest.fixture
+    async def github_member(self, db_session: AsyncSession, sample_organizations: list[Organization]) -> User:
+        """A GitHub-onboarded member of org-001, reachable by all three forms."""
+        from src.shared.models.vault import UserIdentity
+
+        user = User(
+            id=self.CANONICAL_ID,
+            org_id="org-001",
+            team_id="team-001",
+            email="cloud@test.com",
+            name="Cloud Operator",
+            cognito_sub=self.COGNITO_SUB,
+        )
+        db_session.add(user)
+        await db_session.flush()
+        db_session.add(
+            UserIdentity(
+                id="identity-cloud-operator",
+                org_id="org-001",
+                team_id="team-001",
+                user_id=self.CANONICAL_ID,
+                provider="github",
+                provider_user_id=self.GITHUB_USER_ID,
+                provider_username="cloud-operator",
+                verification_method="oauth",
+            )
+        )
+        await db_session.commit()
+        return user
+
+    def _request(self, entity_id: str):
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetCreateRequest
+
+        return BudgetCreateRequest(
+            entity_type="root_user",
+            entity_id=entity_id,
+            period_type="monthly",
+            budget_amount_usd=Decimal("250.00"),
+            enforcement_mode="hard",
+        )
+
+    @pytest.mark.asyncio
+    async def test_root_user_is_an_accepted_entity_type(self, admin_service: AdminService, github_member: User):
+        """The gap the issue reports: the API refused this type outright.
+
+        `BudgetCreateRequest.entity_type` was a Literal without `root_user`, so a
+        cloud-agent cap could not be created at all — not even by API call.
+        """
+        result = await admin_service.create_budget("org-001", self._request(self.CANONICAL_ID))
+        assert result.entity_type == "root_user"
+
+    @pytest.mark.asyncio
+    async def test_create_with_canonical_id_persists_unchanged(self, admin_service: AdminService, github_member: User):
+        """The canonical id is already the key, so it round-trips untouched.
+
+        This is what the person picker submits for a cloud-agent budget.
+        """
+        result = await admin_service.create_budget("org-001", self._request(self.CANONICAL_ID))
+        assert result.entity_id == self.CANONICAL_ID
+
+    @pytest.mark.asyncio
+    async def test_create_with_sub_resolves_to_canonical_id(self, admin_service: AdminService, github_member: User):
+        """A sub must NOT be persisted here — it is the other ledger's key.
+
+        Persisting it would be #4511 recreated one ledger over: a cap that exists
+        and matches nothing the tracker ever writes.
+        """
+        result = await admin_service.create_budget("org-001", self._request(self.COGNITO_SUB))
+        assert result.entity_id == self.CANONICAL_ID
+
+    @pytest.mark.asyncio
+    async def test_create_with_cognito_username_resolves_to_canonical_id(self, admin_service: AdminService, github_member: User):
+        """`GitHub_<id>` — the form the broker mints — resolves."""
+        result = await admin_service.create_budget("org-001", self._request(f"GitHub_{self.GITHUB_USER_ID}"))
+        assert result.entity_id == self.CANONICAL_ID
+
+    @pytest.mark.asyncio
+    async def test_create_with_lowercase_github_prefix_resolves(self, admin_service: AdminService, github_member: User):
+        """Prefix matching is case-insensitive, as on the direct-use path."""
+        result = await admin_service.create_budget("org-001", self._request(f"github_{self.GITHUB_USER_ID}"))
+        assert result.entity_id == self.CANONICAL_ID
+
+    @pytest.mark.asyncio
+    async def test_create_for_member_without_sub_is_allowed(
+        self, admin_service: AdminService, db_session: AsyncSession, sample_organizations: list[Organization]
+    ):
+        """The one asymmetry with direct-use: a never-signed-in member IS cappable.
+
+        `user` budgets 422 for this person (no sub for enforcement to match), but
+        their cloud spend is attributed from the run's lineage, so the canonical id
+        is a real enforceable key. Refusing here would deny a working budget.
+        """
+        db_session.add(
+            User(
+                id="user-cloud-invited",
+                org_id="org-001",
+                team_id="team-001",
+                email="cloud-invited@test.com",
+                cognito_sub=None,
+            )
+        )
+        await db_session.commit()
+
+        result = await admin_service.create_budget("org-001", self._request("user-cloud-invited"))
+        assert result.entity_id == "user-cloud-invited"
+
+    @pytest.mark.asyncio
+    async def test_create_with_service_principal_passes_through(self, admin_service: AdminService, github_member: User):
+        """`service:` root principals are already canonical keys (#4344).
+
+        Not offered in the form, but the API accepts them unmodified so an
+        unattended CI/EventBridge trigger can still be given a ceiling.
+        """
+        result = await admin_service.create_budget("org-001", self._request("service:eventbridge:adp-dev-nightly"))
+        assert result.entity_id == "service:eventbridge:adp-dev-nightly"
+
+    @pytest.mark.asyncio
+    async def test_create_with_email_rejected_and_persists_nothing(self, admin_service: AdminService, github_member: User):
+        """Email is not a key (no uniqueness constraint) — 422, nothing written."""
+        with pytest.raises(UnresolvableUserEntityError) as exc:
+            await admin_service.create_budget("org-001", self._request("cloud@test.com"))
+        assert exc.value.status_code == 422
+
+        budgets = await admin_service.get_budgets_list("org-001")
+        assert budgets.total == 0
+
+    @pytest.mark.asyncio
+    async def test_create_does_not_resolve_across_tenants(self, admin_service: AdminService, github_member: User):
+        """org-001's member must not resolve when creating a budget in org-002.
+
+        Cross-tenant keying is the blast radius the issue calls out by name.
+        """
+        with pytest.raises(UnresolvableUserEntityError):
+            await admin_service.create_budget("org-002", self._request(f"GitHub_{self.GITHUB_USER_ID}"))
+
+    @pytest.mark.asyncio
+    async def test_sub_and_canonical_id_collide_as_duplicates(self, admin_service: AdminService, github_member: User):
+        """Two spellings of one person are one budget, not two.
+
+        Resolution runs before the conflict probe, so the second create is a 409
+        rather than a second row violating uq_budget_config.
+        """
+        await admin_service.create_budget("org-001", self._request(self.CANONICAL_ID))
+        with pytest.raises(ResourceConflictError):
+            await admin_service.create_budget("org-001", self._request(self.COGNITO_SUB))
+
+    @pytest.mark.asyncio
+    async def test_direct_use_and_cloud_agent_budgets_coexist(self, admin_service: AdminService, github_member: User):
+        """One person can hold both caps, on separate rows with separate keys.
+
+        The whole point of the second entity type: capping direct use leaves cloud
+        spend unbounded and vice versa, so both must be creatable for one person
+        without colliding.
+        """
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetCreateRequest
+
+        cloud = await admin_service.create_budget("org-001", self._request(self.CANONICAL_ID))
+        direct = await admin_service.create_budget(
+            "org-001",
+            BudgetCreateRequest(
+                entity_type="user",
+                entity_id=self.CANONICAL_ID,
+                period_type="monthly",
+                budget_amount_usd=Decimal("100.00"),
+                enforcement_mode="hard",
+            ),
+        )
+
+        assert cloud.entity_id == self.CANONICAL_ID
+        assert direct.entity_id == self.COGNITO_SUB, "direct-use must still key on the sub (#4511)"
+        assert (await admin_service.get_budgets_list("org-001")).total == 2
+
+    @pytest.mark.asyncio
+    async def test_update_path_applies_same_resolution(self, admin_service: AdminService, github_member: User):
+        """The path param gets the same resolution as the create body.
+
+        Without it, editing a cloud-agent budget by sub would miss the
+        canonical-id-keyed row the operator meant to edit.
+        """
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetConfigUpdateRequest
+
+        # The budget service is mocked in this fixture, so assert on the id the
+        # service looked the budget up by — that is the behaviour under test.
+        with pytest.raises(ResourceNotFoundError):
+            await admin_service.update_budget_config(
+                "org-001",
+                "root_user",
+                self.COGNITO_SUB,
+                BudgetConfigUpdateRequest(budget_amount_usd=Decimal("10.00"), enforcement_mode="hard"),
+            )
+
+        lookup_entity_id = admin_service.budget_service.get_budgets_for_entity.await_args.args[1]
+        assert lookup_entity_id == self.CANONICAL_ID, "update looked the budget up by an id the cloud ledger never uses"
+
+    @pytest.mark.asyncio
+    async def test_update_with_unresolvable_id_raises_422(self, admin_service: AdminService, github_member: User):
+        """An unresolvable id on the update path is a 422, not a 404."""
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetConfigUpdateRequest
+
+        with pytest.raises(UnresolvableUserEntityError):
+            await admin_service.update_budget_config(
+                "org-001",
+                "root_user",
+                "cloud@test.com",
+                BudgetConfigUpdateRequest(budget_amount_usd=Decimal("10.00"), enforcement_mode="hard"),
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_key_matches_dashboard_read_key(self, admin_service: AdminService, github_member: User):
+        """Guard test (I6, one ledger over): create key == dashboard read key.
+
+        The dashboard's cloud-agent line is read by resolving the caller's Cognito
+        sub to their canonical id (`me_routes._resolve_root_principal`) and querying
+        `root_user` on it (`_read_cap`). This drives BOTH real paths: create through
+        the admin service using the incident-shaped input, then read through the
+        owner's own derivation. If a future change lets create persist a non-canonical
+        key, this fails rather than shipping another inert cap.
+        """
+        from src.budget.me_routes import _read_cap, _resolve_root_principal
+        from src.shared.schemas.budget import EntityType, PeriodType
+
+        # Create the way the UI does — via a form-supplied identity form.
+        await admin_service.create_budget("org-001", self._request(f"GitHub_{self.GITHUB_USER_ID}"))
+
+        # Derive the read key the way the owner's own page does: from their token's
+        # Cognito sub, through the same resolver the read path uses.
+        context = SimpleNamespace(
+            account_type="user",
+            user_id=self.COGNITO_SUB,
+            org_id="org-001",
+        )
+        canonical_user_id, identity_status = await _resolve_root_principal(admin_service.db, context)
+
+        assert identity_status == "resolved"
+        cap = await _read_cap(
+            admin_service.db,
+            "org-001",
+            EntityType.ROOT_USER,
+            canonical_user_id,
+            PeriodType.MONTHLY,
+        )
+
+        assert cap is not None, "cloud-agent budget created via the admin path is invisible to the owner's read path"
+        assert cap.entity_id == self.CANONICAL_ID
+
+    @pytest.mark.asyncio
+    async def test_list_resolves_a_display_name_for_canonical_keys(self, admin_service: AdminService, github_member: User):
+        """A cloud-agent row must render as a person, not a bare UUID.
+
+        The Cognito batch lookup used for `user` rows is keyed by sub and cannot
+        name these, so without a `users`-backed lookup every cloud-agent budget
+        would list as an opaque id.
+        """
+        await admin_service.create_budget("org-001", self._request(self.CANONICAL_ID))
+
+        listed = await admin_service.get_budgets_list("org-001")
+        row = next(item for item in listed.items if item.entity_type == "root_user")
+        assert row.entity_display_name == "Cloud Operator"
+
+    @pytest.mark.asyncio
+    async def test_list_leaves_service_principal_rows_unnamed(self, admin_service: AdminService, github_member: User):
+        """A `service:` row has no person to name, so no name is invented."""
+        await admin_service.create_budget("org-001", self._request("service:ci:nightly"))
+
+        listed = await admin_service.get_budgets_list("org-001")
+        row = next(item for item in listed.items if item.entity_type == "root_user")
+        assert row.entity_display_name is None
 
 
 # Issue #185: Rate Limit List/Create/Delete Tests

@@ -32,7 +32,7 @@ from src.admin.schemas import (
     RateLimitListItem,
     RateLimitListResponse,
 )
-from src.shared.identity import resolve_user_entity_id
+from src.shared.identity import resolve_root_user_entity_id, resolve_user_entity_id
 from src.shared.interfaces.budget import IBudgetService
 from src.shared.interfaces.ratelimit import IRateLimitService
 from src.shared.models.budget import BudgetConfig, BudgetUsage
@@ -629,7 +629,8 @@ class AdminService:
         Args:
             org_id: Organization ID
             entity_type: Entity type
-            entity_id: Entity ID (from the route path; resolved for `user` — #4511)
+            entity_id: Entity ID (from the route path; resolved for `user` and
+                `root_user` — #4511, #4536)
             request: Update request
 
         Returns:
@@ -637,14 +638,14 @@ class AdminService:
 
         Raises:
             ResourceNotFoundError: 404, if no budget exists for this entity
-            UnresolvableUserEntityError: 422, if a ``user`` entity id cannot be
-                resolved to a Cognito sub (#4511)
+            UnresolvableUserEntityError: 422, if a person-scoped entity id cannot
+                be resolved to the key its ledger uses (#4511, #4536)
 
         Issue #4511: this used to ``return None`` on every miss, which the route
         rendered as **HTTP 200 with a null body** — an operator editing a budget
         got a success response and no change. Every miss is now a 404. The same
-        `user` id resolution as ``create_budget`` is applied, so editing a budget
-        cannot re-introduce a mis-keyed row.
+        person-scoped id resolution as ``create_budget`` is applied, so editing a
+        budget cannot re-introduce a mis-keyed row.
         """
         if not self.budget_service:
             raise ResourceNotFoundError("BudgetConfig", f"{entity_type}/{entity_id}")
@@ -656,8 +657,7 @@ class AdminService:
         except ValueError:
             raise ResourceNotFoundError("BudgetConfig", f"{entity_type}/{entity_id}") from None
 
-        if entity_type == "user":
-            entity_id = await resolve_user_entity_id(self.db, org_id, entity_id)
+        entity_id = await self._resolve_person_entity_id(org_id, entity_type, entity_id)
 
         # Get existing budget
         budgets = await self.budget_service.get_budgets_for_entity(entity, entity_id, org_id)
@@ -1830,6 +1830,12 @@ class AdminService:
         # Resolve user display names from Cognito (batch lookup)
         user_display_names: dict[str, str] = {}
         user_entity_ids = [c.entity_id for c in budget_configs if c.entity_type == "user"]
+        # Issue #4536: cloud-agent rows are keyed by canonical `users.id`, which
+        # Cognito knows nothing about, so they need their own lookup — through
+        # `users` — or every cloud-agent budget renders as a bare UUID.
+        root_user_display_names = await self._resolve_root_user_display_names(
+            org_id, [c.entity_id for c in budget_configs if c.entity_type == "root_user"]
+        )
         if user_entity_ids and cognito_service:
             try:
                 cognito_users, _ = cognito_service.list_users_by_org(org_id)
@@ -1875,10 +1881,14 @@ class AdminService:
             current_usage_usd = usage.total_cost_usd if usage else Decimal("0.00")
             utilization_pct = float(current_usage_usd / config.budget_amount_usd * 100) if config.budget_amount_usd > 0 else 0.0
 
-            # Resolve display name for user entities
+            # Resolve display name for the two person-scoped entity types. They are
+            # keyed in different namespaces, so each reads its own map — a shared
+            # lookup would silently show one person's name against another's row.
             display_name = None
             if config.entity_type == "user":
                 display_name = user_display_names.get(config.entity_id)
+            elif config.entity_type == "root_user":
+                display_name = root_user_display_names.get(config.entity_id)
 
             items.append(
                 BudgetListItem(
@@ -1902,6 +1912,50 @@ class AdminService:
             has_more=(page * page_size) < total,
         )
 
+    async def _resolve_root_user_display_names(self, org_id: str, entity_ids: list[str]) -> dict[str, str]:
+        """Map canonical ``users.id`` budget keys to a human-readable name.
+
+        Issue #4536. ``root_user`` rows are keyed by canonical ``users.id``, so the
+        Cognito batch lookup used for ``user`` rows cannot name them — it is keyed
+        by sub. This resolves them from ``users`` instead, org-scoped, so a row from
+        another tenant can never be labelled with a local person's name.
+
+        ``service:``-qualified ids (unattended CI/EventBridge triggers, #4344) have
+        no ``users`` row by design and are simply absent from the result; the caller
+        renders the raw id for them, which is the honest label for an automation.
+        """
+        resolvable = [eid for eid in entity_ids if not eid.startswith("service:")]
+        if not resolvable:
+            return {}
+
+        rows = await self.db.execute(select(User).where(User.org_id == org_id, User.id.in_(resolvable)))
+        return {user.id: (user.name or user.email or user.id) for user in rows.scalars().all()}
+
+    async def _resolve_person_entity_id(self, org_id: str, entity_type: str, entity_id: str) -> str:
+        """Normalise a person-scoped entity id to the key its ledger is written with.
+
+        The two per-person budget kinds are keyed in different namespaces, and each
+        must be written with the one its own ledger and read path use:
+
+        * ``user`` — the person's **direct** traffic, keyed by Cognito sub
+          (#4511; ``enforcement_service`` builds ``(USER, context.user_id)``).
+        * ``root_user`` — the spend of agent runs they triggered, keyed by canonical
+          ``users.id`` (#4536; ``me_routes._resolve_root_principal`` derives the
+          same key for the read path).
+
+        Every other entity type is returned untouched: org/team/department ids are
+        already their own keys, and running them through a ``users`` lookup could
+        only ever 422 a valid budget.
+
+        Raises:
+            UnresolvableUserEntityError: 422; the caller persists nothing.
+        """
+        if entity_type == "user":
+            return await resolve_user_entity_id(self.db, org_id, entity_id)
+        if entity_type == "root_user":
+            return await resolve_root_user_entity_id(self.db, org_id, entity_id)
+        return entity_id
+
     async def create_budget(self, org_id: str, request: BudgetCreateRequest) -> BudgetConfigResponse:
         """
         Create a new budget configuration.
@@ -1915,17 +1969,15 @@ class AdminService:
 
         Raises:
             ResourceConflictError: If budget already exists for this entity/period
-            UnresolvableUserEntityError: 422, if a ``user`` entity id cannot be
-                resolved to a Cognito sub (#4511)
+            UnresolvableUserEntityError: 422, if a person-scoped entity id cannot
+                be resolved to the key its ledger uses (#4511, #4536)
         """
-        # Issue #4511: normalise a `user` entity id to the Cognito sub BEFORE the
-        # conflict probe, so the duplicate check and the persisted row agree with
+        # Issue #4511: normalise a person-scoped entity id to its ledger key BEFORE
+        # the conflict probe, so the duplicate check and the persisted row agree with
         # each other and with the key enforcement matches on. Resolving after the
         # probe would let `GitHub_123` and its own sub both insert, colliding on
         # uq_budget_config.
-        entity_id = request.entity_id
-        if request.entity_type == "user":
-            entity_id = await resolve_user_entity_id(self.db, org_id, entity_id)
+        entity_id = await self._resolve_person_entity_id(org_id, request.entity_type, request.entity_id)
 
         # Check for existing budget with same entity and period
         existing = await self.db.execute(

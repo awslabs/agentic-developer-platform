@@ -26,23 +26,16 @@ import { BudgetFormModal } from '@/components/budget/BudgetFormModal';
 import { DeleteConfirmationModal } from '@/components/ui/DeleteConfirmationModal';
 // Issue #4207: was a byte-identical local copy of utils/format's formatCurrency.
 import { formatCurrency } from '@/utils/format';
+// Issue #4536: the friendly labels moved to a shared module so the create form, this
+// list and the edit view cannot word the two person-scoped budget kinds differently —
+// and so `root_user` reaches no screen.
+import { formatEntityType } from '@/utils/entityLabels';
 
 // Helper to get utilization badge color
 function getUtilizationBadgeVariant(pct: number): 'success' | 'warning' | 'danger' {
   if (pct < 50) return 'success';
   if (pct < 80) return 'warning';
   return 'danger';
-}
-
-// Format entity type for display
-function formatEntityType(type: string): string {
-  const map: Record<string, string> = {
-    org: 'Organization',
-    department: 'Department',
-    team: 'Team',
-    user: 'User',
-  };
-  return map[type] || type;
 }
 
 export function BudgetManagement() {
@@ -197,10 +190,16 @@ export function BudgetManagement() {
 
   const entityTypeOptions = [
     { value: '', label: 'All Types' },
-    { value: EntityType.ORGANIZATION, label: 'Organization' },
-    { value: EntityType.DEPARTMENT, label: 'Department' },
-    { value: EntityType.TEAM, label: 'Team' },
-    { value: EntityType.USER, label: 'User' },
+    ...[
+      EntityType.ORGANIZATION,
+      EntityType.DEPARTMENT,
+      EntityType.TEAM,
+      EntityType.USER,
+      // Issue #4536: cloud-agent budgets are authorable now, so they must be
+      // filterable too — otherwise the type that is hardest to find is the one a
+      // person most needs to check.
+      EntityType.ROOT_USER,
+    ].map((value) => ({ value, label: formatEntityType(value) })),
   ];
 
   return (

@@ -37,7 +37,7 @@ export const mockPeriod = {
 /** The caller's `direct` line: their own traffic, keyed by Cognito sub. */
 export const mockDirectLine: BudgetLine = {
   entity_type: 'user',
-  label: 'Direct usage (my machine)',
+  label: 'Direct use (my machine)',
   source: 'direct',
   principal_kind: 'human',
   cap_usd: '600.00',
@@ -89,7 +89,7 @@ export const mockServiceLine: BudgetLine = {
  */
 export const mockUncappedLine: BudgetLine = {
   entity_type: 'user',
-  label: 'Direct usage (my machine)',
+  label: 'Direct use (my machine)',
   source: 'direct',
   principal_kind: 'human',
   cap_usd: null,

@@ -17,6 +17,7 @@ import {
   getCognitoDepartments,
 } from '@/services/admin';
 import { EntityType } from '@/types';
+import { formatEntityType, entityTypeHelpText } from '@/utils/entityLabels';
 
 interface EntityOption {
   value: string;
@@ -34,13 +35,23 @@ interface EntitySelectorProps {
   disabled?: boolean;
   /** List of department IDs for fetching teams (needed since teams require dept ID) */
   departmentIds?: string[];
+  /**
+   * Offer "User — cloud agents" (`root_user`) alongside "User — direct use".
+   *
+   * Issue #4536. Opt-in rather than always-on because this component is shared with
+   * the rate-limit form, and nothing enforces a `root_user` rate limit — offering it
+   * there would let an operator configure a limit that silently does nothing. Only
+   * the budget form, whose create/update path resolves and persists the type, sets it.
+   */
+  allowCloudAgentScope?: boolean;
 }
 
-const entityTypeOptions = [
-  { value: EntityType.ORGANIZATION, label: 'Organization' },
-  { value: EntityType.DEPARTMENT, label: 'Department' },
-  { value: EntityType.TEAM, label: 'Team' },
-  { value: EntityType.USER, label: 'User' },
+/** The entity types every caller offers, in narrowing order. */
+const baseEntityTypes = [
+  EntityType.ORGANIZATION,
+  EntityType.DEPARTMENT,
+  EntityType.TEAM,
+  EntityType.USER,
 ];
 
 export function EntitySelector({
@@ -50,7 +61,20 @@ export function EntitySelector({
   onEntityTypeChange,
   onEntityIdChange,
   disabled = false,
+  allowCloudAgentScope = false,
 }: EntitySelectorProps) {
+  // Labels come from the shared map, so this dropdown cannot word the two
+  // person-scoped kinds differently from the list that renders them (#4536).
+  // Without the cloud-agent kind on offer (the rate-limit form), "User — direct
+  // use" would imply a cloud-agents counterpart that doesn't exist there, so
+  // that surface keeps the plain "User" label and no bucket help text.
+  const entityTypeOptions = (
+    allowCloudAgentScope ? [...baseEntityTypes, EntityType.ROOT_USER] : baseEntityTypes
+  ).map((value) => ({
+    value,
+    label:
+      !allowCloudAgentScope && value === EntityType.USER ? 'User' : formatEntityType(value),
+  }));
   const [entityOptions, setEntityOptions] = useState<EntityOption[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +150,26 @@ export function EntitySelector({
             break;
           }
 
+          case EntityType.ROOT_USER: {
+            // Issue #4536: the SAME person picker as direct-use above — one list of
+            // people, so the two budget kinds cannot disagree about who exists. The
+            // difference is which id is submitted: the cloud-agent ledger is keyed by
+            // canonical `users.id` (#4300), not by Cognito sub, so sending the sub
+            // here would recreate #4511 one ledger over — a cap that exists and
+            // matches nothing.
+            const usersResponse = await getOrgUsers(orgId, { pageSize: 100 });
+            if (cancelled) return;
+            options = usersResponse.items.map((user) => ({
+              // Never disabled: the canonical id always exists, and agent spend is
+              // attributed from the run's lineage rather than a signed-in session, so
+              // a member who has not signed in yet still has an enforceable cloud
+              // budget. That is the one asymmetry with direct-use.
+              value: user.id,
+              label: user.name ? `${user.name} (${user.email})` : user.email,
+            }));
+            break;
+          }
+
           default:
             setUseManualInput(true);
             setIsLoading(false);
@@ -169,6 +213,10 @@ export function EntitySelector({
         }}
         disabled={disabled}
         required
+        // Which of a person's two spend buckets this cap governs. Without it the
+        // labels alone don't tell you which dollars land where (#4536). Budget
+        // form only — see the option-label note above.
+        helperText={allowCloudAgentScope ? entityTypeHelpText(entityType) : undefined}
       />
 
       {isLoading ? (
@@ -192,11 +240,13 @@ export function EntitySelector({
             required
             error={error || undefined}
             helperText={
-              entityType === EntityType.USER
-                ? // Issue #4511: the old copy suggested `user-123 or user email`,
-                  // neither of which can ever be a valid user key. Name the forms
-                  // the server actually accepts.
-                  "Enter the user's Cognito sub, their ADP user ID, or their Cognito username (GitHub_<id>). Email is not accepted."
+              // Issue #4511: the old copy suggested `user-123 or user email`,
+              // neither of which can ever be a valid user key. Name the forms
+              // the server actually accepts. #4536: the accepted input forms are
+              // identical for both person-scoped kinds — the server resolves them
+              // to whichever key that ledger uses — so one hint serves both.
+              entityType === EntityType.USER || entityType === EntityType.ROOT_USER
+                ? "Enter the user's Cognito sub, their ADP user ID, or their Cognito username (GitHub_<id>). Email is not accepted."
                 : entityOptions.length === 0 && !error
                   ? 'No entities found. Enter the ID manually.'
                   : undefined
@@ -247,6 +297,7 @@ function getPlaceholderForEntityType(entityType: string): string {
     case EntityType.TEAM:
       return 'e.g., team-001 or platform-team';
     case EntityType.USER:
+    case EntityType.ROOT_USER:
       // Issue #4511: a Cognito sub is a UUID. The old `user-123 or
       // user@example.com` hint named two forms that can never be valid keys.
       return 'e.g., 8a41f2c0-1b7d-4e5a-9c33-... or GitHub_20402445';
