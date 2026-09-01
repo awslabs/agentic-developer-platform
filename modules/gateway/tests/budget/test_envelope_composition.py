@@ -43,7 +43,6 @@ prose cannot enforce them:
 
 import ast
 import re
-import subprocess
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -911,48 +910,13 @@ class TestStaticGates:
     whereas a one-off command run at review time does not.
     """
 
-    def test_enforcement_service_is_not_modified(self):
-        """Scope gate — this unit changes no enforcement behaviour (NFR-2).
-
-        The issue's literal gate is ``git diff --stat origin/main...HEAD --
-        src/budget/enforcement_service.py`` being empty. Skipped rather than failed
-        when git or the base ref is unavailable, so the suite stays runnable
-        outside a checkout — the check is meaningless there, and a false failure
-        would train people to ignore it.
-        """
-        try:
-            merge_base = subprocess.run(
-                ["git", "merge-base", "origin/main", "HEAD"],
-                cwd=_REPO_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if merge_base.returncode != 0:
-                pytest.skip("origin/main is not available in this checkout")
-
-            diff = subprocess.run(
-                [
-                    "git",
-                    "diff",
-                    "--stat",
-                    f"{merge_base.stdout.strip()}...HEAD",
-                    "--",
-                    "modules/gateway/src/budget/enforcement_service.py",
-                ],
-                cwd=_REPO_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if diff.returncode != 0:
-                pytest.skip("git diff unavailable in this environment")
-        except (OSError, subprocess.SubprocessError):
-            pytest.skip("git is unavailable in this environment")
-
-        assert diff.stdout.strip() == "", f"enforcement_service.py was modified; this unit is read-only composition:\n{diff.stdout}"
+    # test_enforcement_service_is_not_modified removed (Issue #4591 review):
+    # it asserted `git diff origin/main...HEAD -- enforcement_service.py` is
+    # empty, which was U-2's per-branch scope gate — but written as a permanent
+    # test it outlaws EVERY future change to the enforcement service (it only
+    # stayed green in CI because shallow clones made it skip). #4591 modifies
+    # that file deliberately; the remaining gates below still pin U-2's real
+    # invariants (read-only composition, no fused envelope, no SQL aggregates).
 
     def test_no_direct_spend_is_written_to_the_root_user_ledger(self):
         """Scope gate — writing direct spend to ``root_user`` is #4396's job.

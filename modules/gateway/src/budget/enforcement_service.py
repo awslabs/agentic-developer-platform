@@ -517,23 +517,62 @@ class BudgetEnforcementService:
         """Bind the asserted run id to the authenticated caller (Issue #4187).
 
         Returns:
-            The verified binding, or ``None`` when no run/chain cap applies to
-            this request.
+            The VERIFIED binding, in **both** modes, or ``None`` when there is no
+            verified binding to report.
 
         Raises:
             RunBindingError: the run id is unknown or belongs to someone else, in
                 ``enforce`` mode. The caller converts this into a 402.
 
-        ``None`` covers four cases, all of them deliberate:
+        Issue #4591 — a verified binding is returned in shadow mode too. This used
+        to end ``return binding if enforcing else None``, which conflated two
+        separate questions: "did this run id verify?" and "may we deny on it yet?".
+        Only the second is the #4337 rollout gate. The first also carries the
+        #4300 root-human attribution, so discarding it in shadow starved the whole
+        attribution chain (chat-log ``root_human_id`` → the tracker Lambda's
+        ``root_user`` ledger row → every per-person cloud-agent budget authored via
+        #4536) in every environment still in shadow — which is the shipped default.
+        The caller now applies the mode gate to the run/chain CAP alone.
+
+        ``None`` covers three cases, all of them deliberate:
 
         * the feature is off;
         * no run id was asserted AND the missing-header policy exempts this caller;
-        * the binding faulted (DDB unreachable) — degrade, do not deny;
-        * shadow mode — the binding is resolved and drift is recorded, but no cap
-          is applied yet.
+        * there is no verified binding to return — either the assertion failed
+          verification in shadow mode (drift recorded, nothing denied) or the
+          lookup faulted (DDB unreachable — degrade, do not deny).
+
+        That last case is a hard boundary: attribution may only ever be published
+        from a row this function VERIFIED. Returning an unverified or unresolved
+        row here would let an agent pin its spend on an arbitrary human, which is
+        exactly the forgery surface #4187/AD-1 closed.
         """
         if not budget_config.budget_run_cap_enabled:
-            return None
+            # Issue #4591: the run-cap FEATURE being off must not starve
+            # attribution — that is the same defect this issue fixes for shadow
+            # mode, one flag over (the flag ships False in config.py, so an
+            # unconditional `return None` here would make the shadow-mode fix a
+            # no-op in any environment that never enabled run caps). A verified
+            # binding is still resolved for its root_human_id; everything cap-
+            # shaped stays off: no missing-id policy, no drift metrics (they
+            # measure a rollout that is not happening), no denial ever.
+            if not run_id:
+                return None
+            try:
+                binding = await resolve_run_binding(
+                    run_id=run_id,
+                    caller_user_id=context.user_id,
+                    caller_org_id=context.attributed_org_id,
+                    resolver=self._get_run_bindings(),
+                )
+            except RunBindingError as exc:
+                # Failed verification is never a source of attribution — see the
+                # forgery boundary in the docstring. Logged (not drift-metered)
+                # so an operator can still see refusals with the feature off.
+                logger.info(f"Run id failed verification with run caps disabled (no attribution): run={run_id} reason={exc.reason}")
+                return None
+            # None here is a lookup fault: degrade to "no attribution".
+            return binding
 
         enforcing = budget_config.budget_run_binding_mode.lower() == "enforce"
 
@@ -586,6 +625,13 @@ class BudgetEnforcementService:
             )
         except RunBindingError as exc:
             # Shadow mode: record what a deny WOULD have rejected, deny nothing.
+            #
+            # Issue #4591: this returns ``None`` and must keep doing so. The row
+            # behind this exception FAILED verification (unknown run id, or one
+            # owned by another tenant/identity), so it is not a source of anything
+            # — least of all attribution. Widening this to return the offending
+            # row so shadow could "observe more" would hand an agent the ability
+            # to name any human as the payer of its spend.
             if not enforcing:
                 logger.warning(f"Run-binding drift (shadow mode, not denying): run={run_id} reason={exc.reason} caller={context.user_id}")
                 emit_run_binding_drift(reason=exc.reason, environment=self._get_environment())
@@ -594,10 +640,14 @@ class BudgetEnforcementService:
             raise
 
         if binding is None:
-            # Lookup fault — the hierarchy caps still apply.
+            # Lookup fault — the hierarchy caps still apply. Nothing verified, so
+            # nothing to attribute either (Issue #4591): a registry outage must
+            # degrade to "no attribution", never to a guessed one.
             return None
 
-        return binding if enforcing else None
+        # Verified. Returned in BOTH modes — see the docstring; the mode gate lives
+        # on the caller's run/chain cap block, not here.
+        return binding
 
     def _scope_targets(self, binding: RunBinding, run_cap: Decimal, chain_cap: Decimal) -> list[ReservationTarget]:
         """Build the run and chain reservation targets for a bound run (#4187).
@@ -728,43 +778,78 @@ class BudgetEnforcementService:
                     )
 
                 if binding is not None:
-                    # Issue #4337 (B1): the cap is looked up for the tenant the ROW
-                    # names, matching the partition `_scope_targets` keys on. Reading
-                    # the caller-influenced `attributed_org_id` here would mean a
-                    # tenant's per-run override could be addressed by a header, and
-                    # would desync the cap from the ledger it is applied to.
-                    run_cap = await self._resolve_scope_cap(session, binding.tenant_id, EntityType.RUN)
-                    chain_cap = await self._resolve_scope_cap(session, binding.tenant_id, EntityType.CHAIN)
-                    scope_targets = self._scope_targets(binding, run_cap, chain_cap)
-                    reservation_targets.extend(scope_targets)
+                    # Issue #4591: the binding is VERIFIED in both modes, but the two
+                    # things built from it below have different rollout gates.
+                    #
+                    #   * the run/chain CAP can deny a request, so it is gated on
+                    #     `enforce` — that is the #4337 shadow-first rollout gate, and
+                    #     shadow must continue to deny nothing;
+                    #   * the #4300 ATTRIBUTION denies nothing. It labels the spend
+                    #     with the human who set it in motion. Gating it on the same
+                    #     flag was the #4591 defect: in shadow (the shipped default)
+                    #     no cost record carried a root human, so every per-person
+                    #     cloud-agent budget accrued nothing and enforced nothing.
+                    #
+                    # Deliberate and intended consequence: with attribution published
+                    # in shadow, an authored `root_user` cap (the #4536 Budget
+                    # Management surface) joins the entity hierarchy below and enforces
+                    # like any user or org cap. That is HIERARCHY enforcement under
+                    # `budget_check_enabled` — a cap a human explicitly authored, on a
+                    # settled ledger, with `cap - settled` headroom — and it is
+                    # independent of the run-binding rollout gate, which governs only
+                    # the platform-default run/chain caps that deny with no ledger
+                    # behind them. It is also exactly what that screen already
+                    # promises the operator who set the number.
+                    #
+                    # Guarded on the feature flag too (Issue #4591): with run caps
+                    # disabled, _resolve_run_scope now returns verified bindings
+                    # for attribution, and a leftover mode=enforce setting must
+                    # not switch the cap machinery on through this path.
+                    enforcing = budget_config.budget_run_cap_enabled and budget_config.budget_run_binding_mode.lower() == "enforce"
 
-                    # Issue #4323: publish the run/chain targets so the reconcile
-                    # on the way out can release them. The hierarchy targets are
-                    # rebuilt from scratch at reconcile time (entity × period is
-                    # derivable from the context alone), but these two are not:
-                    # their keys need `binding.run_id` / `binding.correlation_id`,
-                    # which only exist here. Re-resolving the binding at reconcile
-                    # time would mean trusting `X-Agent-RunId` on a path that has
-                    # no caller to deny — exactly the forgery surface AD-1 closed.
-                    #
-                    # The SAME target objects are carried, not the ids to rebuild
-                    # them from, so the released key byte-matches the reserved key
-                    # by construction. A mismatch here is not a loud failure, it is
-                    # a silent no-op that looks exactly like the leak being fixed.
-                    #
-                    # Assigned even when reserving is later skipped or degrades:
-                    # reconcile against a field that was never written is a no-op
-                    # (the Lua only touches existing fields), which is cheaper than
-                    # reasoning about which of the two paths ran.
-                    #
-                    # Plain assignment, NOT the `object.__setattr__` the public
-                    # attribution fields below use. That idiom exists to dodge
-                    # validator re-entry, which private attributes never trigger —
-                    # and pydantic keeps them in `__pydantic_private__`, so
-                    # `object.__setattr__` would instead shadow a stale default
-                    # there with a value in `__dict__`. Two homes for one value is
-                    # a silent-divergence trap; this writes the one pydantic reads.
-                    context._run_scope_reservations = scope_targets
+                    if enforcing:
+                        # Issue #4337 (B1): the cap is looked up for the tenant the ROW
+                        # names, matching the partition `_scope_targets` keys on. Reading
+                        # the caller-influenced `attributed_org_id` here would mean a
+                        # tenant's per-run override could be addressed by a header, and
+                        # would desync the cap from the ledger it is applied to.
+                        run_cap = await self._resolve_scope_cap(session, binding.tenant_id, EntityType.RUN)
+                        chain_cap = await self._resolve_scope_cap(session, binding.tenant_id, EntityType.CHAIN)
+                        scope_targets = self._scope_targets(binding, run_cap, chain_cap)
+                        reservation_targets.extend(scope_targets)
+
+                        # Issue #4323: publish the run/chain targets so the reconcile
+                        # on the way out can release them. The hierarchy targets are
+                        # rebuilt from scratch at reconcile time (entity × period is
+                        # derivable from the context alone), but these two are not:
+                        # their keys need `binding.run_id` / `binding.correlation_id`,
+                        # which only exist here. Re-resolving the binding at reconcile
+                        # time would mean trusting `X-Agent-RunId` on a path that has
+                        # no caller to deny — exactly the forgery surface AD-1 closed.
+                        #
+                        # The SAME target objects are carried, not the ids to rebuild
+                        # them from, so the released key byte-matches the reserved key
+                        # by construction. A mismatch here is not a loud failure, it is
+                        # a silent no-op that looks exactly like the leak being fixed.
+                        #
+                        # Assigned even when reserving is later skipped or degrades:
+                        # reconcile against a field that was never written is a no-op
+                        # (the Lua only touches existing fields), which is cheaper than
+                        # reasoning about which of the two paths ran.
+                        #
+                        # Stays inside the `enforcing` branch (Issue #4591): it exists
+                        # to release the run/chain reservations, and in shadow none are
+                        # ever taken. Publishing it unconditionally would name targets
+                        # that were never reserved.
+                        #
+                        # Plain assignment, NOT the `object.__setattr__` the public
+                        # attribution fields below use. That idiom exists to dodge
+                        # validator re-entry, which private attributes never trigger —
+                        # and pydantic keeps them in `__pydantic_private__`, so
+                        # `object.__setattr__` would instead shadow a stale default
+                        # there with a value in `__dict__`. Two homes for one value is
+                        # a silent-divergence trap; this writes the one pydantic reads.
+                        context._run_scope_reservations = scope_targets
 
                     # Issue #4300: publish the server-resolved root human onto the
                     # context so (a) the hierarchy below can add its budget entity
@@ -795,7 +880,26 @@ class BudgetEnforcementService:
                     #
                     # A service-rooted run puts a SERVICE IDENTITY KEY here, not a
                     # `users.id`; see `_qualify_root_principal_id`.
-                    if binding.root_human_id:
+                    #
+                    # Issue #4591: UNCONDITIONAL on the binding mode — deliberately
+                    # outside the `if enforcing:` block above. Attribution is a label,
+                    # not a denial, and it is what makes cloud-agent spend visible and
+                    # accruable at all. Re-gating it on `enforcing` puts every
+                    # per-person budget back to displaying $0 forever in shadow.
+                    #
+                    # IAM callers only: a JWT human's spend is already accounted
+                    # under (USER, sub), and verify_row_matches_caller deliberately
+                    # never compares caller identity — so a signed-in human
+                    # replaying a live run's X-Agent-RunId (debug replay, a client
+                    # propagating agent headers) would otherwise be debited TWICE
+                    # for one request: once as themselves, once as the run's root
+                    # human. The ROOT_USER dedup guard in _get_entity_hierarchy
+                    # cannot catch it — it compares a Cognito sub against a
+                    # canonical users.id, disjoint namespaces that never match.
+                    # Attribution exists to label AGENT spend; agents authenticate
+                    # as IAM. (Fusing direct human spend into the per-person
+                    # envelope is #4396's job, deliberately not this line's.)
+                    if binding.root_human_id and context.auth_source == "iam":
                         object.__setattr__(
                             context,
                             "attributed_user_id",
@@ -1090,6 +1194,16 @@ class BudgetEnforcementService:
                         budget_amount_usd=budget.budget_amount_usd,
                         current_spend_usd=current_spend,
                         enforcement_mode=enforcement_mode,
+                        # Issue #4591: the settled-ledger ROOT_USER deny is the
+                        # dominant deny path attribution newly activates, and the
+                        # agent worker classifies the stop by matching `scope` in
+                        # the 402 body (agent-worker.ts). Without it, a per-person
+                        # cloud-agent cap misreports as hierarchy_cap_exceeded and
+                        # the operator is told to raise the org budget — the wrong
+                        # knob. Other hierarchy types keep scope=None: their 402
+                        # bodies pre-date the field and consumers key off
+                        # exceeded_entity_type for them.
+                        scope="root_user" if entity_type == EntityType.ROOT_USER else None,
                     ),
                     None,
                 )

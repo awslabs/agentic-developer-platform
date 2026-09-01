@@ -40,9 +40,17 @@ Harness notes (inherited from ``test_run_spend_cap.py``, the #4187 suite):
   never a ``MagicMock`` — a fully-patched config asserts a guarantee it never
   exercised (the #4046 trap).
 * ``budget_run_cap_enabled`` / ``budget_run_binding_mode=enforce`` are ON here
-  because the root-human value rides #4187's server-side binding: the envelope is
-  inert until #4187 is flipped to enforce. That gate is asserted by
-  ``TestDependencyGate``.
+  so the #4187 run/chain assertions in this suite stay meaningful. Attribution
+  itself no longer depends on either (Issue #4591 review): ``TestDependencyGate``
+  asserts the envelope attributes and enforces on the SHIPPED defaults.
+
+  Issue #4591: the ``enforce`` half of that config is no longer load-bearing for
+  attribution — a VERIFIED binding publishes the root human in shadow mode too,
+  because attribution labels spend rather than denying it, and gating it on the
+  rollout flag left every per-person cloud-agent budget accruing nothing in the
+  shipped default. This suite keeps ``enforce`` set so its #4187 run/chain
+  assertions stay meaningful; the shadow-mode behaviour is
+  ``test_shadow_mode_attribution.py``.
 """
 
 import json
@@ -1278,16 +1286,26 @@ class TestPeriodRollover:
 
 
 class TestDependencyGate:
-    """The envelope is inert until #4187's binding is flipped to enforce."""
+    """Attribution has NO dependency gate; only the run/chain caps have one.
+
+    Issue #4591 (review): attribution used to be starved by TWO flags — the
+    binding MODE (shadow discarded the verified binding) and the run-cap FEATURE
+    flag (``budget_run_cap_enabled`` ships ``False`` and no environment plumbs
+    it, so gating on it made the shadow fix a silent no-op everywhere). Both
+    couplings are removed: a verified binding always attributes, and an authored
+    per-person cap (a number a human typed into Budget Management, on a settled
+    ledger) enforces as ordinary hierarchy enforcement. Only the platform-default
+    run/chain caps keep their gate: ``budget_run_cap_enabled`` AND mode=enforce.
+    """
 
     @pytest.mark.asyncio
-    async def test_shipped_defaults_do_not_enforce_the_envelope(self, redis_client, clock):
-        """With the shipped defaults (disabled / shadow), nothing is denied.
+    async def test_shipped_defaults_attribute_and_enforce_the_authored_envelope(self, redis_client, clock):
+        """With the SHIPPED defaults, an authored cap accrues and denies.
 
-        The root-human value rides #4187's server-side binding, which withholds
-        the binding in shadow mode. That coupling is deliberate and is the
-        rollout gate for this feature — asserted so it cannot regress into
-        enforcing before #4187 does.
+        This is the deploy-day contract #4536 promises: the operator who typed a
+        cap gets a cap, without hunting for a feature flag nothing documents.
+        The denial is hierarchy enforcement under ``budget_check_enabled`` — the
+        run/chain platform caps stay off (asserted via the reservation targets).
         """
         ledger = _Ledger(budgets={(EntityType.ROOT_USER.value, HUMAN): "0.01"})
         service = _service(redis_client, clock, _chain_registry({"evt-1": "svc-agent-1"}))
@@ -1295,15 +1313,35 @@ class TestDependencyGate:
         assert shipped.budget_run_cap_enabled is False
         assert shipped.budget_run_binding_mode == "shadow"
 
+        context = _agent_context("svc-agent-1")
         harness = await _drive(
             service,
             ledger,
             shipped,
-            context=_agent_context("svc-agent-1"),
+            context=context,
+            run_id="evt-1",
+            request_id="req-1",
+        )
+        assert harness.status == 402, "an authored cap must enforce on shipped defaults"
+        assert context.attributed_user_id == HUMAN
+        assert context._run_scope_reservations == [], "run/chain caps stay feature-gated"
+
+    @pytest.mark.asyncio
+    async def test_shipped_defaults_admit_when_no_cap_is_authored(self, redis_client, clock):
+        """The premise: it is the authored CAP that denies, not the defaults."""
+        service = _service(redis_client, clock, _chain_registry({"evt-1": "svc-agent-1"}))
+        context = _agent_context("svc-agent-1")
+
+        harness = await _drive(
+            service,
+            _Ledger(budgets={}),
+            BudgetConfig(),
+            context=context,
             run_id="evt-1",
             request_id="req-1",
         )
         assert harness.status == 200
+        assert context.attributed_user_id == HUMAN, "attribution must flow with the run-cap feature off"
 
 
 class TestEntityTypeContract:
