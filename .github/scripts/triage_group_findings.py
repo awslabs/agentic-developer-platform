@@ -645,23 +645,30 @@ def file_group(
     }
 
 
-def ledger_fields(daily_epic: int, filed: list[dict]) -> dict:
+def ledger_fields(daily_epic: int | None, filed: list[dict]) -> dict:
     """The `triage`-stage ledger fields for this pass.
 
     Only fields this stage_type owns in the U2 schema's `x-fields`. `story_ids`
     and `findings_covered` are recorded as identities, not just counts, so
     reconciliation can name WHICH story or finding is unaccounted for instead of
     reporting a delta nobody can act on.
+
+    ``daily_epic`` is None on a night with nothing to file, and is then OMITTED
+    rather than sent as a placeholder: there is no dated EPIC on a quiet night,
+    the schema declares the field `minimum: 1`, and a 0 would be a value the
+    ledger records as true and no reader can distinguish from a real number.
     """
     covered: set[str] = set()
     for item in filed:
         covered.update(item["finding_ids"])
-    return {
-        "daily_epic": daily_epic,
+    fields = {
         "stories_created": len(filed),
         "story_ids": sorted(item["number"] for item in filed),
         "findings_covered": sorted(covered),
     }
+    if daily_epic is not None:
+        fields["daily_epic"] = daily_epic
+    return fields
 
 
 def run_triage(
@@ -678,15 +685,34 @@ def run_triage(
     """Group one scanner's new findings into filed work items.
 
     Returns a result document. On a night with nothing new this returns BEFORE
-    resolving the umbrella, so no parent and no work item is created and no
-    ledger fields are produced -- NT-5, and the reason the zero-findings ledger
-    fixture has no triage shard at all.
+    resolving the umbrella, so no parent and no work item is created and nothing
+    at all is filed on GitHub -- NT-5.
+
+    It does still produce ledger fields, and that is load-bearing rather than
+    incidental. "This scanner ran and found nothing" and "this scanner never ran"
+    are different facts, and the join barrier (U10) has to tell them apart: it
+    treats a present marker as a completion signal and an ABSENT one as a scanner
+    that never signalled. If the quiet path wrote no marker, then every quiet
+    night -- the common night -- would look to the barrier exactly like a hung
+    pass: a fully quiet night would time out and hard-fail instead of closing
+    cleanly, and a half-quiet night would ship a plan stamped PARTIAL blaming a
+    scanner that was healthy and simply had nothing to report.
+
+    So the marker is written with an empty `story_ids` and no `daily_epic`. Only
+    a scanner that genuinely never got here leaves no marker behind.
     """
     source = new_findings["source"]
     if new_findings["nothing_to_file"]:
         validate_plan(plan, [], source=source)
         print(f"no new {source} findings tonight — filing nothing. This is expected.")
-        return {"nothing_to_file": True, "source": source, "run_date": run_date}
+        return {
+            "nothing_to_file": True,
+            "source": source,
+            "run_date": run_date,
+            # The completion marker for a done-with-nothing pass. No GitHub state
+            # is touched to produce it; it records only that this pass finished.
+            "ledger_fields": ledger_fields(None, []),
+        }
 
     validated = validate_plan(plan, new_findings["finding_ids"], source=source)
     patterns = patterns if patterns is not None else load_banned_patterns()
@@ -790,12 +816,16 @@ def _cmd_file(args: argparse.Namespace) -> int:
     # log, which is readable by anyone who can see the run (NEV-2).
     if result["nothing_to_file"]:
         print(f"nothing_to_file=true source={args.source}")
-        return 0
-    print(
-        f"nothing_to_file=false source={args.source} "
-        f"daily_epic={result['daily_epic']} "
-        f"stories_created={result['ledger_fields']['stories_created']}"
-    )
+    else:
+        print(
+            f"nothing_to_file=false source={args.source} "
+            f"daily_epic={result['daily_epic']} "
+            f"stories_created={result['ledger_fields']['stories_created']}"
+        )
+    # Written on BOTH paths. The quiet path's marker is what tells the join
+    # barrier this pass completed rather than hung -- see run_triage. An early
+    # return here was the bug: it made a healthy quiet scanner indistinguishable
+    # from one that never ran.
     if args.ledger_fields:
         Path(args.ledger_fields).parent.mkdir(parents=True, exist_ok=True)
         Path(args.ledger_fields).write_text(

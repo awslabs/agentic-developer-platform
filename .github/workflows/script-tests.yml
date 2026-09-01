@@ -28,6 +28,7 @@ on:
       - '.github/scripts/normalize_security_findings.py'
       - '.github/scripts/dedup_security_findings.py'
       - '.github/scripts/triage_group_findings.py'
+      - '.github/scripts/join_barrier.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -65,6 +66,7 @@ on:
       - '.github/scripts/normalize_security_findings.py'
       - '.github/scripts/dedup_security_findings.py'
       - '.github/scripts/triage_group_findings.py'
+      - '.github/scripts/join_barrier.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -130,4 +132,5 @@ jobs:
             tests/test_assert_findings_bucket_private.py \
             tests/test_security_agent_dedup.py \
             tests/test_triage_grouping.py \
+            tests/test_join_barrier.py \
             -v --tb=short --timeout=60

@@ -109,6 +109,13 @@
       "stages": ["orchestration"],
       "description": "Story numbers in dependency order (FR-C21). `single` because order carries meaning — merging two orderings would invent a third."
     },
+    "unsignalled_sources": {
+      "type": "array",
+      "items": {"type": "string"},
+      "merge": "unique-list",
+      "stages": ["orchestration"],
+      "description": "Scanners that never signalled completion before the join barrier timed out, so the night's plan was written without their findings (unit U10). Absent on a complete plan. Recorded in the ledger and not only in the plan's body, because a partial plan that is only distinguishable by reading an issue is a partial plan nothing downstream can detect — which is the failure mode the timeout escape exists to avoid creating."
+    },
     "story_status": {
       "type": "map-of-story-status",
       "merge": "map-union",

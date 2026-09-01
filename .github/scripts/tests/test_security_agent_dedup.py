@@ -977,10 +977,41 @@ def test_the_existing_findings_differ_is_untouched():
     _assert_unchanged_vs_main(".github/scripts/diff_security_findings.py")
 
 
-def test_the_ledger_schema_is_untouched():
-    """The fields this unit writes already exist in U2's schema. Editing the
-    schema would reshape another stage's contract."""
-    _assert_unchanged_vs_main(".github/security/ledger-schema.json")
+def test_the_ledger_schema_contract_this_unit_relies_on_is_untouched():
+    """The fields this unit writes already exist in U2's schema, and it reshapes
+    no stage's contract.
+
+    Asserted as "nothing this unit relies on CHANGED", not as whole-file byte
+    identity. The original byte-identity form over-reached: it also forbade a
+    later stage from DECLARING ITS OWN new field, which U2's validator requires
+    before that stage can write one (an undeclared field is rejected at write
+    time -- NT-11). U10's join barrier hit exactly that, needing to record which
+    scanner never signalled. Additive declarations by the owning stage are the
+    intended way to extend this schema; what must not change is the shape
+    anything already depends on, which is what this now checks.
+    """
+    ref = _main_ref()
+    if ref is None:
+        pytest.skip("no network and no local main ref; cannot compare against main")
+    path = ".github/security/ledger-schema.json"
+    completed = _git("show", f"{ref}:{path}")
+    assert completed.returncode == 0, f"cannot read {path} from {ref}"
+    before = json.loads(completed.stdout)
+    after = json.loads((REPO_ROOT / path).read_text(encoding="utf-8"))
+
+    # The envelope, the stuck rule and every previously-declared field must be
+    # unchanged: those are what other stages read.
+    for key in ("schema_version", "properties", "required", "x-story-status", "x-stuck-rule"):
+        assert after.get(key) == before.get(key), f"{key} changed in {path}"
+    for name, spec in before["x-fields"].items():
+        assert after["x-fields"].get(name) == spec, f"field {name!r} was reshaped"
+    for name in before["x-report-allowlist"]:
+        assert name in after["x-report-allowlist"], f"{name!r} dropped from the report"
+
+    # This unit in particular adds nothing at all.
+    assert set(after["x-fields"]) - set(before["x-fields"]) <= {"unsignalled_sources"}, (
+        "an unexpected field was added to the ledger schema"
+    )
 
 
 def test_this_suite_is_pinned_into_script_tests():

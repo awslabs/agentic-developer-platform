@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import ensure_umbrella_epic as ue
 import triage_group_findings as tg
 from ensure_umbrella_epic import UMBRELLA_TITLE
-from security_agent_ledger import build_shard, load_schema
+from security_agent_ledger import build_shard, load_schema, validate_shard
 from triage_group_findings import (
     DAILY_EPIC_TITLE_TEMPLATE,
     MAX_FINDINGS_PER_GROUP,
@@ -724,9 +724,25 @@ def test_zero_new_findings_creates_no_parent_no_work_items_and_dispatches_nothin
         run_id=RUN_ID,
         run_date=RUN_DATE,
     )
-    assert result == {"nothing_to_file": True, "source": "code-review", "run_date": RUN_DATE}
+    assert result["nothing_to_file"] is True
+    assert result["source"] == "code-review"
+    assert result["run_date"] == RUN_DATE
     assert gh.calls == [], "a zero-findings night must touch no GitHub state at all"
-    assert "ledger_fields" not in result
+
+    # NT-5 is about GitHub state -- no parent, no work item, no dispatch, all
+    # asserted above. It is NOT about the ledger: this pass DID run, and it says
+    # so with a completion marker carrying no stories. The join barrier (U10)
+    # reads exactly this to tell "ran, found nothing" from "never ran"; without
+    # it every quiet night looks like a hung scanner.
+    assert result["ledger_fields"] == {
+        "stories_created": 0,
+        "story_ids": [],
+        "findings_covered": [],
+    }
+    # No dated EPIC exists on a quiet night, so the field is absent rather than
+    # zero -- the schema declares it `minimum: 1`, and a placeholder would be
+    # recorded as fact.
+    assert "daily_epic" not in result["ledger_fields"]
 
 
 def test_a_plan_proposing_work_on_a_zero_findings_night_is_rejected():
@@ -959,6 +975,42 @@ def test_the_file_subcommand_on_a_zero_findings_night(monkeypatch, tmp_path, cap
     assert main(args) == 0
     assert gh.calls == []
     assert "nothing_to_file=true" in capsys.readouterr().out
+
+
+def test_the_file_subcommand_writes_a_completion_marker_on_a_quiet_night(
+    monkeypatch, tmp_path, capsys
+):
+    """The quiet path must still write its `--ledger-fields` marker.
+
+    This is the assertion whose absence let the barrier bug ship: `_cmd_file`
+    returned before the write, so a healthy scanner that found nothing left no
+    trace, and the join barrier could not distinguish it from one that hung. The
+    marker is the ONLY thing a quiet night produces -- GitHub is untouched.
+    """
+    gh = FakeGh(issues=[])
+    monkeypatch.setattr(ue, "_gh", gh)
+    findings = tmp_path / "dedup.json"
+    findings.write_text(
+        json.dumps({"run_date": RUN_DATE, "nothing_to_file": True, "new_findings": []}),
+        encoding="utf-8",
+    )
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps(a_plan([])), encoding="utf-8")
+    out = tmp_path / "nested" / "fields.json"
+    args = _cli_args("file", ["--repo", REPO, "--ledger-fields", str(out)])
+    args[args.index("--plan") + 1] = str(plan)
+    args[args.index("--new-findings") + 1] = str(findings)
+
+    assert main(args) == 0
+    assert gh.calls == [], "a quiet night must still touch no GitHub state"
+    assert out.exists(), "a quiet night left no completion marker"
+    fields = json.loads(out.read_text(encoding="utf-8"))
+    assert fields == {"stories_created": 0, "story_ids": [], "findings_covered": []}
+
+    # And the marker U9 emits must be a legal `triage` shard payload, since the
+    # barrier validates every marker through U2's schema before trusting it.
+    shard = build_shard(RUN_DATE, "triage.code-review", "2026-08-30T03:00:00Z", fields)
+    assert validate_shard(shard, load_schema())["fields"]["story_ids"] == []
 
 
 def test_an_unresolvable_run_date_is_an_error(tmp_path):
