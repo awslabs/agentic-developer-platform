@@ -30,8 +30,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import ensure_umbrella_epic as ue
+import triage_group_findings as tg
 from join_barrier import (
     DEFAULT_TIMEOUT_SECONDS,
+    MARKER_STAGE_RE,
     MAX_BODY_BYTES,
     ORCHESTRATION_STAGE,
     PLAN_LABEL,
@@ -375,6 +377,22 @@ def test_marker_stage_ids_are_distinct_per_scanner():
 def test_marker_stage_rejects_an_undeclared_source():
     with pytest.raises(BarrierError, match="is not one of"):
         marker_stage("nmap")
+
+
+def test_the_writer_and_the_reader_agree_on_the_marker_stage_id():
+    """U9 WRITES the marker stage id and U10 READS it, and each declares the
+    template. Two literals is the arrangement this defect class comes from, so
+    they are pinned together here: a change to one that the other does not
+    follow fails on this line rather than on a night at the join.
+
+    Asserted through the two `marker_stage` functions, not by comparing the
+    template strings -- what has to agree is the id each side actually produces.
+    """
+    for source in SOURCES:
+        assert tg.marker_stage(source) == marker_stage(source)
+        # And the id the writer emits must satisfy the pattern the reader
+        # attributes it by, which is the check `load_markers` performs.
+        assert MARKER_STAGE_RE.match(tg.marker_stage(source)) is not None
 
 
 # ==========================================================================
@@ -981,7 +999,16 @@ def test_the_cli_surfaces_a_malformed_marker_as_an_error(fake_gh, tmp_path, caps
 
 def u9_marker_from_a_real_quiet_run(tmp_path, source, monkeypatch):
     """Run U9's `file` command on a genuine zero-findings input; return the
-    marker it really wrote, as a validated shard."""
+    marker it really wrote, exactly as written.
+
+    This helper used to take U9's bare field output and wrap it in `build_shard`
+    ITSELF before handing it to the barrier -- which is how the shard-wrapper
+    defect (#4616) survived a suite that drove U9's real CLI. The test supplied
+    the envelope production did not, so every assertion below passed against an
+    artifact no U9 run ever produced. Nothing is wrapped here now: what the
+    barrier gets is the bytes U9 wrote, and both the name of the file and the
+    stage inside it come from U9.
+    """
     gh_calls: list[list[str]] = []
 
     def record(args):
@@ -1011,7 +1038,10 @@ def u9_marker_from_a_real_quiet_run(tmp_path, source, monkeypatch):
         ),
         encoding="utf-8",
     )
-    fields_out = tmp_path / f"fields.{source}.json"
+    # A directory, not a filename: U9 derives the marker's name from its stage
+    # id, so this test cannot name the file and therefore cannot paper over a
+    # disagreement between that name and the barrier's glob.
+    ledger_out = tmp_path / f"ledger.{source}"
 
     rc = triage_main(
         [
@@ -1022,17 +1052,19 @@ def u9_marker_from_a_real_quiet_run(tmp_path, source, monkeypatch):
             "--source", source,
             "--findings-uri", LEDGER_URI,
             "--run-id", "12345",
-            "--ledger-fields", str(fields_out),
+            "--ledger-dir", str(ledger_out),
+            "--generated-at", GENERATED_AT,
         ]
     )
     assert rc == 0, "U9's quiet path must exit cleanly"
     assert gh_calls == []
-    assert fields_out.exists(), (
-        "U9 wrote no completion marker on a quiet night, so the barrier cannot "
-        "tell this healthy scanner from one that hung"
+    written = sorted(ledger_out.glob("shard-triage*.json"))
+    assert len(written) == 1, (
+        "U9 wrote no completion marker matching the delivery job's "
+        "`shard-triage*.json` glob on a quiet night, so the barrier cannot tell "
+        f"this healthy scanner from one that hung (found: {written})"
     )
-    fields = json.loads(fields_out.read_text(encoding="utf-8"))
-    return build_shard(RUN_DATE, marker_stage(source), GENERATED_AT, fields)
+    return json.loads(written[0].read_text(encoding="utf-8"))
 
 
 def test_a_real_u9_quiet_run_produces_a_marker_the_barrier_accepts(tmp_path, monkeypatch):

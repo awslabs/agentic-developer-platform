@@ -22,6 +22,7 @@ fake below replaces. That is what lets these tests assert a write was *not*
 issued -- the strongest form of the idempotency and zero-findings claims.
 """
 
+import fnmatch
 import json
 import re
 import sys
@@ -34,7 +35,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import ensure_umbrella_epic as ue
 import triage_group_findings as tg
 from ensure_umbrella_epic import UMBRELLA_TITLE
-from security_agent_ledger import build_shard, load_schema, validate_shard
+from join_barrier import load_markers
+from security_agent_ledger import (
+    SHARD_NAME_TEMPLATE,
+    build_shard,
+    load_schema,
+    validate_shard,
+)
 from triage_group_findings import (
     DAILY_EPIC_TITLE_TEMPLATE,
     MAX_FINDINGS_PER_GROUP,
@@ -59,6 +66,7 @@ REPO = "aws-e/adp"
 UMBRELLA_NUM = 9001
 RUN_DATE = "2026-08-30"
 RUN_ID = "99830451698"
+GENERATED_AT = "2026-08-30T03:10:00Z"
 FINDINGS_URI = "s3://adp-dev-security-scans-000000000000/security-agent/runs/2026-08-30/"
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -907,6 +915,156 @@ def test_ledger_fields_dedupes_findings_across_work_items():
 
 
 # --------------------------------------------------------------------------
+# The marker WRAPPER and the marker NAME (#4616).
+#
+# `ledger_fields` above returns the right field SET, and the tests above proved
+# it -- by wrapping it in `build_shard` themselves. That is exactly what shipped
+# the defect: the marker `_cmd_file` wrote was the bare field set, and the join
+# barrier validates every marker through U2's envelope and RAISES on a missing
+# field. The stage exited 0, landed an unreadable marker, and failed one job
+# later with "invalid shard" -- indistinguishable from a genuinely broken run.
+#
+# So these assert on the WRITTEN ARTIFACT, and nothing here supplies an envelope
+# on the writer's behalf.
+# --------------------------------------------------------------------------
+
+
+def test_the_written_marker_is_accepted_by_the_barrier_as_written(fake_gh, tmp_path):
+    """The acceptance test: U9's real output goes straight into U2's validator
+    and U10's loader, with no test-side wrapping in between."""
+    fake_gh()
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+
+    marker = out / "shard-triage.code-review.json"
+    shard = json.loads(marker.read_text(encoding="utf-8"))
+    validate_shard(shard, load_schema())
+
+    # And through the barrier's own reader, which is the code that actually
+    # rejected the old bare marker.
+    assert sorted(load_markers(out)) == ["code-review"]
+    assert load_markers(out)["code-review"]["fields"]["stories_created"] == 5
+
+
+def test_the_marker_carries_the_full_u2_envelope(fake_gh, tmp_path):
+    """Named field by field: `validate_shard` raises on the FIRST missing one, so
+    a single assertion cannot show the envelope is complete."""
+    fake_gh()
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+    shard = json.loads((out / "shard-triage.code-review.json").read_text(encoding="utf-8"))
+
+    assert shard["schema_version"] == "1"
+    assert shard["run_date"] == RUN_DATE
+    assert shard["stage"] == "triage.code-review"
+    assert shard["stage_type"] == "triage"
+    assert shard["generated_at"] == GENERATED_AT
+    assert isinstance(shard["fields"], dict)
+
+
+def test_the_marker_name_matches_the_delivery_jobs_glob(fake_gh, tmp_path):
+    """`security-agent-nightly.yml`'s deliver job decides whether there is
+    anything to join with `find -name 'shard-triage*.json'`. A marker outside that
+    glob leaves `joinable` false forever: the night hands off nothing, silently,
+    and no error is raised anywhere."""
+    fake_gh()
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+
+    written = sorted(p.name for p in out.iterdir())
+    assert written == ["shard-triage.code-review.json"]
+    assert fnmatch.fnmatch(written[0], "shard-triage*.json")
+    # The name is DERIVED from the stage id, not typed alongside it -- so the two
+    # cannot drift apart.
+    shard = json.loads((out / written[0]).read_text(encoding="utf-8"))
+    assert written[0] == SHARD_NAME_TEMPLATE.format(stage=shard["stage"])
+
+
+def test_each_scanner_writes_its_own_marker_under_its_own_name(fake_gh, tmp_path):
+    """U2's stage id is the concurrency boundary. The two grouping halves run
+    concurrently into the SAME ledger directory, so if they derived one name the
+    second to finish would silently overwrite the first's completion signal and
+    the barrier would wait forever on a pass that had already reported."""
+    # ONE directory for both passes, which is the arrangement that matters: the
+    # delivery job syncs every shard of the night into a single prefix, so two
+    # passes deriving one name is a lost completion signal, not a collision two
+    # separate temp dirs would have hidden.
+    out = tmp_path / "ledger"
+    for source in tg.SOURCES:
+        fake_gh()
+        args = _cli_args("file", ["--repo", REPO, *_marker_args(out)])
+        args[args.index("--source") + 1] = source
+        # The pentest plan/findings fixtures are the code-review ones relabelled:
+        # what is under test is the marker's identity, not the grouping.
+        args[args.index("--plan") + 1] = str(_relabelled(tmp_path, PLAN_FIXTURE, source))
+        args[args.index("--new-findings") + 1] = str(
+            _relabelled(tmp_path, FINDINGS_FIXTURE, source)
+        )
+        assert main(args) == 0
+
+    assert sorted(p.name for p in out.iterdir()) == [
+        "shard-triage.code-review.json",
+        "shard-triage.pentest.json",
+    ], "the second pass overwrote the first's completion marker"
+    # Both are attributable, so the barrier sees a complete join rather than
+    # waiting forever on a pass that already reported.
+    assert sorted(load_markers(out)) == ["code-review", "pentest"]
+
+
+def test_a_marker_cannot_be_written_under_an_undeclared_scanner():
+    with pytest.raises(TriageError, match="is not one of"):
+        tg.marker_stage("nmap")
+
+
+def test_the_marker_stage_is_never_a_bare_triage():
+    """A bare `triage` id is the shape the barrier rejects as unattributable, and
+    two passes sharing it would overwrite each other's key. It must be
+    unreachable from a declared source, not merely absent today."""
+    for source in tg.SOURCES:
+        assert tg.marker_stage(source) != "triage"
+        assert tg.marker_stage(source).startswith("triage.")
+
+
+def test_writing_a_marker_needs_a_timestamp_and_says_so_before_filing(
+    monkeypatch, tmp_path, capsys
+):
+    """`--generated-at` is required with `--ledger-dir`, and the refusal lands
+    BEFORE anything is filed: a marker this pass cannot write is a wiring bug,
+    and discovering it after the issues exist means the fixing retry runs against
+    GitHub state the first attempt created."""
+    gh = FakeGh(issues=[])
+    monkeypatch.setattr(ue, "_gh", gh)
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, "--ledger-dir", str(out)])) == 1
+    assert "--ledger-dir needs --generated-at" in capsys.readouterr().err
+    assert gh.calls == [], "the refusal must precede every GitHub write"
+    assert not out.exists()
+
+
+def test_a_malformed_timestamp_fails_in_this_stage_not_in_the_barrier(fake_gh, tmp_path, capsys):
+    """`build_shard` validates before writing, so an unusable timestamp is this
+    stage's named error rather than an unreadable marker the barrier is blamed
+    for one job later."""
+    fake_gh()
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out, "last tuesday")])) == 1
+    assert "::error title=Security findings triage::" in capsys.readouterr().err
+    assert not out.exists(), "an invalid marker must not be left on disk"
+
+
+def test_the_marker_is_byte_reproducible_across_a_rerun(fake_gh, tmp_path):
+    """FR-C30: the same night re-run with the same caller-supplied timestamp
+    rewrites the same bytes, so a retry is a no-op rather than a spurious diff.
+    This is why `--generated-at` is the caller's and not a clock read here."""
+    first, second = tmp_path / "a", tmp_path / "b"
+    for out in (first, second):
+        fake_gh()
+        assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+    name = "shard-triage.code-review.json"
+    assert (first / name).read_bytes() == (second / name).read_bytes()
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
@@ -921,6 +1079,28 @@ def _cli_args(command, extra=()):
         "--run-id", RUN_ID,
         *extra,
     ]
+
+
+def _marker_args(ledger_dir, generated_at=GENERATED_AT):
+    """The marker-writing flags. A DIRECTORY plus a caller-supplied timestamp --
+    the filename is U9's to derive, so no test names it on the command line."""
+    return ["--ledger-dir", str(ledger_dir), "--generated-at", generated_at]
+
+
+def _relabelled(tmp_path, fixture, source):
+    """Copy a `code-review` fixture across to another scanner.
+
+    `source` is stamped on the document AND on every finding, because
+    `load_new_findings` selects per-finding: relabelling only the envelope yields
+    a document that parses and matches nothing, which reads as a quiet night.
+    """
+    document = json.loads(fixture.read_text(encoding="utf-8"))
+    document["source"] = source
+    for finding in document.get("new_findings", []):
+        finding["source"] = source
+    out = tmp_path / f"{fixture.stem}.{source}.json"
+    out.write_text(json.dumps(document), encoding="utf-8")
+    return out
 
 
 def test_the_validate_subcommand_touches_no_github_state(monkeypatch, capsys):
@@ -940,11 +1120,15 @@ def test_the_validate_subcommand_fails_on_a_bad_plan(tmp_path, capsys):
     assert "::error title=Security findings triage::" in capsys.readouterr().err
 
 
-def test_the_file_subcommand_writes_the_ledger_fields(fake_gh, tmp_path, capsys):
+def test_the_file_subcommand_writes_the_ledger_shard(fake_gh, tmp_path, capsys):
+    """The marker is a full shard under a DERIVED name, into a directory that
+    need not already exist."""
     fake_gh()
-    out = tmp_path / "nested" / "ledger.json"
-    assert main(_cli_args("file", ["--repo", REPO, "--ledger-fields", str(out)])) == 0
-    assert json.loads(out.read_text(encoding="utf-8"))["stories_created"] == 5
+    out = tmp_path / "nested" / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+    shard = json.loads((out / "shard-triage.code-review.json").read_text(encoding="utf-8"))
+    assert shard["fields"]["stories_created"] == 5
+    assert shard["stage"] == "triage.code-review"
     assert "nothing_to_file=false" in capsys.readouterr().out
 
 
@@ -980,7 +1164,7 @@ def test_the_file_subcommand_on_a_zero_findings_night(monkeypatch, tmp_path, cap
 def test_the_file_subcommand_writes_a_completion_marker_on_a_quiet_night(
     monkeypatch, tmp_path, capsys
 ):
-    """The quiet path must still write its `--ledger-fields` marker.
+    """The quiet path must still write its completion marker.
 
     This is the assertion whose absence let the barrier bug ship: `_cmd_file`
     returned before the write, so a healthy scanner that found nothing left no
@@ -996,21 +1180,22 @@ def test_the_file_subcommand_writes_a_completion_marker_on_a_quiet_night(
     )
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps(a_plan([])), encoding="utf-8")
-    out = tmp_path / "nested" / "fields.json"
-    args = _cli_args("file", ["--repo", REPO, "--ledger-fields", str(out)])
+    out = tmp_path / "nested" / "ledger"
+    args = _cli_args("file", ["--repo", REPO, *_marker_args(out)])
     args[args.index("--plan") + 1] = str(plan)
     args[args.index("--new-findings") + 1] = str(findings)
 
     assert main(args) == 0
     assert gh.calls == [], "a quiet night must still touch no GitHub state"
-    assert out.exists(), "a quiet night left no completion marker"
-    fields = json.loads(out.read_text(encoding="utf-8"))
-    assert fields == {"stories_created": 0, "story_ids": [], "findings_covered": []}
+    marker = out / "shard-triage.code-review.json"
+    assert marker.exists(), "a quiet night left no completion marker"
 
-    # And the marker U9 emits must be a legal `triage` shard payload, since the
-    # barrier validates every marker through U2's schema before trusting it.
-    shard = build_shard(RUN_DATE, "triage.code-review", "2026-08-30T03:00:00Z", fields)
-    assert validate_shard(shard, load_schema())["fields"]["story_ids"] == []
+    # The marker U9 writes must be a shard the barrier ACCEPTS as written -- the
+    # whole envelope, read back off disk, not a payload a test wraps for it.
+    shard = json.loads(marker.read_text(encoding="utf-8"))
+    validate_shard(shard, load_schema())
+    assert shard["fields"] == {"stories_created": 0, "story_ids": [], "findings_covered": []}
+    assert "daily_epic" not in shard["fields"], "there is no dated EPIC on a quiet night"
 
 
 def test_an_unresolvable_run_date_is_an_error(tmp_path):

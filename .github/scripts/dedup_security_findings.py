@@ -64,8 +64,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from normalize_security_findings import (
+    SOURCES,
     NormalizationError,
     normalize_documents,
+)
+from security_agent_ledger import (
+    SHARD_NAME_TEMPLATE,
+    LedgerError,
+    build_shard,
 )
 
 PROFILE_PATH = (
@@ -86,6 +92,14 @@ _BASELINE_ENTRY_FIELDS = ("fingerprint", "accepted_on", "reason", "key_files")
 # path by which exploit detail reaches a document (the same NT-11 reasoning the
 # ledger applies to its `reason` field).
 _ACCEPTED_REASONS = ("accepted_risk", "false_positive", "fixed_elsewhere", "pre_existing")
+
+# The stage id this unit records its counts under, one per scanner half. The
+# dotted suffix is what the ledger schema's own description calls out: the two
+# halves run CONCURRENTLY, so `workflow.code-review` and `workflow.pentest` land
+# on distinct keys. A bare `workflow` would have the second half to finish
+# overwrite the first's counts, and the schema merges `identified_raw` with `sum`
+# specifically because each half reports its own.
+WORKFLOW_STAGE_TEMPLATE = "workflow.{source}"
 
 
 class DedupError(ValueError):
@@ -368,12 +382,47 @@ def ledger_fields(result: dict) -> dict:
     }
 
 
+def workflow_stage(source: str) -> str:
+    """The stage id this half records its counts under."""
+    if source not in SOURCES:
+        raise DedupError(f"source {source!r} is not one of {list(SOURCES)}")
+    return WORKFLOW_STAGE_TEMPLATE.format(source=source)
+
+
+def write_shard(
+    ledger_dir: Path | str, *, run_date: str, source: str, generated_at: str, fields: dict
+) -> Path:
+    """Write this half's counts as a full U2 ledger shard.
+
+    Same reasoning as the triage marker (`triage_group_findings.write_marker`),
+    and the same defect being fixed: bare `ledger_fields()` output is not a
+    shard. Every reader of this directory -- the renderer's `load_shards`, the
+    report finalizer -- validates through U2's envelope and RAISES on a missing
+    field, so an unwrapped file is a night whose counts are unreadable and whose
+    reported cause points at the reader rather than at this writer.
+
+    The wrapper and the filename are both derived, never a caller's string, so
+    the stage id inside the shard and the key it lands on cannot disagree.
+    """
+    shard = build_shard(run_date, workflow_stage(source), generated_at, fields)
+    out = Path(ledger_dir) / SHARD_NAME_TEMPLATE.format(stage=shard["stage"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(shard, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return out
+
+
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
 
 def _cmd_diff(args: argparse.Namespace) -> int:
+    if args.ledger_dir and not (args.source and args.generated_at):
+        raise DedupError(
+            "--ledger-dir needs --source and --generated-at: the shard's stage id "
+            "is per-scanner-half (two halves sharing one id overwrite each other) "
+            "and its timestamp is the caller's, so a re-run rewrites the same shard"
+        )
     assert_ids_are_unstable(args.profile)
     normalized = normalize_documents(args.findings)
     baseline = load_baseline(args.baseline)
@@ -383,11 +432,24 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     Path(args.output).write_text(
         json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8"
     )
-    if args.ledger_fields:
-        Path(args.ledger_fields).write_text(
-            json.dumps(ledger_fields(result), sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
+    if args.ledger_dir:
+        # `build_result` leaves `run_date` None when neither the flag nor the
+        # document carried one. Named here rather than left to the schema's
+        # pattern check, because "shard-<stage>.json under the wrong night's
+        # prefix" is the failure this addresses and `None` is its only warning.
+        if not result["run_date"]:
+            raise DedupError(
+                "cannot write a ledger shard without a run date: pass --run-date, "
+                "since the shard's run_date is what places it under tonight's prefix"
+            )
+        out = write_shard(
+            args.ledger_dir,
+            run_date=result["run_date"],
+            source=args.source,
+            generated_at=args.generated_at,
+            fields=ledger_fields(result),
         )
+        print(f"wrote ledger shard {out.name}")
 
     # Summary only. No titles, paths or reproduction detail on a CI log, which
     # is a world-readable artifact for anyone who can see the run (NEV-2).
@@ -436,7 +498,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     diff.add_argument("--baseline", default=str(BASELINE_PATH))
     diff.add_argument("--output", required=True, help="where to write the new-only result")
-    diff.add_argument("--ledger-fields", help="also write the workflow-stage ledger fields here")
+    # A DIRECTORY, not a file: the shard's name is derived from its stage id
+    # (`shard-workflow.<source>.json`), so the id lives in code and the key it
+    # lands on cannot disagree with the id inside the file.
+    diff.add_argument(
+        "--ledger-dir", help="directory to write this half's workflow-stage shard into"
+    )
+    diff.add_argument(
+        "--source",
+        choices=SOURCES,
+        help="which scanner half is writing; required with --ledger-dir. The two "
+        "halves must record under distinct stage ids or one overwrites the other",
+    )
+    diff.add_argument(
+        "--generated-at",
+        help="ISO-8601, from the caller; required with --ledger-dir",
+    )
     diff.add_argument("--run-date", help="YYYY-MM-DD; defaults to the document's runDate")
     diff.add_argument("--profile", default=str(PROFILE_PATH))
     diff.set_defaults(func=_cmd_diff)
@@ -457,7 +534,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (DedupError, NormalizationError) as exc:
+    # `LedgerError` too: `build_shard` validates before writing, so a shard this
+    # unit could not legally emit fails here, named as this stage's error, rather
+    # than as a traceback or as a later reader's "invalid shard".
+    except (DedupError, NormalizationError, LedgerError) as exc:
         print(f"::error title=Security findings dedup::{exc}", file=sys.stderr)
         return 1
 

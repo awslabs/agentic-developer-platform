@@ -83,6 +83,11 @@ from ensure_umbrella_epic import (  # noqa: E402
     find_issue_by_exact_title,
     link_sub_issue,
 )
+from security_agent_ledger import (  # noqa: E402
+    SHARD_NAME_TEMPLATE,
+    LedgerError,
+    build_shard,
+)
 
 BANNED_PATTERNS_PATH = (
     Path(__file__).resolve().parent.parent / "security" / "triage-banned-patterns.json"
@@ -94,6 +99,14 @@ PLAN_SCHEMA_VERSION = "1"
 # the service populated (see normalize_security_findings.source_of), so these are
 # that module's values, not a second vocabulary.
 SOURCES = ("code-review", "pentest")
+
+# The stage id this pass signals completion under, one per scanner. Declared
+# HERE, in the writer, and imported by the barrier that reads it (U10 matches it
+# with `MARKER_STAGE_RE`) -- a second literal in the reader is the drift this
+# unit's whole defect class comes from. The dotted suffix is load-bearing: U2's
+# stage id IS the concurrency boundary, so two passes sharing a bare `triage`
+# would overwrite each other's shard and the barrier could not attribute either.
+MARKER_STAGE_TEMPLATE = "triage.{source}"
 
 # The dated parent's title. Distinct from UMBRELLA_TITLE, and matched by exact
 # equality like it -- a date suffix is what makes "one parent per night"
@@ -671,6 +684,45 @@ def ledger_fields(daily_epic: int | None, filed: list[dict]) -> dict:
     return fields
 
 
+def marker_stage(source: str) -> str:
+    """The stage id this pass signals completion under."""
+    if source not in SOURCES:
+        raise TriageError(f"source {source!r} is not one of {list(SOURCES)}")
+    return MARKER_STAGE_TEMPLATE.format(source=source)
+
+
+def write_marker(
+    ledger_dir: Path | str, *, run_date: str, source: str, generated_at: str, fields: dict
+) -> Path:
+    """Write this pass's completion marker as a full U2 ledger shard.
+
+    Two things here are deliberately NOT the caller's to choose, and both were
+    the defect: the shard WRAPPER and the FILENAME.
+
+    * The wrapper. The barrier validates every marker it reads through U2's
+      `validate_shard`, which raises on a missing envelope field. Writing bare
+      `ledger_fields()` output produced a file this pass exited 0 on and the
+      barrier rejected one job later -- a failure whose reported cause was
+      "invalid shard", indistinguishable from a genuinely broken run. So the
+      fields go through `build_shard`, which validates before returning: a
+      marker the barrier would reject fails HERE, in the stage that wrote it.
+    * The filename. Derived from the stage id via U2's `SHARD_NAME_TEMPLATE`,
+      so `shard-triage.<source>.json` is a consequence of the stage id rather
+      than a string a caller retypes. A hand-typed path is free to disagree
+      with the stage inside the file, and to stop matching the delivery job's
+      `shard-triage*.json` glob -- at which point the join silently has nothing
+      to join.
+
+    `generated_at` is the caller's, never a clock read here: it is what lets a
+    re-run of the same night produce a byte-identical shard (FR-C30).
+    """
+    shard = build_shard(run_date, marker_stage(source), generated_at, fields)
+    out = Path(ledger_dir) / SHARD_NAME_TEMPLATE.format(stage=shard["stage"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(shard, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return out
+
+
 def run_triage(
     repo: str,
     *,
@@ -800,6 +852,15 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
 
 def _cmd_file(args: argparse.Namespace) -> int:
+    # Checked BEFORE anything is filed. A marker this pass cannot write is a
+    # wiring bug, and discovering it after the issues exist means the retry that
+    # fixes it runs against GitHub state the first attempt already created.
+    if args.ledger_dir and not args.generated_at:
+        raise TriageError(
+            "--ledger-dir needs --generated-at: the marker's timestamp is the "
+            "caller's, so re-running a night rewrites the same shard rather than "
+            "a differing one"
+        )
     new_findings = load_new_findings(args.new_findings, args.source)
     plan = _load_plan(args.plan)
     run_date = _resolve_run_date(args, new_findings, plan)
@@ -826,12 +887,15 @@ def _cmd_file(args: argparse.Namespace) -> int:
     # barrier this pass completed rather than hung -- see run_triage. An early
     # return here was the bug: it made a healthy quiet scanner indistinguishable
     # from one that never ran.
-    if args.ledger_fields:
-        Path(args.ledger_fields).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.ledger_fields).write_text(
-            json.dumps(result["ledger_fields"], sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
+    if args.ledger_dir:
+        out = write_marker(
+            args.ledger_dir,
+            run_date=run_date,
+            source=args.source,
+            generated_at=args.generated_at,
+            fields=result["ledger_fields"],
         )
+        print(f"wrote completion marker {out.name}")
     return 0
 
 
@@ -866,7 +930,17 @@ def build_parser() -> argparse.ArgumentParser:
     file_cmd = sub.add_parser("file", help="materialize the plan as issues")
     common(file_cmd)
     file_cmd.add_argument("--repo", required=True, help="Repository (owner/name)")
-    file_cmd.add_argument("--ledger-fields", help="write the triage-stage ledger fields here")
+    # A DIRECTORY, not a file. The shard's name is derived from its stage id
+    # (`shard-triage.<source>.json`), so the stage id lives in code and cannot
+    # drift from the filename or from the delivery job's marker glob.
+    file_cmd.add_argument(
+        "--ledger-dir", help="directory to write this pass's completion marker shard into"
+    )
+    file_cmd.add_argument(
+        "--generated-at",
+        help="ISO-8601, from the caller; required with --ledger-dir. Supplied rather "
+        "than read from a clock here so a re-run writes a byte-identical shard",
+    )
     file_cmd.set_defaults(func=_cmd_file)
     return parser
 
@@ -875,7 +949,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except TriageError as exc:
+    # `LedgerError` too: `build_shard` validates the marker before it is written,
+    # so a bad `--generated-at` or an unownable field surfaces as this stage's
+    # named error rather than as a traceback the barrier is later blamed for.
+    except (TriageError, LedgerError) as exc:
         print(f"::error title=Security findings triage::{exc}", file=sys.stderr)
         return 1
 
