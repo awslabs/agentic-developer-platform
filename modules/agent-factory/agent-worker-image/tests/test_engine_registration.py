@@ -42,6 +42,9 @@ from lib.engine_registration import (  # noqa: E402
 ISSUE = 4528
 TENANT = "org-alpha"
 ENDPOINT = "https://api-gw.example.com"
+# The run's envelope `message_id` (Issue #4597) — the `event_id` PK of the run's
+# `webhook-events` row, which is what the gateway resolves the owning tenant from.
+RUN_ID = "evt-run-4597"
 
 # What the gateway returns on a successful registration (`DraftRegisteredResponse`).
 GATEWAY_OK = {
@@ -59,17 +62,36 @@ GATEWAY_OK = {
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """A pod-like environment: endpoint and tenant present, kill switch unset."""
+    """A pod-like environment: endpoint, tenant and run id present, kill switch unset.
+
+    `ADP_MESSAGE_ID` is set explicitly (Issue #4597) rather than inherited. It is
+    genuinely present in a real pod and in an agent's own shell, so leaving it to the
+    ambient environment makes this whole module pass locally and fail in CI — which
+    is exactly what happened when the run-id header was added.
+    """
     monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", ENDPOINT)
     monkeypatch.setenv("ADP_TENANT_ID", TENANT)
+    monkeypatch.setenv("ADP_MESSAGE_ID", RUN_ID)
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.delenv(DISABLED_ENV, raising=False)
 
 
 @pytest.fixture(autouse=True)
 def _no_real_signing():
-    """Never reach botocore. Signing is not what these tests are about."""
-    with patch("lib.engine_registration._sigv4_sign_request", return_value={"Content-Type": "application/json", "Authorization": "AWS4-x"}):
+    """Never reach botocore. Signing is not what these tests are about.
+
+    Echoes the headers it was given plus an `Authorization`, which is what the real
+    `_sigv4_sign_request` does (botocore's `add_auth` mutates the request's existing
+    header set). The previous stub returned a fixed dict, silently dropping every
+    header the caller passed — so an assertion about a header the worker sends could
+    not distinguish "not sent" from "eaten by the stub". Issue #4597 added such a
+    header, and this is what makes it testable.
+    """
+
+    def _echo(_method, _url, headers, _data):
+        return {**headers, "Authorization": "AWS4-x"}
+
+    with patch("lib.engine_registration._sigv4_sign_request", side_effect=_echo):
         yield
 
 
@@ -305,6 +327,91 @@ class TestTenantIsAlwaysServerResolved:
         assert request.full_url == f"{ENDPOINT}/agent/orchestration/flows/drafts"
         assert request.method == "POST"
         assert "/internal/" not in request.full_url
+
+
+class TestRunIdHeader:
+    """Issue #4597: the run reference that lets the gateway establish the tenant.
+
+    The pod is resolved as the shared `scaledjob-worker` registry entry, whose
+    `org_id` is `__platform__` — no real tenant. So the gateway derives the owning
+    tenant from the run's ingress row instead, and this header is how the request
+    names that row. Without it every real-tenant registration is refused.
+    """
+
+    def sent_headers(self, urlopen: MagicMock) -> dict:
+        """Header names lowercased: urllib title-cases what it stores, and the
+        assertions here are about the wire name, not about urllib's casing."""
+        return {name.lower(): value for name, value in urlopen.call_args[0][0].header_items()}
+
+    def test_the_run_id_is_sent_under_the_platforms_header_name(self, tmp_path):
+        """`X-Agent-RunId` — one word, matching `proxy/routes.py`'s `x-agent-runid`.
+
+        The spelling is the contract. `X-Agent-Run-Id` is a different header and the
+        gateway does not read it, so a hyphenation drift here refuses every
+        registration while looking correct in a diff.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))) as urlopen:
+            register_loop_proposal(work_dir=tmp_path, issue=ISSUE)
+
+        assert self.sent_headers(urlopen)["x-agent-runid"] == RUN_ID
+
+    def test_the_run_id_is_inside_the_signed_header_set(self, tmp_path):
+        """Signed, not appended after signing, so it cannot be rewritten in flight.
+
+        Asserted on what is handed to the signer: a header added to the request after
+        `_sigv4_sign_request` returns would still arrive, and would still work, which
+        is precisely why the weaker arrangement needs a test to stay out.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration._sigv4_sign_request", return_value={"Authorization": "AWS4-x"}) as signer:
+            with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
+                register_loop_proposal(work_dir=tmp_path, issue=ISSUE)
+
+        signed_headers = signer.call_args[0][2]
+        assert signed_headers["X-Agent-RunId"] == RUN_ID
+
+    def test_the_worker_sends_no_org_header(self, tmp_path):
+        """The tenant is NOT asserted. `X-Agent-OrgId` is caller-influenced and the
+        #4132 invariant forbids it gating access, so the worker must not start
+        sending it here and invite the gateway to read it."""
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))) as urlopen:
+            register_loop_proposal(work_dir=tmp_path, issue=ISSUE)
+
+        assert "x-agent-orgid" not in self.sent_headers(urlopen)
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_a_missing_run_id_warns_and_sends_nothing(self, monkeypatch, tmp_path, value):
+        """Reported here rather than sent blank, for the same reason as the tenant.
+
+        The gateway's refusal would name the header; an operator reading the closing
+        comment needs to know the *pod* had nothing to send. And it stays fail-soft: a
+        warning note, never a raise.
+        """
+        monkeypatch.setenv("ADP_MESSAGE_ID", value)
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen") as urlopen:
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        urlopen.assert_not_called()
+        assert "ADP_MESSAGE_ID" in note
+        assert note.startswith("### ⚠️")
+
+    def test_an_absent_run_id_env_var_warns_and_sends_nothing(self, monkeypatch, tmp_path):
+        """Unset, not merely blank — the shape a pod that never exported it has."""
+        monkeypatch.delenv("ADP_MESSAGE_ID", raising=False)
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen") as urlopen:
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        urlopen.assert_not_called()
+        assert "ADP_MESSAGE_ID" in note
 
 
 class TestSuccessNote:
