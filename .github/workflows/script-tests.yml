@@ -31,6 +31,7 @@ on:
       - '.github/scripts/join_barrier.py'
       - '.github/scripts/ops_dispatch.py'
       - '.github/scripts/ops_stuck_tracker.py'
+      - '.github/scripts/finalize_security_report.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -77,6 +78,7 @@ on:
       - '.github/scripts/join_barrier.py'
       - '.github/scripts/ops_dispatch.py'
       - '.github/scripts/ops_stuck_tracker.py'
+      - '.github/scripts/finalize_security_report.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -150,4 +152,5 @@ jobs:
             tests/test_triage_grouping.py \
             tests/test_join_barrier.py \
             tests/test_ops_dispatch_bounds.py \
+            tests/test_report_finalization.py \
             -v --tb=short --timeout=60
