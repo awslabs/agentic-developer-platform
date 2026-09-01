@@ -253,7 +253,14 @@ _CACHE_PREFIX = "runbind"
 # runs. The attribute is written at ingress (webhook-ingress
 # ``lambda/common/webhook_events.py``) and advanced on every transition by the
 # worker's status updater (``agent-worker-image/lib/invocation_status.py``).
-_PROJECTION = "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, status, arrived_at"
+# ``status`` is a DynamoDB RESERVED KEYWORD: used raw in a ProjectionExpression
+# it makes EVERY Query throw ValidationException, which the fault handler
+# dutifully degraded to "no binding" — so no lookup ever completed, no run was
+# ever bound, and no attribution ever published, silently, in every environment
+# (found live during the #4591 smoke). It must travel through the ``#status``
+# alias in _PROJECTION_NAMES below.
+_PROJECTION = "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, #status, arrived_at"
+_PROJECTION_NAMES = {"#status": "status"}
 
 # The two principal kinds ``root_human_id`` can name. Issue #4337 D4: DERIVED from
 # the row's ``is_human_rooted`` flag, never a new column and never a value any
@@ -452,6 +459,7 @@ class RunBindingResolver:
         response = self._get_table().query(
             KeyConditionExpression=Key("event_id").eq(run_id),
             ProjectionExpression=_PROJECTION,
+            ExpressionAttributeNames=_PROJECTION_NAMES,
             ScanIndexForward=False,  # descending arrived_at -> latest first
             Limit=1,
         )

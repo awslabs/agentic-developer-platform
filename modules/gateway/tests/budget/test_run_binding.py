@@ -929,6 +929,56 @@ class TestJoinKeyIsEventIdNotTheRowRunIdAttribute:
         # Positive half: the identity attributes the binding genuinely needs.
         assert {"user_id", "tenant_id", "root_human_id", "correlation_id"} <= projected
 
+    def test_projection_reserved_keywords_are_aliased(self):
+        """A DynamoDB reserved keyword sent raw in a ProjectionExpression makes
+        EVERY Query throw ValidationException — and the fault handler correctly
+        degrades that to "no binding", so the feature silently never works.
+        That is exactly how ``status`` shipped: no lookup ever completed in any
+        environment until the #4591 smoke caught it live. Reserved words must
+        travel through an ``ExpressionAttributeNames`` alias.
+        """
+        tokens = {attr.strip() for attr in run_binding_module._PROJECTION.split(",")}
+        # The subset of DynamoDB's ~570 reserved words this row shape could
+        # plausibly grow: enough to catch the next `status`.
+        reserved = {
+            "status",
+            "timestamp",
+            "ttl",
+            "name",
+            "type",
+            "source",
+            "owner",
+            "role",
+            "user",
+            "session",
+            "token",
+            "date",
+            "time",
+            "state",
+            "action",
+            "connection",
+            "data",
+        }
+        for token in tokens:
+            assert token.lower() not in reserved, f"'{token}' is a DynamoDB reserved keyword — alias it via _PROJECTION_NAMES"
+        aliases = {t for t in tokens if t.startswith("#")}
+        assert aliases == set(run_binding_module._PROJECTION_NAMES), (
+            "every #alias in _PROJECTION must be defined in _PROJECTION_NAMES, and none left dangling"
+        )
+
+    @pytest.mark.asyncio
+    async def test_lookup_sends_the_alias_map(self, cache):
+        """The alias map must reach the actual Query call, not just the module
+        constant — introspected off the recorded kwargs like the key-condition
+        test above."""
+        table = _StubTable(items=[_row()])
+        resolver = _resolver(table, cache)
+
+        await resolver.resolve(RUN_ID)
+
+        assert table.queries[-1]["ExpressionAttributeNames"] == {"#status": "status"}
+        assert "#status" in table.queries[-1]["ProjectionExpression"]
+
     @pytest.mark.asyncio
     async def test_lookup_key_condition_names_event_id(self, cache):
         """Positive assertion: the Query keys on ``event_id``, introspected.
