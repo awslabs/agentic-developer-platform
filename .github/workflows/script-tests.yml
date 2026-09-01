@@ -28,6 +28,7 @@ on:
       - '.github/scripts/normalize_security_findings.py'
       - '.github/scripts/dedup_security_findings.py'
       - '.github/scripts/triage_group_findings.py'
+      - '.github/scripts/author_grouping_plan.py'
       - '.github/scripts/join_barrier.py'
       - '.github/scripts/ops_dispatch.py'
       - '.github/scripts/ops_stuck_tracker.py'
@@ -75,6 +76,7 @@ on:
       - '.github/scripts/normalize_security_findings.py'
       - '.github/scripts/dedup_security_findings.py'
       - '.github/scripts/triage_group_findings.py'
+      - '.github/scripts/author_grouping_plan.py'
       - '.github/scripts/join_barrier.py'
       - '.github/scripts/ops_dispatch.py'
       - '.github/scripts/ops_stuck_tracker.py'
@@ -150,6 +152,7 @@ jobs:
             tests/test_assert_findings_bucket_private.py \
             tests/test_security_agent_dedup.py \
             tests/test_triage_grouping.py \
+            tests/test_author_grouping_plan.py \
             tests/test_join_barrier.py \
             tests/test_ops_dispatch_bounds.py \
             tests/test_report_finalization.py \
