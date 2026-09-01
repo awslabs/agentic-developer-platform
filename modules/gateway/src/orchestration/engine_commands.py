@@ -762,10 +762,15 @@ async def _handle_row(
     """Resolve, authorize and apply one marked event row.
 
     Every exit either applies the command or queues a reply, so no comment is
-    silently ignored. The one exception is a body that parses to nothing: the
-    Lambda marks any comment containing the tag, so `cc @agent-engine` in prose is
-    a marked row with no command in it. Replying to those would turn every mention
-    of the engine into a comment, so they are consumed quietly.
+    silently ignored. There are two exceptions, both consumed quietly because a
+    reply would be noise rather than information (#4599):
+
+    * **A body that parses to nothing.** The Lambda marks any comment containing the
+      tag, so `cc @agent-engine` in prose — or a doc quoting a command inside
+      backticks — is a marked row with no command in it. Replying to those would
+      turn every mention of the engine into a comment.
+    * **A comment a bot authored.** A live command is a human act; the platform's own
+      agents narrating what a command does are not issuing one.
     """
     org_id = str(row.get("tenant_id") or "")
     repo_full = str(row.get("repo") or "")
@@ -809,6 +814,31 @@ async def _handle_row(
                 message=message,
             )
         )
+
+    # Issue #4599: a bot did not *ask* for anything. A live engine command is a
+    # human act, so a comment authored by a GitHub App or a bot account is consumed
+    # with no reply — checked before parsing, because the point is to say nothing at
+    # all rather than to say it more quietly.
+    #
+    # THIS IS A NOISE FILTER, NOT AN AUTHORIZATION BOUNDARY. Authority already holds
+    # without it: bot identities seed with `role="agent"`, which is absent from
+    # `_MEMBERSHIP_ROLE_TO_ADMIN_ROLE`, so `membership_role_to_admin_role` fails
+    # closed to MEMBER, which lacks `PLAN_APPROVE`. Deleting this branch makes the
+    # thread noisy again; it does not make a bot able to approve anything. Do not
+    # relax that RBAC on the strength of this check.
+    #
+    # `.get` with a False default because the field (#4599) postdates rows already in
+    # the table, and the webhook Lambda that writes it ships before this reads it —
+    # during that window, and for any row written earlier, absent means "unknown",
+    # and treating unknown as human preserves exactly today's behaviour.
+    if bool(row.get("engine_command_sender_is_bot", False)):
+        logger.info(
+            "orchestration engine commands: event %s was authored by a bot; consuming quietly",
+            event_id,
+        )
+        report.record(org_id, "commands_refused")
+        _queue("", installation_id=None)
+        return
 
     command = parse_engine_command(body)
     if command is None:

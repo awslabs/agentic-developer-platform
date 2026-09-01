@@ -194,6 +194,7 @@ class WebhookEventLogger:
         engine_command: bool = False,
         comment_body: str | None = None,
         sender_github_id: str | None = None,
+        sender_is_bot: bool = False,
     ) -> dict[str, Any]:
         """Record a webhook event in DynamoDB.
 
@@ -248,6 +249,19 @@ class WebhookEventLogger:
                 logins are renameable, so a login would let a renamed account
                 inherit another user's approvals. The tick resolves it to a
                 platform identity server-side and never trusts it as authority.
+            sender_is_bot: Issue #4599 — whether a bot or GitHub App authored the
+                comment. A FACT this component already knows (it gates persona
+                dispatch on the same signal) and the tick cannot recompute, because
+                only the body and the sender id reach the row — author-kind never
+                did. Carried, not parsed, so #4303's closed-routes constraint is
+                untouched: the Lambda still decides nothing about the command.
+
+                The tick reads it to skip replying to a bot's own comment. It is a
+                NOISE filter, not an authorization boundary — bot identities seed
+                with ``role="agent"``, which resolves to MEMBER and therefore lacks
+                ``PLAN_APPROVE``, so a bot command is refused on authority whether
+                or not this flag is present. Do not relax that RBAC because this
+                exists.
 
         Returns:
             The DDB item that was written.
@@ -323,12 +337,18 @@ class WebhookEventLogger:
         # attributes are written together or not at all — a pending marker with no
         # body would make the tick wake up to a command it cannot parse, and a body
         # with no marker would never be found (the index is sparse on the marker).
+        # Issue #4599: `engine_command_sender_is_bot` joins that all-or-nothing set.
+        # Always written (not conditional on being true) so the tick can tell "this
+        # row predates the field" from "this row says the author was human" — an
+        # absent attribute defaulting to False is the safe read either way, but an
+        # always-present boolean is what makes the cross-side contract testable.
         if engine_command:
             item["engine_command_status"] = ENGINE_COMMAND_STATUS_PENDING
             item["engine_command_body"] = (comment_body or "")[
                 :ENGINE_COMMAND_BODY_MAX_CHARS
             ]
             item["engine_command_sender_github_id"] = sender_github_id or ""
+            item["engine_command_sender_is_bot"] = bool(sender_is_bot)
 
         try:
             self._table.put_item(Item=item)

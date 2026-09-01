@@ -14,11 +14,11 @@ would mix "what did the human ask for" with "may this human have it", which are
 the two questions the bridge has to keep separate.
 
 **Pure. No I/O, no session, no AWS.** Everything here is a function of the comment
-text. That is what makes the hostile cases — a command inside a quoted block, two
-commands in one comment, a gate number of ``99999999999999`` — cheap to enumerate
-as tests rather than expensive to reason about. Authority lives entirely on the
-other side of this boundary: this module can say "this text asks for a halt" and
-nothing else. It cannot halt anything.
+text. That is what makes the hostile cases — a command inside a Markdown blockquote
+or a code block, two commands in one comment, a gate number of ``99999999999999`` —
+cheap to enumerate as tests rather than expensive to reason about. Authority lives
+entirely on the other side of this boundary: this module can say "this text asks for
+a halt" and nothing else. It cannot halt anything.
 
 **Untrusted input.** A comment body is written by anyone who can comment on the
 issue, which on a public repository is anyone at all. So:
@@ -32,6 +32,14 @@ issue, which on a public repository is anyone at all. So:
 * quoted lines (Markdown ``>`` blockquotes) are skipped, so replying to a comment
   that contained a command does not re-issue it — GitHub's "Quote reply" button
   makes that the single most likely way a command is accidentally repeated;
+* **code is not a command** (#4599): fenced blocks and inline code spans are
+  removed before the tag is looked for, because a backticked command name is how
+  a human writes *about* a command — in a doc, a table, or a design note. Note
+  this is a separate rule from the blockquote one and is not implied by it;
+* **the tag must be addressed, not described** (#4599): only whitespace, list or
+  table markers, ``cc`` and other ``@mentions`` may precede the tag. A word before
+  it means prose. Deliberately weaker than "the tag must lead the comment", which
+  would reject the ``cc @agent-engine halt`` form this module documents below;
 * the gate number is bounded and must be all digits, so no parse here can produce
   an argument the applier has to defend against.
 
@@ -114,6 +122,69 @@ _TAG_RE = re.compile(re.escape(ENGINE_TAG) + r"(?![\w-])", re.IGNORECASE)
 # the plan a second time, attributed to whoever pressed the button.
 _QUOTE_RE = re.compile(r"\A\s*>")
 
+# A Markdown fence: three or more backticks or tildes opening a line, optionally
+# followed by an info string (` ```python `). Matched on the line's own indentation
+# because GitHub renders an indented fence inside a list item as a fence.
+#
+# Issue #4599: the parser had no code-awareness at all, and that — not the
+# "substring anywhere" the issue describes — was the defect. Inside a code span or
+# a fenced block the tag IS still immediately followed by the verb, so every
+# existing anchor (`_TAG_RE`'s token match, `_VERB_PATTERNS`' `\A`) passes and a
+# doc, a table or a design write-up quoting a command parses as a live one. That is
+# precisely how humans write command names, so the false-trigger rate tracked how
+# much the feature was being documented.
+_FENCE_RE = re.compile(r"\A\s*(?P<fence>`{3,}|~{3,})")
+
+# An inline code span: a run of one or more backticks, the shortest possible span
+# of text, then the SAME run again. Non-greedy with a backreference so ``a `x` b
+# `y` c`` yields two spans rather than one that swallows the prose between them.
+#
+# Spans are removed from a line before the tag is looked for, so a tag inside
+# backticks is not merely un-anchored — it is not there at all. Removal rather than
+# rejection of the whole line because ``@agent-engine halt — see `docs/x.md` `` is
+# a real command with an incidental code span after it, and dropping the line would
+# lose it.
+_INLINE_CODE_RE = re.compile(r"(?P<ticks>`+)(?s:.)*?(?P=ticks)")
+
+# What may sit immediately before the tag for the tag to still be *addressed*
+# rather than *described* (issue #4599). Matched against the text preceding the tag
+# on its line, and anchored at the END of that text: only the last thing before the
+# tag matters, because that is what says whether a sentence is running into the tag.
+#
+# This is the *address-only prefix rule*, and it deliberately is NOT the
+# "leading token" rule the issue proposed. A bare-leading-token requirement would
+# reject `cc @agent-engine halt` — a form this module's own code comment documents
+# ("Anything before it is address ('cc @agent-engine') or prose") — and the shipped
+# `no — @agent-engine halt` reply shape. It would therefore ship exactly the
+# regression row 1 of the issue's blast-radius table warns about: real human
+# commands silently ignored, making the engine look dead.
+#
+# Two things qualify:
+#
+# * **The line start**, optionally past indentation, a table-cell pipe, a list
+#   bullet or a blockquote marker — the ordinary way a command is written.
+# * **A clause boundary**: punctuation (`—`, `,`, `:`, `.`, `?`, brackets…), an
+#   address token (`cc`, `/cc`), or another `@mention`. All of them end whatever
+#   preceded them, so the tag begins a new thought — `no — @agent-engine halt`,
+#   `@alice @agent-engine halt`.
+#
+# What does NOT qualify is a bare WORD running into the tag. That is the true
+# discriminator: `posts @agent-engine accept to approve` and `the operator should
+# @agent-engine halt` are prose ABOUT a command, because the sentence flows through
+# the tag instead of stopping at it. Narrower than a leading-token rule in exactly
+# the place that matters, and it costs nothing a human actually types.
+_ADDRESS_PREFIX_RE = re.compile(
+    r"""(?:
+          \A [\s|]* (?: (?: [-*+>] | \d{1,3}\. ) \s* )*   # line start, past markers
+        | (?:                                             # or a clause boundary
+              [-–—,:;.!?()\[\]*+>|/]                      #   punctuation
+            | (?<![\w-]) /?cc :?                          #   an address token
+            | @[\w-]+                                     #   another @mention
+          ) \s*
+      ) \Z""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
 # Free text carried on a `replan:`. Bounded because it lands in `reason` on an
 # append-only row, and the same 2000-char cap the dashboard applies to a reason
 # (`controls.py`'s `Field(max_length=2000)`) is the right ceiling here — the two
@@ -154,10 +225,50 @@ class EngineCommand:
 def _candidate_lines(body: str) -> list[str]:
     """The lines of ``body`` a command may appear on, in order.
 
-    Blockquotes are dropped here rather than filtered later so that no downstream
-    step can accidentally reach one.
+    Three kinds of line are dropped, all of them here rather than filtered later so
+    that no downstream step can accidentally reach one:
+
+    * **Blockquotes** (``>``) — GitHub's "Quote reply" must not re-issue a command.
+    * **Fenced code blocks** — a command shown in a fence is documentation.
+    * **Inline code spans** are stripped from the lines that survive, so a tag
+      inside backticks is not present to be found at all.
+
+    **The fence toggle fails safe: an unclosed fence swallows the rest of the
+    body.** This direction is load-bearing, not incidental. Bodies are truncated at
+    ``ENGINE_COMMAND_BODY_MAX_CHARS`` on the webhook side, which can cut a body
+    mid-fence and leave the opening ``` with no partner. Treating an unclosed fence
+    as "not really a fence" would make truncation a way to smuggle a command *out*
+    of a code block: paste 4000 characters of prose, then a fence, and the fence
+    silently stops applying. Erring toward "this is code" can only ever lose a
+    command that was written after an unterminated fence — a body that renders as
+    code on GitHub anyway, so the human already cannot see their command as a
+    command.
     """
-    return [line for line in body[:_MAX_BODY_SCAN_CHARS].splitlines() if not _QUOTE_RE.match(line)]
+    lines: list[str] = []
+    open_fence: str | None = None
+
+    for line in body[:_MAX_BODY_SCAN_CHARS].splitlines():
+        fence = _FENCE_RE.match(line)
+
+        if open_fence is not None:
+            # Inside a fence. Only a fence of the same character closes it, so a
+            # ``` inside a ~~~ block is content, exactly as Markdown renders it.
+            if fence is not None and fence.group("fence")[0] == open_fence[0]:
+                open_fence = None
+            continue
+
+        if fence is not None:
+            open_fence = fence.group("fence")
+            continue
+
+        if _QUOTE_RE.match(line):
+            continue
+
+        # Strip inline code spans before the caller looks for the tag. A line that
+        # was nothing but a code span becomes blank and simply never matches.
+        lines.append(_INLINE_CODE_RE.sub(" ", line))
+
+    return lines
 
 
 def parse_engine_command(body: str | None) -> EngineCommand | None:
@@ -187,8 +298,14 @@ def parse_engine_command(body: str | None) -> EngineCommand | None:
         if tag is None:
             continue
 
+        # Issue #4599: what comes BEFORE the tag decides whether the tag is being
+        # talked to or talked about. Only an address prefix keeps it a command;
+        # a word before it means prose ("posts @agent-engine accept to approve").
+        if not _ADDRESS_PREFIX_RE.search(line[: tag.start()]):
+            continue
+
         # Only the text after the tag, on the tag's own line, is the command.
-        # Anything before it is address ("cc @agent-engine") or prose.
+        # Anything before it is address ("cc @agent-engine").
         remainder = line[tag.end() :].strip()
 
         for pattern, verb in _VERB_PATTERNS:

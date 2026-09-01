@@ -1683,6 +1683,12 @@ def handler(event: dict, context) -> dict:
     if intent is None:
         from common import skip_reasons as skip_reasons_mod
 
+        # Issue #4599: reuse the shared author-kind predicate rather than
+        # re-deriving it. It is the same signal `spawn_persona` gates bot dispatch
+        # on, so a comment that would not be allowed to spawn an agent also cannot
+        # provoke an engine-command refusal reply.
+        from common.spawn_persona import _is_bot_sender as _is_bot_sender_for_engine
+
         # Issue #4527: an `@agent-engine` comment is a no-op for THIS Lambda but not
         # for the platform. Marking the row is the entire delivery mechanism: the
         # engine tick queries for pending engine commands on its next wake, parses
@@ -1727,6 +1733,12 @@ def handler(event: dict, context) -> dict:
             engine_command=is_engine_command,
             comment_body=payload.get("comment", {}).get("body") if is_engine_command else None,
             sender_github_id=str(sender_id) if is_engine_command and sender_id else None,
+            # Issue #4599: author-kind, reusing the SAME predicate that gates
+            # persona dispatch rather than a second copy of the rule. Bot logins
+            # end in `[bot]` and carry `type == "Bot"`, which covers the platform's
+            # own `aws-e-adp-agent-*` accounts without a login-prefix match that
+            # would break the day one is renamed.
+            sender_is_bot=_is_bot_sender_for_engine(sender) if is_engine_command else False,
         )
         # Echo the reason in the body for parity with the guard-block response
         # below, which has always included it.
@@ -1876,6 +1888,7 @@ def _capture_invocation_event(
     engine_command: bool = False,
     comment_body: str | None = None,
     sender_github_id: str | None = None,
+    sender_is_bot: bool = False,
 ) -> None:
     """Write enriched invocation row to DynamoDB (best-effort).
 
@@ -1892,6 +1905,10 @@ def _capture_invocation_event(
     tick has no other way to reach them. They are deliberately not written on
     every row: a comment body on every no-op would balloon the table and put
     arbitrary user text on rows nothing reads.
+
+    Issue #4599: ``sender_is_bot`` travels the same path, for the same reason —
+    author-kind is on the payload here and nowhere the tick can see it. The tick
+    uses it to stay quiet rather than post a refusal at a bot's own comment.
     """
     try:
         event_logger = _get_webhook_event_logger()
@@ -1942,6 +1959,7 @@ def _capture_invocation_event(
             engine_command=engine_command,
             comment_body=comment_body,
             sender_github_id=sender_github_id,
+            sender_is_bot=sender_is_bot,
         )
     except Exception as e:
         # Best-effort — never block the webhook response

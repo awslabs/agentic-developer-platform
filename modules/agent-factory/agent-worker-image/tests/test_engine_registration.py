@@ -161,7 +161,10 @@ class TestFailSoft:
     def assert_is_warning(self, note: str) -> None:
         assert note.startswith("### ⚠️ Delivery loop not registered")
         assert "remain" in note and "source of truth" in note
-        assert "Reply `@agent-engine accept`" not in note
+        # No accept instruction in any form: a registration that did not happen has
+        # nothing to accept. Matched on the command itself rather than the sentence
+        # around it, so the #4599 reformat cannot make this assertion vacuous.
+        assert "@agent-engine accept" not in note
 
     def test_malformed_json_warns(self, tmp_path):
         write_proposal(tmp_path, "{not json at all")
@@ -315,7 +318,7 @@ class TestSuccessNote:
 
         assert "flow-abc123" in note
         assert "loop/epic-1/wave-1/accept" in note
-        assert "Reply `@agent-engine accept` to start execution." in note
+        assert "@agent-engine accept" in note
         # The plan must be described as executing nothing — this is the promise the
         # whole story rests on.
         assert "draft" in note and "executes nothing" in note
@@ -328,7 +331,30 @@ class TestSuccessNote:
         with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(response))):
             note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
 
-        assert "Reply `@agent-engine approve-plan` to start execution." in note
+        assert "@agent-engine approve-plan" in note
+
+    def test_the_command_is_fenced_not_inline(self, tmp_path):
+        """Issue #4599: this note must not trigger the bridge it is announcing.
+
+        It posts on every successful registration, and it used to quote the command
+        in inline backticks — which the tick read as a live command: marked pending,
+        parsed, refused (a bot has no `PLAN_APPROVE`) and answered on the thread with
+        "this command cannot be applied by this account". Every registration produced
+        that reply, so the feature's own success message was the noise source.
+
+        A fenced block is ignored by the parser's code-awareness rule while staying
+        copy-pasteable — the property the human actually needs from this line. The
+        assertion is on the fence rather than on "no inline span anywhere" because
+        other fields in this note (`flow_id`, the gate address) are legitimately
+        inline-quoted; it is the COMMAND that must not be.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "```\n@agent-engine accept\n```" in note
+        assert "`@agent-engine accept`" not in note.replace("```\n@agent-engine accept\n```", "")
 
     def test_an_idempotent_retry_says_so(self, tmp_path):
         """A fail-soft retry must not read as a second plan having been created."""

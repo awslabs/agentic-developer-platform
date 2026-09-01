@@ -238,6 +238,15 @@ def _success_note(result: dict[str, Any]) -> str:
     rather than spelled here. The human reading this comment types that string
     back, and a copy of it in the worker could drift from the parser in the
     gateway — leaving a human following a working instruction that does nothing.
+
+    **The command goes in a fenced block, not inline backticks (#4599).** This note
+    is posted on every successful registration, and an inline `@agent-engine accept`
+    used to be read by the tick as a live command: marked pending, parsed, refused
+    (this comment's author is a bot with no `PLAN_APPROVE`), and answered with
+    "this command cannot be applied by this account". Every registration produced
+    that reply — the feature's own success message triggering the feature. A fence
+    is ignored by the parser's code-awareness rule while staying copy-pasteable,
+    which is the property the human actually needs from this line.
     """
     accept_command = result.get("accept_command") or "@agent-engine accept"
     already = result.get("already_registered")
@@ -250,7 +259,11 @@ def _success_note(result: dict[str, Any]) -> str:
         "**State**: `draft` — the plan is visible in the graph UI and executes nothing.",
         f"**Acceptance gate**: `{result.get('acceptance_gate_address')}`",
         "",
-        f"Reply `{accept_command}` to start execution.",
+        "Reply with the following to start execution:",
+        "",
+        "```",
+        accept_command,
+        "```",
     ]
     if already:
         lines.extend(["", "_This document was already registered; the existing plan is unchanged._"])
