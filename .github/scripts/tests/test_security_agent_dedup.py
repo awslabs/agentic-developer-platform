@@ -941,16 +941,35 @@ def test_security_scan_workflow_is_byte_identical_to_main():
 
 
 def test_this_unit_touches_no_workflow_but_the_test_binding():
-    """The only workflow this unit may modify is Script Tests, to pin its own
-    suite. Anything else is an out-of-scope change to a relied-upon pipeline."""
+    """No out-of-scope change to a relied-upon pipeline.
+
+    The allow-list carries the nightly as well as Script Tests, which it did not
+    when U8 landed. That was planned obsolescence of the same kind U5 hit with
+    this suite's old `len(jobs) == 1` fixture: U8 authored no workflow steps, so
+    "touches no workflow at all" and "touches nothing out of scope" were the same
+    sentence then and stopped being so the moment a later unit wired the scripts
+    into their caller. U11's wiring (#4598) is a step in the nightly by
+    definition -- the nightly IS this EPIC's pipeline -- so the narrow form would
+    fail every future unit for doing exactly what it was asked to do.
+
+    The property actually worth defending is that the pre-existing, unrelated
+    scan pipeline does not change as a side effect of this EPIC. That is
+    unaffected: `security-scan.yml` is not on this list and is separately
+    asserted byte-identical to main by the test above, which is the stronger
+    check of the two.
+    """
     ref = _main_ref()
     if ref is None:
         pytest.skip("no network and no local main ref; cannot compare against main")
     completed = _git("diff", "--name-only", ref, "--", ".github/workflows/")
     assert completed.returncode == 0, f"git diff failed: {completed.stderr}"
     changed = {line for line in completed.stdout.split() if line}
-    assert changed <= {".github/workflows/script-tests.yml"}, (
-        f"unexpected workflow changes: {sorted(changed - {'.github/workflows/script-tests.yml'})}"
+    allowed = {
+        ".github/workflows/security-agent-nightly.yml",
+        ".github/workflows/script-tests.yml",
+    }
+    assert changed <= allowed, (
+        f"unexpected workflow changes: {sorted(changed - allowed)}"
     )
 
 

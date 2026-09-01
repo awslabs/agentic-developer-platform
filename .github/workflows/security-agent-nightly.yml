@@ -270,3 +270,211 @@ jobs:
           fi
           $SECURITYAGENT_PYTHON .github/scripts/assert_findings_bucket_private.py \
             --bucket "adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}"
+
+  # ---------------------------------------------------------------------------
+  # Hand the night's plan off to the delivery role (U11, issue #4450 / #4598)
+  # ---------------------------------------------------------------------------
+  # This job is the CALLER the U11 scripts were built for. #4559 §8 items 6-9
+  # are the contract, and items 6 and 7 are the two that belong HERE:
+  #
+  #   6. create the night's plan issue first and capture its number
+  #   7. emit ONE `put-events` root event carrying that number
+  #
+  # ---------------------------------------------------------------------------
+  # WHY `dispatch-items` AND `transition` ARE NOT STEPS IN THIS JOB
+  # ---------------------------------------------------------------------------
+  # They are not missing. They are not CI steps at all, and adding them here
+  # would produce steps that fail on every run — so this comment exists to stop
+  # the next reader "completing" the wiring by pasting them in.
+  #
+  # #4559 §1 splits the night's dispatches across two transports that are NOT
+  # interchangeable. The root, once per night, must be `put-events`: a GitHub
+  # Actions job cannot originate a chain any other way, because `adp-trigger`
+  # and `POST /agent/trigger` are both verified closed to root-minting (a fresh
+  # call has no lineage -> `400 missing_lineage`; a fabricated one -> `422
+  # unknown_chain`). Every hop INSIDE the night is `adp-trigger`, which runs in
+  # the `operations` run this job's event starts — not on this runner.
+  #
+  # That split is enforced by the runtime, twice over:
+  #
+  #   * `adp-trigger` is installed only in the agent-worker image
+  #     (modules/agent-factory/agent-worker-image/Dockerfile). It is absent from
+  #     platform/arc-runner/Dockerfile, so `ops_dispatch.py dispatch-items` on
+  #     this runner dies `FileNotFoundError: adp-trigger` — not a graceful skip.
+  #   * even if it were installed, `adp_trigger/client.py` hard-requires
+  #     ADP_CORRELATION_ID / ADP_MESSAGE_ID / ADP_CHAIN_DEPTH /
+  #     ADP_TRIGGER_ENDPOINT from the POD environment and exits 2 without them.
+  #     A GitHub Actions runner has none: it is not in the chain, which is the
+  #     whole reason the root has to come from EventBridge.
+  #
+  # So `dispatch-items` and `transition` are the delivery role's tools, reached
+  # THROUGH the root dispatch below. Calling them from CI would either crash or,
+  # if someone "fixed" that by switching the per-item hops to `put-events`, mint
+  # a fresh root per item at chain_depth=0 — disabling the depth cap and the
+  # cross-persona loop guard and unlinking the night in lineage (§1).
+  #
+  # ---------------------------------------------------------------------------
+  # STILL NO `schedule:` KEY, AND THE RULE IS STILL DISABLED
+  # ---------------------------------------------------------------------------
+  # This job adds no `schedule:` (the gate in test_securityagent_preflight.py
+  # fails the build on one) and does not flip
+  # `enable_eventbridge_security_agent_rule`, which stays `false` in
+  # modules/agent-factory/webhook-ingress/infra/terraform.tfvars. With the rule
+  # off, the emit below reaches no target: the wiring lands inert on purpose.
+  # Arming is a separate, deliberate step and the IAM `events:PutEvents` grant
+  # must be applied first (§8 items 8 and 10).
+  deliver:
+    name: Deliver
+    needs: code-review
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+      # The barrier files the night's plan issue. Read-only cannot create one,
+      # and #4559 §7.2 is explicit that this path attaches an agent to an
+      # EXISTING issue and cannot conjure one.
+      issues: write
+    env:
+      SECURITYAGENT_PYTHON: python3
+      # Same explicit-default idiom as `code-review`: on an invocation without
+      # a dispatch input this is empty, and an empty environment resolves the
+      # ledger bucket to a name with a doubled dash that silently does not
+      # exist (#4517).
+      ENVIRONMENT: ${{ inputs.environment == '' && 'dev' || inputs.environment }}
+      # Local mirror of the run's private ledger prefix. The U11 scripts read
+      # and write shards on disk; S3 is the durable copy either side.
+      LEDGER_DIR: security-agent-ledger
+    steps:
+      - uses: actions/checkout@v7
+
+      # Resolved once and first, for the same reason as in `code-review`: a
+      # second `date` call can straddle UTC midnight and address a different
+      # night's prefix than the review that produced it.
+      - name: Resolve run date
+        run: echo "RUN_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+
+      - name: Resolve account ID
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+      # The ledger is the night's shared state and it lives in S3, because the
+      # stages that write it are separate jobs on separate runners with no
+      # shared filesystem. Pulled down rather than reconstructed: `load_plan`
+      # takes the order from the shard U10's barrier committed, and re-deriving
+      # it here would be a second ordering that can disagree with the plan the
+      # morning reads.
+      #
+      # `--no-progress` because the default progress output is per-object and
+      # a night's shard count makes it noise. A missing prefix is not an error:
+      # `sync` treats it as empty, which is the correct reading of a night whose
+      # earlier stages wrote nothing.
+      - name: Fetch the run ledger from the private rendezvous
+        run: |
+          mkdir -p "$LEDGER_DIR"
+          aws s3 sync \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}/" \
+            "$LEDGER_DIR/" --no-progress
+          echo "shards=$(find "$LEDGER_DIR" -name 'shard-*.json' | wc -l)"
+
+      # The barrier hard-fails when NO grouping pass signalled, and it is right
+      # to: a night where a scanner never reported is an investigation, not a
+      # quiet night (a scanner that ran and found nothing still leaves a marker
+      # with an empty story_ids).
+      #
+      # But the triage stage that writes those markers is not itself wired to
+      # this workflow yet, so today that condition is unconditionally true and
+      # an unguarded barrier call would fail every run. This step therefore
+      # decides whether there is a triage stage to join AT ALL, and the two
+      # steps below are skipped when there is not.
+      #
+      # This guard is temporary scaffolding, and it narrows rather than removes
+      # the barrier's failure: once any marker exists the barrier runs and its
+      # PARTIAL and stalled paths behave exactly as designed. What it masks is
+      # only the all-markers-absent case, which is indistinguishable from
+      # "triage is not wired" until triage IS wired. It must be deleted in the
+      # same change that wires triage, or a wholly broken triage pass would skip
+      # silently instead of failing loudly — tracked as a follow-up.
+      - name: Decide whether there is a plan to join
+        id: joinable
+        run: |
+          if find "$LEDGER_DIR" -name 'shard-triage*.json' | grep -q .; then
+            echo "joinable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "joinable=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Security delivery::no grouping pass signalled for \
+          ${RUN_DATE}, so there is no plan to join and nothing to hand off. Expected \
+          while the triage stage is not wired to this workflow."
+          fi
+
+      # Item 6: the plan issue exists BEFORE the dispatch, and its number is
+      # captured. Idempotent per date by exact title match, so a retried night
+      # adopts its existing plan instead of filing a second one.
+      #
+      # `pipefail` is load-bearing: without it `tee` decides the step's exit
+      # status and a failed barrier would read as success, after which the
+      # dispatch step below would emit a root event naming an issue that was
+      # never filed — and the worker dies on a bad issue number (§7.2).
+      - name: Join the grouping passes and file the night's plan
+        if: steps.joinable.outputs.joinable == 'true'
+        run: |
+          set -o pipefail
+          $SECURITYAGENT_PYTHON .github/scripts/join_barrier.py wait \
+            --repo "${{ github.repository }}" \
+            --run-date "$RUN_DATE" \
+            --ledger-dir "$LEDGER_DIR" \
+            --ledger-uri "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}" \
+            --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --ledger-fields "$LEDGER_DIR/shard-orchestration.json" \
+            | tee barrier.out
+          # A night whose scanners all reported nothing files no plan (NT-5).
+          # That is the common night and it is not a failure — but there is then
+          # no issue to attach an agent to, so the dispatch below must not run.
+          if grep -q 'nothing_to_plan=true' barrier.out; then
+            echo "PLAN_ISSUE=" >> "$GITHUB_ENV"
+          else
+            echo "PLAN_ISSUE=$(sed -n 's/.*plan_issue=\([0-9][0-9]*\).*/\1/p' barrier.out)" >> "$GITHUB_ENV"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Item 7: the night's ONE root event. `root-dispatch` is its own
+      # subcommand precisely so this cannot run twice for a date — it is guarded
+      # by a durable per-date marker in the ledger dir, which the sync below
+      # persists, so a retried night skips the emit instead of minting a second
+      # chain at chain_depth=0 (the envelope's `dedup_key` deduplicates nothing,
+      # §7.3, so this marker is the whole idempotency story).
+      #
+      # Only --run-date, --issue-number and the marker dir are passed. Persona,
+      # service identity and target repo are deliberately NOT sent: they are
+      # Terraform literals in the rule's InputTransformer, which is the primary
+      # control on this path since `events:PutEvents` cannot be scoped to an
+      # event source (§5). Passing any of them here would delete that control.
+      #
+      # With the rule disabled this emit matches nothing and starts no run,
+      # which is the intended inert state.
+      - name: Hand the plan to the delivery role (one root dispatch)
+        if: steps.joinable.outputs.joinable == 'true'
+        run: |
+          if [ -z "${PLAN_ISSUE}" ]; then
+            echo "no plan was filed for ${RUN_DATE}, so there is nothing to hand off"
+            exit 0
+          fi
+          $SECURITYAGENT_PYTHON .github/scripts/ops_dispatch.py root-dispatch \
+            --run-date "$RUN_DATE" \
+            --issue-number "$PLAN_ISSUE" \
+            --marker-dir "$LEDGER_DIR"
+
+      # Ordered AFTER the dispatch and `if: always()`: the orchestration shard
+      # and the root marker are what make a retried night adopt the night in
+      # progress rather than re-plan and re-dispatch it. Losing them on a later
+      # failure would break exactly the idempotency the two steps above rely on.
+      - name: Persist the run ledger back to the private rendezvous
+        if: always()
+        run: |
+          if [ -z "${ACCOUNT_ID}" ] || [ ! -d "$LEDGER_DIR" ]; then
+            echo "no ledger to persist"
+            exit 0
+          fi
+          aws s3 sync "$LEDGER_DIR/" \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}/" \
+            --no-progress
