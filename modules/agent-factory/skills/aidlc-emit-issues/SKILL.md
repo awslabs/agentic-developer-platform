@@ -400,6 +400,95 @@ validated against the invented shape because nothing compared to the live API.
 **If any lint rule fails:** fix the draft and re-lint. Do not commit drafts
 that fail lint. Report lint results in the gate comment.
 
+#### Step 7e: Emit the machine-readable proposal (`proposal.json`)
+
+The markdown drafts above are for the human reviewing the wave structure. This
+step emits the same wave structure in the form the **orchestration engine** reads,
+so that on approval the plan can be executed by machine instead of hand-tracked
+(issue #4528).
+
+Emit exactly one file:
+
+`aidlc/spaces/issue-<N>/construction/loop-proposal/proposal.json`
+
+Write the wave structure you just derived in Step 7a directly as JSON — do **not**
+parse it back out of `wave-map.md`. The markdown is a rendering for humans; this
+file is the machine form of the same decision, and both come from the wave
+assignment you already hold.
+
+**Shape** (the `LoopProposal` contract, defined in
+`modules/gateway/src/orchestration/proposal.py` — that module is authoritative):
+
+```json
+{
+  "flow_slug": "<kebab-case slug for this delivery loop, e.g. aidlc-delivery-loop-<N>>",
+  "title": "<the intent's title>",
+  "org_id": "",
+  "spec_revision": "issue-<N>-r1",
+  "intent_ref": "<N>",
+  "nodes": [
+    {"address": "<flow_slug>/epic-<EPIC>/wave-<K>/<node-ref>",
+     "kind": "story", "title": "<story title>", "issue_ref": "<story issue number>"},
+    {"address": "<flow_slug>/epic-<EPIC>/wave-<K>/eval",
+     "kind": "eval", "title": "Wave <K> evaluation: <what it proves>"}
+  ],
+  "edges": [
+    {"from_address": "<flow_slug>/epic-<EPIC>/wave-<K>/<node-ref>",
+     "to_address": "<flow_slug>/epic-<EPIC>/wave-<K>/eval"}
+  ]
+}
+```
+
+**Rules — a document breaking any of these is refused by the engine:**
+
+1. **`org_id` MUST be the empty string.** The worker overwrites it with the
+   tenant resolved for the run. Never write a tenant id here, even a correct-looking
+   one: the engine compares the declared org against its own resolved value and
+   rejects a mismatch, and a guessed value turns a working registration into a 422.
+2. **Addresses are exactly four segments**, `flow/epic/wave/node`, and the first
+   segment MUST equal `flow_slug` on every node.
+3. **`kind` is one of `story`, `eval`, `gate`.** Never `wave`, `epic` or `flow` —
+   containers are derived by rolling up their members, not declared as nodes.
+4. **Every wave containing stories contains exactly one `eval` node.** One story
+   node per story issue created in Step 6, carrying its number in `issue_ref`.
+5. **Edges encode the wave order** from Step 7a: each wave's stories point at that
+   wave's eval, and each wave's eval points at the next wave's stories.
+6. **Declare no `gate` nodes unless the delivery plan genuinely calls for one.**
+   Registration inserts an acceptance gate in front of the whole plan, and (for a
+   proposal that declares no gate of its own) a gate at every wave boundary. A
+   hand-declared gate suppresses that default, so declare one only deliberately.
+7. **The edge set MUST be acyclic**, and every endpoint MUST resolve to a declared
+   node.
+
+**Validate before committing** — the same rules the engine enforces, run locally:
+
+```bash
+python3 .github/scripts/validate_loop_proposal.py --authored \
+  aidlc/spaces/issue-<N>/construction/loop-proposal/proposal.json
+```
+
+`--authored` is required here and says "the tenant is not resolved yet", which is
+correct for the file you just wrote: rule 1 above mandates a blank `org_id`, and
+without the flag the validator rejects the document on that field alone. **If you
+see a complaint about `org_id`, add the flag — do not fill in a tenant id to make
+the validator happy.** Inventing one is the single worst edit you can make to this
+file: the engine compares the declared tenant against the one it resolved for the
+run, so a guessed value converts a working registration into a hard 422.
+
+Exit 0 means the document is acceptable. **A non-zero exit is a lint failure: fix
+the document and re-run — do not commit a proposal that fails validation.** The
+check is advisory (nothing forces you to run it), which is exactly why you must.
+
+Commit this file alongside the Step 7a–7c drafts. Reference example (a valid
+two-wave document): `aidlc/spaces/issue-4120/construction/loop-proposal/example-proposal.json`.
+
+**What happens after you commit it:** the worker's finish path finds this file,
+fills in `org_id`, and POSTs it to the gateway, which stores it as an **inert
+draft** — visible in the graph UI, executing nothing. The run's closing comment
+names the plan id and the one command a human types to make it live. If the file
+is absent, registration is silently skipped and the loop stays markdown-only, so
+omitting it is a silent regression rather than a visible error.
+
 ### Step 8: Materialize delivery loop (on loop-proposal approval)
 
 This step runs ONLY after the `loop-proposal` gate is approved (Run B). It
@@ -407,11 +496,23 @@ creates the actual GitHub issues from the committed drafts.
 
 #### Pre-materialization lint
 
-Before creating any issues, re-lint ALL drafts in
+Before creating any issues, re-lint ALL issue drafts (the `.md` files) in
 `aidlc/spaces/issue-<N>/construction/loop-proposal/` against the Step 7d rules.
 If any draft fails (e.g. a manual edit broke a rule since the gate was posted),
 **REFUSE** — do not create issues. Re-gate with an error summary listing which
 rules failed on which drafts.
+
+`proposal.json` is not an issue draft and the Step 7d rules do not apply to it.
+Re-validate it with its own checker instead, and refuse on a non-zero exit:
+
+```bash
+python3 .github/scripts/validate_loop_proposal.py --authored \
+  aidlc/spaces/issue-<N>/construction/loop-proposal/proposal.json
+```
+
+`--authored` for the same reason as in Step 7e: `org_id` is still blank at this
+point, because the worker fills it in at registration and nothing between here and
+there writes it.
 
 #### Idempotency guard
 

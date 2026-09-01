@@ -276,6 +276,19 @@ class TestOrchestrationRouterIsOperatorPlane:
 
         assert "src.orchestration.routes" in UNIT_MODULES, "src.orchestration.routes is not registered; the amendment endpoint would 404."
 
+    def test_draft_router_is_registered_on_the_operator_plane(self):
+        """Issue #4528's draft-registration router is operator-plane, like the rest.
+
+        It is a separate module because it carries a *weaker* permission
+        (`PLAN_DRAFT`, see the sibling test below), and `routes.py`'s guarantee is
+        that nothing on it is reachable below approval authority. Separate module,
+        same plane: the weaker permission must not come with weaker
+        authentication.
+        """
+        from src.app import UNIT_MODULES
+
+        assert "src.orchestration.draft_routes" in UNIT_MODULES, "src.orchestration.draft_routes is not registered; draft registration would 404."
+
     def test_orchestration_is_not_registered_as_an_internal_module(self):
         """Registering orchestration routes under /internal/v1 is the failure mode."""
         from src.app import UNIT_MODULES
@@ -443,4 +456,87 @@ class TestOrchestrationRouterIsOperatorPlane:
         assert offenders == [], (
             f"orchestration routes mutate state or read acceptance records without PLAN_APPROVE: {offenders}. "
             "A weaker permission on promotion state is exactly the escalation this guard exists to stop."
+        )
+
+    def test_draft_route_surface_is_exactly_the_allowlist(self):
+        """Issue #4528: the draft router's surface, checked for equality.
+
+        `routes.py`'s allowlist above cannot cover this router, because the rule it
+        enforces (`PLAN_APPROVE` on every non-GET handler) is the rule draft
+        registration deliberately does not satisfy. So the draft router gets its
+        own equality-checked allowlist, and adding a route to it is the same review
+        moment: state the permission out loud, and justify anything weaker than
+        approval authority.
+        """
+        from src.auth.dependencies import get_current_user
+        from src.orchestration.draft_routes import router as draft_router
+
+        expected_permissions = {
+            # Issue #4528: an authoring agent registering a compiled proposal as an
+            # INERT draft. PLAN_DRAFT, not PLAN_APPROVE, and that is the whole
+            # point: an agent that could hold PLAN_APPROVE could accept the plan it
+            # just wrote, which is the self-approval this EPIC exists to prevent.
+            #
+            # The weaker permission is safe because inertness is structural, not
+            # policy — see src/orchestration/registration.py. Two independent
+            # guards: the decision row is PLAN_DRAFTED, which is absent from
+            # `genesis.APPROVAL_DECISION_KINDS` so dispatch has nothing to root a
+            # chain in; and the whole graph sits behind an acceptance gate created
+            # in `awaiting_gate`, whose progress edges are `_HUMAN_ONLY` in
+            # state.py. Both are asserted directly in test_registration.py.
+            #
+            # If a future change on this router makes anything it writes *executable*
+            # without a separate human approval, the permission must become
+            # PLAN_APPROVE.
+            "/orchestration/flows/drafts": "Permission.PLAN_DRAFT",
+        }
+
+        actual_paths = set()
+        unguarded = []
+        for route in draft_router.routes:
+            endpoint = getattr(route, "endpoint", None)
+            if endpoint is None:
+                continue
+
+            path = getattr(route, "path", "?")
+            actual_paths.add(path)
+            dependency_calls = {getattr(dep, "call", None) for dep in getattr(getattr(route, "dependant", None), "dependencies", []) or []}
+            source = inspect.getsource(endpoint)
+
+            required = expected_permissions.get(path)
+            if get_current_user not in dependency_calls or required is None or required not in source:
+                unguarded.append(path)
+
+        assert actual_paths == set(expected_permissions), (
+            f"draft router surface changed: {sorted(actual_paths ^ set(expected_permissions))}. "
+            "Add the new route to expected_permissions with the permission it enforces."
+        )
+
+        assert unguarded == [], f"draft routes missing authentication or their required permission check: {unguarded}."
+
+    def test_draft_router_declares_no_internal_plane_path(self):
+        """The mount-path variant of the mistake, for the new router too."""
+        from src.orchestration.draft_routes import router as draft_router
+
+        internal_paths = [route.path for route in draft_router.routes if "/internal/" in getattr(route, "path", "")]
+        assert internal_paths == [], f"draft router declares internal-plane paths: {internal_paths}"
+
+    def test_draft_route_never_records_an_approval_kind_decision(self):
+        """The load-bearing one: PLAN_DRAFT must not be able to write an approval.
+
+        `PLAN_DRAFT` is weaker than `PLAN_APPROVE` only because the row it writes
+        cannot root a dispatch. If the draft path ever recorded a kind inside
+        `APPROVAL_DECISION_KINDS`, the weaker permission would become a route to
+        arming execution — the escalation, arriving through the door built to be
+        harmless.
+
+        Asserted on the DECISION KIND rather than on source text, because that is
+        the property dispatch actually reads.
+        """
+        from src.orchestration.genesis import APPROVAL_DECISION_KINDS
+        from src.orchestration.models import DecisionKind
+
+        assert DecisionKind.PLAN_DRAFTED.value not in APPROVAL_DECISION_KINDS, (
+            "PLAN_DRAFTED is now an approval kind, so a draft registered by an agent can root an engine "
+            "dispatch. Registration would auto-start execution — issue #4528's first bug class."
         )

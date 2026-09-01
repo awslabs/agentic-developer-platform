@@ -32,6 +32,7 @@ from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
+from lib.engine_registration import draft_registration_note
 from lib.invocation_status import update_status as update_invocation_status
 from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
@@ -66,6 +67,14 @@ AGENT_EXIT_RETRYABLE = 75
 # (case (a) in Step 6b) would destroy prior stage commits. These personas always
 # fetch + extend instead. Issue #3430.
 PERSONAS_EXTENDING_BRANCH = frozenset({"aidlc"})
+
+# Personas whose finish path registers an authored loop proposal with the
+# orchestration engine (issue #4528). Only the authoring persona composes a
+# proposal, so only it has one to register; every other persona's finish path is
+# byte-identical to before. A frozenset rather than an `== "aidlc"` check for the
+# same reason as the set above — the gate is a list of personas, and the next one
+# added should not require finding this branch.
+PERSONAS_REGISTERING_DRAFTS = frozenset({"aidlc"})
 
 # STS session tag values must match [\p{L}\p{Z}\p{N}_.:/=+\-@]*. The natural
 # task ID shape `<owner>/<repo>#<issue>` contains '#' which fails validation.
@@ -2092,6 +2101,24 @@ def _is_zero_token_failure(meta: dict | None) -> bool:
         return False
 
 
+def _register_authored_draft(persona: str, issue: int) -> str:
+    """Register the run's loop proposal with the engine; return a comment section.
+
+    Issue #4528. Runs only for the authoring personas, and only after Step 11 has
+    pushed the branch — the committed markdown is the source of truth, and the
+    engine draft is a view of it, so the artifacts must be safe on the remote
+    before anything tries to turn them into engine state.
+
+    Fail-soft with no error handling here: `draft_registration_note` never raises
+    and returns "" when registration does not apply. A failed registration becomes
+    a warning section in the closing comment and the run still succeeds — the
+    issue's third bug class ("compile failure kills the AIDLC run").
+    """
+    if persona not in PERSONAS_REGISTERING_DRAFTS:
+        return ""
+    return draft_registration_note(work_dir=WORK_DIR, issue=issue)
+
+
 def _handle_success(
     repo: str,
     issue: int,
@@ -2174,12 +2201,18 @@ def _handle_success(
             self_pr = _find_open_pr(repo, branch)
             if self_pr:
                 _ensure_pr_body_marker(repo, self_pr, branch)
+            # The authoring persona reaches this branch on the common path: it
+            # commits and pushes its own artifacts during the run, so the
+            # entrypoint finds nothing left to push. Registration therefore has to
+            # be wired here too, not only on the PR-creating path below.
+            draft_note = _register_authored_draft(persona, issue)
+            summary = f"Agent `{persona}` finished — no changes needed."
             _post_comment(
                 repo,
                 issue,
                 message_id,
                 "completed",
-                f"Agent `{persona}` finished — no changes needed.",
+                f"{summary}\n\n{draft_note}" if draft_note else summary,
                 check_run_url,
             )
             update_invocation_status(
@@ -2261,12 +2294,14 @@ def _handle_success(
             # the PR and cross-agent lineage is lost (issue #1721). Backfill it:
             # edit the PR body to prepend the marker if it isn't already there.
             _ensure_pr_body_marker(repo, existing_pr_number, branch)
+        draft_note = _register_authored_draft(persona, issue)
+        summary = f"Agent `{persona}` completed. PR opened on branch `{branch}`."
         _post_comment(
             repo,
             issue,
             message_id,
             "completed",
-            f"Agent `{persona}` completed. PR opened on branch `{branch}`.",
+            f"{summary}\n\n{draft_note}" if draft_note else summary,
             check_run_url,
         )
         update_invocation_status(

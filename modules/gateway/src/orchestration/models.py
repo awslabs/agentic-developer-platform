@@ -135,6 +135,14 @@ class DecisionKind(StrEnum):
     # a row of this kind is deliberately the whole of the effect. `kind` is
     # String(32), so this needs no DDL.
     REPLAN_REQUESTED = "replan_requested"
+    # Issue #4528. An authoring agent *registered* a compiled proposal as a draft.
+    # Deliberately NOT in `genesis.APPROVAL_DECISION_KINDS`: that frozenset is what
+    # roots an engine dispatch, so a kind absent from it cannot arm execution no
+    # matter how many ticks run. That absence is the whole reason this is a
+    # separate member rather than reusing `PLAN_ACCEPTED` — registration must land
+    # a graph a human can *see* without landing an approval nobody made. `kind` is
+    # String(32), so this needs no DDL.
+    PLAN_DRAFTED = "plan_drafted"
 
 
 class AppendOnlyViolationError(RuntimeError):

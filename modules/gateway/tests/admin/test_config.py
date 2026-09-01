@@ -47,10 +47,11 @@ class TestPermission:
 
     def test_permission_count(self):
         """Test Permission enum has expected number of permissions."""
-        # Should have 18 permissions based on the source file
+        # Should have 19 permissions based on the source file
         # (Issue #3989 added AGENT_REGISTER for agent-registry writes;
-        #  Issue #4200 added PLAN_APPROVE for orchestration promotion-state writes)
-        assert len(Permission) == 18
+        #  Issue #4200 added PLAN_APPROVE for orchestration promotion-state writes;
+        #  Issue #4528 added PLAN_DRAFT for inert draft-plan registration)
+        assert len(Permission) == 19
 
     def test_agent_register_permission_exists(self):
         """Issue #3989: agent-registry writes gate on their own permission."""

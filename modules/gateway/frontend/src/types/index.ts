@@ -39,6 +39,12 @@ export enum Permission {
   // for approving/rejecting a gate and resuming a halted node (issue #4213) —
   // one permission over promotion state, deliberately not several.
   PLAN_APPROVE = 'plan:approve',
+  // Issue #4528: registering a loop proposal as an inert draft. Strictly weaker
+  // than PLAN_APPROVE — it authorises making a plan visible, never making one run.
+  // Mirrored here only to satisfy full-enum parity with the backend; no UI control
+  // references it, because drafts are registered by an authoring agent, not a
+  // dashboard user.
+  PLAN_DRAFT = 'plan:draft',
 }
 
 // Period types for budgets

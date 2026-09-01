@@ -25,6 +25,15 @@ any of the repo's `pyproject.toml` files; every tool is path-invoked.
 
 Usage:
     python3 .github/scripts/validate_loop_proposal.py <proposal.json> [more.json ...]
+    python3 .github/scripts/validate_loop_proposal.py --authored <proposal.json>
+
+`--authored` validates a document whose tenant is **deliberately not resolved yet**
+— the `proposal.json` an authoring skill emits, where `org_id` is the empty string
+because the worker overwrites it from the pod's resolved tenant at registration
+time (issue #4528). Without the flag such a document fails on `org_id` alone, which
+would tell an author to hard-code a tenant id — the exact value the design refuses
+to let an agent choose. The flag substitutes a placeholder for that one field and
+changes nothing else, so every structural rule is still the shared one.
 
 Exit codes:
     0  every document validated clean
@@ -65,8 +74,19 @@ EXIT_VIOLATIONS = 1
 EXIT_UNREADABLE = 2
 
 
-def _load(path: Path) -> LoopProposal:
+# Stands in for the tenant the worker resolves at registration time, under
+# `--authored` only. Any non-blank string satisfies rule 5 and the `min_length=1`
+# field constraint; it is never written anywhere and never sent to the engine.
+_UNRESOLVED_TENANT_PLACEHOLDER = "org-resolved-at-registration"
+
+
+def _load(path: Path, *, authored: bool = False) -> LoopProposal:
     """Read and parse one proposal document.
+
+    Args:
+        path: The document to read.
+        authored: Treat a blank `org_id` as the expected unresolved state rather
+            than a violation. See the module docstring.
 
     Raises:
         ValueError: With a message written for the author, on any failure to get
@@ -84,6 +104,11 @@ def _load(path: Path) -> LoopProposal:
 
     if not isinstance(payload, dict):
         raise ValueError(f"{path} must contain a JSON object at the top level, got {type(payload).__name__}")
+
+    if authored and not str(payload.get("org_id", "")).strip():
+        # Substituted only when actually blank, so `--authored` on a document that
+        # *did* declare a tenant still validates that tenant rather than masking it.
+        payload = {**payload, "org_id": _UNRESOLVED_TENANT_PLACEHOLDER}
 
     try:
         return LoopProposal.model_validate(payload)
@@ -114,6 +139,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Validate loop-proposal documents against the shared schema. Advisory: the authoritative check runs at approval.",
     )
     parser.add_argument("paths", nargs="+", type=Path, help="proposal JSON document(s) to validate")
+    parser.add_argument(
+        "--authored",
+        action="store_true",
+        help="the document's tenant is not resolved yet (blank org_id is expected, not a violation)",
+    )
     args = parser.parse_args(argv)
 
     # Every document is processed before exiting, rather than bailing on the
@@ -123,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for path in args.paths:
         try:
-            proposal = _load(path)
+            proposal = _load(path, authored=args.authored)
         except ValueError as exc:
             print(f"FAIL {exc}", file=sys.stderr)
             unreadable += 1

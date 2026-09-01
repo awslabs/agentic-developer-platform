@@ -23,6 +23,16 @@ and the graph, and neither is skippable from the outside:
    tenant A quietly becoming tenant B's state, with tenant B's operator's name on
    the decision record.
 
+3. **Only an approval rewrites the plan of record.** A compile whose
+   `decision_kind` is not in `genesis.APPROVAL_DECISION_KINDS` — #4528's
+   `PLAN_DRAFTED`, and any non-approval kind added later — is refused if a plan is
+   already in force for the flow. Enforced here rather than in the caller that
+   needs it because a guard in a caller protects only that caller: review PR #4558
+   reproduced both a plan-of-record rewrite *and* a dispatch of unapproved work
+   through a direct call with a non-approval kind, since flow-scoped genesis
+   (`_latest_approval_decision_id`) lets a pre-existing human approval root nodes
+   appended afterwards.
+
 **Atomicity.** All inserts happen inside a single `begin_nested()` savepoint, so a
 failure part-way leaves nothing behind. Without it, a failure between the node
 insert and the accepted-plan insert would leave nodes on the graph for a plan that
@@ -50,6 +60,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .genesis import APPROVAL_DECISION_KINDS
 from .models import DecisionKind
 from .proposal import LoopProposal, Violation, split_address, validate_proposal
 from .repository import OrchestrationRepository
@@ -58,6 +69,7 @@ from .state import ActorKind, NodeState
 __all__ = [
     "ApprovalContext",
     "CompileResult",
+    "NonApprovalSupersedeError",
     "ProposalRejectedError",
     "TenantMismatchError",
     "address_of",
@@ -91,6 +103,21 @@ class TenantMismatchError(ProposalRejectedError):
     `ProposalRejectedError`, while the tenant case stays separately catchable —
     it is a possible attack, not a typo, and a caller may want to alert on it
     rather than just report it back to the author.
+    """
+
+
+class NonApprovalSupersedeError(ProposalRejectedError):
+    """Raised when a non-approval compile would supersede an in-force accepted plan.
+
+    The plan of record is what answers "what did a human approve?", and only an
+    approval may rewrite it. A compile whose `decision_kind` is not in
+    `APPROVAL_DECISION_KINDS` — issue #4528's `PLAN_DRAFTED`, and any future
+    non-approval kind — is refused rather than allowed to supersede.
+
+    A subclass of `ProposalRejectedError` so a caller that only asks "was this
+    refused?" catches it with everything else, while staying separately catchable:
+    like `TenantMismatchError` this is a possible privilege escalation rather than
+    an author's mistake, and deserves its own status code and alerting.
     """
 
 
@@ -156,6 +183,9 @@ async def compile_proposal(
     session: AsyncSession,
     proposal: LoopProposal,
     decision: ApprovalContext,
+    *,
+    decision_kind: DecisionKind = DecisionKind.PLAN_ACCEPTED,
+    initial_states: dict[str, NodeState] | None = None,
 ) -> CompileResult:
     """Validate a proposal authoritatively and compile it to rows, atomically.
 
@@ -169,6 +199,21 @@ async def compile_proposal(
         decision: Server-resolved approval context. `decision.org_id` is the
             tenant the plan lands in; the document's declared `org_id` is only
             compared against it.
+        decision_kind: The kind of decision row this compile records. Defaults to
+            `PLAN_ACCEPTED`, which is what every acceptance path wants. Issue
+            #4528's draft registration passes `PLAN_DRAFTED` — a kind absent from
+            `genesis.APPROVAL_DECISION_KINDS`, so the compiled graph exists and is
+            readable while being unable to root a dispatch. Parameterised here
+            rather than forked into a second compiler because a second
+            "insert the proposal's nodes" is free to accept a document this one
+            would refuse, which is exactly what AC-29 forbids.
+        initial_states: Graph address -> the state that node is *created* in, for
+            addresses this compile creates. Anything omitted uses the column
+            default (`pending`). This is a creation-time value, not a transition:
+            `transition()` is the authority for *changing* a node's state and is
+            untouched by this. #4528's acceptance gate is born in `awaiting_gate`
+            because there is no legal edge into that state from `pending`, so the
+            alternative would be a second, unguarded writer of node state.
 
     Returns:
         A `CompileResult`. `already_compiled` is True when the identical document
@@ -178,6 +223,8 @@ async def compile_proposal(
         ProposalRejectedError: The document failed validation. No rows written.
         TenantMismatchError: The document declares a different tenant than the
             approver's resolved org. No rows written.
+        NonApprovalSupersedeError: `decision_kind` is not an approval kind and a
+            plan is already in force for the flow. No rows written.
     """
     # --- Gate 1: authoritative re-validation -------------------------------
     # The advisory CLI may or may not have run. This is the control, and it runs
@@ -223,7 +270,37 @@ async def compile_proposal(
                 already_compiled=True,
             )
 
-        node_ids, nodes_created = await upsert_nodes(repo, proposal=proposal, org_id=decision.org_id, flow_id=flow.id)
+        # --- Gate 3: only an approval may rewrite the plan of record ----------
+        # Checked *after* the idempotency return above, deliberately: an identical
+        # document writes nothing at all, so a retry must stay a no-op rather than
+        # become a 409 the moment a plan is in force. That ordering is the whole
+        # reason a fail-soft caller (issue #4528's worker) can retry safely.
+        #
+        # This lives here, in the primitive, rather than in the calling module that
+        # needs it. `registration.py` has its own stricter refusal, but a guard in a
+        # caller only protects that caller: reached directly with a non-approval
+        # `decision_kind`, this function would supersede the in-force plan (a
+        # plan-of-record rewrite) and — because `_latest_approval_decision_id` is
+        # flow-scoped — leave the new nodes rooted by the *human's* pre-existing
+        # approval, dispatching work nobody accepted under that human's identity.
+        # Both escalations from review PR #4558 reproduce through that route, so the
+        # invariant belongs where no caller can bypass it. `APPROVAL_DECISION_KINDS`
+        # is imported from `genesis.py` rather than restated so this and the rule
+        # that roots dispatch cannot disagree about what an approval is.
+        if in_force is not None and decision_kind.value not in APPROVAL_DECISION_KINDS:
+            raise NonApprovalSupersedeError(
+                f"a {decision_kind.value!r} compile cannot supersede plan version {in_force.version}, which is in force "
+                f"for flow {flow.slug!r}: only an approval decision may rewrite the plan of record. Use the amendment "
+                "path (PLAN_APPROVE), or target a flow with no plan in force."
+            )
+
+        node_ids, nodes_created = await upsert_nodes(
+            repo,
+            proposal=proposal,
+            org_id=decision.org_id,
+            flow_id=flow.id,
+            initial_states=initial_states,
+        )
         edges_created = await upsert_edges(repo, proposal=proposal, org_id=decision.org_id, flow_id=flow.id, node_ids=node_ids)
 
         # The decision is appended before the plan row so the plan can point at
@@ -232,7 +309,7 @@ async def compile_proposal(
         record = await repo.append_decision(
             org_id=decision.org_id,
             flow_id=flow.id,
-            kind=DecisionKind.PLAN_ACCEPTED.value,
+            kind=decision_kind.value,
             actor_id=decision.actor_id,
             actor_role=decision.actor_role,
             actor_kind=ActorKind(decision.actor_kind).value,
@@ -301,6 +378,7 @@ async def upsert_nodes(
     proposal: LoopProposal,
     org_id: str,
     flow_id: str,
+    initial_states: dict[str, NodeState] | None = None,
 ) -> tuple[dict[str, str], int]:
     """Insert the proposal's nodes, reusing any that already exist by address.
 
@@ -313,6 +391,11 @@ async def upsert_nodes(
     Every newly created node starts in `NodeState.PENDING`, which is the column
     default in `models.py`. Not passed explicitly: a literal here would be a
     second place the initial state is decided, and the two could disagree.
+
+    `initial_states` overrides that default per address, and applies **only to
+    nodes this call creates** — a node already on the graph keeps whatever state
+    it reached, so a retried registration cannot reset a gate a human already
+    answered back to `awaiting_gate`.
     """
     existing = {address_of(proposal.flow_slug, node): node for node in await repo.list_nodes(org_id=org_id, flow_id=flow_id)}
 
@@ -326,6 +409,7 @@ async def upsert_nodes(
             continue
 
         _, epic_ref, wave_ref, node_ref = split_address(proposed.address)
+        override = (initial_states or {}).get(proposed.address)
         node = await repo.add_node(
             org_id=org_id,
             flow_id=flow_id,
@@ -335,6 +419,7 @@ async def upsert_nodes(
             kind=proposed.kind,
             title=proposed.title,
             issue_ref=proposed.issue_ref,
+            state=override.value if override is not None else None,
         )
         node_ids[proposed.address] = node.id
         created += 1

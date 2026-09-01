@@ -56,6 +56,13 @@ _ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
         # protect. tests/orchestration/test_amend.py asserts this frozenset for
         # EQUALITY so the next permission cannot be added without landing here.
         Permission.PLAN_APPROVE,
+        # Issue #4528: draft registration is org-scoped for the same reason, and it
+        # matters MORE here, not less. `PLAN_DRAFT` is held by `AdminRole.MEMBER`,
+        # so it is the one promotion-adjacent permission an unprivileged principal
+        # has; omitting it would let a principal with an empty `org_id` skip the
+        # membership-deny below and short-circuit the `target_org_id` check, and
+        # register plan rows with no tenant at all.
+        Permission.PLAN_DRAFT,
     }
 )
 

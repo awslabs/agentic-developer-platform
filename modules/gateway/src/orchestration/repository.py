@@ -67,7 +67,14 @@ class OrchestrationRepository:
         kind: str,
         title: str,
         issue_ref: str | None = None,
+        state: str | None = None,
     ) -> OrchestrationNode:
+        # `state=None` means "use the column default" (pending), which is what
+        # every compile has always done. It is an argument at all only for issue
+        # #4528's acceptance gate, which must be *born* in `awaiting_gate`: a node
+        # created pending and then moved would be a second writer of node state
+        # outside `transition()`, and `transition()` has no edge into
+        # `awaiting_gate` from `pending` to offer it.
         node = OrchestrationNode(
             org_id=org_id,
             flow_id=flow_id,
@@ -77,6 +84,7 @@ class OrchestrationRepository:
             kind=kind,
             title=title,
             issue_ref=issue_ref,
+            **({"state": state} if state is not None else {}),
         )
         self._session.add(node)
         await self._session.flush()

@@ -72,6 +72,15 @@ UNIT_MODULES = [
     # pods the ability to approve their own gates. Guarded by
     # tests/orchestration/test_internal_plane_guard.py.
     "src.orchestration.controls",
+    # Issue #4528: draft plan registration. Same operator plane as the two routers
+    # above (Cognito / the SigV4 agent path via get_current_user), but gated on
+    # PLAN_DRAFT rather than PLAN_APPROVE — its caller is an authoring agent, which
+    # must never hold approval authority. A SEPARATE module on purpose: routes.py's
+    # guarantee is "nothing here is reachable below approval authority", and a
+    # weaker-permission route cannot live behind that guarantee. What it writes is
+    # inert by construction (src/orchestration/registration.py). Guarded by
+    # tests/orchestration/test_internal_plane_guard.py.
+    "src.orchestration.draft_routes",
 ]
 
 

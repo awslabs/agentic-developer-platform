@@ -504,6 +504,11 @@ class TestAC17OrgScopedPermissionRegistration:
                 Permission.METRICS_READ,
                 Permission.AGENT_REGISTER,
                 Permission.PLAN_APPROVE,
+                # Issue #4528: draft registration. Org-scoped, and load-bearingly so
+                # — it is the only promotion-adjacent permission AdminRole.MEMBER
+                # holds, so an unscoped holder is the realistic case rather than the
+                # theoretical one.
+                Permission.PLAN_DRAFT,
             }
         )
 

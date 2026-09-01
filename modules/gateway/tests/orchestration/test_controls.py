@@ -607,6 +607,11 @@ class TestAC17OrgScopedPermissionRegistration:
                 Permission.METRICS_READ,
                 Permission.AGENT_REGISTER,
                 Permission.PLAN_APPROVE,
+                # Issue #4528: draft registration is org-scoped, and load-bearingly
+                # so — it is the only promotion-adjacent permission AdminRole.MEMBER
+                # holds, so it is the one where an empty-org bypass would actually be
+                # reachable by an ordinary principal.
+                Permission.PLAN_DRAFT,
             }
         )
 

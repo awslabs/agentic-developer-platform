@@ -64,6 +64,21 @@ class Permission(str, Enum):
     # weaker one of its own — a softer door into the same room is the same hole.
     PLAN_APPROVE = "plan:approve"
 
+    # Issue #4528: registering a loop proposal as an *inert draft*. Deliberately
+    # weaker than PLAN_APPROVE, and deliberately a separate permission rather than
+    # a relaxation of it, because the two authorise structurally different things:
+    #
+    #   PLAN_APPROVE  — "this plan may execute". Arms dispatch.
+    #   PLAN_DRAFT    — "this plan may be looked at". Arms nothing.
+    #
+    # An authoring agent needs the second and must never hold the first: a plan it
+    # registered is behind an acceptance gate that only a PLAN_APPROVE human can
+    # answer, and the decision row registration writes (`PLAN_DRAFTED`) is absent
+    # from `genesis.APPROVAL_DECISION_KINDS`, so it cannot root a dispatch. Both
+    # properties are structural, which is what makes the weaker permission safe
+    # rather than merely convenient.
+    PLAN_DRAFT = "plan:draft"
+
 
 # Role to permissions mapping
 ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
@@ -86,6 +101,7 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.METRICS_READ,
         Permission.AGENT_REGISTER,
         Permission.PLAN_APPROVE,
+        Permission.PLAN_DRAFT,
     },
     AdminRole.ORG_ADMIN: {
         Permission.ORG_READ,
@@ -105,6 +121,7 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         # Issue #4200: an org admin may accept and amend plans for their OWN
         # org's flows; the target_org_id scope check enforces the boundary.
         Permission.PLAN_APPROVE,
+        Permission.PLAN_DRAFT,
     },
     AdminRole.DEPT_ADMIN: {
         Permission.BUDGET_READ,
@@ -120,6 +137,39 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
     # the 403 an unprivileged caller must get.
     AdminRole.MEMBER: {
         Permission.USAGE_READ,
+        # Issue #4528: MEMBER holds PLAN_DRAFT, and this is a deliberate widening
+        # that has to be justified rather than assumed, because it is the first
+        # write permission this least-privilege role has ever held.
+        #
+        # It is here because a registry-resolved agent principal (the AIDLC worker
+        # pod, arriving over the SigV4 `/agent/*` path) has no `tenant_memberships`
+        # row and therefore resolves to MEMBER. The alternative — granting the pod
+        # ORG_ADMIN, or letting it hold PLAN_APPROVE — is the self-approval the
+        # EPIC exists to prevent.
+        #
+        # WHO ACTUALLY HOLDS THIS: not just that pod. `_MEMBERSHIP_ROLE_TO_ADMIN_ROLE`
+        # below maps `member`, `user` AND `viewer` to MEMBER, so this grant reaches
+        # **every ordinary human user in every tenant**, including read-only ones.
+        # An earlier version of this comment claimed the grant was scoped to the
+        # worker pod; that was wrong, and review (PR #4558) reproduced a
+        # plan-of-record rewrite through it. Any future reasoning about PLAN_DRAFT
+        # must start from "every ordinary user has this", never from "only the agent".
+        #
+        # Why it is nonetheless safe, structurally rather than by trust — all three
+        # in `src/orchestration/registration.py`:
+        #   1. The decision kind it writes (PLAN_DRAFTED) is absent from
+        #      `genesis.APPROVAL_DECISION_KINDS`, so it cannot root a dispatch.
+        #   2. The graph it writes sits behind an acceptance gate born in
+        #      `awaiting_gate`, whose progress edges are `_HUMAN_ONLY` in state.py.
+        #   3. Registration refuses any flow that already carries an approval or a
+        #      differing in-force plan, so a draft can neither inherit a human's
+        #      approval nor supersede the plan of record — it only ever creates
+        #      version 1 of a flow that had nothing.
+        # PLAN_DRAFT is also org-scoped (`access_control._ORG_SCOPED_PERMISSIONS`),
+        # so a principal with no resolvable org is denied outright. The worst a
+        # holder can do is add inert rows to a new flow in their own tenant, which a
+        # PLAN_APPROVE human must accept before anything executes.
+        Permission.PLAN_DRAFT,
     },
 }
 

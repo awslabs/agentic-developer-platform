@@ -96,6 +96,23 @@ jobs:
           fi
           echo "Loop-proposal validator rejected the cyclic fixture as expected."
 
+          # Issue #4528: the authored shape, i.e. exactly what the AIDLC skill's
+          # Step 7e emits — `org_id` blank because the worker resolves the tenant at
+          # registration. Both directions are asserted, because the pair is the
+          # contract: `--authored` must accept it, and the bare invocation must
+          # still reject it. If the flag ever silently became the default, an
+          # unresolved tenant would sail through the fixture check and the mismatch
+          # would surface as a 422 at registration instead.
+          python3 .github/scripts/validate_loop_proposal.py --authored \
+            aidlc/spaces/issue-4120/construction/loop-proposal/authored-proposal.json
+
+          if python3 .github/scripts/validate_loop_proposal.py \
+               aidlc/spaces/issue-4120/construction/loop-proposal/authored-proposal.json 2>/dev/null; then
+            echo "::error::validator accepted a blank org_id without --authored; the tenant check is not firing"
+            exit 1
+          fi
+          echo "Loop-proposal validator required --authored for the unresolved-tenant fixture as expected."
+
   test:
     name: Test
     runs-on: arc-runner-org

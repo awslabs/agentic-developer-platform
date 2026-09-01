@@ -413,18 +413,29 @@ async def _resolve_target(
 ) -> tuple[str, OrchestrationNode | None] | None:
     """The flow a command on this issue addresses, and the node if it is one.
 
-    Two lookups, in order, both filtered on `org_id` in SQL:
+    Two lookups, both filtered on `org_id` in SQL, then reconciled:
 
     1. A node materialised as this issue. This is the common case — a human
        comments on the story or gate they are looking at.
-    2. Otherwise a flow whose `intent_ref` is this issue, so commands on the
-       originating intent issue address the whole plan. `halt`, `resume` and
-       `replan` are flow-scoped, and that is where a human reads plan status.
+    2. A flow whose `intent_ref` is this issue, so commands on the originating
+       intent issue address the whole plan. `halt`, `resume` and `replan` are
+       flow-scoped, and that is where a human reads plan status.
 
     Returns `(flow_id, node_or_None)`, or None when the issue addresses nothing
-    unambiguously. **Ambiguity is a refusal, not a choice**: two nodes carrying the
-    same `issue_ref` give no basis to pick one, and picking the first would apply a
-    halt to whichever row happened to sort first.
+    unambiguously. **Ambiguity is a refusal, not a choice.** There is no basis to
+    pick, so the engine refuses, when:
+
+    * two nodes carry the same `issue_ref` — picking the first would apply a halt
+      to whichever row happened to sort first; or
+    * a node in one flow AND a *different* flow's `intent_ref` both name this issue.
+      `ProposedNode.issue_ref` is author-chosen free text and node authoring is
+      open to any ``PLAN_DRAFT`` holder, so an attacker can plant a node whose
+      `issue_ref` collides with a victim flow's intent issue (or a flow whose
+      `intent_ref` collides with a victim's node). Preferring either match would
+      route a human's ``@agent-engine accept``/``halt`` onto attacker-controlled
+      work and root the resulting approval under the human's identity — the exact
+      privilege escalation this bridge exists to prevent. Both lookups must agree
+      on a single flow, or the command is refused.
     """
     candidates = _issue_ref_candidates(issue_number)
 
@@ -440,8 +451,6 @@ async def _resolve_target(
         .scalars()
         .all()
     )
-    if len(nodes) == 1:
-        return nodes[0].flow_id, nodes[0]
     if len(nodes) > 1:
         logger.warning(
             "orchestration engine commands: issue %s matches %d nodes in org %s — refusing as ambiguous",
@@ -463,8 +472,6 @@ async def _resolve_target(
         .scalars()
         .all()
     )
-    if len(flows) == 1:
-        return flows[0].id, None
     if len(flows) > 1:
         logger.warning(
             "orchestration engine commands: issue %s matches %d flows in org %s — refusing as ambiguous",
@@ -472,7 +479,30 @@ async def _resolve_target(
             len(flows),
             org_id,
         )
-    return None
+        return None
+
+    node = nodes[0] if nodes else None
+    flow = flows[0] if flows else None
+
+    # The distinct flows this issue names, across both lookups. A node's parent
+    # and a flow's own intent home may legitimately be the SAME flow (self-
+    # consistent); two DIFFERENT flows is the collision described above.
+    addressed = {flow_id for flow_id in (node.flow_id if node else None, flow.id if flow else None) if flow_id is not None}
+    if len(addressed) != 1:
+        if addressed:
+            logger.warning(
+                "orchestration engine commands: issue %s names %d distinct flows in org %s (node parent vs. intent_ref) — refusing as ambiguous",
+                issue_number,
+                len(addressed),
+                org_id,
+            )
+        return None
+
+    flow_id = next(iter(addressed))
+    # The node is returned only when it is genuinely in the addressed flow; when the
+    # intent issue is what matched, there is no single node and the command is
+    # flow-scoped.
+    return flow_id, (node if node is not None and node.flow_id == flow_id else None)
 
 
 async def _resolve_gate(
