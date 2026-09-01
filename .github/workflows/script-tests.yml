@@ -25,11 +25,15 @@ on:
       - '.github/scripts/securityagent_preflight.py'
       - '.github/scripts/code_review_request.py'
       - '.github/scripts/assert_findings_bucket_private.py'
+      - '.github/scripts/normalize_security_findings.py'
+      - '.github/scripts/dedup_security_findings.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
       - 'platform/infra/securityagent-nightly-iam.tf'
       - '.github/actions/publish-findings-s3/action.yml'
+      # Artifact the dedup suite asserts against (#4447)
+      - '.github/security/security-agent-baseline.json'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -49,11 +53,15 @@ on:
       - '.github/scripts/securityagent_preflight.py'
       - '.github/scripts/code_review_request.py'
       - '.github/scripts/assert_findings_bucket_private.py'
+      - '.github/scripts/normalize_security_findings.py'
+      - '.github/scripts/dedup_security_findings.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
       - 'platform/infra/securityagent-nightly-iam.tf'
       - '.github/actions/publish-findings-s3/action.yml'
+      # Artifact the dedup suite asserts against (#4447)
+      - '.github/security/security-agent-baseline.json'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -102,4 +110,5 @@ jobs:
             tests/test_securityagent_preflight.py \
             tests/test_code_review_request.py \
             tests/test_assert_findings_bucket_private.py \
+            tests/test_security_agent_dedup.py \
             -v --tb=short --timeout=60
