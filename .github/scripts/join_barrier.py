@@ -206,6 +206,51 @@ def marker_stage(source: str) -> str:
     return MARKER_STAGE_TEMPLATE.format(source=source)
 
 
+def parse_sources(values: list[str] | None) -> tuple[str, ...]:
+    """The scanners THIS run joins on, from the caller's ``--sources``.
+
+    The set the barrier joins on is per-run; the set of *valid* sources is the
+    ``SOURCES`` constant. Keeping those apart is the whole fix: a night that runs
+    one scanner must be able to join on one scanner without ``SOURCES`` shrinking
+    -- it is also U9's ``--source`` validator and dedup's source vocabulary, and
+    a scanner that is merely unbuilt today is still a valid source tomorrow.
+
+    Returns ``SOURCES`` when the caller said nothing, so every existing caller
+    keeps its behaviour and the choice becomes explicit only where it is made.
+
+    Accepts repeated flags and comma-separated values interchangeably, because a
+    workflow writing ``--sources code-review,pentest`` and one writing two flags
+    mean the same thing. Order is the caller's, deduped.
+    """
+    if not values:
+        return SOURCES
+
+    parsed: list[str] = []
+    for value in values:
+        for source in value.split(","):
+            source = source.strip()
+            if not source:
+                continue
+            # Same membership check `marker_stage` applies, deliberately reused:
+            # an unknown scanner here would be joined on forever (it can never
+            # write a marker under a stage id this module would read), so it
+            # must be rejected at the boundary rather than time out at 1800s.
+            if source not in SOURCES:
+                raise BarrierError(
+                    f"source {source!r} is not one of {list(SOURCES)}; the barrier "
+                    "cannot join on a scanner it has no marker stage for"
+                )
+            if source not in parsed:
+                parsed.append(source)
+
+    if not parsed:
+        raise BarrierError(
+            "--sources was given but named no scanner; a barrier joining on "
+            "nothing would declare every night ready without reading a marker"
+        )
+    return tuple(parsed)
+
+
 def load_markers(ledger_dir: Path | str, schema: dict | None = None) -> dict:
     """Load every completion marker in a run directory, keyed by scanner.
 
@@ -604,12 +649,17 @@ def wait_for_markers(
     monotonic=time.monotonic,
     sleep=time.sleep,
     schema: dict | None = None,
+    sources: tuple[str, ...] = SOURCES,
 ) -> tuple[dict, dict]:
-    """Poll until every scanner signalled or the timeout expires.
+    """Poll until every scanner in ``sources`` signalled or the timeout expires.
 
     The clock and the sleep are injected so this loop is exercised in tests
     rather than mocked away wholesale; the decision itself stays in
     ``evaluate_barrier``, which reads no clock at all.
+
+    ``sources`` is threaded into that decision rather than left to its default:
+    dropping it here is what made a single-scanner night wait out the full
+    timeout and then ship a plan blaming a scanner that was never running.
     """
     started = monotonic()
     while True:
@@ -618,6 +668,7 @@ def wait_for_markers(
             markers,
             elapsed_seconds=monotonic() - started,
             timeout_seconds=timeout_seconds,
+            sources=sources,
         )
         if state["state"] != STATE_WAITING:
             return markers, state
@@ -634,6 +685,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
         args.ledger_dir,
         timeout_seconds=args.timeout_seconds,
         poll_seconds=args.poll_seconds,
+        sources=parse_sources(args.sources),
     )
     if state["partial"]:
         print(
@@ -685,6 +737,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wait.add_argument(
         "--ledger-uri", required=True, help="s3:// URI of the private run ledger prefix"
+    )
+    wait.add_argument(
+        "--sources",
+        action="append",
+        metavar="SOURCE[,SOURCE...]",
+        help="the scanners THIS run joins on (repeatable or comma-separated; "
+        f"each one of {list(SOURCES)}). Defaults to every source, so a night "
+        "running a subset must name it: joining on a scanner that is not "
+        "running waits out the whole timeout and then blames it for the gap.",
     )
     wait.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     wait.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS)

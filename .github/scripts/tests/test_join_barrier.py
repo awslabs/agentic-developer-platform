@@ -30,6 +30,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import ensure_umbrella_epic as ue
+import join_barrier as jb
 import triage_group_findings as tg
 from join_barrier import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -53,6 +54,7 @@ from join_barrier import (
     load_markers,
     main,
     marker_stage,
+    parse_sources,
     plan_labels,
     planned_sequence,
     render_body,
@@ -207,6 +209,27 @@ def both_markers():
         "code-review": a_marker("code-review", story_ids=(5002, 5003)),
         "pentest": a_marker("pentest", story_ids=(5004,)),
     }
+
+
+def _never_sleeping(real_wait):
+    """``wait_for_markers`` with sleeping made an error.
+
+    For CLI tests asserting a night joins on the FIRST poll while leaving the
+    real default timeout in force. A regression then fails here in milliseconds
+    instead of hanging CI for 1800 real seconds -- see the caller's docstring.
+    """
+
+    def _wait(*args, **kwargs):
+        def explode(_seconds):
+            raise AssertionError(
+                "the barrier polled a second time: it is waiting on a scanner "
+                "this run does not join on, which on a real clock is the full "
+                "timeout followed by a false PARTIAL"
+            )
+
+        return real_wait(*args, **{**kwargs, "sleep": explode})
+
+    return _wait
 
 
 def ship(gh_factory, markers=None, *, state=None, **kwargs):
@@ -980,6 +1003,207 @@ def test_the_cli_surfaces_a_malformed_marker_as_an_error(fake_gh, tmp_path, caps
         ]
     ) == 1
     assert "::error" in capsys.readouterr().err
+
+
+# ==========================================================================
+# The joined set is an INPUT, not the constant (defect 🔴-2).
+#
+# The barrier joins on `SOURCES` by default, which includes `pentest` -- a
+# scanner (U6/U7) that is not built and does not run. A night running only
+# code-review therefore could never reach `ready`: it waited out the full 1800s
+# and then shipped a plan stamped PARTIAL blaming a scanner that was never
+# missing, and wrote that false claim into the run ledger every single night.
+#
+# The two halves of the fix, and why both are needed:
+#   * `--sources` exists at all, so a caller can say what ran tonight;
+#   * `wait_for_markers` PASSES IT DOWN. It previously accepted no `sources` and
+#     called `evaluate_barrier` without one, so even a correct flag would have
+#     been silently discarded -- `evaluate_barrier`'s parameter was reachable
+#     only from a direct unit-test call, never from the CLI.
+#
+# The set the barrier JOINS on is per-run. The set of VALID sources is the
+# constant, and it stays whole: it is also U9's `--source` validator and dedup's
+# source vocabulary, and pentest is a planned scanner, not a deleted one.
+# ==========================================================================
+
+
+def test_a_code_review_only_night_is_ready_at_once_not_partial_at_the_timeout():
+    """The defect, at the decision function. One marker, one joined scanner."""
+    state = evaluate_barrier(
+        {"code-review": a_marker()}, elapsed_seconds=0, sources=("code-review",)
+    )
+    assert state["state"] == STATE_READY
+    assert state["unsignalled"] == [], "pentest is not running, so it is not a gap"
+    assert state["partial"] is False
+
+
+def test_the_polling_loop_threads_sources_instead_of_dropping_them(tmp_path):
+    """The bug itself: `wait_for_markers` never passed `sources` down.
+
+    The clock is injected and yields exactly the two ticks ONE pass needs (the
+    start reading, then the first poll's). A loop that still joined on pentest
+    would sleep and ask for a third, so it raises StopIteration here rather than
+    quietly passing -- and zero sleeps is the claim that matters: the night is
+    joined on the first poll, not after 1800s.
+    """
+    ledger = write_markers(tmp_path / "run", a_marker("code-review"))
+    polls = []
+
+    markers, state = wait_for_markers(
+        ledger,
+        timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
+        poll_seconds=1,
+        monotonic=iter([0, 0]).__next__,
+        sleep=lambda _s: polls.append(1),
+        sources=("code-review",),
+    )
+    assert state["state"] == STATE_READY
+    assert polls == [], "the barrier slept waiting for a scanner that never runs"
+    assert sorted(markers) == ["code-review"]
+
+
+def test_the_cli_joins_only_the_named_scanner_and_ships_a_clean_plan(
+    fake_gh, tmp_path, capsys, monkeypatch
+):
+    """End to end through the real CLI, on the REAL default 1800s timeout.
+
+    `--timeout-seconds` is deliberately not passed: the claim is about the night
+    the nightly actually runs, and a test that shrank the window to 0 would pass
+    just as happily against the broken code.
+
+    Sleeping is made an error instead, which is the property under test stated
+    directly: a correctly-joined night never polls twice. It also makes a
+    regression fail in milliseconds with a readable message -- on a real clock
+    this test would hang CI for the full 30 minutes and then report PARTIAL, and
+    a 30-minute hang is not something anyone reads as a test failure.
+    """
+    ledger = write_markers(tmp_path / "run", a_marker("code-review"))
+    gh = fake_gh()
+    out_file = tmp_path / "out" / "shard-orchestration.json"
+    monkeypatch.setattr(jb, "wait_for_markers", _never_sleeping(jb.wait_for_markers))
+    rc = main(
+        [
+            "wait", "--repo", REPO, "--run-date", RUN_DATE,
+            "--ledger-dir", str(ledger), "--ledger-uri", LEDGER_URI,
+            "--generated-at", GENERATED_AT, "--sources", "code-review",
+            "--ledger-fields", str(out_file),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "partial=false" in out
+    assert "::warning" not in out, "a plan for the scanners that ran is not partial"
+    assert "pentest" not in out
+
+    body = gh.created[0]["body"]
+    assert "PARTIAL" not in body
+    assert "pentest" not in body, "the plan blamed a scanner that was never running"
+
+    written = json.loads(out_file.read_text(encoding="utf-8"))
+    assert validate_shard(written, SCHEMA)["stage"] == ORCHESTRATION_STAGE
+    assert "unsignalled_sources" not in written["fields"], (
+        "the false 'pentest went silent' claim was recorded in the run ledger"
+    )
+
+
+def test_a_genuine_multi_source_night_still_ships_partial_after_the_timeout(
+    fake_gh, tmp_path, capsys
+):
+    """The regression guard. `--sources` must not become a way to lose the real
+    signal: when a scanner that IS running goes silent, that is still a PARTIAL
+    plan and still a recorded gap -- the hung-scanner investigation signal."""
+    ledger = write_markers(tmp_path / "run", a_marker("code-review"))
+    gh = fake_gh()
+    out_file = tmp_path / "out" / "shard-orchestration.json"
+    rc = main(
+        [
+            "wait", "--repo", REPO, "--run-date", RUN_DATE,
+            "--ledger-dir", str(ledger), "--ledger-uri", LEDGER_URI,
+            "--generated-at", GENERATED_AT, "--sources", "code-review,pentest",
+            "--timeout-seconds", "0", "--poll-seconds", "0",
+            "--ledger-fields", str(out_file),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "::warning title=Partial security plan::" in out
+    assert "partial=true" in out
+    assert "PARTIAL PLAN" in gh.created[0]["body"]
+    written = json.loads(out_file.read_text(encoding="utf-8"))
+    assert written["fields"]["unsignalled_sources"] == ["pentest"]
+
+
+def test_omitting_sources_joins_on_every_source():
+    """The default is unchanged, so no existing caller changes behaviour. The
+    nightly becomes the explicit caller of `--sources code-review` (#4613)."""
+    assert parse_sources(None) == SOURCES
+    assert parse_sources([]) == SOURCES
+
+
+def test_sources_accepts_comma_separated_and_repeated_flags_alike():
+    """A workflow writing one comma-separated flag and one writing two flags mean
+    the same thing; neither spelling may be the one that silently misjoins."""
+    assert parse_sources(["code-review,pentest"]) == ("code-review", "pentest")
+    assert parse_sources(["code-review", "pentest"]) == ("code-review", "pentest")
+    assert parse_sources(["code-review", "pentest,code-review"]) == (
+        "code-review",
+        "pentest",
+    )
+    assert parse_sources([" code-review , pentest "]) == ("code-review", "pentest")
+
+
+def test_an_unknown_scanner_is_rejected_rather_than_joined_on_forever():
+    """A typo'd source can never write a marker under a stage id this module
+    reads, so joining on it is an unconditional 1800s timeout. Reject at the
+    boundary -- the same membership check `marker_stage` applies."""
+    with pytest.raises(BarrierError, match="not one of"):
+        parse_sources(["nmap"])
+    with pytest.raises(BarrierError, match="not one of"):
+        parse_sources(["code-review,nmap"])
+
+
+def test_sources_naming_no_scanner_is_rejected():
+    """A barrier joining on the empty set is `ready` before reading a marker --
+    it would ship a plan from a night that had not run."""
+    with pytest.raises(BarrierError, match="named no scanner"):
+        parse_sources([""])
+    with pytest.raises(BarrierError, match="named no scanner"):
+        parse_sources([","])
+
+
+def test_the_cli_surfaces_an_unknown_source_as_an_error_not_a_traceback(
+    fake_gh, tmp_path, capsys, monkeypatch
+):
+    """Rejection must happen BEFORE the wait, so sleeping is again an error: a
+    build that let an unknown source through would otherwise sit on the real
+    1800s clock here rather than failing."""
+    ledger = write_markers(tmp_path / "run", a_marker("code-review"))
+    gh = fake_gh()
+    monkeypatch.setattr(jb, "wait_for_markers", _never_sleeping(jb.wait_for_markers))
+    rc = main(
+        [
+            "wait", "--repo", REPO, "--run-date", RUN_DATE,
+            "--ledger-dir", str(ledger), "--ledger-uri", LEDGER_URI,
+            "--generated-at", GENERATED_AT, "--sources", "nmap",
+        ]
+    )
+    assert rc == 1
+    assert "::error title=Security plan barrier::" in capsys.readouterr().err
+    assert not gh.creates(), "a plan was filed from an unvalidated join set"
+
+
+def test_the_source_vocabulary_constant_is_not_shrunk():
+    """Pins the 'do not shrink SOURCES' rule the design calls out.
+
+    Making the joined set an input is the fix; deleting `pentest` from the
+    constant is the tempting wrong one. `SOURCES` is also U9's `--source` choice
+    validator and dedup's source vocabulary, and U6/U7 are planned -- so pentest
+    must stay a VALID source that tonight simply does not run.
+    """
+    assert "pentest" in SOURCES
+    assert set(SOURCES) == {"code-review", "pentest"}
+    assert marker_stage("pentest") == "triage.pentest"
+    assert parse_sources(["pentest"]) == ("pentest",)
 
 
 # ==========================================================================
