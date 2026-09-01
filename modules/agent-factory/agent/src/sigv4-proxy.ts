@@ -109,7 +109,18 @@ const server = http.createServer(async (req, res) => {
 
   // Response-body idle timeout: if upstream sends headers then stalls mid-stream,
   // destroy the connection so the SDK sees a broken stream and retries.
-  const RESP_IDLE_MS = 180_000; // 3 minutes
+  //
+  // Must sit ABOVE every other idle ceiling in the model path so this watchdog
+  // never fires first on a healthy-but-quiet stream. The gateway's own Bedrock
+  // streaming client tolerates 300s between chunks (pool/simple_pool.py), and
+  // the API Gateway integration + both ALBs allow 900s. A long implementation
+  // turn on a large context can legitimately go quiet for minutes (long time-to-
+  // first-token, or an extended-thinking stretch), so the old 180s value severed
+  // healthy streams mid-response — the SDK surfaced it as "API Error: Connection
+  // closed mid-response" and the run stalled with nothing pushed (repeatedly, on
+  // #4450). 600s clears those false kills while still catching a genuinely dead
+  // upstream well before the 3600s socket timeout below.
+  const RESP_IDLE_MS = 600_000; // 10 minutes
 
   const parsed = new URL(upstreamUrl);
   const proxyReq = https.request({

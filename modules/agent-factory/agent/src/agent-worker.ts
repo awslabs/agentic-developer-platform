@@ -89,6 +89,7 @@ import { buildPersonalContextIdentity, getPersonalContextHeaders } from './compl
 // AIDLC Gate Enforcer — deterministic enforcement of commit + gate comment protocol
 // (Issue #3231, EPIC #3158 hardening wave). Only invoked when AIDLC_ENABLED.
 import { enforceAidlcGate } from './aidlc-gate-enforcer';
+import { isTruncatedStreamResult } from './stream-truncation';
 
 // AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232, EPIC #3158).
 // Writes a synthetic audit event proving a real human answered the gate, satisfying
@@ -2089,6 +2090,19 @@ Working on this task...`);
     // Run the agent
     const result = await runAgent(issue, mainIssueNumber, beadsPrimeContext, commentsContext, memoryContext);
     agentResult = result || '';
+
+    // #4450: The SDK degrades a mid-stream connection drop into a *successful*
+    // result whose final assistant text is a "Connection closed mid-response"
+    // sentinel (subtype 'success', normal turns/cost — so the #2883 $0/1-turn
+    // guard misses it). Trusting it posts a fake "Done / no changes needed" and
+    // silently abandons the work. Route it through the catch block instead so
+    // the run reports Failed and can be re-dispatched honestly.
+    if (isTruncatedStreamResult(agentResult)) {
+      throw new Error(
+        'Model response stream was truncated (connection closed mid-response); ' +
+        'treating run as failed rather than reporting a false completion',
+      );
+    }
 
     // Mark analyze through PR stages as complete (agent handles all internally)
     activeLiveComment.transition(1, 'complete');
