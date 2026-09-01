@@ -27,6 +27,7 @@ on:
       - '.github/scripts/assert_findings_bucket_private.py'
       - '.github/scripts/normalize_security_findings.py'
       - '.github/scripts/dedup_security_findings.py'
+      - '.github/scripts/triage_group_findings.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -34,6 +35,14 @@ on:
       - '.github/actions/publish-findings-s3/action.yml'
       # Artifact the dedup suite asserts against (#4447)
       - '.github/security/security-agent-baseline.json'
+      # Artifacts the triage suite asserts against (#4448)
+      - '.github/security/triage-banned-patterns.json'
+      # The persona the triage suite's authorization gates assert against
+      # (#4448). Listed so a later edit re-runs the gate that guards it — the
+      # authorization and the dispatch prohibition are asserted by content, and
+      # a persona change reaches the runtime only via an image rebuild, so a
+      # regression here is otherwise invisible until a nightly run misbehaves.
+      - 'modules/agent-factory/rules/personas/architect.md'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -55,6 +64,7 @@ on:
       - '.github/scripts/assert_findings_bucket_private.py'
       - '.github/scripts/normalize_security_findings.py'
       - '.github/scripts/dedup_security_findings.py'
+      - '.github/scripts/triage_group_findings.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -62,6 +72,14 @@ on:
       - '.github/actions/publish-findings-s3/action.yml'
       # Artifact the dedup suite asserts against (#4447)
       - '.github/security/security-agent-baseline.json'
+      # Artifacts the triage suite asserts against (#4448)
+      - '.github/security/triage-banned-patterns.json'
+      # The persona the triage suite's authorization gates assert against
+      # (#4448). Listed so a later edit re-runs the gate that guards it — the
+      # authorization and the dispatch prohibition are asserted by content, and
+      # a persona change reaches the runtime only via an image rebuild, so a
+      # regression here is otherwise invisible until a nightly run misbehaves.
+      - 'modules/agent-factory/rules/personas/architect.md'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -111,4 +129,5 @@ jobs:
             tests/test_code_review_request.py \
             tests/test_assert_findings_bucket_private.py \
             tests/test_security_agent_dedup.py \
+            tests/test_triage_grouping.py \
             -v --tb=short --timeout=60
