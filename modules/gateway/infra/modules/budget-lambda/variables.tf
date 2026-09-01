@@ -128,6 +128,18 @@ variable "cloudwatch_kms_key_arn" {
   default     = ""
 }
 
+variable "alarm_actions" {
+  description = <<-EOT
+    SNS topic ARNs notified by the unknown-model-pricing alarm (Issue #4592).
+
+    Empty means the alarm still evaluates and is visible in the console but
+    pages nobody — which is how three mispriced model ids went unnoticed for
+    weeks. Set this in any environment where budget figures are trusted.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "enable_reserved_concurrency" {
   description = "Enable reserved concurrent executions. Set to false on fresh accounts where Lambda quota is too low (Issue #2910)."
   type        = bool

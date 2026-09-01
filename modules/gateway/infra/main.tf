@@ -942,6 +942,11 @@ module "budget_lambda" {
   # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
   enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
 
+  # Issue #4592: unknown-model-pricing alarm notifications. Reuses the existing
+  # budget alarm topics — a model priced at the default rate is a budget-accuracy
+  # problem, so it should reach whoever already owns budget alarms.
+  alarm_actions = var.budget_alarm_sns_topic_arns
+
   # Ensure the psycopg2 layer zip is built+uploaded before this module's
   # aws_s3_object data source reads it.
   depends_on = [module.s3_chat_logs, module.rds, null_resource.build_psycopg2_layer]

@@ -71,6 +71,29 @@ resource "aws_iam_role_policy" "usage_tracker" {
         ]
         Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.name_prefix}-budget-usage-tracker:*"
       },
+      # CloudWatch custom metrics (Issue #4592)
+      #
+      # pricing_fallback.get_model_pricing() publishes ADP/Gateway ·
+      # UnknownModelPricing on every fallback-priced model, but this role never
+      # had PutMetricData. The emit is wrapped in `except Exception: pass`, so
+      # every publish failed silently — the log WARNING landed and the metric
+      # never did. Without this the #4592 alarm can never fire.
+      #
+      # PutMetricData takes no resource-level permissions; scope it with the
+      # namespace condition instead of leaving it fully open.
+      {
+        Sid    = "CloudWatchPutMetrics"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "ADP/Gateway"
+          }
+        }
+      },
       # VPC ENI Management
       {
         Sid    = "VPCExecution"

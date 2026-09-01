@@ -57,6 +57,12 @@ output "pricing_refresh_schedule_rule_arn" {
   value       = aws_cloudwatch_event_rule.pricing_refresh.arn
 }
 
+# CloudWatch Alarms
+output "unknown_model_pricing_alarm_arn" {
+  description = "ARN of the unknown-model-pricing alarm (model billed at default fallback rate — Issue #4592)"
+  value       = aws_cloudwatch_metric_alarm.unknown_model_pricing.arn
+}
+
 # Lambda Layer
 output "psycopg2_layer_arn" {
   description = "ARN of the psycopg2 Lambda Layer"

@@ -7,6 +7,12 @@ on AWS Bedrock published rates.
 
 Issue #234: Budget Usage Tracking Lambda
 Issue #1486: Added cache_read_input/cache_creation_input rates and new model IDs
+Issue #4592: Added Claude Opus 5, Sonnet 4.5 and bare-id Sonnet 4.6 entries
+
+Every Claude entry must carry all four keys (input, output, cache_read_input,
+cache_creation_input). Agent traffic is cache-dominated, and the "default" row
+has no cache rates at all — a base-rate-only entry misprices the majority of
+the tokens it is supposed to fix.
 
 Source: AWS Bedrock pricing page (https://aws.amazon.com/bedrock/pricing/)
 """
@@ -79,6 +85,36 @@ MODEL_PRICING: dict[str, dict[str, Decimal]] = {
         "output": Decimal("0.015"),
         "cache_read_input": Decimal("0.0003"),
         "cache_creation_input": Decimal("0.00375"),
+    },
+    # NOTE: bare (un-suffixed) id forms like 'anthropic.claude-sonnet-4-6' and
+    # 'anthropic.claude-opus-4-8' are resolved by the suffix-variant retry in
+    # get_model_pricing, not by per-id alias rows — one mechanism for the whole
+    # class instead of a hand-maintained duplicate row per id shape. Issue #4592.
+    # Sonnet 4.5 keeps the dated id form. Sonnet-family rate: $3/$15 per MTok.
+    # Issue #4592.
+    "anthropic.claude-sonnet-4-5-20250929-v1:0": {
+        "input": Decimal("0.003"),
+        "output": Decimal("0.015"),
+        "cache_read_input": Decimal("0.0003"),
+        "cache_creation_input": Decimal("0.00375"),
+    },
+    # Claude 5 models (2026) — Issue #4592
+    # Opus 5 rate VERIFIED against the published price list at $5/$25 per MTok
+    # (same as Opus 4.6-4.8 — confirmed, not assumed).
+    "anthropic.claude-opus-5": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+        "cache_read_input": Decimal("0.0005"),  # 0.1× input
+        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
+    },
+    # Opus 4.5 dated form — live via the 'opus45' /model alias
+    # (src/proxy/model_resolver.py); previously missed the table entirely and
+    # billed at the Sonnet-tier default. Opus 4.x rate. Issue #4592.
+    "anthropic.claude-opus-4-5-20251101-v1:0": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+        "cache_read_input": Decimal("0.0005"),  # 0.1× input
+        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
     },
     "anthropic.claude-haiku-4-5-20251001-v1:0": {
         "input": Decimal("0.0008"),
@@ -273,6 +309,20 @@ def get_model_pricing(model_id: str) -> dict[str, Decimal]:
         if key.lower() == model_lower:
             return MODEL_PRICING[key]
 
+    # Issue #4592: live callers and the table disagree about version suffixes —
+    # model_resolver.py emits bare 'anthropic.claude-opus-4-8' while the table
+    # keys 'anthropic.claude-opus-4-8-v1', and ':0'/'-v1'-suffixed forms arrive
+    # for ids the table keys bare. Retrying the suffix variants fixes the whole
+    # class instead of a hand-maintained alias row per id shape.
+    for candidate in (
+        f"{resolved_id}-v1",
+        resolved_id.removesuffix(":0"),
+        resolved_id.removesuffix("-v1:0"),
+        resolved_id.removesuffix("-v1"),
+    ):
+        if candidate != resolved_id and candidate in MODEL_PRICING:
+            return MODEL_PRICING[candidate]
+
     # Issue #1486: Unknown model — log a WARNING so this is observable.
     # Previously this was silent, causing Opus 4.6 to be priced as Sonnet.
     logger.warning(
@@ -280,28 +330,53 @@ def get_model_pricing(model_id: str) -> dict[str, Decimal]:
         model_id,
         resolved_id,
     )
-    # Emit a CloudWatch metric for alerting
+    _emit_unknown_model_metric(resolved_id)
+
+    return MODEL_PRICING["default"]
+
+
+# Lazy singleton + per-container dedup for the unknown-model metric. The metric
+# is deliberately DIMENSIONLESS: CloudWatch alarms cannot be created on SEARCH()
+# expressions, so a per-ModelId dimension would leave the alarm unbuildable —
+# and each distinct id would mint a permanent paid custom metric with caller-
+# controlled cardinality. The offending id is already in the WARNING log above;
+# the metric only needs to say "at least one record mispriced".
+_cloudwatch_client = None
+_emitted_unknown_ids: set[str] = set()
+
+
+def _emit_unknown_model_metric(resolved_id: str) -> None:
+    """Best-effort alarm signal, at most once per distinct id per container.
+
+    Deduping bounds the hot-path cost when one unknown model produces thousands
+    of records in a batch: the alarm threshold is > 0, so one datapoint carries
+    the same signal as one per record. The id is only marked emitted on success,
+    so a transient publish failure retries on the next record.
+    """
+    global _cloudwatch_client
+    if resolved_id in _emitted_unknown_ids:
+        return
     try:
         import boto3
 
-        cloudwatch = boto3.client("cloudwatch")
-        cloudwatch.put_metric_data(
+        if _cloudwatch_client is None:
+            _cloudwatch_client = boto3.client("cloudwatch")
+        _cloudwatch_client.put_metric_data(
             Namespace="ADP/Gateway",
             MetricData=[
                 {
                     "MetricName": "UnknownModelPricing",
                     "Value": 1,
                     "Unit": "Count",
-                    "Dimensions": [
-                        {"Name": "ModelId", "Value": resolved_id},
-                    ],
                 }
             ],
         )
+        _emitted_unknown_ids.add(resolved_id)
     except Exception:
-        pass  # Best-effort metric; don't fail pricing on CW issues
-
-    return MODEL_PRICING["default"]
+        # The silent-swallow variant of this except is how the pre-#4592 metric
+        # failed unnoticed for weeks (AccessDenied, eaten). Never fail pricing on
+        # a metrics problem, but leave a trace.
+        logger.warning("UnknownModelPricing metric publish failed", exc_info=True)
 
 
 def calculate_cost(
