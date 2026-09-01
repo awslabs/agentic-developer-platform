@@ -37,9 +37,24 @@ resource "aws_db_parameter_group" "main" {
     value = "all"
   }
 
+  # "1", not "on". RDS normalises boolean parameter values and reports this one
+  # back as "1", so declaring "on" produces a diff that can never converge: every
+  # plan writes "on", every refresh reads "1", the diff returns. The value is
+  # identical either way — log_duration is already enabled.
+  #
+  # A permanent diff here is not cosmetic in effect. module.budget_lambda and
+  # module.orchestration_tick both declare depends_on = [module.rds], and a
+  # module-level depends_on defers the DATA SOURCES inside those modules too. So
+  # a pending change on this parameter group makes data.aws_caller_identity and
+  # data.aws_region unknown at plan time, which makes every IAM policy that
+  # interpolates an account id or region unknown, which forces replacement of
+  # aws_lambda_permission.usage_tracker_s3 — source_account is force-new. The
+  # result was a destroy-and-recreate of a live Lambda permission on every single
+  # plan, opening a window where S3 event notifications to the usage tracker are
+  # rejected. Fixing this one string removes that entire cascade.
   parameter {
     name  = "log_duration"
-    value = "on"
+    value = "1"
   }
 
   parameter {
