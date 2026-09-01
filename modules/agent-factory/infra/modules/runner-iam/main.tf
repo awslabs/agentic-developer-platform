@@ -457,6 +457,33 @@ resource "aws_iam_policy" "runner_base" {
         Resource = "arn:aws:events:us-east-1:*:rule/*-ecr-image-push"
       },
       {
+        # Issue #4450 / design note #4559 §5. The nightly security pipeline's ONE
+        # root dispatch per night is an `aws events put-events` from this runner —
+        # a GitHub Actions job cannot originate an agent chain any other way
+        # (adp-trigger and /agent/trigger are both closed to root-minting).
+        #
+        # This CANNOT join EventBridgeRules above: that statement's resource is a
+        # RULE arn, while PutEvents authorizes against the EVENT-BUS arn.
+        #
+        # State the scope honestly: `events:PutEvents` cannot be restricted to an
+        # event `source`. The IAM resource is the bus; `source` is a request-body
+        # field with no condition key. So this grant lets the runner emit any
+        # event with any source onto the default bus, including one matching
+        # another enabled adp-<env>-* rule. What contains it is the target rules'
+        # InputTransformers, which pin persona, service_identity and target repo
+        # as Terraform literals, plus `allowed_personas` on each service-identity
+        # row. Blast radius therefore equals the set of ENABLED adp-<env>-* rules
+        # — one, today — and each future rule widens it. This is "scoped to the
+        # bus, with source-level selection constrained by the transformer," not
+        # least privilege.
+        Sid    = "EventBridgePutEvents"
+        Effect = "Allow"
+        Action = [
+          "events:PutEvents"
+        ]
+        Resource = "arn:aws:events:us-east-1:*:event-bus/default"
+      },
+      {
         Sid    = "IAMRolePolicyMgmt"
         Effect = "Allow"
         Action = [

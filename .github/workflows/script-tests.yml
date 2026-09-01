@@ -29,6 +29,8 @@ on:
       - '.github/scripts/dedup_security_findings.py'
       - '.github/scripts/triage_group_findings.py'
       - '.github/scripts/join_barrier.py'
+      - '.github/scripts/ops_dispatch.py'
+      - '.github/scripts/ops_stuck_tracker.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -44,6 +46,12 @@ on:
       # a persona change reaches the runtime only via an image rebuild, so a
       # regression here is otherwise invisible until a nightly run misbehaves.
       - 'modules/agent-factory/rules/personas/architect.md'
+      # Artifact the ops dispatch suite asserts against (#4450). The rule's
+      # InputTransformer pins persona, service_identity and the target repo as
+      # literals, and the suite asserts both that they are literals and that
+      # they follow the caller-supplied values. Listed so an edit re-runs the
+      # gate that guards it -- otherwise that assertion is decorative.
+      - 'modules/agent-factory/webhook-ingress/infra/eventbridge.tf'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -67,6 +75,8 @@ on:
       - '.github/scripts/dedup_security_findings.py'
       - '.github/scripts/triage_group_findings.py'
       - '.github/scripts/join_barrier.py'
+      - '.github/scripts/ops_dispatch.py'
+      - '.github/scripts/ops_stuck_tracker.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -82,6 +92,12 @@ on:
       # a persona change reaches the runtime only via an image rebuild, so a
       # regression here is otherwise invisible until a nightly run misbehaves.
       - 'modules/agent-factory/rules/personas/architect.md'
+      # Artifact the ops dispatch suite asserts against (#4450). The rule's
+      # InputTransformer pins persona, service_identity and the target repo as
+      # literals, and the suite asserts both that they are literals and that
+      # they follow the caller-supplied values. Listed so an edit re-runs the
+      # gate that guards it -- otherwise that assertion is decorative.
+      - 'modules/agent-factory/webhook-ingress/infra/eventbridge.tf'
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
@@ -133,4 +149,5 @@ jobs:
             tests/test_security_agent_dedup.py \
             tests/test_triage_grouping.py \
             tests/test_join_barrier.py \
+            tests/test_ops_dispatch_bounds.py \
             -v --tb=short --timeout=60

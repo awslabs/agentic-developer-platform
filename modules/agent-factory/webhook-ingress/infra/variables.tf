@@ -333,6 +333,33 @@ variable "eventbridge_alarm_target_repo" {
 }
 
 # -----------------------------------------------------------------------------
+# Nightly security agent root dispatch (Issue #4450 / design note #4559)
+# -----------------------------------------------------------------------------
+# There is deliberately NO `eventbridge_security_agent_persona` variable to match
+# `eventbridge_alarm_persona` above. The persona is a literal in the rule's
+# InputTransformer and a single entry in the identity row's `allowed_personas`, so
+# which persona a machine trigger can spawn is a Terraform-reviewed decision
+# rather than a runtime input (#4559 §2.1). A variable here would widen that back.
+
+variable "enable_eventbridge_security_agent_rule" {
+  description = "Enable the nightly security agent's root-dispatch EventBridge rule. Creates the rule + target that routes the pipeline's one nightly event to the webhook Lambda, plus the service-identity row it fails closed without."
+  type        = bool
+  default     = false
+}
+
+variable "eventbridge_security_agent_repo" {
+  description = "GitHub repo (org/repo) the nightly security agent is dispatched against. A Terraform literal in the rule's InputTransformer — never caller-supplied, because it is the org-gate anchor."
+  type        = string
+  default     = ""
+}
+
+variable "eventbridge_security_agent_org" {
+  description = "GitHub org that owns the pipeline repo. Becomes tenant_id AND org_id on the service-identity row; must be a real org with the GitHub App installed, or dispatch fails 422 no_installation_for_tenant."
+  type        = string
+  default     = ""
+}
+
+# -----------------------------------------------------------------------------
 # GitLab Webhook (Issue #3324)
 # -----------------------------------------------------------------------------
 

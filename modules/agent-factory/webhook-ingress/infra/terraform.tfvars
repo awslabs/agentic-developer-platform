@@ -66,3 +66,26 @@ enable_adversarial_e2e = true
 # to mint via the gatekeeper. Rollback is a webhook-ingress apply (this change);
 # in-flight pods keep the setting they started with.
 gh_token_broker_enabled = false
+
+# Issue #4450 / design note #4559 §8: the nightly security agent's root-dispatch
+# EventBridge rule, its target, and the service-identity row it fails closed
+# without.
+#
+# The repo and org are set here so they are reviewed values rather than
+# whatever a later ad-hoc apply passes (they are inert while the rule is off —
+# every resource is `count = enable ? 1 : 0`).
+#
+# The enable flag stays FALSE in this committed file on purpose, and flipping it
+# is the deliberate follow-up, not a merge side effect. This module
+# AUTO-APPLIES on any push under infra/**, while the runner's
+# `events:PutEvents` grant lands via a manual agent-factory-infra-apply. #4559
+# §8 requires the IAM grant FIRST — the rule without it means the pipeline's
+# first emit fails AccessDeniedException. Committing `true` here would invert
+# that order on merge. So: run agent-factory-infra-apply.yml, then set this to
+# true (or pass -var) and run webhook-ingress-deploy.yml.
+#
+# Nothing emits until someone dispatches the nightly workflow, so the rule being
+# absent until then changes no behaviour.
+enable_eventbridge_security_agent_rule = false
+eventbridge_security_agent_repo        = "aws-e/adp"
+eventbridge_security_agent_org         = "aws-e"
