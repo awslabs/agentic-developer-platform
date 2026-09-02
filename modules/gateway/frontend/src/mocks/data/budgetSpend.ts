@@ -24,7 +24,7 @@
  * `utilization_pct` is `null` for an uncapped line.
  */
 
-import type { BudgetEnvelopeResponse, BudgetLine, BudgetRunsResponse, PersonCapResponse } from '@/types/budget';
+import type { BudgetEnvelopeResponse, BudgetLine, BudgetRunsResponse, PerOrgLine, PersonCapResponse, PersonEnvelope } from '@/types/budget';
 
 /** `BudgetPeriod` — only calendar periods exist; run/chain have no window. */
 export const mockPeriod = {
@@ -102,6 +102,63 @@ export const mockUncappedLine: BudgetLine = {
 };
 
 /**
+ * The caller's per-tenant cloud lines — `PerOrgLine`, Issue #4626. Active partition FIRST.
+ *
+ * This is the #4620 operator scenario, reproduced: the person is a member of two
+ * tenants, their session is attributed to the first, and their agent runs also execute
+ * in the second. The active line's `cloud_spend_usd` deliberately equals
+ * `mockCloudLine.spend_usd` — the schema orders the active partition first and flags it
+ * precisely so these rows AGREE with the `lines`/`binding` figures rendered beside them,
+ * and a fixture where they disagreed would be describing an impossible response.
+ *
+ * The second line is the defect's signature: real settled spend in a tenant that
+ * authored **no** cap (`cap_usd: null`). Rendering that as `$0.00` would report a $0
+ * ceiling where the truth is "no ceiling was ever authored here", which is the confusion
+ * the whole issue is about.
+ */
+export const mockPerOrgLines: PerOrgLine[] = [
+  {
+    org_id: 'org-1',
+    org_name: 'Pranav Sharma (home)',
+    // Matches mockCloudLine.spend_usd — the active partition is the one `lines` describes.
+    cloud_spend_usd: '171.400000',
+    // …and mockCloudLine.cap_usd: this tenant authored the cap.
+    cap_usd: '200.00',
+    is_active_partition: true,
+  },
+  {
+    org_id: 'org-aws-e',
+    org_name: 'aws-e',
+    // Real dollars, in the partition the caller's session is NOT attributed to. Invisible
+    // on this screen before #4646 — the `$0` the issue was filed for.
+    cloud_spend_usd: '243.650000',
+    // No cap authored in the tenant where the spend actually accrues.
+    cap_usd: null,
+    is_active_partition: false,
+  },
+];
+
+/**
+ * `PersonEnvelope` — the cross-org sum. **Informational; never a budget.**
+ *
+ * Note which fields are ABSENT and that their absence is the contract: no `cap_usd`, no
+ * `remaining_usd`, no `utilization_pct`, no `band`. None exists on the wire, which is
+ * what makes a progress bar unbindable rather than merely discouraged. `is_budget` is an
+ * unsettable `false` for the same reason.
+ *
+ * `spend_usd` is the exact 6dp sum of `mockPerOrgLines` (171.400000 + 243.650000).
+ * `anchor` is `github:<numeric id>` because one person can hold a different `users.id`
+ * per tenant, so the GitHub identity — not the canonical id — is what the totals fuse on.
+ */
+export const mockPersonEnvelope: PersonEnvelope = {
+  anchor: 'github:12345678',
+  spend_usd: '415.050000',
+  partition_count: 2,
+  is_budget: false,
+  note: "Your cloud-agent spend across every workspace you belong to. Not a cap: no budget governs this total, and nothing is enforced against it. Each workspace's own cap is shown on its line.",
+};
+
+/**
  * The full envelope. The headline fields mirror `binding` — the lowest-remaining
  * CAPPED line — and are never the sum of `lines`.
  */
@@ -125,6 +182,10 @@ export const mockBudgetEnvelope: BudgetEnvelopeResponse = {
     is_budget: false,
     note: 'Sum of two separately-capped lines. No cap governs this total and it is not enforced.',
   },
+  // The cross-org view (#4626). Both fields are OPTIONAL on the response type because a
+  // backend predating #4640 omits them — see the "renders unchanged" test.
+  per_org: mockPerOrgLines,
+  person_envelope: mockPersonEnvelope,
   freshness: {
     cost_backfill_lag: false,
   },

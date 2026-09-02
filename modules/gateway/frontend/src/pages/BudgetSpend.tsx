@@ -33,6 +33,7 @@ import { useQuery } from '@tanstack/react-query';
 import { StatCard } from '@/components/dashboard/StatCard';
 import { Card } from '@/components/ui';
 import { BudgetLines, BandBadge } from '@/components/budget/BudgetLines';
+import { PerOrgSpend } from '@/components/budget/PerOrgSpend';
 import { BudgetRunsTable } from '@/components/budget/BudgetRunsTable';
 import { PersonSpendingLimit } from '@/components/budget/PersonSpendingLimit';
 import { getMyBudget, getMyBudgetRuns } from '@/services/budgetSpend';
@@ -273,6 +274,24 @@ export default function BudgetSpend() {
           )}
 
           <BudgetLines lines={envelope.lines} combined={envelope.combined_informational} />
+
+          {/* Everything above describes ONE partition — the tenant this session is
+              attributed to, which is the partition enforcement reads. These are all of
+              them (#4626/#4646): a person whose runs execute outside their session's
+              tenant reads `$0` above while real dollars accrue elsewhere. Both props are
+              optional on the wire, and the component renders nothing when neither is
+              present, so a response predating #4640 leaves this screen unchanged. */}
+          <PerOrgSpend perOrg={envelope.per_org} personEnvelope={envelope.person_envelope} identityStatus={envelope.identity_status} />
+
+          {/* Scope boundary, stated where the two surfaces meet (review fix): the
+              runs endpoint is single-partition, so a reader of the cross-org card
+              above must not go hunting for foreign-workspace runs below it. */}
+          {(envelope.per_org?.length ?? 0) > 1 && (
+            <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="runs-scope-note">
+              The run list below covers this workspace only. Runs billed to your other workspaces are counted in the card above but are not listed
+              here.
+            </p>
+          )}
 
           <BudgetRunsTable data={runs} isLoading={runsLoading} error={runsError} />
         </>

@@ -21,8 +21,9 @@ import BudgetSpend from '@/pages/BudgetSpend';
 import { BudgetRunsTable } from '@/components/budget/BudgetRunsTable';
 import { Navigation } from '@/components/Navigation';
 import { FeatureGate } from '@/components/FeatureGate';
-import { mockBudgetEnvelope, mockBudgetRuns, mockUncappedLine } from '@/mocks/data/budgetSpend';
+import { mockBudgetEnvelope, mockBudgetRuns, mockUncappedLine, mockPerOrgLines, mockPersonEnvelope } from '@/mocks/data/budgetSpend';
 import type { FeatureFlags } from '@/services/features';
+import type { BudgetEnvelopeResponse } from '@/types/budget';
 
 vi.mock('@/services/budgetSpend', () => ({
   getMyBudget: vi.fn(),
@@ -147,6 +148,10 @@ describe('BudgetSpend — a member sees their own figures', () => {
       cap_status: 'uncapped',
       enforcement_mode: null,
       binding: null,
+      // No inherited per-org card: its active row carries "Cap here $200.00",
+      // which contradicts this test's uncapped premise (review fix).
+      per_org: [],
+      person_envelope: null,
       lines: [mockUncappedLine],
       combined_informational: null,
     });
@@ -512,10 +517,188 @@ describe('BudgetSpend — absent cloud ledger', () => {
     // `unresolved` means the cloud ledger could not be looked up, so it is ABSENT from
     // the figures. Reading that as "no cloud spend" is the EPIC's headline failure: a
     // screen saying "you have spent nothing" when the truth is "we could not look".
-    mockGetMyBudget.mockResolvedValue({ ...mockBudgetEnvelope, identity_status: 'unresolved' });
+    mockGetMyBudget.mockResolvedValue({
+      ...mockBudgetEnvelope,
+      identity_status: 'unresolved',
+      // The wire shape the backend guarantees for this state (review fix: the
+      // fixture spread was silently inheriting per_org and rendering exact cloud
+      // figures under the "could not be looked up" notice — a response no
+      // backend sends).
+      per_org: [],
+      person_envelope: null,
+    });
     renderScreen();
 
     await waitFor(() => expect(screen.getByTestId('identity-unresolved')).toBeInTheDocument());
     expect(screen.getByTestId('identity-unresolved').textContent).toMatch(/not a statement that it is zero/i);
+    expect(screen.queryByText(/by workspace/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Cross-org cloud spend — Issue #4646 (C1-UI of #4620).
+ *
+ * The screen's other sections all describe ONE partition: the tenant the session is
+ * attributed to. These tests cover the section that describes all of them, and the two
+ * ways it can be got wrong: rendering the person envelope as though it were a governed
+ * budget (it carries no cap on the wire, by design), and breaking a response that
+ * predates the API change.
+ */
+describe('BudgetSpend — cloud spend by workspace', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUsePermissions.mockReturnValue(memberPermissions());
+    mockUseFeatures.mockReturnValue(features());
+    mockGetMyBudget.mockResolvedValue(mockBudgetEnvelope);
+    mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+  });
+
+  it('renders one row per per_org line, with each workspace named', async () => {
+    renderScreen();
+
+    await waitFor(() => expect(screen.getAllByTestId('per-org-row')).toHaveLength(2));
+    const rows = screen.getAllByTestId('per-org-row');
+    // Order is the server's: active partition FIRST, so these rows agree with the
+    // `lines`/`binding` figures rendered above them.
+    expect(rows.map((r) => r.getAttribute('data-org-id'))).toEqual(['org-1', 'org-aws-e']);
+    expect(within(rows[0]).getByText('Pranav Sharma (home)')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('aws-e')).toBeInTheDocument();
+  });
+
+  it('shows the foreign partition spend that the single-partition figures omit', async () => {
+    // The whole point of #4620: $243.65 accrued in a tenant the session is not attributed
+    // to, so it appears NOWHERE in the headline or the per-line list. If this row is
+    // missing, the operator still reads their cross-org spend as absent.
+    renderScreen();
+
+    await waitFor(() => expect(screen.getAllByTestId('per-org-row')).toHaveLength(2));
+    const foreign = screen.getAllByTestId('per-org-row')[1];
+    expect(within(foreign).getByTestId('per-org-spend').textContent).toBe('$243.65');
+    // And it is genuinely absent from the headline, which reads the active partition only.
+    expect(screen.getByTestId('headline-binding').textContent).not.toContain('243.65');
+  });
+
+  it('flags only the active partition', async () => {
+    renderScreen();
+
+    await waitFor(() => expect(screen.getAllByTestId('per-org-row')).toHaveLength(2));
+    const rows = screen.getAllByTestId('per-org-row');
+    // Read off the server's `is_active_partition`, never re-derived from the token.
+    expect(within(rows[0]).getByTestId('per-org-active-badge')).toBeInTheDocument();
+    expect(within(rows[1]).queryByTestId('per-org-active-badge')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('per-org-active-badge')).toHaveLength(1);
+  });
+
+  it("renders a workspace's own cap, and a null cap as 'No cap set' rather than $0.00", async () => {
+    // Each tenant's cap governs only spend executing inside it, so caps are per row and
+    // never folded together. A null cap on a line with REAL spend is the
+    // mis-partitioned-cap signature the issue is about — reporting it as a $0 ceiling
+    // states the opposite of the truth ("no ceiling was authored here").
+    renderScreen();
+
+    await waitFor(() => expect(screen.getAllByTestId('per-org-row')).toHaveLength(2));
+    const rows = screen.getAllByTestId('per-org-row');
+    expect(within(rows[0]).getByTestId('per-org-cap').textContent).toBe('$200.00');
+    expect(within(rows[1]).getByTestId('per-org-cap').textContent).toBe('No cap set');
+    expect(within(rows[1]).getByTestId('per-org-cap').textContent).not.toContain('$0.00');
+  });
+
+  it('renders the person envelope total with the server-supplied note verbatim', async () => {
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('person-envelope')).toBeInTheDocument());
+    const envelope = screen.getByTestId('person-envelope');
+    // The exact 6dp cross-org sum (171.400000 + 243.650000), displayed at cents.
+    expect(within(envelope).getByTestId('person-envelope-amount').textContent).toBe('$415.05');
+    // Verbatim: the "not a budget" caption is authored once, server-side, so two surfaces
+    // cannot word the same figure differently.
+    expect(within(envelope).getByTestId('person-envelope-note').textContent).toBe(mockPersonEnvelope.note);
+    // And it says how many workspaces contributed, so the total cannot read as single-tenant.
+    expect(envelope.textContent).toMatch(/across 2 workspaces/i);
+  });
+
+  it('renders the person envelope with NO progress bar and no denominator', async () => {
+    // The core constraint. `PersonEnvelope` carries no cap/headroom/utilisation/band on
+    // the wire at all: no person-level cap table exists yet and whether one may deny is
+    // an open ruling, so a bar here would advertise a ceiling nothing enforces — #4620's
+    // own defect, inverted.
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('person-envelope')).toBeInTheDocument());
+    const envelope = screen.getByTestId('person-envelope');
+
+    expect(envelope.querySelector('[role="progressbar"]')).toBeNull();
+    // No `x / y` denominator, and no band badge (a band presupposes a cap).
+    expect(envelope.textContent).not.toMatch(/\$[\d,.]+\s*\/\s*\$/);
+    expect(within(envelope).queryByTestId('band-badge')).not.toBeInTheDocument();
+    // None of the cap-presupposing vocabulary either.
+    expect(envelope.textContent).not.toMatch(/headroom|remaining|of cap used/i);
+  });
+
+  it('never labels the cross-org total as a budget, cap or limit', async () => {
+    // `is_budget` is an unsettable `false`. The rendered copy must agree with it.
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('person-envelope')).toBeInTheDocument());
+    const envelope = screen.getByTestId('person-envelope');
+    expect(envelope.textContent).not.toMatch(/your budget|budget limit|cross-org cap|total cap/i);
+  });
+
+  it('renders the page unchanged when the response omits both new fields', async () => {
+    // Criterion: an older API response (predating #4640) has neither field. The section
+    // must be absent entirely — an empty card captioned "by workspace" would assert the
+    // caller has no cross-org spend when the truth is that this response never spoke to
+    // the question — and nothing else on the screen may change or throw.
+    const legacy: BudgetEnvelopeResponse = { ...mockBudgetEnvelope };
+    delete legacy.per_org;
+    delete legacy.person_envelope;
+    // Both keys are genuinely ABSENT, not merely undefined — which is what an older
+    // backend actually sends, and the case a `?? []` guard has to survive.
+    expect('per_org' in legacy).toBe(false);
+    expect('person_envelope' in legacy).toBe(false);
+    mockGetMyBudget.mockResolvedValue(legacy);
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('headline-binding')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('per-org-row')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('person-envelope')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Cloud agents by workspace/i)).not.toBeInTheDocument();
+    // Everything that rendered before still renders.
+    expect(screen.getByTestId('combined-informational')).toBeInTheDocument();
+    expect(screen.getAllByTestId('budget-line-row')).toHaveLength(2);
+    expect(screen.getByTestId('shadow-mode-banner')).toBeInTheDocument();
+  });
+
+  it('draws no fabricated $0 workspace line when identity did not resolve', async () => {
+    // `per_org: []` with `person_envelope: null` is what the backend sends when the
+    // caller's canonical id could not be resolved. The screen already states that the
+    // cloud ledger is MISSING rather than zero; a $0 workspace row here would contradict
+    // that notice with a figure it does not have.
+    mockGetMyBudget.mockResolvedValue({ ...mockBudgetEnvelope, identity_status: 'unresolved', per_org: [], person_envelope: null });
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('identity-unresolved')).toBeInTheDocument());
+    expect(screen.queryByTestId('per-org-row')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('person-envelope')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Cloud agents by workspace/i)).not.toBeInTheDocument();
+  });
+
+  it('renders a single-partition envelope, which is still a useful claim', async () => {
+    // Unlike `combined_informational`, the envelope ships even for one partition: "this
+    // is your total everywhere" is distinct and useful when the count is one, and hiding
+    // it would show nothing to the person whose spend has not yet crossed a boundary.
+    mockGetMyBudget.mockResolvedValue({
+      ...mockBudgetEnvelope,
+      per_org: [mockPerOrgLines[0]],
+      person_envelope: { ...mockPersonEnvelope, spend_usd: '171.400000', partition_count: 1 },
+    });
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('person-envelope')).toBeInTheDocument());
+    expect(screen.getAllByTestId('per-org-row')).toHaveLength(1);
+    expect(screen.getByTestId('person-envelope-amount').textContent).toBe('$171.40');
+    // Singular, so the sentence reads correctly at a count of one.
+    expect(screen.getByTestId('person-envelope').textContent).toMatch(/across 1 workspace\b/i);
   });
 });
