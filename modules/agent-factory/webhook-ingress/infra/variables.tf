@@ -438,3 +438,40 @@ variable "webhook_lambda_security_group_ids" {
   type        = list(string)
   default     = []
 }
+
+# =============================================================================
+# Webhook WAF source restriction and logging
+# =============================================================================
+# All four default to the prior behaviour: default-Allow with a rate limit only,
+# and no logging. Supplying the three IP-set ARNs together is what flips the ACL
+# to default-Block.
+
+variable "github_hooks_ipv4_ip_set_arn" {
+  type        = string
+  description = "ARN of a REGIONAL WAFv2 IP set holding GitHub's published hooks IPv4 ranges. Supply together with the ipv6 and internal-callers ARNs to flip this ACL to default-Block. Empty (default) leaves it default-Allow."
+  default     = ""
+}
+
+variable "github_hooks_ipv6_ip_set_arn" {
+  type        = string
+  description = "ARN of a REGIONAL WAFv2 IP set holding GitHub's published hooks IPv6 ranges. Required alongside the IPv4 set: GitHub delivers over both families, and a v4-only allowlist silently drops v6 deliveries."
+  default     = ""
+}
+
+variable "internal_callers_ip_set_arn" {
+  type        = string
+  description = "ARN of a REGIONAL WAFv2 IP set holding the addresses this deployment's own callers present — normally the NAT egress EIPs. Required when restricting: the ACL covers the whole stage, and the stage serves POST /agent/trigger from the NAT address as well as POST /github from GitHub. Omitting it would flip the default to Block and break agent chaining."
+  default     = ""
+}
+
+variable "enable_waf_logging" {
+  type        = bool
+  description = "Create an aws-waf-logs-* CloudWatch group and attach it to the webhook web ACL. Without it a rate-limit block or IP denial on this endpoint leaves no record. Default false to preserve prior behaviour."
+  default     = false
+}
+
+variable "waf_log_retention_days" {
+  type        = number
+  description = "Retention for the webhook WAF log group when enable_waf_logging is true."
+  default     = 30
+}
