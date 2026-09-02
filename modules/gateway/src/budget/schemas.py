@@ -319,6 +319,146 @@ class Freshness(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Cross-org person view — Issue #4626 (C1 of #4620)
+# ---------------------------------------------------------------------------
+#
+# Everything above describes ONE partition: the caller's active/attributed tenant.
+# That is what enforcement reads and it stays exactly as it was. The two models
+# below answer the different question #4620 was filed for — "how much have MY
+# agents spent, everywhere they run" — for a person whose runs execute outside the
+# tenant their session is in.
+#
+# The mechanics, from `docs/design-notes/4620-cross-org-person-budgets.md`:
+# `budget_usage` is uniquely keyed `(org_id, entity_type, entity_id, …)`, the
+# tracker writes every `root_user` row into the run's *attributed* tenant (#4132),
+# and the `root_user` key is a canonical `users.id` that the webhook resolver looks
+# up org-free. So the same person's spend is spread across partitions under keys
+# that already match — the read is a widened `org_id` predicate, not an
+# identity-stitching project (note §0.1).
+#
+# Two things make that widening safe rather than a tenant leak, and both are
+# structural rather than a reviewer's care:
+#
+#   * The partition list is derived SERVER-SIDE from `tenant_memberships` (plus the
+#     shadow-user `users.org_id` fallback), never from a request parameter. This
+#     model appears only on the `/me` router, which accepts no scope parameter at
+#     all (note §7.3).
+#   * Only settled dollar TOTALS cross. No run detail, and never to anyone but the
+#     person themselves — explicitly NOT to their home-org admin, whose reach stops
+#     at their own partition (note §7.2).
+
+
+class PerOrgLine(BaseModel):
+    """One tenant's settled cloud-agent spend for the caller, for this period.
+
+    ``root_user`` only — the ledger of chains the caller set in motion. Their
+    ``user`` (direct) ledger is deliberately absent: direct traffic is keyed by
+    Cognito sub and only ever lands in the tenant they were signed into, so there
+    is nothing cross-partition about it, and mixing the two entity types into one
+    figure is the #4322 double-count family (note §7.3).
+
+    ``cap_usd`` is the cap **that tenant** authored for this person, if any. It is
+    reported per line rather than folded into a single number because each one is
+    independently authoritative: an org's own ``root_user`` cap governs spend
+    inside that org and nothing else, and that layer is unchanged by #4620 (note
+    §3.1). A ``null`` cap on a line with real spend is the mis-partitioned-cap
+    signature the issue is about — the spend is accruing where no ceiling was
+    authored.
+    """
+
+    org_id: str = Field(description="The tenant this line's ledger rows live in. One of the caller's own member tenants, derived server-side.")
+    org_name: str = Field(
+        description=(
+            "Display name from `organizations.name`, falling back to `org_id` when "
+            "the row is unreadable. Server-supplied so two surfaces cannot word one "
+            "tenant differently."
+        )
+    )
+    cloud_spend_usd: str = Field(
+        description=(
+            "Settled `root_user` spend in this tenant for this period at 6dp, read "
+            "with the same full 5-filter predicate as every other figure here. A "
+            "true `0.000000` when no usage row exists — a measurement, not a "
+            "fallback."
+        )
+    )
+    cap_usd: str | None = Field(
+        description=(
+            "The cloud-agent cap THIS tenant authored for the caller, at 2dp, or "
+            "`null` when it authored none. Not clamped across tenants: each org's "
+            "cap governs only spend executing inside it."
+        )
+    )
+    is_active_partition: bool = Field(
+        description=(
+            "`true` for the tenant the caller's session is attributed to — the one "
+            "partition `lines`/`binding` above describe. Present so a client can "
+            "show 'this workspace' without re-deriving it from the token."
+        )
+    )
+
+
+class PersonEnvelope(BaseModel):
+    """The caller's cross-org cloud-agent total — **informational, never a budget**.
+
+    Issue #4626, note §7.1. This is the figure that reads ``$0`` on the operator's
+    own page today while real dollars accrue in another tenant's partition.
+
+    **Same shape guarantee as ``CombinedInformational``, for the same reason.** No
+    ``cap_usd``, no ``remaining_usd``, no ``utilization_pct``, no ``band`` — the
+    fields simply do not exist on the wire, so no client can bind a progress bar to
+    a denominator, and ``is_budget`` is an unsettable ``Literal[False]``. That is
+    not conservatism: **no cap governs this number and no ledger row contains it.**
+    A person-level cap is a separate table that does not exist yet
+    (``person_budget_configs``, note §4.1), and whether it may ever *deny* is an
+    open ruling (§5.7). Adding a denominator here before that lands would advertise
+    a ceiling nothing enforces — the exact "cap that caps nothing" defect #4620 was
+    filed for, inverted.
+
+    Two exclusions are baked into how the total is summed (note §7.3):
+
+    * **``root_user`` rows only.** Never mixed with ``user``/``org`` rows, which
+      would re-count the same dollar (the #4322 family).
+    * **``service:``-qualified principals are excluded** (#4344), on the same rule
+      ``_combined_informational`` uses: an unattended CI trigger is not this
+      person, and for a service-rooted run the same dollar lands on both the
+      ``user`` and ``root_user`` rows.
+    """
+
+    anchor: str = Field(
+        description=(
+            "The cross-org identity this total was fused on — `github:<numeric id>` "
+            "when a GitHub identity is linked, else `users:<canonical id>`. The "
+            "GitHub numeric id is the anchor because one person can hold a "
+            "DIFFERENT `users.id` per tenant (note §3.3), so summing by canonical "
+            "id alone under-reports for exactly the multi-org population this "
+            "figure exists for."
+        )
+    )
+    spend_usd: str = Field(
+        description=(
+            "Exact sum of every `per_org[].cloud_spend_usd` at 6dp — the caller's "
+            "settled cloud-agent spend across all their member tenants. NOT a "
+            "budget and NOT enforced. As much a LOWER BOUND as the figures above: "
+            "`freshness.cost_backfill_lag` applies to this total too."
+        )
+    )
+    partition_count: int = Field(
+        description=(
+            "How many tenants contributed to `spend_usd`. Present so a client can "
+            "say 'across N workspaces' rather than implying the figure is "
+            "single-tenant, and so a caller can tell 'one partition, genuinely $0' "
+            "from 'several partitions, genuinely $0'."
+        )
+    )
+    is_budget: Literal[False] = Field(
+        default=False,
+        description=("Always `false`, and typed so it cannot be anything else. No person-level cap exists yet (note §4.1), so none is reported."),
+    )
+    note: str = Field(description="Plain-language restatement of `is_budget` for surfaces that render the figure with a caption.")
+
+
 class MyBudgetResponse(BaseModel):
     """The signed-in caller's own cap, settled spend and headroom for one period.
 
@@ -441,6 +581,37 @@ class MyBudgetResponse(BaseModel):
             "there is nothing to combine (fewer than two per-person lines). The "
             "fused per-person ENVELOPE, with a real cap, is #4396 and is "
             "deliberately not built here."
+        ),
+    )
+
+    # -----------------------------------------------------------------------
+    # Cross-org person view — Issue #4626 (C1 of #4620)
+    # -----------------------------------------------------------------------
+
+    per_org: list[PerOrgLine] = Field(
+        default_factory=list,
+        description=(
+            "The caller's settled cloud-agent spend PER member tenant, active "
+            "partition first. Everything above this field describes ONE partition "
+            "(the attributed tenant enforcement reads); this describes all of them, "
+            "because a person whose runs execute outside their session's tenant sees "
+            "`$0` above while real dollars accrue elsewhere (#4620). Empty when the "
+            "caller's canonical identity did not resolve — never a fabricated "
+            "single-tenant `$0` line."
+        ),
+    )
+
+    person_envelope: PersonEnvelope | None = Field(
+        default=None,
+        description=(
+            "The cross-org sum of `per_org[].cloud_spend_usd`, INFORMATIONAL ONLY — "
+            "no cap governs it and no ledger row equals it, so it carries no "
+            "denominator field by design (see `PersonEnvelope`). `None` when there "
+            "are no per-org lines to sum, i.e. when the caller's identity did not "
+            "resolve. Present even for a single partition, unlike "
+            "`combined_informational`: 'this is your total everywhere' is a distinct, "
+            "useful claim when the count is one, and a client that hid it would show "
+            "nothing to the person whose spend has not yet crossed a boundary."
         ),
     )
 
