@@ -53,6 +53,14 @@ UNIT_MODULES = [
     # from tenant_memberships. Deliberately NOT added to src.budget.routes, whose
     # unscoped entity_type/entity_id pattern is open IDOR #4384 (NFR-1).
     "src.budget.managed_scope_routes",
+    # Issue #4627: mis-partitioned person-cap report
+    # (GET /budget/reports/mis-partitioned-caps). A FOURTH budget router, and
+    # separate for a mechanical reason on top of the same IDOR-hygiene one: it
+    # cannot be a route on managed_scope_routes because that router's
+    # /{entity_type}/{entity_id} pattern would shadow a literal sibling path and
+    # answer a valid report request with a 422. Read-only and detection-only —
+    # design note 4620-cross-org-person-budgets.md §8.2 rules out mutation.
+    "src.budget.report_routes",
     # Issue #4629 (#4620 · C3): person-level cap authoring
     # (PUT /me/budget/person-cap, PUT /budget/person-cap/{anchor}). A FOURTH
     # budget router, separate again for a different reason from the other three:

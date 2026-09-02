@@ -1018,6 +1018,111 @@ class ManagedScopeRunsResponse(BaseModel):
     entity_id: str = Field(description="The target's id, echoed from the request path.")
 
 
+class MisPartitionedCapRow(BaseModel):
+    """One ``root_user`` cap that has never accrued in its own partition — #4627.
+
+    Design note ``4620-cross-org-person-budgets.md`` §8.2. The row describes a cap
+    the operator authored, in the partition they authored it in, that no settled
+    ``budget_usage`` row has ever matched. That is the mis-partitioned signature:
+    the cap's key and the accrual's key are the *same string*, and only ``org_id``
+    differs (§2), so the cap displays, accrues nothing, and stops nothing.
+
+    **Every field describes the caller's OWN partition, except one boolean.** §7.2
+    of the note draws the disclosure line precisely: a foreign org's dollar totals
+    are that org's cost data and must not reach an admin of an unrelated tenant on
+    the basis that a person is shared. So there is no foreign ``org_id`` here, no
+    foreign spend figure and no foreign run detail — only
+    ``accrues_elsewhere``, which says *whether* a matching accrual exists somewhere
+    the caller cannot see. A bare boolean is not a total; it is the minimum needed
+    to tell "authored in the wrong partition" from "authored correctly and quiet",
+    and without it the report is a list of maybes nobody can act on.
+
+    ``accrues_elsewhere=false`` is deliberately still reported rather than
+    filtered out. §8.2: "a dormant cap is not proof of misconfiguration (a person
+    may simply not have run yet), which is exactly why this reports rather than
+    migrates." Suppressing those rows would make the report *look* authoritative
+    while hiding the cap that is about to become mis-partitioned the moment its
+    owner runs somewhere else.
+    """
+
+    org_id: str = Field(description="The partition the cap was authored in — always the caller's own resolved partition, never a foreign one.")
+    entity_id: str = Field(
+        description=(
+            "The cap's key: a canonical `users.id`, possibly `service:`-qualified "
+            "(#4344). Echoed as stored, because it is the string that has to match "
+            "an accrual for the cap to ever bind."
+        )
+    )
+    display_name: str | None = Field(
+        default=None,
+        description=(
+            "The person's name or email, resolved org-scoped from `users`. `null` "
+            "for a `service:`-qualified principal, which has no `users` row by "
+            "design — the caller renders the raw id, the honest label for an "
+            "automation."
+        ),
+    )
+    principal_kind: PrincipalKind = Field(
+        description=(
+            "`human` or `service`, from the `service:` id qualifier (#4344). A "
+            "`service`-rooted cap is an unattended trigger, not a person, and a "
+            "report that renders one as a colleague makes the operator chase the "
+            "wrong fix."
+        )
+    )
+    period_type: str = Field(description="The cap's period type, echoed from the row. Part of the predicate that found no matching accrual.")
+    cap_usd: str = Field(
+        description=("The cap as authored, at 2dp (contract rule 1). The RAW row, not the platform-clamped effective cap — see the module comment.")
+    )
+    enforcement_mode: str = Field(
+        description=("`soft` or `hard`, echoed from the row. A `hard` cap that can never match is the more alarming case of the two.")
+    )
+    accrues_elsewhere: bool = Field(
+        description=(
+            "`true` when a settled `root_user` accrual for the SAME person exists "
+            "in a partition other than this one — the cap can never match, and "
+            "this is the operator's confirmed defect. `false` means no accrual "
+            "exists anywhere yet: the cap is merely dormant, which §8.2 says is "
+            "not proof of misconfiguration. A boolean, never a figure: a foreign "
+            "org's dollars do not cross this surface (§7.2)."
+        )
+    )
+
+
+class MisPartitionedCapReport(BaseModel):
+    """The mis-partitioned ``root_user`` cap report — #4627, note §8.2.
+
+    **Read-only and detection-only.** Nothing here mutates a cap, and no endpoint
+    on this router does either: §8.1 rules that existing caps stay exactly where
+    they are, because moving one silently changes what stops a workload. The
+    remedy is the operator's, in two steps (§8.3); this report is what tells them
+    which caps need it.
+
+    ``rows`` is ordered with ``accrues_elsewhere=true`` first, so the confirmed
+    defects are what an operator sees without scrolling, then by ``entity_id`` and
+    ``period_type`` for a stable order across calls.
+    """
+
+    org_id: str = Field(description="The partition reported on, resolved SERVER-SIDE from `tenant_memberships`. Never read from a request parameter.")
+    rows: list[MisPartitionedCapRow] = Field(
+        default_factory=list,
+        description=(
+            "The `root_user` caps in this partition with no matching settled "
+            "accrual, confirmed cross-partition cases first. An empty list means "
+            "every `root_user` cap here has accrued at least once — it never means "
+            "the check could not run, which is a `503`."
+        ),
+    )
+    total_row_count: int = Field(
+        description=("`len(rows)`. The report is not paginated: `root_user` caps are per-person and one partition's set is small.")
+    )
+    accrues_elsewhere_count: int = Field(
+        description=(
+            "How many rows are CONFIRMED mis-partitioned (`accrues_elsewhere=true`). The number an operator acts on; the rest are dormant caps."
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # The person-level cap — Issue #4629 (#4620 · C3)
 # ---------------------------------------------------------------------------
