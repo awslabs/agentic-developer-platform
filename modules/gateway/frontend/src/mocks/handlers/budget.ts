@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw';
-import { mockBudgetEnvelope, mockBudgetRuns } from '../data/budgetSpend';
+import { mockBudgetEnvelope, mockBudgetRuns, mockPersonCap } from '../data/budgetSpend';
 
 const mockBudgets = [
   {
@@ -190,4 +190,26 @@ export const budgetHandlers = [
   http.get('/api/me/budget', () => HttpResponse.json(mockBudgetEnvelope)),
 
   http.get('/api/me/budget/runs', () => HttpResponse.json(mockBudgetRuns)),
+
+  // ---------------------------------------------------------------------------
+  // The caller's own platform-wide spending limit — Issue #4629 (#4620 - C3).
+  //
+  // No `person_anchor` in any of these paths: the self surface derives the person
+  // from the token, so there is no target for a client to send. The platform-admin
+  // route (`/api/budget/person-cap/{anchor}`) is deliberately NOT mocked — no
+  // screen in this app calls it, and a mock for an uncalled route is a mock that
+  // drifts unnoticed.
+  // ---------------------------------------------------------------------------
+  http.get('/api/me/budget/person-cap', () => HttpResponse.json(mockPersonCap)),
+
+  http.put('/api/me/budget/person-cap', async ({ request }) => {
+    const body = (await request.json()) as { budget_amount_usd?: string };
+    // Echoes the submitted amount rather than a canned figure, so a test can tell
+    // "the component sent what the user typed" from "the component sent something".
+    return HttpResponse.json({ ...mockPersonCap, cap_usd: body.budget_amount_usd ?? mockPersonCap.cap_usd });
+  }),
+
+  // 204 with no body, matching the endpoint: a removal is a success whether or not
+  // a limit existed.
+  http.delete('/api/me/budget/person-cap', () => new HttpResponse(null, { status: 204 })),
 ];

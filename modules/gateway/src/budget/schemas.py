@@ -1016,3 +1016,107 @@ class ManagedScopeRunsResponse(BaseModel):
 
     entity_type: str = Field(description="The target's entity type, echoed from the request path after allow-list validation.")
     entity_id: str = Field(description="The target's id, echoed from the request path.")
+
+
+# ---------------------------------------------------------------------------
+# The person-level cap — Issue #4629 (#4620 · C3)
+# ---------------------------------------------------------------------------
+#
+# Design note `docs/design-notes/4620-cross-org-person-budgets.md` §4.
+#
+# Everything above is keyed on a tenant. These two models are the first budget
+# shapes in this module that are NOT: a person-level cap is stored partition-free
+# in `person_budget_configs`, keyed on the person's cross-org anchor, because a
+# person's runs execute in whichever tenant the work is in (#4620).
+#
+# Money is still a JSON string at the cap column's own precision (contract rule 1),
+# and "no cap authored" is still not "a cap of $0" (rule 2) — expressed here as a
+# `null` `cap` object rather than a zeroed one.
+#
+# What is deliberately NOT on these models:
+#
+# * **No spend, headroom, utilisation or band.** This unit is storage and authoring
+#   only. Rendering the cap against a cross-org denominator is C1 (#4626), which
+#   adds `person_envelope` to `GET /me/budget`; putting a second, separately-derived
+#   spend figure here is how the two surfaces come to disagree about the same
+#   dollars (the #4322 read/write asymmetry class).
+# * **No `enforcement_mode` on the REQUEST.** The person layer is informational in
+#   this unit and `soft` is the only value the API writes. `hard` requires the §5.7
+#   ruling and lands with C4 (#4630). Accepting the field now would let a client
+#   author a cap that claims to stop spend while nothing reads it.
+
+
+class PersonCapRequest(BaseModel):
+    """Author (or re-author) a person's own platform-wide spend limit — C3.
+
+    One field, on purpose. ``period_type`` is in the path, the anchor is derived
+    server-side (or, for a platform admin, taken from the path and validated), and
+    ``enforcement_mode`` is not client-settable in this unit — see the section
+    comment above. A request body that cannot name a target cannot author a cap for
+    somebody else, which is the same structural-scoping argument ``me_routes.py``
+    makes for the read path.
+
+    ``gt=0`` matches ``BudgetCreateRequest`` (``src/shared/schemas/budget.py``): a
+    limit of exactly zero would be indistinguishable in every downstream reader
+    from "no limit authored", and a negative one has no meaning at all. Someone
+    who wants no ceiling deletes the row.
+    """
+
+    budget_amount_usd: Decimal = Field(
+        gt=0,
+        le=Decimal("99999999.99"),
+        decimal_places=2,
+        description=(
+            "The person's total spend ceiling for one calendar period, across every "
+            "organization. 2dp, matching the `NUMERIC(10,2)` column; `le` is that "
+            "column's maximum — without it an over-range amount passes validation "
+            "and dies in Postgres as a numeric-field overflow, which the routes' "
+            "fault mapping would misreport as a retryable 503 backend failure "
+            "(and SQLite-backed tests would never catch, since SQLite ignores "
+            "NUMERIC precision). Must be > 0 — removing a limit is a DELETE, not "
+            "a `0`."
+        ),
+    )
+
+
+class PersonCapResponse(BaseModel):
+    """A person's platform-wide limit, or the explicit absence of one — C3.
+
+    ``cap_usd`` is ``None`` exactly when no row exists, and the caller is told so
+    by ``cap_status`` rather than having to infer it from a zero (contract rule 2,
+    applied to this table).
+
+    ``enforcement_mode`` is on the wire even though it is not settable, because a
+    client MUST be able to tell an informational limit from an enforcing one. When
+    C4 (#4630) makes `hard` reachable, the same field carries it and no client
+    needs a new one — and until then, a surface reading this cannot claim spend
+    will be stopped.
+    """
+
+    person_anchor: str = Field(
+        description=(
+            "The cross-org person key this limit is stored against, "
+            "`github:<numeric_user_id>`. Deliberately NOT a `users.id`: a person "
+            "onboarded into two orgs has two of those, so a cap keyed on one would "
+            "miss their spend in the other."
+        )
+    )
+    period_type: Literal["daily", "weekly", "monthly"] = Field(
+        description="The calendar period the limit applies to. Run/chain caps are not calendar periods and have no person-level equivalent."
+    )
+    cap_usd: str | None = Field(
+        description="The authored limit at 2dp, or `null` when none is authored. `null` is NOT `0.00` — see `cap_status`.",
+    )
+    cap_status: CapStatus = Field(
+        description="`capped` when a limit row exists for this person and period, `uncapped` when none does.",
+    )
+    enforcement_mode: str | None = Field(
+        description=(
+            "`soft` — informational only: the figure is reported and nothing is "
+            "denied. `null` when uncapped. A client MUST NOT tell a user their spend "
+            "will be stopped while this is `soft`."
+        ),
+    )
+    updated_at: str | None = Field(
+        description="ISO-8601 instant the limit was last authored, or `null` when uncapped.",
+    )

@@ -273,3 +273,62 @@ export interface BudgetRunsResponse {
   period: BudgetPeriod;
   identity_status: IdentityStatus;
 }
+
+// ---------------------------------------------------------------------------
+// The person-level cap — Issue #4629 (#4620 · C3)
+// ---------------------------------------------------------------------------
+//
+// A person's own ceiling on their total agent spend, across EVERY organization.
+// Distinct from every type above, which describes a cap belonging to one org:
+// this one belongs to a person and has no org at all, which is exactly why it can
+// express "my total" when the org-scoped ones cannot (#4620).
+//
+// **Informational only in this release.** `enforcement_mode` is `'soft'`: the
+// figure is reported and nothing is denied. No copy rendering these types may say
+// spend will be stopped — enforcement is #4630, and a screen that threatens a
+// consequence it cannot deliver trains users to disbelieve the screen (the same
+// rule the shadow-mode banner follows).
+//
+// Deliberately absent: spend, headroom, utilisation and band. Those need a
+// cross-org denominator, which is #4626. A spend figure derived alongside this cap
+// would be a second accumulator of the same dollars.
+
+/**
+ * The caller's (or, for a platform admin, a named person's) platform-wide limit.
+ * `GET|PUT /me/budget/person-cap`, `GET|PUT /budget/person-cap/{anchor}`.
+ */
+export interface PersonCapResponse {
+  /**
+   * The cross-org person key the limit is stored against, `github:<numeric_id>`.
+   * Not a `users.id`: a person onboarded into two orgs has two of those, so a cap
+   * keyed on one would miss their spend in the other.
+   */
+  person_anchor: string;
+  period_type: BudgetPeriodType;
+  /** The authored limit at 2dp, or `null` when none is set. `null` is NOT `'0.00'`. */
+  cap_usd: string | null;
+  /** `capped` when a limit exists, `uncapped` when none does — read this, never a zero. */
+  cap_status: CapStatus;
+  /**
+   * `'soft'` — informational only. `null` when uncapped. While this is `'soft'`,
+   * a surface MUST NOT tell the user their spend will be stopped.
+   */
+  enforcement_mode: string | null;
+  /** ISO-8601 instant the limit was last authored, or `null` when uncapped. */
+  updated_at: string | null;
+}
+
+/**
+ * The body for authoring a limit.
+ *
+ * One field. The person is derived server-side on the self path, so there is no
+ * target to send — and nothing here sets `enforcement_mode`, which is not
+ * client-settable while the person layer is informational.
+ *
+ * A string, not a number: money crosses the wire at the column's precision, and a
+ * JS number would round `0.1 + 0.2`-style. Removing a limit is a DELETE, never a
+ * `'0'` — `'0'` is a real ceiling of zero dollars and the server rejects it.
+ */
+export interface PersonCapRequest {
+  budget_amount_usd: string;
+}

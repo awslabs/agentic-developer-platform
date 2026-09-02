@@ -1,0 +1,320 @@
+/**
+ * Tests for "My spending limit" — Issue #4629 (#4620 · C3).
+ *
+ * The control a person uses to set a ceiling on their own agent spend across every
+ * organization. What is asserted here, and why each one is a gate rather than a
+ * coverage line:
+ *
+ *  - **No "will be stopped" copy.** The limit is informational in this release
+ *    (enforcement is #4630). A screen that threatens a consequence it cannot
+ *    deliver trains users to disbelieve the screen — the same rule the shadow-mode
+ *    banner follows. Asserted against the rendered text, not against a prop.
+ *  - **No limit renders as no limit, never as `$0.00`.** `cap_status` is the
+ *    signal; a zero would show a person who may spend nothing.
+ *  - **A load failure is not "you have no limit".** An outage is the one moment we
+ *    cannot know, so the error copy says so.
+ *  - **The typed amount is what gets sent**, at 2dp, as a string.
+ *  - **Removing a limit is a DELETE**, not a `PUT` of `0`.
+ *  - **No target is ever sent.** The self surface derives the person from the
+ *    token; a component that sent an anchor would be the beginning of the authority
+ *    inversion §4.2 forbids.
+ *
+ * Fixtures come from `mocks/data/budgetSpend.ts`, transcribed from
+ * `src/budget/schemas.py`. Writing them from the frontend type is what let #3675
+ * ship a dashboard whose mocks, tests and eval all validated fields the backend
+ * never sent.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { PersonSpendingLimit, validateCapAmount } from '@/components/budget/PersonSpendingLimit';
+import { mockPersonCap, mockPersonCapUncapped } from '@/mocks/data/budgetSpend';
+
+vi.mock('@/services/personCap', () => ({
+  getMyPersonCap: vi.fn(),
+  setMyPersonCap: vi.fn(),
+  deleteMyPersonCap: vi.fn(),
+}));
+
+import { deleteMyPersonCap, getMyPersonCap, setMyPersonCap } from '@/services/personCap';
+
+const mockGet = getMyPersonCap as ReturnType<typeof vi.fn>;
+const mockSet = setMyPersonCap as ReturnType<typeof vi.fn>;
+const mockDelete = deleteMyPersonCap as ReturnType<typeof vi.fn>;
+
+function createTestQueryClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
+}
+
+function renderControl(period: 'daily' | 'weekly' | 'monthly' = 'monthly') {
+  return render(
+    <QueryClientProvider client={createTestQueryClient()}>
+      <PersonSpendingLimit period={period} />
+    </QueryClientProvider>,
+  );
+}
+
+/** Copy that would be false while the limit is informational. */
+const ENFORCEMENT_CLAIMS = [/will be stopped/i, /will be blocked/i, /requests are blocked/i, /will be halted/i, /we.ll stop/i];
+
+describe('PersonSpendingLimit — an existing limit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGet.mockResolvedValue(mockPersonCap);
+    mockSet.mockResolvedValue(mockPersonCap);
+    mockDelete.mockResolvedValue(undefined);
+  });
+
+  it('shows the stored limit at 2dp', async () => {
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-current')).toBeInTheDocument());
+    expect(screen.getByText('$250.00')).toBeInTheDocument();
+  });
+
+  it('states the limit covers every organization, not just this one', async () => {
+    // The whole reason the control exists: an org-scoped cap cannot express this,
+    // so a person reading "per month" without "across all organizations" would
+    // reasonably assume it is another single-org figure like the rest of the page.
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-current')).toBeInTheDocument());
+    expect(screen.getByText(/across all organizations/i)).toBeInTheDocument();
+  });
+
+  it('says the limit is informational and does NOT claim spend will be stopped', async () => {
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-informational')).toBeInTheDocument());
+    expect(screen.getByTestId('person-cap-informational')).toHaveTextContent(/not blocked/i);
+
+    const rendered = screen.getByTestId('person-spending-limit').textContent ?? '';
+    for (const claim of ENFORCEMENT_CLAIMS) {
+      expect(rendered).not.toMatch(claim);
+    }
+  });
+
+  it('offers Change limit and Remove limit', async () => {
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    expect(screen.getByTestId('person-cap-edit')).toHaveTextContent(/change limit/i);
+    expect(screen.getByTestId('person-cap-remove')).toBeInTheDocument();
+  });
+});
+
+describe('PersonSpendingLimit — no limit set', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGet.mockResolvedValue(mockPersonCapUncapped);
+    mockSet.mockResolvedValue(mockPersonCap);
+    mockDelete.mockResolvedValue(undefined);
+  });
+
+  it('says no limit is set, and never renders $0.00', async () => {
+    // `cap_usd: null` means no row exists. A `$0.00` here would render a person who
+    // may spend nothing — the opposite of the truth, and a limit nobody authored.
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-uncapped')).toBeInTheDocument());
+    expect(screen.getByTestId('person-cap-uncapped')).toHaveTextContent(/have not set a personal limit/i);
+    expect(screen.queryByText('$0.00')).not.toBeInTheDocument();
+  });
+
+  it('offers Set a limit and hides Remove limit', async () => {
+    // There is nothing to remove, and offering the action would imply there is.
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    expect(screen.getByTestId('person-cap-edit')).toHaveTextContent(/set a limit/i);
+    expect(screen.queryByTestId('person-cap-remove')).not.toBeInTheDocument();
+  });
+});
+
+describe('PersonSpendingLimit — authoring', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGet.mockResolvedValue(mockPersonCapUncapped);
+    mockSet.mockResolvedValue(mockPersonCap);
+    mockDelete.mockResolvedValue(undefined);
+  });
+
+  it('sends the typed amount as a 2dp string for the selected period', async () => {
+    const user = userEvent.setup();
+    renderControl('weekly');
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    await user.click(screen.getByTestId('person-cap-edit'));
+    await user.type(screen.getByTestId('person-cap-input'), '250.00');
+    await user.click(screen.getByTestId('person-cap-save'));
+
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1));
+    // Money is a string at the column's precision. A number here would round.
+    expect(mockSet).toHaveBeenCalledWith('weekly', '250.00');
+  });
+
+  it('sends no target of any kind — only the period and the amount', async () => {
+    // Structural scoping: the person is derived from the token server-side. A
+    // component that sent an anchor would be the first step toward the authority
+    // inversion §4.2 forbids, so the argument list is asserted exactly.
+    const user = userEvent.setup();
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    await user.click(screen.getByTestId('person-cap-edit'));
+    await user.type(screen.getByTestId('person-cap-input'), '10.00');
+    await user.click(screen.getByTestId('person-cap-save'));
+
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1));
+    const args = mockSet.mock.calls[0];
+    expect(args).toHaveLength(2);
+    expect(JSON.stringify(args)).not.toMatch(/github:|person_anchor|user_id/);
+  });
+
+  it('never sends enforcement_mode', async () => {
+    // Not client-settable while the person layer is informational (#4630). A
+    // component that sent `hard` would be asking for a promise nothing keeps.
+    const user = userEvent.setup();
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    await user.click(screen.getByTestId('person-cap-edit'));
+    await user.type(screen.getByTestId('person-cap-input'), '10.00');
+    await user.click(screen.getByTestId('person-cap-save'));
+
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(mockSet.mock.calls[0])).not.toContain('enforcement_mode');
+  });
+
+  it('rejects a zero amount client-side and does not call the API', async () => {
+    // Zero is indistinguishable downstream from "no limit", so it is refused and
+    // the user is pointed at Remove limit instead. The server rejects it too — this
+    // is the affordance, not the authority.
+    const user = userEvent.setup();
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    await user.click(screen.getByTestId('person-cap-edit'));
+    await user.type(screen.getByTestId('person-cap-input'), '0');
+    await user.click(screen.getByTestId('person-cap-save'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/greater than zero/i);
+    expect(mockSet).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-numeric amount without calling the API', async () => {
+    const user = userEvent.setup();
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    await user.click(screen.getByTestId('person-cap-edit'));
+    await user.type(screen.getByTestId('person-cap-input'), 'lots');
+    await user.click(screen.getByTestId('person-cap-save'));
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(mockSet).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed save as unsaved, not as a new limit', async () => {
+    // A failed write that looked like a success would leave the person believing a
+    // limit is in force when nothing was stored.
+    mockSet.mockRejectedValue({ error: 'service_unavailable', message: 'down' });
+    const user = userEvent.setup();
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    await user.click(screen.getByTestId('person-cap-edit'));
+    await user.type(screen.getByTestId('person-cap-input'), '10.00');
+    await user.click(screen.getByTestId('person-cap-save'));
+
+    expect(await screen.findByTestId('person-cap-save-error')).toHaveTextContent(/was not saved/i);
+  });
+});
+
+describe('PersonSpendingLimit — removing a limit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGet.mockResolvedValue(mockPersonCap);
+    mockSet.mockResolvedValue(mockPersonCap);
+    mockDelete.mockResolvedValue(undefined);
+  });
+
+  it('removes via DELETE, never a PUT of 0', async () => {
+    // `0` is a real ceiling of zero dollars. Using it to mean "no limit" is exactly
+    // the conflation `cap_status` exists to prevent.
+    const user = userEvent.setup();
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-remove')).toBeInTheDocument());
+    await user.click(screen.getByTestId('person-cap-remove'));
+
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith('monthly'));
+    expect(mockSet).not.toHaveBeenCalled();
+  });
+});
+
+describe('PersonSpendingLimit — failure states', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSet.mockResolvedValue(mockPersonCap);
+    mockDelete.mockResolvedValue(undefined);
+  });
+
+  it('reports a load failure as a failure, never as "no limit"', async () => {
+    // An outage is the one moment we cannot know whether a limit exists, so the
+    // uncapped copy would be a claim we cannot support.
+    mockGet.mockRejectedValue({ error: 'service_unavailable', message: 'down' });
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-error')).toBeInTheDocument());
+    expect(screen.getByTestId('person-cap-error')).toHaveTextContent(/not a statement that you have no limit/i);
+    expect(screen.queryByTestId('person-cap-uncapped')).not.toBeInTheDocument();
+    expect(screen.queryByText('$0.00')).not.toBeInTheDocument();
+  });
+});
+
+describe('PersonSpendingLimit — period handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGet.mockResolvedValue(mockPersonCap);
+    mockSet.mockResolvedValue(mockPersonCap);
+    mockDelete.mockResolvedValue(undefined);
+  });
+
+  it('reads the limit for the period it was given', async () => {
+    renderControl('daily');
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledWith('daily'));
+  });
+
+  it('labels the limit with the period noun', async () => {
+    renderControl('daily');
+
+    // Scoped to the figure line: "per day" legitimately appears in the description
+    // above it too, so an unscoped query matches twice.
+    await waitFor(() => expect(screen.getByTestId('person-cap-current')).toBeInTheDocument());
+    expect(screen.getByTestId('person-cap-current')).toHaveTextContent(/per day/i);
+  });
+});
+
+describe('validateCapAmount', () => {
+  // Unit-level, because the rules mirror the server's and a silent divergence
+  // would let the UI submit values that always 422.
+  it.each(['1', '250', '250.5', '250.50', '0.01'])('accepts %s', (value) => {
+    expect(validateCapAmount(value)).toBeNull();
+  });
+
+  it.each([
+    ['', 'empty'],
+    ['0', 'zero is not "no limit"'],
+    ['0.00', 'zero is not "no limit"'],
+    ['-5', 'negative has no meaning'],
+    ['1.234', 'more precision than the column holds'],
+    ['abc', 'not a number'],
+    ['$250', 'currency symbol'],
+  ])('rejects %s (%s)', (value) => {
+    expect(validateCapAmount(value)).not.toBeNull();
+  });
+});

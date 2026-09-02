@@ -478,11 +478,19 @@ class TestRevisionChain:
         """`alembic heads` must report a SINGLE head — the issue's hard gate.
 
         Computed structurally rather than trusted: a head is a revision that no
-        other revision names as its parent. After this migration lands there must
-        be exactly one, and it must be this revision. This is the executable form
-        of "confirm `alembic current` reports a single head before opening the PR",
-        so a concurrently-merged sibling migration fails CI here instead of
-        breaking `alembic upgrade head` in dev.
+        other revision names as its parent. This is the executable form of "confirm
+        `alembic current` reports a single head before opening the PR", so a
+        concurrently-merged sibling migration fails CI here instead of breaking
+        `alembic upgrade head` in dev.
+
+        Asserts the *count* and that 033 is still ON the chain — deliberately NOT
+        that 033 IS the head. The head advances with every migration that lands
+        (034 in #4629), and a name-pinned assertion turns every future migration
+        into a spurious failure here, which trains people to edit this test rather
+        than read it. Same reasoning as
+        `test_029_orchestration_graph.test_migration_leaves_exactly_one_head`,
+        which this was corrected to match. What must never change is that there is
+        exactly one head and that this revision is reachable from it.
         """
         revisions: set[str] = set()
         parents: set[str] = set()
@@ -495,7 +503,10 @@ class TestRevisionChain:
                 parents.add(module.down_revision)
 
         heads = revisions - parents
-        assert heads == {MIG_033.revision}, f"expected a single head ({MIG_033.revision}), found: {sorted(heads)}"
+        assert len(heads) == 1, f"expected exactly one head, found: {sorted(heads)}"
+        # 033 is either the head itself or a link somebody else chained onto.
+        assert MIG_033.revision in revisions
+        assert MIG_033.revision in parents or heads == {MIG_033.revision}, "033 has been orphaned off the chain"
 
 
 class TestModelParity:

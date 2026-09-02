@@ -34,6 +34,7 @@ import { StatCard } from '@/components/dashboard/StatCard';
 import { Card } from '@/components/ui';
 import { BudgetLines, BandBadge } from '@/components/budget/BudgetLines';
 import { BudgetRunsTable } from '@/components/budget/BudgetRunsTable';
+import { PersonSpendingLimit } from '@/components/budget/PersonSpendingLimit';
 import { getMyBudget, getMyBudgetRuns } from '@/services/budgetSpend';
 import { describeBand, formatUtilization } from '@/utils/budgetBand';
 import { COST_SCOPE_LABEL } from '@/utils/cost';
@@ -276,6 +277,16 @@ export default function BudgetSpend() {
           <BudgetRunsTable data={runs} isLoading={runsLoading} error={runsError} />
         </>
       )}
+
+      {/* Issue #4629: the caller's own cross-org ceiling.
+          Rendered OUTSIDE the envelope block on purpose, for two reasons. It is a
+          separate fetch with its own loading and error states, so an outage on the
+          org-scoped envelope must not hide the control a person uses to set their
+          own limit. And it comes AFTER the figures above rather than before them:
+          this limit is informational (enforcement is #4630) while the binding line
+          above is what will actually stop them, so giving the soft figure visual
+          primacy over the enforcing one would invert what a reader should act on. */}
+      <PersonSpendingLimit period={period} />
     </div>
   );
 }

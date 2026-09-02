@@ -53,6 +53,17 @@ UNIT_MODULES = [
     # from tenant_memberships. Deliberately NOT added to src.budget.routes, whose
     # unscoped entity_type/entity_id pattern is open IDOR #4384 (NFR-1).
     "src.budget.managed_scope_routes",
+    # Issue #4629 (#4620 · C3): person-level cap authoring
+    # (PUT /me/budget/person-cap, PUT /budget/person-cap/{anchor}). A FOURTH
+    # budget router, separate again for a different reason from the other three:
+    # it is the only one that WRITES, and what it writes is partition-free, so its
+    # authoring rule is unlike theirs — the person themselves or a platform admin
+    # may author, an org admin may NOT (§4.2; an org admin authoring a cap that
+    # spans tenants they cannot see is the authority inversion the #4620 ruling
+    # forbids). Not in me_routes, which documents itself read-only; not in
+    # src.budget.routes, whose unscoped entity_type/entity_id pattern is open
+    # IDOR #4384.
+    "src.budget.person_cap_routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
