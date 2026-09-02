@@ -155,5 +155,6 @@ jobs:
             tests/test_author_grouping_plan.py \
             tests/test_join_barrier.py \
             tests/test_ops_dispatch_bounds.py \
+            tests/test_nightly_triage_wiring.py \
             tests/test_report_finalization.py \
             -v --tb=short --timeout=60

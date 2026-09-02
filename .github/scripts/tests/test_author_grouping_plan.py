@@ -738,12 +738,21 @@ def test_this_suite_and_its_subject_are_pinned_into_script_tests():
     )
 
 
-def test_this_change_arms_nothing():
-    """This unit is consumed by #4613's wiring and must not do the wiring. A
-    nightly that calls this producer before the wiring PR has reviewed the whole
-    stage is an un-reviewed change to the pipeline's shape."""
-    assert "author_grouping_plan" not in NIGHTLY_WORKFLOW.read_text(encoding="utf-8"), (
-        "wiring the producer into the nightly is #4613, not this issue"
+def test_the_producer_is_the_nightly_plan_author():
+    """This gate was the inverse until #4613: while the wiring was unreviewed, a
+    nightly that called this producer was an un-reviewed change to the pipeline's
+    shape, so the gate asserted the call was ABSENT. #4613 reviewed and landed
+    that wiring, so the same line is now the binding: it asserts the producer is
+    the ONLY thing the nightly authors a plan with.
+
+    Kept here rather than deleted because an unreferenced producer is this unit's
+    real failure mode -- every gate above passes against a script nothing calls.
+    The rest of the stage's shape is asserted by
+    `tests/test_nightly_triage_wiring.py`.
+    """
+    assert "author_grouping_plan.py" in NIGHTLY_WORKFLOW.read_text(encoding="utf-8"), (
+        "the nightly authors no plan, so this producer is dead code and every gate "
+        "in this suite is decorative (#4613 wired it into the `triage` job)"
     )
 
 
