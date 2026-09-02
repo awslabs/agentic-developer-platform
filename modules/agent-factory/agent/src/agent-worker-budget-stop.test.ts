@@ -87,12 +87,38 @@ describe('agent-worker budget-stop detection (Issue #4187)', () => {
       expect(scopeRegex).toContain('root_user');
     });
 
-    it('keeps the three scopes distinct from each other and from the fallback', () => {
-      // Four outcomes, four distinct strings. A copy-paste that reused
-      // `chain_cap_exceeded` for the new arm would still satisfy the assertions
+    it('maps the person scope to its own reason (Issue #4630)', () => {
+      // A FOURTH scope, and the one whose remedy involves no administrator at
+      // all: a person-level cap is the ceiling the person set on their own total
+      // agent spend across every org, so nobody else can raise it. Reported as
+      // `hierarchy_cap_exceeded` it would send the operator to an org budget that
+      // is not the limit that fired and that cannot help — and because the
+      // discriminator is a CLOSED regex, a new scope reaches that fallback
+      // silently unless the regex is widened with the ternary arm.
+      expect(DETECT_FN).toContain('person_cap_exceeded');
+      const scopeRegex = /\/"scope"[^/]*\//.exec(DETECT_FN)?.[0] ?? '';
+      expect(scopeRegex).toContain('person');
+    });
+
+    it('keeps person distinct from root_user, which is the easy confusion', () => {
+      // Both are "a cap on a human", and they are different humans' knobs:
+      // `root_user` is ONE org's cap on that person (an admin there can raise
+      // it), `person` is the person's own cross-org ceiling (only they can).
+      // Collapsing them tells half the operators to go ask the wrong party.
+      expect(DETECT_FN).toContain('root_user_cap_exceeded');
+      expect(DETECT_FN).toContain('person_cap_exceeded');
+      const scopeRegex = /\/"scope"[^/]*\//.exec(DETECT_FN)?.[0] ?? '';
+      // `root_user` contains no "person", but a lazy widening to `.*` would admit
+      // anything and stop discriminating at all.
+      expect(scopeRegex).not.toContain('.*');
+    });
+
+    it('keeps the four scopes distinct from each other and from the fallback', () => {
+      // Five outcomes, five distinct strings. A copy-paste that reused
+      // `chain_cap_exceeded` for a new arm would still satisfy the assertions
       // above.
-      const reasons = ['run_cap_exceeded', 'chain_cap_exceeded', 'root_user_cap_exceeded', 'hierarchy_cap_exceeded'];
-      expect(new Set(reasons).size).toBe(4);
+      const reasons = ['run_cap_exceeded', 'chain_cap_exceeded', 'root_user_cap_exceeded', 'person_cap_exceeded', 'hierarchy_cap_exceeded'];
+      expect(new Set(reasons).size).toBe(5);
       for (const reason of reasons) {
         expect(DETECT_FN).toContain(reason);
       }

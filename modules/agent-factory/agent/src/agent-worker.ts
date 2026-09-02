@@ -813,14 +813,20 @@ function detectBudgetStop(err: Error): { stopReason: string } | null {
   // must be distinguishable from the hierarchy default: telling an operator to
   // raise an org budget when the real limit was one person's cap sends them to
   // change the wrong knob.
-  const scope = /"scope"\s*:\s*"(run|chain|root_user)"/.exec(message)?.[1];
+  // `person` (#4630) is the person's OWN platform-wide ceiling, spanning every org
+  // their agents run in. It must be distinguishable from `root_user` — which is
+  // one org's cap on that person — because the remedies differ and only one of
+  // them involves an administrator: nobody but the person can raise a person cap.
+  const scope = /"scope"\s*:\s*"(run|chain|root_user|person)"/.exec(message)?.[1];
   const stopReason = scope === 'run'
     ? 'run_cap_exceeded'
     : scope === 'chain'
       ? 'chain_cap_exceeded'
       : scope === 'root_user'
         ? 'root_user_cap_exceeded'
-        : 'hierarchy_cap_exceeded';
+        : scope === 'person'
+          ? 'person_cap_exceeded'
+          : 'hierarchy_cap_exceeded';
   return { stopReason };
 }
 

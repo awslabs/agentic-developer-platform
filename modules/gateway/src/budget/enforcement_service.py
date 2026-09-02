@@ -23,9 +23,10 @@ from src.shared.metrics import (
     emit_budget_check_failure,
     emit_budget_grace_engaged,
     emit_budget_reservation_outcome,
+    emit_person_budget_layer_skipped,
     emit_run_binding_drift,
 )
-from src.shared.models.budget import BudgetConfig, BudgetUsage
+from src.shared.models.budget import BudgetConfig, BudgetUsage, PersonBudgetConfig
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import (
     DenyReason,
@@ -948,6 +949,31 @@ class BudgetEnforcementService:
                         if result.warnings:
                             all_warnings.extend(result.warnings)
 
+                # Issue #4630 (#4620 · C4): the person layer, AFTER the per-org
+                # hierarchy above. The ordering is a design requirement, not a
+                # coincidence of where the line was typed: an org's own cap must
+                # keep firing first, which is what "per-org caps remain
+                # independently authoritative" means operationally (note §5.3).
+                # With no person cap row authored, this returns None and the whole
+                # path above is byte-identical to pre-#4630 behaviour.
+                #
+                # Contained rather than allowed to raise (review finding): a fault
+                # in here must NOT reach the shared `except` below, whose
+                # `_handle_check_failure` fails OPEN for code-level faults. That
+                # would void the ENTIRE budget check — run, chain and every org cap
+                # — while requests still returned 200. Not hypothetical: on an
+                # environment where C3's migration has not landed, the cap read
+                # raises for every request, so all enforcement platform-wide would
+                # silently fail open. This new layer may only ever fail to enforce
+                # ITSELF.
+                person_result = await self._check_person_budget_contained(session, context, estimated_cost)
+                if person_result is not None:
+                    if not person_result.allowed:
+                        # The ledger read succeeded, so this is a healthy check.
+                        await self._note_check_succeeded()
+                        return person_result
+                    all_warnings.extend(person_result.warnings)
+
                 # All checks passed — the ledger is readable, so reset the
                 # consecutive-failure window and emit the healthy-path 0.
                 await self._note_check_succeeded()
@@ -1250,6 +1276,294 @@ class BudgetEnforcementService:
             warnings.append(f"{entity_type.value} {entity_id} {period_type.value} budget at {utilization:.1f}%")
 
         return EnforcementResult(allowed=True, warnings=warnings), target
+
+    async def _check_person_budget_contained(
+        self,
+        session: AsyncSession,
+        context: TokenContext,
+        estimated_cost: Decimal,
+    ) -> EnforcementResult | None:
+        """Run the person layer with its faults confined to itself (Issue #4630).
+
+        The person layer is the newest and widest-reading part of this check: it
+        resolves an identity, fans out over a partition set and reads one ledger row
+        per (partition, fused id). Any of that can fault, and it sits inside
+        ``check_budget_hierarchy``'s shared ``try`` — whose handler
+        (``_handle_check_failure``) deliberately fails **open** for code-level
+        faults so a deterministic bug cannot permanently down all inference.
+
+        Composing those two gives a defect worth naming: a fault in *this* layer
+        would return an allow for the whole request, discarding the run, chain and
+        per-org verdicts that had already been computed. On an environment where
+        C3's migration has not landed, that is every request — all budget
+        enforcement platform-wide, silently off, with 200s.
+
+        So the person layer is the only layer whose failure it may cause. A fault
+        here skips the person cap, emits the dedicated ``PersonBudgetLayerSkipped``
+        metric (alarmed in ``budget-alarms/main.tf`` once that infra is applied),
+        and leaves every other verdict standing. It deliberately does NOT enter the
+        shared grace window: escalation there fails CLOSED for the whole check, and
+        a person-layer-only fault (e.g. the C3 migration missing) must never be
+        able to down all inference.
+        That is strictly safer than the alternative in both directions: the org that
+        pays still has its ceiling enforced, and the person's own cap is advisory
+        for the duration of the fault rather than the whole check being.
+
+        Returns:
+            The person layer's verdict, or ``None`` when there is no cap to apply
+            (the overwhelmingly common case) or the layer faulted.
+        """
+        try:
+            return await self._check_person_budget(session, context, estimated_cost)
+        except Exception as exc:  # noqa: BLE001 — containment is the whole point; see docstring
+            logger.error(
+                f"Person-level budget check failed and was SKIPPED — every other budget verdict stands ({type(exc).__name__}): {exc}",
+                exc_info=True,
+            )
+            fault_class = "infrastructure" if isinstance(exc, _INFRASTRUCTURE_FAULTS) else "unexpected"
+            emit_budget_check_failure(
+                fault_class=fault_class,
+                # A distinct outcome, not one of `_handle_check_failure`'s: nothing
+                # was allowed *because of* this fault, so reporting it as
+                # `allowed_fail_open` would overstate the blast radius and hide the
+                # one thing that did stop working.
+                outcome="person_layer_skipped",
+                environment=self._get_environment(),
+            )
+            # The alarmable signal (review fix on #4661): the outcome above lands
+            # in a dimension set no alarm watches, and this failure mode — person
+            # caps silently unenforced while everything else stays green — is
+            # found on a bill unless something pages. Dedicated metric, plain
+            # [Environment] rollup, single alarm in budget-alarms/main.tf.
+            emit_person_budget_layer_skipped(
+                fault_class=fault_class,
+                environment=self._get_environment(),
+            )
+            return None
+
+    async def _check_person_budget(
+        self,
+        session: AsyncSession,
+        context: TokenContext,
+        estimated_cost: Decimal,
+    ) -> EnforcementResult | None:
+        """Check the person's platform-wide cap against a cross-org SETTLED denominator.
+
+        Issue #4630 (#4620 · C4), design note
+        ``docs/design-notes/4620-cross-org-person-budgets.md`` §5.3 + §5.5.
+
+        This is the layer that makes a person's own ceiling real in every org their
+        agents run in. The per-org hierarchy above cannot express it: every budget
+        row is keyed ``org_id``-first, so a cap authored in one partition caps
+        nothing that executes in another (#4620). ``person_budget_configs`` is
+        partition-free, and this reads it.
+
+        **The denominator is the settled ledger, and the overshoot bound is real
+        (§5.5).** ``ReservationTarget.key()`` embeds ``{org_id}`` as a Redis Cluster
+        hash tag so the multi-key atomic Lua stays single-slot
+        (``reservations.py``); a person key cannot carry an ``org_id`` hash tag
+        without re-partitioning the very thing this cap exists to span. The
+        recorded ruling on #4620 is therefore explicit: **do not add a second,
+        non-atomic reservation call for this layer.** So this method returns no
+        ``ReservationTarget`` and takes no Redis reservation — that absence is the
+        requirement, not an omission.
+
+        The consequence, stated rather than implied away: **a person cap can be
+        exceeded by up to the spend incurred but not yet settled at the moment of
+        this check** — bounded in practice by the person's aggregate burn rate over
+        the settlement lag (``/me/budget`` surfaces that lag as
+        ``freshness.cost_backfill_lag``), plus in-flight concurrency. It is a
+        bounded ceiling, **not** an atomic guarantee, and
+        ``docs/budget-ratelimit.md`` says so in the 402 contract. Per-org hierarchy
+        caps keep their live Redis denominator, so each org's own ceiling stays
+        bounded exactly as tightly as it is today.
+
+        **Identity is C1's, reused verbatim.** ``_resolve_person_identity`` fuses
+        the person's ``users.id`` rows through ``user_identities.provider_user_id``
+        (§3.3 — one GitHub account legitimately holds one ``users.id`` *per tenant*,
+        so summing by canonical id alone under-reports for exactly the multi-org
+        population this ships for), ``_resolve_member_partitions`` derives the
+        partition set server-side (§7.3, including the shadow-user union), and
+        ``_read_settled_spend`` performs the same full 5-filter single-row read
+        enforcement already compares against. The cross-org read is a **widened
+        partition set over an unchanged predicate** — never a relaxed predicate and
+        never a SQL aggregate. A third identity fusion in this module would be the
+        #4511 class: an enforcement layer reading a different person key than C3
+        writes is an inert cap.
+
+        **Cap first, denominator second.** One indexed read of
+        ``person_budget_configs``; when it returns nothing — essentially every
+        request on the platform — the partition fan-out and every spend read are
+        skipped entirely.
+
+        Returns:
+            ``None`` when this caller has no person cap to apply. Otherwise an
+            ``EnforcementResult``: a denial for a ``hard`` cap that is exceeded, or
+            an allow (possibly carrying warnings) in every other case. Deliberately
+            no ``ReservationTarget`` in the return — see above.
+        """
+        # Function-local import: `me_routes` imports `_INFRASTRUCTURE_FAULTS` from
+        # this module, so a module-level import here is a cycle. Same technique
+        # `person_anchor.py` already uses for its own.
+        from src.shared.identity.person_anchor import PERSON_ANCHOR_GITHUB_PREFIX
+
+        from .me_routes import _read_settled_spend, _resolve_member_partitions, _resolve_person_anchor_id, _resolve_person_identity
+
+        attributed_user_id = context.attributed_user_id or ""
+
+        # A JWT human's own direct spend is accounted under `(USER, sub)`, not as a
+        # root principal; fusing it into the person line is #4396's job, deliberately
+        # not this one's.
+        if not attributed_user_id:
+            return None
+
+        # §7.3's double-count guard: a service principal (EventBridge / scheduled /
+        # CI / alarm) is not a person, has no GitHub anchor, and must not be charged
+        # against anybody's personal ceiling.
+        if attributed_user_id.startswith(_SERVICE_PRINCIPAL_PREFIX):
+            return None
+
+        # Cap first, fan-out second — for real this time (review fix on #4661: the
+        # previous shape ran the cross-tenant fused-id scan before the cap read,
+        # paying it on every attributed request when the overwhelmingly common
+        # outcome is "no cap"). Only the single deterministic anchor lookup runs
+        # unconditionally; the fused-id scan and partition derivation are deferred
+        # until a cap row proves they will be consumed.
+        anchor_id = await _resolve_person_anchor_id(session, attributed_user_id)
+
+        # C3 only ever writes `github:` anchors (`format_person_anchor`), so a
+        # caller with no linked GitHub identity cannot have a matching row.
+        # The prefix comes from the shared constant, never a raw literal, so the
+        # key this reads stays the key C3 writes by construction (#4511 class).
+        if not anchor_id:
+            return None
+        anchor = f"{PERSON_ANCHOR_GITHUB_PREFIX}{anchor_id}"
+
+        cap_rows = (
+            (
+                await session.execute(
+                    select(PersonBudgetConfig)
+                    .where(
+                        PersonBudgetConfig.person_anchor == anchor,
+                        # Calendar periods only. A run/chain cap is lifetime-scoped
+                        # and `get_period_start_end` raises for it, so a stray
+                        # non-calendar row must be filtered here rather than
+                        # faulting the layer. Sorted because
+                        # `CALENDAR_PERIOD_TYPES` is a frozenset — unsorted, the
+                        # generated SQL varies between runs for no reason.
+                        PersonBudgetConfig.period_type.in_(sorted(CALENDAR_PERIOD_TYPES)),
+                    )
+                    # Deterministic evaluation order, so which of several exceeded
+                    # periods is named in the denial is stable rather than an
+                    # accident of row order.
+                    .order_by(PersonBudgetConfig.period_type)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        if not cap_rows:
+            return None
+
+        # A cap exists: NOW pay for the denominator's identity fusion. The resolver
+        # re-runs the anchor lookup internally (one extra single-row query on the
+        # rare capped path) — reused rather than forked, so authoring, the C1 read
+        # and this layer cannot drift on what "the same person" means.
+        resolved_anchor, person_user_ids = await _resolve_person_identity(session, attributed_user_id)
+        if resolved_anchor != anchor:
+            # Only possible if identity rows changed between the two lookups
+            # mid-request. The cap was matched on `anchor`; refusing to enforce a
+            # cap against a denominator resolved for a DIFFERENT anchor beats
+            # denying someone on another person's spend.
+            logger.warning("Person anchor changed between cap lookup and identity fusion; skipping the person layer for this request")
+            return None
+
+        partitions = await _resolve_member_partitions(session, person_user_ids, context.attributed_org_id)
+
+        warnings: list[str] = []
+
+        for cap_row in cap_rows:
+            period_type = PeriodType(cap_row.period_type)
+            period_start, _ = get_period_start_end(period_type)
+
+            # The cross-org denominator: the SAME predicate, over a widened
+            # partition set. Summing across the person's fused ids cannot
+            # double-count — they are distinct `users` primary keys addressing
+            # disjoint rows of a table uniquely keyed on `entity_id` — and
+            # `root_user` rows only, never mixed with `user`/`org` rows, which
+            # would re-count the same dollar (§7.3, the #4322 family).
+            current_spend = Decimal("0")
+            for org_id in partitions:
+                for entity_id in person_user_ids:
+                    current_spend += await _read_settled_spend(
+                        session,
+                        org_id,
+                        EntityType.ROOT_USER,
+                        entity_id,
+                        period_type,
+                        period_start,
+                    )
+
+            projected_spend = current_spend + estimated_cost
+            enforcement_mode = EnforcementMode(cap_row.enforcement_mode)
+
+            if projected_spend > cap_row.budget_amount_usd:
+                if enforcement_mode == EnforcementMode.HARD:
+                    logger.warning(
+                        f"Person budget exceeded (hard limit): {anchor} - {cap_row.period_type} "
+                        f"cap ${cap_row.budget_amount_usd}, settled ${current_spend} across "
+                        f"{len(partitions)} partition(s), projected ${projected_spend}"
+                    )
+                    return EnforcementResult(
+                        allowed=False,
+                        deny_reason=DenyReason.BUDGET_EXCEEDED,
+                        # The anchor and period are named HERE, and in the WARN
+                        # above, because they are what an operator needs to find the
+                        # knob — and `scope="person"` alone does not say which
+                        # person or which period.
+                        blocked_reason=(
+                            f"Personal spending limit exceeded for {anchor} ({cap_row.period_type}): "
+                            f"${projected_spend:.2f} of ${cap_row.budget_amount_usd:.2f} across all organizations"
+                        ),
+                        # `exceeded_entity_type`/`exceeded_entity_id` stay None
+                        # DELIBERATELY. A person is not an `EntityType`, and minting
+                        # one would make `entity_type="person"` authorable through
+                        # `budget_configs` — an inert cap nothing enforces, which is
+                        # the #4511 class this EPIC exists to remove.
+                        budget_amount_usd=cap_row.budget_amount_usd,
+                        current_spend_usd=current_spend,
+                        enforcement_mode=enforcement_mode,
+                        # The discriminator the worker classifies the stop by. A new
+                        # scope that is not threaded end-to-end silently misreports
+                        # as `hierarchy_cap_exceeded` and sends the operator to
+                        # raise an ORG budget — the wrong knob, and nobody can raise
+                        # this one but the person themselves.
+                        scope="person",
+                        scope_cap_usd=cap_row.budget_amount_usd,
+                    )
+
+                # Soft means informational: the figure is reported and nothing is
+                # denied — the same meaning `_check_entity_budget` gives the column
+                # on `budget_configs`, so there is one enforcement semantic for
+                # `enforcement_mode` rather than a per-table special case.
+                logger.info(
+                    f"Person budget exceeded (soft limit): {anchor} - {cap_row.period_type} "
+                    f"cap ${cap_row.budget_amount_usd}, projected ${projected_spend}"
+                )
+                warnings.append(
+                    f"Personal spending limit exceeded for {cap_row.period_type}: "
+                    f"${projected_spend:.2f} / ${cap_row.budget_amount_usd:.2f} across all organizations"
+                )
+                continue
+
+            utilization = calculate_budget_utilization(cap_row.budget_amount_usd, projected_spend)
+            if utilization >= budget_config.budget_critical_threshold_percent:
+                warnings.append(f"Personal spending limit {cap_row.period_type} at {utilization:.1f}% (critical)")
+            elif utilization >= budget_config.budget_warning_threshold_percent:
+                warnings.append(f"Personal spending limit {cap_row.period_type} at {utilization:.1f}%")
+
+        return EnforcementResult(allowed=True, warnings=warnings)
 
     async def record_usage(
         self,

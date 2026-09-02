@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw';
-import { mockBudgetEnvelope, mockBudgetRuns, mockPersonCap } from '../data/budgetSpend';
+import { mockBudgetEnvelope, mockBudgetRuns, mockPersonCap, mockPersonCapEnforcing } from '../data/budgetSpend';
 
 const mockBudgets = [
   {
@@ -206,7 +206,12 @@ export const budgetHandlers = [
     const body = (await request.json()) as { budget_amount_usd?: string };
     // Echoes the submitted amount rather than a canned figure, so a test can tell
     // "the component sent what the user typed" from "the component sent something".
-    return HttpResponse.json({ ...mockPersonCap, cap_usd: body.budget_amount_usd ?? mockPersonCap.cap_usd });
+    // Based on the ENFORCING shape (review fix on #4661): the real server writes
+    // `hard` on every PUT since C4, so echoing the soft mock modelled a response
+    // the server can never produce — and made the post-save "now enforcing"
+    // state unreachable in mock mode (the soft notice says "save again to start
+    // enforcing", which would loop forever).
+    return HttpResponse.json({ ...mockPersonCapEnforcing, cap_usd: body.budget_amount_usd ?? mockPersonCapEnforcing.cap_usd });
   }),
 
   // 204 with no body, matching the endpoint: a removal is a success whether or not

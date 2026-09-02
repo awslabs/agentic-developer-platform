@@ -375,11 +375,13 @@ export interface BudgetRunsResponse {
 // this one belongs to a person and has no org at all, which is exactly why it can
 // express "my total" when the org-scoped ones cannot (#4620).
 //
-// **Informational only in this release.** `enforcement_mode` is `'soft'`: the
-// figure is reported and nothing is denied. No copy rendering these types may say
-// spend will be stopped — enforcement is #4630, and a screen that threatens a
-// consequence it cannot deliver trains users to disbelieve the screen (the same
-// rule the shadow-mode banner follows).
+// **Enforcing since C4 (#4630).** Every save writes `enforcement_mode: 'hard'`:
+// the limit DENIES attributed agent requests across every organization once the
+// settled cross-org total passes it. Rows authored before C4 remain `'soft'`
+// (reported, nothing denied) until re-saved. Copy rendering these types must
+// track the mode: a `soft` row must not threaten a stop it cannot deliver, and a
+// `hard` row must not stay silent about the stop it WILL — either direction is
+// the screen/behavior disagreement #4620 exists to close.
 //
 // Deliberately absent: spend, headroom, utilisation and band. Those need a
 // cross-org denominator, which is #4626. A spend figure derived alongside this cap
@@ -402,8 +404,13 @@ export interface PersonCapResponse {
   /** `capped` when a limit exists, `uncapped` when none does — read this, never a zero. */
   cap_status: CapStatus;
   /**
-   * `'soft'` — informational only. `null` when uncapped. While this is `'soft'`,
-   * a surface MUST NOT tell the user their spend will be stopped.
+   * `'hard'` — the limit DENIES the person's agent runs across every org (#4630).
+   * `'soft'` — informational only, the C3-era mode: the figure is reported and
+   * nothing is blocked. `null` when uncapped.
+   *
+   * Read it; never assume either. A surface must not tell the user their spend
+   * will be stopped while this is `'soft'`, and must not stay silent about it
+   * while it is `'hard'`. Both mistakes are the same one.
    */
   enforcement_mode: string | null;
   /** ISO-8601 instant the limit was last authored, or `null` when uncapped. */
@@ -415,7 +422,8 @@ export interface PersonCapResponse {
  *
  * One field. The person is derived server-side on the self path, so there is no
  * target to send — and nothing here sets `enforcement_mode`, which is not
- * client-settable while the person layer is informational.
+ * client-settable: authoring your own limit IS the choice to be enforced (#4630),
+ * so a mode parameter would only add a way to author a cap that does nothing.
  *
  * A string, not a number: money crosses the wire at the column's precision, and a
  * JS number would round `0.1 + 0.2`-style. Removing a limit is a DELETE, never a

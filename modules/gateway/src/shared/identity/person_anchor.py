@@ -222,6 +222,11 @@ async def resolve_caller_person_anchor(db: AsyncSession, caller_id: str) -> tupl
             UserIdentity.user_id == user_pk,
             UserIdentity.provider == IdentityProvider.github,
         )
+        # Deterministic pick (review fix on #4661): (user_id, provider) is not
+        # unique, and the enforcement-side resolver orders the same way — an
+        # unordered pick on either side lets a two-GitHub-row user author a cap
+        # under one anchor while enforcement reads another (inert cap, #4511).
+        .order_by(UserIdentity.provider_user_id)
         .limit(1)
     )
     if not github_user_id:

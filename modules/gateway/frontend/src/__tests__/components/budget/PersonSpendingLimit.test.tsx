@@ -5,10 +5,14 @@
  * organization. What is asserted here, and why each one is a gate rather than a
  * coverage line:
  *
- *  - **No "will be stopped" copy.** The limit is informational in this release
- *    (enforcement is #4630). A screen that threatens a consequence it cannot
+ *  - **The stopping copy matches what the stored row does.** Both directions of one
+ *    rule: a `soft` row (authored under C3) must not claim spend will be stopped,
+ *    and a `hard` row (#4630 made the layer enforce) must not stay silent about the
+ *    fact that it stops runs. A screen that threatens a consequence it cannot
  *    deliver trains users to disbelieve the screen — the same rule the shadow-mode
- *    banner follows. Asserted against the rendered text, not against a prop.
+ *    banner follows — and a screen that quietly acquires a consequence it never
+ *    mentioned is that defect mirrored. Asserted against the rendered text, not
+ *    against a prop.
  *  - **No limit renders as no limit, never as `$0.00`.** `cap_status` is the
  *    signal; a zero would show a person who may spend nothing.
  *  - **A load failure is not "you have no limit".** An outage is the one moment we
@@ -30,7 +34,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PersonSpendingLimit, validateCapAmount } from '@/components/budget/PersonSpendingLimit';
-import { mockPersonCap, mockPersonCapUncapped } from '@/mocks/data/budgetSpend';
+import { mockPersonCap, mockPersonCapEnforcing, mockPersonCapUncapped } from '@/mocks/data/budgetSpend';
 
 vi.mock('@/services/personCap', () => ({
   getMyPersonCap: vi.fn(),
@@ -96,12 +100,76 @@ describe('PersonSpendingLimit — an existing limit', () => {
     }
   });
 
+  it('tells a soft-row reader they can turn enforcement on by re-saving (#4630)', async () => {
+    // A C3-era row keeps its stored `soft` mode, so the informational copy stays
+    // true for it — but the mode is no longer permanent, and a person who wants the
+    // ceiling to actually bite has no way to discover the one action that does it
+    // unless this sentence says so. Nothing else on the screen changes on re-save.
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-informational')).toBeInTheDocument());
+    expect(screen.getByTestId('person-cap-informational')).toHaveTextContent(/save it again/i);
+  });
+
   it('offers Change limit and Remove limit', async () => {
     renderControl();
 
     await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
     expect(screen.getByTestId('person-cap-edit')).toHaveTextContent(/change limit/i);
     expect(screen.getByTestId('person-cap-remove')).toBeInTheDocument();
+  });
+});
+
+describe('PersonSpendingLimit — an enforcing limit (#4630)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGet.mockResolvedValue(mockPersonCapEnforcing);
+    mockSet.mockResolvedValue(mockPersonCapEnforcing);
+    mockDelete.mockResolvedValue(undefined);
+  });
+
+  it('says the limit stops runs, and does NOT show the informational copy', async () => {
+    // C3's rule read one way — never claim spend will be stopped while nothing
+    // stops it — and this is the same rule read the other way. A `hard` row halts
+    // runs mid-flight; a screen that stayed silent about that would leave the
+    // person to discover it from a stopped agent, which is the identical defect
+    // (screen and behaviour disagreeing) with the sign flipped.
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-enforcing')).toBeInTheDocument());
+    expect(screen.getByTestId('person-cap-enforcing')).toHaveTextContent(/stopped/i);
+    // The two notices are mutually exclusive: "requests are not blocked" beside
+    // "your runs are stopped" is worse than either sentence alone.
+    expect(screen.queryByTestId('person-cap-informational')).not.toBeInTheDocument();
+  });
+
+  it('states the overshoot bound instead of promising a hard stop', async () => {
+    // The denominator is the settled ledger (§5.5 — a person key cannot carry the
+    // Redis hash tag the atomic reservation needs), so spend still being metered is
+    // invisible to the check and the stop lands slightly over. Promising an exact
+    // ceiling here would be the screen over-claiming — the same failure C3's
+    // informational copy existed to avoid.
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-enforcing')).toBeInTheDocument());
+    expect(screen.getByTestId('person-cap-enforcing')).toHaveTextContent(/slightly over/i);
+  });
+
+  it('still never sends enforcement_mode when re-saving', async () => {
+    // The mode is not client-settable in either direction: authoring the cap IS the
+    // opt-in (§5.6), so a component offering a soft/hard toggle would be inventing
+    // an authority the server does not accept.
+    const user = userEvent.setup();
+    renderControl();
+
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    await user.click(screen.getByTestId('person-cap-edit'));
+    await user.clear(screen.getByTestId('person-cap-input'));
+    await user.type(screen.getByTestId('person-cap-input'), '300.00');
+    await user.click(screen.getByTestId('person-cap-save'));
+
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(mockSet.mock.calls[0])).not.toContain('enforcement_mode');
   });
 });
 

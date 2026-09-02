@@ -389,6 +389,33 @@ def emit_budget_check_failure(
     )
 
 
+def emit_person_budget_layer_skipped(
+    fault_class: str,
+    count: int = 1,
+    environment: str = "production",
+) -> None:
+    """Emit PersonBudgetLayerSkipped (Issue #4630, review fix on #4661).
+
+    A DEDICATED metric rather than a BudgetCheckFailure outcome: the
+    ``person_layer_skipped`` outcome landed in a dimension combination no alarm
+    watched, and the failure mode it marks — person caps silently unenforced
+    platform-wide while every other verdict stands — is exactly the kind that is
+    discovered from a bill unless something pages. Emitted with the plain
+    ``[Environment]`` rollup so a single-metric alarm matches every fault class.
+    """
+    _emit_emf(
+        metrics={
+            "PersonBudgetLayerSkipped": count,
+            "fault_class": fault_class,
+            "Environment": environment,
+        },
+        dimensions=[
+            ["fault_class", "Environment"],
+            ["Environment"],
+        ],
+    )
+
+
 def emit_run_binding_drift(
     reason: str,
     count: int = 1,

@@ -11,7 +11,7 @@ of this unit is *who may author a partition-free cap* (§4.2):
   T4  the person -> their own cap              -> 200  (self-service)
   T5  platform admin -> anybody's cap          -> 200
   T6  the stored key is `github:<numeric_id>`, never a `users.id`
-  T7  `soft` is the only mode any path can write (enforcement is C4 / #4630)
+  T7  `hard` is the only mode any path writes since C4 (#4630); never client-settable
   T8  the self path has NO target parameter at any position
   T9  unresolvable / malformed anchors -> 422, and nothing is written
   T10 upsert idempotence, and DELETE vs a `0` cap
@@ -401,6 +401,11 @@ async def test_t4b_person_reads_their_own_cap(session, seeded):
     body = response.json()
     assert body["cap_usd"] == "125.50"
     assert body["cap_status"] == "capped"
+    # The STORED mode is echoed, not a constant. `seed_cap` writes `soft` (a C3-era
+    # row), and reading it back as `soft` is the point: those rows stay
+    # informational until re-authored (#4630's flag-day rule), and the UI picks its
+    # notice off this field — so a read that normalised it to `hard` would tell
+    # somebody their spend is being stopped when it is not.
     assert body["enforcement_mode"] == "soft"
 
 
@@ -577,58 +582,92 @@ async def test_t6c_self_and_platform_admin_paths_produce_the_same_key(session, s
 
 
 # ===========================================================================
-# T7 — `soft` is the only mode any path can write (enforcement is C4 / #4630)
+# T7 — `hard` is the only mode any path writes, since C4 (#4630)
+#
+# C3 pinned these to `soft` because nothing read the table. #4630's
+# `_check_person_budget` now does, so an authored cap denies — see
+# `test_person_cap_enforcement.py`. What did NOT change is that the mode is not
+# client-settable, which is what T7c still guards.
 # ===========================================================================
 
 
-async def test_t7_self_authored_cap_is_soft(session, seeded):
-    """Soft/informational only — the scope boundary this issue states explicitly.
+async def test_t7_self_authored_cap_is_enforcing(session, seeded):
+    """A self-authored cap is written ``hard`` — it denies (#4630).
 
-    Enforcement is #4630 (C4) and depends on the §5.7 ruling. A row written
-    ``hard`` here would be a cap that no code enforces while every surface claims
-    it does.
+    Authoring your own ceiling IS the §5.6 opt-in, which is what makes a denying
+    cross-org cap legitimate: the person is the one party present in every org the
+    spend happens in, so this is self-restraint rather than an authority inversion.
     """
     async with client_for(session, context_for(PERSON_SUB)) as client:
         response = await client.put("/me/budget/person-cap", json={"budget_amount_usd": "20.00"})
 
-    assert response.json()["enforcement_mode"] == "soft"
+    assert response.json()["enforcement_mode"] == "hard"
     rows = await stored_caps(session)
-    assert rows[0].enforcement_mode == "soft"
+    assert rows[0].enforcement_mode == "hard"
 
 
-async def test_t7b_platform_admin_authored_cap_is_also_soft(session, seeded):
-    """A platform admin cannot author an enforcing person cap either.
+async def test_t7b_platform_admin_authored_cap_is_also_enforcing(session, seeded):
+    """A platform admin's cap enforces too — §4.2's second author.
 
-    Their extra authority is over *whose* cap they may set, not over whether it
-    enforces — nothing reads this table for enforcement yet, so a ``hard`` row from
-    any author would be a false promise.
+    They already hold cross-org authority by design, which is why they are the one
+    other party permitted to author a partition-free cap at all.
     """
     async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
         response = await client.put(f"/budget/person-cap/{PERSON_ANCHOR}", json={"budget_amount_usd": "20.00"})
 
-    assert response.json()["enforcement_mode"] == "soft"
+    assert response.json()["enforcement_mode"] == "hard"
     rows = await stored_caps(session)
-    assert rows[0].enforcement_mode == "soft"
+    assert rows[0].enforcement_mode == "hard"
 
 
 @pytest.mark.parametrize("path", ["/me/budget/person-cap", f"/budget/person-cap/{PERSON_ANCHOR}"])
 async def test_t7c_enforcement_mode_is_not_client_settable(session, seeded, path):
-    """A request asking for ``hard`` does not get it — on either route.
+    """A request asking for ``soft`` does not get it — on either route.
 
     The field is absent from the request model, so an extra key is ignored rather
-    than honoured. Asserted rather than assumed: this is the one property that
-    keeps this unit inside its stated scope, and "the model doesn't have the field"
-    is exactly the kind of protection a later convenience change removes.
+    than honoured. Still asserted after #4630 flipped the written value, and the
+    direction of the attempt is deliberately inverted with it: the thing a client
+    might now want to smuggle in is a cap that does NOT enforce, which would be a
+    limit somebody believes is stopping their spend while nothing does (#4511).
     """
     context = context_for(PLATFORM_ADMIN_SUB, is_admin=True) if path.startswith("/budget") else context_for(PERSON_SUB)
 
     async with client_for(session, context) as client:
-        response = await client.put(path, json={"budget_amount_usd": "20.00", "enforcement_mode": "hard"})
+        response = await client.put(path, json={"budget_amount_usd": "20.00", "enforcement_mode": "soft"})
 
     assert response.status_code == 200, response.text
-    assert response.json()["enforcement_mode"] == "soft"
+    assert response.json()["enforcement_mode"] == "hard"
     rows = await stored_caps(session)
-    assert [row.enforcement_mode for row in rows] == ["soft"]
+    assert [row.enforcement_mode for row in rows] == ["hard"]
+
+
+async def test_t7d_resaving_a_c3_era_soft_row_upgrades_it_to_enforcing(session, seeded):
+    """Re-authoring is the documented flag-day remediation (#4630).
+
+    C3-era rows are deliberately NOT converted on deploy: that UI told the person in
+    as many words that "requests are not blocked", and silently turning the number
+    they typed into a denial breaks the promise the screen made. Re-saving is the
+    person restating the limit against copy that now says it enforces — one click,
+    no amount change needed.
+    """
+    session.add(
+        PersonBudgetConfig(
+            person_anchor=PERSON_ANCHOR,
+            period_type="monthly",
+            budget_amount_usd=Decimal("20.00"),
+            enforcement_mode="soft",
+            authored_by_user_id=PERSON_CANONICAL,
+        )
+    )
+    await session.commit()
+
+    async with client_for(session, context_for(PERSON_SUB)) as client:
+        response = await client.put("/me/budget/person-cap", json={"budget_amount_usd": "20.00"})
+
+    assert response.json()["enforcement_mode"] == "hard"
+    rows = await stored_caps(session)
+    assert len(rows) == 1, "re-authoring updates in place; it must not create a second row"
+    assert rows[0].enforcement_mode == "hard"
 
 
 # ===========================================================================
@@ -1059,3 +1098,44 @@ async def test_over_range_amount_is_a_422_not_a_db_overflow(session, seeded):
         response = await client.put("/me/budget/person-cap", json={"budget_amount_usd": "99999999999.00"})
     assert response.status_code == 422
     assert await stored_caps(session) == []
+
+
+async def test_two_github_rows_author_and_enforce_under_the_same_anchor(session, seeded):
+    """A person with TWO linked GitHub rows gets ONE deterministic anchor everywhere.
+
+    Review fix on #4661: ``user_identities`` has no unique constraint on
+    ``(user_id, provider)``, and authoring and enforcement each picked a row with
+    an unordered ``LIMIT 1`` — two independent picks that can disagree, storing a
+    cap under ``github:A`` that enforcement looks up as ``github:B`` (an inert
+    hard cap, the #4511 class). Both sides now order by ``provider_user_id``;
+    this pins that the ROUTE-stored anchor equals the ENFORCEMENT-side
+    resolution for the same person.
+    """
+    from src.budget.me_routes import _resolve_person_anchor_id
+    from src.shared.models.vault import UserIdentity
+
+    # A second, later-linked GitHub account for the same person. Its id sorts
+    # AFTER the seeded one, so an unordered pick could return either.
+    session.add(
+        UserIdentity(
+            user_id=PERSON_CANONICAL,
+            org_id=ORG_ID,
+            team_id=TEAM_ID,
+            provider=IdentityProvider.github.value,
+            provider_user_id="99999999",
+            provider_username="second-account",
+            verification_method="admin_link",
+        )
+    )
+    await session.commit()
+
+    async with client_for(session, context_for(PERSON_SUB)) as client:
+        response = await client.put("/me/budget/person-cap", json={"budget_amount_usd": "42.00"})
+    assert response.status_code == 200
+
+    stored_anchor = (await stored_caps(session))[0].person_anchor
+    enforcement_anchor_id = await _resolve_person_anchor_id(session, PERSON_CANONICAL)
+
+    assert stored_anchor == f"github:{enforcement_anchor_id}", (
+        "authoring and enforcement resolved DIFFERENT anchors for one person — the cap is inert"
+    )

@@ -594,6 +594,29 @@ async def _read_cap(
 # home-org admin).
 
 
+async def _resolve_person_anchor_id(db: AsyncSession, canonical_user_id: str) -> str | None:
+    """The caller's GitHub anchor id, resolved DETERMINISTICALLY.
+
+    ``user_identities`` has no unique constraint on ``(user_id, provider)``, so a
+    person can legitimately hold two GitHub rows (admin-linked second account).
+    An unordered ``LIMIT 1`` here and an independent unordered pick on the
+    authoring side can each choose a DIFFERENT row — a cap stored under
+    ``github:A`` that enforcement looks up as ``github:B``: the #4511 inert-cap
+    class (review fix on #4661). Every anchor pick — this one, the authoring
+    resolver in ``shared/identity/person_anchor.py``, and the enforcement layer —
+    must order identically; ``provider_user_id`` ascending is the convention.
+    """
+    return await db.scalar(
+        select(UserIdentity.provider_user_id)
+        .where(
+            UserIdentity.user_id == canonical_user_id,
+            UserIdentity.provider == IdentityProvider.github,
+        )
+        .order_by(UserIdentity.provider_user_id)
+        .limit(1)
+    )
+
+
 async def _resolve_person_identity(db: AsyncSession, canonical_user_id: str) -> tuple[str, list[str]]:
     """Fuse the caller's ``users.id`` rows across tenants, and name the anchor (§3.3).
 
@@ -618,12 +641,7 @@ async def _resolve_person_identity(db: AsyncSession, canonical_user_id: str) -> 
         identity that fails to resolve can never *shrink* the read below what the
         single-partition path already covers.
     """
-    anchor_id = await db.scalar(
-        select(UserIdentity.provider_user_id).where(
-            UserIdentity.user_id == canonical_user_id,
-            UserIdentity.provider == IdentityProvider.github,
-        )
-    )
+    anchor_id = await _resolve_person_anchor_id(db, canonical_user_id)
     if not anchor_id:
         return f"users:{canonical_user_id}", [canonical_user_id]
 

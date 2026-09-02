@@ -8,11 +8,25 @@ belongs to a tenant, so a cap authored in one partition caps nothing that execut
 in another (#4620). This router is the authoring surface for
 ``person_budget_configs``, the partition-free table that fixes that.
 
-**Soft / informational ONLY.** Nothing here denies anything, and nothing in the
-enforcement path or the reservation keys is touched. ``enforcement_mode`` is
-written as ``soft`` and is not client-settable; ``hard`` requires the §5.7 ruling
-and lands with C4 (#4630). A surface rendering these figures must not tell a user
-their spend will be stopped.
+**Enforcing since C4 (#4630).** A cap authored here now DENIES: the ruling on
+§5.7 landed, and ``BudgetEnforcementService._check_person_budget`` reads this table
+against a cross-org settled denominator, so the limit stops the person's agents in
+every org they run in. ``enforcement_mode`` is written ``hard`` and remains
+non-client-settable.
+
+Two properties of that enforcement matter to anyone reading a figure from here:
+
+* **The denominator is the settled ledger, so the cap is a bounded ceiling, not an
+  atomic one.** No reservation key is taken for the person layer — a person key
+  cannot carry the ``{org_id}`` Redis Cluster hash tag the atomic Lua needs
+  (§5.5), and the #4620 ruling forbids a second non-atomic call. The overshoot
+  bound is stated in ``docs/budget-ratelimit.md``.
+* **Rows authored before C4 keep their stored ``soft`` mode and stay
+  informational.** C3's UI promised those users that requests would not be
+  blocked; converting the row on deploy would break that promise silently.
+  Re-authoring (the ``PUT`` upsert) writes ``hard``.
+
+Per-org caps are untouched by all of this and remain independently authoritative.
 
 **Why a fourth budget router.** ``src/budget/routes.py`` reads
 ``entity_type``/``entity_id`` unscoped from the request and is open IDOR #4384, so
@@ -103,11 +117,19 @@ logger = logging.getLogger("bedrockgateway.budget")
 # do not.
 router = APIRouter(tags=["budget"])
 
-# The person layer is informational in this unit: the figure is reported and
-# nothing is denied. Written as a constant rather than relying on the column
-# default so the value is visible at the write site — the ONE thing a reviewer of
-# this unit needs to confirm is that no code path here writes `hard`.
-_SOFT_MODE = "soft"
+# Issue #4630 (C4) flipped this from `soft` to `hard`. C3 pinned it to `soft`
+# because nothing read the table; `_check_person_budget` now does, so a cap
+# authored here denies in every org the person's agents run in (note §5.3).
+#
+# Still NOT client-settable, and the reason is the §5.6 opt-in structure rather
+# than caution: the person authoring a limit on their own agents IS the opt-in,
+# and the platform admin is the only other party §4.2 permits. There is no third
+# author for whom a mode choice would mean anything, so exposing the column would
+# add a way to author an inert cap and nothing else.
+#
+# Written as a constant rather than relying on the column default so the value is
+# visible at the write site — the one thing a reviewer of this unit checks.
+_ENFORCING_MODE = "hard"
 
 # Calendar periods only. A run/chain cap is lifetime-scoped and has no calendar
 # window (`budget/utils.get_period_start_end` raises for them), so there is no
@@ -193,7 +215,7 @@ async def _upsert_cap(
             person_anchor=person_anchor,
             period_type=period_type,
             budget_amount_usd=amount,
-            enforcement_mode=_SOFT_MODE,
+            enforcement_mode=_ENFORCING_MODE,
             authored_by_user_id=authored_by_user_id,
         )
         db.add(row)
@@ -213,11 +235,21 @@ async def _upsert_cap(
                 # The violation was not this race; let the fault mapping have it.
                 raise
             row.budget_amount_usd = amount
+            row.enforcement_mode = _ENFORCING_MODE
             row.authored_by_user_id = authored_by_user_id
             row.updated_at = datetime.now(UTC)
             await db.commit()
     else:
         row.budget_amount_usd = amount
+        # Issue #4630: re-authoring upgrades a C3-era `soft` row to enforcing.
+        #
+        # This is the documented one-click remediation for the flag day, and the
+        # reason those rows are NOT converted on deploy: C3's shipped UI told the
+        # person in as many words that "requests are not blocked" when they typed
+        # the number. Silently converting that row into a denial breaks the promise
+        # the screen made. Re-saving is the person restating the limit against the
+        # current copy, which now says it enforces.
+        row.enforcement_mode = _ENFORCING_MODE
         # Re-stamped on every re-author: the audit question is who set the limit
         # that is in force now, not who set the first one ever.
         row.authored_by_user_id = authored_by_user_id
@@ -308,12 +340,17 @@ async def put_my_person_cap(
     authentication: the person is bounding the spend of agents they set in motion,
     exercising no authority over any tenant. §4.2's first row.
 
-    **Informational only in this unit.** The row is written ``soft``: the figure is
-    reported and nothing is denied. Enforcement is C4 (#4630), gated on the §5.7
-    ruling, so no copy on any surface reading this may say spend will be stopped.
+    **This limit ENFORCES (#4630).** The row is written ``hard``: the person's
+    agents are denied in every org they run in once the cross-org settled total
+    passes it. Authoring it is the §5.6 opt-in — the person choosing to be stopped,
+    which is why self-authorship is what makes a denying cross-org cap legitimate.
+    The ceiling is bounded rather than atomic (settled denominator, §5.5); see
+    ``docs/budget-ratelimit.md`` for the overshoot bound.
 
     Idempotent: re-authoring replaces the amount in place, keeping the row's ``id``
-    and ``created_at``.
+    and ``created_at``. Re-authoring a C3-era ``soft`` row also upgrades it to
+    ``hard`` — the documented remediation for limits typed under the old
+    "requests are not blocked" copy.
 
     Returns:
         ``200`` with the stored limit.
@@ -448,9 +485,9 @@ async def put_person_cap(
     match a settled ledger row, so it would display a limit and govern nothing
     (#4511).
 
-    Written ``soft``, exactly as the self path — a platform admin cannot author an
-    enforcing person-level cap in this unit either, because no enforcement reads
-    this table yet (C4 / #4630).
+    Written ``hard``, exactly as the self path (#4630): this cap denies the
+    person's agents in every org they run in. The platform admin is the one other
+    party §4.2 permits to author it, holding cross-org authority by design.
 
     Raises:
         HTTPException:

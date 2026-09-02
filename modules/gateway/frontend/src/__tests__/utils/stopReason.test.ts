@@ -39,13 +39,30 @@ describe('describeStopReason', () => {
     expect(prose).not.toMatch(/organization/i);
   });
 
-  it('keeps all three cap scopes distinct from one another', () => {
-    // Four enums, four sentences. A copy-paste that reused the chain wording for
+  it('gives the person cap prose that does NOT send the reader to an admin (#4630)', () => {
+    // The fourth scope, and the only one no administrator can raise: this is the
+    // ceiling the person set on their own total spend across every organization.
+    // Rendering it with the hierarchy sentence — or letting it fall through to the
+    // humanized enum, which names no owner at all — sends them to ask somebody who
+    // is powerless to help, which is worse than saying nothing.
+    const prose = describeStopReason('person_cap_exceeded');
+    expect(prose).not.toBeNull();
+    expect(prose).not.toBe('Person cap exceeded');
+    expect(prose).toMatch(/your own/i);
+    // The remedy is their own settings, so the prose must not tell them to ask an
+    // administrator the way every other cap's prose does.
+    expect(prose).toMatch(/no administrator/i);
+    expect(prose).not.toBe(describeStopReason('hierarchy_cap_exceeded'));
+    expect(prose).not.toBe(describeStopReason('root_user_cap_exceeded'));
+  });
+
+  it('keeps all four cap scopes distinct from one another', () => {
+    // Five enums, five sentences. A copy-paste that reused the chain wording for
     // the new scope would still satisfy the assertions above.
-    const prose = ['run_cap_exceeded', 'chain_cap_exceeded', 'root_user_cap_exceeded', 'hierarchy_cap_exceeded'].map(
+    const prose = ['run_cap_exceeded', 'chain_cap_exceeded', 'root_user_cap_exceeded', 'person_cap_exceeded', 'hierarchy_cap_exceeded'].map(
       (r) => describeStopReason(r),
     );
-    expect(new Set(prose).size).toBe(4);
+    expect(new Set(prose).size).toBe(5);
   });
 
   it('names the administrator for a hierarchy cap', () => {

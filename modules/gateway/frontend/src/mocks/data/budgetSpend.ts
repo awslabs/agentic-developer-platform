@@ -245,10 +245,11 @@ export const mockBudgetRuns: BudgetRunsResponse = {
 //   - `cap_usd` at **2dp** as a **string** (`NUMERIC(10,2)`, contract rule 1)
 //   - the uncapped shape carries `cap_usd: null` and `enforcement_mode: null` —
 //     NOT `'0.00'`, because "no limit" and "a limit of zero" are different states
-//   - `enforcement_mode: 'soft'`, the only value this release can write: the
-//     person layer is informational and enforcement is #4630
+//   - both `enforcement_mode` values, because the API returns both: #4630 made the
+//     layer enforce and writes `hard`, but rows authored under C3 keep the `soft`
+//     they were saved with until the person re-saves, so the UI has to render each
 
-/** A person with a limit set. `PersonCapResponse`. */
+/** A person with a C3-era informational limit — still `soft` until re-saved (#4630). */
 export const mockPersonCap: PersonCapResponse = {
   // `github:<numeric_id>`, not a `users.id` — see the type's own comment.
   person_anchor: 'github:5550001',
@@ -257,6 +258,16 @@ export const mockPersonCap: PersonCapResponse = {
   cap_status: 'capped',
   enforcement_mode: 'soft',
   updated_at: '2026-08-30T12:00:00Z',
+};
+
+/** A person with an ENFORCING limit — what #4630 writes on every save. */
+export const mockPersonCapEnforcing: PersonCapResponse = {
+  person_anchor: 'github:5550001',
+  period_type: 'monthly',
+  cap_usd: '250.00',
+  cap_status: 'capped',
+  enforcement_mode: 'hard',
+  updated_at: '2026-09-01T12:00:00Z',
 };
 
 /** A person with NO limit set. `cap_usd` is `null`, never `'0.00'`. */

@@ -302,7 +302,7 @@ export default function BudgetSpend() {
           separate fetch with its own loading and error states, so an outage on the
           org-scoped envelope must not hide the control a person uses to set their
           own limit. And it comes AFTER the figures above rather than before them:
-          this limit is informational (enforcement is #4630) while the binding line
+          a pre-C4 `soft` limit is informational while the binding line
           above is what will actually stop them, so giving the soft figure visual
           primacy over the enforcing one would invert what a reader should act on. */}
       <PersonSpendingLimit period={period} />

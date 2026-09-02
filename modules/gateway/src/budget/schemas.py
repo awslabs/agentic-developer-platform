@@ -1217,9 +1217,13 @@ class PersonCapResponse(BaseModel):
     )
     enforcement_mode: str | None = Field(
         description=(
-            "`soft` — informational only: the figure is reported and nothing is "
-            "denied. `null` when uncapped. A client MUST NOT tell a user their spend "
-            "will be stopped while this is `soft`."
+            "`hard` — every write since C4 (#4630): the limit DENIES attributed "
+            "agent requests across every organization once the settled cross-org "
+            "total passes it. `soft` — a row authored before C4, still "
+            "informational until re-saved (nothing is denied). `null` when "
+            "uncapped. A client MUST render `soft` as not-enforcing and `hard` as "
+            "enforcing; claiming either the other way is the screen/behavior "
+            "disagreement #4620 exists to close."
         ),
     )
     updated_at: str | None = Field(

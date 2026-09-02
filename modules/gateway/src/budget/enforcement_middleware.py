@@ -264,8 +264,8 @@ class BudgetEnforcementMiddleware:
             "details": {
                 "entity_type": (result.exceeded_entity_type.value if result.exceeded_entity_type else None),
                 "entity_id": result.exceeded_entity_id,
-                "budget_usd": (float(result.budget_amount_usd) if result.budget_amount_usd else None),
-                "spent_usd": (float(result.current_spend_usd) if result.current_spend_usd else None),
+                "budget_usd": (float(result.budget_amount_usd) if result.budget_amount_usd is not None else None),
+                "spent_usd": (float(result.current_spend_usd) if result.current_spend_usd is not None else None),
                 "enforcement_mode": (result.enforcement_mode.value if result.enforcement_mode else None),
             },
         }

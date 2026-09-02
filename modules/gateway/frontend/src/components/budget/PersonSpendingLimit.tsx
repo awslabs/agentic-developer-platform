@@ -9,11 +9,13 @@
  *
  * Three copy rules, each load-bearing rather than stylistic:
  *
- * 1. **It never says spend will be stopped.** The limit is informational in this
- *    release — the figure is reported and nothing is denied (enforcement is
- *    #4630). The same rule the shadow-mode banner follows for the same reason: a
- *    screen that threatens a consequence it cannot deliver trains users to
- *    disbelieve the screen.
+ * 1. **What it says about stopping matches what the stored row actually does.**
+ *    Since #4630 a `hard` row denies, so it says so; a `soft` row (authored under
+ *    C3, before enforcement shipped) still does not, so it still says it does not.
+ *    Both directions are the same rule: a screen that threatens a consequence it
+ *    cannot deliver trains users to disbelieve it, and a screen that silently
+ *    acquires a consequence it never mentioned is the same defect mirrored. The
+ *    mode is read from the row, never assumed.
  * 2. **No limit is stated as no limit, never as $0.00.** `cap_status` is read
  *    directly; a zero would render a person who may spend nothing, which is the
  *    opposite of the truth.
@@ -84,8 +86,31 @@ export function validateCapAmount(raw: string): string | null {
 function InformationalNotice() {
   return (
     <p className="text-sm text-blue-800 dark:text-blue-200" data-testid="person-cap-informational">
-      This limit is informational for now: your spend is measured and reported against it, but requests are not blocked when it is passed. Use it
-      to keep track of your own total.
+      This limit is informational: your spend is measured and reported against it, but requests are not blocked when it is passed. Save it again to
+      start enforcing it.
+    </p>
+  );
+}
+
+/**
+ * The enforcing-mode notice (#4630).
+ *
+ * Rule 1 above cut both ways and this is the other half of it: C3's rule was
+ * "never claim spend will be stopped while nothing stops it", and a cap that now
+ * stops spend while the screen stays silent is the same defect mirrored. A person
+ * whose agents halt mid-run needs to have been told here that this number does
+ * that.
+ *
+ * It also states the bound rather than promising a hard stop, because the
+ * denominator is the settled ledger: spend already incurred but not yet settled is
+ * not visible to the check, so a little overshoot is expected and saying otherwise
+ * would be the screen over-claiming again.
+ */
+function EnforcingNotice() {
+  return (
+    <p className="text-sm text-amber-800 dark:text-amber-200" data-testid="person-cap-enforcing">
+      This limit is enforced: once your total agent spend across every organization passes it, your agent runs are stopped until the period resets
+      or you raise the limit. Spend that has not finished being metered yet is not counted, so the stop can land slightly over the number.
     </p>
   );
 }
@@ -226,6 +251,7 @@ export function PersonSpendingLimit({ period }: { period: BudgetPeriodType }) {
             </div>
 
             {cap.cap_status === 'capped' && cap.enforcement_mode === 'soft' && <InformationalNotice />}
+            {cap.cap_status === 'capped' && cap.enforcement_mode === 'hard' && <EnforcingNotice />}
 
             {editing ? (
               <div className="space-y-3">

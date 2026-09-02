@@ -26,6 +26,12 @@ const STOP_REASON_TEXT: Record<string, string> = {
     'This run and the runs it spawned together reached the per-chain spend cap, so the chain was stopped.',
   root_user_cap_exceeded:
     'Everything you have set in motion this period — this run and the agents it spawned — reached your personal spend budget, so this run was stopped. An administrator can raise your budget.',
+  // Distinct from `root_user_cap_exceeded` in the one way that matters to the
+  // reader: this is the limit they set on themselves, across every organization,
+  // so the remedy is their own settings page and NOT an administrator. Telling
+  // them to ask an admin would send them to somebody who cannot raise it (#4630).
+  person_cap_exceeded:
+    'Your own spending limit — the ceiling you set on your total agent spend across every organization you work in — was reached, so this run was stopped. You can change or remove it on your budget page; no administrator can raise it for you.',
   hierarchy_cap_exceeded:
     'Your organization, team, or user budget is exhausted, so this run was stopped. An administrator can raise it.',
   budget_cap_exceeded: 'A spend cap was reached, so this run was stopped.',
