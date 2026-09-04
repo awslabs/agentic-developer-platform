@@ -37,6 +37,7 @@ from src.auth.magic_link import (
 from src.shared.config import get_settings
 from src.shared.models.vault import MagicLinkNonce
 
+from .bot_identity import seed_bot_identity
 from .github_app_provider import get_github_app_provider
 from .github_client import GitHubAppClient
 from .schemas import (
@@ -676,6 +677,18 @@ async def install_callback(
         org_id=resolved_org_id,
     )
 
+    # Seed the platform App's own bot identity so the webhook Lambda
+    # recognizes its sender (e.g. the agent editing its own status comment)
+    # instead of 403'ing as unknown_user. Best-effort — never blocks install.
+    app_slug = get_github_app_provider().get_slug()
+    if app_slug:
+        await seed_bot_identity(
+            org_id=resolved_org_id,
+            app_slug=app_slug,
+            github_client=github_client,
+            db=db,
+        )
+
     # Issue #4016: the verification card must reflect the install immediately,
     # not after the 60s TTL — an operator who just installed and clicks through
     # to Settings would otherwise see stale reds for work that just succeeded.
@@ -1004,6 +1017,17 @@ async def _handle_no_nonce_install(
                 installation_id=installation_id,
                 org_id=resolved_org_id,
             )
+
+            # Same best-effort bot-identity seed as the nonce path (install_callback) —
+            # see its call site for why this matters.
+            app_slug = get_github_app_provider().get_slug()
+            if app_slug:
+                await seed_bot_identity(
+                    org_id=resolved_org_id,
+                    app_slug=app_slug,
+                    github_client=github_client,
+                    db=db,
+                )
 
     # -----------------------------------------------------------------------
     # Issue #4016 (🔴-3): report the OUTCOME, not the fact that we ran.

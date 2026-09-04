@@ -235,5 +235,24 @@ class GitHubAppClient:
             )
         return resp.status_code == 204
 
+    async def get_bot_user(self, bot_login: str) -> dict[str, Any]:
+        """Fetch the numeric GitHub user id for a bot login (e.g. ``my-app[bot]``).
+
+        Every GitHub App has an associated bot user at ``<slug>[bot]``, but its
+        numeric id is not returned by the app-manifest conversion or the
+        installation callback — a follow-up lookup is unavoidable. Uses app-JWT
+        auth (rather than an anonymous call) so it draws from the App's own
+        rate limit instead of the shared anonymous one.
+
+        Returns the raw GitHub API response dict, e.g. ``{"id": 317952797,
+        "login": "my-app[bot]", "type": "Bot", ...}``.
+        """
+        resp = await self._http_client.get(
+            f"/users/{bot_login}",
+            headers=self._auth_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def aclose(self) -> None:  # pragma: no cover
         await self._http_client.aclose()
