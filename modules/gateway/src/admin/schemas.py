@@ -123,6 +123,23 @@ class BudgetConfigResponse(BaseModel):
     budget_amount_usd: Decimal
     enforcement_mode: str
     updated_at: datetime
+    # Issue #4669: an ADVISORY sentence about the cap that was just written — never a
+    # reason it was refused. A `root_user` cap authored in a partition where the
+    # person's agent runs do not bill is inert: it displays, it validates, and it will
+    # never see a dollar (#4620). The operator finds that out weeks later, from spend
+    # that never stopped. So the create path says so at the moment of authoring.
+    #
+    # It is a field on the 201 rather than a 4xx on purpose. Which partition a
+    # person's runs bill to can change, an org admin may legitimately want the cap in
+    # place before it does, and this check reads a foreign tenant's ledger — a
+    # cross-tenant read must not be able to VETO a write inside this tenant.
+    #
+    # `None` by default, so every existing caller, transform and test that never saw
+    # this field is unaffected.
+    advisory: str | None = Field(
+        None,
+        description="Advisory warning about the created budget. Never a rejection — the budget was created.",
+    )
 
 
 class BudgetConfigUpdateRequest(BaseModel):

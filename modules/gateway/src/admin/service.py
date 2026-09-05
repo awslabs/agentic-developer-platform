@@ -2018,6 +2018,61 @@ class AdminService:
             budget_amount_usd=budget.budget_amount_usd,
             enforcement_mode=budget.enforcement_mode,
             updated_at=budget.updated_at,
+            # Deliberately computed AFTER the commit: the cap exists either way, and
+            # an advisory is a sentence about a write that already happened.
+            advisory=await self._mis_partitioned_cap_advisory(org_id, budget.entity_type, budget.entity_id),
+        )
+
+    async def _mis_partitioned_cap_advisory(self, org_id: str, entity_type: str, entity_id: str) -> str | None:
+        """Warn when a cloud-agent cap was authored where the person's spend does not land.
+
+        Issue #4669. Only `root_user` caps can have this defect: they are keyed by
+        canonical `users.id` and a person can hold a different one per tenant, so the
+        cap and the accrual can end up in different partitions (#4620). Every other
+        entity type is scoped to the partition it was written in by construction.
+
+        **Never raises, and never blocks.** Two independent reasons, and both are
+        requirements rather than caution:
+
+        - The budget is already committed. Letting this read fail the request would
+          report a successful create as an error, and the operator would author it
+          again — reaching a 409 for a row they were told did not exist.
+        - The check reads a foreign tenant's ledger. A cross-tenant read must not be
+          able to veto a write inside this tenant, so its failure mode is "no advice",
+          never "no cap".
+
+        `except Exception` rather than a fault tuple for exactly that reason: the
+        distinction between an outage and a code defect matters to the log, not to the
+        caller — every outcome here is still a 201 with the cap in place.
+        """
+        if entity_type != "root_user":
+            return None
+
+        # Local import, matching `budget_helper.py` and the `src.budget.utils` import
+        # above: importing `src.budget` at module scope pulls in
+        # `src.budget.__init__` -> routes -> `src.auth`. `person_accrual` is a leaf
+        # module precisely so this import stays cheap (#4669).
+        from src.budget.person_accrual import count_foreign_accrual_partitions
+
+        try:
+            partitions = await count_foreign_accrual_partitions(self.db, org_id, entity_id)
+        except Exception:
+            logger.warning(
+                "Could not check where cloud-agent spend accrues for the budget just created; returning it without an advisory",
+                exc_info=True,
+            )
+            return None
+
+        if partitions == 0:
+            return None
+
+        # The COUNT only — never which workspaces, never their figures. The author is
+        # an admin of this tenant with no authority to learn the others (design note
+        # `4620-cross-org-person-budgets.md` §7.2).
+        workspaces = "workspace" if partitions == 1 else "workspaces"
+        return (
+            f"This person's agent spend currently accrues in {partitions} other {workspaces}, not here. "
+            "This cap governs only the spend that bills to this workspace, so it may never be reached."
         )
 
     async def delete_budget(self, org_id: str, entity_type: str, entity_id: str, period_type: str) -> bool:

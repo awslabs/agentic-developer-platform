@@ -82,7 +82,6 @@ from src.admin.config import AdminRole, Permission, get_admin_config
 from src.admin.exceptions import AccessDeniedError, InvalidScopeError
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
-from src.shared.identity.providers import IdentityProvider
 from src.shared.models.budget import BudgetConfig, BudgetUsage
 from src.shared.models.organization import User
 from src.shared.schemas.auth import TokenContext
@@ -90,6 +89,12 @@ from src.shared.schemas.budget import EntityType
 
 from .enforcement_service import _INFRASTRUCTURE_FAULTS
 from .me_routes import _principal_kind_for
+
+# Issue #4669: the accrues-elsewhere predicate moved to `person_accrual.py` when the
+# budget create path needed the same question answered at write time. Imported, not
+# re-implemented — two definitions of "this person accrues elsewhere" would drift
+# into a report and a warning that disagree about the same row.
+from .person_accrual import keys_accruing_elsewhere, person_ledger_keys
 from .schemas import CAP_PLACES, SERVICE_PRINCIPAL_QUALIFIER, MisPartitionedCapReport, MisPartitionedCapRow, format_money
 
 logger = logging.getLogger("bedrockgateway.budget")
@@ -256,112 +261,6 @@ async def _read_dormant_root_user_caps(db: AsyncSession, org_id: str) -> list[Bu
     return list((await db.execute(stmt)).scalars().all())
 
 
-async def _person_ledger_keys(db: AsyncSession, org_id: str, entity_ids: list[str]) -> dict[str, set[str]]:
-    """Map each cap's ``entity_id`` to **every** ledger key the same person uses.
-
-    §3.3 and §11 caveat 3 of the note, and the reason this function exists at all:
-    a person is *normally* one ``users`` row, so the cap's key and the foreign
-    partition's accrual key are the same string. But ``users`` carries
-    ``TenantMixin``, and someone independently onboarded into two orgs **can** have
-    two ``users`` rows and therefore two ``root_user`` keys (see
-    ``tests/shared/test_resolve_root_user_entity_id.py``, where one GitHub account
-    has distinct ids per org). Comparing ``entity_id`` alone would silently miss
-    exactly the multi-org population this report is for.
-
-    The join key is the **GitHub numeric id** (``user_identities.provider_user_id``),
-    the note's person anchor. Two hops:
-
-    1. In-partition: the cap's ``users.id`` -> its GitHub anchor. Scoped to
-       ``org_id``, because the anchor belongs to the row that authored the cap.
-    2. Cross-partition: that anchor -> every ``users.id`` linked to it in **any**
-       tenant. This hop is deliberately unscoped; it is the only cross-partition
-       read on this router, it returns identifiers rather than figures, and it is
-       what the note's aggregate model is built on (§7.3).
-
-    Only ``github`` identities are followed. The note names the GitHub numeric id
-    as *the* anchor; widening to every provider would join people through, say, a
-    shared Slack workspace id and could fuse two different humans into one row.
-
-    Returns:
-        ``{entity_id: {ledger keys for that person}}``, always including the
-        ``entity_id`` itself — so a cap with no linked identity still gets the
-        single-``users``-row comparison, which is the common case.
-    """
-    # Imported here, not at module scope: `src.shared.models.vault` imports
-    # `src.shared.identity.providers`, and a top-level import makes the models
-    # package circular at collection time (the same note as in
-    # `shared/identity/resolver._resolve_via_github_identity`).
-    from src.shared.models.vault import UserIdentity
-
-    keys: dict[str, set[str]] = {entity_id: {entity_id} for entity_id in entity_ids}
-
-    # A `service:`-qualified principal has no `users` row by design (#4344), so it
-    # has no anchor to follow and is compared on its own id alone.
-    resolvable = [entity_id for entity_id in entity_ids if not entity_id.startswith(SERVICE_PRINCIPAL_QUALIFIER)]
-    if not resolvable:
-        return keys
-
-    anchor_rows = (
-        await db.execute(
-            select(UserIdentity.user_id, UserIdentity.provider_user_id).where(
-                UserIdentity.org_id == org_id,
-                UserIdentity.provider == IdentityProvider.github,
-                UserIdentity.user_id.in_(resolvable),
-            )
-        )
-    ).all()
-    if not anchor_rows:
-        return keys
-
-    anchors = {provider_user_id for _, provider_user_id in anchor_rows}
-    sibling_rows = (
-        await db.execute(
-            select(UserIdentity.provider_user_id, UserIdentity.user_id).where(
-                UserIdentity.provider == IdentityProvider.github,
-                UserIdentity.provider_user_id.in_(anchors),
-            )
-        )
-    ).all()
-
-    siblings_by_anchor: dict[str, set[str]] = {}
-    for provider_user_id, user_id in sibling_rows:
-        siblings_by_anchor.setdefault(provider_user_id, set()).add(user_id)
-
-    for entity_id, provider_user_id in anchor_rows:
-        keys[entity_id] |= siblings_by_anchor.get(provider_user_id, set())
-
-    return keys
-
-
-async def _keys_accruing_elsewhere(db: AsyncSession, org_id: str, candidate_keys: set[str]) -> set[str]:
-    """Which of these ledger keys have a settled ``root_user`` accrual OUTSIDE ``org_id``?
-
-    One batched existence query for the whole report, and it returns **keys only**
-    — never the foreign ``org_id`` and never the foreign figure. That is the §7.2
-    boundary expressed in the return type: the caller of this function has nothing
-    to leak because it was never given anything to leak.
-
-    No ``period_type`` and no ``period_start`` filter, on purpose. The question is
-    "does this person's spend land in a different partition *at all*", which is
-    what makes the cap unmatched-by-construction rather than unmatched-this-month.
-    A period filter would report a cap as merely dormant on the strength of one
-    quiet window.
-    """
-    if not candidate_keys:
-        return set()
-
-    rows = await db.execute(
-        select(BudgetUsage.entity_id)
-        .where(
-            BudgetUsage.entity_type == EntityType.ROOT_USER.value,
-            BudgetUsage.entity_id.in_(candidate_keys),
-            BudgetUsage.org_id != org_id,
-        )
-        .distinct()
-    )
-    return set(rows.scalars().all())
-
-
 async def _display_names(db: AsyncSession, org_id: str, entity_ids: list[str]) -> dict[str, str]:
     """Name the caps' principals from ``users``, org-scoped.
 
@@ -413,8 +312,8 @@ async def get_mis_partitioned_cap_report(
     try:
         caps = await _read_dormant_root_user_caps(db, org_id)
         entity_ids = sorted({cap.entity_id for cap in caps})
-        person_keys = await _person_ledger_keys(db, org_id, entity_ids)
-        elsewhere = await _keys_accruing_elsewhere(db, org_id, {key for keys in person_keys.values() for key in keys})
+        person_keys = await person_ledger_keys(db, org_id, entity_ids)
+        elsewhere = await keys_accruing_elsewhere(db, org_id, {key for keys in person_keys.values() for key in keys})
         names = await _display_names(db, org_id, entity_ids)
     except _INFRASTRUCTURE_FAULTS as exc:
         logger.error("Failed to build the mis-partitioned-cap report; returning 503 rather than an empty report", exc_info=True)
