@@ -735,3 +735,54 @@ export async function getIndexingRunDetail(runId: string): Promise<IndexRunDetai
     })),
   };
 }
+
+/**
+ * The GitHub numeric user id linked to a member, or `null` when none is.
+ *
+ * Issue #4687. Authoring somebody's cross-workspace person limit needs their person
+ * anchor (`github:<numeric id>`), and this is the only client-side way to obtain the
+ * id inside it **from the server**. That "from the server" is the requirement, not a
+ * convenience: the anchor is the key the cap is stored under, so an id derived from
+ * anything the operator typed — or inferred client-side from a display name, an email,
+ * or a `users.id` — produces a row that validates, displays a limit, and is never
+ * matched by the enforcement path (#4511, and #4629's reason for existing at all).
+ *
+ * `users.cognito_username` looks like a shortcut here (`GitHub_<id>` for
+ * GitHub-onboarded members, already on the member-list payload) and is deliberately
+ * NOT used: it is only populated on the admin-invite path, so it is NULL for exactly
+ * the population #4511 affected. `user_identities` is the bridge that is actually
+ * populated, and this endpoint reads it.
+ *
+ * Returns `null` rather than throwing for "no GitHub identity", because that is a
+ * legitimate, permanent state for a member who signed up by email — the caller renders
+ * the same explanation the self-service card uses instead of an error. A transport or
+ * authorization failure still throws: "we could not ask" must not render as "they have
+ * no GitHub account".
+ *
+ * The `/api` prefix is doubled on purpose. This router mounts at
+ * `/api/admin/identity/*` while `apiClient`'s base is already `/api`, so the browser
+ * emits `/api/api/...` and CloudFront strips one segment back to the mount — the same
+ * compensating double prefix `knowledge.ts` uses and the quarantine list in
+ * `tests/test_route_prefix_convention.py` documents. Dropping one `/api` here 404s.
+ */
+// QUARANTINED-DOUBLE-PREFIX-CALLER (#4330 follow-up): this hits the identity
+// router's double-prefix mount (`/api/admin/identity/...` behind CloudFront's
+// stripped `/api`). When the planned remount lands, THIS call site must change
+// in the same commit as the router — grep this marker; the backend
+// route-prefix test's scan does not cover frontend callers (review note on
+// #4688).
+export async function getMemberGithubUserId(userId: string): Promise<string | null> {
+  const response = await apiClient.get<{
+    identities: Array<{ provider: string; provider_user_id: string }>;
+    total: number;
+  }>(`/api/admin/identity/users/${userId}/identities`);
+
+  const identities = Array.isArray(response?.identities) ? response.identities : [];
+  const github = identities.find((i) => i.provider?.toLowerCase() === 'github');
+  // An empty/whitespace `provider_user_id` is treated as "not linked" rather than
+  // passed through: `github:` with nothing after it is precisely one of the three
+  // shapes `parse_person_anchor` rejects, and failing here explains itself while
+  // failing there surfaces as a bare 422.
+  const providerUserId = github?.provider_user_id?.trim();
+  return providerUserId ? providerUserId : null;
+}

@@ -161,6 +161,43 @@ export const adminHandlers = [
     });
   }),
 
+  // A member's linked provider identities — Issue #4687.
+  //
+  // Mocked because setting somebody's person limit needs their GitHub numeric id, and
+  // this endpoint is the only server-side source of it (`user_identities`). Doubled
+  // `/api` in the path because the real router mounts at `/api/admin/identity/*` while
+  // apiClient's base is already `/api` — see the note on `getMemberGithubUserId`.
+  //
+  // The last mock user deliberately has NO github identity, so the "no linked GitHub
+  // identity" branch is reachable in mock mode: that path declines to write a cap, and a
+  // branch nothing can reach is a branch that rots.
+  http.get('/api/api/admin/identity/users/:userId/identities', ({ params }) => {
+    const userId = params.userId as string;
+    if (userId === 'user-dept-admin-001') {
+      return HttpResponse.json({ identities: [], total: 0 });
+    }
+    return HttpResponse.json({
+      identities: [
+        {
+          id: `identity-${userId}`,
+          user_id: userId,
+          org_id: 'org-001',
+          team_id: 'team-001',
+          provider: 'github',
+          // A numeric id, as `user_identities.provider_user_id` carries for GitHub — the
+          // anchor is `github:<this>`, so a non-numeric placeholder here would model a
+          // key the real resolver would reject.
+          provider_user_id: '20402445',
+          provider_username: userId.replace('user-', ''),
+          verification_method: 'oauth',
+          verified_at: '2024-01-01T00:00:00Z',
+          created_at: '2024-01-01T00:00:00Z',
+        },
+      ],
+      total: 1,
+    });
+  }),
+
   // Assignable roles for the current caller.
   // Issue #4019: this used to return a paginated USER list, which matches
   // neither the real endpoint nor either caller (getAvailableRoles and

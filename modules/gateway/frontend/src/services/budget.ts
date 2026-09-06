@@ -161,6 +161,10 @@ export async function createBudget(orgId: string, data: BudgetCreateRequest): Pr
     budget_amount_usd: number;
     enforcement_mode: string;
     updated_at: string;
+    // Issue #4669: present only when the cap just written may never be reached. Read
+    // through to the caller (#4687) — the create path is the one moment the operator
+    // can still choose the control that would actually bind.
+    advisory?: string | null;
   }>(`/admin/organizations/${orgId}/budgets`, data);
   // Transform the response - note: this endpoint returns BudgetConfigResponse
   return {
@@ -172,6 +176,7 @@ export async function createBudget(orgId: string, data: BudgetCreateRequest): Pr
     enforcementMode: response.enforcement_mode as EnforcementMode,
     orgId: response.org_id,
     updatedAt: response.updated_at,
+    advisory: response.advisory ?? null,
   };
 }
 

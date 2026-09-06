@@ -275,6 +275,23 @@ export interface Budget {
   enforcementMode: EnforcementMode;
   orgId: string;
   updatedAt: string;
+  /**
+   * An advisory sentence about the budget that was just created — **never a reason it
+   * was refused** (Issue #4669, surfaced by #4687).
+   *
+   * Populated only on create, and only for a cloud-agent (`root_user`) cap whose
+   * person's agent spend currently accrues in some other workspace: such a cap
+   * validates, displays, and will never see a dollar. The server returns it as a field
+   * on the `201` rather than a `4xx` on purpose — which workspace a person's runs bill
+   * to can change, and an admin may legitimately want the cap in place before it does.
+   *
+   * A surface rendering this MUST NOT treat it as a failure: the budget is already
+   * committed, so undoing or re-submitting on it would report a successful create as an
+   * error and drive the admin into a 409 for a row they were told did not exist.
+   *
+   * `undefined` on every other response, including updates.
+   */
+  advisory?: string | null;
 }
 
 export interface BudgetStatus {

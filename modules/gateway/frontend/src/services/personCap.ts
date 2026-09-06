@@ -6,14 +6,16 @@
  * talks to the partition-free surface, which is what makes "my total" expressible
  * at all (#4620).
  *
- * **Only the self surface is wrapped here.** The platform-admin route
- * (`PUT /budget/person-cap/{anchor}`) exists server-side but has no client
- * function, because no screen in this app authors somebody else's personal limit
- * and adding the wrapper before the screen exists is how a target parameter ends
- * up reachable from a component that should not have one. The self functions below
- * take **no** person argument at any position — the anchor is derived from the
- * caller's token server-side, so server-side scoping is the access control and
- * there is nothing for a caller to pass.
+ * **Two surfaces, deliberately unlike each other.** The self functions
+ * (`getMyPersonCap` / `setMyPersonCap` / `deleteMyPersonCap`) take **no** person
+ * argument at any position — the anchor is derived from the caller's token
+ * server-side, so server-side scoping is the access control and there is nothing
+ * for a caller to pass. `setPersonCapFor` is the targeted platform-admin write and
+ * necessarily does take a person; it landed in #4687, when Budget Management became
+ * the first screen to author somebody else's limit. Before that this file
+ * deliberately had no such wrapper, on the reasoning that a target parameter
+ * reachable from a component that should not have one is how authority leaks — the
+ * wrapper exists now because the screen does, not the other way round.
  *
  * Snake_case wire shapes are kept verbatim (the `budgetSpend.ts` / `runStats.ts`
  * convention for `/me/*`), so the types stay diffable against
@@ -63,4 +65,46 @@ export async function setMyPersonCap(period: BudgetPeriodType, amountUsd: string
 export async function deleteMyPersonCap(period: BudgetPeriodType): Promise<void> {
   const query = buildQueryString({ period_type: period });
   await apiClient.delete<void>(`/me/budget/person-cap${query}`);
+}
+
+/**
+ * Set **another person's** platform-wide limit. Platform admin only — Issue #4687.
+ *
+ * The one targeted write in this file, and the ruling on #4620 §4.2 is what makes it
+ * legitimate: a platform admin already holds cross-org authority by design, so they
+ * are the one party besides the person themselves who may author this row. An org
+ * admin may not, not even for a member of their own org, because the row is
+ * partition-free — it governs the person's spend in every other tenant they work in,
+ * including tenants the org admin has no membership in.
+ *
+ * **The UI gate is not the access control.** `require_platform_admin` on the route is;
+ * this function is callable by anyone who can reach the module, and an org admin who
+ * did would get a `403`. Hiding the option in the form is an affordance that keeps
+ * admins out of a dead end — it must never be mistaken for the boundary, and widening
+ * the UI gate would not widen the authority, it would only produce a 403 the operator
+ * has no way to interpret.
+ *
+ * `anchor` is `github:<numeric id>` and MUST come from a server-sourced GitHub
+ * identity (`admin.getMemberGithubUserId`), never from anything the operator typed:
+ * the anchor is the storage key, so a wrong one writes a cap that displays a number
+ * and governs nothing (#4511). The server re-validates it against `user_identities`
+ * and `422`s an unlinked id, which is the real guarantee — this note is about not
+ * relying on that 422 to catch a mistake the UI should not be able to make.
+ *
+ * `amountUsd` is a string at 2dp for the same reason as the self path, and removing
+ * somebody's limit is deliberately NOT wrapped: the admin surface authors limits, and
+ * a remove affordance is a separate decision (#4687 non-goals) rather than an omission
+ * to be filled in by passing `'0'` — the server rejects that, correctly.
+ */
+export async function setPersonCapFor(
+  anchor: string,
+  period: BudgetPeriodType,
+  amountUsd: string
+): Promise<PersonCapResponse> {
+  const query = buildQueryString({ period_type: period });
+  const body: PersonCapRequest = { budget_amount_usd: amountUsd };
+  // `encodeURIComponent` because the anchor carries a `:` — unescaped it is a valid
+  // path character, but escaping keeps the segment unambiguous if the anchor's
+  // namespace ever grows a form that is not.
+  return apiClient.put<PersonCapResponse>(`/budget/person-cap/${encodeURIComponent(anchor)}${query}`, body);
 }

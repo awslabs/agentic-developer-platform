@@ -194,11 +194,11 @@ export const budgetHandlers = [
   // ---------------------------------------------------------------------------
   // The caller's own platform-wide spending limit — Issue #4629 (#4620 - C3).
   //
-  // No `person_anchor` in any of these paths: the self surface derives the person
-  // from the token, so there is no target for a client to send. The platform-admin
-  // route (`/api/budget/person-cap/{anchor}`) is deliberately NOT mocked — no
-  // screen in this app calls it, and a mock for an uncalled route is a mock that
-  // drifts unnoticed.
+  // No `person_anchor` in the `/me/*` paths: the self surface derives the person from
+  // the token, so there is no target for a client to send. The platform-admin route
+  // (`/api/budget/person-cap/{anchor}`) IS mocked now (#4687) — Budget Management
+  // authors somebody else's limit through it, and the rule that kept it unmocked was
+  // "no mock for an uncalled route", which no longer applies.
   // ---------------------------------------------------------------------------
   http.get('/api/me/budget/person-cap', () => HttpResponse.json(mockPersonCap)),
 
@@ -217,4 +217,22 @@ export const budgetHandlers = [
   // 204 with no body, matching the endpoint: a removal is a success whether or not
   // a limit existed.
   http.delete('/api/me/budget/person-cap', () => new HttpResponse(null, { status: 204 })),
+
+  // The platform-admin targeted write — Issue #4687.
+  //
+  // Echoes the anchor from the path and the amount from the body, so a test can tell
+  // "the form sent the anchor it resolved for the person picked" from "the form sent
+  // something". That distinction is the #4511 guard: a mock returning a canned anchor
+  // would pass whether or not the component built the key correctly.
+  //
+  // ENFORCING shape, because the real route writes `hard` on every PUT (#4630) — a soft
+  // echo would model a response the server cannot produce.
+  http.put('/api/budget/person-cap/:anchor', async ({ params, request }) => {
+    const body = (await request.json()) as { budget_amount_usd?: string };
+    return HttpResponse.json({
+      ...mockPersonCapEnforcing,
+      person_anchor: decodeURIComponent(params.anchor as string),
+      cap_usd: body.budget_amount_usd ?? mockPersonCapEnforcing.cap_usd,
+    });
+  }),
 ];

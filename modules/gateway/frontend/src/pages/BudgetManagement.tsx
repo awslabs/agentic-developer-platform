@@ -10,12 +10,14 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
+import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Table, type Column } from '@/components/ui/Table';
 import { Badge } from '@/components/ui/Badge';
 import { Select } from '@/components/ui/Select';
 import { useToast } from '@/contexts/ToastContext';
 import { useAuthContext } from '@/contexts/AuthContext';
+import { usePermissions } from '@/hooks/usePermissions';
 import {
   type BudgetListItem,
   getBudgetsWithUtilization,
@@ -29,7 +31,7 @@ import { formatCurrency } from '@/utils/format';
 // Issue #4536: the friendly labels moved to a shared module so the create form, this
 // list and the edit view cannot word the two person-scoped budget kinds differently —
 // and so `root_user` reaches no screen.
-import { formatEntityType } from '@/utils/entityLabels';
+import { formatEntityType, PERSON_LIMIT_LABEL, WORKSPACE_NOUN , PERSON_LIMIT_OPTION_VALUE } from '@/utils/entityLabels';
 
 // Helper to get utilization badge color
 function getUtilizationBadgeVariant(pct: number): 'success' | 'warning' | 'danger' {
@@ -40,7 +42,12 @@ function getUtilizationBadgeVariant(pct: number): 'success' | 'warning' | 'dange
 
 export function BudgetManagement() {
   const { user } = useAuthContext();
+  const { isPlatformAdmin } = usePermissions();
   const toast = useToast();
+  // Read once per render rather than passed as a call: the create modal needs the
+  // answer, not the predicate. Gates the person-limit option only (#4687, #4620 §4.2)
+  // — the route's `require_platform_admin` is the actual boundary.
+  const callerIsPlatformAdmin = isPlatformAdmin();
 
   const [budgets, setBudgets] = useState<BudgetListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -51,9 +58,29 @@ export function BudgetManagement() {
 
   // Modal states
   const [showCreateModal, setShowCreateModal] = useState(false);
+  // Preselection handed to the create modal by the advisory's redirect (review
+  // fix on #4688): the button must land on the person-limit form with the person
+  // already picked, or the operator re-authors the mis-aimed cap it warned about.
+  const [createPreset, setCreatePreset] = useState<{ entityType: string; entityId: string } | null>(null);
+  // The person the advisory described, so the redirect can preselect them.
+  const [advisorySubjectId, setAdvisorySubjectId] = useState<string | null>(null);
+  // Persistent evidence of a person-limit write (review fix on #4688): the budget
+  // list below cannot contain it (different table), so a closing modal plus a
+  // transient toast reads as a failed write. Dismissible, not a toast.
+  const [personLimitConfirmation, setPersonLimitConfirmation] = useState<string | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [selectedBudget, setSelectedBudget] = useState<BudgetListItem | null>(null);
+  /**
+   * The #4669 advisory for the cap that was just created — Issue #4687.
+   *
+   * Page-level, not modal-level, because the create closes the modal: a notice owned by
+   * a dialog that is going away would be rendered and instantly dismissed. It describes
+   * a budget that **exists** — a cloud-agent cap authored in a workspace where this
+   * person's agent spend does not accrue, so it may never be reached. Never an error,
+   * and nothing here undoes the create.
+   */
+  const [createAdvisory, setCreateAdvisory] = useState<string | null>(null);
 
   // Use ref to break useEffect/useCallback dependency cycle on toast (Defect #2 fix)
   const toastRef = useRef(toast);
@@ -216,6 +243,59 @@ export function BudgetManagement() {
         <Button onClick={() => setShowCreateModal(true)}>Add Budget</Button>
       </div>
 
+      {/* Issue #4687: the cap was created. This says why it may never bind, and offers
+          the control that would — which is the entire point of surfacing it at create
+          time rather than leaving the admin to discover it from spend that never
+          stopped. Dismissible, and dismissing it changes nothing about the cap. */}
+      {personLimitConfirmation && (
+        <Alert variant="success" title="Person limit set" onDismiss={() => setPersonLimitConfirmation(null)}>
+          <p data-testid="person-limit-confirmation">
+            The limit was written. It does not appear in the budget list below — person limits live outside any single {WORKSPACE_NOUN} — and it
+            now governs this person's agent spend everywhere. The person sees it on their own Budget &amp; Spend page.
+          </p>
+        </Alert>
+      )}
+
+      {createAdvisory && (
+        <Alert
+          variant="warning"
+          title="This cap may never be reached"
+          onDismiss={() => setCreateAdvisory(null)}
+        >
+          <p>{createAdvisory}</p>
+          {callerIsPlatformAdmin ? (
+            <p className="mt-2">
+              To bound this person's agent spend everywhere, set a{' '}
+              {PERSON_LIMIT_LABEL.toLowerCase()} instead.{' '}
+              <button
+                type="button"
+                className="underline font-medium hover:opacity-80"
+                onClick={() => {
+                  // Straight back into the create flow — landing on the person-limit
+                  // form with the SAME person picked (review fix on #4688). The
+                  // advisory is cleared as the form reopens; the cap it described is
+                  // untouched either way.
+                  setCreatePreset(advisorySubjectId ? { entityType: PERSON_LIMIT_OPTION_VALUE, entityId: advisorySubjectId } : { entityType: PERSON_LIMIT_OPTION_VALUE, entityId: '' });
+                  setCreateAdvisory(null);
+                  setShowCreateModal(true);
+                }}
+              >
+                Set a person limit instead
+              </button>
+            </p>
+          ) : (
+            // The ruling on #4620 §4.2 forbids org admins from authoring somebody's
+            // cross-workspace limit, so this path offers no button — an affordance that
+            // 403s is worse than none. It names who can do it instead.
+            <p className="mt-2">
+              A limit that follows this person across GitHub orgs can only be set
+              by a platform admin — ask one to set a {PERSON_LIMIT_LABEL.toLowerCase()}{' '}
+              for them.
+            </p>
+          )}
+        </Alert>
+      )}
+
       <Card>
         <CardHeader>
           <div className="flex justify-between items-center">
@@ -269,11 +349,24 @@ export function BudgetManagement() {
       <BudgetFormModal
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
-        onSuccess={() => {
+        onSuccess={(result) => {
           setShowCreateModal(false);
+          setCreatePreset(null);
+          // The budget is already committed when this fires; the advisory only decides
+          // whether a notice is shown next to the refreshed list.
+          setCreateAdvisory(result?.advisory ?? null);
+          setAdvisorySubjectId(result?.advisory ? (result?.entityId ?? null) : null);
+          // A person-limit write is NOT in the list below (different table), so it
+          // gets persistent on-page evidence instead of only a transient toast
+          // (review fix on #4688). `advisory` null + entityId present = person path.
+          if (result && result.advisory === null && result.entityId) {
+            setPersonLimitConfirmation(result.entityId);
+          }
           loadBudgets();
         }}
         orgId={user?.orgId || ''}
+        isPlatformAdmin={callerIsPlatformAdmin}
+        preset={createPreset}
       />
 
       {/* Edit Modal */}

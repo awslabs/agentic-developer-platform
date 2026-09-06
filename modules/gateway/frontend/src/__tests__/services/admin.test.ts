@@ -18,6 +18,7 @@ import {
   getAvailableRoles,
   assignUserRole,
   removeUserRole,
+  getMemberGithubUserId,
 } from '@/services/admin';
 import { AdminRole } from '@/types';
 
@@ -468,6 +469,81 @@ describe('Admin Service', () => {
         await expect(removeUserRole('user-1')).rejects.toThrow('org_id is required');
         expect(apiClient.put).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  // Issue #4687: the only server-side source of a member's GitHub numeric id, which is
+  // what the cross-workspace person anchor (`github:<id>`) is built from. Everything
+  // here exists to keep that id from being inferred client-side: a cap keyed on a guess
+  // validates, displays a number, and is never matched by enforcement (#4511).
+  describe('getMemberGithubUserId', () => {
+    it('reads the id from the identities endpoint', async () => {
+      vi.mocked(apiClient.get).mockResolvedValue({
+        identities: [
+          { provider: 'github', provider_user_id: '20402445' },
+        ],
+        total: 1,
+      });
+
+      const id = await getMemberGithubUserId('user-operator');
+
+      expect(id).toBe('20402445');
+      // The doubled `/api` is deliberate: CloudFront strips the first segment, and this
+      // router is one of the quarantined `/api`-prefixed mounts. Dropping one 404s.
+      expect(apiClient.get).toHaveBeenCalledWith(
+        '/api/admin/identity/users/user-operator/identities'
+      );
+    });
+
+    it('picks the github identity out of several providers', async () => {
+      vi.mocked(apiClient.get).mockResolvedValue({
+        identities: [
+          { provider: 'google', provider_user_id: 'not-a-github-id' },
+          { provider: 'github', provider_user_id: '20402445' },
+        ],
+        total: 2,
+      });
+
+      // Provider-matched rather than positional: an anchor built from another
+      // provider's id would be a well-formed key for a person who does not exist.
+      expect(await getMemberGithubUserId('user-operator')).toBe('20402445');
+    });
+
+    it('returns null for a member with no linked identities', async () => {
+      // Legitimate and permanent for someone who signed up by email. Null rather than a
+      // throw, because the caller has a real answer to give ("no limit can be set for
+      // this person") and an exception would render it as an outage.
+      vi.mocked(apiClient.get).mockResolvedValue({ identities: [], total: 0 });
+
+      expect(await getMemberGithubUserId('user-invited')).toBeNull();
+    });
+
+    it('returns null when linked to other providers but not github', async () => {
+      vi.mocked(apiClient.get).mockResolvedValue({
+        identities: [{ provider: 'google', provider_user_id: '123' }],
+        total: 1,
+      });
+
+      expect(await getMemberGithubUserId('user-invited')).toBeNull();
+    });
+
+    it('returns null for a blank provider id rather than a bare prefix', async () => {
+      // `github:` with nothing after it is an anchor the server rejects, so treating a
+      // blank as "no identity" keeps the caller from submitting a key it knows is bad.
+      vi.mocked(apiClient.get).mockResolvedValue({
+        identities: [{ provider: 'github', provider_user_id: '   ' }],
+        total: 1,
+      });
+
+      expect(await getMemberGithubUserId('user-operator')).toBeNull();
+    });
+
+    it('propagates transport and authorization failures', async () => {
+      // A 403 or a network fault is NOT "this person has no GitHub identity". Collapsing
+      // the two would let a permissions problem read as a fact about the member.
+      vi.mocked(apiClient.get).mockRejectedValue(new Error('Forbidden'));
+
+      await expect(getMemberGithubUserId('user-operator')).rejects.toThrow('Forbidden');
     });
   });
 

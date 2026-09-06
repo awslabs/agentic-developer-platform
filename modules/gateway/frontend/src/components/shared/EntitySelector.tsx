@@ -17,7 +17,12 @@ import {
   getCognitoDepartments,
 } from '@/services/admin';
 import { EntityType } from '@/types';
-import { formatEntityType, entityTypeHelpText } from '@/utils/entityLabels';
+import {
+  formatEntityType,
+  entityTypeHelpText,
+  PERSON_LIMIT_LABEL,
+  PERSON_LIMIT_OPTION_VALUE,
+} from '@/utils/entityLabels';
 
 interface EntityOption {
   value: string;
@@ -44,6 +49,24 @@ interface EntitySelectorProps {
    * the budget form, whose create/update path resolves and persists the type, sets it.
    */
   allowCloudAgentScope?: boolean;
+  /**
+   * Offer "Person limit — all workspaces" alongside the workspace-scoped kinds.
+   *
+   * Issue #4687. Opt-in for a stronger reason than `allowCloudAgentScope`'s: this
+   * option is **platform-admin only** per the ruling on #4620 §4.2, and the caller is
+   * the only party that knows the caller's role. Defaulting it on would offer org
+   * admins an action that 403s — and defaulting it *off* means a surface that forgets
+   * to pass it loses a feature rather than leaking authority, which is the correct
+   * direction for the mistake to fall.
+   *
+   * The gate here is an affordance, never the boundary:
+   * `PUT /budget/person-cap/{anchor}` enforces `require_platform_admin` server-side
+   * regardless of what this component renders.
+   *
+   * Selecting it does NOT change which `entity_type` is submitted — a person limit is
+   * not an entity type. It selects a different API. See `PERSON_LIMIT_OPTION_VALUE`.
+   */
+  allowPersonLimitScope?: boolean;
 }
 
 /** The entity types every caller offers, in narrowing order. */
@@ -54,6 +77,27 @@ const baseEntityTypes = [
   EntityType.USER,
 ];
 
+/**
+ * Every page of the org's members, not just the first (review fix on #4688).
+ *
+ * The pickers built on this are the ONLY path to a person for the person-scoped
+ * kinds — the person limit deliberately has no typed fallback — so a single
+ * 100-row page silently made members #101+ un-cappable with nothing on screen
+ * saying why. Bounded at 10 pages (1,000 members) to keep a runaway org from
+ * hanging the modal; beyond that the picker is the wrong tool and search is the
+ * follow-up.
+ */
+async function getAllOrgUsers(orgId: string) {
+  const items = [];
+  let page = 1;
+  for (; page <= 10; page++) {
+    const response = await getOrgUsers(orgId, { pageSize: 100, page });
+    items.push(...response.items);
+    if (!response.hasMore) return { items, truncated: false };
+  }
+  return { items, truncated: true };
+}
+
 export function EntitySelector({
   orgId,
   entityType,
@@ -62,23 +106,41 @@ export function EntitySelector({
   onEntityIdChange,
   disabled = false,
   allowCloudAgentScope = false,
+  allowPersonLimitScope = false,
 }: EntitySelectorProps) {
   // Labels come from the shared map, so this dropdown cannot word the two
   // person-scoped kinds differently from the list that renders them (#4536).
   // Without the cloud-agent kind on offer (the rate-limit form), "User — direct
   // use" would imply a cloud-agents counterpart that doesn't exist there, so
   // that surface keeps the plain "User" label and no bucket help text.
-  const entityTypeOptions = (
-    allowCloudAgentScope ? [...baseEntityTypes, EntityType.ROOT_USER] : baseEntityTypes
-  ).map((value) => ({
-    value,
-    label:
-      !allowCloudAgentScope && value === EntityType.USER ? 'User' : formatEntityType(value),
-  }));
+  const entityTypeOptions = [
+    ...(allowCloudAgentScope ? [...baseEntityTypes, EntityType.ROOT_USER] : baseEntityTypes).map(
+      (value) => ({
+        value: value as string,
+        label:
+          !allowCloudAgentScope && value === EntityType.USER ? 'User' : formatEntityType(value),
+      })
+    ),
+    // Last in the list, after the workspace-scoped kinds it is the alternative to
+    // (#4687). Its label is not in ENTITY_TYPE_LABELS because it is not an entity
+    // type — see PERSON_LIMIT_LABEL.
+    ...(allowPersonLimitScope
+      ? [{ value: PERSON_LIMIT_OPTION_VALUE, label: PERSON_LIMIT_LABEL }]
+      : []),
+  ];
+  // Whether the cross-workspace person limit is the selected kind. It changes two
+  // things: the picker becomes mandatory (no typed anchors, #4687) and the "Entity ID"
+  // label becomes a person label, because "Entity ID" for a row keyed by a person is
+  // the ledger vocabulary #4536 exists to keep off the screen.
+  const isPersonLimit = entityType === PERSON_LIMIT_OPTION_VALUE;
   const [entityOptions, setEntityOptions] = useState<EntityOption[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [useManualInput, setUseManualInput] = useState(false);
+  // Bumped by the person-limit failure notice's Retry button (review fix on
+  // #4688): the fetch effect otherwise re-runs only on entityType/orgId change,
+  // so the old copy's "try again in a moment" pointed at nothing.
+  const [fetchNonce, setFetchNonce] = useState(0);
 
   // Fetch entities when entity type or org changes
   // Issue #226: Updated to use Cognito-backed endpoints
@@ -132,7 +194,7 @@ export function EntitySelector({
             // Cognito *username*, which is `GitHub_<github_id>` for anyone
             // onboarded through GitHub and only coincidentally equals the sub for
             // email-signup users, which is why this survived testing.
-            const usersResponse = await getOrgUsers(orgId, { pageSize: 100 });
+            const usersResponse = await getAllOrgUsers(orgId);
             if (cancelled) return;
             options = usersResponse.items.map((user) => {
               const displayName = user.name ? `${user.name} (${user.email})` : user.email;
@@ -150,6 +212,18 @@ export function EntitySelector({
             break;
           }
 
+          // Issue #4687: the person limit reuses the SAME person picker as the two
+          // budget kinds — one list of people, so the workspace-scoped option and the
+          // cross-workspace one cannot disagree about who exists, which is the whole
+          // reason an admin can compare them.
+          //
+          // The value stays the canonical `users.id`, NOT the person anchor: the
+          // anchor's GitHub id is not on this payload and must be resolved from the
+          // server (`admin.getMemberGithubUserId`) rather than guessed from anything
+          // here. Building `github:<something>` in this component is exactly the
+          // #4511 class — a key that validates and never matches. The consumer does
+          // that resolution at submit time, once, for the one person picked.
+          case PERSON_LIMIT_OPTION_VALUE:
           case EntityType.ROOT_USER: {
             // Issue #4536: the SAME person picker as direct-use above — one list of
             // people, so the two budget kinds cannot disagree about who exists. The
@@ -157,7 +231,7 @@ export function EntitySelector({
             // canonical `users.id` (#4300), not by Cognito sub, so sending the sub
             // here would recreate #4511 one ledger over — a cap that exists and
             // matches nothing.
-            const usersResponse = await getOrgUsers(orgId, { pageSize: 100 });
+            const usersResponse = await getAllOrgUsers(orgId);
             if (cancelled) return;
             options = usersResponse.items.map((user) => ({
               // Never disabled: the canonical id always exists, and agent spend is
@@ -199,7 +273,7 @@ export function EntitySelector({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entityType, orgId]);
+  }, [entityType, orgId, fetchNonce]);
 
   return (
     <div className="space-y-4">
@@ -213,10 +287,15 @@ export function EntitySelector({
         }}
         disabled={disabled}
         required
-        // Which of a person's two spend buckets this cap governs. Without it the
-        // labels alone don't tell you which dollars land where (#4536). Budget
-        // form only — see the option-label note above.
-        helperText={allowCloudAgentScope ? entityTypeHelpText(entityType) : undefined}
+        // Which of a person's two spend buckets this cap governs, and — for the
+        // workspace-scoped one — that it IS workspace-scoped plus what to use instead
+        // (#4536, #4687). Without it the labels alone don't tell you which dollars land
+        // where. Budget form only — see the option-label note above.
+        helperText={
+          allowCloudAgentScope || allowPersonLimitScope
+            ? entityTypeHelpText(entityType)
+            : undefined
+        }
       />
 
       {isLoading ? (
@@ -228,6 +307,45 @@ export function EntitySelector({
           <div className="w-full px-3 py-2 border rounded-lg border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-500 dark:text-gray-400">
             Loading entities...
           </div>
+        </div>
+      ) : isPersonLimit && (useManualInput || entityOptions.length === 0) ? (
+        // Issue #4687: the person limit has NO manual-entry fallback, and that is a
+        // requirement rather than a missing feature. Every other kind here accepts a
+        // typed id because the server resolves it against this org's users and rejects
+        // what it cannot match. A person limit is keyed by the cross-workspace anchor,
+        // which is derived from a server-sourced GitHub identity for a person the
+        // operator PICKED — so a text box here could only ever be a way to type an
+        // anchor, which is the one thing #4511 says must not exist. When the member
+        // list is unavailable there is nothing to pick from, so the answer is "not
+        // now", not "type it".
+        <div
+          className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-3 text-sm text-gray-600 dark:text-gray-400"
+          data-testid="person-limit-no-picker"
+        >
+          {error ? (
+            <>
+              {`The member list could not be loaded, so there is nobody to pick. A ${PERSON_LIMIT_LABEL.toLowerCase()} must be set on a person chosen from this list — it cannot be typed in.`}{' '}
+              <button
+                type="button"
+                className="underline font-medium hover:opacity-80"
+                onClick={() => setFetchNonce((nonce) => nonce + 1)}
+                data-testid="person-limit-retry"
+              >
+                Retry
+              </button>
+            </>
+          ) : !orgId ? (
+            // An org-less session cannot list anyone; saying "no members" would
+            // misdiagnose the caller's own token as an empty org (review fix on
+            // #4688).
+            'Your session carries no GitHub org, so there is no member list to pick from. Open Budget Management from within a GitHub org context.'
+          ) : (
+            // Honest scope: the picker lists THIS org's members even though the
+            // limit follows the person everywhere. Capping a member of another
+            // org means opening that org's context (cross-org listing is a
+            // follow-up, not a picker bug).
+            'No members found in this GitHub org. The picker lists this org\'s members only — to cap a member of another GitHub org, open Budget Management in that org.'
+          )}
         </div>
       ) : useManualInput || entityOptions.length === 0 ? (
         <div>
@@ -255,17 +373,18 @@ export function EntitySelector({
         </div>
       ) : (
         <Select
-          label="Entity ID"
+          label={isPersonLimit ? 'Person' : 'Entity ID'}
           options={entityOptions}
           value={entityId}
           onChange={(e) => onEntityIdChange(e.target.value)}
-          placeholder="Select an entity..."
+          placeholder={isPersonLimit ? 'Select a person...' : 'Select an entity...'}
           disabled={disabled}
           required
         />
       )}
 
-      {!useManualInput && entityOptions.length > 0 && (
+      {/* No manual-entry escape hatch for the person limit — see the branch above. */}
+      {!isPersonLimit && !useManualInput && entityOptions.length > 0 && (
         <button
           type="button"
           className="text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 underline"
