@@ -2,8 +2,12 @@
  * Tests for "My spending limit" — Issue #4629 (#4620 · C3).
  *
  * The control a person uses to set a ceiling on their own agent spend across every
- * organization. What is asserted here, and why each one is a gate rather than a
+ * workspace. What is asserted here, and why each one is a gate rather than a
  * coverage line:
+ *
+ *  - **It renders no figure of its own (#4685).** It is a control mounted inside the
+ *    Cloud spend tile, whose denominator IS this limit. Two renderings of one number
+ *    on one page is the ambiguity the #4669 ruling removed.
  *
  *  - **The stopping copy matches what the stored row does.** Both directions of one
  *    rule: a `soft` row (authored under C3) must not claim spend will be stopped,
@@ -71,21 +75,17 @@ describe('PersonSpendingLimit — an existing limit', () => {
     mockDelete.mockResolvedValue(undefined);
   });
 
-  it('shows the stored limit at 2dp', async () => {
+  it('renders no money figure of its own (#4685)', async () => {
+    // The limit figure is the Cloud spend tile's denominator now, and this is a
+    // control mounted inside that tile. It used to restate the same number a few
+    // lines below the tile's copy of it, which is precisely the "which figure
+    // governs me?" ambiguity the #4669 ruling removed — one number, one rendering.
+    // Asserted as the absence of ANY dollar amount rather than of `$250.00`
+    // specifically, so a future edit cannot reintroduce a figure under a new value.
     renderControl();
 
     await waitFor(() => expect(screen.getByTestId('person-cap-current')).toBeInTheDocument());
-    expect(screen.getByText('$250.00')).toBeInTheDocument();
-  });
-
-  it('states the limit covers every organization, not just this one', async () => {
-    // The whole reason the control exists: an org-scoped cap cannot express this,
-    // so a person reading "per month" without "across all organizations" would
-    // reasonably assume it is another single-org figure like the rest of the page.
-    renderControl();
-
-    await waitFor(() => expect(screen.getByTestId('person-cap-current')).toBeInTheDocument());
-    expect(screen.getByText(/across all organizations/i)).toBeInTheDocument();
+    expect(screen.getByTestId('person-spending-limit').textContent ?? '').not.toMatch(/\$\d/);
   });
 
   it('says the limit is informational and does NOT claim spend will be stopped', async () => {
@@ -357,13 +357,17 @@ describe('PersonSpendingLimit — period handling', () => {
     await waitFor(() => expect(mockGet).toHaveBeenCalledWith('daily'));
   });
 
-  it('labels the limit with the period noun', async () => {
+  it('labels the amount field with the period noun', async () => {
+    // The period noun now appears on the editor's field label rather than beside a
+    // figure (#4685 moved the figure to the Cloud spend tile). It still has to be
+    // stated somewhere the author can see: a box that just says "USD" gives no clue
+    // whether 250 is a daily or a monthly ceiling, and the two differ ~30x.
+    const user = userEvent.setup();
     renderControl('daily');
 
-    // Scoped to the figure line: "per day" legitimately appears in the description
-    // above it too, so an unscoped query matches twice.
-    await waitFor(() => expect(screen.getByTestId('person-cap-current')).toBeInTheDocument());
-    expect(screen.getByTestId('person-cap-current')).toHaveTextContent(/per day/i);
+    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    await user.click(screen.getByTestId('person-cap-edit'));
+    expect(screen.getByLabelText(/limit per day \(usd\)/i)).toBeInTheDocument();
   });
 });
 

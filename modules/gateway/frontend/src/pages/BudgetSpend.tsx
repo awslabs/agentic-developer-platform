@@ -1,27 +1,33 @@
 /**
- * Budget & Spend — Issue #4402 (U-5 of EPIC #4324).
+ * Budget & Spend — Issue #4402 (U-5 of EPIC #4324), restructured to two tiles by #4685.
  *
  * The screen the EPIC is named for: the one that turns a silent, punitive cap into a
- * visible budget. A signed-in user sees, for a chosen calendar period, their cap,
- * settled spend, remaining headroom, the band they are in, and the runs that got them
- * there.
+ * visible budget. **It presents exactly ONE spend element** (the final #4669 ruling,
+ * 2026-09-05, rendered in `components/budget/SpendTiles.tsx` as `MySpend`): "you can
+ * spend $X; you've spent $Y" — the figure enforcement tracks, against the personal
+ * limit. Direct use, the per-GitHub-org breakdown, other capped lines and the runs
+ * list are drill-downs beneath it. That count is the contract: the page
+ * previously carried five things that all read as "how much have I spent" — a binding-line
+ * headline, a per-line list, a combined direct+cloud total, a per-workspace card with its own
+ * cross-workspace total, and a separate personal-limit card — and the operator who designed
+ * the underlying model could not tell which number governed them. Four were deleted rather
+ * than hidden. Adding a third top-level figure here re-creates the ambiguity, whatever it is.
  *
- * Four things it deliberately does NOT do:
+ * What this page still owns is everything that is **not** a spend figure: the period
+ * selector, and the three notices that qualify the figures in the tiles.
  *
- * 1. **No fused headline bar.** The headline is the *binding* line — the
- *    lowest-remaining capped entity, the line that will actually stop them first —
- *    never the sum of the lines. A summed headline is governed by no cap, so the screen
- *    would read "exhausted" while enforcement stopped nothing. The combined direct+cloud
- *    figure is an informational total with no bar and no denominator (`BudgetLines`).
- * 2. **No band computed here.** Every band is read off the response, derived server-side
+ * Rules carried over unchanged from #4402, because each is a defect that shipped once:
+ *
+ * 1. **No band computed here.** Every band is read off the response, derived server-side
  *    from the same thresholds enforcement reads (80/95). `BudgetManagement.tsx` hardcodes
  *    a different 50/80 band; copying it would tell a user they are fine at 79% while the
  *    server has already warned.
- * 3. **No claim that spend will be stopped** while `enforcement_mode` is `shadow`. Caps
+ * 2. **No claim that spend will be stopped** while `enforcement_mode` is `shadow`. Caps
  *    are advisory in shadow mode, so that copy would simply be false — and a screen that
  *    threatens a consequence it cannot deliver is worse than no screen.
- * 4. **No `change=` prop on any tile.** `StatCard`'s `change` hardcodes "from yesterday"
- *    and colours increases green; for spend, an increase is not good news.
+ * 3. **A backend failure is never rendered as a zero.** "We could not look" and "you spent
+ *    nothing" are opposite claims, and the whole EPIC exists because they once rendered
+ *    identically.
  *
  * Also not built, per the frozen rulings: the per-client-tool cost table and
  * device/session column (no data exists), the in-flight/reserved band and per-run/chain
@@ -30,17 +36,11 @@
 
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { StatCard } from '@/components/dashboard/StatCard';
 import { Card } from '@/components/ui';
-import { BudgetLines, BandBadge } from '@/components/budget/BudgetLines';
-import { PerOrgSpend } from '@/components/budget/PerOrgSpend';
-import { BudgetRunsTable } from '@/components/budget/BudgetRunsTable';
-import { PersonSpendingLimit } from '@/components/budget/PersonSpendingLimit';
-import { getMyBudget, getMyBudgetRuns } from '@/services/budgetSpend';
-import { describeBand, formatUtilization } from '@/utils/budgetBand';
-import { COST_SCOPE_LABEL } from '@/utils/cost';
+import { MySpend } from '@/components/budget/SpendTiles';
+import { getMyBudget } from '@/services/budgetSpend';
 import { BUDGET_PERIOD_TYPES } from '@/types/budget';
-import type { BudgetEnvelopeResponse, BudgetPeriodType } from '@/types/budget';
+import type { BudgetPeriodType } from '@/types/budget';
 
 /** Display labels for the three calendar periods. */
 const PERIOD_LABELS: Record<BudgetPeriodType, string> = {
@@ -48,14 +48,6 @@ const PERIOD_LABELS: Record<BudgetPeriodType, string> = {
   weekly: 'Weekly',
   monthly: 'Monthly',
 };
-
-function formatMoney(value: string | null | undefined): string {
-  if (value == null) return '—';
-  const amount = Number(value);
-  if (Number.isNaN(amount)) return '—';
-  const sign = amount < 0 ? '-' : '';
-  return `${sign}$${Math.abs(amount).toFixed(2)}`;
-}
 
 /**
  * The period selector.
@@ -131,62 +123,6 @@ function FreshnessNotice() {
   );
 }
 
-/**
- * The headline tile: the binding line.
- *
- * `binding` is `null` when nothing in the caller's hierarchy is capped. That is not an
- * error and not a `$0` cap — it means no budget row governs them, so there is no
- * headroom to report and nothing that will stop them. Rendering `$0.00` there would
- * show an uncapped user as exhausted.
- */
-function HeadlineTiles({ envelope }: { envelope: BudgetEnvelopeResponse }) {
-  const binding = envelope.binding;
-
-  if (!binding) {
-    return (
-      // The testid is on a wrapper, not on `Card`: `Card` accepts only
-      // children/className/padding and silently drops anything else, so a
-      // `data-testid` passed to it never reaches the DOM.
-      <div data-testid="headline-uncapped">
-        <Card>
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">No cap is set for you</h2>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            Nothing in your hierarchy has a budget configured, so there is no limit to report. Your settled spend for this period is{' '}
-            <span className="font-mono">{formatMoney(envelope.spend_usd)}</span>.
-          </p>
-        </Card>
-      </div>
-    );
-  }
-
-  const presentation = describeBand(binding.band);
-
-  return (
-    <div className="space-y-3" data-testid="headline-binding">
-      <div className="flex items-center gap-2 flex-wrap">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{binding.label}</h2>
-        <BandBadge band={binding.band} />
-        <span className="text-sm text-gray-500 dark:text-gray-400">
-          — the line that will reach its cap first
-        </span>
-      </div>
-
-      {/* No `change` prop on any of these: it hardcodes "from yesterday" and colours
-          increases green, and for spend an increase is not good news. */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <StatCard title="Cap" value={formatMoney(binding.cap_usd)} subtitle={`${PERIOD_LABELS[envelope.period.period_type]} limit`} />
-        <StatCard title="Spend" value={formatMoney(binding.spend_usd)} subtitle={COST_SCOPE_LABEL} />
-        <StatCard
-          title="Headroom"
-          value={formatMoney(binding.remaining_usd)}
-          subtitle={`${formatUtilization(binding.utilization_pct)} of cap used`}
-          className={presentation.colorClass}
-        />
-      </div>
-    </div>
-  );
-}
-
 export default function BudgetSpend() {
   const [period, setPeriod] = useState<BudgetPeriodType>('monthly');
 
@@ -200,21 +136,12 @@ export default function BudgetSpend() {
     queryFn: () => getMyBudget(period),
   });
 
-  const {
-    data: runs,
-    isLoading: runsLoading,
-    error: runsError,
-  } = useQuery({
-    queryKey: ['myBudgetRuns', period],
-    queryFn: () => getMyBudgetRuns({ period }),
-  });
-
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Budget &amp; Spend</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Your caps, settled spend and remaining headroom.</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Your spend for this period, and the limits it is measured against.</p>
         </div>
         <PeriodSelector value={period} onChange={setPeriod} />
       </div>
@@ -254,6 +181,15 @@ export default function BudgetSpend() {
               would otherwise throw on the whole screen. */}
           {envelope.freshness?.cost_backfill_lag && <FreshnessNotice />}
 
+          {/* `unresolved` means the cloud-agent ledger could not be looked up and is
+              ABSENT from the figures — not that there is no cloud spend. Stated ABOVE the
+              tiles, because it qualifies the Cloud spend figure inside one of them. */}
+          {envelope.identity_status === 'unresolved' && (
+            <p className="text-sm text-amber-800 dark:text-amber-300" data-testid="identity-unresolved">
+              Your cloud-agent spend could not be looked up, so it is missing from the figures below. This is not a statement that it is zero.
+            </p>
+          )}
+
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
             <span>
               {envelope.period.period_start} to {envelope.period.period_end}
@@ -263,49 +199,15 @@ export default function BudgetSpend() {
             </span>
           </div>
 
-          <HeadlineTiles envelope={envelope} />
-
-          {/* `unresolved` means the cloud-agent ledger could not be looked up and is
-              ABSENT from these figures — not that there is no cloud spend. */}
-          {envelope.identity_status === 'unresolved' && (
-            <p className="text-sm text-amber-800 dark:text-amber-300" data-testid="identity-unresolved">
-              Your cloud-agent spend could not be looked up, so it is missing from the figures above. This is not a statement that it is zero.
-            </p>
-          )}
-
-          <BudgetLines lines={envelope.lines} combined={envelope.combined_informational} />
-
-          {/* Everything above describes ONE partition — the tenant this session is
-              attributed to, which is the partition enforcement reads. These are all of
-              them (#4626/#4646): a person whose runs execute outside their session's
-              tenant reads `$0` above while real dollars accrue elsewhere. Both props are
-              optional on the wire, and the component renders nothing when neither is
-              present, so a response predating #4640 leaves this screen unchanged. */}
-          <PerOrgSpend perOrg={envelope.per_org} personEnvelope={envelope.person_envelope} identityStatus={envelope.identity_status} />
-
-          {/* Scope boundary, stated where the two surfaces meet (review fix): the
-              runs endpoint is single-partition, so a reader of the cross-org card
-              above must not go hunting for foreign-workspace runs below it. */}
-          {(envelope.per_org?.length ?? 0) > 1 && (
-            <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="runs-scope-note">
-              The run list below covers this workspace only. Runs billed to your other workspaces are counted in the card above but are not listed
-              here.
-            </p>
-          )}
-
-          <BudgetRunsTable data={runs} isLoading={runsLoading} error={runsError} />
         </>
       )}
 
-      {/* Issue #4629: the caller's own cross-org ceiling.
-          Rendered OUTSIDE the envelope block on purpose, for two reasons. It is a
-          separate fetch with its own loading and error states, so an outage on the
-          org-scoped envelope must not hide the control a person uses to set their
-          own limit. And it comes AFTER the figures above rather than before them:
-          a pre-C4 `soft` limit is informational while the binding line
-          above is what will actually stop them, so giving the soft figure visual
-          primacy over the enforcing one would invert what a reader should act on. */}
-      <PersonSpendingLimit period={period} />
+      {/* The page's entire spend surface: ONE card, mounted UNCONDITIONALLY (final
+          #4669 ruling + review fix on #4686). Its own data — the personal limit —
+          is a separate endpoint, and an outage on /me/budget must not hide the one
+          control that can unblock a person whose hard limit is stopping runs. The
+          envelope-dependent figure inside degrades to "could not be read". */}
+      <MySpend envelope={envelope} period={period} />
     </div>
   );
 }

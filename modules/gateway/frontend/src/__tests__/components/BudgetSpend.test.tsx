@@ -1,11 +1,25 @@
 /**
- * Tests for the Budget & Spend screen — Issue #4402 (U-5 of EPIC #4324).
+ * Tests for the Budget & Spend screen — Issue #4402 (U-5 of EPIC #4324), retargeted to the
+ * two-tile shape by #4685.
  *
  * Covers the issue's numbered validation criteria: a member sees the nav item and their
  * own figures (1), exactly three period options with no RUN/CHAIN (2), `unknown` cost
  * rendering `—` rather than `$0.00` (5), the shadow-mode banner with no
  * "will be stopped" copy (6), flag off removing both route and nav (7), the freshness
  * affordance (8), and no `change=` prop on any spend tile (9).
+ *
+ * **What #4685 changed here.** The page's spend surface is now two tiles rendered by
+ * `SpendTiles`, so assertions that reached for `headline-binding`, `combined-informational`
+ * or `person-envelope` now reach for the single `my-spend` card. Three tests
+ * were deleted rather than retargeted, because the elements they guarded no longer exist:
+ * the person-envelope total's verbatim server note, its no-progressbar constraint, and its
+ * "never called a budget" copy. That coverage did not evaporate — `SpendTiles.test.tsx`
+ * asserts the same rules against the Cloud tile that replaced it, including that a bar
+ * appears only when a `hard` limit actually enforces the denominator.
+ *
+ * The page-level tests that remain are the ones genuinely about the *page*: period
+ * selection, the three qualifying notices, the error path, the feature flag, and the fact
+ * that the figures the tiles show are the caller's own.
  *
  * Fixtures come from `mocks/data/budgetSpend.ts`, transcribed from
  * `src/budget/schemas.py`. Writing them from the frontend type is what let #3675 ship a
@@ -21,7 +35,7 @@ import BudgetSpend from '@/pages/BudgetSpend';
 import { BudgetRunsTable } from '@/components/budget/BudgetRunsTable';
 import { Navigation } from '@/components/Navigation';
 import { FeatureGate } from '@/components/FeatureGate';
-import { mockBudgetEnvelope, mockBudgetRuns, mockUncappedLine, mockPerOrgLines, mockPersonEnvelope } from '@/mocks/data/budgetSpend';
+import { mockBudgetEnvelope, mockBudgetRuns, mockUncappedLine, mockPerOrgLines, mockPersonCapEnforcing, mockPersonEnvelope } from '@/mocks/data/budgetSpend';
 import type { FeatureFlags } from '@/services/features';
 import type { BudgetEnvelopeResponse } from '@/types/budget';
 
@@ -30,10 +44,21 @@ vi.mock('@/services/budgetSpend', () => ({
   getMyBudgetRuns: vi.fn(),
 }));
 
+// The personal-limit read moved inside the Cloud tile (#4685), so the page now pulls it
+// too. Mocked here for the same reason the budget service is: an unmocked module would
+// hit the real axios client and every test would depend on network behaviour.
+vi.mock('@/services/personCap', () => ({
+  getMyPersonCap: vi.fn(),
+  setMyPersonCap: vi.fn(),
+  deleteMyPersonCap: vi.fn(),
+}));
+
 import { getMyBudget, getMyBudgetRuns } from '@/services/budgetSpend';
+import { getMyPersonCap } from '@/services/personCap';
 
 const mockGetMyBudget = getMyBudget as ReturnType<typeof vi.fn>;
 const mockGetMyBudgetRuns = getMyBudgetRuns as ReturnType<typeof vi.fn>;
+const mockGetMyPersonCap = getMyPersonCap as ReturnType<typeof vi.fn>;
 
 // Nav gating inputs. The defaults describe a MEMBER: no admin role and none of the
 // admin view permissions — which is the persona the screen exists for.
@@ -84,6 +109,12 @@ function features(overrides: Partial<FeatureFlags> = {}): FeatureFlags {
   };
 }
 
+/** The runs list is lazy since the one-card reshape: expand its drill-down first. */
+async function openRunsDrilldown() {
+  await waitFor(() => expect(screen.getByTestId('my-spend-drilldown-runs')).toBeInTheDocument());
+  await userEvent.click(within(screen.getByTestId('my-spend-drilldown-runs')).getByText(/agent runs/i));
+}
+
 function createTestQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 }
@@ -105,6 +136,7 @@ describe('BudgetSpend — a member sees their own figures', () => {
     mockUseFeatures.mockReturnValue(features());
     mockGetMyBudget.mockResolvedValue(mockBudgetEnvelope);
     mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+    mockGetMyPersonCap.mockResolvedValue(mockPersonCapEnforcing);
   });
 
   it('renders the nav item for a member-role token', async () => {
@@ -121,21 +153,39 @@ describe('BudgetSpend — a member sees their own figures', () => {
     expect(link).toHaveAttribute('href', '/budget');
   });
 
-  it('renders the binding line as the headline with cap, spend and headroom', async () => {
+  it('presents exactly ONE spend element, and no summed figure (final #4669 ruling)', async () => {
+    // The page-level half of the #4669 ruling: whatever the tiles do internally, the
+    // PAGE must put exactly one spend element in front of the reader. It used to mount
+    // five, and the operator who designed the budget model could not tell which of them
+    // governed him.
     renderScreen();
 
-    // The headline is the BINDING line (lowest-remaining capped), never a sum of lines.
-    // Scoped to the headline: the binding line's label and figures legitimately appear
-    // again in the per-line list below, so an unscoped query matches twice.
-    await waitFor(() => expect(screen.getByTestId('headline-binding')).toBeInTheDocument());
-    const headline = screen.getByTestId('headline-binding');
-    expect(within(headline).getByRole('heading', { name: 'Cloud agent runs' })).toBeInTheDocument();
-    expect(within(headline).getByText('$200.00')).toBeInTheDocument();
-    expect(within(headline).getByText('$28.60')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('my-spend')).toBeInTheDocument());
+    // ONE headline figure — the final #4669 ruling. The count is the contract.
+    expect(document.querySelectorAll('[data-testid="my-spend-amount"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-testid$="spend-tile"]')).toHaveLength(0);
 
-    // And it is NOT the sum of the two lines' caps ($800) or spends ($584.20).
-    expect(screen.queryByText('$800.00')).not.toBeInTheDocument();
-    expect(headline.textContent).not.toContain('$584.20');
+    // Neither double-counted total appears: $584.20 is direct+cloud for this partition,
+    // $827.85 is envelope+direct. The two ledgers are keyed differently, so each counts
+    // the same dollars twice against a cap that governs neither figure.
+    const rendered = document.body.textContent ?? '';
+    expect(rendered).not.toContain('$584.20');
+    expect(rendered).not.toContain('$827.85');
+  });
+
+  it('shows the caller their own direct and cloud figures', async () => {
+    // Criterion 1, in the two-tile shape: the direct line's own spend, and the
+    // cross-workspace cloud envelope. Each measured against the cap that governs it.
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('my-spend-amount')).toBeInTheDocument());
+    // The headline is the enforced figure (the cross-org envelope) and only that.
+    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$415.05');
+    // The direct figure is a drill-down, not a sibling headline (final ruling).
+    await userEvent.click(within(screen.getByTestId('my-spend-drilldown-lines')).getByText(/direct use & other lines/i));
+    const directRow = screen.getAllByTestId('budget-line-row').find((row) => row.getAttribute('data-source') === 'direct');
+    expect(directRow).toBeDefined();
+    expect(directRow!.textContent).toContain('$412.80');
   });
 
   it('renders an uncapped caller without inventing a cap', async () => {
@@ -157,9 +207,13 @@ describe('BudgetSpend — a member sees their own figures', () => {
     });
     renderScreen();
 
-    // `binding: null` means nothing is capped. Not an error, and not a $0 cap.
-    await waitFor(() => expect(screen.getByTestId('headline-uncapped')).toBeInTheDocument());
-    expect(screen.queryByTestId('headline-binding')).not.toBeInTheDocument();
+    // Nothing is capped, so the tile says so in words. Not an error, and not a $0 cap —
+    // "no cap configured" and "a ceiling of zero dollars" are opposite claims.
+    await waitFor(() => expect(screen.getByTestId('my-spend-drilldown-lines')).toBeInTheDocument());
+    await userEvent.click(within(screen.getByTestId('my-spend-drilldown-lines')).getByText(/direct use & other lines/i));
+    const directRow = screen.getAllByTestId('budget-line-row').find((row) => row.getAttribute('data-source') === 'direct');
+    expect(directRow!.textContent).toContain('$31.25');
+    expect(directRow!.textContent).not.toContain('$0.00');
   });
 
   it('reports a backend failure as a failure, never as zero spend', async () => {
@@ -178,6 +232,7 @@ describe('BudgetSpend — period selector', () => {
     mockUseFeatures.mockReturnValue(features());
     mockGetMyBudget.mockResolvedValue(mockBudgetEnvelope);
     mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+    mockGetMyPersonCap.mockResolvedValue(mockPersonCapEnforcing);
   });
 
   it('offers exactly three options, and no RUN or CHAIN option', async () => {
@@ -211,6 +266,7 @@ describe('BudgetSpend — shadow mode copy', () => {
     mockUsePermissions.mockReturnValue(memberPermissions());
     mockUseFeatures.mockReturnValue(features());
     mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+    mockGetMyPersonCap.mockResolvedValue(mockPersonCapEnforcing);
   });
 
   it('renders the shadow-mode banner while enforcement_mode is shadow', async () => {
@@ -245,7 +301,7 @@ describe('BudgetSpend — shadow mode copy', () => {
     });
     renderScreen();
 
-    await waitFor(() => expect(screen.getByTestId('headline-binding')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('my-spend')).toBeInTheDocument());
     expect(screen.queryByTestId('shadow-mode-banner')).not.toBeInTheDocument();
   });
 });
@@ -256,6 +312,7 @@ describe('BudgetSpend — freshness affordance', () => {
     mockUsePermissions.mockReturnValue(memberPermissions());
     mockUseFeatures.mockReturnValue(features());
     mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+    mockGetMyPersonCap.mockResolvedValue(mockPersonCapEnforcing);
   });
 
   it('renders the freshness notice when back-fill lag is signalled', async () => {
@@ -272,7 +329,7 @@ describe('BudgetSpend — freshness affordance', () => {
     mockGetMyBudget.mockResolvedValue({ ...mockBudgetEnvelope, freshness: { cost_backfill_lag: false } });
     renderScreen();
 
-    await waitFor(() => expect(screen.getByTestId('headline-binding')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('my-spend')).toBeInTheDocument());
     expect(screen.queryByTestId('freshness-notice')).not.toBeInTheDocument();
   });
 
@@ -294,6 +351,7 @@ describe('BudgetSpend — run drill-down cost rendering', () => {
     mockUseFeatures.mockReturnValue(features());
     mockGetMyBudget.mockResolvedValue(mockBudgetEnvelope);
     mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+    mockGetMyPersonCap.mockResolvedValue(mockPersonCapEnforcing);
   });
 
   it('renders an unknown cost as an em dash, never as $0.00', async () => {
@@ -301,6 +359,7 @@ describe('BudgetSpend — run drill-down cost rendering', () => {
     // it was free. The fixture's `unknown` run carries no amount at all.
     renderScreen();
 
+    await openRunsDrilldown();
     await waitFor(() => expect(screen.getAllByTestId('budget-run-row')).toHaveLength(3));
 
     const unknownCell = screen.getByText('—', { selector: '[data-cost-status="unknown"]' });
@@ -317,6 +376,7 @@ describe('BudgetSpend — run drill-down cost rendering', () => {
     });
     renderScreen();
 
+    await openRunsDrilldown();
     await waitFor(() => expect(screen.getAllByTestId('budget-run-row')).toHaveLength(1));
     expect(screen.queryByText('$0.00')).not.toBeInTheDocument();
   });
@@ -326,6 +386,7 @@ describe('BudgetSpend — run drill-down cost rendering', () => {
     // hidden behind a dash. The opposite failure to the one above.
     renderScreen();
 
+    await openRunsDrilldown();
     await waitFor(() => expect(screen.getAllByTestId('budget-run-row')).toHaveLength(3));
     expect(screen.getByText('$0.00', { selector: '[data-cost-status="none_incurred"]' })).toBeInTheDocument();
   });
@@ -334,6 +395,7 @@ describe('BudgetSpend — run drill-down cost rendering', () => {
     // A page figure captioned as a period total is the class of wrong number the EPIC
     // exists to eliminate.
     renderScreen();
+    await openRunsDrilldown();
 
     await waitFor(() => expect(screen.getByText(/Subtotal for these 3 runs/i)).toBeInTheDocument());
   });
@@ -341,6 +403,7 @@ describe('BudgetSpend — run drill-down cost rendering', () => {
   it('marks a partial subtotal as a lower bound', async () => {
     renderScreen();
 
+    await openRunsDrilldown();
     await waitFor(() => expect(screen.getAllByTestId('budget-run-row')).toHaveLength(3));
     expect(screen.getByText(/or more — partial total/i)).toBeInTheDocument();
   });
@@ -413,6 +476,7 @@ describe('BudgetSpend — no misleading tile affordances', () => {
     mockUseFeatures.mockReturnValue(features());
     mockGetMyBudget.mockResolvedValue(mockBudgetEnvelope);
     mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+    mockGetMyPersonCap.mockResolvedValue(mockPersonCapEnforcing);
   });
 
   it('passes no change= prop to any spend tile', async () => {
@@ -421,17 +485,20 @@ describe('BudgetSpend — no misleading tile affordances', () => {
     // output the prop would produce, so it cannot be reintroduced unnoticed.
     const { container } = renderScreen();
 
-    await waitFor(() => expect(screen.getByTestId('headline-binding')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('my-spend')).toBeInTheDocument());
     // "from yesterday" is the literal string `change` renders, and it must appear
     // nowhere on the screen.
     expect(container.textContent).not.toContain('from yesterday');
     // The green-increase treatment is checked inside the TILES specifically. A
     // green elsewhere is fine and expected — a run whose status is `complete` is
-    // legitimately green — but a green delta on a spend tile would be saying an
-    // increase in spend is good news.
-    expect(screen.getByTestId('headline-binding').querySelector('.text-green-600')).toBeNull();
-    // The arrow glyphs `change` renders, likewise absent from the tiles.
-    expect(screen.getByTestId('headline-binding').textContent).not.toMatch(/[↑↓]/);
+    // legitimately green, and a within-budget band badge is legitimately green — but a
+    // green DELTA on a spend figure would be saying an increase in spend is good news.
+    for (const testId of ['my-spend-amount']) {
+      const figure = screen.getByTestId(testId);
+      expect(figure.querySelector('.text-green-600')).toBeNull();
+      // The arrow glyphs `change` renders, likewise absent from the figures.
+      expect(figure.textContent).not.toMatch(/[↑↓]/);
+    }
   });
 });
 
@@ -441,6 +508,7 @@ describe('BudgetSpend — feature flag', () => {
     mockUsePermissions.mockReturnValue(memberPermissions());
     mockGetMyBudget.mockResolvedValue(mockBudgetEnvelope);
     mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+    mockGetMyPersonCap.mockResolvedValue(mockPersonCapEnforcing);
   });
 
   it('hides the nav item when the flag is off', () => {
@@ -501,7 +569,7 @@ describe('BudgetSpend — feature flag', () => {
       </QueryClientProvider>,
     );
 
-    await waitFor(() => expect(screen.getByTestId('headline-binding')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('my-spend')).toBeInTheDocument());
   });
 });
 
@@ -511,6 +579,7 @@ describe('BudgetSpend — absent cloud ledger', () => {
     mockUsePermissions.mockReturnValue(memberPermissions());
     mockUseFeatures.mockReturnValue(features());
     mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+    mockGetMyPersonCap.mockResolvedValue(mockPersonCapEnforcing);
   });
 
   it('says cloud spend is missing rather than zero when identity is unresolved', async () => {
@@ -531,35 +600,64 @@ describe('BudgetSpend — absent cloud ledger', () => {
 
     await waitFor(() => expect(screen.getByTestId('identity-unresolved')).toBeInTheDocument());
     expect(screen.getByTestId('identity-unresolved').textContent).toMatch(/not a statement that it is zero/i);
-    expect(screen.queryByText(/by workspace/i)).not.toBeInTheDocument();
+    // The notice sits ABOVE the tiles, because what it qualifies is the Cloud figure
+    // inside one of them — a caveat printed below the number it caveats is read second.
+    const notice = screen.getByTestId('identity-unresolved');
+    const tiles = screen.getByTestId('my-spend');
+    expect(notice.compareDocumentPosition(tiles) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // And the figure itself makes no claim: an em dash, never $0.00.
+    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('—');
+    expect(screen.getByTestId('my-spend-amount').textContent).not.toContain('$0.00');
   });
 });
 
 /**
- * Cross-org cloud spend — Issue #4646 (C1-UI of #4620).
+ * Cross-workspace cloud spend — Issue #4646 (C1-UI of #4620), demoted to a drill-down by
+ * #4685.
  *
- * The screen's other sections all describe ONE partition: the tenant the session is
- * attributed to. These tests cover the section that describes all of them, and the two
- * ways it can be got wrong: rendering the person envelope as though it were a governed
- * budget (it carries no cap on the wire, by design), and breaking a response that
- * predates the API change.
+ * The per-workspace breakdown is no longer a top-level card: it is the "by workspace"
+ * drill-down inside the Cloud tile, collapsed by default. These tests expand it and assert
+ * the rows still carry what #4646 put there — the foreign-partition spend that the
+ * single-partition figures omit, the server's active-partition flag, and each workspace's
+ * own cap.
+ *
+ * The three tests that guarded `PersonEnvelopeTotal` are gone with the component. The
+ * cross-workspace figure is now the Cloud tile's numerator, and the rules that used to
+ * apply to that block — no bar without a cap, never captioned as a budget — are asserted
+ * against the tile in `SpendTiles.test.tsx`, where the figure now lives.
  */
-describe('BudgetSpend — cloud spend by workspace', () => {
+describe('BudgetSpend — cloud spend by workspace (drill-down)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUsePermissions.mockReturnValue(memberPermissions());
     mockUseFeatures.mockReturnValue(features());
     mockGetMyBudget.mockResolvedValue(mockBudgetEnvelope);
     mockGetMyBudgetRuns.mockResolvedValue(mockBudgetRuns);
+    mockGetMyPersonCap.mockResolvedValue(mockPersonCapEnforcing);
+  });
+
+  /** Expand the collapsed "by workspace" drill-down and wait for its rows. */
+  async function openWorkspaceDrillDown() {
+    await waitFor(() => expect(screen.getByTestId('my-spend-drilldown-orgs')).toBeInTheDocument());
+    await userEvent.click(within(screen.getByTestId('my-spend-drilldown-orgs')).getByText(/by GitHub org/i));
+  }
+
+  it('is collapsed until the reader asks for it', async () => {
+    // The ruling's demotion: this used to be a card competing with the headline figures.
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('my-spend-drilldown-orgs')).toBeInTheDocument());
+    expect(screen.getByTestId('my-spend-drilldown-orgs')).not.toHaveAttribute('open');
   });
 
   it('renders one row per per_org line, with each workspace named', async () => {
     renderScreen();
+    await openWorkspaceDrillDown();
 
-    await waitFor(() => expect(screen.getAllByTestId('per-org-row')).toHaveLength(2));
     const rows = screen.getAllByTestId('per-org-row');
+    expect(rows).toHaveLength(2);
     // Order is the server's: active partition FIRST, so these rows agree with the
-    // `lines`/`binding` figures rendered above them.
+    // figures in the tiles above them.
     expect(rows.map((r) => r.getAttribute('data-org-id'))).toEqual(['org-1', 'org-aws-e']);
     expect(within(rows[0]).getByText('Pranav Sharma (home)')).toBeInTheDocument();
     expect(within(rows[1]).getByText('aws-e')).toBeInTheDocument();
@@ -567,21 +665,25 @@ describe('BudgetSpend — cloud spend by workspace', () => {
 
   it('shows the foreign partition spend that the single-partition figures omit', async () => {
     // The whole point of #4620: $243.65 accrued in a tenant the session is not attributed
-    // to, so it appears NOWHERE in the headline or the per-line list. If this row is
-    // missing, the operator still reads their cross-org spend as absent.
+    // to, so it appears in NEITHER of the single-partition figures. If this row is
+    // missing, the operator still reads their cross-workspace spend as absent.
     renderScreen();
+    await openWorkspaceDrillDown();
 
-    await waitFor(() => expect(screen.getAllByTestId('per-org-row')).toHaveLength(2));
     const foreign = screen.getAllByTestId('per-org-row')[1];
     expect(within(foreign).getByTestId('per-org-spend').textContent).toBe('$243.65');
-    // And it is genuinely absent from the headline, which reads the active partition only.
-    expect(screen.getByTestId('headline-binding').textContent).not.toContain('243.65');
+    // Genuinely absent from Personal spend, which is this workspace's direct use only.
+    // The foreign-org figure appears only inside its drill-down row, never in the headline copy above it.
+    expect(screen.getByTestId('my-spend-amount').textContent).not.toContain('243.65');
+    // But included in the Cloud numerator, which is the cross-workspace sum: that is the
+    // relationship between the tile and its own drill-down.
+    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$415.05');
   });
 
   it('flags only the active partition', async () => {
     renderScreen();
+    await openWorkspaceDrillDown();
 
-    await waitFor(() => expect(screen.getAllByTestId('per-org-row')).toHaveLength(2));
     const rows = screen.getAllByTestId('per-org-row');
     // Read off the server's `is_active_partition`, never re-derived from the token.
     expect(within(rows[0]).getByTestId('per-org-active-badge')).toBeInTheDocument();
@@ -589,66 +691,25 @@ describe('BudgetSpend — cloud spend by workspace', () => {
     expect(screen.getAllByTestId('per-org-active-badge')).toHaveLength(1);
   });
 
-  it("renders a workspace's own cap, and a null cap as 'No cap set' rather than $0.00", async () => {
+  it("renders a workspace's own cap, and defers to the personal limit where none was authored", async () => {
     // Each tenant's cap governs only spend executing inside it, so caps are per row and
-    // never folded together. A null cap on a line with REAL spend is the
-    // mis-partitioned-cap signature the issue is about — reporting it as a $0 ceiling
-    // states the opposite of the truth ("no ceiling was authored here").
+    // never folded together. A null cap is never `$0.00` — but with a personal limit in
+    // force it is not "ungoverned" either, so the row says which ceiling actually applies
+    // (#4685). The bare "No cap set" case is covered in SpendTiles.test.tsx, where the
+    // caller has no personal limit.
     renderScreen();
+    await openWorkspaceDrillDown();
 
-    await waitFor(() => expect(screen.getAllByTestId('per-org-row')).toHaveLength(2));
     const rows = screen.getAllByTestId('per-org-row');
     expect(within(rows[0]).getByTestId('per-org-cap').textContent).toBe('$200.00');
-    expect(within(rows[1]).getByTestId('per-org-cap').textContent).toBe('No cap set');
+    expect(within(rows[1]).getByTestId('per-org-cap').textContent).toMatch(/your personal limit applies/i);
     expect(within(rows[1]).getByTestId('per-org-cap').textContent).not.toContain('$0.00');
   });
 
-  it('renders the person envelope total with the server-supplied note verbatim', async () => {
-    renderScreen();
-
-    await waitFor(() => expect(screen.getByTestId('person-envelope')).toBeInTheDocument());
-    const envelope = screen.getByTestId('person-envelope');
-    // The exact 6dp cross-org sum (171.400000 + 243.650000), displayed at cents.
-    expect(within(envelope).getByTestId('person-envelope-amount').textContent).toBe('$415.05');
-    // Verbatim: the "not a budget" caption is authored once, server-side, so two surfaces
-    // cannot word the same figure differently.
-    expect(within(envelope).getByTestId('person-envelope-note').textContent).toBe(mockPersonEnvelope.note);
-    // And it says how many workspaces contributed, so the total cannot read as single-tenant.
-    expect(envelope.textContent).toMatch(/across 2 workspaces/i);
-  });
-
-  it('renders the person envelope with NO progress bar and no denominator', async () => {
-    // The core constraint. `PersonEnvelope` carries no cap/headroom/utilisation/band on
-    // the wire at all: no person-level cap table exists yet and whether one may deny is
-    // an open ruling, so a bar here would advertise a ceiling nothing enforces — #4620's
-    // own defect, inverted.
-    renderScreen();
-
-    await waitFor(() => expect(screen.getByTestId('person-envelope')).toBeInTheDocument());
-    const envelope = screen.getByTestId('person-envelope');
-
-    expect(envelope.querySelector('[role="progressbar"]')).toBeNull();
-    // No `x / y` denominator, and no band badge (a band presupposes a cap).
-    expect(envelope.textContent).not.toMatch(/\$[\d,.]+\s*\/\s*\$/);
-    expect(within(envelope).queryByTestId('band-badge')).not.toBeInTheDocument();
-    // None of the cap-presupposing vocabulary either.
-    expect(envelope.textContent).not.toMatch(/headroom|remaining|of cap used/i);
-  });
-
-  it('never labels the cross-org total as a budget, cap or limit', async () => {
-    // `is_budget` is an unsettable `false`. The rendered copy must agree with it.
-    renderScreen();
-
-    await waitFor(() => expect(screen.getByTestId('person-envelope')).toBeInTheDocument());
-    const envelope = screen.getByTestId('person-envelope');
-    expect(envelope.textContent).not.toMatch(/your budget|budget limit|cross-org cap|total cap/i);
-  });
-
   it('renders the page unchanged when the response omits both new fields', async () => {
-    // Criterion: an older API response (predating #4640) has neither field. The section
-    // must be absent entirely — an empty card captioned "by workspace" would assert the
-    // caller has no cross-org spend when the truth is that this response never spoke to
-    // the question — and nothing else on the screen may change or throw.
+    // An older API response (predating #4640) has neither field. The breakdown must be
+    // empty rather than asserting the caller has no cross-workspace spend — the response
+    // never spoke to the question — and nothing else on the screen may change or throw.
     const legacy: BudgetEnvelopeResponse = { ...mockBudgetEnvelope };
     delete legacy.per_org;
     delete legacy.person_envelope;
@@ -658,47 +719,49 @@ describe('BudgetSpend — cloud spend by workspace', () => {
     expect('person_envelope' in legacy).toBe(false);
     mockGetMyBudget.mockResolvedValue(legacy);
     renderScreen();
+    await waitFor(() => expect(screen.getByTestId('my-spend')).toBeInTheDocument());
 
-    await waitFor(() => expect(screen.getByTestId('headline-binding')).toBeInTheDocument());
-
+    // Stronger than empty rows: the drill-down itself never mounts onto nothing —
+    // a clickable expander opening an empty pane would read as "no cross-org
+    // spend" when the response never spoke to the question (review fix on #4686).
+    expect(screen.queryByTestId('my-spend-drilldown-orgs')).not.toBeInTheDocument();
     expect(screen.queryByTestId('per-org-row')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('person-envelope')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Cloud agents by workspace/i)).not.toBeInTheDocument();
-    // Everything that rendered before still renders.
-    expect(screen.getByTestId('combined-informational')).toBeInTheDocument();
-    expect(screen.getAllByTestId('budget-line-row')).toHaveLength(2);
+    // The cloud figure makes no claim either, rather than reporting a zero.
+    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('—');
+    // Everything genuinely unrelated still renders.
+    await userEvent.click(within(screen.getByTestId('my-spend-drilldown-lines')).getByText(/direct use & other lines/i));
+    const direct = screen.getAllByTestId('budget-line-row').find((row) => row.getAttribute('data-source') === 'direct');
+    expect(direct!.textContent).toContain('$412.80');
     expect(screen.getByTestId('shadow-mode-banner')).toBeInTheDocument();
   });
 
   it('draws no fabricated $0 workspace line when identity did not resolve', async () => {
     // `per_org: []` with `person_envelope: null` is what the backend sends when the
-    // caller's canonical id could not be resolved. The screen already states that the
-    // cloud ledger is MISSING rather than zero; a $0 workspace row here would contradict
-    // that notice with a figure it does not have.
+    // caller's canonical id could not be resolved. The page already states that the cloud
+    // ledger is MISSING rather than zero; a $0 workspace row would contradict that notice
+    // with a figure it does not have.
     mockGetMyBudget.mockResolvedValue({ ...mockBudgetEnvelope, identity_status: 'unresolved', per_org: [], person_envelope: null });
     renderScreen();
-
     await waitFor(() => expect(screen.getByTestId('identity-unresolved')).toBeInTheDocument());
+
+    // The drill-down never mounts for an unresolved identity (review fix on #4686).
+    expect(screen.queryByTestId('my-spend-drilldown-orgs')).not.toBeInTheDocument();
     expect(screen.queryByTestId('per-org-row')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('person-envelope')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Cloud agents by workspace/i)).not.toBeInTheDocument();
   });
 
-  it('renders a single-partition envelope, which is still a useful claim', async () => {
-    // Unlike `combined_informational`, the envelope ships even for one partition: "this
-    // is your total everywhere" is distinct and useful when the count is one, and hiding
-    // it would show nothing to the person whose spend has not yet crossed a boundary.
+  it('counts a single partition in the cloud figure, which is still a useful claim', async () => {
+    // "This is your total everywhere" is distinct and useful even when everywhere is one
+    // workspace, so the figure ships rather than being suppressed for a person whose
+    // spend has not yet crossed a boundary.
     mockGetMyBudget.mockResolvedValue({
       ...mockBudgetEnvelope,
       per_org: [mockPerOrgLines[0]],
       person_envelope: { ...mockPersonEnvelope, spend_usd: '171.400000', partition_count: 1 },
     });
     renderScreen();
+    await openWorkspaceDrillDown();
 
-    await waitFor(() => expect(screen.getByTestId('person-envelope')).toBeInTheDocument());
     expect(screen.getAllByTestId('per-org-row')).toHaveLength(1);
-    expect(screen.getByTestId('person-envelope-amount').textContent).toBe('$171.40');
-    // Singular, so the sentence reads correctly at a count of one.
-    expect(screen.getByTestId('person-envelope').textContent).toMatch(/across 1 workspace\b/i);
+    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$171.40');
   });
 });

@@ -1,11 +1,19 @@
 /**
- * "My spending limit" — Issue #4629 (#4620 · C3).
+ * "My spending limit" — Issue #4629 (#4620 · C3), folded into the Cloud spend tile by #4685.
  *
  * The self-service control on a person's own `/budget` page. It answers one
  * question the rest of this screen cannot: *what is the ceiling on my total agent
- * spend, everywhere?* Every other figure on this page belongs to one organization,
+ * spend, everywhere?* Every other figure on this page belongs to one workspace,
  * so somebody working across two of them can be under a cap in each and under no
  * ceiling on the sum (#4620). This is where they set that ceiling themselves.
+ *
+ * **It is a control, not a spend element (#4685).** It shipped as a fifth top-level card
+ * that restated the limit figure the Cloud spend tile now carries as its denominator, and
+ * the #4669 ruling allows exactly two spend elements on this page. So the figure and the
+ * card chrome are gone from here: the tile states the number once, and this renders the
+ * mode notices and the editor that authors it. There is exactly one mount point (inside
+ * the Cloud tile), which is why there is no variant prop — a second shape would be a
+ * second place for the same number to appear.
  *
  * Three copy rules, each load-bearing rather than stylistic:
  *
@@ -23,37 +31,27 @@
  *    we cannot know whether a limit exists, so the error state says so explicitly
  *    instead of falling back to the uncapped copy.
  *
- * It also does not show spend, headroom or a progress bar. Those need a
- * *cross-org* denominator, which is #4626; rendering this cap against the
- * single-org spend already on this page would put a number under a bar that does
- * not measure it — the class of wrong figure EPIC #4324 exists to eliminate.
+ * It shows no spend figure, no headroom and no progress bar. That was #4626's constraint
+ * (no cross-workspace denominator existed) and it survives as a *placement* rule: the
+ * Cloud spend tile above now has the cross-workspace numerator and draws the bar, and
+ * only when the mode is `hard`. Drawing a second one here would either duplicate that bar
+ * or — worse — measure this cap against the single-workspace spend beside it, putting a
+ * number under a bar that does not measure it.
  */
 
 import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, Input } from '@/components/ui';
-import { deleteMyPersonCap, getMyPersonCap, setMyPersonCap } from '@/services/personCap';
-import type { BudgetPeriodType, PersonCapResponse } from '@/types/budget';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Button, Input } from '@/components/ui';
+import { deleteMyPersonCap, setMyPersonCap } from '@/services/personCap';
+import { personCapQueryKey, usePersonCap } from '@/hooks/usePersonCap';
+import { WORKSPACE_TERM, WORKSPACE_TERM_PLURAL } from '@/utils/budgetVocabulary';
+import type { BudgetPeriodType } from '@/types/budget';
 
 const PERIOD_NOUN: Record<BudgetPeriodType, string> = {
   daily: 'day',
   weekly: 'week',
   monthly: 'month',
 };
-
-/** `'250.00'` → `'$250.00'`. `null`/empty/unparseable/non-finite → `'—'`, never `'$0.00'`. */
-function formatMoney(value: string | null | undefined): string {
-  // `Number('')` and `Number('   ')` are 0, not NaN — an empty wire value must
-  // render as "unknown", not as a $0.00 ceiling (review fix). Same for
-  // 'Infinity'/'1e999', which pass an isNaN check but are not renderable money.
-  if (value == null || value.trim() === '') return '—';
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return '—';
-  // Sign from the ROUNDED value so '-0.004' renders '$0.00', not '-$0.00'.
-  const rounded = Number(amount.toFixed(2));
-  const sign = rounded < 0 ? '-' : '';
-  return `${sign}$${Math.abs(rounded).toFixed(2)}`;
-}
 
 /**
  * Validate the typed amount, mirroring the server's rules.
@@ -109,8 +107,8 @@ function InformationalNotice() {
 function EnforcingNotice() {
   return (
     <p className="text-sm text-amber-800 dark:text-amber-200" data-testid="person-cap-enforcing">
-      This limit is enforced: once your total agent spend across every organization passes it, your agent runs are stopped until the period resets
-      or you raise the limit. Spend that has not finished being metered yet is not counted, so the stop can land slightly over the number.
+      This limit is enforced: once your total agent spend across every {WORKSPACE_TERM} passes it, your agent runs are stopped until the period
+      resets or you raise the limit. Spend that has not finished being metered yet is not counted, so the stop can land slightly over the number.
     </p>
   );
 }
@@ -136,15 +134,9 @@ export function PersonSpendingLimit({ period }: { period: BudgetPeriodType }) {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
 
-  const {
-    data: cap,
-    isLoading,
-    error,
-    refetch,
-  } = useQuery<PersonCapResponse>({
-    queryKey: ['myPersonCap', period],
-    queryFn: () => getMyPersonCap(period),
-  });
+  // The ONE shared query identity (review fix on #4686): the headline denominator
+  // in `MySpend` reads the same hook, so the two cannot drift apart on a save.
+  const { data: cap, isLoading, error, refetch } = usePersonCap(period);
 
   // Seed the field from the stored limit, and re-seed when the period changes —
   // otherwise switching from monthly to daily leaves the monthly figure in the box
@@ -161,7 +153,7 @@ export function PersonSpendingLimit({ period }: { period: BudgetPeriodType }) {
   }, [cap?.cap_usd, period]);
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['myPersonCap', period] });
+    queryClient.invalidateQueries({ queryKey: personCapQueryKey(period) });
   };
 
   const save = useMutation({
@@ -198,139 +190,121 @@ export function PersonSpendingLimit({ period }: { period: BudgetPeriodType }) {
 
   return (
     <div data-testid="person-spending-limit">
-      <Card>
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">My spending limit</h2>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              A ceiling you set on your own agent spend per {PERIOD_NOUN[period]}, counting every organization you work in — not just this one.
-            </p>
-          </div>
-        </div>
+      {/* No `Card` and no figure of its own (#4685): the Cloud spend tile this is mounted
+          inside states the limit once, as its denominator. A second rendering of the same
+          number is the ambiguity the #4669 ruling removed. */}
+      {isLoading && <div className="h-10 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" data-testid="person-cap-loading" />}
 
-        {isLoading && <div className="mt-4 h-10 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" data-testid="person-cap-loading" />}
+      {/* A deterministic "no cross-workspace identity" is NOT an outage (review fix):
+          the GET 422s permanently for accounts with no linked GitHub identity,
+          and a red alert with a Retry that can never succeed reads as a backend
+          failure. Rendered as a calm note, like the page's identity_status
+          precedent. */}
+      {!isLoading && error && isUnresolvableAnchor(error) && (
+        <p className="text-sm text-gray-600 dark:text-gray-400" data-testid="person-cap-unlinked">
+          A personal limit needs a linked GitHub identity, and this account has none — so there is no cross-{WORKSPACE_TERM} identity a limit could
+          follow. This is a property of the account, not an error.
+        </p>
+      )}
 
-        {/* A deterministic "no cross-org identity" is NOT an outage (review fix):
-            the GET 422s permanently for accounts with no linked GitHub identity,
-            and a red alert with a Retry that can never succeed reads as a backend
-            failure. Rendered as a calm note, like the page's identity_status
-            precedent. */}
-        {!isLoading && error && isUnresolvableAnchor(error) && (
-          <p className="mt-4 text-sm text-gray-600 dark:text-gray-400" data-testid="person-cap-unlinked">
-            A personal limit needs a linked GitHub identity, and this account has none — so there is no cross-organization identity a limit could
-            follow. This is a property of the account, not an error.
+      {/* An outage is NOT "you have no limit": that is the one moment we cannot
+          know, so the uncapped copy would be a claim we cannot support. */}
+      {!isLoading && error && !isUnresolvableAnchor(error) && (
+        <div>
+          <p className="text-sm text-red-700 dark:text-red-400" role="alert" data-testid="person-cap-error">
+            Could not load your spending limit. This is not a statement that you have no limit set.
           </p>
-        )}
+          <Button variant="outline" size="sm" className="mt-3" onClick={() => refetch()}>
+            Retry
+          </Button>
+        </div>
+      )}
 
-        {/* An outage is NOT "you have no limit": that is the one moment we cannot
-            know, so the uncapped copy would be a claim we cannot support. */}
-        {!isLoading && error && !isUnresolvableAnchor(error) && (
-          <div className="mt-4">
-            <p className="text-sm text-red-700 dark:text-red-400" role="alert" data-testid="person-cap-error">
-              Could not load your spending limit. This is not a statement that you have no limit set.
+      {!isLoading && !error && cap && (
+        <div className="space-y-3" data-testid="person-cap-current">
+          {/* "No limit" still needs saying in words — the tile renders the figure with no
+              denominator beside it, and silence there is indistinguishable from a
+              denominator that failed to load. Never `$0.00`: `cap_status` is the signal. */}
+          {cap.cap_status === 'uncapped' && (
+            <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="person-cap-uncapped">
+              You have not set a personal limit for this period, so nothing caps your agent spend across all {WORKSPACE_TERM_PLURAL}.
             </p>
-            <Button variant="outline" size="sm" className="mt-3" onClick={() => refetch()}>
-              Retry
-            </Button>
-          </div>
-        )}
+          )}
 
-        {!isLoading && !error && cap && (
-          <div className="mt-4 space-y-4">
-            <div className="flex items-baseline gap-2 flex-wrap" data-testid="person-cap-current">
-              {cap.cap_status === 'capped' ? (
-                <>
-                  <span className="text-2xl font-semibold text-gray-900 dark:text-white font-mono">{formatMoney(cap.cap_usd)}</span>
-                  <span className="text-sm text-gray-500 dark:text-gray-400">per {PERIOD_NOUN[period]}, across all organizations</span>
-                </>
-              ) : (
-                <span className="text-sm text-gray-700 dark:text-gray-300" data-testid="person-cap-uncapped">
-                  You have not set a personal limit for this period.
-                </span>
+          {cap.cap_status === 'capped' && cap.enforcement_mode === 'soft' && <InformationalNotice />}
+          {cap.cap_status === 'capped' && cap.enforcement_mode === 'hard' && <EnforcingNotice />}
+
+          {editing ? (
+            <div className="space-y-3">
+              <Input
+                label={`Limit per ${PERIOD_NOUN[period]} (USD)`}
+                name="person-cap-amount"
+                data-testid="person-cap-input"
+                inputMode="decimal"
+                value={amount}
+                onChange={(event) => setAmount(event.target.value)}
+                error={validationError ?? undefined}
+                helperText="For example 250.00. To remove your limit entirely, use Remove limit."
+              />
+              {/* The mutation's own failure, kept distinct from a validation
+                  problem: a failed save must not look like a saved limit. */}
+              {mutationError && (
+                <p className="text-sm text-red-700 dark:text-red-400" role="alert" data-testid="person-cap-save-error">
+                  Your limit was not saved. Nothing has changed — try again.
+                </p>
               )}
-            </div>
-
-            {cap.cap_status === 'capped' && cap.enforcement_mode === 'soft' && <InformationalNotice />}
-            {cap.cap_status === 'capped' && cap.enforcement_mode === 'hard' && <EnforcingNotice />}
-
-            {editing ? (
-              <div className="space-y-3">
-                <Input
-                  label={`Limit per ${PERIOD_NOUN[period]} (USD)`}
-                  name="person-cap-amount"
-                  data-testid="person-cap-input"
-                  inputMode="decimal"
-                  value={amount}
-                  onChange={(event) => setAmount(event.target.value)}
-                  error={validationError ?? undefined}
-                  helperText="For example 250.00. To remove your limit entirely, use Remove limit."
-                />
-                {/* The mutation's own failure, kept distinct from a validation
-                    problem: a failed save must not look like a saved limit. */}
-                {mutationError && (
-                  <p className="text-sm text-red-700 dark:text-red-400" role="alert" data-testid="person-cap-save-error">
-                    Your limit was not saved. Nothing has changed — try again.
-                  </p>
-                )}
-                <div className="flex gap-2">
-                  <Button size="sm" onClick={onSave} isLoading={save.isPending} data-testid="person-cap-save">
-                    Save limit
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      save.reset();
-                      remove.reset();
-                      setEditing(false);
-                      setAmount(cap.cap_usd ?? '');
-                      setValidationError(null);
-                    }}
-                    disabled={busy}
-                    data-testid="person-cap-cancel"
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex gap-2 flex-wrap">
+              <div className="flex gap-2">
+                <Button size="sm" onClick={onSave} isLoading={save.isPending} data-testid="person-cap-save">
+                  Save limit
+                </Button>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
                   onClick={() => {
                     save.reset();
                     remove.reset();
+                    setEditing(false);
                     setAmount(cap.cap_usd ?? '');
                     setValidationError(null);
-                    setEditing(true);
                   }}
-                  data-testid="person-cap-edit"
+                  disabled={busy}
+                  data-testid="person-cap-cancel"
                 >
-                  {cap.cap_status === 'capped' ? 'Change limit' : 'Set a limit'}
+                  Cancel
                 </Button>
-                {cap.cap_status === 'capped' && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => remove.mutate()}
-                    isLoading={remove.isPending}
-                    data-testid="person-cap-remove"
-                  >
-                    Remove limit
-                  </Button>
-                )}
               </div>
-            )}
+            </div>
+          ) : (
+            <div className="flex gap-2 flex-wrap">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  save.reset();
+                  remove.reset();
+                  setAmount(cap.cap_usd ?? '');
+                  setValidationError(null);
+                  setEditing(true);
+                }}
+                data-testid="person-cap-edit"
+              >
+                {cap.cap_status === 'capped' ? 'Change limit' : 'Set a limit'}
+              </Button>
+              {cap.cap_status === 'capped' && (
+                <Button variant="ghost" size="sm" onClick={() => remove.mutate()} isLoading={remove.isPending} data-testid="person-cap-remove">
+                  Remove limit
+                </Button>
+              )}
+            </div>
+          )}
 
-            {!editing && mutationError && (
-              <p className="text-sm text-red-700 dark:text-red-400" role="alert" data-testid="person-cap-mutation-error">
-                That change was not saved. Your limit is unchanged.
-              </p>
-            )}
-          </div>
-        )}
-      </Card>
+          {!editing && mutationError && (
+            <p className="text-sm text-red-700 dark:text-red-400" role="alert" data-testid="person-cap-mutation-error">
+              That change was not saved. Your limit is unchanged.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
