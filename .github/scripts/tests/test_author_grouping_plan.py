@@ -1549,6 +1549,143 @@ def test_zero_concurrency_is_rejected(patterns):
         )
 
 
+# ==========================================================================
+# 9. the enforced output shape -- both phases answer through a tool schema
+# ==========================================================================
+#
+# Two whole-repo replays (34108572024, 34111797978) lost work items to three
+# shape failures: an invented key, a required field omitted, and ~10KB of prose
+# hand-assembled into a JSON string that would not parse. A schema is what makes
+# all three impossible instead of retried, so these tests assert the schema is
+# SENT, is derived from the fields the downstream gate requires, and that the
+# parsed `tool_use` answer is used directly.
+
+
+class ToolBedrock:
+    """Answers with a `tool_use` block, and records the request bodies."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.requests: list[dict] = []
+
+    def invoke_model(self, *, modelId, contentType, accept, body):  # noqa: N803
+        request = json.loads(body)
+        self.requests.append(request)
+        assert self.answers, "ToolBedrock ran out of answers"
+        answer = self.answers.pop(0)
+        name = request.get("tools", [{}])[0].get("name", "submit")
+        return {
+            "body": _Body(
+                json.dumps(
+                    {"content": [{"type": "tool_use", "name": name, "input": answer}]}
+                )
+            )
+        }
+
+
+def test_both_phases_send_a_tool_and_pin_the_choice_to_it(tmp_path, monkeypatch, no_github):
+    """`tool_choice` pinned to the tool is what makes the shape a constraint rather
+    than a request. Without it the model may answer in prose, which is the mode
+    that failed twice."""
+    groups = _fixture_groups()
+    clusters = {"clusters": [{k: g[k] for k in agp._CLUSTER_FIELDS} for g in groups]}
+    items = [{k: g[k] for k in agp._AUTHORED_FIELDS} for g in groups]
+    fake = ToolBedrock([clusters, *items])
+    _patch_bedrock(monkeypatch, fake)
+
+    output = tmp_path / "plan.json"
+    argv = _author_argv(
+        new_findings=FINDINGS_FIXTURE, output=output, extra=("--max-concurrency", "1")
+    )
+    assert main(argv) == 0
+
+    assert len(fake.requests) == 1 + len(groups), "one clustering call, one per work item"
+    names = []
+    for request in fake.requests:
+        assert len(request["tools"]) == 1
+        tool = request["tools"][0]
+        assert request["tool_choice"] == {"type": "tool", "name": tool["name"]}
+        names.append(tool["name"])
+    assert names[0] == "submit_clusters"
+    assert set(names[1:]) == {"submit_work_item"}
+
+    # And the plan built from the tool answers passes the real downstream gate.
+    assert tg.main(_validate_argv(plan=output, new_findings=FINDINGS_FIXTURE)) == 0
+
+
+def test_a_tool_answer_is_used_directly_and_no_text_is_parsed(monkeypatch):
+    """The whole point: the answer arrives already parsed, so there is no string
+    for an unescaped quote in 10KB of prose to break."""
+    payload = {"clusters": [{"slug": "a", "title": "A", "finding_ids": ["f-1"]}]}
+    fake = ToolBedrock([payload])
+    got = agp.invoke_model(
+        fake, "prompt", model_id="m", max_tokens=100, tool=agp.cluster_tool()
+    )
+    assert got == payload
+
+
+def test_a_model_that_answers_in_prose_anyway_is_still_read():
+    """The text path is a fallback, not dead code: a model that ignores
+    `tool_choice` has still answered, and failing the night over that would be
+    strictly worse than reading it."""
+
+    class ProseBedrock:
+        def invoke_model(self, *, modelId, contentType, accept, body):  # noqa: N803
+            text = json.dumps({"clusters": []}) + "\n\nHope that helps."
+            return {"body": _Body(json.dumps({"content": [{"text": text}]}))}
+
+    got = agp.invoke_model(
+        ProseBedrock(), "p", model_id="m", max_tokens=10, tool=agp.cluster_tool()
+    )
+    assert got == {"clusters": []}
+
+
+def test_the_work_item_schema_requires_every_field_the_gate_requires():
+    """The drift guard. A field added to U9's group schema must become a required
+    tool field, or the model is never asked for it and every night fails on a
+    missing field."""
+    schema = agp.work_item_tool()["input_schema"]
+    assert set(schema["required"]) == set(agp._AUTHORED_FIELDS)
+    assert set(schema["properties"]) == set(agp._AUTHORED_FIELDS)
+    assert set(schema["required"]) | set(agp._CLUSTER_FIELDS) == set(
+        tg._REQUIRED_GROUP_FIELDS
+    )
+    assert schema["additionalProperties"] is False
+
+
+def test_the_schema_forbids_the_empty_string_that_cost_six_attempts():
+    """`who_benefits`/`who_is_impacted` were omitted six times across two replays.
+    `required` plus `minLength` is what makes both the omission and the empty
+    placeholder impossible rather than a rejection we pay an attempt for."""
+    properties = agp.work_item_tool()["input_schema"]["properties"]
+    for field in ("who_benefits", "who_is_impacted"):
+        assert properties[field] == {"type": "string", "minLength": 1}
+    # The two structured fields keep their shape, and their rows are closed too.
+    assert properties["fix_surface"]["minItems"] == 1
+    risk = properties["risks"]["items"]
+    assert set(risk["required"]) == set(tg._RISK_FIELDS)
+    assert risk["additionalProperties"] is False
+
+
+def test_the_cluster_schema_is_the_three_identity_fields_and_closed():
+    item = agp.cluster_tool()["input_schema"]["properties"]["clusters"]["items"]
+    assert set(item["required"]) == set(agp._CLUSTER_FIELDS)
+    assert item["additionalProperties"] is False
+    assert item["properties"]["finding_ids"]["minItems"] == 1
+
+
+@pytest.mark.parametrize(
+    "prompt_of,tool_name",
+    [(_cluster_prompt, "submit_clusters"), (_authoring_prompt, "submit_work_item")],
+)
+def test_each_prompt_names_the_tool_it_must_answer_through(prompt_of, tool_name):
+    """A prompt that still says "return one JSON object" while the API enforces a
+    tool is a prompt arguing with its own transport."""
+    _, prompt = prompt_of()
+    assert tool_name in prompt
+    assert "Return ONE JSON object" not in prompt
+
+
 # --------------------------------------------------------------------------
 # tiny local helper (kept at the bottom: plumbing, not a gate)
 # --------------------------------------------------------------------------

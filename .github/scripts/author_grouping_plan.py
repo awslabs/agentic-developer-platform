@@ -231,6 +231,90 @@ _AUTHORED_FIELDS = tuple(sorted(set(tg._REQUIRED_GROUP_FIELDS) - set(_CLUSTER_FI
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
+# --------------------------------------------------------------------------
+# the enforced output shapes
+#
+# Both phases hand the model a TOOL whose input schema is the answer, rather
+# than asking in prose for JSON and validating what comes back. The difference is
+# not stylistic: an asked-for shape is a request, and a tool's schema is a
+# constraint the API applies before we ever see the response.
+#
+# Two whole-repo replays paid for that lesson. Run 34108572024 and 34111797978
+# lost work items to exactly three things -- keys the model invented, a required
+# field omitted (`who_benefits`/`who_is_impacted`, six times, always as a pair),
+# and JSON that would not parse because ~10KB of prose containing quotes had been
+# hand-assembled into a string (`Expecting ',' delimiter: line 1 column 11890`).
+# All three are shape failures, and all three are what a schema is for: `required`
+# makes an omission impossible, `minLength` makes an empty string impossible,
+# `additionalProperties` makes an invented key impossible, and a `tool_use` block
+# arrives already parsed so there is no string for an unescaped quote to break.
+#
+# Built from the field constants rather than written out, so the schema cannot
+# drift from what the downstream gate requires -- and so no field name is spelled
+# twice in this file.
+# --------------------------------------------------------------------------
+
+
+def _string_properties(names) -> dict:
+    """A non-empty-string property per field. `minLength` is the point: an empty
+    required field renders an empty issue section, which the gate rejects anyway
+    -- better for the API to refuse it than for us to spend an attempt on it."""
+    return {name: {"type": "string", "minLength": 1} for name in names}
+
+
+def _non_empty_array(items: dict) -> dict:
+    return {"type": "array", "minItems": 1, "items": items}
+
+
+def cluster_tool() -> dict:
+    """Phase 1's answer, as a tool schema."""
+    properties = _string_properties(_CLUSTER_FIELDS)
+    properties["finding_ids"] = _non_empty_array({"type": "string"})
+    return {
+        "name": "submit_clusters",
+        "description": "Submit the night's grouping: which findings are one piece of work.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "clusters": _non_empty_array(
+                    {
+                        "type": "object",
+                        "properties": properties,
+                        "required": list(_CLUSTER_FIELDS),
+                        "additionalProperties": False,
+                    }
+                )
+            },
+            "required": ["clusters"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def work_item_tool() -> dict:
+    """Phase 2's answer, as a tool schema. Every authored field required."""
+    properties = _string_properties(_AUTHORED_FIELDS)
+    properties["fix_surface"] = _non_empty_array({"type": "string", "minLength": 1})
+    properties["risks"] = _non_empty_array(
+        {
+            "type": "object",
+            "properties": _string_properties(tg._RISK_FIELDS),
+            "required": list(tg._RISK_FIELDS),
+            "additionalProperties": False,
+        }
+    )
+    return {
+        "name": "submit_work_item",
+        "description": "Submit one security work item's issue text.",
+        "input_schema": {
+            "type": "object",
+            "properties": properties,
+            "required": list(_AUTHORED_FIELDS),
+            "additionalProperties": False,
+        },
+    }
+
+
 class PlanAuthoringError(RuntimeError):
     """The plan could not be authored, or what was authored is not fileable."""
 
@@ -378,18 +462,14 @@ for shared fixes across different files, not just within one file.
 
 ## Output contract
 
-Return ONE JSON object and nothing else -- no prose before or after, no code
-fence:
-
-```
-{{"clusters": [ {{...}}, {{...}} ]}}
-```
+Answer by calling the `submit_clusters` tool. Its schema IS the contract, so the
+shape is enforced rather than requested -- fill it and nothing else.
 
 Produce between {low} and {high} clusters (inclusive). This band is calibrated
 against a real triage of twelve findings into five work items; outside it your
 answer is rejected.
 
-Every cluster is an object with EXACTLY these three keys and no others:
+Each cluster carries three things:
 
 - `slug` -- lowercase kebab-case, unique across clusters. Names the shared fix.
 - `title` -- short and specific; it becomes the issue title. Describe the FIX or
@@ -481,15 +561,13 @@ The filed issue references these findings by id.
 {_detail_block(findings, details or {})}
 ## Output contract
 
-Return ONE JSON object and nothing else -- no prose before or after, no code
-fence. It has EXACTLY these {len(_AUTHORED_FIELDS)} keys, every one present and
-non-empty, and no others:
+Answer by calling the `submit_work_item` tool. Its schema IS the contract -- every
+one of these {len(_AUTHORED_FIELDS)} fields is required and must be non-empty:
 
 {keys}
 
-Do not include the work item's slug, its title, or its finding ids: those are
-already decided and will be attached for you. Adding them, or adding any other
-key, is rejected.
+The work item's slug, title and finding ids are already decided and are attached
+for you; the tool does not accept them.
 
 ## How to write it (this is the template, follow it)
 
@@ -557,22 +635,39 @@ Return the JSON object now."""
 # --------------------------------------------------------------------------
 
 
-def invoke_model(client, prompt: str, *, model_id: str, max_tokens: int) -> str:
-    """One Bedrock call. The client is injected so every path above it is
-    testable without AWS, the same seam shape the ledger's S3 writer uses."""
-    body = json.dumps(
-        {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-    )
+def invoke_model(
+    client, prompt: str, *, model_id: str, max_tokens: int, tool: dict | None = None
+) -> dict:
+    """One Bedrock call, returning the model's answer as an object.
+
+    The client is injected so every path above it is testable without AWS, the
+    same seam shape the ledger's S3 writer uses.
+
+    When a ``tool`` is given it is sent with ``tool_choice`` pinned to it, so the
+    model must answer by filling that schema. The answer then arrives as a
+    ``tool_use`` block whose ``input`` is ALREADY PARSED -- there is no string to
+    hand-assemble and therefore nothing for an unescaped quote in 10KB of prose to
+    break.
+
+    The text path is kept as a fallback rather than removed. A model that answers
+    in prose despite ``tool_choice`` has still answered, and the tolerant object
+    reader can usually read it; falling back costs nothing and turns a
+    would-be-failed night into a night that proceeds.
+    """
+    request = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if tool is not None:
+        request["tools"] = [tool]
+        request["tool_choice"] = {"type": "tool", "name": tool["name"]}
     try:
         response = client.invoke_model(
             modelId=model_id,
             contentType="application/json",
             accept="application/json",
-            body=body,
+            body=json.dumps(request),
         )
         payload = json.loads(response["body"].read())
     except Exception as exc:  # noqa: BLE001 - any failure here is one failure mode
@@ -580,10 +675,17 @@ def invoke_model(client, prompt: str, *, model_id: str, max_tokens: int) -> str:
     blocks = payload.get("content")
     if not isinstance(blocks, list) or not blocks:
         raise PlanAuthoringError("the plan-authoring model returned no content")
+    for block in blocks:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "tool_use"
+            and isinstance(block.get("input"), dict)
+        ):
+            return block["input"]
     text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
     if not text.strip():
         raise PlanAuthoringError("the plan-authoring model returned an empty response")
-    return text
+    return parse_object(text)
 
 
 def parse_object(text: str) -> dict:
@@ -652,17 +754,17 @@ def _first_json_object(text: str) -> dict | None:
     return None
 
 
-def parse_clusters(text: str) -> list:
-    """Phase 1's response: the `clusters` array."""
-    clusters = parse_object(text).get("clusters")
+def clusters_from(document: dict) -> list:
+    """Phase 1's answer: the `clusters` array out of the returned object."""
+    clusters = document.get("clusters") if isinstance(document, dict) else None
     if not isinstance(clusters, list):
         raise PlanAuthoringError("the clustering response carries no `clusters` array")
     return clusters
 
 
-def parse_authored(text: str) -> dict:
-    """Phase 2's response: one work item's fields, as a flat object."""
-    return parse_object(text)
+def parse_clusters(text: str) -> list:
+    """The same, from raw text -- the prose fallback path."""
+    return clusters_from(parse_object(text))
 
 
 # --------------------------------------------------------------------------
@@ -800,8 +902,14 @@ def _form_clusters(
         )
         try:
             return _gate_clusters(
-                parse_clusters(
-                    invoke_model(client, prompt, model_id=model_id, max_tokens=max_tokens)
+                clusters_from(
+                    invoke_model(
+                        client,
+                        prompt,
+                        model_id=model_id,
+                        max_tokens=max_tokens,
+                        tool=cluster_tool(),
+                    )
                 ),
                 expected_ids,
             )
@@ -854,9 +962,17 @@ def _author_one(
             previous_error=previous_error,
         )
         try:
-            response = parse_authored(
-                invoke_model(client, prompt, model_id=model_id, max_tokens=max_tokens)
+            response = invoke_model(
+                client,
+                prompt,
+                model_id=model_id,
+                max_tokens=max_tokens,
+                tool=work_item_tool(),
             )
+            if not isinstance(response, dict):
+                raise PlanAuthoringError(
+                    f"the work item response is a {type(response).__name__}, not an object"
+                )
             # PROJECTED to the allow-list, not rejected for carrying extras.
             #
             # Rejecting bought nothing and cost a whole attempt. The group below is
