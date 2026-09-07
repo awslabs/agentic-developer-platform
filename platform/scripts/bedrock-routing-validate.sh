@@ -24,19 +24,45 @@
 #                Together these are exactly what a save-time test-assume must
 #                establish before a mapping may be stored (#4692 ruling: reject,
 #                never store inert — the #4511 class).
-#   authz        Prove the admin routes are platform-admin-only. A member identity
-#                must receive 401/403 on every route. See the LIMITATION note.
+#   authz        Prove the admin routes are platform-admin-only, against a REAL
+#                org_admin (the strong case) and against a plain member and an
+#                unauthenticated caller (the weak cases).
 #   panel        Prove the admin surface is actually deployed (routes not 404).
 #
-# LIMITATION, STATED UP FRONT (do not let a green run overstate this)
-#   dev seeds only two identities: adp/<env>/gateway/test-admin-credentials
-#   (is_admin=True, platform admin) and .../test-user-credentials (plain member).
-#   There is NO org_admin identity, so --check authz demonstrates the 403 against
-#   a MEMBER, not against an org admin. A member is denied by any authz check at
-#   all, so this is the weaker assertion. The org_admin case is provable cheaply
-#   only in the backend test suite with a synthetic org_admin context, and that
-#   test is required at PR time. This script prints that caveat on every run so a
-#   PASS is never mistaken for the stronger claim.
+# WHY THE org_admin CASE IS THE ONE THAT MATTERS
+#   A MEMBER is denied by any authz check at all, so a member 403 is nearly
+#   content-free: it passes whether the route is correctly platform-admin-only or
+#   merely "not public". The discriminating principal is an admin of an org who is
+#   NOT a platform admin — the caller who has real admin authority somewhere and
+#   must still be refused a platform-wide routing surface. That is the assertion
+#   this check leads with.
+#
+#   An earlier revision of this script (and an earlier ops finding on #4748)
+#   asserted "dev has NO org_admin identity" after enumerating Secrets Manager,
+#   and fell back to the member-only assertion. That was wrong: absence of a
+#   static password is not absence of the principal. dev has a purpose-built
+#   actor harness, Lambda adp-<env>-agent-pentest-actor-token (#4444, source at
+#   modules/agent-factory/gateway/lambdas/pentest-actor-token/), minting
+#   platform_admin, org_admin_a, org_admin_b (deliberately DIFFERENT orgs) and
+#   regular_user. We use it here.
+#
+#   THE AUTHORITY ASYMMETRY (read before touching the identity handling)
+#   Platform admin comes from the TOKEN alone — custom:role in
+#   {platform_admin, admin} or membership of {admins, platform-admins}; the
+#   is_admin short-circuit in AccessControl.get_user_role never hits the DB.
+#   Org admin comes ONLY from Postgres — with is_admin false,
+#   _resolve_membership_role requires an is_active tenant_memberships row
+#   (migration 021); with no row the caller silently resolves to MEMBER. So a
+#   hand-rolled token carrying custom:role=org_admin IS A MEMBER, and using one
+#   here would quietly re-introduce the weak assertion while LOOKING like the
+#   strong one. The minting Lambda fails closed when the membership row is
+#   absent, which is exactly why we call it instead of forging a token.
+#
+#   We therefore verify the fixture has genuine authority before trusting its
+#   denial: the org_admin must get 2xx on its OWN org's admin surface. Without
+#   that positive control, a 403 on the routing routes cannot be distinguished
+#   from "this identity is powerless". If the control fails, the org_admin
+#   assertions are SKIPPED, never counted as passes.
 #
 #   For the record, the platform DOES reject org_admin here: all three copies of
 #   the predicate (auth/auth_service.py:301, auth/dependencies.py:82,
@@ -297,6 +323,41 @@ except Exception as exc:                       # noqa: BLE001 - surface cause, h
 PY
 }
 
+mint_actor_token() {  # mint_actor_token <actor> <out-file>; echoes the actor's org_id
+  # Uses the dev pentest actor-token Lambda (#4444) rather than a forged token,
+  # because org-admin authority lives in Postgres and a claims-only token would
+  # resolve to MEMBER (see the header). The Lambda fails closed if the
+  # tenant_memberships row is missing, so a returned token is a REAL org admin.
+  # The token is written to a file and never placed on a command line or logged.
+  ADP_FN="adp-${ENVIRONMENT}-agent-pentest-actor-token" ADP_ACTOR="$1" \
+  python3 - "$2" <<'PY' 2>/dev/null
+import base64, json, os, subprocess, sys, tempfile
+fn, actor = os.environ["ADP_FN"], os.environ["ADP_ACTOR"]
+out = tempfile.NamedTemporaryFile(suffix=".json", delete=False).name
+payload = base64.b64encode(json.dumps({"actor": actor}).encode()).decode()
+try:
+    subprocess.run(["aws", "lambda", "invoke", "--function-name", fn,
+                    "--payload", payload, out],
+                   capture_output=True, text=True, check=True)
+    d = json.load(open(out))
+    if isinstance(d.get("body"), str):
+        d = json.loads(d["body"])
+    tok = d.get("access_token")
+    if not tok:
+        # Never echo the response body: on some paths it can carry a credential.
+        print(f"no token (statusCode={d.get('statusCode')})", file=sys.stderr)
+        sys.exit(1)
+    open(sys.argv[1], "w").write(tok)
+    print(d.get("org_id", ""))
+except Exception as exc:                       # noqa: BLE001 - surface cause, hide value
+    print(f"{type(exc).__name__}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    try: os.unlink(out)
+    except OSError: pass
+PY
+}
+
 # The admin routes under test. Kept in one place so authz and panel agree.
 ROUTES=(
   "GET  /api/admin/bedrock-routing/mappings"
@@ -348,13 +409,42 @@ fi
 # ===========================================================================
 if [[ "${CHECK}" == "authz" || "${CHECK}" == "all" ]]; then
   echo "--> [authz] Confirming the admin routes are platform-admin-only"
-  echo "    CAVEAT: dev has no org_admin identity. The denial below is proven"
-  echo "            against a MEMBER, which is the WEAKER assertion. The"
-  echo "            org_admin case must be proven in the backend test suite."
   if ! resolve_gateway; then
     fail "gateway unreachable — cannot evaluate authz"
   else
-    MEMBER_TOK="$(mktemp)"; trap 'rm -f "${MEMBER_TOK}"' EXIT
+    # --- the STRONG case: a real org_admin must still be refused -------------
+    OA_TOK="$(mktemp)"; trap 'rm -f "${OA_TOK}"' EXIT
+    if ! OA_ORG="$(mint_actor_token "org_admin_a" "${OA_TOK}")"; then
+      skip "org_admin case — could not mint org_admin_a from the actor Lambda"
+      echo "          (adp-${ENVIRONMENT}-agent-pentest-actor-token; it fails closed when the"
+      echo "           tenant_memberships row is absent. NOT counted as a pass.)"
+    elif [[ -z "${OA_ORG}" ]]; then
+      skip "org_admin case — actor minted but reported no org_id; authority unverifiable"
+    else
+      # Positive control FIRST: prove this identity actually has admin authority
+      # somewhere, so that its denial below is meaningful rather than vacuous.
+      ctl="$(http_status GET "/api/admin/organizations/${OA_ORG}/users?limit=1" "${OA_TOK}")"
+      if [[ "${ctl}" == 2* ]]; then
+        pass "control: org_admin_a reads its OWN org (${ctl}) — authority is real, so a denial below counts"
+        for entry in "${ROUTES[@]}"; do
+          m="${entry%% *}"; p="${entry##* }"
+          code="$(http_status "${m}" "${p}" "${OA_TOK}")"
+          case "${code}" in
+            401|403) pass "${m} ${p} -> ${code} for a REAL org_admin (denied) <- the strong assertion" ;;
+            404)     fail "${m} ${p} -> 404: route absent, so the denial proves nothing. R4 is NOT deployed." ;;
+            2*)      fail "${m} ${p} -> ${code} for an ORG_ADMIN — AUTHZ HOLE. A tenant admin can read platform-wide routing." ;;
+            *)       fail "${m} ${p} -> ${code} (unexpected)" ;;
+          esac
+        done
+      else
+        # Do not fall back to the member-only assertion and call it a pass.
+        skip "org_admin case — positive control returned ${ctl}, so this identity has no provable"
+        echo "          admin authority and its 403 would be indistinguishable from a member's."
+      fi
+    fi
+
+    # --- the WEAK cases: member and unauthenticated -------------------------
+    MEMBER_TOK="$(mktemp)"; trap 'rm -f "${OA_TOK}" "${MEMBER_TOK}"' EXIT
     if ! mint_token "test-user-credentials" "${MEMBER_TOK}"; then
       fail "could not authenticate the member identity (expired Cognito creds?)"
     else
@@ -362,7 +452,7 @@ if [[ "${CHECK}" == "authz" || "${CHECK}" == "all" ]]; then
         m="${entry%% *}"; p="${entry##* }"
         code="$(http_status "${m}" "${p}" "${MEMBER_TOK}")"
         case "${code}" in
-          401|403) pass "${m} ${p} -> ${code} for a member (denied)" ;;
+          401|403) pass "${m} ${p} -> ${code} for a member (denied; weak — any authz check does this)" ;;
           404)     fail "${m} ${p} -> 404: route absent, so the denial proves nothing. R4 is NOT deployed." ;;
           2*)      fail "${m} ${p} -> ${code} for a MEMBER — AUTHZ HOLE. A non-admin can read platform-wide routing." ;;
           *)       fail "${m} ${p} -> ${code} (unexpected)" ;;
