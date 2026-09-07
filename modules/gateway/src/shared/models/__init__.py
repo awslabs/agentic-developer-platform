@@ -6,6 +6,11 @@ in src/app.py lifespan and calling Base.metadata.create_all().
 """
 
 from src.shared.models.base import Base, TenantMixin, new_uuid, utcnow
+from src.shared.models.bedrock_routing import (
+    MAPPING_SCOPE_TYPES,
+    BedrockAccountMapping,
+    BedrockDestinationRegistry,
+)
 from src.shared.models.budget import BudgetConfig, BudgetUsage, PersonBudgetConfig
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import (
@@ -38,6 +43,9 @@ __all__ = [
     "TenantMixin",
     "new_uuid",
     "utcnow",
+    "MAPPING_SCOPE_TYPES",
+    "BedrockAccountMapping",
+    "BedrockDestinationRegistry",
     "BudgetConfig",
     "BudgetUsage",
     "PersonBudgetConfig",

@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from src.budget.enforcement_service import reconcile_budget_reservation
+from src.proxy.bedrock_routing import resolve_shadow_target
 from src.proxy.exceptions import (
     BedrockInvocationError,
 )
@@ -400,6 +401,15 @@ class ProxyService(IProxyService):
         on success AND on failure — which makes it both the "charge the real
         cost" hook and the "release what a failed request was holding" hook.
 
+        Issue #4743: now also records the Bedrock account this call *would* have
+        been routed to (shadow mode, §8.2 phase 1). It is resolved here rather
+        than at client-construction time precisely because nothing about signing
+        changes: this method is the settlement point, the column it writes has
+        existed unwritten since 001, and resolving alongside the other metering
+        reads keeps the routing decision out of the invoke path entirely. When
+        the flag is off, or resolution fails, the column stays NULL — "not
+        captured", never a fabricated account.
+
         Failures are swallowed to avoid impacting the proxy hot path.
         """
         # Issue #1074: Use contextvar if no explicit request_id provided
@@ -414,6 +424,14 @@ class ProxyService(IProxyService):
         # so nothing here can raise and no raw User-Agent can reach the column.
         # None means "not captured" and is written as NULL — never a placeholder.
         client_tool = _current_client_tool.get()
+
+        # Issue #4743: the would-be routing destination. SHADOW ONLY — this value
+        # is written to usage_logs and read by nobody else; the request was already
+        # signed with the platform account's ambient IRSA credentials by the time
+        # we get here (this runs in the caller's `finally`), which is what makes
+        # "signing is unchanged" a structural property rather than a promise.
+        # Returns None when the flag is off or resolution failed; never raises.
+        shadow_target = await resolve_shadow_target(context)
 
         await reconcile_budget_reservation(
             context=context,
@@ -440,6 +458,10 @@ class ProxyService(IProxyService):
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_creation_input_tokens=cache_creation_input_tokens,
                     client_tool=client_tool,
+                    # Issue #4743: shadow-mode capture into the column that has
+                    # existed since 001 and never been written. None persists as
+                    # NULL = "not captured".
+                    bedrock_account_id=shadow_target.account_id if shadow_target else None,
                 )
         except Exception as exc:
             logger.warning(

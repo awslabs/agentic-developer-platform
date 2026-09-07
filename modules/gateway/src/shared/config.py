@@ -187,6 +187,32 @@ class Settings(BaseSettings):
     # so a pod recycle is enough; no image rebuild).
     enforce_org_assignment: bool = False
 
+    # Issue #4743 (#4692 · R2): per-principal Bedrock account routing, SHADOW MODE.
+    # When True the resolution ladder (user > team > org > platform) runs on the
+    # settlement path and its answer is recorded in usage_logs.bedrock_account_id.
+    # It does NOT change where any request goes — the call is already signed and
+    # sent by the time this runs, with the platform account's ambient IRSA
+    # credentials, exactly as on main. Enforcement is #4744 (R3).
+    #
+    # Default True: with zero mappings configured the existence gate makes this
+    # cost zero queries per model call, and the captured column is what #4744 is
+    # gated on — an operator has to be able to see what routing *would* do before
+    # being asked to let it happen. Set BG_BEDROCK_ROUTING_SHADOW_MODE=false to
+    # stop observing (read per-request, so a pod recycle is enough; no rebuild).
+    bedrock_routing_shadow_mode: bool = True
+
+    # Issue #4743: the account the gateway's own IRSA credentials belong to — the
+    # answer for the platform rung, i.e. every call today. Configured rather than
+    # discovered because a live sts:get_caller_identity on the settlement path
+    # would add a network hop to every request that resolves to platform (which,
+    # before any mapping exists, is all of them).
+    #
+    # Empty means "not captured": the platform rung still resolves, but the column
+    # is left NULL rather than filled with a guess. NULL is a truthful "we did not
+    # capture this"; a fabricated account id reads as evidence and would mislead
+    # exactly the audit this column exists to support.
+    platform_bedrock_account_id: str = ""
+
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 
 

@@ -33,6 +33,7 @@ import httpx
 
 from src.budget.enforcement_service import reconcile_budget_reservation
 from src.budget.pricing import pricing_service
+from src.proxy.bedrock_routing import resolve_shadow_target
 from src.proxy.mantle_auth import MantleAuth
 from src.proxy.service import _current_client_tool
 from src.shared.database import get_session_factory
@@ -400,9 +401,27 @@ class MantlePassthroughService:
         here too. Wiring only the Bedrock path would leave client_tool NULL on
         100% of OpenAI passthrough rows — indistinguishable from "not captured",
         so a future breakdown would under-report this route with nothing saying so.
+
+        Issue #4743: ``bedrock_account_id`` is captured here for that same reason,
+        with one important difference from the Bedrock path — **this route is
+        capture-only and is NOT routable** (design note §7.2). ``SigV4MantleAuth``
+        is constructed once at app startup, so per-request account selection here
+        is a larger refactor that is explicitly out of scope. The value is
+        nonetheless recorded so the column is not silently NULL on 100% of
+        passthrough rows, which would be indistinguishable from "we never looked"
+        — the same trap #4398 documents above. An operator reading a mapped
+        principal's rows needs the mantle rows to say which account served them,
+        even while nothing can yet change that answer.
         """
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
+
+        # Issue #4743: resolve the would-be destination account for the audit
+        # trail. Shadow mode only — this runs AFTER the upstream call has already
+        # been signed and sent (every caller reaches _log_usage from a `finally`),
+        # so it cannot influence where the request went. Returns None when the
+        # flag is off or resolution failed; None persists as NULL.
+        shadow_target = await resolve_shadow_target(context)
 
         await reconcile_budget_reservation(
             context=context,
@@ -433,6 +452,9 @@ class MantlePassthroughService:
                     # Issue #4398: already normalised (or None) by the route
                     # dependency; None persists as NULL = "not captured".
                     client_tool=_current_client_tool.get(),
+                    # Issue #4743: the account this call SHOULD have been served by
+                    # (capture only on this path — see the docstring, §7.2).
+                    bedrock_account_id=shadow_target.account_id if shadow_target else None,
                 )
         except Exception as exc:  # noqa: BLE001 - metering must not break the proxy
             logger.warning("Failed to write mantle usage_logs row", extra={"error": str(exc), "model": model})

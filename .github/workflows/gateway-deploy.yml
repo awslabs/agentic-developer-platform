@@ -260,6 +260,14 @@ jobs:
           # "true" per env via SSM once the WARN logs are clean.
           VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-enforce-credential-host-binding" "false")
 
+          # Issue #4743: Bedrock routing shadow mode. Observation only — the
+          # resolved destination is recorded in usage_logs.bedrock_account_id and
+          # changes nothing about where a request goes (enforcement is #4744).
+          # Defaults "true" because the captured column is what #4744 is gated on,
+          # and with zero mappings the existence gate makes it free. Set the SSM
+          # param to "false" + `kubectl rollout restart` to stop observing.
+          BEDROCK_ROUTING_SHADOW_MODE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/bedrock-routing-shadow-mode" "true")
+
           sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
               -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
               -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -288,6 +296,8 @@ jobs:
               -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
               -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
               -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
+              -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
+              -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---

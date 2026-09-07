@@ -244,6 +244,35 @@ data:
   BG_ENFORCE_ORG_ASSIGNMENT: "false"
 
   # =============================================================================
+  # Per-principal Bedrock account routing — SHADOW MODE (Issue #4743, #4692)
+  # =============================================================================
+  # When "true", the resolution ladder (user > team > org > platform) runs on the
+  # settlement path and its answer is recorded in usage_logs.bedrock_account_id.
+  # It does NOT change where any request goes: by the time it runs the call has
+  # already been signed and sent with the gateway's ambient IRSA credentials, the
+  # same as before. Enforcement is #4744.
+  #
+  # Leave "true". The captured column is the evidence #4744 is gated on — an
+  # operator has to be able to see what routing WOULD do before being asked to
+  # let it happen — and with zero mappings authored a 60s existence gate makes it
+  # cost zero queries per model call. Set the SSM param
+  # /adp/{env}/gateway/bedrock-routing-shadow-mode to "false" +
+  # `kubectl rollout restart` to stop observing; read per-request via
+  # get_settings(), so no image rebuild is needed.
+  #
+  # PLATFORM_BEDROCK_ACCOUNT_ID is the account the gateway's own IRSA credentials
+  # belong to — the answer for the platform rung, i.e. every call today. It is
+  # substituted by gateway-deploy.yml rather than discovered at runtime, because a
+  # live sts:get_caller_identity on the settlement path would add a network hop to
+  # every request that resolves to platform (before any mapping exists, all of
+  # them). If this is ever left EMPTY the platform rung still resolves but the
+  # column stays NULL — which reads as "not captured" and makes shadow mode
+  # silently unobservable, so it is wired here deliberately rather than defaulted.
+  # =============================================================================
+  BG_BEDROCK_ROUTING_SHADOW_MODE: "__BEDROCK_ROUTING_SHADOW_MODE__"
+  BG_PLATFORM_BEDROCK_ACCOUNT_ID: "__PLATFORM_BEDROCK_ACCOUNT_ID__"
+
+  # =============================================================================
   # Budget enforcement fail mode (Issue #4075)
   # =============================================================================
   # What happens when the budget CHECK itself fails (DB/IAM error), as opposed

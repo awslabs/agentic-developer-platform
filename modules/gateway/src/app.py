@@ -117,6 +117,7 @@ async def lifespan(app: FastAPI):
             # Import all models so Base.metadata knows about them
             import src.admin.models  # noqa: F401
             import src.shared.models.audit  # noqa: F401  # Issue #446
+            import src.shared.models.bedrock_routing  # noqa: F401  # Issue #4743
             import src.shared.models.budget  # noqa: F401
             import src.shared.models.organization  # noqa: F401
             import src.shared.models.usage  # noqa: F401
