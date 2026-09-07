@@ -69,6 +69,15 @@ vi.mock('@/components/budget/DefaultPersonLimits', () => ({
   DefaultPersonLimits: () => <div data-testid="default-person-limits" />,
 }));
 
+/**
+ * The #4745 routing panel, stubbed for the same reason: its behaviour is covered in
+ * BedrockAccountRouting.test.tsx, and unstubbed it fetches mappings, destinations and
+ * organizations on mount.
+ */
+vi.mock('@/components/bedrock/BedrockAccountRouting', () => ({
+  BedrockAccountRouting: () => <div data-testid="bedrock-account-routing" />,
+}));
+
 import { getBudgetsWithUtilization } from '@/services/budget';
 
 const mockGetBudgets = getBudgetsWithUtilization as ReturnType<typeof vi.fn>;
@@ -244,5 +253,40 @@ describe('BudgetManagement — default person limits panel (#4691)', () => {
     await waitFor(() => expect(mockGetBudgets).toHaveBeenCalled());
 
     expect(screen.queryByTestId('default-person-limits')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The Bedrock account-routing panel (#4745, #4692 · R4 §6.3).
+ *
+ * Same gate, same reasoning as the defaults panel above, and the stakes are if anything
+ * higher: these rules decide whose AWS account is BILLED for a population's model calls,
+ * and they are partition-free — an org id is a scope value, not a boundary, so an org
+ * admin could name another tenant's destination. Hence `require_platform_admin` on every
+ * `/admin/bedrock-routing/*` route (design ruling 4, §6.5), which is the actual boundary;
+ * hiding the panel only keeps an org admin out of a 403 they could not interpret.
+ */
+describe('BudgetManagement — Bedrock account routing panel (#4745)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetBudgets.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20, hasMore: false });
+  });
+
+  it('mounts the routing panel for a platform admin', async () => {
+    mockIsPlatformAdmin.mockReturnValue(true);
+
+    renderPage();
+    await waitFor(() => expect(mockGetBudgets).toHaveBeenCalled());
+
+    expect(screen.getByTestId('bedrock-account-routing')).toBeInTheDocument();
+  });
+
+  it('hides the routing panel from a non-platform-admin', async () => {
+    mockIsPlatformAdmin.mockReturnValue(false);
+
+    renderPage();
+    await waitFor(() => expect(mockGetBudgets).toHaveBeenCalled());
+
+    expect(screen.queryByTestId('bedrock-account-routing')).not.toBeInTheDocument();
   });
 });

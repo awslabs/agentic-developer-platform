@@ -27,6 +27,7 @@ import { EntityType } from '@/types';
 import { BudgetFormModal } from '@/components/budget/BudgetFormModal';
 // Issue #4691: the admin authoring surface for #4690's default-limit ladder.
 import { DefaultPersonLimits } from '@/components/budget/DefaultPersonLimits';
+import { BedrockAccountRouting } from '@/components/bedrock/BedrockAccountRouting';
 import { DeleteConfirmationModal } from '@/components/ui/DeleteConfirmationModal';
 // Issue #4207: was a byte-identical local copy of utils/format's formatCurrency.
 import { formatCurrency } from '@/utils/format';
@@ -310,6 +311,15 @@ export function BudgetManagement() {
           would not widen the authority — it would only produce 403s an org admin has no
           way to interpret. */}
       {callerIsPlatformAdmin && <DefaultPersonLimits />}
+
+      {/* Bedrock account routing (#4745, #4692 · R4 §6.3): mounted here because it
+          answers the question adjacent to every other control on this page. Budgets say
+          how much a principal may spend; this says whose AWS account is billed for it —
+          the same scope ladder (org / team / person), governed from the same screen.
+
+          Same platform-admin gate, same reasoning: `require_platform_admin` on every
+          routing route is the boundary, and this only keeps org admins out of a 403. */}
+      {callerIsPlatformAdmin && <BedrockAccountRouting />}
 
       <Card>
         <CardHeader>

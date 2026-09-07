@@ -72,6 +72,14 @@ UNIT_MODULES = [
     # src.budget.routes, whose unscoped entity_type/entity_id pattern is open
     # IDOR #4384.
     "src.budget.person_cap_routes",
+    # Issue #4745 (#4692 · R4): the Bedrock account-routing authoring API — the
+    # platform-admin surface over R2's mapping/destination tables. Every route is
+    # `require_platform_admin`, org admins included (design ruling 4, §6.5): a mapping
+    # decides whose AWS account is BILLED for a principal's model calls, and a
+    # user-rung mapping names a person who may work in several tenants. Registered
+    # here, not under src.admin.routes, because that module's authoring rules are
+    # partition-scoped and this one's deliberately are not.
+    "src.admin.bedrock_routing.routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)

@@ -28,6 +28,15 @@ from src.shared.database import get_db
 from src.shared.models.organization import User
 from src.shared.models.vault import UserCredential
 from src.shared.schemas.auth import TokenContext
+from src.shared.services.routing_probe import (
+    ROUTING_REASON_PROBE_INCONCLUSIVE as _ROUTING_REASON_PROBE_INCONCLUSIVE,
+)
+from src.shared.services.routing_probe import (
+    ROUTING_REASON_USER_PINNED as _ROUTING_REASON_USER_PINNED,
+)
+from src.shared.services.routing_probe import (
+    probe_assumable_for_any_principal,
+)
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
 from .cfn_template import build_launch_url, compute_role_arn
@@ -335,70 +344,27 @@ async def connect_verify(
 
 #: Machine-readable reason a verified connection is not usable as a Bedrock
 #: routing destination. Stable vocabulary — the admin UI renders these.
-ROUTING_REASON_USER_PINNED = "role_user_pinned_needs_v2_template"
-ROUTING_REASON_PROBE_INCONCLUSIVE = "routing_probe_inconclusive"
+#:
+#: Issue #4745 moved the definitions into ``src/shared/services/routing_probe.py``
+#: alongside the probe that produces them, and re-exports them here so #4742's
+#: callers and tests keep importing them from where they were introduced. Two
+#: literals in two modules is a vocabulary that drifts.
+ROUTING_REASON_USER_PINNED = _ROUTING_REASON_USER_PINNED
+ROUTING_REASON_PROBE_INCONCLUSIVE = _ROUTING_REASON_PROBE_INCONCLUSIVE
 
-
-async def _probe_routing_capability(
-    *,
-    role_arn: str,
-    external_id: str | None,
-    default_region: str,
-    user_id: str,
-    label: str,
-) -> tuple[bool, str | None]:
-    """Classify a verified role as routing-capable (v2) or single-user (v1).
-
-    Issue #4742. The property that matters for routing is not "which template did
-    you launch" — we cannot see that from here, and a self-reported version would
-    be a guess. It is the *behaviour*: can this role be assumed on behalf of
-    someone other than whoever created the stack?
-
-    We test it directly by repeating the assume **without session tags**. The v1
-    trust policy conditions on ``aws:RequestTag/adp:user_id``, so an untagged
-    assume is denied; v2 drops that condition, so it succeeds. That single call is
-    a definitive read of the exact property, needs no extra IAM permission, and
-    costs nothing.
-
-    Returns ``(routing_capable, reason)`` where ``reason`` is None on success.
-    Never raises — the caller has already proved the connection works, and a
-    classification failure must not fail the verify.
-    """
-    try:
-        await asyncio.to_thread(
-            assume_role,
-            role_arn=role_arn,
-            external_id=external_id,
-            session_duration_seconds=900,
-            default_region=default_region,
-            user_id=user_id,
-            agent_id="connect-verify",
-            task_id="routing-probe",
-            label=label,
-            send_session_tags=False,
-        )
-    except STSAssumeError as exc:
-        if exc.code in ("AccessDenied", "AccessDeniedException"):
-            # The trust policy refused an untagged assume — the v1 single-user
-            # pin. This is the expected, non-alarming outcome for every existing
-            # connection; the account must re-run the v2 template to be routable.
-            logger.info(
-                "Routing probe: role is user-pinned (v1 shape) role_arn=%s",
-                role_arn,
-            )
-            return False, ROUTING_REASON_USER_PINNED
-        # Anything else (throttling, region disabled, transient STS failure) is
-        # not evidence about the trust policy. Report not-capable so nothing is
-        # routed to an unproven role, but with a distinct reason so an operator
-        # can tell "re-run the template" from "re-run the probe".
-        logger.warning(
-            "Routing probe inconclusive role_arn=%s code=%s",
-            role_arn,
-            exc.code,
-        )
-        return False, ROUTING_REASON_PROBE_INCONCLUSIVE
-
-    return True, None
+#: The v1/v2 assumability classifier, now shared. Issue #4745 (R4) needs the same
+#: check at mapping-save time, and design note §6.7 item 1 is explicit that there
+#: must be exactly ONE assume probe: *"Reuse it; do not write a second assume
+#: probe. Two probes with different conditions is how 'verified here, broken
+#: there' happens."* So the implementation moved to
+#: :mod:`src.shared.services.routing_probe` and this name is an alias, not a copy.
+#:
+#: Note what the admin path adds on top and this one deliberately does NOT: the
+#: ``bedrock:InvokeModel`` capability probe (§6.7 item 3). A connection being
+#: classified here may be a perfectly valid read-only v1 credential, and a missing
+#: Bedrock permission is not a defect in *that* purpose — it only disqualifies the
+#: role as a routing destination, which is a question only the routing surface asks.
+_probe_routing_capability = probe_assumable_for_any_principal
 
 
 def _sts_error_to_reason(code: str) -> str:
