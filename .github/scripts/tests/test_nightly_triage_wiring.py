@@ -186,8 +186,16 @@ def test_triage_runs_between_the_scan_and_the_handoff(jobs, triage_job):
     empty prefix, and -- with the temporary guard now gone -- hard-fails the
     barrier as STALLED, blaming a triage pass that had not yet run.
     """
-    assert triage_job["needs"] == "code-review", (
-        "triage consumes the findings the scan published, so it must depend on it"
+    # `needs` may be a string or a list, and triage legitimately gained a second
+    # dependency (#4792's `scan_gate`, which decides whether this scan file has
+    # already been turned into issues). The invariant is that the EDGE to the scan
+    # exists, not that it is the only one -- a stricter assertion would fail any
+    # future gate for doing exactly what it was asked to do.
+    triage_needs = triage_job["needs"]
+    triage_needs = [triage_needs] if isinstance(triage_needs, str) else triage_needs
+    assert "code-review" in triage_needs, (
+        "triage consumes the findings the scan published, so it must depend on it. "
+        f"Found {triage_job['needs']!r}"
     )
     assert jobs["deliver"]["needs"] == ["code-review", "triage"], (
         "deliver must depend on BOTH: `code-review` for the run date it consumes "

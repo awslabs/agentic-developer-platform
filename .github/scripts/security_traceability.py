@@ -349,11 +349,39 @@ def assert_fully_traced(trace: dict) -> None:
 # --------------------------------------------------------------------------
 
 
-def write_ledger(path: Path | str, trace: dict) -> Path:
+def write_ledger(path: Path | str, trace: dict, *, allow_stage_regression: bool = False) -> Path:
     """Write the ledger deterministically (sorted keys), so a re-run of the same
     night produces a byte-identical file -- the same reproducibility the U2 shard
-    writer keeps, and for the same reason (a diff should mean a real change)."""
+    writer keeps, and for the same reason (a diff should mean a real change).
+
+    **Refuses to write a grouping-stage ledger over a filed-stage one** (#4792).
+
+    That regression is what lost the 2026-08-30 record: a re-run's authoring step
+    wrote its fresh grouping-stage ledger to the same path, erasing the filed
+    stage that mapped 62 findings to issues #4701-#4731. The issue numbers were
+    only recoverable from GitHub afterwards, and the file that exists to answer
+    "where did this finding end up" answered it wrongly.
+
+    Refusing is right rather than merging, because the two documents describe
+    different groupings of the same findings -- merging them would produce a
+    ledger that is a partition of nothing. The caller that genuinely means to
+    replace a filed record passes ``allow_stage_regression`` and says so.
+    """
     out = Path(path)
+    if not allow_stage_regression and trace.get("stage") == "grouping" and out.exists():
+        try:
+            existing = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # An unreadable file is not a filed record to protect. Fall through
+            # and overwrite it rather than failing the night over a corrupt one.
+            existing = {}
+        if isinstance(existing, dict) and existing.get("stage") == "filed":
+            raise TraceabilityError(
+                f"refusing to overwrite the filed-stage traceability ledger at {out} "
+                "with a grouping-stage one: it maps this run's findings to real issue "
+                "numbers and a fresh grouping would erase them. This night has "
+                "already been filed -- see #4792 on why a re-run should not reach here"
+            )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(trace, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     return out

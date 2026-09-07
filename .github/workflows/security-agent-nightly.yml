@@ -360,6 +360,74 @@ jobs:
             --bucket "adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}"
 
   # ---------------------------------------------------------------------------
+  # Has this scan already been turned into issues? (#4792)
+  # ---------------------------------------------------------------------------
+  # A whole JOB rather than a step inside `triage`, and that is the load-bearing
+  # choice. The triage job's steps are guarded by wiring gates that require them
+  # to be UNCONDITIONAL, for good reasons: a plan gate that can be skipped is not
+  # a gate, and the filing step is what writes the completion marker the delivery
+  # barrier joins on — a condition there is how a night silently stops signalling.
+  # Conditioning those steps would have satisfied this feature by weakening both.
+  #
+  # A job-level decision touches no step. `triage` is skipped whole or runs whole,
+  # and `deliver` skips with it because a skipped dependency skips its dependents.
+  # Nothing is half-done, and no gate is bypassed.
+  #
+  # Why this exists: the pipeline had no memory of its own work, so the same scan
+  # file could be consumed repeatedly, each time filing a fresh set of issues for
+  # the same defects (2026-08-30 produced 31 work items and then 27 more). The
+  # existing guard matched on issue TITLE, which is model-authored and varies
+  # between runs — the one part of a plan guaranteed not to match.
+  scan_gate:
+    name: Scan Gate
+    needs: code-review
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    outputs:
+      processed: ${{ steps.check.outputs.processed }}
+      findings_version: ${{ steps.check.outputs.findings_version }}
+      started_at: ${{ steps.check.outputs.started_at }}
+    env:
+      SECURITYAGENT_PYTHON: python3
+      ENVIRONMENT: ${{ inputs.environment == '' && 'dev' || inputs.environment }}
+      RUN_DATE: ${{ needs.code-review.outputs.run_date }}
+      SOURCE: code-review
+      # A FIXED key, deliberately not under a run's date prefix: the log has to
+      # outlive any single run.
+      RUN_LOG: security-agent/processed-runs.json
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve account ID
+        run: echo "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
+
+      # Keyed on the findings file's CONTENT, not its date: a re-scan that
+      # republishes a different document for the same date must still be
+      # processed, and keying on the date would skip it and lose real findings.
+      # Only a `success` entry blocks, so a failed night stays retryable.
+      - name: Has this scan already been processed?
+        id: check
+        run: |
+          mkdir -p run-log
+          aws s3 cp \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}/code-review-findings.json" \
+            findings.json --no-progress
+          aws s3 cp \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/${RUN_LOG}" \
+            run-log/processed-runs.json --no-progress 2>/dev/null \
+            || echo "no run log yet — nothing has been processed"
+          echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          $SECURITYAGENT_PYTHON .github/scripts/processed_runs.py check \
+            --log run-log/processed-runs.json \
+            --source "$SOURCE" \
+            --findings findings.json | tee check.txt
+          grep -E '^(processed|findings_version)=' check.txt >> "$GITHUB_OUTPUT"
+          if grep -q '^processed=true$' check.txt; then
+            echo "::notice title=Security triage::this scan file has already been turned into issues; triage and delivery will be skipped"
+          fi
+
+  # ---------------------------------------------------------------------------
   # Turn the night's raw findings into deduped, grouped issues (#4613)
   # ---------------------------------------------------------------------------
   # The middle of the pipeline. Without it `code-review` publishes findings to a
@@ -405,7 +473,10 @@ jobs:
   # no trigger, so the wiring lands as dormant as the rest of the file.
   triage:
     name: Triage
-    needs: code-review
+    needs: [code-review, scan_gate]
+    # Skipped WHOLE when this scan file has already been turned into issues. No
+    # step inside carries a condition — see the `scan_gate` job on why.
+    if: needs.scan_gate.outputs.processed != 'true'
     runs-on: arc-runner-org
     permissions:
       contents: read
@@ -426,6 +497,7 @@ jobs:
       # every filed body, so the gate must lint the body that will actually be
       # filed — two spellings would gate one body and file another.
       SOURCE: code-review
+      RUN_LOG: security-agent/processed-runs.json
       BEDROCK_VIA: ${{ inputs.bedrock_via == '' && 'direct' || inputs.bedrock_via }}
     steps:
       - uses: actions/checkout@v7
@@ -649,6 +721,48 @@ jobs:
           aws s3 sync "$LEDGER_DIR/" \
             "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}/" \
             --no-progress --exclude 'code-review-findings.json'
+
+      # Record that this scan file was consumed (#4792). LAST, and `always()`, so a
+      # failed night is written as history — only a `success` entry blocks a retry,
+      # which is what keeps a failed night re-dispatchable.
+      #
+      # A run that dies before this step leaves no entry and is correctly retried.
+      # It re-files whatever it had already filed; that is accepted, not a gap — it
+      # needs a crash in a narrow window and yields a duplicate issue, which is
+      # visible and closable. An in-progress state would buy little for real cost.
+      #
+      # The whole log object is rewritten each time, on purpose: the bucket's one
+      # lifecycle rule has NO prefix filter and expires at 365 days, so an object
+      # never rewritten eventually ages out and would silently weaken this check.
+      - name: Record this run in the processed-scan log
+        if: always()
+        run: |
+          if [ -z "${ACCOUNT_ID}" ] || [ ! -f "$LEDGER_DIR/code-review-findings.json" ]; then
+            echo "no findings document reached this run; nothing to record"
+            exit 0
+          fi
+          STATUS=success
+          if [ "${{ job.status }}" != "success" ]; then STATUS=failed; fi
+          mkdir -p run-log
+          aws s3 cp \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/${RUN_LOG}" \
+            run-log/processed-runs.json --no-progress 2>/dev/null || true
+          TOTAL=$($SECURITYAGENT_PYTHON -c \
+            "import json;print(len(json.load(open('new-findings.json')).get('new_findings') or []))" \
+            2>/dev/null || echo "")
+          $SECURITYAGENT_PYTHON .github/scripts/processed_runs.py record \
+            --log run-log/processed-runs.json \
+            --source "$SOURCE" \
+            --findings-version "${{ needs.scan_gate.outputs.findings_version }}" \
+            --findings-key "security-agent/runs/${RUN_DATE}/code-review-findings.json" \
+            --run-id "${{ github.run_id }}" \
+            --run-date "$RUN_DATE" \
+            --started-at "${{ needs.scan_gate.outputs.started_at }}" \
+            --finished-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --status "$STATUS" \
+            ${TOTAL:+--findings-total "$TOTAL"}
+          aws s3 cp run-log/processed-runs.json \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/${RUN_LOG}" --no-progress
 
   # ---------------------------------------------------------------------------
   # Hand the night's plan off to the delivery role (U11, issue #4450 / #4598)

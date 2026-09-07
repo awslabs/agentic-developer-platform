@@ -292,3 +292,52 @@ def test_the_ledger_is_written_deterministically(tmp_path):
     st.write_ledger(a, a_grouping_ledger())
     st.write_ledger(b, a_grouping_ledger())
     assert a.read_bytes() == b.read_bytes()
+
+
+# --------------------------------------------------------------------------
+# the filed record must survive a re-run (#4792)
+# --------------------------------------------------------------------------
+
+
+def test_a_grouping_stage_write_refuses_to_erase_a_filed_stage_ledger(tmp_path):
+    """The regression that lost the 2026-08-30 record.
+
+    A re-run's authoring step wrote a fresh grouping-stage ledger to the same path
+    and erased the filed stage that mapped 62 findings to issues #4701-#4731. The
+    file that exists to answer "where did this finding end up" then answered it
+    wrongly, and the issue numbers were only recoverable from GitHub.
+    """
+    path = tmp_path / "traceability.json"
+    filed = st.enrich_filed(a_grouping_ledger(), filed_work_items(load_plan()), repo=REPO)
+    st.write_ledger(path, filed)
+
+    with pytest.raises(st.TraceabilityError, match="refusing to overwrite the filed-stage"):
+        st.write_ledger(path, a_grouping_ledger())
+
+    # The filed record is intact — issue numbers still there.
+    assert st.read_ledger(path)["stage"] == "filed"
+    st.assert_fully_traced(st.read_ledger(path))
+
+
+def test_the_refusal_can_be_overridden_explicitly(tmp_path):
+    """A caller that genuinely means to replace a filed record says so."""
+    path = tmp_path / "traceability.json"
+    st.write_ledger(path, st.enrich_filed(a_grouping_ledger(), filed_work_items(load_plan()), repo=REPO))
+    st.write_ledger(path, a_grouping_ledger(), allow_stage_regression=True)
+    assert st.read_ledger(path)["stage"] == "grouping"
+
+
+def test_a_grouping_stage_write_is_fine_when_nothing_is_filed_yet(tmp_path):
+    """The normal first run, and a re-run of a night that never reached filing."""
+    path = tmp_path / "traceability.json"
+    st.write_ledger(path, a_grouping_ledger())
+    st.write_ledger(path, a_grouping_ledger())  # grouping over grouping is fine
+    assert st.read_ledger(path)["stage"] == "grouping"
+
+
+def test_an_unreadable_existing_ledger_is_not_a_filed_record_to_protect(tmp_path):
+    """A corrupt file must not wedge the night: there is no filed record in it."""
+    path = tmp_path / "traceability.json"
+    path.write_text("{broken", encoding="utf-8")
+    st.write_ledger(path, a_grouping_ledger())
+    assert st.read_ledger(path)["stage"] == "grouping"
