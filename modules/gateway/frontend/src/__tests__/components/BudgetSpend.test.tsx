@@ -27,7 +27,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -165,22 +165,23 @@ describe('BudgetSpend — a member sees their own figures', () => {
     expect(document.querySelectorAll('[data-testid="my-spend-amount"]')).toHaveLength(1);
     expect(document.querySelectorAll('[data-testid$="spend-tile"]')).toHaveLength(0);
 
-    // Neither double-counted total appears: $584.20 is direct+cloud for this partition,
-    // $827.85 is envelope+direct. The two ledgers are keyed differently, so each counts
-    // the same dollars twice against a cap that governs neither figure.
+    // The page-level double-count still must not appear: $584.20 is this partition's
+    // direct+cloud added together by a client, against a cap that governs neither half.
+    // ($827.85 is NOT in this class since #4396 — it is the server's own fused person
+    // total, computed over two disjoint ledgers and enforced as one figure, so it is the
+    // headline rather than a forbidden sum.)
     const rendered = document.body.textContent ?? '';
     expect(rendered).not.toContain('$584.20');
-    expect(rendered).not.toContain('$827.85');
   });
 
   it('shows the caller their own direct and cloud figures', async () => {
     // Criterion 1, in the two-tile shape: the direct line's own spend, and the
-    // cross-workspace cloud envelope. Each measured against the cap that governs it.
+    // cross-workspace person envelope. Each measured against the cap that governs it.
     renderScreen();
 
     await waitFor(() => expect(screen.getByTestId('my-spend-amount')).toBeInTheDocument());
-    // The headline is the enforced figure (the cross-org envelope) and only that.
-    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$415.05');
+    // The headline is the enforced figure — the fused person total (#4396) — and only that.
+    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$827.85');
     // The direct figure is a drill-down, not a sibling headline (final ruling).
     await userEvent.click(within(screen.getByTestId('my-spend-drilldown-lines')).getByText(/direct use & other lines/i));
     const directRow = screen.getAllByTestId('budget-line-row').find((row) => row.getAttribute('data-source') === 'direct');
@@ -378,7 +379,11 @@ describe('BudgetSpend — run drill-down cost rendering', () => {
 
     await openRunsDrilldown();
     await waitFor(() => expect(screen.getAllByTestId('budget-run-row')).toHaveLength(1));
-    expect(screen.queryByText('$0.00')).not.toBeInTheDocument();
+    // Scoped to the runs drill-down, not the document: a `<details>` keeps its content in
+    // the DOM while collapsed, so an unscoped query also sees the per-workspace rows —
+    // where a `'0.000000'` direct figure is a MEASURED zero and `$0.00` is the honest
+    // rendering. This assertion is about the `unknown` cost cell only.
+    expect(within(screen.getByTestId('my-spend-drilldown-runs')).queryByText('$0.00')).not.toBeInTheDocument();
   });
 
   it('renders a verified zero as $0.00, which is honest', async () => {
@@ -675,9 +680,53 @@ describe('BudgetSpend — cloud spend by workspace (drill-down)', () => {
     // Genuinely absent from Personal spend, which is this workspace's direct use only.
     // The foreign-org figure appears only inside its drill-down row, never in the headline copy above it.
     expect(screen.getByTestId('my-spend-amount').textContent).not.toContain('243.65');
-    // But included in the Cloud numerator, which is the cross-workspace sum: that is the
-    // relationship between the tile and its own drill-down.
-    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$415.05');
+    // But included in the headline numerator, which is the cross-workspace total: that is
+    // the relationship between the card and its own drill-down.
+    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$827.85');
+  });
+
+  it('shows each workspace\'s agent and direct spend side by side, never added (#4396)', async () => {
+    // The personal limit now governs both halves, so the breakdown has to show both —
+    // otherwise a reader whose limit is being consumed by interactive use sees rows that
+    // account for only part of the number above them. Side by side and NOT summed: the
+    // total has exactly one home, the headline.
+    renderScreen();
+    await openWorkspaceDrillDown();
+
+    const active = screen.getAllByTestId('per-org-row')[0];
+    expect(within(active).getByTestId('per-org-spend').textContent).toBe('$171.40');
+    expect(within(active).getByTestId('per-org-direct-spend').textContent).toBe('$412.80');
+    // No per-row total: $584.20 is 171.40 + 412.80, a figure no cap governs.
+    expect(active.textContent).not.toContain('$584.20');
+    // The labels say which ledger each cell is, so the two are not read as one.
+    expect(within(active).getByText('Agents')).toBeInTheDocument();
+    expect(within(active).getByText('Direct')).toBeInTheDocument();
+  });
+
+  it('renders a measured zero of direct spend as $0.00, and an absent one as a dash', async () => {
+    // Two opposite failures on one cell. A person's interactive spend lands in whichever
+    // tenant they were signed into, so `'0.000000'` in a foreign partition is a real
+    // measurement and `$0.00` is honest. But a response predating #4396 — or a stale cache
+    // mid-rollout — omits the field entirely, and rendering THAT as `$0.00` would claim the
+    // person never worked interactively there.
+    renderScreen();
+    await openWorkspaceDrillDown();
+    const foreign = screen.getAllByTestId('per-org-row')[1];
+    expect(within(foreign).getByTestId('per-org-direct-spend').textContent).toBe('$0.00');
+
+    // Now the pre-#4396 shape: the key is genuinely ABSENT, not undefined.
+    const legacyLine: Record<string, unknown> = { ...mockPerOrgLines[0] };
+    delete legacyLine.direct_spend_usd;
+    expect('direct_spend_usd' in legacyLine).toBe(false);
+    mockGetMyBudget.mockResolvedValue({ ...mockBudgetEnvelope, per_org: [legacyLine as unknown as (typeof mockPerOrgLines)[0]] });
+    cleanup();
+    renderScreen();
+    await openWorkspaceDrillDown();
+
+    const legacyRow = screen.getAllByTestId('per-org-row')[0];
+    expect(within(legacyRow).getByTestId('per-org-direct-spend').textContent).toBe('—');
+    // The cloud cell beside it is unaffected: one missing field is not a broken row.
+    expect(within(legacyRow).getByTestId('per-org-spend').textContent).toBe('$171.40');
   });
 
   it('flags only the active partition', async () => {

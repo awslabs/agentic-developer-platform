@@ -350,21 +350,27 @@ class Freshness(BaseModel):
 
 
 class PerOrgLine(BaseModel):
-    """One tenant's settled cloud-agent spend for the caller, for this period.
+    """One tenant's settled spend for the caller — both ledgers — for this period.
 
-    ``root_user`` only — the ledger of chains the caller set in motion. Their
-    ``user`` (direct) ledger is deliberately absent: direct traffic is keyed by
-    Cognito sub and only ever lands in the tenant they were signed into, so there
-    is nothing cross-partition about it, and mixing the two entity types into one
-    figure is the #4322 double-count family (note §7.3).
+    **Widened by #4396.** This line used to carry cloud (``root_user``) spend only,
+    because the person figure it fed was cloud-only. The operator ruling of
+    2026-09-05 made the person's limit govern their TOTAL spend, so the line now
+    reports ``direct_spend_usd`` beside ``cloud_spend_usd``: the components of the
+    fused total, kept separate so a reader can add them up and audit the headline.
 
-    ``cap_usd`` is the cap **that tenant** authored for this person, if any. It is
-    reported per line rather than folded into a single number because each one is
-    independently authoritative: an org's own ``root_user`` cap governs spend
-    inside that org and nothing else, and that layer is unchanged by #4620 (note
-    §3.1). A ``null`` cap on a line with real spend is the mis-partitioned-cap
-    signature the issue is about — the spend is accruing where no ceiling was
-    authored.
+    **The two figures cannot double-count each other.** They come from rows that are
+    disjoint by ``entity_type`` and by key namespace — ``user`` rows are keyed by
+    Cognito sub, ``root_user`` rows by canonical ``users.id`` — and ``budget_usage``
+    is uniquely keyed including ``entity_type``. Summing one of each sums each dollar
+    once (the #4322 discipline satisfied, not bypassed).
+
+    ``cap_usd`` is the cloud-agent cap **that tenant** authored for this person, if
+    any. It is reported per line rather than folded into a single number because each
+    one is independently authoritative: an org's own ``root_user`` cap governs spend
+    inside that org and nothing else, and that layer is unchanged by #4620 and by
+    #4396 (note §3.1). A ``null`` cap on a line with real spend is the
+    mis-partitioned-cap signature the issue is about — the spend is accruing where no
+    ceiling was authored.
     """
 
     org_id: str = Field(description="The tenant this line's ledger rows live in. One of the caller's own member tenants, derived server-side.")
@@ -377,17 +383,28 @@ class PerOrgLine(BaseModel):
     )
     cloud_spend_usd: str = Field(
         description=(
-            "Settled `root_user` spend in this tenant for this period at 6dp, read "
-            "with the same full 5-filter predicate as every other figure here. A "
-            "true `0.000000` when no usage row exists — a measurement, not a "
-            "fallback."
+            "Settled `root_user` spend in this tenant for this period at 6dp — the "
+            "agent runs the caller triggered here. Read with the same full 5-filter "
+            "predicate as every other figure here. A true `0.000000` when no usage "
+            "row exists — a measurement, not a fallback."
+        )
+    )
+    direct_spend_usd: str = Field(
+        description=(
+            "Settled `user` spend in this tenant for this period at 6dp — the "
+            "caller's own direct, interactive use (#4396). Keyed by Cognito sub, so "
+            "it is a DIFFERENT row from `cloud_spend_usd` and adding the two counts "
+            "each dollar once. A true `0.000000` when no usage row exists. Governed "
+            "by this tenant's own `user` cap, not by `cap_usd` below."
         )
     )
     cap_usd: str | None = Field(
         description=(
-            "The cloud-agent cap THIS tenant authored for the caller, at 2dp, or "
-            "`null` when it authored none. Not clamped across tenants: each org's "
-            "cap governs only spend executing inside it."
+            "The cloud-agent (`root_user`) cap THIS tenant authored for the caller, "
+            "at 2dp, or `null` when it authored none. Not clamped across tenants: "
+            "each org's cap governs only spend executing inside it. It governs "
+            "`cloud_spend_usd` only — `direct_spend_usd` answers to this tenant's "
+            "`user` cap, which `lines`/`binding` render for the active partition."
         )
     )
     is_active_partition: bool = Field(
@@ -400,30 +417,51 @@ class PerOrgLine(BaseModel):
 
 
 class PersonEnvelope(BaseModel):
-    """The caller's cross-org cloud-agent total — **informational, never a budget**.
+    """The caller's ONE number: everything they spent, everywhere — **and it is enforced**.
 
-    Issue #4626, note §7.1. This is the figure that reads ``$0`` on the operator's
-    own page today while real dollars accrue in another tenant's partition.
+    Issue #4626, note §7.1, **fused and made load-bearing by #4396**.
 
-    **Same shape guarantee as ``CombinedInformational``, for the same reason.** No
-    ``cap_usd``, no ``remaining_usd``, no ``utilization_pct``, no ``band`` — the
-    fields simply do not exist on the wire, so no client can bind a progress bar to
-    a denominator, and ``is_budget`` is an unsettable ``Literal[False]``. That is
-    not conservatism: **no cap governs this number and no ledger row contains it.**
-    A person-level cap is a separate table that does not exist yet
-    (``person_budget_configs``, note §4.1), and whether it may ever *deny* is an
-    open ruling (§5.7). Adding a denominator here before that lands would advertise
-    a ceiling nothing enforces — the exact "cap that caps nothing" defect #4620 was
-    filed for, inverted.
+    **What changed, and why it matters to anyone reading a figure from here.** This
+    started as an informational cloud-agent-only total: no cap existed to compare it
+    against, so it deliberately carried no denominator. Both halves of that premise
+    are gone. The operator ruling of 2026-09-05 (thread on #4669/#4685) is that **a
+    person's limit governs their TOTAL spend — direct use plus cloud agents, across
+    all GitHub orgs — and they see ONE number tracked against it.** So:
 
-    Two exclusions are baked into how the total is summed (note §7.3):
+    * ``spend_usd`` is now ``direct + cloud``, summed across every member partition.
+    * ``BudgetEnforcementService._check_person_budget`` enforces against **this exact
+      figure**, via the same ``_read_person_partition_spend`` that composes it. The
+      displayed number IS the enforced number — not two derivations that agree today.
 
-    * **``root_user`` rows only.** Never mixed with ``user``/``org`` rows, which
-      would re-count the same dollar (the #4322 family).
-    * **``service:``-qualified principals are excluded** (#4344), on the same rule
-      ``_combined_informational`` uses: an unattended CI trigger is not this
-      person, and for a service-rooted run the same dollar lands on both the
-      ``user`` and ``root_user`` rows.
+    **There is still no cap field here, and the reason has inverted rather than
+    lapsed.** Before, a denominator would have advertised a ceiling nothing enforced.
+    Now the ceiling is real but it lives on ``GET /me/budget/person-cap``, which is
+    the one authoring-and-reading surface for it; restating it here would put one
+    ceiling on two surfaces that can disagree. ``person_cap_routes.py`` refuses to
+    return spend for the mirror-image reason. One figure, one home, each.
+
+    **How the fused total avoids the #4322 double-count.** The two ledgers are
+    disjoint by construction, not by a filter applied after the fact:
+
+    * ``entity_type="user"`` rows are keyed by **Cognito sub** (direct traffic);
+      ``entity_type="root_user"`` rows by **canonical ``users.id``** (chains the
+      person triggered). ``budget_usage`` is uniquely keyed including
+      ``entity_type``, so these are different rows holding different dollars.
+    * A direct request writes only the ``user`` row — the tracker's ``!= user_id``
+      gate suppresses the ``root_user`` row exactly when the root IS the caller.
+    * A hosted run's ``user`` row is keyed by the shared **worker** identity, never
+      by this person's sub, so it cannot enter the direct half.
+    * ``org``/``team``/``department`` rows are never read here at all: those are
+      shared ancestors, not this person's spend.
+
+    **``service:``-qualified principals are excluded** (#4344): the key list is built
+    from ``users`` primary keys and their subs, neither of which can carry the
+    qualifier, so an unattended CI trigger is kept out of a human's personal envelope
+    structurally rather than by a filter that could be dropped.
+
+    Like every figure on this surface it is a **lower bound**:
+    ``freshness.cost_backfill_lag`` applies to it, which is also why the enforcement
+    layer's overshoot bound exists (``docs/budget-ratelimit.md``).
     """
 
     anchor: str = Field(
@@ -438,10 +476,27 @@ class PersonEnvelope(BaseModel):
     )
     spend_usd: str = Field(
         description=(
-            "Exact sum of every `per_org[].cloud_spend_usd` at 6dp — the caller's "
-            "settled cloud-agent spend across all their member tenants. NOT a "
-            "budget and NOT enforced. As much a LOWER BOUND as the figures above: "
-            "`freshness.cost_backfill_lag` applies to this total too."
+            "The caller's ONE total at 6dp: the exact sum of every "
+            "`per_org[].direct_spend_usd` AND `per_org[].cloud_spend_usd` across all "
+            "their member tenants (#4396). This is the figure the personal spending "
+            "limit is ENFORCED against — the cap itself is on "
+            "`GET /me/budget/person-cap`. A LOWER BOUND like every figure here: "
+            "`freshness.cost_backfill_lag` applies to this total too, which is why "
+            "enforcement documents an overshoot bound."
+        )
+    )
+    cloud_spend_usd: str = Field(
+        description=(
+            "The cloud-agent (`root_user`) component of `spend_usd` at 6dp — the "
+            "agent runs the caller triggered, everywhere. Reported so the fused total "
+            "is auditable: this plus `direct_spend_usd` equals `spend_usd` exactly."
+        )
+    )
+    direct_spend_usd: str = Field(
+        description=(
+            "The direct-use (`user`) component of `spend_usd` at 6dp — the caller's "
+            "own interactive traffic, everywhere. A different row namespace from "
+            "`cloud_spend_usd`, so the two sum without re-counting a dollar."
         )
     )
     partition_count: int = Field(
@@ -454,9 +509,18 @@ class PersonEnvelope(BaseModel):
     )
     is_budget: Literal[False] = Field(
         default=False,
-        description=("Always `false`, and typed so it cannot be anything else. No person-level cap exists yet (note §4.1), so none is reported."),
+        description=(
+            "Always `false`, and typed so it cannot be anything else. It means THIS "
+            "OBJECT carries no denominator — not that the figure is ungoverned. Since "
+            "#4396 a personal limit IS enforced against `spend_usd`; the cap is served "
+            "by `GET /me/budget/person-cap` and a client renders the two together. The "
+            "field stays `false` so no bar can be bound to a ceiling this payload does "
+            "not contain, which is what keeps the two surfaces from disagreeing."
+        ),
     )
-    note: str = Field(description="Plain-language restatement of `is_budget` for surfaces that render the figure with a caption.")
+    note: str = Field(
+        description=("Plain-language statement of what the figure covers and what governs it, for surfaces that render it with a caption.")
+    )
 
 
 class MyBudgetResponse(BaseModel):

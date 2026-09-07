@@ -81,9 +81,14 @@ describe('MySpend — the one headline figure', () => {
 
     await waitFor(() => expect(screen.getByTestId('my-spend-amount')).toBeInTheDocument());
     expect(document.querySelectorAll('[data-testid="my-spend-amount"]')).toHaveLength(1);
-    // The envelope figure, never a client-side sum with `direct` (#4322 family).
-    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$415.05');
-    expect(document.body.textContent).not.toContain('$584.20');
+    // The envelope's own `spend_usd` — the fused total the server enforces against
+    // (#4396) — never a figure this card added up itself (#4322 family). The fusion is
+    // server-side, so the component still reads ONE field.
+    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$827.85');
+    // Neither component alone may appear as the headline: the cloud subtotal is what
+    // this figure meant before #4396, so rendering it here would be the pre-fusion
+    // understatement silently restored.
+    expect(screen.getByTestId('my-spend-amount')).not.toHaveTextContent('$415.05');
   });
 
   it('mounts the card and the limit editor WITHOUT an envelope (outage independence)', async () => {
@@ -116,16 +121,53 @@ describe('MySpend — the one headline figure', () => {
   });
 });
 
+describe('MySpend — the fused total (#4396)', () => {
+  it('captions the headline as both halves of the spend, not agents alone', async () => {
+    // The ruling's one UI requirement: the number is now direct use PLUS cloud agents, so
+    // a caption reading "what your agents have spent" understates what the reader is
+    // looking at — and understating the number that DENIES their requests is the whole
+    // defect. The fusion is server-side; this copy is the only client-side change.
+    renderCard(mockBudgetEnvelope);
+
+    await waitFor(() => expect(screen.getByTestId('my-spend-amount')).toBeInTheDocument());
+    expect(screen.getByTestId('my-spend')).toHaveTextContent(/what you and your agents have spent/i);
+    // The pre-fusion caption must be gone, not merely joined by the new one.
+    expect(screen.getByTestId('my-spend')).not.toHaveTextContent(/what your agents have spent/i);
+  });
+
+  it('still reads ONE envelope field, so the client never re-fuses the halves', async () => {
+    // `cloud_spend_usd` and `direct_spend_usd` exist on the wire for the breakdown rows;
+    // the headline must keep reading `spend_usd`. A client that added the two subtotals
+    // would produce a figure the server does not enforce the moment either half's
+    // partition set changes (#4322 family / the #4511 inert-cap class).
+    renderCard({
+      ...mockBudgetEnvelope,
+      person_envelope: {
+        ...mockBudgetEnvelope.person_envelope!,
+        // Deliberately NOT the sum of the components below: only a component-summing
+        // client could disagree with this field.
+        spend_usd: '900.000000',
+        cloud_spend_usd: '415.050000',
+        direct_spend_usd: '412.800000',
+      },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('my-spend-amount')).toBeInTheDocument());
+    expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('$900.00');
+    expect(document.body.textContent).not.toContain('$827.85');
+  });
+});
+
 describe('MySpend — the limit denominator', () => {
   it('draws a bar for a hard limit, clamped for ARIA with the true overage in valuetext', async () => {
-    // spend $415.05 against the $250 enforcing fixture = 166.0%.
+    // spend $827.85 against the $250 enforcing fixture = 331.1%.
     renderCard(mockBudgetEnvelope);
 
     const bar = await screen.findByTestId('my-spend-bar');
     // ARIA numeric contract: valuenow stays in [min,max] because AT clamps silently…
     expect(bar).toHaveAttribute('aria-valuenow', '100');
     // …and the TRUE figure rides valuetext, so a screen-reader hears the overage.
-    expect(bar).toHaveAttribute('aria-valuetext', '166.0% of your personal limit used');
+    expect(bar).toHaveAttribute('aria-valuetext', '331.1% of your personal limit used');
     expect(screen.getByTestId('my-spend-caption')).toHaveTextContent(/enforcing/);
   });
 

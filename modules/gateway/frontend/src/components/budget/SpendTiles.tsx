@@ -9,13 +9,18 @@
  * exist — is a drill-down beneath it, never a sibling.
  *
  * **The displayed number and the enforced number are the same number, at all times.**
- * Today that is the cross-org cloud-agent figure (`person_envelope.spend_usd`) against
- * the personal limit — exactly what the person layer (#4630) enforces. When #4396 lands
- * (direct spend fused into the person figure server-side, enforcement widened to the
- * total), the SAME field carries the total and this card upgrades by copy change only.
- * Until then the direct figure lives in the drill-down, labelled as governed by
- * GitHub-org budgets rather than by the personal limit — summing it into the headline
- * client-side would show a number nothing enforces (the #4322 family, on the headline).
+ * Since #4396 that number is the person's TOTAL — their own direct use plus the agents
+ * they triggered, across every workspace — carried by the SAME `person_envelope.spend_usd`
+ * field and enforced against by the person layer. The fusion is entirely server-side, so
+ * this card upgraded **by copy change only**: the caption now names both halves, because
+ * a total described as "what your agents have spent" understates what the reader is
+ * looking at. Nothing is summed here — a client-side total would be a number the server
+ * does not enforce (the #4322 family, on the headline).
+ *
+ * The direct-use drill-down below stays, and stays labelled as GitHub-org-budget
+ * territory: those lines are the per-org caps that govern that spend *within* one
+ * workspace, which is a different denominator from the personal limit above and not the
+ * same claim restated.
  *
  * Load-bearing rules, each a defect that has already shipped once on this page:
  *
@@ -192,13 +197,13 @@ export function MySpend({ envelope, period }: MySpendProps) {
             caveat (and no bar) rather than a dash beside a confident 0%. */}
         {spendAmount == null && (
           <p className="mt-1 text-sm text-gray-600 dark:text-gray-400" data-testid="my-spend-unreported">
-            Your agent spend could not be read, so there is no figure to show. This is not a statement that it is zero.
+            Your spend could not be read, so there is no figure to show. This is not a statement that it is zero.
           </p>
         )}
 
         {spendAmount != null && (
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            what your agents have spent, across all {WORKSPACE_TERM_PLURAL}
+            what you and your agents have spent, across all {WORKSPACE_TERM_PLURAL}
           </p>
         )}
 

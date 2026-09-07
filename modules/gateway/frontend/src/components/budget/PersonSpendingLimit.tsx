@@ -107,8 +107,9 @@ function InformationalNotice() {
 function EnforcingNotice() {
   return (
     <p className="text-sm text-amber-800 dark:text-amber-200" data-testid="person-cap-enforcing">
-      This limit is enforced: once your total agent spend across every {WORKSPACE_TERM} passes it, your agent runs are stopped until the period
-      resets or you raise the limit. Spend that has not finished being metered yet is not counted, so the stop can land slightly over the number.
+      This limit is enforced: once everything you spend — your own requests plus your agents' — across every {WORKSPACE_TERM} passes it, further
+      requests and agent runs are stopped until the period resets or you raise the limit. Spend that has not finished being metered yet is not
+      counted, so the stop can land slightly over the number.
     </p>
   );
 }
@@ -227,7 +228,7 @@ export function PersonSpendingLimit({ period }: { period: BudgetPeriodType }) {
               denominator that failed to load. Never `$0.00`: `cap_status` is the signal. */}
           {cap.cap_status === 'uncapped' && (
             <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="person-cap-uncapped">
-              You have not set a personal limit for this period, so nothing caps your agent spend across all {WORKSPACE_TERM_PLURAL}.
+              You have not set a personal limit for this period, so nothing caps your total spend — direct use or agent runs — across all {WORKSPACE_TERM_PLURAL}.
             </p>
           )}
 

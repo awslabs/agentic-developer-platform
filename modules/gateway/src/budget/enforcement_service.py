@@ -7,6 +7,7 @@ checks budget constraints at each level.
 """
 
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -27,6 +28,7 @@ from src.shared.metrics import (
     emit_run_binding_drift,
 )
 from src.shared.models.budget import BudgetConfig, BudgetUsage, PersonBudgetConfig
+from src.shared.models.organization import User
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import (
     DenyReason,
@@ -89,6 +91,10 @@ _INFRASTRUCTURE_FAULTS: tuple[type[BaseException], ...] = (
 # canonical `users.id` is a generated UUID (`shared/models/organization.py`), which
 # contains no colon, so no bare human id can ever equal a `service:`-qualified value.
 _SERVICE_PRINCIPAL_PREFIX = "service:"
+
+# How long the "any person caps exist?" verdict may be reused per process (review
+# fix on #4689). Bounded staleness in both directions — see _any_person_caps_exist.
+_PERSON_CAPS_EXISTENCE_TTL_SECONDS = 60.0
 
 
 def _qualify_root_principal_id(root_principal_id: str, *, is_human_rooted: bool | None) -> str:
@@ -173,6 +179,7 @@ class BudgetEnforcementService:
                 for testing). When omitted, one is built lazily from config.
         """
         self.db_session = db_session
+        self._person_caps_exist_cache: tuple[bool, float] | None = None
         self._pricing = pricing or pricing_service
         self._grace_window = grace_window
         self._reservations = reservations
@@ -898,8 +905,10 @@ class BudgetEnforcementService:
                     # cannot catch it — it compares a Cognito sub against a
                     # canonical users.id, disjoint namespaces that never match.
                     # Attribution exists to label AGENT spend; agents authenticate
-                    # as IAM. (Fusing direct human spend into the per-person
-                    # envelope is #4396's job, deliberately not this line's.)
+                    # as IAM. (#4396 fused direct human spend into the per-person
+                    # envelope on the READ side, over the `(USER, sub)` rows that
+                    # already exist — so this guard stays exactly as narrow as it
+                    # was, and must: widening it is the double-debit above.)
                     if binding.root_human_id and context.auth_source == "iam":
                         object.__setattr__(
                             context,
@@ -1341,6 +1350,27 @@ class BudgetEnforcementService:
             )
             return None
 
+    async def _any_person_caps_exist(self, session: AsyncSession) -> bool:
+        """Short-TTL process-local gate: does ANY person cap exist at all?
+
+        Review fix on #4689. `person_budget_configs` is empty on most installs, and
+        without this gate every JWT model invoke paid up to three sequential
+        identity/cap queries to learn "no cap". One tiny `LIMIT 1` per TTL window
+        per process answers the common case instead.
+
+        Trade documented at the call site: a first-ever cap starts enforcing within
+        the TTL, not instantly; a deleted last cap wastes queries for one window.
+        The cache is deliberately per-process and unlocked — a stale read is
+        bounded by the TTL and both failure directions are benign.
+        """
+        now = time.monotonic()
+        cached = self._person_caps_exist_cache
+        if cached is not None and now - cached[1] < _PERSON_CAPS_EXISTENCE_TTL_SECONDS:
+            return cached[0]
+        exists = (await session.execute(select(PersonBudgetConfig.id).limit(1))).scalar_one_or_none() is not None
+        self._person_caps_exist_cache = (exists, now)
+        return exists
+
     async def _check_person_budget(
         self,
         session: AsyncSession,
@@ -1378,23 +1408,59 @@ class BudgetEnforcementService:
         caps keep their live Redis denominator, so each org's own ceiling stays
         bounded exactly as tightly as it is today.
 
+        **The denominator is the person's TOTAL spend — direct + cloud (#4396).**
+        Widened from cloud-only by the operator ruling of 2026-09-05 (thread on
+        #4669/#4685): *the person's limit governs total spend across all GitHub orgs,
+        and the person sees ONE number tracked against it.* Two consequences, both
+        deliberate:
+
+        * **JWT (direct, interactive) callers now pass through this layer.** Before
+          #4396 an unattributed request returned ``None`` immediately, so a person
+          could sit inside their personal limit while spending freely from their own
+          machine. The person key for such a caller is resolved from the token
+          identity instead of from a run binding — see below.
+        * **The figure enforced here is the figure ``/me/budget`` displays.** Both
+          call the same ``_read_person_partition_spend``, so "displayed == enforced"
+          is a shared code path rather than two derivations that happen to agree.
+          That was the explicit requirement of the ruling.
+
+        **No double-count, and it needs no offsetting skip.** The two ledgers summed
+        are disjoint by construction: ``user`` rows are keyed by Cognito sub, all
+        ``root_user`` rows by canonical ``users.id``, and ``budget_usage`` is uniquely
+        keyed including ``entity_type``. A direct request writes only the ``user``
+        row (the tracker's ``!= user_id`` gate suppresses the other); a hosted run's
+        ``user`` row is keyed by the shared *worker* identity, never by this person's
+        sub. ``me_routes``' fused-envelope section header states the full argument.
+
+        **This is why the equality-skip in ``_get_entity_hierarchy`` is left
+        untouched.** The issue asked for it to be revisited, and revisiting it
+        concludes: leave it. It prevents a second *reservation* against one party
+        inside one request — a live-Redis concern about one org's hierarchy — which is
+        a different question from what this settled cross-org read sums. Relaxing it
+        would reintroduce the 2x debit its own comment documents, without changing
+        anything here.
+
         **Identity is C1's, reused verbatim.** ``_resolve_person_identity`` fuses
         the person's ``users.id`` rows through ``user_identities.provider_user_id``
         (§3.3 — one GitHub account legitimately holds one ``users.id`` *per tenant*,
         so summing by canonical id alone under-reports for exactly the multi-org
-        population this ships for), ``_resolve_member_partitions`` derives the
-        partition set server-side (§7.3, including the shadow-user union), and
-        ``_read_settled_spend`` performs the same full 5-filter single-row read
-        enforcement already compares against. The cross-org read is a **widened
-        partition set over an unchanged predicate** — never a relaxed predicate and
-        never a SQL aggregate. A third identity fusion in this module would be the
-        #4511 class: an enforcement layer reading a different person key than C3
+        population this ships for), ``_resolve_person_subs`` projects that same fusion
+        onto the Cognito subs the direct ledger is keyed by, ``_resolve_member_partitions``
+        derives the partition set server-side (§7.3, including the shadow-user union),
+        and ``_read_settled_spend`` performs the same full 5-filter single-row read
+        enforcement already compares against. The cross-org read is a **widened key
+        and partition set over an unchanged predicate** — never a relaxed predicate
+        and never a SQL aggregate. A second identity fusion in this module would be
+        the #4511 class: an enforcement layer reading a different person key than C3
         writes is an inert cap.
 
-        **Cap first, denominator second.** One indexed read of
-        ``person_budget_configs``; when it returns nothing — essentially every
+        **Cap first, denominator second.** At most two single-row indexed lookups
+        (the person key, then the anchor) before one indexed read of
+        ``person_budget_configs``; when that returns nothing — essentially every
         request on the platform — the partition fan-out and every spend read are
-        skipped entirely.
+        skipped entirely. Direct callers pay one extra ``users`` lookup on
+        ``cognito_sub`` (an indexed column) relative to pre-#4396, which is the
+        irreducible cost of them being subject to the cap at all.
 
         Returns:
             ``None`` when this caller has no person cap to apply. Otherwise an
@@ -1402,26 +1468,58 @@ class BudgetEnforcementService:
             an allow (possibly carrying warnings) in every other case. Deliberately
             no ``ReservationTarget`` in the return — see above.
         """
-        # Function-local import: `me_routes` imports `_INFRASTRUCTURE_FAULTS` from
-        # this module, so a module-level import here is a cycle. Same technique
-        # `person_anchor.py` already uses for its own.
+        # `person_ledger` is a deliberate leaf (review fix on #4689): unlike the
+        # previous me_routes underscore-privates, these carry a stability contract
+        # for this second consumer and import no router — the anchor-prefix import
+        # stays function-local only for symmetry with `person_anchor.py`'s own note.
         from src.shared.identity.person_anchor import PERSON_ANCHOR_GITHUB_PREFIX
 
-        from .me_routes import _read_settled_spend, _resolve_member_partitions, _resolve_person_anchor_id, _resolve_person_identity
+        from .person_ledger import (
+            read_person_partition_spend,
+            resolve_member_partitions,
+            resolve_person_anchor_id,
+            resolve_person_identity,
+            resolve_person_subs,
+        )
+
+        # The overwhelmingly common case platform-wide is "no person cap exists at
+        # all" — the table is empty on most installs. This short-TTL process-local
+        # gate keeps that case at ~zero cost instead of up to three sequential
+        # identity/cap queries on EVERY JWT model invoke (review fix on #4689),
+        # which landed squarely on the gateway latency path. Cost of the cache:
+        # the first cap ever authored takes up to the TTL to start enforcing, and
+        # deleting the last one wastes queries for one TTL window — both bounded
+        # and documented in budget-ratelimit.md.
+        if not await self._any_person_caps_exist(session):
+            return None
 
         attributed_user_id = context.attributed_user_id or ""
 
-        # A JWT human's own direct spend is accounted under `(USER, sub)`, not as a
-        # root principal; fusing it into the person line is #4396's job, deliberately
-        # not this one's.
-        if not attributed_user_id:
-            return None
-
-        # §7.3's double-count guard: a service principal (EventBridge / scheduled /
-        # CI / alarm) is not a person, has no GitHub anchor, and must not be charged
-        # against anybody's personal ceiling.
-        if attributed_user_id.startswith(_SERVICE_PRINCIPAL_PREFIX):
-            return None
+        if attributed_user_id:
+            # §7.3's double-count guard: a service principal (EventBridge / scheduled
+            # / CI / alarm) is not a person, has no GitHub anchor, and must not be
+            # charged against anybody's personal ceiling.
+            if attributed_user_id.startswith(_SERVICE_PRINCIPAL_PREFIX):
+                return None
+            person_user_id = attributed_user_id
+        else:
+            # A direct (JWT) caller: there is no run binding, so the person key comes
+            # from the token identity (#4396).
+            # Not a person: unattended/service principals never carry a personal
+            # ceiling (mirrors the read surface's not_applicable case).
+            if context.account_type != "human":
+                return None
+            # STRICT lookup, deliberately NOT the read surface's resolver (review
+            # fix on #4689): `resolve_canonical_user_id` swallows SQLAlchemyError
+            # into a raw-sub fallback — tolerable for a degraded dollar figure on
+            # a page, but HERE it turned a transient DB error into a silent
+            # fail-open that never reached the containment wrapper, so the
+            # PersonBudgetLayerSkipped pager stayed dark. A fault must propagate
+            # to the wrapper; only a genuine no-row (unprovisioned identity, no
+            # direct ledger to govern) skips quietly.
+            person_user_id = await session.scalar(select(User.id).where(User.cognito_sub == context.user_id).limit(1))
+            if not person_user_id:
+                return None
 
         # Cap first, fan-out second — for real this time (review fix on #4661: the
         # previous shape ran the cross-tenant fused-id scan before the cap read,
@@ -1429,7 +1527,7 @@ class BudgetEnforcementService:
         # outcome is "no cap"). Only the single deterministic anchor lookup runs
         # unconditionally; the fused-id scan and partition derivation are deferred
         # until a cap row proves they will be consumed.
-        anchor_id = await _resolve_person_anchor_id(session, attributed_user_id)
+        anchor_id = await resolve_person_anchor_id(session, person_user_id)
 
         # C3 only ever writes `github:` anchors (`format_person_anchor`), so a
         # caller with no linked GitHub identity cannot have a matching row.
@@ -1470,7 +1568,7 @@ class BudgetEnforcementService:
         # re-runs the anchor lookup internally (one extra single-row query on the
         # rare capped path) — reused rather than forked, so authoring, the C1 read
         # and this layer cannot drift on what "the same person" means.
-        resolved_anchor, person_user_ids = await _resolve_person_identity(session, attributed_user_id)
+        resolved_anchor, person_user_ids = await resolve_person_identity(session, person_user_id)
         if resolved_anchor != anchor:
             # Only possible if identity rows changed between the two lookups
             # mid-request. The cap was matched on `anchor`; refusing to enforce a
@@ -1479,7 +1577,10 @@ class BudgetEnforcementService:
             logger.warning("Person anchor changed between cap lookup and identity fusion; skipping the person layer for this request")
             return None
 
-        partitions = await _resolve_member_partitions(session, person_user_ids, context.attributed_org_id)
+        partitions = await resolve_member_partitions(session, person_user_ids, context.attributed_org_id)
+        # The direct half's key namespace (#4396). A projection of the fusion just
+        # performed, not a second opinion on who the person is.
+        person_subs = await resolve_person_subs(session, person_user_ids)
 
         warnings: list[str] = []
 
@@ -1487,23 +1588,29 @@ class BudgetEnforcementService:
             period_type = PeriodType(cap_row.period_type)
             period_start, _ = get_period_start_end(period_type)
 
-            # The cross-org denominator: the SAME predicate, over a widened
-            # partition set. Summing across the person's fused ids cannot
-            # double-count — they are distinct `users` primary keys addressing
-            # disjoint rows of a table uniquely keyed on `entity_id` — and
-            # `root_user` rows only, never mixed with `user`/`org` rows, which
-            # would re-count the same dollar (§7.3, the #4322 family).
+            # The cross-org denominator: the SAME predicate, over a widened key
+            # and partition set. `_read_person_partition_spend` is the read
+            # surface's own function, called here rather than reimplemented, so
+            # `/me/budget`'s figure and this one cannot drift — the ruling's
+            # "displayed == enforced" is a shared code path, not a coincidence.
+            # Summing cloud and direct cannot double-count: `root_user` rows are
+            # keyed by canonical `users.id` and `user` rows by Cognito sub, in a
+            # table uniquely keyed including `entity_type`, and no write path
+            # produces both for one dollar (§7.3, the #4322 family — the argument
+            # in full lives on `me_routes`' fused-envelope section header).
+            # `organization`/`department`/`team` rows stay excluded: those re-count
+            # the same dollar at a coarser grain.
             current_spend = Decimal("0")
             for org_id in partitions:
-                for entity_id in person_user_ids:
-                    current_spend += await _read_settled_spend(
-                        session,
-                        org_id,
-                        EntityType.ROOT_USER,
-                        entity_id,
-                        period_type,
-                        period_start,
-                    )
+                cloud, direct = await read_person_partition_spend(
+                    session,
+                    org_id,
+                    person_user_ids,
+                    person_subs,
+                    period_type,
+                    period_start,
+                )
+                current_spend += cloud + direct
 
             projected_spend = current_spend + estimated_cost
             enforcement_mode = EnforcementMode(cap_row.enforcement_mode)
@@ -1672,6 +1779,81 @@ class BudgetEnforcementService:
             usage.total_tokens += total_tokens
             usage.request_count += 1
 
+    async def _person_cap_headroom(self, session: AsyncSession, context: TokenContext):
+        """The caller's tightest HARD person-cap headroom, or ``None``.
+
+        Review fix on #4689, for the headers surface only — the deny path stays
+        ``_check_person_budget``. Same person key, same anchor, same fused
+        denominator (the ``person_ledger`` primitives), evaluated per cap row over
+        that row's OWN period, so the headroom reported here is the headroom the
+        402 enforces. Returns ``(remaining, limit, period_end)`` for the row with
+        the least remaining. Faults propagate to the caller's fail-open handler
+        ("unavailable"), which is the honest header answer for an unreadable
+        person ledger.
+        """
+        from src.shared.identity.person_anchor import PERSON_ANCHOR_GITHUB_PREFIX
+
+        from .person_ledger import (
+            read_person_partition_spend,
+            resolve_member_partitions,
+            resolve_person_anchor_id,
+            resolve_person_identity,
+            resolve_person_subs,
+        )
+
+        if not await self._any_person_caps_exist(session):
+            return None
+
+        person_user_id = context.attributed_user_id or ""
+        if person_user_id.startswith(_SERVICE_PRINCIPAL_PREFIX):
+            return None
+        if not person_user_id:
+            if context.account_type != "human":
+                return None
+            person_user_id = await session.scalar(select(User.id).where(User.cognito_sub == context.user_id).limit(1))
+            if not person_user_id:
+                return None
+
+        anchor_id = await resolve_person_anchor_id(session, person_user_id)
+        if not anchor_id:
+            return None
+        anchor = f"{PERSON_ANCHOR_GITHUB_PREFIX}{anchor_id}"
+
+        cap_rows = (
+            (
+                await session.execute(
+                    select(PersonBudgetConfig)
+                    .where(
+                        PersonBudgetConfig.person_anchor == anchor,
+                        PersonBudgetConfig.enforcement_mode == "hard",
+                        PersonBudgetConfig.period_type.in_(sorted(CALENDAR_PERIOD_TYPES)),
+                    )
+                    .order_by(PersonBudgetConfig.period_type)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not cap_rows:
+            return None
+
+        _, person_user_ids = await resolve_person_identity(session, person_user_id)
+        person_subs = await resolve_person_subs(session, person_user_ids)
+        partitions = await resolve_member_partitions(session, person_user_ids, context.attributed_org_id)
+
+        tightest = None
+        for cap_row in cap_rows:
+            period_type = PeriodType(cap_row.period_type)
+            period_start, period_end = get_period_start_end(period_type)
+            total = Decimal("0")
+            for org_id in partitions:
+                cloud, direct = await read_person_partition_spend(session, org_id, person_user_ids, person_subs, period_type, period_start)
+                total += cloud + direct
+            remaining = cap_row.budget_amount_usd - total
+            if tightest is None or remaining < tightest[0]:
+                tightest = (remaining, cap_row.budget_amount_usd, period_end)
+        return tightest
+
     async def get_budget_status_for_headers(self, context: TokenContext) -> dict[str, Any]:
         """
         Get budget status info for response headers.
@@ -1790,6 +1972,23 @@ class BudgetEnforcementService:
                             lowest_remaining = remaining
                             corresponding_limit = budget.budget_amount_usd
                             corresponding_reset = period_end
+
+                # The PERSON layer (review fix on #4689): #4396 subjects every
+                # JWT caller to the personal limit, and these headers are read by
+                # exactly that population — omitting it advertised headroom
+                # enforcement will not honour (the FR-1.4 class). Same primitives
+                # as _check_person_budget, so the header figure IS the enforced
+                # figure; gated on the same existence cache, so the empty-table
+                # common case costs nothing. Soft rows are skipped: a
+                # non-enforcing ceiling in X-Budget-Remaining would be the
+                # opposite lie.
+                person = await self._person_cap_headroom(session, context)
+                if person is not None:
+                    person_remaining, person_limit, person_reset = person
+                    if lowest_remaining is None or person_remaining < lowest_remaining:
+                        lowest_remaining = person_remaining
+                        corresponding_limit = person_limit
+                        corresponding_reset = person_reset
 
                 if lowest_remaining is not None:
                     return {

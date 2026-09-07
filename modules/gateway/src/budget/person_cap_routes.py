@@ -14,6 +14,20 @@ against a cross-org settled denominator, so the limit stops the person's agents 
 every org they run in. ``enforcement_mode`` is written ``hard`` and remains
 non-client-settable.
 
+**What the number governs, since #4396: the person's TOTAL spend.** Per the
+operator ruling of 2026-09-05, the limit authored here covers *everything* the
+person spends — their own direct, interactive use **plus** the cloud agents they
+trigger — summed across every GitHub org they belong to. It is deliberately not two
+budgets: the person sees one figure on ``/me/budget`` (``person_envelope.spend_usd``)
+and that figure is the denominator this cap is enforced against. Before #4396 the
+cap governed cloud-agent spend only, so a person could sit inside their limit while
+spending freely from their own machine.
+
+The practical consequence for this surface: the ceiling stored here now stops
+INTERACTIVE requests too, not just agent runs. A number chosen under the old
+meaning governs strictly more spend than its author intended — which is why the
+copy on the authoring UI names both halves.
+
 Two properties of that enforcement matter to anyone reading a figure from here:
 
 * **The denominator is the settled ledger, so the cap is a bounded ceiling, not an

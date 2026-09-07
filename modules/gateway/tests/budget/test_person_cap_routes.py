@@ -1111,7 +1111,7 @@ async def test_two_github_rows_author_and_enforce_under_the_same_anchor(session,
     this pins that the ROUTE-stored anchor equals the ENFORCEMENT-side
     resolution for the same person.
     """
-    from src.budget.me_routes import _resolve_person_anchor_id
+    from src.budget.person_ledger import resolve_person_anchor_id as _resolve_person_anchor_id
     from src.shared.models.vault import UserIdentity
 
     # A second, later-linked GitHub account for the same person. Its id sorts

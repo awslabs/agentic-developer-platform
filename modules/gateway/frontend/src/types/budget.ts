@@ -158,25 +158,36 @@ export interface CombinedInformational {
 }
 
 /**
- * One member tenant's settled cloud-agent spend for the caller — Issue #4626 (C1 of #4620).
+ * One member tenant's settled spend for the caller — Issue #4626 (C1 of #4620).
  *
- * Transcribed from `PerOrgLine` in `src/budget/schemas.py`. `root_user` (cloud) spend
- * only: the caller's `direct` ledger is keyed by Cognito sub and only ever lands in the
- * tenant they signed into, so there is nothing cross-partition about it, and mixing the
- * two entity types into one figure is the #4322 double-count family.
+ * Transcribed from `PerOrgLine` in `src/budget/schemas.py`. Carries **both** of the
+ * caller's person-grain ledgers since #4396: `cloud_spend_usd` (their agents) and
+ * `direct_spend_usd` (their own interactive use). The two are separate fields rather
+ * than one pre-added figure because they are keyed in different namespaces — cloud by
+ * canonical `users.id`, direct by Cognito sub — and a caller who wants the total has
+ * `person_envelope.spend_usd`, which is the one the server enforces against.
  */
 export interface PerOrgLine {
   /** The tenant this line's ledger rows live in. Derived server-side from the caller's memberships. */
   org_id: string;
   /** Display name from `organizations.name`, falling back to `org_id`. Server-supplied. */
   org_name: string;
-  /** Settled `root_user` spend in this tenant for this period at 6dp. A true `'0.000000'` when no usage row exists. */
-  cloud_spend_usd: string;
+  /** Settled `root_user` (cloud-agent) spend in this tenant for this period at 6dp. A true `'0.000000'` when no usage row exists. */
+  cloud_spend_usd?: string;
+  /**
+   * Settled `user` (direct, interactive) spend in this tenant for this period at 6dp,
+   * added by #4396. A true `'0.000000'` when no usage row exists. Disjoint from
+   * `cloud_spend_usd` by ledger key, so the two may be added; adding either to an
+   * org-grain figure is the #4322 double-count family.
+   */
+  direct_spend_usd?: string;
   /**
    * The cloud-agent cap **this tenant** authored for the caller, at 2dp, or `null` when
-   * it authored none. Not clamped across tenants — each org's cap governs only spend
-   * executing inside it. A `null` cap on a line with real spend is the
-   * mis-partitioned-cap signature #4620 was filed for, so it must not render as `$0.00`.
+   * it authored none. Governs `cloud_spend_usd` only — a per-org `root_user` row — not
+   * the line's total, and not the personal limit (`GET /me/budget/person-cap`). Not
+   * clamped across tenants: each org's cap governs only spend executing inside it. A
+   * `null` cap on a line with real spend is the mis-partitioned-cap signature #4620 was
+   * filed for, so it must not render as `$0.00`.
    */
   cap_usd: string | null;
   /** `true` for the tenant the caller's session is attributed to — the one partition `lines`/`binding` describe. */
@@ -184,20 +195,22 @@ export interface PerOrgLine {
 }
 
 /**
- * The caller's cross-org cloud-agent total — **informational, never a budget**.
+ * The caller's cross-org TOTAL spend — direct + cloud, and the figure their personal
+ * limit is enforced against (Issue #4396).
  *
  * Transcribed from `PersonEnvelope` in `src/budget/schemas.py` (Issue #4626, design
- * note §7.1). This is the figure that reads `$0` on the operator's own page today while
- * real dollars accrue in another tenant's partition.
+ * note §7.1; widened by #4396). Originally the cloud-agent-only total that read `$0` on
+ * the operator's own page while real dollars accrued in another tenant. Per the
+ * operator ruling of 2026-09-05 it is now **one number**: everything the person spent,
+ * their own interactive use plus the agents they triggered, across every workspace they
+ * belong to — and the server enforces their personal limit against exactly this figure.
  *
- * **The shape is the guarantee, exactly as for `CombinedInformational`.** There is no
- * `cap_usd`, no `remaining_usd`, no `utilization_pct` and no `band` field anywhere on
- * this type because none exists on the wire — so no progress bar can be bound to a
- * denominator, and the "no `x / y` bar" rule is enforced by the type rather than by
- * reviewer vigilance. The reason is stronger here than for the combined total: a
- * person-level cap is a table that does not exist yet, and whether one may ever *deny*
- * is an open ruling. A denominator now would advertise a ceiling nothing enforces —
- * #4620's own defect, inverted.
+ * **There is still no `cap_usd`, `remaining_usd`, `utilization_pct` or `band` field**,
+ * and that is deliberate rather than left over. The ceiling is real now, but it has one
+ * home: `GET /me/budget/person-cap`. Restating it here would give the UI two sources for
+ * one limit that can disagree (#4322), and the absent fields keep a progress bar from
+ * being bound to a denominator this payload does not carry. A client that wants the
+ * `x / y` reading fetches the cap and renders the two together.
  */
 export interface PersonEnvelope {
   /**
@@ -208,16 +221,25 @@ export interface PersonEnvelope {
    */
   anchor: string;
   /**
-   * Exact sum of every `per_org[].cloud_spend_usd` at 6dp. NOT a budget and NOT
-   * enforced. As much a LOWER BOUND as every other figure — `freshness.cost_backfill_lag`
-   * applies to this total too.
+   * The person's TOTAL: `cloud_spend_usd + direct_spend_usd` at 6dp, i.e. the exact sum
+   * of both components of every `per_org[]` line. This is the figure the personal limit
+   * denies against, so it is the one to render as the headline. Still a LOWER BOUND —
+   * `freshness.cost_backfill_lag` applies to it like every other settled figure.
    */
   spend_usd: string;
+  /** The agent half of `spend_usd` at 6dp: settled `root_user` rows across all partitions. */
+  cloud_spend_usd?: string;
+  /** The interactive half of `spend_usd` at 6dp: settled `user` rows across all partitions. */
+  direct_spend_usd?: string;
   /** How many tenants contributed to `spend_usd`. Distinguishes "one partition, genuinely $0" from "several, genuinely $0". */
   partition_count: number;
-  /** Always `false`, and typed so it cannot be anything else. */
+  /**
+   * Always `false`, and typed so it cannot be anything else. It means THIS OBJECT
+   * carries no denominator — not that the figure is ungoverned. Since #4396 a personal
+   * limit IS enforced against `spend_usd`; the cap comes from the person-cap endpoint.
+   */
   is_budget: false;
-  /** Plain-language restatement of `is_budget`, for rendering as a caption. */
+  /** Plain-language statement of what the figure covers and what governs it, for rendering as a caption. */
   note: string;
 }
 
@@ -286,8 +308,8 @@ export interface BudgetEnvelopeResponse {
   combined_informational: CombinedInformational | null;
 
   /**
-   * The caller's settled cloud-agent spend PER member tenant, active partition first —
-   * Issue #4626 (C1 of #4620).
+   * The caller's settled spend PER member tenant — cloud and direct, active partition
+   * first — Issue #4626 (C1 of #4620), both components since #4396.
    *
    * Everything above this field describes ONE partition (the attributed tenant
    * enforcement reads); this describes all of them, because a person whose runs execute
@@ -302,9 +324,10 @@ export interface BudgetEnvelopeResponse {
   per_org?: PerOrgLine[];
 
   /**
-   * The cross-org sum of `per_org[].cloud_spend_usd` — INFORMATIONAL ONLY. No cap
-   * governs it and no ledger row equals it, so it carries no denominator field by
-   * design (see `PersonEnvelope`).
+   * The caller's cross-org TOTAL — the sum of both components of every `per_org[]` line,
+   * and since #4396 the figure their personal limit is enforced against. It still
+   * carries no denominator field: the cap has one home (`GET /me/budget/person-cap`).
+   * See `PersonEnvelope`.
    *
    * `null` when there are no per-org lines to sum, i.e. when the caller's identity did
    * not resolve. Present even for a single partition, unlike `combined_informational`:
