@@ -170,6 +170,31 @@ DEFAULT_MAX_ATTEMPTS = 4
 # night into a wave of retries.
 DEFAULT_MAX_CONCURRENCY = int(os.environ.get("ADP_GROUPING_MAX_CONCURRENCY", "6"))
 
+# How the model is reached. Named after the agent worker's switch of the same
+# name, because it is the same decision and the same two answers:
+#
+#   direct  -- `bedrock-runtime` on the runner's own IRSA identity. What this has
+#              always done. No attribution: the night's ~26 Opus calls appear in
+#              no gateway usage row and against no budget envelope.
+#   gateway -- SigV4 to the ADP gateway's IAM-authenticated agent route, which
+#              resolves the runner's role through the agent registry and puts the
+#              call through the budget and rate-limit middleware. That IS the
+#              attribution, and it is also a new way for the night to fail: a
+#              missing budget config or a reached cap now fails plan authoring.
+#
+# Defaults to `direct` on purpose. Landing this must change nothing until someone
+# chooses to flip it, and `direct` then stays as the rollback that needs an
+# environment variable rather than a revert.
+DEFAULT_BEDROCK_VIA = os.environ.get("ADP_BEDROCK_VIA", "direct")
+BEDROCK_VIA_CHOICES = ("direct", "gateway")
+
+# The gateway's per-model route, relative to the API Gateway stage's `/agent`
+# base. Not invented here: this is the path the agent worker's sigv4-proxy
+# already targets in production (`--target .../STAGE/agent`, with the SDK
+# appending `/model/{id}/invoke`), so the nightly reaches the gateway by the one
+# route that is already proven on this platform rather than by a second one.
+GATEWAY_MODEL_PATH = "/agent/model/{model_id}/invoke"
+
 # The complete set of per-finding fields that may enter the prompt. An
 # allow-list for the same reason `normalize_security_findings._FIELD_MAP` is
 # one: the findings document is produced from an open-set service schema, so a
@@ -633,6 +658,144 @@ Return the JSON object now."""
 # --------------------------------------------------------------------------
 # the model seam
 # --------------------------------------------------------------------------
+
+
+class GatewayClient:
+    """A ``bedrock-runtime``-shaped client that goes through the ADP gateway.
+
+    Deliberately duck-typed to ``invoke_model(modelId=, contentType=, accept=,
+    body=)`` returning ``{"body": <readable>}``. That is not a cosmetic choice:
+    the model call already had a single injected seam, so matching its shape means
+    the transport swaps without ``invoke_model`` above, the two phases, the retry
+    loops, or any existing test knowing there are now two transports.
+
+    The request is SigV4-signed for ``execute-api`` with the runner's own IRSA
+    credentials and sent to the gateway's IAM-authenticated agent route. API
+    Gateway then hands the gateway an ``X-Caller-Identity`` it resolves through the
+    agent registry, so there is **no token to mint, store or rotate** -- the
+    identity is the role the job already runs as.
+
+    The body is passed through byte-for-byte, which is what lets the tool schema
+    survive: the gateway's request model declares ``tools``/``tool_choice`` and
+    allows extra fields, and its per-model route logs whether they were present.
+    """
+
+    def __init__(
+        self,
+        invoke_url: str,
+        *,
+        region: str,
+        timeout: int = 1200,
+        http=None,
+        credentials=None,
+    ):
+        self._base = invoke_url.rstrip("/")
+        self._region = region
+        self._timeout = timeout
+        self._http = http
+        self._credentials = credentials
+
+    def _sender(self):
+        if self._http is None:
+            from botocore.httpsession import URLLib3Session  # noqa: PLC0415
+
+            self._http = URLLib3Session(timeout=self._timeout)
+        return self._http
+
+    def _creds(self):
+        if self._credentials is None:
+            import botocore.session  # noqa: PLC0415
+
+            resolved = botocore.session.get_session().get_credentials()
+            if resolved is None:
+                raise PlanAuthoringError(
+                    "no AWS credentials to sign the gateway call with; the runner's "
+                    "IRSA identity is what authenticates this path"
+                )
+            self._credentials = resolved.get_frozen_credentials()
+        return self._credentials
+
+    def url_for(self, model_id: str) -> str:
+        from urllib.parse import quote  # noqa: PLC0415
+
+        return self._base + GATEWAY_MODEL_PATH.format(model_id=quote(model_id, safe=""))
+
+    def invoke_model(self, *, modelId, contentType, accept, body):  # noqa: N803
+        from botocore.auth import SigV4Auth  # noqa: PLC0415
+        from botocore.awsrequest import AWSRequest  # noqa: PLC0415
+
+        request = AWSRequest(
+            method="POST",
+            url=self.url_for(modelId),
+            data=body,
+            headers={"Content-Type": contentType, "Accept": accept},
+        )
+        SigV4Auth(self._creds(), "execute-api", self._region).add_auth(request)
+        response = self._sender().send(request.prepare())
+        status = getattr(response, "status_code", 0)
+        if status < 200 or status >= 300:
+            # Truncated: a gateway rejection body can quote the request, and this
+            # message reaches a CI log (NEV-2). The status and a short reason are
+            # enough to tell a budget denial from an auth failure.
+            detail = (response.content or b"")[:200]
+            raise PlanAuthoringError(
+                f"the ADP gateway rejected the model call with HTTP {status}: "
+                f"{detail!r}. `--bedrock-via direct` is the rollback"
+            )
+        return {"body": _ReadableBytes(response.content)}
+
+
+class _ReadableBytes:
+    """Gives the gateway's response body the ``.read()`` boto3 callers expect."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+
+def build_client(
+    via: str, *, gateway_url: str | None = None, region: str | None = None, timeout: int = 1200
+):
+    """The one place a transport is chosen. Raises on an unknown one."""
+    if via not in BEDROCK_VIA_CHOICES:
+        raise PlanAuthoringError(
+            f"unknown model transport {via!r}; expected one of {list(BEDROCK_VIA_CHOICES)}"
+        )
+    if via == "gateway":
+        if not gateway_url:
+            raise PlanAuthoringError(
+                "--bedrock-via gateway needs --gateway-url (the API Gateway invoke "
+                "URL, e.g. from SSM /adp/<env>/gateway/apigw-invoke-url)"
+            )
+        resolved_region = region or os.environ.get("AWS_REGION") or os.environ.get(
+            "AWS_DEFAULT_REGION"
+        )
+        if not resolved_region:
+            raise PlanAuthoringError(
+                "--bedrock-via gateway needs a region to sign with; set AWS_REGION"
+            )
+        return GatewayClient(gateway_url, region=resolved_region, timeout=timeout)
+
+    import boto3  # noqa: PLC0415 - imported late so --help works unprovisioned
+    from botocore.config import Config  # noqa: PLC0415
+
+    # A non-streaming invoke_model does not return until the whole response is
+    # generated. botocore's default 60s read timeout fires long before that on a
+    # real call, so every attempt died as a "Read timeout on endpoint URL" (#4290
+    # replay run 34056074448), never reaching the model's actual output. Give the
+    # call real room. botocore's own retries are pinned to a single attempt so a
+    # genuine timeout surfaces to the visible attempt loops rather than being
+    # retried invisibly under the step.
+    return boto3.client(
+        "bedrock-runtime",
+        config=Config(
+            read_timeout=timeout,
+            connect_timeout=15,
+            retries={"max_attempts": 1, "mode": "standard"},
+        ),
+    )
 
 
 def invoke_model(
@@ -1209,24 +1372,12 @@ def _cmd_author(args: argparse.Namespace) -> int:
                 f"scanner detail available for {len(details)}/"
                 f"{len(new_findings['finding_ids'])} finding(s)"
             )
-        import boto3  # noqa: PLC0415 - imported late so --help works unprovisioned
-        from botocore.config import Config  # noqa: PLC0415
-
-        # A non-streaming invoke_model does not return until the whole response is
-        # generated. botocore's default 60s read timeout fires long before that on
-        # a real call, so every attempt died as a "Read timeout on endpoint URL"
-        # (#4290 replay run 34056074448), never reaching the model's actual output.
-        # Give the call real room. botocore's own retries are pinned to a single
-        # attempt so a genuine timeout surfaces to the visible attempt loops above
-        # instead of being retried invisibly under the step.
-        client = boto3.client(
-            "bedrock-runtime",
-            config=Config(
-                read_timeout=1200,
-                connect_timeout=15,
-                retries={"max_attempts": 1, "mode": "standard"},
-            ),
+        client = build_client(
+            args.bedrock_via,
+            gateway_url=args.gateway_url,
+            timeout=args.read_timeout,
         )
+        print(f"model transport: {args.bedrock_via}")
 
     plan = author_plan(
         client,
@@ -1301,6 +1452,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", required=True, help="the nightly run id")
     parser.add_argument("--run-date", help="YYYY-MM-DD; defaults to the input document's")
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
+    parser.add_argument(
+        "--bedrock-via",
+        default=DEFAULT_BEDROCK_VIA,
+        choices=BEDROCK_VIA_CHOICES,
+        help="how to reach the model. `direct` is bedrock-runtime on the runner's own "
+        "identity and attributes nothing; `gateway` signs to the ADP gateway's "
+        "IAM-authenticated agent route, so the night's spend lands on a budget. "
+        "`direct` is the default and the rollback",
+    )
+    parser.add_argument(
+        "--gateway-url",
+        default=os.environ.get("ADP_GATEWAY_INVOKE_URL"),
+        help="API Gateway invoke URL for --bedrock-via gateway "
+        "(SSM /adp/<env>/gateway/apigw-invoke-url)",
+    )
+    parser.add_argument(
+        "--read-timeout",
+        type=int,
+        default=1200,
+        help="seconds to wait for one non-streaming model response",
+    )
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     parser.add_argument(
         "--max-attempts",

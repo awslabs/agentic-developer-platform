@@ -61,6 +61,28 @@ on:
       # full run. Adding an input does not change the set of triggers, so the
       # no-schedule / manual-only gate is unaffected: the pipeline stays as
       # dormant as before, this only changes what a MANUAL dispatch does.
+      # Which transport the plan-authoring model call uses. `direct` is
+      # bedrock-runtime on the runner's own IRSA identity and attributes nothing:
+      # a whole-repo night's ~26 Opus calls appear in no gateway usage row and
+      # against no budget envelope. `gateway` SigV4-signs to the ADP gateway's
+      # IAM-authenticated agent route, which resolves this runner's role through
+      # the agent registry and puts the call through budget and rate-limit
+      # enforcement -- that IS the attribution, and it is also a new way for the
+      # night to fail (a missing budget config or a reached cap now fails plan
+      # authoring). An INPUT rather than a committed default so proving the
+      # gateway path costs a dispatch instead of a PR, and rolling back costs a
+      # dispatch instead of a revert.
+      bedrock_via:
+        description: >-
+          How to reach the model for plan authoring. `direct` = bedrock-runtime on
+          the runner identity (no spend attribution). `gateway` = via the ADP
+          gateway, so the night's spend lands on a budget.
+        type: choice
+        options:
+          - direct
+          - gateway
+        default: direct
+        required: false
       findings_run_date:
         description: >-
           Reuse an existing run's published findings instead of scanning. Set to
@@ -404,6 +426,7 @@ jobs:
       # every filed body, so the gate must lint the body that will actually be
       # filed — two spellings would gate one body and file another.
       SOURCE: code-review
+      BEDROCK_VIA: ${{ inputs.bedrock_via == '' && 'direct' || inputs.bedrock_via }}
     steps:
       - uses: actions/checkout@v7
 
@@ -534,8 +557,25 @@ jobs:
       # cluster's computed severity) beside the plan, inside $LEDGER_DIR so the
       # persist step below carries it to the private run rendezvous. The filing
       # step enriches this same file in place with each cluster's issue number.
+      # `--gateway-url` is resolved from SSM only on the gateway path, so the
+      # default `direct` run needs no extra permission and no extra call. The
+      # runner's own IRSA identity is what authenticates the gateway call -- there
+      # is no token to mint, store or rotate -- so nothing secret is read here.
       - name: Author the night's grouping plan
         run: |
+          TRANSPORT_ARGS=(--bedrock-via "$BEDROCK_VIA")
+          if [ "$BEDROCK_VIA" = "gateway" ]; then
+            GATEWAY_URL=$(aws ssm get-parameter \
+              --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
+              --query Parameter.Value --output text)
+            if [ -z "${GATEWAY_URL}" ] || [ "${GATEWAY_URL}" = "None" ]; then
+              echo "::error title=Security nightly::bedrock_via=gateway but \
+          /adp/${ENVIRONMENT}/gateway/apigw-invoke-url is unset" >&2
+              exit 1
+            fi
+            TRANSPORT_ARGS+=(--gateway-url "$GATEWAY_URL")
+            echo "routing plan authoring through the ADP gateway"
+          fi
           $SECURITYAGENT_PYTHON .github/scripts/author_grouping_plan.py \
             --new-findings new-findings.json \
             --source "$SOURCE" \
@@ -544,7 +584,8 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-date "$RUN_DATE" \
             --raw-findings "$LEDGER_DIR/code-review-findings.json" \
-            --traceability "$LEDGER_DIR/traceability.$SOURCE.json"
+            --traceability "$LEDGER_DIR/traceability.$SOURCE.json" \
+            "${TRANSPORT_ARGS[@]}"
 
       # A HARD GATE, with no fallback, and that asymmetry is the whole point: a
       # failed night is recoverable by re-dispatch and costs one wasted scan,

@@ -29,6 +29,7 @@ import re
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -134,6 +135,22 @@ def no_github(monkeypatch):
 @pytest.fixture
 def patterns():
     return tg.load_banned_patterns()
+
+
+@pytest.fixture
+def real_botocore():
+    """Skip when botocore is absent.
+
+    The gateway transport signs with real SigV4, so the tests that assert the
+    signature need the real library -- stubbing it would assert the shape of the
+    stub. The Script Tests runner installs neither boto3 nor botocore, so those
+    tests skip there and run everywhere else, which is the same bargain
+    `test_securityagent_preflight` already makes with `importorskip("boto3")`.
+
+    Everything that does NOT need signing -- the transport choice, the URL shape,
+    the guards -- is asserted unconditionally above and below.
+    """
+    return pytest.importorskip("botocore.auth")
 
 
 # --------------------------------------------------------------------------
@@ -1684,6 +1701,188 @@ def test_each_prompt_names_the_tool_it_must_answer_through(prompt_of, tool_name)
     _, prompt = prompt_of()
     assert tool_name in prompt
     assert "Return ONE JSON object" not in prompt
+
+
+# ==========================================================================
+# 10. the transport -- direct Bedrock, or the ADP gateway (attribution)
+# ==========================================================================
+#
+# `direct` reaches the model on the runner's own identity and attributes nothing:
+# a whole-repo night's ~26 Opus calls appear in no gateway usage row and against
+# no budget. `gateway` signs to the gateway's IAM-authenticated agent route, which
+# resolves the runner's role through the agent registry and puts the call through
+# budget and rate-limit enforcement. These tests pin that the choice is explicit,
+# that `direct` stays the default so landing this changes nothing, and that the
+# gateway client is a drop-in for the seam the rest of the module already had.
+
+
+class _FakeHttp:
+    """Stands in for botocore's HTTP session, recording the signed request."""
+
+    def __init__(self, *, status=200, payload=b'{"content":[{"text":"{}"}]}'):
+        self.status = status
+        self.payload = payload
+        self.sent = []
+
+    def send(self, prepared):
+        self.sent.append(prepared)
+        return types.SimpleNamespace(status_code=self.status, content=self.payload)
+
+
+class _FrozenCreds:
+    access_key = "AKIDEXAMPLE"
+    secret_key = "secret"
+    token = None
+
+
+def _gateway_client(**kwargs):
+    kwargs.setdefault("http", _FakeHttp())
+    kwargs.setdefault("credentials", _FrozenCreds())
+    return agp.GatewayClient(
+        "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev",
+        region="us-east-1",
+        **kwargs,
+    )
+
+
+def test_direct_is_the_default_transport_so_landing_this_changes_nothing():
+    """The flip is a decision, not a side effect of a merge. `direct` is also the
+    rollback, and a rollback that needs a revert is not a rollback."""
+    assert agp.DEFAULT_BEDROCK_VIA == "direct"
+    argv = _author_argv(new_findings=FINDINGS_FIXTURE, output=Path("plan.json"))
+    assert agp.build_parser().parse_args(argv).bedrock_via == "direct"
+
+
+def test_the_gateway_url_is_the_route_the_agent_worker_already_uses():
+    """Not a second route invented here: the worker's sigv4-proxy targets
+    `.../STAGE/agent` and the SDK appends `/model/{id}/invoke`. Reaching the
+    gateway by a different path would be an unproven path in the one place that
+    must work unattended."""
+    client = _gateway_client()
+    assert client.url_for("us.anthropic.claude-opus-5").endswith(
+        "/dev/agent/model/us.anthropic.claude-opus-5/invoke"
+    )
+
+
+def test_the_gateway_call_is_sigv4_signed_for_execute_api(real_botocore):
+    """There is no token to mint or store: the identity is the role the job runs
+    as, and API Gateway resolves it through the agent registry."""
+    http = _FakeHttp()
+    client = _gateway_client(http=http)
+    client.invoke_model(
+        modelId="m", contentType="application/json", accept="application/json", body="{}"
+    )
+    (sent,) = http.sent
+    auth = sent.headers["Authorization"]
+    assert auth.startswith("AWS4-HMAC-SHA256 ")
+    assert "/execute-api/aws4_request" in auth
+    assert "us-east-1" in auth
+
+
+def test_the_gateway_passes_the_tool_schema_through_unchanged(real_botocore):
+    """The gateway's request model declares `tools`/`tool_choice` and allows extra
+    fields, so structured output and this transport compose. Asserted on the bytes
+    actually sent, because a transport that dropped the tool would silently return
+    us to the failure mode tool-schema output exists to end."""
+    http = _FakeHttp()
+    body = json.dumps({"messages": [], "tools": [agp.work_item_tool()],
+                       "tool_choice": {"type": "tool", "name": "submit_work_item"}})
+    _gateway_client(http=http).invoke_model(
+        modelId="m", contentType="application/json", accept="application/json", body=body
+    )
+    sent = json.loads(http.sent[0].body)
+    assert sent["tool_choice"] == {"type": "tool", "name": "submit_work_item"}
+    assert sent["tools"][0]["name"] == "submit_work_item"
+    assert set(sent["tools"][0]["input_schema"]["required"]) == set(agp._AUTHORED_FIELDS)
+
+
+def test_the_gateway_client_is_a_drop_in_for_the_existing_seam(
+    tmp_path, monkeypatch, no_github, real_botocore
+):
+    """The whole night runs through the gateway client without `invoke_model`, the
+    two phases, the retry loops or any other test knowing there are two transports
+    -- which is the reason the model call had a single injected seam."""
+    groups = _fixture_groups()
+    answers = [{"clusters": [{k: g[k] for k in agp._CLUSTER_FIELDS} for g in groups]}]
+    answers += [{k: g[k] for k in agp._AUTHORED_FIELDS} for g in groups]
+
+    class _SequencedHttp(_FakeHttp):
+        def send(self, prepared):
+            self.sent.append(prepared)
+            answer = answers.pop(0)
+            payload = json.dumps(
+                {"content": [{"type": "tool_use", "name": "t", "input": answer}]}
+            ).encode()
+            return types.SimpleNamespace(status_code=200, content=payload)
+
+    http = _SequencedHttp()
+    monkeypatch.setattr(agp, "build_client", lambda *a, **k: _gateway_client(http=http))
+
+    output = tmp_path / "plan.json"
+    argv = _author_argv(
+        new_findings=FINDINGS_FIXTURE,
+        output=output,
+        extra=("--bedrock-via", "gateway", "--gateway-url", "https://x/dev",
+               "--max-concurrency", "1"),
+    )
+    assert main(argv) == 0
+    assert len(http.sent) == 1 + len(groups)
+    assert tg.main(_validate_argv(plan=output, new_findings=FINDINGS_FIXTURE)) == 0
+
+
+@pytest.mark.parametrize("status", [403, 429, 500])
+def test_a_gateway_rejection_fails_the_night_and_names_the_rollback(status, real_botocore):
+    """Routing through the gateway puts budget and rate-limit enforcement in the
+    night's critical path, which is a NEW way for it to fail. When that happens the
+    error has to say so and name the way out, not look like a model problem."""
+    client = _gateway_client(http=_FakeHttp(status=status, payload=b"denied"))
+    with pytest.raises(PlanAuthoringError, match=f"HTTP {status}"):
+        client.invoke_model(
+            modelId="m", contentType="application/json", accept="application/json", body="{}"
+        )
+
+
+def test_a_gateway_rejection_body_is_truncated_in_the_message(real_botocore):
+    """A gateway rejection can quote the request back, and this message reaches a
+    CI log (NEV-2). Status plus a short reason is enough to tell a budget denial
+    from an auth failure."""
+    client = _gateway_client(http=_FakeHttp(status=403, payload=b"x" * 5000))
+    with pytest.raises(PlanAuthoringError) as caught:
+        client.invoke_model(
+            modelId="m", contentType="application/json", accept="application/json", body="{}"
+        )
+    assert len(str(caught.value)) < 400
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        ({"via": "gateway"}, "needs --gateway-url"),
+        ({"via": "nonsense"}, "unknown model transport"),
+    ],
+    ids=["gateway-without-url", "unknown-transport"],
+)
+def test_an_unusable_transport_choice_fails_before_any_model_call(kwargs, match):
+    with pytest.raises(PlanAuthoringError, match=match):
+        agp.build_client(kwargs["via"])
+
+
+def test_gateway_mode_without_a_region_fails_rather_than_signing_wrongly(monkeypatch):
+    """An unsigned or wrongly-scoped request is a 403 from API Gateway that reads
+    like an authorization problem; failing here names the real cause."""
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    with pytest.raises(PlanAuthoringError, match="needs a region"):
+        agp.build_client("gateway", gateway_url="https://x/dev")
+
+
+def test_the_nightly_can_select_the_transport_without_a_code_change():
+    """The flip has to be an operator action on a dispatch, not a merge: otherwise
+    proving the gateway path costs a PR and rolling back costs another."""
+    text = NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+    assert "bedrock_via" in text, "the nightly cannot select a transport"
+    assert "--bedrock-via" in text
+    assert "apigw-invoke-url" in text, "the gateway URL is not resolved from SSM"
 
 
 # --------------------------------------------------------------------------
