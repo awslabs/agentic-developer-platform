@@ -30,6 +30,26 @@ Agent Worker Pod
 | `ANTHROPIC_BEDROCK_BASE_URL` | `http://127.0.0.1:9090` | Set by entrypoint.py |
 | `CLAUDE_CODE_USE_BEDROCK` | `1` | ConfigMap + entrypoint.py |
 
+### Valid `ADP_BEDROCK_VIA` values
+
+| Value | Behavior |
+|-------|----------|
+| `gateway` (default) | Bedrock via the local sigv4-proxy → API GW → gateway. Metered, budgeted, attributed. |
+| `direct` | Bedrock directly on pod IRSA. **Kill switch** — bypasses gateway budget/audit/metering. |
+| `platform` | Legacy alias for `direct`. |
+| `user` | **RETIRED (#4747).** Setting it is now a startup error. |
+
+**Why `user` was retired.** It served Bedrock with the customer's own assumed
+credentials, so the spend hit their account but no `usage_logs` row was written —
+platform metering was blind to it. Per-principal Bedrock account routing (#4692)
+replaces it: create a mapping (Settings → Credentials, or the admin Bedrock
+routing surface) and leave `ADP_BEDROCK_VIA=gateway`. The calls reach the same
+customer account, but metered.
+
+Setting `=user` raises at startup rather than falling back. That is deliberate:
+a silent fallback would run the pod on platform-billed IRSA, switching the payer
+without telling anyone.
+
 ## Rollback: Switch to Direct Bedrock
 
 **Time to revert: ~30 seconds.**

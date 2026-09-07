@@ -27,7 +27,7 @@ has to be **computed from the row count**, not read out of the sum:
 
 `CostStatus.UNKNOWN` always carries a `reason`, because "unknown" with no
 explanation reads as a bug. The legitimate reasons are real: a non-gateway
-Bedrock path (`ADP_BEDROCK_VIA=direct|user`) writes no usage row, chat logging
+Bedrock path (`ADP_BEDROCK_VIA=direct`) writes no usage row, chat logging
 can be disabled, and a node may simply not have run yet.
 
 **`usage_logs` is the only cost source (R-O6a).** `budget_usage`
@@ -140,7 +140,7 @@ class UnknownReason(StrEnum):
     NO_USAGE_ROWS = "no_usage_rows"  # Addressed, but nothing logged against it
     NOT_STARTED = "not_started"  # Node has not run yet
     NOT_COSTABLE = "not_costable"  # Gate/eval node with no model calls to bill
-    NON_GATEWAY_PATH = "non_gateway_path"  # ADP_BEDROCK_VIA=direct|user: no row
+    NON_GATEWAY_PATH = "non_gateway_path"  # ADP_BEDROCK_VIA=direct: no row
 
 
 class JoinKeyError(ValueError):

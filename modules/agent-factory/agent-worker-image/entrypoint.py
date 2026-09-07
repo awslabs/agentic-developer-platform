@@ -48,6 +48,32 @@ SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
+# Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
+#
+# Issue #4747 (ruling 3 of #4692): `user` routed Bedrock through the customer's
+# own assumed credentials, bypassing the gateway — so those calls were billed to
+# the customer but written to no `usage_logs` row at all. Per-principal routing
+# (#4742-#4746) replaces it with a mapping that reaches the same account *with*
+# metering, so the mode is retired rather than migrated.
+#
+# This is a rejection guard, NOT a routing branch: no path honors `user` as a
+# mode. It fails loudly on purpose. Falling through to the trailing `else` would
+# silently run the agent on pod IRSA — i.e. platform-billed Bedrock for someone
+# who explicitly asked to be billed on their own account. A silent billing
+# switch is exactly what the ruling forbids, so an unroutable pod must die
+# before it spends anything rather than spend it against the wrong account.
+RETIRED_BEDROCK_VIA = {
+    "user": (
+        "ADP_BEDROCK_VIA=user is retired (issue #4747, ruling 3 of #4692). It billed "
+        "Bedrock to the customer's account while writing no usage row, so platform "
+        "metering could not see the spend. To route a principal's Bedrock calls to "
+        "their own AWS account with metering intact, create a per-principal Bedrock "
+        "account mapping (Settings -> Credentials, or the admin Bedrock routing "
+        "surface) and leave ADP_BEDROCK_VIA=gateway. Use ADP_BEDROCK_VIA=direct only "
+        "as the documented kill switch for platform-billed direct Bedrock."
+    ),
+}
+
 # Exit code by which the Node worker asks for the SQS message to be RETRIED rather
 # than acked. Step 13 below deletes the message on every other terminal exit, so a
 # plain non-zero exit would destroy the task instead of retrying it.
@@ -1536,9 +1562,10 @@ def main() -> int:
     # ADP_BEDROCK_VIA controls the Bedrock routing path:
     #   - "gateway" (default): route through platform gateway via sigv4-proxy sidecar
     #   - "direct": use pod IRSA to call Bedrock directly (fallback/rollback)
-    #   - "user": use customer's assumed credentials for both Bedrock + AWS calls
-    #     (legacy: operations persona on customer-billed Bedrock)
     #   - "platform": alias for "direct" (legacy compat)
+    #
+    # "user" is RETIRED (#4747) — see RETIRED_BEDROCK_VIA above. Setting it is a
+    # startup error, not a silent fallback.
     #
     # When ADP_BEDROCK_VIA=gateway AND the persona has assumed a customer role,
     # the two compose: Bedrock routes through the platform gateway (platform IRSA,
@@ -1553,6 +1580,10 @@ def main() -> int:
     agent_env = os.environ.copy()
     bedrock_via_raw = os.environ.get("ADP_BEDROCK_VIA")
     bedrock_via = (bedrock_via_raw or "gateway").strip().lower()
+
+    # Reject retired routing modes before starting the proxy or spending a token.
+    if bedrock_via in RETIRED_BEDROCK_VIA:
+        raise RuntimeError(RETIRED_BEDROCK_VIA[bedrock_via])
 
     # Start sigv4-proxy subprocess for gateway mode.
     # The proxy must sign with platform IRSA (which has execute-api:Invoke on
@@ -1592,23 +1623,6 @@ def main() -> int:
             "ADP_BEDROCK_VIA=%r (normalized: %s) — direct Bedrock via pod IRSA",
             bedrock_via_raw,
             bedrock_via,
-        )
-    elif bedrock_via == "user" and "AWS_ACCESS_KEY_ID" in agent_env:
-        for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
-            agent_env.pop(var, None)
-        logger.info(
-            "ADP_BEDROCK_VIA=%r (normalized: user) — agent env stripped of IRSA; "
-            "user account credentials will be used for all agent AWS calls",
-            bedrock_via_raw,
-        )
-    elif bedrock_via == "user" and persona not in PERSONAS_NEEDING_AWS:
-        logger.warning(
-            "ADP_BEDROCK_VIA=user set but persona=%r does not assume customer role "
-            "(not in PERSONAS_NEEDING_AWS=%s). Agent will use pod IRSA for all AWS "
-            "calls including Bedrock. Either add this persona to PERSONAS_NEEDING_AWS "
-            "or unset ADP_BEDROCK_VIA on the ScaledJob.",
-            persona,
-            sorted(PERSONAS_NEEDING_AWS),
         )
     elif bedrock_via == "gateway":
         # Gateway-mode Bedrock already wired above. If a customer role was

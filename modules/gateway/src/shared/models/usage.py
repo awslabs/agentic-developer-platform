@@ -37,7 +37,7 @@ class UsageLog(Base, TenantMixin):
     # call is attributable to. Nullable with NO default, and never backfilled —
     # a null means "this row is not addressed to a graph node", which is the
     # truth for every pre-feature row and for every non-gateway Bedrock path
-    # (ADP_BEDROCK_VIA=direct|user writes no row at all). A default would stamp a
+    # (ADP_BEDROCK_VIA=direct writes no row at all). A default would stamp a
     # fabricated address onto historical rows and land them in some EPIC's total.
     graph_address: Mapped[str | None] = mapped_column(String(512), index=True)
     # Issue #4398: which client tool made the request (claude_code, codex_cli,

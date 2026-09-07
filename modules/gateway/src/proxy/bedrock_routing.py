@@ -71,16 +71,20 @@ Mantle passthrough (``src/proxy/mantle_service.py``)   **Capture only.** The
                                                        refactor. Knowingly out of
                                                        scope, documented not
                                                        omitted.
-``ADP_BEDROCK_VIA=user`` worker branch                 **Knowingly uncovered.**
-                                                       The pod calls Bedrock with
-                                                       the customer's own
-                                                       credentials, bypassing the
-                                                       gateway entirely — no
-                                                       usage row at all, so
-                                                       nothing to populate. On
-                                                       ruling 3's shadow → enforce
-                                                       → remove retirement path
-                                                       (§7.1); not this issue's.
+``ADP_BEDROCK_VIA=user`` worker branch                 **Retired (#4747).** No
+                                                       longer a gap. The pod used
+                                                       to call Bedrock with the
+                                                       customer's own credentials,
+                                                       bypassing the gateway — no
+                                                       usage row at all. Ruling
+                                                       3's shadow → enforce →
+                                                       remove path (§7.1) is
+                                                       complete: the value is now
+                                                       a startup error, and the
+                                                       mappings above are the
+                                                       supported way to reach a
+                                                       principal's own account
+                                                       *with* metering.
 agent-factory ``sqs_consumer.py`` / ingest classifier  **Out of scope.**
                                                        Non-gateway Lambdas on the
                                                        platform account with no
