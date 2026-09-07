@@ -192,11 +192,17 @@ class MockPoolService(IPoolService):
         self._client = client or MockBedrockClient()
         self._error = error
         self.get_client_calls = 0
+        # Every `credentials` argument the proxy passed, in call order. Issue #4744:
+        # the assertion that matters for routing is not "a client was returned" but
+        # "the client was built with the destination's credentials", so the mock has
+        # to record them rather than merely tolerate the argument.
+        self.get_client_credentials: list[Any] = []
         self.report_error_calls: list[str] = []
 
-    async def get_client(self) -> Any:
-        """Return mock Bedrock client."""
+    async def get_client(self, credentials: Any | None = None) -> Any:
+        """Return mock Bedrock client, recording what it was asked to sign with."""
         self.get_client_calls += 1
+        self.get_client_credentials.append(credentials)
         if self._error:
             raise self._error
         return self._client

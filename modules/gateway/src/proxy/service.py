@@ -11,8 +11,15 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+from botocore.exceptions import ClientError
+
 from src.budget.enforcement_service import reconcile_budget_reservation
-from src.proxy.bedrock_routing import resolve_shadow_target
+from src.proxy.bedrock_enforcement import RoutingDecision, resolve_routing_decision
+from src.proxy.bedrock_routing import BedrockTarget, resolve_shadow_target
+from src.proxy.bedrock_routing_errors import (
+    REASON_MODEL_NOT_ENABLED,
+    BedrockAccountUnavailableError,
+)
 from src.proxy.exceptions import (
     BedrockInvocationError,
 )
@@ -60,6 +67,77 @@ _current_agent_run_id: contextvars.ContextVar[str | None] = contextvars.ContextV
 # context, so the value survives to _log_usage — including into a
 # StreamingResponse generator's `finally`, which is where the streaming paths log.
 _current_client_tool: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_client_tool", default=None)
+
+
+def _classify_bedrock_failure(
+    exc: Exception,
+    *,
+    model_id: str,
+    target: BedrockTarget | None,
+) -> Exception:
+    """Turn a raw Bedrock failure into the right error class (§5.1, §5.2).
+
+    Issue #4744. Before this, ``_invoke_bedrock`` caught bare ``Exception`` and raised
+    ``BedrockInvocationError(str(e))``, which collapsed three genuinely different
+    situations — "your account lacks this model", "your role cannot be assumed", and
+    "Bedrock is down" — into one opaque 502. §5.1 calls that discrimination a
+    **prerequisite** rather than a nicety, because without it the routing feature's most
+    common failure mode is indistinguishable from an outage, and the operator's first
+    instinct is to page someone rather than enable a model.
+
+    Two rules, in order:
+
+    1. **A fail-closed error passes through untouched.** ``BedrockAccountUnavailableError``
+       already names its account, cause and fix; re-wrapping it would replace that with a
+       generic transport message and lose the whole point.
+    2. **On a ROUTED call, ``AccessDeniedException`` becomes ``model_not_enabled``.**
+       Bedrock model access is per-account, and a routed call has already passed every
+       ADP-side check (``check_model_access`` is a glob match against the caller's
+       allowed-model config — it knows nothing about what the *destination* account has
+       enabled). So the overwhelmingly likely cause is an unenabled model in the
+       destination.
+
+       Stated honestly, because it is an inference and not a certainty: a
+       missing ``bedrock:InvokeModel`` on the role produces the same error code. The
+       message therefore leads with the model-enablement fix — the far more common cause
+       once R1's routing-capable template is what created the role, since that template
+       grants InvokeModel explicitly — and the ``account_id`` in the payload is what lets
+       an operator check the other possibility. A wrong-but-actionable message naming the
+       right account beats a correct-but-opaque one.
+
+    Everything else — transport failures, throttling, ``ValidationException`` for a
+    malformed body — keeps main's exact behaviour, including on routed calls. Reclassifying
+    those would change platform-account error handling, which this issue has no mandate to
+    touch.
+    """
+    if isinstance(exc, BedrockAccountUnavailableError):
+        return exc
+
+    error_code = ""
+    if isinstance(exc, ClientError):
+        error_code = exc.response.get("Error", {}).get("Code", "") or ""
+
+    if target is not None and not target.is_platform and error_code in ("AccessDeniedException", "AccessDenied"):
+        logger.error(
+            "Routed Bedrock call denied by the destination account",
+            extra={
+                "bedrock_account_id": target.account_id,
+                "rung": target.rung,
+                "model_id": model_id,
+                "bedrock_error_code": error_code,
+            },
+        )
+        return BedrockAccountUnavailableError(
+            reason=REASON_MODEL_NOT_ENABLED,
+            account_id=target.account_id or "unknown",
+            scope=target.rung,  # type: ignore[arg-type]
+            model_id=model_id,
+        )
+
+    logger.error(f"Bedrock invocation error: {exc}")
+    # Main's behaviour, preserved exactly — including the error code now that we have
+    # parsed one, which costs nothing and makes a transport failure debuggable.
+    return BedrockInvocationError(str(exc), bedrock_error_code=error_code or None)
 
 
 class ProxyService(IProxyService):
@@ -122,11 +200,16 @@ class ProxyService(IProxyService):
             # Convert request to Bedrock format
             bedrock_request = self._prepare_bedrock_request(request, bedrock_model_id, api_format)
 
+            # Issue #4744: decide where this call is signed for, then get the matching
+            # client. `decision.credentials is None` (unmapped, or org not opted in)
+            # returns the ambient IRSA client — identical to main.
+            decision = await resolve_routing_decision(context)
+
             # Get Bedrock client from pool
-            client = await self._pool_service.get_client()
+            client = await self._pool_service.get_client(decision.credentials)
 
             # Invoke Bedrock
-            response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
+            response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target)
 
             # Calculate latency
             latency_ms = (time.time() - start_time) * 1000
@@ -206,6 +289,11 @@ class ProxyService(IProxyService):
         start_time = time.time()
         usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         status_code = 200
+        # Issue #4744: initialised before the try so the `finally` can always record
+        # which account served the call — including when the failure was the routing
+        # decision itself, where an unset local would raise inside the settlement path
+        # and lose the usage row entirely.
+        decision = RoutingDecision()
 
         try:
             # Resolve model and check access
@@ -215,12 +303,15 @@ class ProxyService(IProxyService):
             # Convert request to Bedrock format
             bedrock_request = self._prepare_bedrock_request(request, bedrock_model_id, api_format)
 
+            # Issue #4744: routing decision, then the matching client (see `invoke`).
+            decision = await resolve_routing_decision(context)
+
             # Get Bedrock client from pool
-            client = await self._pool_service.get_client()
+            client = await self._pool_service.get_client(decision.credentials)
 
             # Invoke Bedrock with streaming
             response_id = str(uuid.uuid4())
-            bedrock_stream = await self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
+            bedrock_stream = await self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target)
 
             # Convert stream to target format
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, api_format, model, response_id):
@@ -245,6 +336,7 @@ class ProxyService(IProxyService):
                 # .get() yields None for "provider never reported it".
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                routing_decision=decision,
             )
 
     # =========================================================================
@@ -378,6 +470,7 @@ class ProxyService(IProxyService):
         request_id: str | None = None,
         cache_read_input_tokens: int | None = None,
         cache_creation_input_tokens: int | None = None,
+        routing_decision: RoutingDecision | None = None,
     ) -> None:
         """Write a row to usage_logs for admin dashboard visibility.
 
@@ -425,13 +518,26 @@ class ProxyService(IProxyService):
         # None means "not captured" and is written as NULL — never a placeholder.
         client_tool = _current_client_tool.get()
 
-        # Issue #4743: the would-be routing destination. SHADOW ONLY — this value
-        # is written to usage_logs and read by nobody else; the request was already
-        # signed with the platform account's ambient IRSA credentials by the time
-        # we get here (this runs in the caller's `finally`), which is what makes
-        # "signing is unchanged" a structural property rather than a promise.
-        # Returns None when the flag is off or resolution failed; never raises.
-        shadow_target = await resolve_shadow_target(context)
+        # Issue #4743/#4744: which Bedrock account this call belongs to.
+        #
+        # Two sources, and the distinction is the whole audit value of the column:
+        #
+        #  - ENFORCED (routing_decision.is_enforced): the caller already resolved the
+        #    target AND signed with it, so this is the account that ACTUALLY served the
+        #    call. Reuse it — re-resolving here would walk the ladder a second time per
+        #    request and, worse, could disagree with what was signed if a mapping
+        #    changed mid-request, putting a wrong account in the audit trail.
+        #  - SHADOW (no decision, or enforcement not active for this org): resolve the
+        #    would-be target for observation only. The request was signed with ambient
+        #    IRSA before this ran, exactly as on main.
+        #
+        # In both cases None persists as NULL, meaning "not captured" — never a
+        # fabricated account id.
+        if routing_decision is not None and routing_decision.is_enforced:
+            bedrock_account_id = routing_decision.target.account_id if routing_decision.target else None
+        else:
+            shadow_target = await resolve_shadow_target(context)
+            bedrock_account_id = shadow_target.account_id if shadow_target else None
 
         await reconcile_budget_reservation(
             context=context,
@@ -458,10 +564,8 @@ class ProxyService(IProxyService):
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_creation_input_tokens=cache_creation_input_tokens,
                     client_tool=client_tool,
-                    # Issue #4743: shadow-mode capture into the column that has
-                    # existed since 001 and never been written. None persists as
-                    # NULL = "not captured".
-                    bedrock_account_id=shadow_target.account_id if shadow_target else None,
+                    # Issue #4743 (shadow) / #4744 (enforced): see the resolution above.
+                    bedrock_account_id=bedrock_account_id,
                 )
         except Exception as exc:
             logger.warning(
@@ -544,6 +648,7 @@ class ProxyService(IProxyService):
         client: Any,
         model_id: str,
         request: BedrockInvokeRequest,
+        target: BedrockTarget | None = None,
     ) -> BedrockInvokeResponse:
         """Invoke Bedrock model.
 
@@ -553,6 +658,12 @@ class ProxyService(IProxyService):
             client: Bedrock client
             model_id: Model ID
             request: Bedrock request
+            target: Issue #4744 — the routed destination, when this call was signed
+                with a destination account's credentials. Used only to classify a
+                failure: an ``AccessDeniedException`` from a *routed* call is almost
+                always "that account has not enabled this model", which needs its own
+                error code and its own remediation (§5.1, §5.2). None for a
+                platform-account call, whose error handling is unchanged.
 
         Returns:
             Bedrock response
@@ -575,14 +686,20 @@ class ProxyService(IProxyService):
                 return BedrockInvokeResponse(**response_body)
 
         except Exception as e:
-            logger.error(f"Bedrock invocation error: {e}")
-            raise BedrockInvocationError(str(e))
+            # Issue #4744 (§5.1): discriminate the error classes BEFORE collapsing them
+            # into a generic BedrockInvocationError. On a routed call, "your account has
+            # not enabled this model" and "Bedrock is down" need different messages and
+            # different remediations; the bare-Exception catch below made them
+            # indistinguishable, which meant the feature's single most common failure
+            # mode read as an outage.
+            raise _classify_bedrock_failure(e, model_id=model_id, target=target) from e
 
     async def _invoke_bedrock_stream(
         self,
         client: Any,
         model_id: str,
         request: BedrockInvokeRequest,
+        target: BedrockTarget | None = None,
     ) -> AsyncIterator[bytes]:
         """Invoke Bedrock model with streaming.
 
@@ -593,6 +710,10 @@ class ProxyService(IProxyService):
             client: Bedrock client
             model_id: Model ID
             request: Bedrock request
+            target: Issue #4744 — the routed destination, for failure classification.
+                See :meth:`_invoke_bedrock`. Streaming needs it for the same reason:
+                a model-not-enabled ``AccessDeniedException`` arrives on the initial
+                call, before any chunk, so it is fully classifiable here.
 
         Yields:
             Raw response chunks
@@ -644,8 +765,8 @@ class ProxyService(IProxyService):
 
         except Exception as e:
             span.record_exception(e)
-            logger.error(f"Bedrock streaming error: {e}")
-            raise BedrockInvocationError(str(e))
+            # Issue #4744 (§5.1): same discrimination as the non-streaming path.
+            raise _classify_bedrock_failure(e, model_id=model_id, target=target) from e
         finally:
             span_ctx.__exit__(None, None, None)
 
@@ -673,9 +794,13 @@ class ProxyService(IProxyService):
         cache_read: int | None = None
         cache_creation: int | None = None
         status_code = 200
+        # Issue #4744: see `invoke_stream` — set before the try so the `finally`
+        # settlement path always has a decision to record, even if resolution failed.
+        decision = RoutingDecision()
         try:
-            client = await self._pool_service.get_client()
-            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
+            decision = await resolve_routing_decision(context)
+            client = await self._pool_service.get_client(decision.credentials)
+            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target)
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
@@ -697,6 +822,7 @@ class ProxyService(IProxyService):
                 status_code=status_code,
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_creation,
+                routing_decision=decision,
             )
 
     async def _stream_openai_response(
@@ -720,11 +846,15 @@ class ProxyService(IProxyService):
         start_time = time.time()
         usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         status_code = 200
+        # Issue #4744: see `invoke_stream` — set before the try so the `finally`
+        # settlement path always has a decision to record, even if resolution failed.
+        decision = RoutingDecision()
         try:
-            client = await self._pool_service.get_client()
+            decision = await resolve_routing_decision(context)
+            client = await self._pool_service.get_client(decision.credentials)
             response_id = str(uuid.uuid4())
 
-            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
+            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target)
 
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "openai", model, response_id):
                 # Extract usage from streaming chunks for logging
@@ -747,6 +877,7 @@ class ProxyService(IProxyService):
                 # .get() yields None for "provider never reported it".
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                routing_decision=decision,
             )
 
     async def _invoke_anthropic_response(
@@ -773,9 +904,13 @@ class ProxyService(IProxyService):
         cache_read: int | None = None
         cache_creation: int | None = None
         status_code = 200
+        # Issue #4744: see `invoke_stream` — set before the try so the `finally`
+        # settlement path always has a decision to record, even if resolution failed.
+        decision = RoutingDecision()
         try:
-            client = await self._pool_service.get_client()
-            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
+            decision = await resolve_routing_decision(context)
+            client = await self._pool_service.get_client(decision.credentials)
+            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target)
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
@@ -797,6 +932,7 @@ class ProxyService(IProxyService):
                 status_code=status_code,
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_creation,
+                routing_decision=decision,
             )
 
     async def _stream_anthropic_response(
@@ -820,11 +956,15 @@ class ProxyService(IProxyService):
         start_time = time.time()
         usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         status_code = 200
+        # Issue #4744: see `invoke_stream` — set before the try so the `finally`
+        # settlement path always has a decision to record, even if resolution failed.
+        decision = RoutingDecision()
         try:
-            client = await self._pool_service.get_client()
+            decision = await resolve_routing_decision(context)
+            client = await self._pool_service.get_client(decision.credentials)
             response_id = str(uuid.uuid4())
 
-            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
+            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target)
 
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "anthropic", model, response_id):
                 self._extract_usage_from_sse_chunk(chunk, usage)
@@ -846,6 +986,7 @@ class ProxyService(IProxyService):
                 # .get() yields None for "provider never reported it".
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                routing_decision=decision,
             )
 
     async def _invoke_bedrock_response(
@@ -870,9 +1011,13 @@ class ProxyService(IProxyService):
         cache_read: int | None = None
         cache_creation: int | None = None
         status_code = 200
+        # Issue #4744: see `invoke_stream` — set before the try so the `finally`
+        # settlement path always has a decision to record, even if resolution failed.
+        decision = RoutingDecision()
         try:
-            client = await self._pool_service.get_client()
-            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
+            decision = await resolve_routing_decision(context)
+            client = await self._pool_service.get_client(decision.credentials)
+            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target)
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
@@ -894,6 +1039,7 @@ class ProxyService(IProxyService):
                 status_code=status_code,
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_creation,
+                routing_decision=decision,
             )
 
     async def _stream_bedrock_response(
@@ -915,11 +1061,15 @@ class ProxyService(IProxyService):
         start_time = time.time()
         usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         status_code = 200
+        # Issue #4744: see `invoke_stream` — set before the try so the `finally`
+        # settlement path always has a decision to record, even if resolution failed.
+        decision = RoutingDecision()
         try:
-            client = await self._pool_service.get_client()
+            decision = await resolve_routing_decision(context)
+            client = await self._pool_service.get_client(decision.credentials)
             response_id = str(uuid.uuid4())
 
-            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
+            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target)
 
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "bedrock", bedrock_model_id, response_id):
                 self._extract_usage_from_sse_chunk(chunk, usage)
@@ -941,6 +1091,7 @@ class ProxyService(IProxyService):
                 # .get() yields None for "provider never reported it".
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                routing_decision=decision,
             )
 
     # =========================================================================
@@ -1001,6 +1152,19 @@ class ProxyService(IProxyService):
 
         Returns:
             List of model information
+
+        Note:
+            Issue #4744 (#4692 · R3), design note §5.2 requirement 4 — **knowingly
+            unaddressed here, recorded so it is not rediscovered as a bug.** This list
+            comes from the caller's allowed-model configuration, which is
+            account-independent. Once a principal is routed, the models that actually
+            work are those enabled in the *destination* account, so this list can
+            legitimately advertise a model whose invoke then fails
+            ``model_not_enabled``. Closing the gap means a per-destination model-access
+            read (a cross-account ``bedrock:ListFoundationModels``, cached), which is
+            new AWS calls on a new permission and out of this issue's scope. The
+            §2.6 error names the account and the fix, so the failure is diagnosable in
+            the meantime. Follow-up: filter this list by destination.
         """
         return self._model_resolver.get_available_models(context)
 

@@ -200,8 +200,14 @@ class BedrockRoutingResolver:
         return exists
 
     @staticmethod
-    async def _resolve_canonical_user_id(session: AsyncSession, context: TokenContext) -> str | None:
+    async def resolve_canonical_user_id(session: AsyncSession, context: TokenContext) -> str | None:
         """Map the token's principal to a canonical ``users.id``, or None.
+
+        Issue #4744: renamed from ``_resolve_canonical_user_id`` and made part of this
+        class's public surface. The enforcement path needs the same canonical id — to
+        send as a CloudTrail session tag on the destination assume — and importing it
+        under a private name would be a second module depending on this one's internals.
+        Same #4647 id-namespace contract, one implementation.
 
         ``scope_id_user`` stores a canonical ``users.id`` (#4647), but
         ``TokenContext.user_id`` holds a Cognito *sub* on the ordinary JWT path.
@@ -251,7 +257,7 @@ class BedrockRoutingResolver:
             return self._platform_target()
 
         if user_id is None:
-            user_id = await self._resolve_canonical_user_id(session, context)
+            user_id = await self.resolve_canonical_user_id(session, context)
 
         # ONE query for all three rungs, resolved most-specific-first in Python
         # (§2.2). Read together rather than walked with a query each: three

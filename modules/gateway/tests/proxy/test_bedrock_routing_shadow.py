@@ -276,20 +276,47 @@ class TestSigningIsUnchanged:
         assert first is second
 
     @pytest.mark.asyncio
-    async def test_get_client_is_still_called_with_no_arguments(self):
-        """The signature is the seam a routing change would have to widen.
+    async def test_get_client_takes_credentials_but_they_default_to_the_ambient_client(self):
+        """The seam #4744 widened, and the shape that keeps shadow mode inert.
 
-        `SimplePoolService.get_client()` takes no account, no role, no context —
-        so there is no way for a resolved destination to reach credential
-        construction. #4744 is the issue that changes this; until it does, the
-        zero-argument signature is the guarantee.
+        R2 asserted `get_client()` was strictly zero-arg, because that made a
+        resolved destination structurally unable to reach credential construction.
+        #4744 owns widening it, so the zero-arg form is deliberately gone.
+
+        What replaces it is the property that still protects shadow mode: the new
+        parameter is **optional and defaults to None**. A caller that does not opt
+        in cannot accidentally sign with anything but the ambient client, so every
+        unmapped call and every non-enforced org keeps main's exact behaviour. A
+        required parameter, or a default that was anything but None, would make
+        every call a routing decision.
         """
         from src.pool.simple_pool import SimplePoolService
         from src.shared.interfaces.pool import IPoolService
 
         for cls in (SimplePoolService, IPoolService):
-            parameters = list(inspect.signature(cls.get_client).parameters)
-            assert parameters == ["self"], f"{cls.__name__}.get_client must stay zero-arg in shadow mode (#4744 owns widening it)"
+            parameters = inspect.signature(cls.get_client).parameters
+            assert list(parameters) == ["self", "credentials"], f"{cls.__name__}.get_client takes exactly the credentials the caller resolved"
+            assert parameters["credentials"].default is None, f"{cls.__name__}.get_client must default to the ambient platform client"
+
+    @pytest.mark.asyncio
+    async def test_shadow_mode_passes_no_credentials_even_for_a_mapped_principal(self, proxy_service, token_context):
+        """With enforcement off, the widened seam is never used. The R2 contract.
+
+        The behavioural half of the test above: `credentials` being optional is
+        only worth anything if the shadow path actually leaves it unset. Asserted
+        against what the pool was *handed*, with the resolver returning a mapped
+        non-platform destination — the exact case enforcement would route.
+        """
+        pool = proxy_service._pool_service
+        pool.get_client_credentials.clear()
+
+        with patch(
+            "src.proxy.service.resolve_shadow_target",
+            AsyncMock(return_value=BedrockTarget(account_id=MAPPED_ACCOUNT, rung="user", destination_id="dest-1")),
+        ):
+            await proxy_service.invoke(_INVOKE_REQUEST, token_context)
+
+        assert pool.get_client_credentials == [None], "shadow mode must sign with the ambient platform client"
 
     def test_the_pool_module_does_not_import_the_resolver(self):
         """A static guarantee: credential construction cannot see routing at all.
