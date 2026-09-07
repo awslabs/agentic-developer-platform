@@ -24,7 +24,16 @@
  * `utilization_pct` is `null` for an uncapped line.
  */
 
-import type { BudgetEnvelopeResponse, BudgetLine, BudgetRunsResponse, PerOrgLine, PersonCapResponse, PersonEnvelope } from '@/types/budget';
+import type {
+  BudgetEnvelopeResponse,
+  BudgetLine,
+  BudgetPeriodType,
+  BudgetRunsResponse,
+  PerOrgLine,
+  PersonCapResponse,
+  PersonDefaultResponse,
+  PersonEnvelope,
+} from '@/types/budget';
 
 /** `BudgetPeriod` — only calendar periods exist; run/chain have no window. */
 export const mockPeriod = {
@@ -321,3 +330,53 @@ export const mockPersonCapUncapped: PersonCapResponse = {
   source_label: null,
   updated_at: null,
 };
+
+// ---------------------------------------------------------------------------
+// DEFAULT person limits — Issue #4690 (D1), rendered by #4691 (D2).
+//
+// PROVENANCE: transcribed from `PersonDefaultResponse` in `src/budget/schemas.py`.
+// Two contract rules carry over unchanged from the cap shapes above:
+//   - money is a STRING at 2dp, the `NUMERIC(10,2)` column's precision
+//   - "no rule authored" is `cap_usd: null` + `cap_status: 'uncapped'`, NOT `'0.00'`
+//     — a zeroed default would read as "nobody in this scope may spend anything"
+//
+// Unlike `PersonCapResponse` there is no `soft` variant to model: the route writes
+// `hard` unconditionally and rejects anything else, so a soft default is a shape the
+// server cannot produce and a fixture for it would model an impossible response.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the default-rule response for one scope path segment and period.
+ *
+ * The scope is **parsed back out of the path** (`platform` | `org:<id>` |
+ * `team:<org>:<team>`) rather than canned, so a handler using this echoes the ids the
+ * component actually sent. A fixture with hardcoded ids would pass whether or not the
+ * component built the segment correctly — the #4511 guard, applied to the scope.
+ *
+ * Only `platform` answers `capped`. That models a fresh install where the broadest
+ * rule has been authored and nothing narrower has, which keeps BOTH the "rule set"
+ * and "No rule set" states reachable in mock mode without a stateful handler.
+ */
+export function mockPersonDefaultFor(scopeSegment: string, period: string): PersonDefaultResponse {
+  const parts = decodeURIComponent(scopeSegment).split(':');
+  const scopeType = parts[0] === 'org' || parts[0] === 'team' ? parts[0] : 'platform';
+  const isPlatform = scopeType === 'platform';
+
+  return {
+    scope_type: scopeType,
+    scope_id_org: isPlatform ? null : (parts[1] ?? null),
+    scope_id_team: scopeType === 'team' ? (parts[2] ?? null) : null,
+    period_type: period as BudgetPeriodType,
+    cap_usd: isPlatform ? '1000.00' : null,
+    cap_status: isPlatform ? 'capped' : 'uncapped',
+    // Always `hard` when a rule exists — `ck_person_budget_default_hard` pins it.
+    enforcement_mode: isPlatform ? 'hard' : null,
+    updated_at: isPlatform ? '2026-09-05T09:00:00Z' : null,
+  };
+}
+
+/** The platform rung with a rule authored — the seeded state of the mock above. */
+export const mockPersonDefaultPlatform: PersonDefaultResponse = mockPersonDefaultFor('platform', 'monthly');
+
+/** A scope with NO rule of its own. `cap_usd` is `null`, never `'0.00'`. */
+export const mockPersonDefaultUncapped: PersonDefaultResponse = mockPersonDefaultFor('org:org-acme', 'monthly');

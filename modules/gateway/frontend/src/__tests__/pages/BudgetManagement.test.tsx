@@ -57,6 +57,18 @@ vi.mock('@/components/budget/BudgetFormModal', () => ({
     ) : null,
 }));
 
+/**
+ * The #4691 defaults panel, stubbed to a marker.
+ *
+ * Its own behavior — scope encoding, the ladder copy, the three read states — is
+ * covered in DefaultPersonLimits.test.tsx. What this file needs is only whether the
+ * page MOUNTS it, so a stub keeps these tests off the panel's network calls (it reads
+ * three scopes on mount) and makes the gating assertions below unambiguous.
+ */
+vi.mock('@/components/budget/DefaultPersonLimits', () => ({
+  DefaultPersonLimits: () => <div data-testid="default-person-limits" />,
+}));
+
 import { getBudgetsWithUtilization } from '@/services/budget';
 
 const mockGetBudgets = getBudgetsWithUtilization as ReturnType<typeof vi.fn>;
@@ -195,5 +207,42 @@ describe('BudgetManagement — create advisory (#4687)', () => {
       'data-platform-admin',
       'true'
     );
+  });
+});
+
+/**
+ * The #4691 gate.
+ *
+ * Default person limits govern a POPULATION's spend across every GitHub org, and the
+ * ruling on #4620 §4.2 puts anything person-level in platform-admin hands only — an
+ * org admin may not author them even for their own members, because the rules are
+ * partition-free. The panel is hidden rather than shown-and-403ing: an affordance that
+ * fails is worse than none, since the operator has no way to interpret the error.
+ *
+ * As everywhere else on this page, hiding it is NOT the boundary —
+ * `require_platform_admin` on every `/budget/person-default/*` route is.
+ */
+describe('BudgetManagement — default person limits panel (#4691)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetBudgets.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20, hasMore: false });
+  });
+
+  it('mounts the defaults panel for a platform admin', async () => {
+    mockIsPlatformAdmin.mockReturnValue(true);
+
+    renderPage();
+    await waitFor(() => expect(mockGetBudgets).toHaveBeenCalled());
+
+    expect(screen.getByTestId('default-person-limits')).toBeInTheDocument();
+  });
+
+  it('hides the defaults panel from a non-platform-admin', async () => {
+    mockIsPlatformAdmin.mockReturnValue(false);
+
+    renderPage();
+    await waitFor(() => expect(mockGetBudgets).toHaveBeenCalled());
+
+    expect(screen.queryByTestId('default-person-limits')).not.toBeInTheDocument();
   });
 });

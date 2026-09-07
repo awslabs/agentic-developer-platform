@@ -30,7 +30,14 @@
  */
 
 import { apiClient, buildQueryString } from './api';
-import type { BudgetPeriodType, PersonCapRequest, PersonCapResponse } from '@/types/budget';
+import type {
+  BudgetPeriodType,
+  PersonCapRequest,
+  PersonCapResponse,
+  PersonDefaultRequest,
+  PersonDefaultResponse,
+  PersonDefaultScope,
+} from '@/types/budget';
 
 /**
  * Read the caller's own platform-wide limit for one period.
@@ -86,4 +93,131 @@ export async function setPersonCapFor(
   // path character, but escaping keeps the segment unambiguous if the anchor's
   // namespace ever grows a form that is not.
   return apiClient.put<PersonCapResponse>(`/budget/person-cap/${encodeURIComponent(anchor)}${query}`, body);
+}
+
+/**
+ * Remove **another person's** individual limit. Platform admin only — Issue #4691.
+ *
+ * `DELETE /budget/person-cap/{anchor}`, the route added by #4690 so an individual row
+ * can be taken away and the person fall back to whatever default governs their scope.
+ * The docstring above reserved this wrapper for the screen that would mount it; this
+ * is that screen.
+ *
+ * **This is not "removing their limit" in the sense a reader expects.** Deleting the
+ * individual row un-shadows the ladder underneath it: the person becomes governed by
+ * their team's default, or their org's, or the platform's, and only becomes unlimited
+ * if none of those exist. Copy on the calling surface has to say that, because the
+ * opposite reading — "I just uncapped this person" — is both the natural one and
+ * wrong wherever a default is authored.
+ *
+ * `204` whether or not a row existed, so a retried delete is not a failure.
+ */
+export async function deletePersonCapFor(anchor: string, period: BudgetPeriodType): Promise<void> {
+  const query = buildQueryString({ period_type: period });
+  return apiClient.delete<void>(`/budget/person-cap/${encodeURIComponent(anchor)}${query}`);
+}
+
+// ---------------------------------------------------------------------------
+// DEFAULT person limits — the scope rules. Issue #4690 (D1) / #4691 (D2).
+//
+// Everything above is about ONE person's row. These three functions author the rules
+// that govern a POPULATION: everybody in a scope with no individual row and no
+// tighter-scoped rule. All are platform-admin-only server-side
+// (`require_platform_admin`), which — as with `setPersonCapFor` — is the boundary;
+// hiding the panel is only an affordance.
+// ---------------------------------------------------------------------------
+
+/**
+ * Encode a scope as the single path segment the server parses.
+ *
+ * The wire forms are exactly `platform`, `org:<org_id>`, and `team:<org_id>:<team_id>`
+ * (`_parse_scope`); anything else is a `422`. One segment rather than three query
+ * parameters because the scope IS the identity of the resource being addressed — the
+ * same reasoning `/budget/person-cap/{anchor}` uses.
+ *
+ * **The team form carries both ids.** A `teams.id` is unique only inside its org, so
+ * a team scope naming only the team would be a rule that could govern a same-id team
+ * in an unrelated tenant.
+ *
+ * Ids are `encodeURIComponent`-escaped individually, before the `:` separators are
+ * added — escaping the assembled string would encode the separators the server splits
+ * on and turn every non-platform scope into a 422.
+ *
+ * @throws Error when a required id is missing. A local throw, not a request: the
+ *   server would reject it anyway, and a `422` from a client-side mistake surfaces
+ *   through this module's fault mapping as a "backend failure" the operator is told
+ *   to retry — a request that can never succeed.
+ */
+export function personDefaultScopePath(scope: PersonDefaultScope): string {
+  if (scope.scope_type === 'platform') return 'platform';
+
+  if (!scope.org) {
+    throw new Error('A GitHub org id is required for an org- or team-scoped default person limit.');
+  }
+  if (scope.scope_type === 'org') return `org:${encodeURIComponent(scope.org)}`;
+
+  if (!scope.team) {
+    throw new Error('A team id is required for a team-scoped default person limit.');
+  }
+  return `team:${encodeURIComponent(scope.org)}:${encodeURIComponent(scope.team)}`;
+}
+
+/**
+ * Read the default authored for one scope and period. Platform admin only.
+ *
+ * Returns the rule for THIS scope, not the rule that would apply to a member of it —
+ * a team with no team-scoped rule reads `uncapped` here even while a platform default
+ * governs everyone in it. See `PersonDefaultResponse`.
+ *
+ * A backend failure raises rather than resolving to an uncapped shape: "the table was
+ * unreachable" must never render as "no default is set", which would invite an admin
+ * to author a duplicate rule or believe a population is unbounded when it is not.
+ */
+export async function getPersonDefault(scope: PersonDefaultScope, period: BudgetPeriodType): Promise<PersonDefaultResponse> {
+  const query = buildQueryString({ period_type: period });
+  return apiClient.get<PersonDefaultResponse>(`/budget/person-default/${personDefaultScopePath(scope)}${query}`);
+}
+
+/**
+ * Author (or re-author) the default for one scope and period. Platform admin only.
+ *
+ * The "$1,000/month each, unless we say otherwise" write. It governs every current
+ * AND future member of the scope who has no individual row and no tighter-scoped
+ * rule — which is what distinguishes it from writing the same number into every
+ * person's row today, where every future joiner would start unlimited.
+ *
+ * Idempotent: re-authoring replaces the amount in place.
+ *
+ * **It takes effect within the enforcement gate's TTL, not instantly** (60s). On an
+ * install whose person-limit tables were both empty, the first rule authored has to
+ * wait for the process-local existence cache to expire before the person layer starts
+ * consulting them at all. A surface promising immediate effect would be wrong for the
+ * first minute — the one minute an operator is most likely to be testing it.
+ *
+ * `amountUsd` is a string at 2dp: money crosses the wire at the column's precision,
+ * and a JS number would round `0.1 + 0.2`-style. The server rejects `0` — removing a
+ * rule is `deletePersonDefault`.
+ */
+export async function setPersonDefault(scope: PersonDefaultScope, period: BudgetPeriodType, amountUsd: string): Promise<PersonDefaultResponse> {
+  const query = buildQueryString({ period_type: period });
+  const body: PersonDefaultRequest = { budget_amount_usd: amountUsd };
+  return apiClient.put<PersonDefaultResponse>(`/budget/person-default/${personDefaultScopePath(scope)}${query}`, body);
+}
+
+/**
+ * Remove one scope's default. Platform admin only.
+ *
+ * A DELETE, not a `PUT` of `0` — `0` is a real ceiling of zero dollars applied to
+ * everybody in the scope.
+ *
+ * **Removing a rule does not make its members unlimited** where a broader rung still
+ * covers them: deleting a team default leaves that team governed by their org's rule,
+ * or the platform's. Calling surfaces must say so.
+ *
+ * `204` whether or not a rule existed: the outcome asked for holds either way, so a
+ * retried delete is not a failure.
+ */
+export async function deletePersonDefault(scope: PersonDefaultScope, period: BudgetPeriodType): Promise<void> {
+  const query = buildQueryString({ period_type: period });
+  return apiClient.delete<void>(`/budget/person-default/${personDefaultScopePath(scope)}${query}`);
 }

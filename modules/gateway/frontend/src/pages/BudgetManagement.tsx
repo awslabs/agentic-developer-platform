@@ -25,6 +25,8 @@ import {
 } from '@/services/budget';
 import { EntityType } from '@/types';
 import { BudgetFormModal } from '@/components/budget/BudgetFormModal';
+// Issue #4691: the admin authoring surface for #4690's default-limit ladder.
+import { DefaultPersonLimits } from '@/components/budget/DefaultPersonLimits';
 import { DeleteConfirmationModal } from '@/components/ui/DeleteConfirmationModal';
 // Issue #4207: was a byte-identical local copy of utils/format's formatCurrency.
 import { formatCurrency } from '@/utils/format';
@@ -295,6 +297,19 @@ export function BudgetManagement() {
           )}
         </Alert>
       )}
+
+      {/* Issue #4691: authoring for the #4690 default-limit ladder — platform admins
+          only, and above the budget list on purpose. These rules govern a POPULATION's
+          spend across every GitHub org, so they are not rows in a list of per-entity
+          budgets inside one org; putting them below it would file the broadest control
+          on the page under the narrowest heading.
+
+          The gate is the same `isPlatformAdmin()` the create form's person-limit option
+          uses (#4687), and it is an affordance for the same reason: every route the
+          panel calls enforces `require_platform_admin` server-side. Widening this gate
+          would not widen the authority — it would only produce 403s an org admin has no
+          way to interpret. */}
+      {callerIsPlatformAdmin && <DefaultPersonLimits />}
 
       <Card>
         <CardHeader>

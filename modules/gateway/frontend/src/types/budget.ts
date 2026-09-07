@@ -474,3 +474,99 @@ export interface PersonCapResponse {
 export interface PersonCapRequest {
   budget_amount_usd: string;
 }
+
+// ---------------------------------------------------------------------------
+// DEFAULT person limits — the scope rules. Issue #4690 (D1), rendered by #4691 (D2).
+//
+// The rung above these is the individual row (`PersonCapResponse`); these are the
+// population-wide rules that govern everybody in a scope who has no row of their
+// own. The full ladder, tightest first:
+//
+//     individual row > team default > org default > platform default
+//
+// Two properties of that ladder shape the copy on every surface reading these types:
+//
+//   1. **Removing a default is not "making the scope unlimited".** Deleting a team
+//      rule leaves that team governed by their org's rule, or the platform's. Only
+//      deleting the LAST applicable rule restores unlimited, and only for people
+//      with no individual row. A confirmation that promises otherwise is wrong.
+//   2. **A default is only ever `hard`.** The route writes `hard` unconditionally
+//      (a default that silently did not enforce is the #4511 inert-cap class at
+//      platform scale), so — unlike `PersonCapResponse`, whose `soft` rows are a
+//      real C3-era legacy — there is no informational mode to render here.
+// ---------------------------------------------------------------------------
+
+/**
+ * Which rung of the ladder a default sits on.
+ *
+ * `'department'` is deliberately absent: it is a #4691 non-goal, and the server's
+ * `_parse_scope` accepts exactly these three forms.
+ */
+export type PersonDefaultScopeType = 'platform' | 'org' | 'team';
+
+/**
+ * One scope addressed for a default-limit read or write.
+ *
+ * A discriminated-ish record rather than a pre-built path string, so the ids stay
+ * separate values until `personDefaultScopePath` encodes them — a caller that
+ * concatenated its own `team:a:b` could not be type-checked for the missing-org
+ * mistake below.
+ *
+ * `org` is required for both the `org` and `team` forms. That is not redundancy:
+ * a `teams.id` is unique only inside its own organization (the table carries
+ * `TenantMixin`), so a team scope naming only the team would be a rule that could
+ * govern a same-id team in an unrelated tenant.
+ */
+export interface PersonDefaultScope {
+  scope_type: PersonDefaultScopeType;
+  /** The GitHub org id — required for `org` and `team`, absent on `platform`. */
+  org?: string;
+  /** The team id — required for `team`, absent otherwise. Always paired with `org`. */
+  team?: string;
+}
+
+/**
+ * A scope's default person limit, or the explicit absence of one.
+ * `GET|PUT /budget/person-default/{scope}`.
+ *
+ * Transcribed from `PersonDefaultResponse` in `src/budget/schemas.py` — snake_case
+ * kept verbatim so the two stay diffable (the `personCap.ts` convention).
+ *
+ * **This is the rule authored FOR this exact scope, not the rule that would apply
+ * to a member of it.** A team with no team-scoped rule reads `uncapped` here even
+ * when a platform default governs everybody in it. Conflating the two would make a
+ * deletion look like a no-op, which is why the server keeps them apart; a surface
+ * that "helpfully" fell back to the broader rung would undo that.
+ */
+export interface PersonDefaultResponse {
+  scope_type: PersonDefaultScopeType;
+  /** The org this rule is scoped to, or `null` on the platform rung. */
+  scope_id_org: string | null;
+  /** The team this rule is scoped to, `null` on every rung but `team`. */
+  scope_id_team: string | null;
+  period_type: BudgetPeriodType;
+  /** The authored default at 2dp, or `null` when this scope+period has none. NOT `'0.00'`. */
+  cap_usd: string | null;
+  /** `capped` when a rule exists for this scope and period, `uncapped` when none does. */
+  cap_status: CapStatus;
+  /** `'hard'` for every stored default (see note 2 above); `null` when uncapped. */
+  enforcement_mode: string | null;
+  /** ISO-8601 instant the rule was last authored, or `null` when uncapped. */
+  updated_at: string | null;
+}
+
+/**
+ * The body for authoring a default.
+ *
+ * Identical to `PersonCapRequest` by design — the columns are the same
+ * `NUMERIC(10,2)`, and a default a client could express but an individual row could
+ * not would be a ceiling nobody could comply with.
+ *
+ * The scope rides in the URL and the period in a query parameter. Nothing here sets
+ * `enforcement_mode`: it is not client-settable. Removing a rule is a DELETE, never
+ * a `'0'` — `'0'` is a real ceiling of zero dollars applied to everybody in the
+ * scope, and the server rejects it.
+ */
+export interface PersonDefaultRequest {
+  budget_amount_usd: string;
+}

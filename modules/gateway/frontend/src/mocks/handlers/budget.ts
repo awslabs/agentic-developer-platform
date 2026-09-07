@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw';
-import { mockBudgetEnvelope, mockBudgetRuns, mockPersonCap, mockPersonCapEnforcing } from '../data/budgetSpend';
+import { mockBudgetEnvelope, mockBudgetRuns, mockPersonCap, mockPersonCapEnforcing, mockPersonDefaultFor } from '../data/budgetSpend';
 
 const mockBudgets = [
   {
@@ -192,31 +192,24 @@ export const budgetHandlers = [
   http.get('/api/me/budget/runs', () => HttpResponse.json(mockBudgetRuns)),
 
   // ---------------------------------------------------------------------------
-  // The caller's own platform-wide spending limit — Issue #4629 (#4620 - C3).
+  // Person limits — Issue #4629 (#4620 · C3), narrowed to admin-governed by #4690.
   //
-  // No `person_anchor` in the `/me/*` paths: the self surface derives the person from
-  // the token, so there is no target for a client to send. The platform-admin route
-  // (`/api/budget/person-cap/{anchor}`) IS mocked now (#4687) — Budget Management
-  // authors somebody else's limit through it, and the rule that kept it unmocked was
-  // "no mock for an uncalled route", which no longer applies.
+  // **The `/me/*` surface is READ-ONLY, and so is this mock.** `PUT` and `DELETE
+  // /me/budget/person-cap` were deleted server-side by the 2026-09-07 ruling on
+  // #4690 (deleted, not 403-stubbed, so the OpenAPI surface advertises no write that
+  // always denies), and their handlers were removed here with them (#4691).
+  //
+  // Do not add them back. A mock for a route that does not exist is worse than dead
+  // code: it makes a reintroduced self-service editor pass its tests in mock mode
+  // against a server that can only 405 — the mock would be the sole reason the
+  // feature looked like it worked. Route-absence is pinned client-side by
+  // `PersonSpendingLimit.test.tsx` and server-side by
+  // `test_person_cap_routes.py::TestSelfServiceWritesAreGone`.
+  //
+  // No `person_anchor` in the `/me/*` path: the self surface derives the person from
+  // the token, so there is no target for a client to send.
   // ---------------------------------------------------------------------------
   http.get('/api/me/budget/person-cap', () => HttpResponse.json(mockPersonCap)),
-
-  http.put('/api/me/budget/person-cap', async ({ request }) => {
-    const body = (await request.json()) as { budget_amount_usd?: string };
-    // Echoes the submitted amount rather than a canned figure, so a test can tell
-    // "the component sent what the user typed" from "the component sent something".
-    // Based on the ENFORCING shape (review fix on #4661): the real server writes
-    // `hard` on every PUT since C4, so echoing the soft mock modelled a response
-    // the server can never produce — and made the post-save "now enforcing"
-    // state unreachable in mock mode (the soft notice says "save again to start
-    // enforcing", which would loop forever).
-    return HttpResponse.json({ ...mockPersonCapEnforcing, cap_usd: body.budget_amount_usd ?? mockPersonCapEnforcing.cap_usd });
-  }),
-
-  // 204 with no body, matching the endpoint: a removal is a success whether or not
-  // a limit existed.
-  http.delete('/api/me/budget/person-cap', () => new HttpResponse(null, { status: 204 })),
 
   // The platform-admin targeted write — Issue #4687.
   //
@@ -235,4 +228,46 @@ export const budgetHandlers = [
       cap_usd: body.budget_amount_usd ?? mockPersonCapEnforcing.cap_usd,
     });
   }),
+
+  // The platform-admin individual-row removal — added by #4690, mounted by #4691.
+  // 204 whether or not a row existed, matching the route: a retried delete is not a
+  // failure.
+  http.delete('/api/budget/person-cap/:anchor', () => new HttpResponse(null, { status: 204 })),
+
+  // ---------------------------------------------------------------------------
+  // DEFAULT person limits — Issue #4690 (D1), authored by #4691 (D2).
+  //
+  // Per-scope only, exactly like the real API: there is no list route, so there is no
+  // list handler to mock. Mocking one would let a UI be built against an endpoint
+  // that does not exist.
+  //
+  // The scope is echoed back PARSED from the path segment, so a test can tell "the
+  // component built `team:<org>:<team>` correctly" from "the component sent
+  // something". A canned scope in the response would pass either way — the same
+  // #4511 guard the anchor echo above exists for, applied to the scope. `platform`
+  // is the seeded rung and answers `capped`; every other scope answers `uncapped`,
+  // which models a fresh install where only the platform rule has been authored and
+  // keeps the "No rule set" state reachable in mock mode.
+  // ---------------------------------------------------------------------------
+  http.get('/api/budget/person-default/:scope', ({ params, request }) => {
+    const period = new URL(request.url).searchParams.get('period_type') ?? 'monthly';
+    return HttpResponse.json(mockPersonDefaultFor(params.scope as string, period));
+  }),
+
+  // ENFORCING shape, because the route writes `hard` unconditionally and rejects
+  // anything else — a soft echo would model a response the server cannot produce.
+  http.put('/api/budget/person-default/:scope', async ({ params, request }) => {
+    const body = (await request.json()) as { budget_amount_usd?: string };
+    const period = new URL(request.url).searchParams.get('period_type') ?? 'monthly';
+    const base = mockPersonDefaultFor(params.scope as string, period);
+    return HttpResponse.json({
+      ...base,
+      cap_usd: body.budget_amount_usd ?? '1000.00',
+      cap_status: 'capped',
+      enforcement_mode: 'hard',
+    });
+  }),
+
+  // 204 whether or not a rule existed, matching the route.
+  http.delete('/api/budget/person-default/:scope', () => new HttpResponse(null, { status: 204 })),
 ];
