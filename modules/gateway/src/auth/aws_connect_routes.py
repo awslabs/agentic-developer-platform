@@ -108,6 +108,14 @@ class ConnectVerifyRequest(BaseModel):
 class ConnectVerifyResponse(BaseModel):
     status: str  # "verified" | "failed"
     reason: str | None = None
+    # Issue #4742: whether this connection's role can serve as a Bedrock routing
+    # destination — i.e. it is assumable for any platform principal, not pinned
+    # to the one user who created it. None when not determined (e.g. the assume
+    # itself failed, or an idempotent re-verify of a row predating this field).
+    routing_capable: bool | None = None
+    # Machine-readable explanation when routing_capable is False. The R4 admin UI
+    # renders it; keep the vocabulary stable.
+    routing_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -240,9 +248,15 @@ async def connect_verify(
             detail={"error": "not_found", "message": "Credential not found"},
         )
 
-    # Idempotency: already verified → no-op
+    # Idempotency: already verified → no-op. Replay the stored routing
+    # classification rather than re-probing (rows written before #4742 simply
+    # have no value, which the None default reports honestly).
     if cred.scopes and cred.scopes.get("status") == "verified":
-        return ConnectVerifyResponse(status="verified")
+        return ConnectVerifyResponse(
+            status="verified",
+            routing_capable=cred.scopes.get("routing_capable"),
+            routing_reason=cred.scopes.get("routing_reason"),
+        )
 
     # Read secret payload to get role_arn and external_id
     secret_value: str = await asyncio.to_thread(sm.get_secret, cred.secret_arn)
@@ -276,26 +290,115 @@ async def connect_verify(
         )
         return ConnectVerifyResponse(status="failed", reason=reason)
 
+    # The assume works. Now classify WHICH kind of role it is — read-only v1
+    # (single-user) or routing-capable v2 — so the routing registry and the admin
+    # dropdowns can filter on it. A probe failure never downgrades `status`: a v1
+    # connection is perfectly valid for its own read-only purpose.
+    routing_capable, routing_reason = await _probe_routing_capability(
+        role_arn=role_arn,
+        external_id=external_id,
+        default_region=secret_data.get("default_region", "us-east-1"),
+        user_id=db_user_id,
+        label=cred.label,
+    )
+
     # Success — update the scopes JSON to verified
     updated_scopes = dict(cred.scopes) if cred.scopes else {}
     updated_scopes["status"] = "verified"
     updated_scopes["verified_at"] = datetime.now(UTC).isoformat()
+    updated_scopes["routing_capable"] = routing_capable
+    if routing_reason is not None:
+        updated_scopes["routing_reason"] = routing_reason
+    else:
+        updated_scopes.pop("routing_reason", None)
     cred.scopes = updated_scopes
     await db.commit()
 
     logger.info(
-        "AWS connect verified credential_id=%s user=%s role_arn=%s",
+        "AWS connect verified credential_id=%s user=%s role_arn=%s routing_capable=%s",
         cred.id,
         token_context.user_id,
         role_arn,
+        routing_capable,
     )
 
-    return ConnectVerifyResponse(status="verified")
+    return ConnectVerifyResponse(
+        status="verified",
+        routing_capable=routing_capable,
+        routing_reason=routing_reason,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+#: Machine-readable reason a verified connection is not usable as a Bedrock
+#: routing destination. Stable vocabulary — the admin UI renders these.
+ROUTING_REASON_USER_PINNED = "role_user_pinned_needs_v2_template"
+ROUTING_REASON_PROBE_INCONCLUSIVE = "routing_probe_inconclusive"
+
+
+async def _probe_routing_capability(
+    *,
+    role_arn: str,
+    external_id: str | None,
+    default_region: str,
+    user_id: str,
+    label: str,
+) -> tuple[bool, str | None]:
+    """Classify a verified role as routing-capable (v2) or single-user (v1).
+
+    Issue #4742. The property that matters for routing is not "which template did
+    you launch" — we cannot see that from here, and a self-reported version would
+    be a guess. It is the *behaviour*: can this role be assumed on behalf of
+    someone other than whoever created the stack?
+
+    We test it directly by repeating the assume **without session tags**. The v1
+    trust policy conditions on ``aws:RequestTag/adp:user_id``, so an untagged
+    assume is denied; v2 drops that condition, so it succeeds. That single call is
+    a definitive read of the exact property, needs no extra IAM permission, and
+    costs nothing.
+
+    Returns ``(routing_capable, reason)`` where ``reason`` is None on success.
+    Never raises — the caller has already proved the connection works, and a
+    classification failure must not fail the verify.
+    """
+    try:
+        await asyncio.to_thread(
+            assume_role,
+            role_arn=role_arn,
+            external_id=external_id,
+            session_duration_seconds=900,
+            default_region=default_region,
+            user_id=user_id,
+            agent_id="connect-verify",
+            task_id="routing-probe",
+            label=label,
+            send_session_tags=False,
+        )
+    except STSAssumeError as exc:
+        if exc.code in ("AccessDenied", "AccessDeniedException"):
+            # The trust policy refused an untagged assume — the v1 single-user
+            # pin. This is the expected, non-alarming outcome for every existing
+            # connection; the account must re-run the v2 template to be routable.
+            logger.info(
+                "Routing probe: role is user-pinned (v1 shape) role_arn=%s",
+                role_arn,
+            )
+            return False, ROUTING_REASON_USER_PINNED
+        # Anything else (throttling, region disabled, transient STS failure) is
+        # not evidence about the trust policy. Report not-capable so nothing is
+        # routed to an unproven role, but with a distinct reason so an operator
+        # can tell "re-run the template" from "re-run the probe".
+        logger.warning(
+            "Routing probe inconclusive role_arn=%s code=%s",
+            role_arn,
+            exc.code,
+        )
+        return False, ROUTING_REASON_PROBE_INCONCLUSIVE
+
+    return True, None
 
 
 def _sts_error_to_reason(code: str) -> str:

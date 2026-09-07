@@ -139,18 +139,22 @@ jobs:
       - name: Export image tag
         run: echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
 
-      - name: Upload CFN template to S3
-        # Issue #562: the AWS connect flow pre-signs a GET URL on this object.
-        # It needs to exist in S3 before the gateway pod can build valid Quick-Create
+      - name: Upload CFN templates to S3
+        # Issue #562: the AWS connect flow pre-signs a GET URL on these objects.
+        # They need to exist in S3 before the gateway pod can build valid Quick-Create
         # URLs. Idempotent — copy-over on every deploy picks up template edits.
+        # Issue #4742: v2 is the routing-capable role (Bedrock invoke, no
+        # single-user trust pin); v1 stays for the read-only connect flow.
         run: |
           BUCKET=$(aws ssm get-parameter \
             --name "/adp/${ENVIRONMENT}/gateway/frontend-bucket" \
             --query "Parameter.Value" --output text)
-          aws s3 cp \
-            modules/gateway/src/auth/cfn_templates/aws_role_v1.yaml \
-            "s3://${BUCKET}/cfn-templates/aws_role_v1.yaml" \
-            --content-type application/x-yaml
+          for v in v1 v2; do
+            aws s3 cp \
+              "modules/gateway/src/auth/cfn_templates/aws_role_${v}.yaml" \
+              "s3://${BUCKET}/cfn-templates/aws_role_${v}.yaml" \
+              --content-type application/x-yaml
+          done
 
       # =====================================================================
       # Issue #1008: First-deploy support — ensure namespace, configmap,

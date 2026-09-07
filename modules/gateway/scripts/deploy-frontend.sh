@@ -11,11 +11,12 @@ set -euo pipefail
 #      a broken app: "GitHub sign-in is not configured" + Cognito unconfigured),
 #   2. syncs dist/ to the frontend bucket, EXCLUDING cfn-templates/* so the
 #      --delete doesn't wipe the template uploaded next,
-#   3. uploads the CloudFormation role template (cfn-templates/aws_role_v1.yaml)
-#      — REQUIRED for the "Add AWS account" flow; the gateway pre-signs a GET for
-#      it, and without it the flow fails "S3 error: The specified key does not
-#      exist." (The paired gateway-infra grant — s3:ListBucket/GetObject on
-#      cfn-templates/* — must also be applied; see modules/gateway/infra.)
+#   3. uploads the CloudFormation role templates (cfn-templates/aws_role_v1.yaml
+#      and, per #4742, cfn-templates/aws_role_v2.yaml) — REQUIRED for the "Add AWS
+#      account" flow; the gateway pre-signs a GET for them, and without them the
+#      flow fails "S3 error: The specified key does not exist." (The paired
+#      gateway-infra grant — s3:ListBucket/GetObject on cfn-templates/* — must
+#      also be applied; see modules/gateway/infra.)
 #   4. invalidates CloudFront.
 #
 # Run AFTER gateway-infra (Phase 4) created the bucket + SSM params, and after
@@ -30,6 +31,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)" # modules/gateway
 FRONTEND_DIR="${MODULE_ROOT}/frontend"
 CFN_TEMPLATE="${MODULE_ROOT}/src/auth/cfn_templates/aws_role_v1.yaml"
+# Issue #4742: v2 is the routing-capable role template (Bedrock invoke, no
+# single-user trust pin). Both versions ship — v1 still backs the personal
+# read-only connect flow.
+CFN_TEMPLATE_V2="${MODULE_ROOT}/src/auth/cfn_templates/aws_role_v2.yaml"
 
 ENVIRONMENT="${ADP_ENV:-dev}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
@@ -59,6 +64,7 @@ command -v aws &>/dev/null || fail "AWS CLI not installed"
 command -v npm &>/dev/null || fail "npm not installed (Node >= 22)"
 [ -d "$FRONTEND_DIR" ] || fail "Frontend dir not found: $FRONTEND_DIR"
 [ -f "$CFN_TEMPLATE" ] || fail "CFN template not found: $CFN_TEMPLATE"
+[ -f "$CFN_TEMPLATE_V2" ] || fail "CFN template not found: $CFN_TEMPLATE_V2"
 
 _ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo ""; }
 
@@ -125,6 +131,8 @@ if [ "$SKIP_TEMPLATE" = true ]; then
 else
   run "aws s3 cp '${CFN_TEMPLATE}' 's3://${BUCKET}/cfn-templates/aws_role_v1.yaml' --content-type text/yaml --region '${AWS_REGION}'"
   ok "Uploaded cfn-templates/aws_role_v1.yaml"
+  run "aws s3 cp '${CFN_TEMPLATE_V2}' 's3://${BUCKET}/cfn-templates/aws_role_v2.yaml' --content-type text/yaml --region '${AWS_REGION}'"
+  ok "Uploaded cfn-templates/aws_role_v2.yaml"
 fi
 
 # -----------------------------------------------------------------------------
