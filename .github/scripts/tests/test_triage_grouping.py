@@ -91,17 +91,37 @@ class FakeGh:
     `link_sub_issue`, so the responses those functions need are the same.
     """
 
-    def __init__(self, *, issues=(), parent_of=None, next_number=9100):
+    def __init__(self, *, issues=(), parent_of=None, next_number=9100, labels=()):
         self.issues = list(issues)
         self.parent_of = dict(parent_of or {})
         self.calls: list[list[str]] = []
         self.writes: list[list[str]] = []
         self.created: list[dict] = []
+        # Labels that already exist in the repo. Empty by default, which is the
+        # state a fresh org is in -- the case that makes ensuring them necessary.
+        self.labels = set(labels)
+        self.created_labels: list[str] = []
         self._next_number = next_number
 
     def __call__(self, args: list[str]) -> tuple[int, str, str]:
         self.calls.append(args)
         joined = " ".join(args)
+
+        # Label create, matched before the lookup below: the POST targets
+        # `/labels` (no trailing name) and carries --method POST.
+        if "--method" in args and "POST" in args and "/labels" in joined:
+            self.writes.append(args)
+            name = next(
+                a.split("=", 1)[1] for a in args if a.startswith("name=")
+            )
+            self.labels.add(name)
+            self.created_labels.append(name)
+            return 0, "{}", ""
+
+        # Label lookup: rc 0 when it exists, non-zero (404) when it does not.
+        if "/labels/" in joined:
+            name = joined.split("/labels/", 1)[1].split()[0]
+            return (0, "{}", "") if name in self.labels else (1, "", "Not Found")
 
         if args[:2] == ["issue", "create"]:
             self.writes.append(args)
@@ -612,6 +632,182 @@ def test_filed_work_items_carry_the_story_label_and_nothing_that_dispatches(fake
 
 def test_story_labels_is_a_closed_list_of_exactly_the_story_label():
     assert story_labels() == ["story"]
+
+
+# --------------------------------------------------------------------------
+# Computed severity: a criticality on every filed issue, derived from the
+# findings, never authored by the model.
+# --------------------------------------------------------------------------
+
+
+def _fixture_severities() -> dict:
+    import security_traceability as st
+
+    return st.severity_by_finding(FINDINGS_FIXTURE, "code-review")
+
+
+def test_a_filed_issue_carries_a_severity_label_and_states_it_in_the_body(fake_gh):
+    """The cluster covering the one CRITICAL finding is filed CRITICAL; an
+    all-HIGH cluster is filed HIGH. Both the label and the body line come from the
+    findings' risk levels, so a reader can triage by criticality without opening
+    the issue and cannot be misled by a model that guessed."""
+    gh = fake_gh()
+    run_triage(
+        REPO,
+        plan=load_fixture_plan(),
+        new_findings=load_fixture_findings(),
+        findings_uri=FINDINGS_URI,
+        run_id=RUN_ID,
+        run_date=RUN_DATE,
+        severities=_fixture_severities(),
+    )
+    stories = [c for c in gh.created if "epic" not in c["labels"]]
+    assert stories, "no work items were filed"
+    for created in stories:
+        sev_labels = [lab for lab in created["labels"] if lab.startswith("severity:")]
+        assert len(sev_labels) == 1, "every filed issue carries exactly one severity label"
+        level = sev_labels[0].split(":", 1)[1].upper()
+        assert f"**Severity** — {level}" in created["body"]
+        # The story label is still present and nothing dispatches.
+        assert "story" in created["labels"]
+        assert not any(lab.startswith("agent-") for lab in created["labels"])
+    # The fixture's one CRITICAL finding produces exactly one critical issue.
+    assert sum("severity:critical" in c["labels"] for c in stories) == 1
+
+
+def test_the_severity_labels_are_created_before_an_issue_is_filed_with_one(fake_gh):
+    """`gh issue create --label` does NOT create a missing label, so filing with a
+    `severity:<level>` that does not exist fails -- and it fails AFTER the dated
+    parent was created, leaving a half-finished night. A fresh org has none of
+    these labels (`aws-e/adp` had none when this was written), so they are ensured
+    the same way `ensure_umbrella_epic.main` ensures `story`.
+
+    Order is the claim: every label a filed issue carries must already have been
+    created by an earlier call.
+    """
+    gh = fake_gh()  # no labels exist, which is the fresh-org state
+    run_triage(
+        REPO,
+        plan=load_fixture_plan(),
+        new_findings=load_fixture_findings(),
+        findings_uri=FINDINGS_URI,
+        run_id=RUN_ID,
+        run_date=RUN_DATE,
+        severities=_fixture_severities(),
+    )
+    # The night's two distinct severities were created, and nothing else was.
+    assert sorted(gh.created_labels) == ["severity:critical", "severity:high"]
+
+    creates = [i for i, call in enumerate(gh.calls) if call[:2] == ["issue", "create"]]
+    for index, call in enumerate(gh.calls):
+        if call[:2] != ["issue", "create"]:
+            continue
+        for label in (call[i + 1] for i, a in enumerate(call) if a == "--label"):
+            if not label.startswith("severity:"):
+                continue
+            made_at = next(
+                i for i, c in enumerate(gh.calls)
+                if "--method" in c and f"name={label}" in c
+            )
+            assert made_at < index, f"{label} was used before it was created"
+    assert creates, "no issues were filed"
+
+
+def test_an_existing_severity_label_is_not_recreated(fake_gh):
+    """Idempotent, so a second night cannot clobber a hand-tuned colour."""
+    gh = fake_gh(labels={"severity:critical", "severity:high"})
+    run_triage(
+        REPO,
+        plan=load_fixture_plan(),
+        new_findings=load_fixture_findings(),
+        findings_uri=FINDINGS_URI,
+        run_id=RUN_ID,
+        run_date=RUN_DATE,
+        severities=_fixture_severities(),
+    )
+    assert gh.created_labels == []
+
+
+def test_a_colour_is_declared_for_every_severity_in_the_vocabulary():
+    """A level with no colour would raise a KeyError mid-filing, after the parent
+    exists. Asserted against the traceability module's vocabulary so the two
+    cannot drift."""
+    import security_traceability as st
+
+    assert set(tg.SEVERITY_LABEL_COLORS) == set(st.SEVERITY_ORDER)
+
+
+def test_severity_in_the_body_is_the_first_impact_bullet_not_before_the_opening():
+    """The severity line must not break the 'plain-terms opening comes first'
+    lint — it lives inside Impact analysis, so the body still lints."""
+    body = render(a_group(), severity="HIGH")
+    assert "**Severity** — HIGH" in body
+    lint_body(body, load_banned_patterns())  # does not raise
+    assert body.lstrip().startswith(REQUIRED_SECTIONS[0])
+    # Severity sits under Impact analysis, above the "Who benefits" bullet.
+    assert body.index("**Severity**") > body.index("## Impact analysis")
+    assert body.index("**Severity**") < body.index("Who benefits")
+
+
+def test_a_body_without_a_computed_severity_omits_the_line_and_still_lints():
+    """Severity is optional so the plan-authoring gate and `validate` can render a
+    body with no findings document to derive it from."""
+    body = render(a_group())
+    assert "**Severity**" not in body
+    lint_body(body, load_banned_patterns())  # does not raise
+
+
+def test_a_group_covering_a_finding_with_no_severity_fails_the_filing(fake_gh):
+    """A plan/findings mismatch is a hard error on the filing path, not a silently
+    unlabelled issue on the run that files un-recallable documents."""
+    fake_gh()
+    severities = _fixture_severities()
+    severities.pop("f-42dca300")
+    with pytest.raises(TriageError, match="no severity"):
+        run_triage(
+            REPO,
+            plan=load_fixture_plan(),
+            new_findings=load_fixture_findings(),
+            findings_uri=FINDINGS_URI,
+            run_id=RUN_ID,
+            run_date=RUN_DATE,
+            severities=severities,
+        )
+
+
+def test_the_file_command_enriches_the_traceability_ledger_grouping_to_filed(fake_gh, tmp_path):
+    """The one file the whole feature exists for: written at grouping (finding ->
+    cluster, with severity), then enriched IN PLACE at filing (cluster -> issue),
+    and asserted to account for every finding exactly once before it persists."""
+    import security_traceability as st
+
+    # Stand up the grouping-stage ledger the author step would have written.
+    trace_path = tmp_path / "traceability.json"
+    severities = st.severity_by_finding(FINDINGS_FIXTURE, "code-review")
+    st.write_ledger(trace_path, st.build_grouping(load_fixture_plan(), severities, run_id=RUN_ID))
+
+    fake_gh()
+    rc = tg.main(
+        [
+            "file",
+            "--plan", str(PLAN_FIXTURE),
+            "--new-findings", str(FINDINGS_FIXTURE),
+            "--source", "code-review",
+            "--repo", REPO,
+            "--findings-uri", FINDINGS_URI,
+            "--run-id", RUN_ID,
+            "--run-date", RUN_DATE,
+            "--traceability", str(trace_path),
+        ]
+    )
+    assert rc == 0
+
+    filed = json.loads(trace_path.read_text())
+    assert filed["stage"] == "filed"
+    st.assert_fully_traced(filed)  # every one of the 12 findings reached a real issue
+    # The CRITICAL finding's row now points at a concrete issue number.
+    assert isinstance(filed["findings_index"]["f-42dca300"]["issue_number"], int)
+    assert filed["findings_index"]["f-42dca300"]["fix_status"] == "FILED"
 
 
 def test_nothing_in_this_module_dispatches(fake_gh):

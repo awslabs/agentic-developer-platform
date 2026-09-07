@@ -114,6 +114,17 @@ MARKER_STAGE_TEMPLATE = "triage.{source}"
 DAILY_EPIC_TITLE_TEMPLATE = "Security scan of the day — {run_date}"
 DAILY_EPIC_LABEL = "epic"
 
+# The colour per severity label, so an operator can read a triage board by
+# colour. Declared here rather than passed in: the label is this module's, and a
+# caller free to choose the colour would produce a board where the same severity
+# is a different colour depending on which night created the label first.
+SEVERITY_LABEL_COLORS = {
+    "CRITICAL": "b60205",
+    "HIGH": "d93f0b",
+    "MEDIUM": "fbca04",
+    "LOW": "0e8a16",
+}
+
 # Work-item titles are prefixed with the run date so they are unique per night
 # and stable across a retry of the same night. Without the prefix, two nights
 # grouping the same recurring surface would collide on an exact-title match and
@@ -445,7 +456,15 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"- `{item}`" for item in items)
 
 
-def render_body(group: dict, *, run_date: str, source: str, findings_uri: str, run_id: str) -> str:
+def render_body(
+    group: dict,
+    *,
+    run_date: str,
+    source: str,
+    findings_uri: str,
+    run_id: str,
+    severity: str | None = None,
+) -> str:
     """Render one work item's body.
 
     The five mandatory sections in their fixed order, plain-terms opening first.
@@ -454,9 +473,23 @@ def render_body(group: dict, *, run_date: str, source: str, findings_uri: str, r
     how the downstream ops agent reaches them. Inlining that detail here would
     move it from a private rendezvous into a permanently retained public-ish
     document, which is the NEV-2 boundary this pipeline is built around.
+
+    ``severity`` is the deterministic criticality of this work item -- the worst
+    ``risk_level`` among its findings, computed by ``security_traceability``, not
+    a judgment the model was asked for. It is optional so the plan-authoring gate
+    and the ``validate`` self-check can render a body without a findings document
+    to derive it from; the filing path always supplies it, so a filed issue
+    always states its criticality. It is rendered as the FIRST impact bullet
+    rather than above the plain-terms opening, which must stay first (lint_body).
     """
     risk_rows = "\n".join(
         f"| {r['bug_class']} | {r['blast_radius']} |" for r in group["risks"]
+    )
+    severity_bullet = (
+        f"- **Severity** — {severity} (worst of the covered findings; computed from "
+        "the scanner's risk levels, not assigned by hand)\n"
+        if severity
+        else ""
     )
     return f"""## The problem in plain terms
 
@@ -472,7 +505,7 @@ def render_body(group: dict, *, run_date: str, source: str, findings_uri: str, r
 
 ## Impact analysis
 
-- **Who benefits** — {group["who_benefits"].strip()}
+{severity_bullet}- **Who benefits** — {group["who_benefits"].strip()}
 - **Who's impacted** — {group["who_is_impacted"].strip()}
 - **What breaks if this ships with a bug**
 
@@ -623,6 +656,7 @@ def file_group(
     daily_epic: int,
     findings_uri: str,
     run_id: str,
+    severity: str | None = None,
     patterns: list[dict] | None = None,
 ) -> dict:
     """File one work item as a native child of the dated EPIC.
@@ -630,14 +664,29 @@ def file_group(
     Linted, then matched by exact title, then created. Linting before the title
     lookup is deliberate: a body that must not be filed must not be filed on the
     retry either, and an early return on "already exists" would skip the check.
+
+    ``severity`` (a computed criticality like ``HIGH``) is rendered into the body
+    and, lowercased, added as a ``severity:<level>`` label so the issue is
+    triageable and filterable by criticality without opening it. It is a
+    non-dispatching label, so it clears the ``story_labels`` assertion by
+    construction.
     """
     title = STORY_TITLE_TEMPLATE.format(run_date=run_date, title=group["title"].strip())
     body = render_body(
-        group, run_date=run_date, source=source, findings_uri=findings_uri, run_id=run_id
+        group,
+        run_date=run_date,
+        source=source,
+        findings_uri=findings_uri,
+        run_id=run_id,
+        severity=severity,
     )
     lint_body(body, patterns)
     if _AGENT_MENTION_RE.search(title):
         raise TriageError(f"work-item title {title!r} contains an `@agent-` mention")
+
+    labels = story_labels()
+    if severity:
+        labels = labels + [f"severity:{severity.lower()}"]
 
     existing = find_issue_by_exact_title(repo, title)
     if existing is not None:
@@ -648,7 +697,7 @@ def file_group(
             "linked": link_sub_issue(repo, daily_epic, existing),
             "finding_ids": sorted(group["finding_ids"]),
         }
-    number = _create_issue(repo, title, body, story_labels())
+    number = _create_issue(repo, title, body, labels)
     print(f"filed work item #{number} ({group['slug']})")
     return {
         "number": number,
@@ -732,6 +781,7 @@ def run_triage(
     run_id: str,
     run_date: str,
     umbrella_title: str = UMBRELLA_TITLE,
+    severities: dict[str, str] | None = None,
     patterns: list[dict] | None = None,
 ) -> dict:
     """Group one scanner's new findings into filed work items.
@@ -753,6 +803,12 @@ def run_triage(
     So the marker is written with an empty `story_ids` and no `daily_epic`. Only
     a scanner that genuinely never got here leaves no marker behind.
     """
+    # Imported here, not at module top: `security_traceability` imports THIS
+    # module, so a top-level import would be a cycle. It is only needed when a
+    # severity map is supplied, which is the filing path, so the cost of the
+    # late import lands only there.
+    import security_traceability as _sec_traceability  # noqa: PLC0415
+
     source = new_findings["source"]
     if new_findings["nothing_to_file"]:
         validate_plan(plan, [], source=source)
@@ -778,6 +834,42 @@ def run_triage(
         )
 
     epic = ensure_daily_epic(repo, run_date, umbrella)
+    # Severity is a per-group rollup over the covered findings' risk levels, and
+    # is optional: when no severity map is supplied the issues file exactly as
+    # before, without a criticality line or label. When one is, a group covering
+    # a finding the map does not know is a mismatch between the plan and the
+    # findings document, and is a hard error rather than a silently-unlabelled
+    # issue on the run that files documents that cannot be recalled.
+    def _severity_for(group: dict) -> str | None:
+        if severities is None:
+            return None
+        levels = []
+        for fid in group["finding_ids"]:
+            if fid not in severities:
+                raise TriageError(
+                    f"group {group['slug']!r} covers {fid}, which has no severity in the "
+                    "findings document; the plan and the findings disagree"
+                )
+            levels.append(severities[fid])
+        return _sec_traceability.rollup_severity(levels)
+
+    # The severity labels must EXIST before an issue is created with one.
+    # `gh issue create --label` does not create a missing label, so filing with an
+    # unknown `severity:<level>` fails -- and it would fail AFTER the dated parent
+    # was created, leaving a half-finished night. Ensured here for the same reason
+    # `ensure_umbrella_epic.main` ensures the `story` label rather than assuming
+    # it: a fresh org has neither, and "someone created the labels by hand" is not
+    # a deploy step anyone remembers. Idempotent, and only for the levels this
+    # night actually uses.
+    group_severities = {group["slug"]: _severity_for(group) for group in validated["groups"]}
+    for level in sorted({s for s in group_severities.values() if s}):
+        ensure_umbrella_epic.ensure_label(
+            repo,
+            f"severity:{level.lower()}",
+            color=SEVERITY_LABEL_COLORS[level],
+            description=f"Nightly security triage: worst covered finding is {level}",
+        )
+
     filed = [
         file_group(
             repo,
@@ -787,6 +879,7 @@ def run_triage(
             daily_epic=epic["number"],
             findings_uri=findings_uri,
             run_id=run_id,
+            severity=group_severities[group["slug"]],
             patterns=patterns,
         )
         for group in validated["groups"]
@@ -861,9 +954,16 @@ def _cmd_file(args: argparse.Namespace) -> int:
             "caller's, so re-running a night rewrites the same shard rather than "
             "a differing one"
         )
+    import security_traceability as sec_traceability  # noqa: PLC0415 - see run_triage
+
     new_findings = load_new_findings(args.new_findings, args.source)
     plan = _load_plan(args.plan)
     run_date = _resolve_run_date(args, new_findings, plan)
+    # The criticality stamped on each issue and recorded in the traceability
+    # ledger: the worst risk level among a group's findings. Derived from the
+    # findings document, so the model never authors it and it cannot drift from
+    # the scanner's own severities.
+    severities = sec_traceability.severity_by_finding(args.new_findings, args.source)
     result = run_triage(
         args.repo,
         plan=plan,
@@ -871,6 +971,7 @@ def _cmd_file(args: argparse.Namespace) -> int:
         findings_uri=args.findings_uri,
         run_id=args.run_id,
         run_date=run_date,
+        severities=severities,
         patterns=load_banned_patterns(args.banned_patterns),
     )
     # Counts and issue numbers only. No titles, paths or finding detail on a CI
@@ -896,6 +997,22 @@ def _cmd_file(args: argparse.Namespace) -> int:
             fields=result["ledger_fields"],
         )
         print(f"wrote completion marker {out.name}")
+
+    # Enrich the grouping-stage traceability ledger the author step wrote into the
+    # filed stage: fold in each cluster's issue number and mark it FILED, then
+    # assert the whole night is accounted for (every finding reached exactly one
+    # real issue) before persisting. This is the stage that turns the file from
+    # "what we plan to file" into "which issue each finding became".
+    if args.traceability:
+        trace = sec_traceability.read_ledger(args.traceability)
+        work_items = result.get("work_items", [])
+        filed = sec_traceability.enrich_filed(trace, work_items, repo=args.repo)
+        sec_traceability.assert_fully_traced(filed)
+        sec_traceability.write_ledger(args.traceability, filed)
+        print(
+            f"traceability filed stage written: {Path(args.traceability).name} "
+            f"findings_total={filed['findings_total']} groups_total={filed['groups_total']}"
+        )
     return 0
 
 
@@ -941,18 +1058,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="ISO-8601, from the caller; required with --ledger-dir. Supplied rather "
         "than read from a clock here so a re-run writes a byte-identical shard",
     )
+    file_cmd.add_argument(
+        "--traceability",
+        help="the grouping-stage traceability ledger (from author_grouping_plan.py) to "
+        "enrich in place into the filed stage: each cluster's issue number folded in, "
+        "then asserted to account for every finding exactly once",
+    )
     file_cmd.set_defaults(func=_cmd_file)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Imported here rather than at module top to avoid the import cycle
+    # (`security_traceability` imports this module); by main() the modules are
+    # both fully initialized.
+    from security_traceability import TraceabilityError  # noqa: PLC0415
+
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
     # `LedgerError` too: `build_shard` validates the marker before it is written,
     # so a bad `--generated-at` or an unownable field surfaces as this stage's
     # named error rather than as a traceback the barrier is later blamed for.
-    except (TriageError, LedgerError) as exc:
+    # `TraceabilityError` likewise: the filed-stage enrichment and the
+    # account-for-everything invariant fail as this stage's named error.
+    except (TriageError, LedgerError, TraceabilityError) as exc:
         print(f"::error title=Security findings triage::{exc}", file=sys.stderr)
         return 1
 

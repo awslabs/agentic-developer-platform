@@ -369,15 +369,32 @@ def test_the_gate_lints_the_body_that_will_actually_be_filed(triage_bodies):
     )
 
 
-def test_the_plan_is_authored_from_the_dedup_output_not_from_the_raw_findings(
+def test_the_plan_s_finding_set_comes_from_the_dedup_output_not_the_raw_findings(
     triage_bodies,
 ):
-    """The producer's input is the deduped document. Handing it the raw findings
-    would re-file every already-accepted finding as new -- nightly issue spam
-    against the baseline the dedup step exists to honour."""
+    """The producer's COVERAGE input is the deduped document. Driving coverage from
+    the raw findings would re-file every already-accepted finding as new -- nightly
+    issue spam against the baseline the dedup step exists to honour.
+
+    The raw document IS handed to the producer, deliberately, but only under
+    `--raw-findings`: it is the sole artifact still holding the scanner's own
+    account of each finding, which the per-work-item authoring call needs so its
+    `validation` section can assert the defect is CLOSED rather than merely that
+    new code runs. That cannot widen the night, because the detail projection is
+    keyed by the deduped id list and returns nothing outside it
+    (`test_the_detail_projection_takes_only_the_findings_of_this_night`, and
+    end-to-end in `test_a_raw_document_holding_suppressed_findings_does_not_widen_the_night`).
+
+    So the gate is on WHICH FLAG the raw document may arrive under, not on whether
+    it appears at all.
+    """
     author = _one_step(triage_bodies, "author_grouping_plan.py")
     assert "--new-findings new-findings.json" in author
-    assert "code-review-findings.json" not in author
+    flags = re.findall(r"(--[\w-]+)\s+\S*code-review-findings\.json", author)
+    assert set(flags) <= {"--raw-findings"}, (
+        f"the raw findings document reaches the producer under {sorted(set(flags))}; "
+        "it may only arrive as `--raw-findings` (detail), never as its findings input"
+    )
 
 
 # --------------------------------------------------------------------------
