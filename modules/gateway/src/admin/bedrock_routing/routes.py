@@ -507,38 +507,23 @@ async def register_destination(
         )
         if credential is None:
             raise _rejected(service.MappingRejectedError("connection_not_found", "No AWS connection with that id exists."))
-        scopes = credential.scopes or {}
-        if scopes.get("status") != "verified":
-            # §4.4: `pending` rows must be EXCLUDED, not deprioritised. A connection
-            # whose role has not been created yet would fail every call.
-            raise _rejected(
-                service.MappingRejectedError(
-                    "connection_not_verified",
-                    "That AWS connection has not been verified yet. Finish its CloudFormation stack and verify it first.",
-                )
-            )
-        account_id = scopes.get("account_id")
-        role_arn = scopes.get("role_arn")
-        if not account_id or not role_arn:
-            raise _rejected(
-                service.MappingRejectedError(
-                    "connection_not_verified",
-                    "That AWS connection is missing its account id or role, so it cannot be used as a routing destination.",
-                )
-            )
-        destination = BedrockDestinationRegistry(
-            id=new_uuid(),
+        # §4.4: `pending` rows must be EXCLUDED, not deprioritised — a connection whose
+        # role has not been created yet would fail every call. Checked in the service so
+        # the self-service selector (§6.4), which needs the identical refusal, cannot
+        # drift from this one.
+        try:
+            account_id, role_arn = service.require_routable_connection(credential)
+        except service.MappingRejectedError as exc:
+            raise _rejected(exc) from exc
+        # The credential's OWN tenant, never a parameter — see the builder. There is no
+        # field with which an admin could mislabel a connection as belonging to a tenant
+        # it does not, which is what makes the §4.2 check meaningful later.
+        destination = service.build_destination_from_credential(
+            credential,
             account_id=account_id,
             role_arn=role_arn,
-            credential_id=credential.id,
-            # The credential's OWN tenant, never a parameter. There is no field with
-            # which an admin could mislabel a connection as belonging to a tenant it
-            # does not — which is what makes the §4.2 check meaningful later.
-            owner_org_id=credential.org_id,
-            is_platform_registered=False,
-            label=request.label or credential.label,
-            region=scopes.get("default_region", "us-east-1"),
-            registered_by_user_id=actor_id,
+            actor_id=actor_id,
+            label=request.label,
         )
         db.add(destination)
         launch_url = None

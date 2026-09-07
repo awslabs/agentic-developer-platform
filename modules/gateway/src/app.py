@@ -80,6 +80,16 @@ UNIT_MODULES = [
     # here, not under src.admin.routes, because that module's authoring rules are
     # partition-scoped and this one's deliberately are not.
     "src.admin.bedrock_routing.routes",
+    # Issue #4746 (#4692 · R5): the SELF-service half of the same tables — a person
+    # pointing their own Bedrock traffic at one of their own connected AWS accounts
+    # (`/me/bedrock-routing/selection`, §6.4). A separate module from the router above
+    # precisely because that one is platform-admin-only on every route, asserted against
+    # its own source; these routes are deliberately callable by an ordinary member, and
+    # the authz is the SHAPE of the path — no target parameter at any position, anchor
+    # derived from the token — not a check inside the handler. Writes the same user-rung
+    # row, and refuses to overwrite one a platform admin authored (§1.4 "admin wins",
+    # which with one row per scope can only be enforced at write time).
+    "src.admin.bedrock_routing.self_routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)

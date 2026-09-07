@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.proxy.bedrock_routing import bedrock_routing_resolver
 from src.proxy.bedrock_routing_errors import REASON_ACCOUNT_UNLINKED
 from src.shared.models.audit import AuditLog
+from src.shared.models.base import new_uuid
 from src.shared.models.bedrock_routing import BedrockAccountMapping, BedrockDestinationRegistry
 from src.shared.models.organization import Organization, User
 from src.shared.models.vault import UserCredential
@@ -285,6 +286,118 @@ async def _reject_personal_credential(db: AsyncSession, destination: BedrockDest
         )
 
 
+def require_routable_connection(credential: UserCredential) -> tuple[str, str]:
+    """A connection's ``(account_id, role_arn)``, or a refusal. Shared by both surfaces.
+
+    Two callers need exactly this check and must refuse identically: the platform
+    admin promoting somebody's connection into the registry
+    (``routes.register_destination``) and the person selecting their own on the
+    credentials page (``self_routes.put_my_selection``, §6.4). A second copy is how one
+    of them starts accepting a ``pending`` row.
+
+    §4.4 is why ``pending`` is a refusal and not a lower priority: the role does not
+    exist in the destination account until the customer's CloudFormation stack finishes,
+    so merely *starting* a connect flow would otherwise be able to reroute traffic onto
+    an account that fails every call.
+
+    Raises:
+        MappingRejectedError: ``connection_not_verified`` when the row is not verified,
+            or is verified but carries no account id or role — a shape that cannot be
+            probed, let alone routed to.
+    """
+    scopes = credential.scopes or {}
+    if scopes.get("status") != "verified":
+        raise MappingRejectedError(
+            "connection_not_verified",
+            "That AWS connection has not been verified yet. Finish its CloudFormation stack and verify it first.",
+        )
+    account_id = scopes.get("account_id")
+    role_arn = scopes.get("role_arn")
+    if not account_id or not role_arn:
+        raise MappingRejectedError(
+            "connection_not_verified",
+            "That AWS connection is missing its account id or role, so it cannot be used as a routing destination.",
+        )
+    return account_id, role_arn
+
+
+def build_destination_from_credential(
+    credential: UserCredential,
+    *,
+    account_id: str,
+    role_arn: str,
+    actor_id: str,
+    label: str | None = None,
+) -> BedrockDestinationRegistry:
+    """A registry row for an existing AWS connection. Not added to the session.
+
+    ``owner_org_id`` comes from the credential's **own** tenant and there is no
+    parameter to override it — the same construction R4 relied on, kept in one place now
+    that the self-service path builds these rows too. That absence is what makes the
+    §4.2 ownership check meaningful later: no caller can mislabel a connection as
+    belonging to a tenant it does not.
+
+    ``routing_capable`` and ``verified_at`` are left at their defaults (False / NULL).
+    Whoever registers the row runs the probe, and :func:`validate_mapping_target` is
+    what stamps them — so a row that has never been probed cannot claim it has.
+    """
+    return BedrockDestinationRegistry(
+        id=new_uuid(),
+        account_id=account_id,
+        role_arn=role_arn,
+        credential_id=credential.id,
+        owner_org_id=credential.org_id,
+        is_platform_registered=False,
+        label=label or credential.label,
+        region=(credential.scopes or {}).get("default_region", "us-east-1"),
+        registered_by_user_id=actor_id,
+    )
+
+
+async def find_or_create_destination_for_credential(
+    db: AsyncSession,
+    credential: UserCredential,
+    *,
+    actor_id: str,
+) -> BedrockDestinationRegistry:
+    """The registry row for this connection, reusing an existing one if there is one.
+
+    A mapping references a *destination*, never a credential (ruling 4a), so the
+    self-service path has to have a registry row to point at. It is the only writer that
+    **re-uses** one rather than always minting one, and the reason is the shape of its
+    caller: a person re-picking their own account is an ordinary, repeatable action, so
+    always inserting would grow the registry by one orphan row per click, each of them a
+    separate ``used_by``-less entry in the admin's destinations table.
+
+    Keyed on ``credential_id``, which is the identity of the thing being pointed at. Not
+    on ``account_id``: one account may legitimately appear several times in the registry
+    (the model documents this — platform-wide plus tenant-linked, with different roles),
+    and collapsing those would let a person's selection silently land on somebody else's
+    row for the same account.
+
+    Raises:
+        MappingRejectedError: from :func:`require_routable_connection`.
+    """
+    account_id, role_arn = require_routable_connection(credential)
+
+    existing = await db.scalar(select(BedrockDestinationRegistry).where(BedrockDestinationRegistry.credential_id == credential.id))
+    if existing is not None:
+        return existing
+
+    destination = build_destination_from_credential(
+        credential,
+        account_id=account_id,
+        role_arn=role_arn,
+        actor_id=actor_id,
+    )
+    db.add(destination)
+    # Flushed so the row has been assigned before a mapping references it: the mapping
+    # carries `destination_id` with no FK, and a caller that committed the mapping while
+    # this row was still pending would leave a rule pointing at nothing.
+    await db.flush()
+    return destination
+
+
 async def load_destination(db: AsyncSession, destination_id: str) -> BedrockDestinationRegistry:
     """Fetch a destination row, or refuse with the shared ``account_unlinked`` reason.
 
@@ -436,6 +549,51 @@ def mapping_source(mapping: BedrockAccountMapping) -> str:
     if mapping.scope_type == "user" and mapping.authored_by_user_id == mapping.scope_id_user:
         return "self"
     return "platform_admin"
+
+
+def require_not_admin_pinned(mapping: BedrockAccountMapping | None) -> None:
+    """Refuse a self-service write over a row a platform admin authored (§1.4).
+
+    **This is the enforcement half of "admin wins", and without it the self surface
+    silently reverses a platform admin's decision.** ``uq_bedrock_account_mapping_scope``
+    permits exactly one row per scope, so the user rung is a single row that both the
+    admin surface and the self surface upsert. "Admin wins" therefore cannot be a
+    precedence question between two rows — there is only ever one — which leaves the
+    write itself as the only place the precedence can live. A self ``PUT`` that
+    overwrote an admin-authored row, or a self ``DELETE`` that removed one, would be a
+    person granting themselves authority over the very decision the override exists to
+    take away from them.
+
+    :func:`mapping_source` is the discriminator, and it works because both ids are
+    canonical ``users.id`` in one namespace (#4647): the row is the person's own iff
+    ``authored_by_user_id == scope_id_user``.
+
+    A ``None`` mapping is not pinned — there is nothing to overwrite.
+
+    Raises:
+        MappingRejectedError: ``pinned_by_platform_admin``. The message names the
+            account so the person can see what governs them, and says who to ask —
+            neither the role ARN (§2.6) nor which admin authored it.
+    """
+    if mapping is None:
+        return
+    if mapping_source(mapping) == "platform_admin":
+        raise MappingRejectedError(
+            "pinned_by_platform_admin",
+            "A platform admin has chosen which AWS account serves your Bedrock calls, and that choice takes "
+            "precedence over your own. Ask a platform admin to change or remove it.",
+        )
+
+
+async def load_self_selection(db: AsyncSession, user_id: str) -> BedrockAccountMapping | None:
+    """The caller's own user-rung mapping row, whoever authored it.
+
+    Returned including the admin-authored case, deliberately: the two writes that guard
+    against one (:func:`require_not_admin_pinned`) and the read that has to *disclose*
+    one both need the same row, and a loader that filtered admin rows out would make the
+    override look like an absence — the display §1.4 forbids.
+    """
+    return await load_mapping_for_scope(db, "user", None, None, user_id)
 
 
 async def destination_usage_counts(db: AsyncSession, destination_ids: list[str]) -> dict[str, int]:

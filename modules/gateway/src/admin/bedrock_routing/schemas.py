@@ -133,6 +133,108 @@ class EffectiveMappingResponse(BaseModel):
     shadowed_account_id: str | None = None
 
 
+class SelectableConnection(BaseModel):
+    """One of the caller's own AWS connections, as the §6.4 selector renders it.
+
+    **Non-selectable rows are returned, not filtered out**, and that is the design
+    note's requirement rather than a convenience. Per §5.0b every connection made with
+    the v1 template is pinned to the person who created it and fails the assumability
+    probe, so on most installs *most* of a person's connections are legitimately
+    unselectable. Filtering them would leave the person an empty list and no
+    explanation — the same "why is there nothing here" dead end §6.4's honest-display
+    requirement exists to prevent. ``selectable`` plus ``reason`` says which and why.
+
+    No ``role_arn`` (§2.6), and no ``secret_arn``: the account id is what identifies a
+    destination to a human.
+    """
+
+    credential_id: str
+    label: str
+    account_id: str | None
+    #: ``verified`` | ``pending`` | ``failed`` — the connection's own status, straight
+    #: from ``user_credentials.scopes``. Reported even for a row that is not selectable,
+    #: because "not verified yet" and "verified but not routing-capable" need different
+    #: actions from the person.
+    status: str
+    #: May this connection be picked as a Bedrock destination? Requires ``verified``
+    #: **and** routing-capable (§4.4, §5.0b). The list is an affordance — the server
+    #: re-checks on write, so a caller ignoring this gets a 422, not a stored mapping.
+    selectable: bool
+    #: Why not, when not. R1/R3's shared vocabulary, so the same code means the same
+    #: thing here, at save time, and in a runtime 502 (§6.7 item 2).
+    reason: str | None = None
+
+
+class MySelectionResponse(BaseModel):
+    """What actually serves the caller's Bedrock calls, plus what they may pick (§6.4).
+
+    **One response, because the screen must never show two answers.** The three facts
+    it carries — the effective destination, the caller's own selection, and whether the
+    two agree — are only meaningful together. A UI that read the person's stored pick
+    from one endpoint and the effective destination from another would render them
+    side by side and leave the reader to decide which is in force, which is the #4511
+    inert-config defect with an extra step.
+
+    ``own_selection_active`` is therefore stated by the server rather than derived by
+    the client. It is False in two distinct situations that look identical from a stored
+    row alone, and both are real:
+
+    * **A platform admin has pinned the caller** (§1.4 "admin wins"), in which case
+      ``effective`` reports the admin's destination and ``overrides_self_selection`` is
+      true.
+    * **The caller's own pick has stopped being usable** — its role was deleted, or the
+      probe now fails — so the resolver skips it and walks on (§4.4). The row still
+      exists and governs nothing.
+    """
+
+    #: Where the caller's calls actually go, from R4's ladder walk. ``rung`` is
+    #: ``platform`` when nothing matched, which is an answer (ambient IRSA), not an
+    #: absence.
+    effective: EffectiveMappingResponse
+    #: The caller's own user-rung selection, when they have authored one and it is still
+    #: theirs. None when they have authored none, and None when a platform admin has
+    #: since taken the row over — in that case the admin's choice IS the user rung and
+    #: reporting the person's overwritten pick would be reporting something that no
+    #: longer exists.
+    own_selection_destination_id: str | None = None
+    own_selection_account_id: str | None = None
+    own_selection_label: str | None = None
+    #: Which of the caller's ``connections`` the selection was made from, so the list can
+    #: mark that row without guessing. Stated server-side because the two ids are NOT
+    #: interchangeable — a mapping references a *destination* (ruling 4a) while the
+    #: selector lists *credentials* — and matching on account id instead would light up
+    #: the wrong row whenever one account is connected twice, which is a shape the
+    #: registry explicitly allows. None when the destination predates the link.
+    own_selection_credential_id: str | None = None
+    #: True only when the caller's own selection is the destination in force. See the
+    #: class docstring for the two different reasons it can be False.
+    own_selection_active: bool = False
+    #: True when a platform admin has taken the user rung. The caller may not change or
+    #: clear the selection while this holds, and the screen must say so (§1.4).
+    pinned_by_platform_admin: bool = False
+    #: Everything the caller may pick, selectable or not. See
+    #: :class:`SelectableConnection`.
+    connections: list[SelectableConnection] = []
+
+
+class MySelectionRequest(BaseModel):
+    """Body for ``PUT /me/bedrock-routing/selection``.
+
+    **Names a connection of the caller's own, and names no person.** There is no
+    ``user_id`` field, and that absence is the access control rather than a check that
+    could be dropped: the anchor is derived from the token, so a request pointing at
+    somebody else cannot be formed (the ``person_cap_routes`` self-path argument).
+
+    Takes a ``credential_id`` rather than R4's ``destination_id`` because a person owns
+    connections, not registry rows — they have no way to learn a ``destination_id`` and
+    no reason to. The server finds or creates the registry row for the connection, which
+    is also what keeps the ownership check trivially total: the credential is looked up
+    scoped to the caller, so an id belonging to anybody else simply does not resolve.
+    """
+
+    credential_id: str = Field(min_length=1)
+
+
 class RegisterConnectionDestination(BaseModel):
     """Promote one of a tenant's own verified AWS connections into the registry.
 
