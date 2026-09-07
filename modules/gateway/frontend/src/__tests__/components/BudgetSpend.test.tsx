@@ -49,8 +49,6 @@ vi.mock('@/services/budgetSpend', () => ({
 // hit the real axios client and every test would depend on network behaviour.
 vi.mock('@/services/personCap', () => ({
   getMyPersonCap: vi.fn(),
-  setMyPersonCap: vi.fn(),
-  deleteMyPersonCap: vi.fn(),
 }));
 
 import { getMyBudget, getMyBudgetRuns } from '@/services/budgetSpend';

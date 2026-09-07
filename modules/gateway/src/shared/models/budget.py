@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, DateTime, Numeric, String, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, Index, Numeric, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantMixin, new_uuid, utcnow
@@ -123,3 +123,111 @@ class PersonBudgetConfig(Base):
     # One cap per person per period. No ``org_id`` in the key — that absence IS
     # the feature: it is what makes the cap partition-free.
     __table_args__ = (UniqueConstraint("person_anchor", "period_type", name="uq_person_budget_config"),)
+
+
+class PersonBudgetDefault(Base):
+    """A DEFAULT person limit at platform, org or team scope — Issue #4690 (D1).
+
+    ``PersonBudgetConfig`` above stores *one person's* limit. This table stores a
+    **rule**: "everybody, unless we say otherwise". One row governs current and
+    future members of its scope, which is what makes it a default rather than a
+    bulk write — a platform admin who typed a limit into every person's row would
+    still have every future joiner start unlimited.
+
+    **Defaults are CEILINGS** (operator ruling, 2026-09-07). Two consequences,
+    both load-bearing and both enforced by the ladder in
+    ``src/budget/person_ledger.py`` rather than by this table:
+
+    * A person may set a **lower** personal limit on themselves; they may not use
+      the self-service path to raise themselves above the applicable default.
+      Only a platform admin may author an individual row above it.
+    * When a person matches several rules at the SAME rung — a member of two orgs
+      that both carry an org default — the **LOWEST** amount governs. A ceiling
+      that could be escaped by joining a second, more generous org would not be
+      one.
+
+    **Deliberately NOT ``TenantMixin``**, for the same reason ``PersonBudgetConfig``
+    is not: the platform rung has no tenant at all, and a person's applicable rule
+    is resolved across every partition they belong to. The scope is carried in
+    explicit columns instead, so a row states which rung it is on rather than
+    leaving a reader to infer it from a NULL.
+
+    **Two nullable scope columns, not one polymorphic id.** ``scope_id_org`` and
+    ``scope_id_team`` are separate because a team rung needs BOTH (a team id is
+    only unique inside its org — ``teams`` carries ``TenantMixin``), and a single
+    packed ``"org:team"`` string would be a second identifier namespace inside one
+    column, the #4344 collision class. ``ck_person_budget_default_scope`` pins the
+    shape so a row can never claim a scope its columns do not describe.
+
+    **The uniqueness key is an expression index, not a ``UniqueConstraint``.** In
+    Postgres NULLs compare distinct inside a unique constraint, so
+    ``UNIQUE (scope_type, scope_id_org, scope_id_team, period_type)`` would happily
+    accept TWO platform defaults for the same period — a rung silently holding two
+    conflicting numbers, where which one governs depends on row order. Indexing
+    ``COALESCE(col, '')`` gives the intended "one rule per (scope, period)" and is
+    enforced by the database rather than by whichever writer remembers to check.
+    """
+
+    __tablename__ = "person_budget_defaults"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True, default=new_uuid)
+    # Which rung: ``platform`` | ``org`` | ``team``. Stored rather than derived
+    # from which scope columns are NULL, so a row is self-describing and a future
+    # rung (department — explicitly left room for in #4690's non-goals) is an added
+    # value here rather than a re-reading of existing rows.
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    # NULL for the platform rung. Set for ``org`` and ``team``.
+    scope_id_org: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Set for the ``team`` rung ONLY, alongside ``scope_id_org``: a ``teams.id``
+    # is unique inside its org, not globally, so a team rule that named only the
+    # team id would match same-named teams in unrelated tenants — the #4511
+    # wrong-person class, in the direction that governs somebody who was never
+    # meant to be governed.
+    scope_id_team: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    period_type: Mapped[str] = mapped_column(String(10), nullable=False)  # daily/weekly/monthly
+    # NUMERIC(10,2), matching ``person_budget_configs.budget_amount_usd`` exactly:
+    # the ladder compares the two and reports whichever applies, so differing
+    # precision would be a silent rounding difference between "your limit" and
+    # "the default you are held to".
+    budget_amount_usd: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    # ``hard`` from the first row, unlike ``person_budget_configs``' historical
+    # ``soft`` default: there is no pre-enforcement generation of these rows to keep
+    # a promise to. A default authored to bound everybody and silently not enforcing
+    # would be the inert-cap class (#4511) at platform scale.
+    enforcement_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="hard")  # hard
+    # The canonical ``users.id`` of the platform admin who authored it (the #4647
+    # audit-column contract). Not ``TokenContext.user_id``, which is a Cognito sub
+    # on the ordinary JWT path — persisting it raw mixes two id namespaces in one
+    # audit column. No FK, for the same tenant-lifecycle reason as
+    # ``PersonBudgetConfig.authored_by_user_id``.
+    authored_by_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        # One rule per (scope, period). See the class docstring for why this is an
+        # expression index over COALESCE rather than a UniqueConstraint.
+        Index(
+            "uq_person_budget_default",
+            "scope_type",
+            text("COALESCE(scope_id_org, '')"),
+            text("COALESCE(scope_id_team, '')"),
+            "period_type",
+            unique=True,
+        ),
+        # A row must describe the rung it claims. Without this, an ``org`` row with
+        # a NULL ``scope_id_org`` is a rule that matches every org's members via a
+        # NULL comparison nobody wrote — and a ``platform`` row carrying a stray
+        # org id is a platform rule that reads as tenant-scoped to a human and as
+        # platform-wide to the ladder.
+        CheckConstraint(
+            "(scope_type = 'platform' AND scope_id_org IS NULL AND scope_id_team IS NULL) "
+            "OR (scope_type = 'org' AND scope_id_org IS NOT NULL AND scope_id_team IS NULL) "
+            "OR (scope_type = 'team' AND scope_id_org IS NOT NULL AND scope_id_team IS NOT NULL)",
+            name="ck_person_budget_default_scope",
+        ),
+        CheckConstraint(
+            "enforcement_mode = 'hard'",
+            name="ck_person_budget_default_hard",
+        ),
+    )

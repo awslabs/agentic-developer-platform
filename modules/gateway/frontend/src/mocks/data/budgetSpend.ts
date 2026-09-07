@@ -275,6 +275,9 @@ export const mockPersonCap: PersonCapResponse = {
   cap_usd: '250.00',
   cap_status: 'capped',
   enforcement_mode: 'soft',
+  // A soft row can only be pre-ruling self-authored (#4690) — hence `own`.
+  source: 'own',
+  source_label: 'your own limit',
   updated_at: '2026-08-30T12:00:00Z',
 };
 
@@ -285,7 +288,26 @@ export const mockPersonCapEnforcing: PersonCapResponse = {
   cap_usd: '250.00',
   cap_status: 'capped',
   enforcement_mode: 'hard',
+  source: 'admin',
+  source_label: 'a limit set for you by a platform administrator',
   updated_at: '2026-09-01T12:00:00Z',
+};
+
+/**
+ * A person governed by a DEFAULT rung (#4690) — they authored nothing, no admin
+ * wrote an individual row, and an org-wide rule caps them anyway. `updated_at` is
+ * `null` on purpose: default timestamps are withheld from person-facing surfaces.
+ */
+export const mockPersonCapDefaultGoverned: PersonCapResponse = {
+  person_anchor: 'github:5550001',
+  period_type: 'monthly',
+  cap_usd: '100.00',
+  cap_status: 'capped',
+  // Defaults are ALWAYS hard — `ck_person_budget_default_hard` pins it in the DB.
+  enforcement_mode: 'hard',
+  source: 'org_default',
+  source_label: 'org default for org-acme',
+  updated_at: null,
 };
 
 /** A person with NO limit set. `cap_usd` is `null`, never `'0.00'`. */
@@ -295,5 +317,7 @@ export const mockPersonCapUncapped: PersonCapResponse = {
   cap_usd: null,
   cap_status: 'uncapped',
   enforcement_mode: null,
+  source: null,
+  source_label: null,
   updated_at: null,
 };

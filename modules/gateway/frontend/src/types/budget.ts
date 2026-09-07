@@ -436,16 +436,35 @@ export interface PersonCapResponse {
    * while it is `'hard'`. Both mistakes are the same one.
    */
   enforcement_mode: string | null;
-  /** ISO-8601 instant the limit was last authored, or `null` when uncapped. */
+  /**
+   * Which rung of the #4690 ladder supplied the number: `own` (a pre-ruling
+   * self-authored row), `admin` (a platform admin authored an individual row),
+   * `team_default` / `org_default` / `platform_default` (no individual row; a
+   * scope-wide rule governs). `null` when uncapped.
+   */
+  source: 'own' | 'admin' | 'team_default' | 'org_default' | 'platform_default' | null;
+  /**
+   * The server-composed human sentence naming that provenance (e.g. "org default
+   * for acme"). Render it verbatim — only the ladder resolver knows which rung
+   * won, and recomputing the label client-side is how it drifts from the rung
+   * actually enforced (#4511).
+   */
+  source_label: string | null;
+  /**
+   * ISO-8601 instant the limit was last authored, or `null` when uncapped — and
+   * `null` on default rungs, whose timestamps are withheld from person-facing
+   * surfaces on purpose.
+   */
   updated_at: string | null;
 }
 
 /**
  * The body for authoring a limit.
  *
- * One field. The person is derived server-side on the self path, so there is no
- * target to send — and nothing here sets `enforcement_mode`, which is not
- * client-settable: authoring your own limit IS the choice to be enforced (#4630),
+ * One field, used only by the platform-admin write (`setPersonCapFor`) — the
+ * self-service write routes were removed by the #4690 ruling. The target person
+ * rides in the URL, not the body, and nothing here sets `enforcement_mode`,
+ * which is not client-settable: admin-authored rows are always enforced (#4630),
  * so a mode parameter would only add a way to author a cap that does nothing.
  *
  * A string, not a number: money crosses the wire at the column's precision, and a

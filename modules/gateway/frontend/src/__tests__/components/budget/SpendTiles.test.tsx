@@ -40,8 +40,6 @@ import type { BudgetEnvelopeResponse } from '@/types/budget';
 
 vi.mock('@/services/personCap', () => ({
   getMyPersonCap: vi.fn(),
-  setMyPersonCap: vi.fn(),
-  deleteMyPersonCap: vi.fn(),
 }));
 vi.mock('@/services/budgetSpend', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/budgetSpend')>()),
@@ -98,9 +96,10 @@ describe('MySpend — the one headline figure', () => {
     // The figure degrades honestly…
     expect(screen.getByTestId('my-spend-amount')).toHaveTextContent('—');
     expect(screen.getByTestId('my-spend-unreported')).toBeInTheDocument();
-    // …while the limit editor — a separate, healthy endpoint — still mounts: it is
-    // the control that can unblock a person whose hard limit is stopping runs.
-    await waitFor(() => expect(screen.getByTestId('person-cap-edit')).toBeInTheDocument());
+    // …while the limit view — a separate, healthy endpoint — still mounts: a
+    // person whose hard limit is stopping runs needs to see it and who to ask
+    // (limits are admin-governed since #4690, so there is no editor to mount).
+    await waitFor(() => expect(screen.getByTestId('person-cap-managed')).toBeInTheDocument());
     // No drill-downs onto data that never arrived.
     expect(screen.queryByTestId('my-spend-drilldown-orgs')).not.toBeInTheDocument();
     expect(screen.queryByTestId('my-spend-drilldown-runs')).not.toBeInTheDocument();

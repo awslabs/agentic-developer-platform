@@ -14,23 +14,105 @@ for their second consumer; here they are the public API of a deliberate LEAF:
   ``Decimal`` figures.
 
 Every function keeps its original docstring; nothing here changed behaviour.
+
+**Issue #4690 (D1) adds the limit LADDER to this module, and here specifically for
+the same reason.** "Which limit governs this person?" is now a question with four
+possible answers (their own row, their team's default, their org's default, the
+platform default), and both the enforcement layer and the read surface must give
+the identical answer or the #4620 ruling's property breaks in a new place: a
+dashboard that labels somebody "unlimited" while a 402 stops them at the platform
+default is the same defect as a mismatched figure. The ladder therefore lives
+beside the primitives it is built from, not in either consumer.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.identity.providers import IdentityProvider
-from src.shared.models.budget import BudgetUsage
+from src.shared.models.budget import BudgetUsage, PersonBudgetConfig, PersonBudgetDefault
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import User
 from src.shared.models.vault import UserIdentity
 from src.shared.schemas.budget import EntityType, PeriodType
 
+from .utils import CALENDAR_PERIOD_TYPES
+
 logger = logging.getLogger("bedrockgateway.budget")
+
+# Where an applicable person limit came from — on the wire (`/me/budget/person-cap`
+# `source`) and in the text of a 402/422, so a person told they are limited can
+# tell whether the number is theirs to change.
+#
+# `own` and `admin` are both individual `person_budget_configs` rows and differ
+# only in who authored them; the split matters because it is the difference
+# between "lower this yourself" and "ask a platform admin", which is the whole
+# reason the ceiling rule exists (#4690).
+PersonLimitSource = Literal["own", "admin", "team_default", "org_default", "platform_default"]
+
+# The rung order, tightest scope first. The ladder walks it and stops at the first
+# rung with a match, so this tuple IS the precedence rule — one grep-able place,
+# rather than an ordering implied by the shape of an if/elif chain.
+_DEFAULT_RUNG_ORDER: tuple[str, ...] = ("team", "org", "platform")
+
+_SOURCE_BY_SCOPE_TYPE: dict[str, PersonLimitSource] = {
+    "team": "team_default",
+    "org": "org_default",
+    "platform": "platform_default",
+}
+
+
+@dataclass(frozen=True)
+class PersonLimit:
+    """The one limit that governs a person for one calendar period, and where it came from.
+
+    Frozen because every consumer of this is a reader: enforcement compares it to
+    a settled denominator, the read surface renders it, and the self-service PUT
+    validates against it. A mutable limit object invites a caller to "adjust" the
+    figure locally, and the whole property being protected is that all three see
+    the same number.
+
+    Attributes:
+        period_type: The calendar period this limit governs. Always a member of
+            ``CALENDAR_PERIOD_TYPES``.
+        amount: The ceiling in USD, at the ``NUMERIC(10,2)`` precision both source
+            columns carry.
+        enforcement_mode: ``hard`` or ``soft``, straight off the row. Defaults are
+            always written ``hard``; a ``soft`` value here can only have come from
+            a C3-era individual row, which stays informational until re-saved.
+        source: Which rung supplied it.
+        scope_label: Human-readable provenance for the 402/422 text — e.g.
+            ``"platform default"``, ``"org default for acme-corp"``, or
+            ``"your own limit"``. Composed here rather than at each message site so
+            the denial, the header surface and the ceiling rejection cannot describe
+            the same rung differently.
+    """
+
+    period_type: str
+    amount: Decimal
+    enforcement_mode: str
+    source: PersonLimitSource
+    scope_label: str
+    # ISO-8601 authored-at for an INDIVIDUAL row; None for every default rung —
+    # a default's timestamp is deliberately withheld from person-facing surfaces
+    # (review fix on #4696: this also removes the read surface's duplicate row
+    # read, whose only purpose was this field).
+    updated_at: str | None = None
+
+    @property
+    def is_default(self) -> bool:
+        """True when this limit came from a default rule rather than an individual row.
+
+        The discriminator the ceiling rule turns on (#4690): a person may lower
+        their own limit below an applicable default, but only a platform admin may
+        author an individual row above one.
+        """
+        return self.source in ("team_default", "org_default", "platform_default")
 
 
 async def read_settled_spend(
@@ -221,7 +303,7 @@ async def read_person_partition_spend(
     return cloud, direct
 
 
-async def resolve_member_partitions(db: AsyncSession, person_user_ids: list[str], active_org_id: str) -> list[str]:
+async def resolve_member_partitions(db: AsyncSession, person_user_ids: list[str], active_org_id: str | None) -> list[str]:
     """Derive, server-side, which partitions this person's spend may be read from (§7.3).
 
     ``tenant_memberships`` is the authority: it is deliberately partition-free (no
@@ -253,4 +335,294 @@ async def resolve_member_partitions(db: AsyncSession, person_user_ids: list[str]
     membership_rows = (await db.execute(select(TenantMembership.tenant_id).where(TenantMembership.user_id.in_(person_user_ids)))).scalars().all()
     home_rows = (await db.execute(select(User.org_id).where(User.id.in_(person_user_ids)))).scalars().all()
 
-    return sorted({active_org_id} | {row for row in membership_rows if row} | {row for row in home_rows if row})
+    # `active_org_id=None` (review fix on #4696): callers deriving the DEFAULT-
+    # LADDER candidates must pass None — the active org is `attributed_org_id`,
+    # which is caller-influenced (#4132), and unioning it here let a header select
+    # a foreign org's more generous default. Widening the SPEND denominator with
+    # it stays safe (more spend counted, never less), so spend callers pass it.
+    seeded = {active_org_id} if active_org_id else set()
+    return sorted(seeded | {row for row in membership_rows if row} | {row for row in home_rows if row})
+
+
+async def resolve_person_team_keys(db: AsyncSession, person_user_ids: list[str]) -> list[tuple[str, str]]:
+    """The ``(org_id, team_id)`` pairs this person belongs to — Issue #4690.
+
+    The team rung's matching key. Derived from the person's OWN ``users`` rows (the
+    fusion ``resolve_person_identity`` already performed), so it is a projection of
+    one identity decision rather than a second opinion on who the person is — the
+    same discipline ``resolve_person_subs`` keeps for the direct-ledger namespace.
+
+    **Both halves of the pair are required.** ``teams`` carries ``TenantMixin``, so a
+    ``teams.id`` is unique inside its org and not globally: matching a team default
+    on the team id alone would let a rule authored for one tenant's team govern a
+    same-id team in an unrelated tenant. That is the #4511 wrong-key class in its
+    more damaging direction — not an inert cap, but a cap that governs somebody it
+    was never authored for, in a tenant whose admin cannot see it.
+
+    ``users.team_id`` is ``NOT NULL`` in the schema but is written ``""`` by some
+    provisioning paths (shadow users from ``POST /resolve-user``); an empty team id
+    is dropped rather than matched, because a team default can only have been
+    authored against a real ``teams.id`` and an empty string would be a shared
+    bogus key every such user in the tenant collides on. Same argument
+    ``resolve_person_subs`` makes for a NULL ``cognito_sub``.
+
+    Returns:
+        Sorted distinct ``(org_id, team_id)`` pairs, possibly empty. Sorted for a
+        deterministic read order, exactly as the id and sub lists are.
+    """
+    rows = (await db.execute(select(User.org_id, User.team_id).where(User.id.in_(person_user_ids)))).all()
+    return sorted({(org_id, team_id) for org_id, team_id in rows if org_id and team_id})
+
+
+def _tightest(rows: list[PersonBudgetDefault]) -> PersonBudgetDefault:
+    """The row a person is held to when several rules match at ONE rung.
+
+    **The lowest amount governs** (operator ruling, 2026-09-07), because a default
+    is a ceiling. The case is real rather than hypothetical: a person who belongs
+    to two orgs that both carry an org default matches two rules at the org rung.
+    Taking the highest — or the first row the database happened to return — would
+    mean a ceiling could be escaped by joining a second, more generous org, which
+    is not a ceiling.
+
+    Ties break on ``id`` so that two rules with the same amount always yield the
+    same row, and therefore the same ``scope_label`` in a denial: an operator
+    reading "org default for acme" must not see "org default for globex" on the
+    next request for the same reason.
+    """
+    return min(rows, key=lambda row: (row.budget_amount_usd, row.id))
+
+
+async def resolve_person_default_limits(
+    db: AsyncSession,
+    org_ids: list[str],
+    team_keys: list[tuple[str, str]],
+) -> dict[str, PersonLimit]:
+    """The DEFAULT limit applicable to this person per period — Issue #4690.
+
+    The fallback half of the ladder: what governs a person for whom no individual
+    ``person_budget_configs`` row exists. Before this, that person was unlimited,
+    which is the defect — "no personal row" meant "no ceiling" even on a platform
+    whose admin had set one number for everybody.
+
+    **Per period, the tightest scope wins, and it is a first-match walk, not a
+    minimum.** ``_DEFAULT_RUNG_ORDER`` is team → org → platform, and the walk stops
+    at the first rung that matched: a team rule of $5,000 beats a platform rule of
+    $1,000 for that person, deliberately. That is what "unless we say otherwise"
+    means — a more specific rule is an override, including an override upward.
+    "Lowest wins" applies only WITHIN one rung (``_tightest``), where the several
+    matches are peers and none is more specific than another.
+
+    Args:
+        db: Async session bound to the gateway DB.
+        org_ids: The partitions this person belongs to — pass
+            ``resolve_member_partitions``' output. Server-derived, never request
+            input: this list is what decides whose rules may govern the person.
+        team_keys: ``(org_id, team_id)`` pairs from ``resolve_person_team_keys``.
+
+    Returns:
+        ``{period_type: PersonLimit}`` for every calendar period that has an
+        applicable default, ``{}`` when none does. Non-calendar rows are filtered
+        out rather than left to fault ``get_period_start_end`` (the #4328 allowlist
+        discipline).
+    """
+    # ONE query for all three rungs. The rungs are read together rather than
+    # walked with a query each because the walk needs the losers anyway to decide
+    # per PERIOD — a person can match a team rule monthly and only a platform rule
+    # daily, and three sequential round-trips would answer neither faster.
+    predicates = [PersonBudgetDefault.scope_type == "platform"]
+    if org_ids:
+        predicates.append(and_(PersonBudgetDefault.scope_type == "org", PersonBudgetDefault.scope_id_org.in_(org_ids)))
+    if team_keys:
+        # Matched as PAIRS, deliberately not `org_id IN (...) AND team_id IN (...)`:
+        # the cross-product form matches org A's rule for team T against a person
+        # who is in org A and in team T *of org B* — a rule governing somebody it
+        # was not authored for. Composed as explicit ANDed pairs rather than a SQL
+        # row-value `IN`, which not every backend this runs on (SQLite in tests)
+        # plans the same way.
+        predicates.append(
+            and_(
+                PersonBudgetDefault.scope_type == "team",
+                or_(
+                    *[and_(PersonBudgetDefault.scope_id_org == org_id, PersonBudgetDefault.scope_id_team == team_id) for org_id, team_id in team_keys]
+                ),
+            )
+        )
+
+    rows = (
+        (
+            await db.execute(
+                select(PersonBudgetDefault).where(
+                    or_(*predicates),
+                    # Calendar periods only (#4328): a run/chain period has no
+                    # calendar window and `get_period_start_end` RAISES for it, so a
+                    # stray row must be filtered here rather than fault the person
+                    # layer. Sorted because CALENDAR_PERIOD_TYPES is a frozenset —
+                    # unsorted, the generated SQL varies between runs for no reason.
+                    PersonBudgetDefault.period_type.in_(sorted(CALENDAR_PERIOD_TYPES)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    by_period_and_scope: dict[tuple[str, str], list[PersonBudgetDefault]] = {}
+    for row in rows:
+        by_period_and_scope.setdefault((row.period_type, row.scope_type), []).append(row)
+
+    limits: dict[str, PersonLimit] = {}
+    for period_type in {row.period_type for row in rows}:
+        for scope_type in _DEFAULT_RUNG_ORDER:
+            candidates = by_period_and_scope.get((period_type, scope_type))
+            if not candidates:
+                continue
+            winner = _tightest(candidates)
+            limits[period_type] = PersonLimit(
+                period_type=period_type,
+                amount=winner.budget_amount_usd,
+                enforcement_mode=winner.enforcement_mode,
+                source=_SOURCE_BY_SCOPE_TYPE[scope_type],
+                scope_label=_default_scope_label(winner),
+            )
+            break
+
+    return limits
+
+
+def _default_scope_label(row: PersonBudgetDefault) -> str:
+    """Name a default's provenance for a human reading a 402 or a 422.
+
+    The rung ALONE is not enough on the org and team rungs: "an org default" does
+    not tell a multi-org person which of their orgs set it, and that is exactly the
+    thing they need to know to go ask somebody. The ids are the operator's handle
+    on the row, so they are named.
+    """
+    if row.scope_type == "platform":
+        return "platform default"
+    if row.scope_type == "org":
+        return f"org default for {row.scope_id_org}"
+    return f"team default for {row.scope_id_team} in {row.scope_id_org}"
+
+
+async def resolve_individual_person_limits(
+    db: AsyncSession,
+    person_anchor: str,
+    self_authored_by: str | None = None,
+) -> dict[str, PersonLimit]:
+    """The ladder's TOP rung alone: this person's own ``person_budget_configs`` rows.
+
+    Separated from :func:`resolve_applicable_person_limits` so the enforcement layer
+    can call *just this rung* when the process-local gate has already established
+    that **no default rule exists anywhere on the install**. In that state the ladder
+    provably degenerates to its top rung, and resolving the person's orgs and teams
+    to discover an empty set of defaults would put several queries back on the hot
+    path for every request — the #4689 regression. This is that degenerate case
+    named and shared, rather than a second copy of the read.
+
+    Args:
+        db: Async session bound to the gateway DB.
+        person_anchor: The ``github:<id>`` key the authoring surface writes.
+        self_authored_by: The caller's canonical ``users.id`` when resolving for
+            that caller — see :func:`resolve_applicable_person_limits`.
+
+    Returns:
+        ``{period_type: PersonLimit}`` for each individual row, ``{}`` when none.
+    """
+    rows = (
+        (
+            await db.execute(
+                select(PersonBudgetConfig).where(
+                    PersonBudgetConfig.person_anchor == person_anchor,
+                    # Calendar periods only — a run/chain row would fault
+                    # `get_period_start_end` downstream (#4328).
+                    PersonBudgetConfig.period_type.in_(sorted(CALENDAR_PERIOD_TYPES)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    limits: dict[str, PersonLimit] = {}
+    for row in rows:
+        # `admin` when the row was authored by anybody other than the person this
+        # ladder is being resolved for. EVERY caller — the read surface AND
+        # enforcement — passes the person's own canonical id (review fix on #4696:
+        # enforcement used to pass None, which interpolated 'set for you by a
+        # platform administrator' into 402s for limits people set on THEMSELVES,
+        # sending them to an admin who could find no such grant).
+        source: PersonLimitSource = "own" if self_authored_by is not None and row.authored_by_user_id == self_authored_by else "admin"
+        limits[row.period_type] = PersonLimit(
+            period_type=row.period_type,
+            amount=row.budget_amount_usd,
+            enforcement_mode=row.enforcement_mode,
+            source=source,
+            scope_label="your own limit" if source == "own" else "a limit set for you by a platform administrator",
+            updated_at=row.updated_at.isoformat() if row.updated_at else None,
+        )
+    return limits
+
+
+async def resolve_applicable_person_limits(
+    db: AsyncSession,
+    *,
+    person_anchor: str | None,
+    org_ids: list[str],
+    team_keys: list[tuple[str, str]],
+    self_authored_by: str | None = None,
+) -> dict[str, PersonLimit]:
+    """The FULL ladder: which limit governs this person, per period — Issue #4690.
+
+    ``individual row > team default > org default > platform default``. This is the
+    single definition of "this person's applicable limit", consumed by enforcement
+    (``_check_person_budget``, ``_person_cap_headroom``) and by the read surface
+    (``/me/budget/person-cap``). Two implementations of it would be the #4620 class
+    of defect one layer up: a screen labelling somebody unlimited while a 402 stops
+    them at a default they were never shown.
+
+    **An individual row shadows the default for its own period only.** A person
+    with a monthly personal limit and no daily one is still governed by a daily
+    default. Resolving per period rather than per person is what makes that work,
+    and the alternative ("any individual row means defaults do not apply") would
+    let somebody escape a daily platform ceiling by authoring an unrelated monthly
+    limit on themselves.
+
+    Args:
+        db: Async session bound to the gateway DB.
+        person_anchor: The person's ``github:<id>`` key — the SAME key the authoring
+            surface writes (``format_person_anchor``), never a re-derived one.
+            ``None`` for a person with no linked GitHub identity: they can hold no
+            individual row (it would be keyed on an anchor no ledger row carries —
+            the #4511 class), but a default STILL governs them, which is the point
+            of a default. Skipping the top rung is not the same as skipping the
+            ladder.
+        org_ids: Server-derived partitions (``resolve_member_partitions``).
+        team_keys: ``(org_id, team_id)`` pairs (``resolve_person_team_keys``).
+        self_authored_by: The caller's canonical ``users.id`` when this is being
+            resolved FOR that caller, so an individual row can be reported as
+            ``own`` rather than ``admin``. ``None`` (the enforcement path) reports
+            every individual row as ``admin`` — see
+            :func:`resolve_individual_person_limits`.
+
+    Returns:
+        ``{period_type: PersonLimit}``, empty when this person is governed by
+        nothing at all. An empty result is the honest "unlimited" and the only case
+        the enforcement layer may treat as such.
+    """
+    limits = await resolve_person_default_limits(db, org_ids, team_keys)
+
+    if person_anchor:
+        # The top rung overwrites the default for the periods it covers — and only
+        # those, so a monthly personal limit does not lift a daily default.
+        #
+        # HARD rows only (review fix on #4696): a C3-era `soft` row is
+        # informational — it warns and never denies — so letting it shadow a hard
+        # default would silently EXEMPT its holder from a ceiling every peer is
+        # denied at. A soft row still surfaces where no default governs that
+        # period (today's display behavior), but a rule that enforces is never
+        # displaced by one that does not.
+        for period, individual in (await resolve_individual_person_limits(db, person_anchor, self_authored_by)).items():
+            if individual.enforcement_mode == "hard" or period not in limits:
+                limits[period] = individual
+
+    return limits

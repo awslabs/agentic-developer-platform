@@ -1047,20 +1047,26 @@ class TestReviewPinsOn4689:
         """
         import inspect
 
-        source = inspect.getsource(BudgetEnforcementService._check_person_budget)
+        # #4690 moved the preamble into `_resolve_person_limits`, so inspecting
+        # `_check_person_budget` alone would make this pin vacuously pass while the
+        # lookup it guards lives elsewhere. Both are checked, and any future split
+        # must extend this list rather than let the pin go quiet.
+        source = inspect.getsource(BudgetEnforcementService._check_person_budget) + inspect.getsource(BudgetEnforcementService._resolve_person_limits)
         # Call sites, not mentions: the fix's own comment names the resolver.
         assert "resolve_canonical_user_id(" not in source
         assert "_resolve_root_principal(" not in source
 
     @pytest.mark.asyncio
     async def test_existence_gate_answers_from_cache_within_the_ttl(self):
-        """One LIMIT-1 query per TTL window, not per request."""
+        """One query per TTL window, not per request."""
         from unittest.mock import AsyncMock, MagicMock
 
         service = BudgetEnforcementService(db_session=MagicMock())
         session = MagicMock()
         empty = MagicMock()
-        empty.scalar_one_or_none.return_value = None
+        # Since #4690 the gate asks both existence questions as two EXISTS
+        # subqueries in ONE statement, so the result is a single row of two bools.
+        empty.one.return_value = (False, False)
         session.execute = AsyncMock(return_value=empty)
 
         assert await service._any_person_caps_exist(session) is False
@@ -1076,7 +1082,7 @@ class TestReviewPinsOn4689:
         service = BudgetEnforcementService(db_session=MagicMock())
         session = MagicMock()
         row = MagicMock()
-        row.scalar_one_or_none.return_value = "cap-row-id"
+        row.one.return_value = (True, False)
         session.execute = AsyncMock(return_value=row)
 
         assert await service._any_person_caps_exist(session) is True
@@ -1085,3 +1091,26 @@ class TestReviewPinsOn4689:
         service._person_caps_exist_cache = (cached_value, cached_at - module._PERSON_CAPS_EXISTENCE_TTL_SECONDS - 1)
         assert await service._any_person_caps_exist(session) is True
         assert session.execute.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_widened_gate_stays_one_round_trip_and_keeps_the_rungs_apart(self):
+        """#4690's widening must not add a hot-path query, nor pre-``or`` the answers.
+
+        Two failure modes this pins at once. A second `SELECT` for the defaults
+        table would put a round trip back on every JWT model invoke — the #4689
+        regression. Collapsing the pair into one bool before caching would make
+        every install with a personal cap pay the defaults ladder's org/team
+        fan-out, which is work only a default's existence justifies.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        service = BudgetEnforcementService(db_session=MagicMock())
+        session = MagicMock()
+        result = MagicMock()
+        result.one.return_value = (False, True)
+        session.execute = AsyncMock(return_value=result)
+
+        assert await service._person_limit_sources_exist(session) == (False, True)
+        # A default alone opens the gate: this is the whole point of #4690.
+        assert await service._any_person_caps_exist(session) is True
+        assert session.execute.await_count == 1

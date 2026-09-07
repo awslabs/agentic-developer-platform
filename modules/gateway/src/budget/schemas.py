@@ -69,6 +69,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+# The wire enum is the LADDER's own type, imported rather than restated (#4690).
+# `person_ledger` is a deliberate leaf — models and shared schemas only — so this
+# adds no cycle, and it means the set of values this contract advertises cannot
+# drift from the set the resolver can actually return. A hand-copied Literal here
+# would go stale the first time a rung is added (department scope is explicitly
+# left room for).
+from .person_ledger import PersonLimitSource
+
 # The warning band a utilisation figure falls in. Derived server-side from
 # `budget_config.budget_warning_threshold_percent` / `_critical_threshold_percent`
 # (80.0 / 95.0) so the frontend cannot drift its own thresholds — today
@@ -1292,4 +1300,126 @@ class PersonCapResponse(BaseModel):
     )
     updated_at: str | None = Field(
         description="ISO-8601 instant the limit was last authored, or `null` when uncapped.",
+    )
+    source: PersonLimitSource | None = Field(
+        default=None,
+        description=(
+            "WHERE the reported limit comes from (#4690), and therefore who can "
+            "change it. `own` — an individual row this person authored; they may "
+            "lower it freely. `admin` — an individual row a platform admin "
+            "authored for them. `team_default` / `org_default` / `platform_default` "
+            "— no individual row exists and a DEFAULT rule governs them; the "
+            "number is a ceiling they may set themselves BELOW but not above. "
+            "`null` only when `cap_status` is `uncapped`, i.e. no rule of any kind "
+            "applies. A client that renders a default as if it were the person's "
+            "own limit invites them to raise it and collect a 422."
+        ),
+    )
+    source_label: str | None = Field(
+        default=None,
+        description=(
+            "The same provenance in prose, ready to show a person — e.g. `your own "
+            "limit`, `platform default`, `org default for acme-corp`. Composed "
+            "server-side so this string, the 402 denial text and the 422 ceiling "
+            "rejection cannot describe the same rule differently. `null` when "
+            "uncapped."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT person limits at platform/org/team scope — Issue #4690 (D1)
+# ---------------------------------------------------------------------------
+#
+# `PersonCapRequest`/`PersonCapResponse` above are about ONE person's row. These two
+# are about a RULE — "$1,000/month each, unless we say otherwise" — that governs
+# every current and future member of a scope. The distinction is why they are
+# separate models rather than an optional `scope` field on the pair above: the
+# target of a default is a scope, not a person, and a model that could express
+# either would put an anchor and a scope in one field.
+#
+# The scope itself is NOT in the body. It is in the path (`platform`, `org:<id>`,
+# `team:<org>:<team>`), so the request model has nothing to name — the same
+# structural-scoping argument the self-service cap routes make.
+
+
+class PersonDefaultRequest(BaseModel):
+    """Author (or re-author) the default person limit for one scope and period — #4690.
+
+    One field, matching ``PersonCapRequest`` exactly: the scope is in the path, the
+    period is a query parameter, and ``enforcement_mode`` is not client-settable (a
+    default that silently does not enforce is the #4511 inert-cap class at platform
+    scale, so ``hard`` is the only value written).
+
+    The constraints are ``PersonCapRequest``'s, deliberately identical because the
+    two columns are identical ``NUMERIC(10,2)``: a default a client could express but
+    an individual row could not would be a ceiling nobody could comply with.
+    """
+
+    budget_amount_usd: Decimal = Field(
+        gt=0,
+        le=Decimal("99999999.99"),
+        decimal_places=2,
+        description=(
+            "The default total spend ceiling, per person, for one calendar period "
+            "across every organization. Applies to everybody in the scope who has "
+            "no individual limit and no tighter-scoped default. 2dp, matching the "
+            "`NUMERIC(10,2)` column; `le` is that column's maximum (see "
+            "`PersonCapRequest` for why an unbounded value would surface as a "
+            "misleading 503). Must be > 0 — removing a default is a DELETE, not a "
+            "`0`, which would be a real ceiling of zero dollars applied to "
+            "everybody in the scope."
+        ),
+    )
+
+
+class PersonDefaultResponse(BaseModel):
+    """A scope's default person limit, or the explicit absence of one — #4690.
+
+    Same two contract rules as every other cap shape here: money is a string at the
+    column's precision (rule 1), and "no default authored" is a distinct
+    ``cap_status`` rather than a ``0.00`` (rule 2) — a zeroed default would read as
+    "nobody in this scope may spend anything", which is the opposite of what an
+    absent rule means.
+
+    No spend and no member count: this is the authoring surface for a rule. How many
+    people it currently governs, and what they have spent, is the admin/person UI
+    (#4691) reading the existing cross-org figures — deriving a second copy here is
+    the #4322 class.
+    """
+
+    scope_type: Literal["platform", "org", "team"] = Field(
+        description=(
+            "Which rung this default sits on. The ladder is individual row > team default > org default > platform default, tightest scope first."
+        )
+    )
+    scope_id_org: str | None = Field(
+        description="The organization this default is scoped to, or `null` on the platform rung.",
+    )
+    scope_id_team: str | None = Field(
+        description=(
+            "The team this default is scoped to, `null` on every rung but `team`. "
+            "Always accompanied by `scope_id_org`, because a team id is unique only "
+            "inside its own organization."
+        ),
+    )
+    period_type: Literal["daily", "weekly", "monthly"] = Field(
+        description="The calendar period the default applies to. Run/chain caps are not calendar periods and have no person-level equivalent."
+    )
+    cap_usd: str | None = Field(
+        description="The authored default at 2dp, or `null` when this scope and period have none. `null` is NOT `0.00` — see `cap_status`.",
+    )
+    cap_status: CapStatus = Field(
+        description="`capped` when a default rule exists for this scope and period, `uncapped` when none does.",
+    )
+    enforcement_mode: str | None = Field(
+        description=(
+            "`hard` for every default (#4690): the rule DENIES once a governed "
+            "person's settled cross-org total passes it. `null` when uncapped. "
+            "Unlike an individual row there is no `soft` case — no generation of "
+            "these rows was ever promised to be informational."
+        ),
+    )
+    updated_at: str | None = Field(
+        description="ISO-8601 instant the default was last authored, or `null` when none is authored.",
     )
