@@ -506,10 +506,14 @@ below; the two fields that name the surface are `fix_surface` and `approach`.
 - `goal` -- one short paragraph: what this work item achieves.
 - `motivation` -- one short paragraph: why it matters that this is fixed, and
   what happens if it is not.
-- `who_benefits` -- the people or roles who are better off (e.g. "every tenant
-  whose data is on the shared plane"). Not a list of components.
-- `who_is_impacted` -- the surfaces or teams this change touches, in plain
-  words (e.g. "billing, support, anyone auditing access").
+- `who_benefits` -- REQUIRED, and the most commonly forgotten. The people or
+  roles who are better off (e.g. "every tenant whose data is on the shared
+  plane"). Not a list of components. There is always an answer: if nobody
+  outside the team benefits, say which operators or reviewers do.
+- `who_is_impacted` -- REQUIRED, and forgotten alongside the one above. The
+  surfaces or teams this change touches, in plain words (e.g. "billing, support,
+  anyone auditing access"). If the blast radius is small, say so explicitly
+  rather than leaving it out.
 - `risks` -- a non-empty array of objects with exactly `bug_class` and
   `blast_radius`, both non-empty. These are ways *the fix itself* can go wrong
   and who is hurt if it does -- not a restatement of the finding.
@@ -594,14 +598,58 @@ def parse_object(text: str) -> dict:
     try:
         document = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise PlanAuthoringError(
-            f"the plan-authoring model did not return parseable JSON: {exc}"
-        ) from exc
+        # A model that emits the object and then keeps talking ("Extra data: line
+        # 1 column 3069") has answered correctly and added a courtesy sentence.
+        # Failing the night on that is failing on manners, not on content, so the
+        # first complete top-level object is extracted and the rest ignored. A
+        # response with no complete object still fails -- that is a real answer we
+        # cannot read (#4290 replay run 34108572024 lost three work items here).
+        document = _first_json_object(stripped)
+        if document is None:
+            raise PlanAuthoringError(
+                f"the plan-authoring model did not return parseable JSON: {exc}"
+            ) from exc
     if not isinstance(document, dict):
         raise PlanAuthoringError(
             f"the plan-authoring model returned a {type(document).__name__}, not an object"
         )
     return document
+
+
+def _first_json_object(text: str) -> dict | None:
+    """The first complete ``{...}`` in ``text``, or None.
+
+    Brace-counted with string/escape awareness rather than regex, because every
+    field in a work item is prose that can itself contain braces and quotes.
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start : index + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
 
 
 def parse_clusters(text: str) -> list:
@@ -806,14 +854,24 @@ def _author_one(
             previous_error=previous_error,
         )
         try:
-            authored = parse_authored(
+            response = parse_authored(
                 invoke_model(client, prompt, model_id=model_id, max_tokens=max_tokens)
             )
-            extra = sorted(set(authored) - set(_AUTHORED_FIELDS))
-            if extra:
-                raise PlanAuthoringError(
-                    f"the work item response has fields outside the schema: {extra}"
-                )
+            # PROJECTED to the allow-list, not rejected for carrying extras.
+            #
+            # Rejecting bought nothing and cost a whole attempt. The group below is
+            # built from named fields, so a key the model invented could never have
+            # reached a rendered body -- the closed-set gate in `_validate_group`
+            # is still the backstop that proves it. Meanwhile "invented an extra
+            # key" was the single largest rejection class on the first real
+            # whole-repo run (#4290 replay 34108572024: seven of them, mostly
+            # `*_note_placeholder*` keys this prompt's own no-placeholder rule
+            # appears to induce), and every one of those attempts was spent
+            # re-authoring prose that was already correct.
+            #
+            # What is NOT relaxed is absence: a required field that is missing or
+            # empty is still a rejection, because that is content the issue needs.
+            authored = {k: v for k, v in response.items() if k in _AUTHORED_FIELDS}
             group = dict(
                 authored,
                 slug=cluster["slug"],

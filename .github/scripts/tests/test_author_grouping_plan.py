@@ -48,6 +48,7 @@ from author_grouping_plan import (
     gate_plan,
     main,
     parse_clusters,
+    parse_object,
     prompt_findings,
 )
 
@@ -557,7 +558,6 @@ def test_every_invalid_clustering_class_fails_and_writes_no_plan(
 @pytest.mark.parametrize(
     "mutate,reason",
     [
-        (lambda a: {**a, "surprise": "x"}, "an undeclared field"),
         (lambda a: {**a, "problem": ""}, "an empty required field"),
         (lambda a: {k: v for k, v in a.items() if k != "goal"}, "a missing required field"),
         (lambda a: {**a, "approach": "Ask @agent-developer to fix it."},
@@ -566,8 +566,6 @@ def test_every_invalid_clustering_class_fails_and_writes_no_plan(
          "a banned reproduction pattern"),
         (lambda a: {**a, "problem": "Steps to reproduce: sign in, then replay."},
          "a reproduction heading"),
-        (lambda a: {**a, "finding_ids": ["f-deadbeef"]},
-         "finding ids the authoring call must not supply"),
         (lambda a: {**a, "risks": []}, "no bug-class/blast-radius rows"),
         (lambda a: {**a, "fix_surface": [""]}, "an empty fix-surface entry"),
     ],
@@ -634,6 +632,114 @@ def test_a_rejected_first_attempt_is_retried_with_the_rejection_reason(
     assert "are in no cluster" in fake.prompts[1]
     assert "f-23536a25" in fake.prompts[1]
     assert "REJECTED" not in fake.prompts[0]
+
+
+def test_a_key_the_model_invented_is_dropped_not_a_rejection(tmp_path, monkeypatch, no_github):
+    """A model that adds a key has still written the twelve fields correctly.
+
+    Rejecting for it bought nothing -- the group is built from named fields, so an
+    invented key could never reach a rendered body -- and it was the single largest
+    rejection class on the first real whole-repo run (#4290 replay 34108572024).
+    The key is projected away, the work item authors on the FIRST attempt, and the
+    plan carries exactly the declared field set.
+    """
+    output = tmp_path / "plan.json"
+    authored = {k: _fixture_groups()[0][k] for k in agp._AUTHORED_FIELDS}
+    invented = json.dumps(
+        {**authored, "motivation_note_placeholder_guard": "x", "confirmation": "ok"}
+    )
+    fake = TwoPhaseBedrock(_fixture_groups(), item_prelude=[invented])
+    _patch_bedrock(monkeypatch, fake)
+
+    argv = _author_argv(
+        new_findings=FINDINGS_FIXTURE, output=output, extra=("--max-concurrency", "1")
+    )
+    assert main(argv) == 0
+    assert fake.item_calls == len(_fixture_groups()), "an invented key cost a retry"
+    for group in json.loads(output.read_text(encoding="utf-8"))["groups"]:
+        assert set(group) == set(tg._REQUIRED_GROUP_FIELDS)
+        assert "confirmation" not in group
+
+
+def test_finding_ids_volunteered_by_the_authoring_call_are_ignored_not_honoured(
+    tmp_path, monkeypatch, no_github
+):
+    """The identity keys are stamped from phase 1. A prose call that volunteers its
+    own `finding_ids` must not be able to change what the work item covers."""
+    output = tmp_path / "plan.json"
+    authored = {k: _fixture_groups()[0][k] for k in agp._AUTHORED_FIELDS}
+    lying = json.dumps({**authored, "finding_ids": ["f-deadbeef"], "slug": "hijacked"})
+    _patch_bedrock(
+        monkeypatch, TwoPhaseBedrock(_fixture_groups(), item_prelude=[lying])
+    )
+
+    argv = _author_argv(
+        new_findings=FINDINGS_FIXTURE, output=output, extra=("--max-concurrency", "1")
+    )
+    assert main(argv) == 0
+    plan = json.loads(output.read_text(encoding="utf-8"))
+    assert "f-deadbeef" not in output.read_text(encoding="utf-8")
+    assert "hijacked" not in [g["slug"] for g in plan["groups"]]
+    covered = sorted(f for g in plan["groups"] for f in g["finding_ids"])
+    assert covered == sorted(_findings()["finding_ids"])
+
+
+@pytest.mark.parametrize(
+    "trailer",
+    [
+        "\n\nI have written all twelve fields as requested.",
+        "\nNote: the validation section avoids reproduction detail.",
+    ],
+    ids=["closing-sentence", "note"],
+)
+def test_a_response_that_keeps_talking_after_the_object_is_still_read(
+    tmp_path, monkeypatch, no_github, trailer
+):
+    """"Extra data: line 1 column 3069" cost three work items on the first real
+    whole-repo run. A model that answers correctly and then adds a courtesy
+    sentence has not failed; failing the night on that is failing on manners."""
+    output = tmp_path / "plan.json"
+    authored = {k: _fixture_groups()[0][k] for k in agp._AUTHORED_FIELDS}
+    fake = TwoPhaseBedrock(
+        _fixture_groups(), item_prelude=[json.dumps(authored) + trailer]
+    )
+    _patch_bedrock(monkeypatch, fake)
+
+    argv = _author_argv(
+        new_findings=FINDINGS_FIXTURE, output=output, extra=("--max-concurrency", "1")
+    )
+    assert main(argv) == 0
+    assert fake.item_calls == len(_fixture_groups()), "a trailing sentence cost a retry"
+
+
+def test_a_clustering_response_that_keeps_talking_is_still_read(
+    tmp_path, monkeypatch, no_github
+):
+    chatty = _cluster_response(_fixture_groups()) + "\n\nThat is the grouping."
+    fake = TwoPhaseBedrock(_fixture_groups(), cluster_prelude=[chatty])
+    _patch_bedrock(monkeypatch, fake)
+    output = tmp_path / "plan.json"
+    assert main(_author_argv(new_findings=FINDINGS_FIXTURE, output=output)) == 0
+    assert fake.cluster_calls == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    ["no object here at all", "{ unterminated", "prose { not: json } more"],
+    ids=["no-braces", "unterminated", "malformed-object"],
+)
+def test_a_response_with_no_readable_object_still_fails(response):
+    """The tolerance is for trailing chatter, not for unreadable answers."""
+    with pytest.raises(PlanAuthoringError, match="did not return parseable JSON"):
+        parse_clusters(response)
+
+
+def test_the_object_extractor_survives_braces_and_quotes_inside_prose():
+    """Every field is prose that can contain braces and escaped quotes, so the
+    extractor is brace-counted with string awareness rather than a regex."""
+    tricky = {"problem": 'A body with {braces} and a \\"quoted\\" phrase.', "goal": "}"}
+    text = json.dumps(tricky) + "\n\nDone."
+    assert parse_object(text) == tricky
 
 
 def test_a_rejected_work_item_is_retried_with_its_own_rejection_reason(
