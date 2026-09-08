@@ -57,6 +57,7 @@ vi.mock('@/services/bedrockRouting', async (importOriginal) => {
 vi.mock('@/services/admin', () => ({
   getOrganizations: vi.fn(),
   getCognitoTeams: vi.fn(),
+  listPlatformUsers: vi.fn(),
 }));
 
 import {
@@ -68,7 +69,7 @@ import {
   registerDestination,
   verifyDestination,
 } from '@/services/bedrockRouting';
-import { getOrganizations, getCognitoTeams } from '@/services/admin';
+import { getOrganizations, getCognitoTeams, listPlatformUsers } from '@/services/admin';
 
 const mockListMappings = listMappings as ReturnType<typeof vi.fn>;
 const mockSetMapping = setMapping as ReturnType<typeof vi.fn>;
@@ -79,6 +80,7 @@ const mockRegisterDestination = registerDestination as ReturnType<typeof vi.fn>;
 const mockVerifyDestination = verifyDestination as ReturnType<typeof vi.fn>;
 const mockGetOrgs = getOrganizations as ReturnType<typeof vi.fn>;
 const mockGetTeams = getCognitoTeams as ReturnType<typeof vi.fn>;
+const mockListPeople = listPlatformUsers as ReturnType<typeof vi.fn>;
 
 const ACME_PROD: DestinationSummary = {
   id: 'dest-acme',
@@ -187,12 +189,46 @@ const RULE_ON_BROKEN: MappingSummary = {
   destination_usable: false,
 };
 
+/**
+ * The platform roster behind the person picker — Issue #4827.
+ *
+ * `id` is the canonical `users.id` and is deliberately UUID-shaped and unlike anything
+ * in the label: the picker's whole job is submitting an id no operator could type, so an
+ * assertion on the submitted value must be unable to pass by matching a display string.
+ *
+ * Casey spans two tenants' worth of recognisability (a GitHub login), Dana has none —
+ * the email-onboarded population, which must still be selectable.
+ */
+const CASEY: { id: string; orgId: string; email: string; name: string | null; githubUsername: string | null } = {
+  id: '48270000-0000-4000-8000-00000000ca5e',
+  orgId: 'acme',
+  email: 'casey@acme.example',
+  name: 'Casey Ng',
+  githubUsername: 'caseyng',
+};
+
+/** No GitHub identity: legitimate and permanent, so the picker must still offer them. */
+const DANA = {
+  id: '48270000-0000-4000-8000-00000000da4a',
+  orgId: 'globex',
+  email: 'dana@globex.example',
+  name: 'Dana Fox',
+  githubUsername: null,
+};
+
 function renderPanel() {
   return render(
     <ToastProvider>
       <BedrockAccountRouting />
     </ToastProvider>,
   );
+}
+
+/** Choose somebody in a person picker, by the canonical id the option carries. */
+async function pickPerson(user: ReturnType<typeof userEvent.setup>, testId: string, personId: string) {
+  const select = await screen.findByTestId(testId);
+  await waitFor(() => expect(within(select).getAllByRole('option').length).toBeGreaterThan(1));
+  await user.selectOptions(select, personId);
 }
 
 /** Open the Add-rule modal and pick a scope type. */
@@ -222,6 +258,7 @@ beforeEach(() => {
     pageSize: 50,
     hasMore: false,
   });
+  mockListPeople.mockResolvedValue({ items: [CASEY, DANA], total: 2, page: 1, pageSize: 50, hasMore: false });
   mockSetMapping.mockResolvedValue(ORG_RULE);
   mockDeleteMapping.mockResolvedValue(undefined);
   mockVerifyDestination.mockResolvedValue({ destination: ACME_PROD, verified: true, reason: null });
@@ -277,12 +314,12 @@ describe('the authored scope reaches the wire intact', () => {
     await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
 
     await openAddRule(user, 'user');
-    await user.type(screen.getByTestId('routing-rule-user'), 'user-dana');
+    await pickPerson(user, 'routing-rule-user', DANA.id);
     await user.selectOptions(screen.getByLabelText('Destination'), 'dest-acme');
     await user.click(screen.getByTestId('routing-rule-save'));
 
     await waitFor(() =>
-      expect(mockSetMapping).toHaveBeenCalledWith(expect.objectContaining({ scope_type: 'user', user: 'user-dana' }), 'dest-acme'),
+      expect(mockSetMapping).toHaveBeenCalledWith(expect.objectContaining({ scope_type: 'user', user: DANA.id }), 'dest-acme'),
     );
   });
 
@@ -340,6 +377,171 @@ describe('the authored scope reaches the wire intact', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Group 1b — the person rung can be authored without knowing an id (Issue #4827)
+// ---------------------------------------------------------------------------
+
+/**
+ * The person picker.
+ *
+ * The defect was NOT a wrong write: the server always refused an unknown `users.id`.
+ * It was that no operator could produce a right one, so the field read as broken. Three
+ * things therefore have to hold, and each has a silent failure mode:
+ *
+ * - **What reaches the wire is the canonical id**, never the label an operator read.
+ *   A picker that submitted an email or a GitHub login would store rules that read back
+ *   correctly and govern nobody.
+ * - **The label is recognisable**, i.e. the GitHub username when one is linked. A
+ *   dropdown of UUIDs is the original defect wearing a different control.
+ * - **The GitHub-less population is still selectable.** Dropping them would leave a
+ *   valid target unpickable — the same dead end, narrower.
+ */
+describe('the person rung is authored from a picker, not a typed id', () => {
+  it('submits the canonical user id, not anything shown in the label', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'user');
+    await pickPerson(user, 'routing-rule-user', CASEY.id);
+    await user.selectOptions(screen.getByLabelText('Destination'), 'dest-acme');
+    await user.click(screen.getByTestId('routing-rule-save'));
+
+    // Asserted on the ARGUMENT. The id is UUID-shaped and appears in no label, so this
+    // cannot pass by coincidence with the email or the GitHub login beside it.
+    await waitFor(() => expect(mockSetMapping).toHaveBeenCalledWith(expect.objectContaining({ scope_type: 'user', user: CASEY.id }), 'dest-acme'));
+    const [scope] = mockSetMapping.mock.calls[0];
+    expect(scope.user).not.toBe(CASEY.email);
+    expect(scope.user).not.toBe(CASEY.githubUsername);
+  });
+
+  it('names people by their GitHub username so an operator can recognise them', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'user');
+    const select = await screen.findByTestId('routing-rule-user');
+
+    // The operator requirement: the GitHub login is how people are recognised. A
+    // dropdown of ids would be the same unusable control in different clothing.
+    const option = await within(select).findByRole('option', { name: /caseyng/ });
+    expect(option).toHaveValue(CASEY.id);
+  });
+
+  it('offers a member with no linked GitHub account, and says so', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'user');
+    const select = await screen.findByTestId('routing-rule-user');
+
+    // Email onboarding is permanent and legitimate. Hiding these people would leave a
+    // valid rule target with no way to select it; showing them with a blank column
+    // instead invites reading the gap as a load failure.
+    const option = await within(select).findByRole('option', { name: /no GitHub linked/ });
+    expect(option).toHaveValue(DANA.id);
+  });
+
+  it('searches server-side rather than filtering a full roster in the browser', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'user');
+    await user.type(await screen.findByTestId('routing-rule-user-search'), 'caseyng');
+
+    // A client-side filter over an unpaginated fetch is what the endpoint's pagination
+    // exists to avoid; the query must reach the server.
+    await waitFor(() => expect(mockListPeople).toHaveBeenCalledWith(expect.objectContaining({ q: 'caseyng' })));
+  });
+
+  it('keeps the chosen person selected when a later search excludes them', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'user');
+    await pickPerson(user, 'routing-rule-user', CASEY.id);
+
+    // The next page of results does not contain Casey.
+    mockListPeople.mockResolvedValue({ items: [DANA], total: 1, page: 1, pageSize: 50, hasMore: false });
+    await user.type(screen.getByTestId('routing-rule-user-search'), 'dana');
+    await waitFor(() => expect(mockListPeople).toHaveBeenCalledWith(expect.objectContaining({ q: 'dana' })));
+
+    // Otherwise the selection silently empties, Save disables itself, and nothing on
+    // screen says why the admin can no longer submit.
+    await waitFor(() => expect((screen.getByTestId('routing-rule-user') as HTMLSelectElement).value).toBe(CASEY.id));
+  });
+
+  it('discloses that it is showing only part of a larger roster', async () => {
+    const user = userEvent.setup();
+    mockListPeople.mockResolvedValue({ items: [CASEY, DANA], total: 900, page: 1, pageSize: 50, hasMore: true });
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'user');
+
+    // A picker showing 2 of 900 in silence reads as the complete roster — the #4688
+    // failure where members past the first page became unreachable with nothing on
+    // screen saying so.
+    expect(await screen.findByTestId('routing-rule-user-truncated')).toHaveTextContent(/900/);
+  });
+
+  it('says the roster could not be loaded rather than showing nobody', async () => {
+    const user = userEvent.setup();
+    mockListPeople.mockRejectedValue({ message: 'Service unavailable' });
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'user');
+
+    // "No matching person" during an outage reads as "this person does not exist",
+    // which sends an admin to create a user who already has an account.
+    const error = await screen.findByTestId('routing-rule-user-error');
+    expect(error).toHaveTextContent('Service unavailable');
+    expect(error).toHaveTextContent(/not a statement that the person does not exist/i);
+    expect(screen.getByTestId('routing-rule-save')).toBeDisabled();
+  });
+
+  it('applies the same picker to the effective-mapping lookup', async () => {
+    const user = userEvent.setup();
+    mockGetEffective.mockResolvedValue({
+      user_id: CASEY.id,
+      rung: 'user',
+      account_id: '111122223333',
+      destination_id: 'dest-acme',
+      destination_label: 'acme-prod',
+      source: 'platform_admin',
+      overrides_self_selection: false,
+      shadowed_rung: null,
+      shadowed_account_id: null,
+    });
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    // This field took a raw id too: an operator who cannot name a person cannot check
+    // who serves them either.
+    await pickPerson(user, 'routing-effective-user', CASEY.id);
+    await user.click(screen.getByTestId('routing-effective-lookup'));
+
+    await waitFor(() => expect(mockGetEffective).toHaveBeenCalledWith(CASEY.id));
+  });
+
+  it('will not look up or save until somebody is chosen', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    expect(screen.getByTestId('routing-effective-lookup')).toBeDisabled();
+
+    await openAddRule(user, 'user');
+    await user.selectOptions(screen.getByLabelText('Destination'), 'dest-acme');
+    expect(screen.getByTestId('routing-rule-save')).toBeDisabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Group 2 — the screen never misreports who is in force
 // ---------------------------------------------------------------------------
 
@@ -360,7 +562,7 @@ describe('the screen reports which rule is in force', () => {
     renderPanel();
     await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
 
-    await user.type(screen.getByTestId('routing-effective-input'), 'user-dana');
+    await pickPerson(user, 'routing-effective-user', DANA.id);
     await user.click(screen.getByTestId('routing-effective-lookup'));
 
     // The rung is the point, not decoration: an effective destination shown WITHOUT
@@ -387,7 +589,7 @@ describe('the screen reports which rule is in force', () => {
     renderPanel();
     await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
 
-    await user.type(screen.getByTestId('routing-effective-input'), 'user-casey');
+    await pickPerson(user, 'routing-effective-user', CASEY.id);
     await user.click(screen.getByTestId('routing-effective-lookup'));
 
     // §1.4 settled on "admin wins" AND required the UI to disclose it. Silence here
@@ -411,7 +613,7 @@ describe('the screen reports which rule is in force', () => {
     renderPanel();
     await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
 
-    await user.type(screen.getByTestId('routing-effective-input'), 'user-nobody');
+    await pickPerson(user, 'routing-effective-user', DANA.id);
     await user.click(screen.getByTestId('routing-effective-lookup'));
 
     expect(await screen.findByTestId('routing-effective-result')).toHaveTextContent(/platform account/);
@@ -423,11 +625,13 @@ describe('the screen reports which rule is in force', () => {
     renderPanel();
     await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
 
-    await user.type(screen.getByTestId('routing-effective-input'), 'not-a-user-id');
+    await pickPerson(user, 'routing-effective-user', CASEY.id);
     await user.click(screen.getByTestId('routing-effective-lookup'));
 
-    // A mistyped id that resolved to "platform" would tell an admin this person has no
-    // rule when they may well have one.
+    // A failed lookup that resolved to "platform" would tell an admin this person has
+    // no rule when they may well have one. Since #4827 the id is picker-sourced, so a
+    // refusal here is a server-side or transport failure rather than a typo — which
+    // makes rendering it as a confident answer worse, not better.
     expect(await screen.findByTestId('routing-effective-error')).toHaveTextContent('No such person.');
     expect(screen.queryByTestId('routing-effective-result')).not.toBeInTheDocument();
   });
@@ -572,7 +776,7 @@ describe('a save-time refusal', () => {
     await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
 
     await openAddRule(user, 'user');
-    await user.type(screen.getByTestId('routing-rule-user'), 'user-casey');
+    await pickPerson(user, 'routing-rule-user', CASEY.id);
     await user.selectOptions(screen.getByLabelText('Destination'), 'dest-acme');
     await user.click(screen.getByTestId('routing-rule-save'));
 

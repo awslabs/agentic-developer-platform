@@ -19,6 +19,7 @@ import {
   assignUserRole,
   removeUserRole,
   getMemberGithubUserId,
+  listPlatformUsers,
 } from '@/services/admin';
 import { AdminRole } from '@/types';
 
@@ -544,6 +545,78 @@ describe('Admin Service', () => {
       vi.mocked(apiClient.get).mockRejectedValue(new Error('Forbidden'));
 
       await expect(getMemberGithubUserId('user-operator')).rejects.toThrow('Forbidden');
+    });
+  });
+
+  // Issue #4827: the source the person-scoped admin pickers read. The routing panel used
+  // to ask an operator to type a `users.id` by hand, which nobody could produce. What
+  // matters here is the shape of the request (a *server-side* search, so the browser
+  // never pulls the whole member table) and that the canonical id survives the
+  // snake_case→camelCase hop intact.
+  describe('listPlatformUsers', () => {
+    it('camelCases the roster and keeps the canonical id', async () => {
+      vi.mocked(apiClient.get).mockResolvedValue({
+        items: [
+          {
+            id: '48270000-0000-4000-8000-00000000ca5e',
+            org_id: 'org-acme',
+            email: 'casey@acme.example',
+            name: 'Casey Ng',
+            github_username: 'caseyng',
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 50,
+        has_more: false,
+      });
+
+      const result = await listPlatformUsers({ q: 'casey' });
+
+      // Search reaches the server. A client-side filter is what pagination exists to
+      // avoid on a table that grows with every signup.
+      expect(apiClient.get).toHaveBeenCalledWith('/admin/users?q=casey&page=1&page_size=50');
+      // The id is what a routing rule is stored under (#4647), so it must pass through
+      // untouched — an email or a login here would store cleanly and govern nobody.
+      expect(result.items[0].id).toBe('48270000-0000-4000-8000-00000000ca5e');
+      expect(result.items[0].githubUsername).toBe('caseyng');
+      expect(result.items[0].orgId).toBe('org-acme');
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('keeps a null github username null rather than blanking it', async () => {
+      // An email-onboarded member has no GitHub login, permanently. Coercing that to ''
+      // would make the picker label them as though the lookup had failed.
+      vi.mocked(apiClient.get).mockResolvedValue({
+        items: [
+          {
+            id: 'user-invited',
+            org_id: 'org-acme',
+            email: 'invited@acme.example',
+            name: null,
+            github_username: null,
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 50,
+        has_more: false,
+      });
+
+      const result = await listPlatformUsers();
+
+      expect(result.items[0].githubUsername).toBeNull();
+      expect(result.items[0].name).toBeNull();
+    });
+
+    it('omits a blank search instead of filtering on the empty string', async () => {
+      vi.mocked(apiClient.get).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, has_more: false });
+
+      await listPlatformUsers({ q: '   ' });
+
+      // A cleared search box must reset to everybody. Sending `q=` (or `q=%20`) would
+      // ask the server to match whitespace and return an empty picker.
+      expect(apiClient.get).toHaveBeenCalledWith('/admin/users?page=1&page_size=50');
     });
   });
 

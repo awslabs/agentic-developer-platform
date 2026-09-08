@@ -89,6 +89,7 @@ from src.shared.schemas.admin import (
     DepartmentListResponse,
     DepartmentResponse,
     DepartmentUpdateRequest,
+    PlatformUserListResponse,
     ServiceAccountCreateRequest,
     ServiceAccountListResponse,
     ServiceAccountResponse,
@@ -1183,6 +1184,55 @@ async def get_available_roles(
         allowed = [r for r in ASSIGNABLE_ROLES if r not in PLATFORM_LEVEL_ROLES and ROLE_RANK.get(r, 0) <= ceiling]
 
     return AvailableRolesResponse(roles=allowed).model_dump()
+
+
+# =============================================================================
+# Platform-wide Member Listing (Issue #4827)
+# =============================================================================
+
+
+@router.get("/users", response_model=PlatformUserListResponse)
+async def list_platform_users(
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    q: Annotated[str | None, Query(max_length=255, description="Case-insensitive search over email, name, and GitHub username")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> PlatformUserListResponse:
+    """Every platform member, for the person-scoped admin pickers. Platform-admin only.
+
+    Issue #4827. The Bedrock-routing panel's person rung was a free-text field asking
+    for an internal ``users.id``, which no operator can produce — so the control read
+    as broken even though the server was correctly refusing wrong ids. This endpoint is
+    the missing half: the list an admin picks a real id *out of*.
+
+    **Why not an existing endpoint.** Every other member listing here is per-org
+    (``/organizations/{org_id}/users``, ``/organizations/{org_id}/cognito/users``) and
+    gated on ``ORG_READ`` for that one org. A platform admin authoring a person rule may
+    pin any user in any org, so an org-scoped picker cannot express the authority the
+    surface actually has.
+
+    **``require_platform_admin``, not ``ORG_READ``.** This is the widest read of the
+    member table in the API — a cross-tenant roster. ``ORG_READ`` would let a tenant's
+    own org_admin enumerate every other tenant's members, which is a tenant-isolation
+    break, not a picker. The check is the first statement in the body for the reason
+    ``bedrock_routing`` states: an authority check placed after any other work is one
+    refactor away from being skipped. ``test_authz.py``'s convention.
+
+    Read-only. No writes, no schema change, no cost beyond one paginated SELECT.
+    """
+    access.require_platform_admin(current_user)
+
+    users, total = await service.list_platform_users(q=q, page=page, page_size=page_size)
+
+    return PlatformUserListResponse(
+        items=users,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(page * page_size) < total,
+    )
 
 
 # =============================================================================

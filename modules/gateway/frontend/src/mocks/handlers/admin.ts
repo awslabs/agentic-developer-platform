@@ -161,6 +161,45 @@ export const adminHandlers = [
     });
   }),
 
+  // The platform-wide member picker's source — Issue #4827.
+  //
+  // Mocked because the Bedrock-routing panel's person rung is now a picker over every
+  // platform user, and in mock mode a picker with no options is indistinguishable from
+  // the raw-id field it replaced.
+  //
+  // `user-dept-admin-001` deliberately carries NO github_username, matching the
+  // identities mock below, so the "no GitHub linked" label branch is reachable here.
+  // A branch nothing can reach is a branch that rots.
+  http.get('/api/admin/users', ({ request }) => {
+    const url = new URL(request.url);
+    const q = (url.searchParams.get('q') || '').toLowerCase();
+    const page = parseInt(url.searchParams.get('page') || '1');
+    const pageSize = parseInt(url.searchParams.get('page_size') || '50');
+
+    const people = mockUsers.map((u) => ({
+      id: u.user_id,
+      org_id: u.org_id || 'org-001',
+      email: `${u.user_id}@example.com`,
+      name: u.user_id.replace('user-', 'User '),
+      github_username: u.user_id === 'user-dept-admin-001' ? null : u.user_id.replace('user-', ''),
+    }));
+
+    // Server-side search, mirroring the real endpoint's fields: a mock that ignored
+    // `q` would let a broken search box pass in mock mode.
+    const matches = q
+      ? people.filter((p) => [p.email, p.name, p.github_username].some((field) => field?.toLowerCase().includes(q)))
+      : people;
+    const start = (page - 1) * pageSize;
+
+    return HttpResponse.json({
+      items: matches.slice(start, start + pageSize),
+      total: matches.length,
+      page,
+      page_size: pageSize,
+      has_more: start + pageSize < matches.length,
+    });
+  }),
+
   // A member's linked provider identities — Issue #4687.
   //
   // Mocked because setting somebody's person limit needs their GitHub numeric id, and

@@ -541,6 +541,88 @@ export async function getOrgUsers(
   };
 }
 
+/** One row of the platform-wide member listing — Issue #4827. */
+export interface PlatformUser {
+  /**
+   * The canonical `users.id`.
+   *
+   * This is the value a person-scoped rule must be stored under: the routing
+   * resolver and the server's `require_scope_exists` both compare `scope_id_user`
+   * to this column (#4647). A picker submitting anything else — a Cognito sub, a
+   * GitHub login — authors a rule that reads back correctly and governs nobody.
+   */
+  id: string;
+  orgId: string;
+  email: string;
+  name: string | null;
+  /** The linked GitHub login, or `null` for a member with no GitHub identity. */
+  githubUsername: string | null;
+}
+
+/**
+ * Every platform member, paginated and searchable. Platform-admin only.
+ *
+ * Issue #4827. Every other member listing in this service is per-org
+ * (`getOrgUsers`, `getCognitoUsers`) because every other caller is authoring
+ * something inside one org. A platform admin authoring a person-scoped Bedrock
+ * routing rule may pin any user in any org, so an org-scoped list would hide
+ * exactly the people that authority covers — which is how the person field ended
+ * up being a UUID typed by hand.
+ *
+ * `q` is a server-side search over email, display name, and GitHub username.
+ * Callers debounce it and render one page: pulling the whole member table into the
+ * browser on mount is what this endpoint's pagination exists to avoid.
+ *
+ * The caller-side platform-admin check is an affordance, never the boundary —
+ * `require_platform_admin` gates the route server-side. A 403 here is a real
+ * refusal and must surface, not be rendered as an empty roster.
+ */
+export async function listPlatformUsers(params?: {
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<{
+  items: PlatformUser[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}> {
+  const query = buildQueryString({
+    q: params?.q?.trim() || undefined,
+    page: params?.page || 1,
+    page_size: params?.pageSize || 50,
+  });
+  const response = await apiClient.get<{
+    items: Array<{
+      id: string;
+      org_id: string;
+      email: string;
+      name: string | null;
+      github_username: string | null;
+    }>;
+    total: number;
+    page: number;
+    page_size: number;
+    has_more: boolean;
+  }>(`/admin/users${query}`);
+
+  const items = Array.isArray(response?.items) ? response.items : [];
+  return {
+    items: items.map((user) => ({
+      id: user.id,
+      orgId: user.org_id,
+      email: user.email,
+      name: user.name,
+      githubUsername: user.github_username,
+    })),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
+  };
+}
+
 /**
  * Get teams (Cognito groups) for an organization.
  *

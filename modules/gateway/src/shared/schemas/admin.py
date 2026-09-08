@@ -139,6 +139,43 @@ class UserListResponse(BaseModel):
     has_more: bool
 
 
+class PlatformUserResponse(BaseModel):
+    """One person in the platform-wide member picker (Issue #4827).
+
+    Deliberately narrower than ``UserResponse``: this feeds an admin picker for
+    person-scoped rules, so it carries what an operator needs to *recognise* somebody
+    plus the id a rule must be stored under — and nothing else. No ``cognito_sub``,
+    no ``cognito_username``, no ``role``: a platform-wide listing is the widest
+    read of the member table in the API, and the fields it does not return cannot
+    leak from it.
+
+    ``id`` is the canonical ``users.id``. That is the column the routing resolver and
+    ``bedrock_routing.service.require_scope_exists`` both compare against (#4647), so
+    a picker that submitted anything else — a Cognito sub, a GitHub login — would
+    produce a rule that stores cleanly and governs nobody.
+
+    ``github_username`` is ``None`` for a member with no linked GitHub identity, which
+    is a legitimate permanent state (email/invite onboarding), never an error. The
+    caller renders the fallback label rather than hiding the row.
+    """
+
+    id: str
+    org_id: str
+    email: str
+    name: str | None = None
+    github_username: str | None = None
+
+
+class PlatformUserListResponse(BaseModel):
+    """Response schema for the platform-wide member listing (Issue #4827)."""
+
+    items: list[PlatformUserResponse]
+    total: int
+    page: int
+    page_size: int
+    has_more: bool
+
+
 # Service Account Schemas
 class ServiceAccountCreateRequest(BaseModel):
     """Request schema for creating a service account."""

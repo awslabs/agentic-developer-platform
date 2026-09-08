@@ -53,7 +53,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Input, Modal, Select } from '@/components/ui';
 import { ConnectAwsForm } from '@/components/aws/ConnectAwsForm';
 import { useToast } from '@/contexts/ToastContext';
-import { getOrganizations, getCognitoTeams } from '@/services/admin';
+import { useDebounce } from '@/hooks/useDebounce';
+import { getOrganizations, getCognitoTeams, listPlatformUsers, type PlatformUser } from '@/services/admin';
 import {
   deleteMapping,
   getEffectiveMapping,
@@ -119,6 +120,165 @@ function rejectionMessage(err: unknown, fallback: string): string {
   if (described) return described;
   const message = (err as { message?: string })?.message;
   return message || fallback;
+}
+
+/**
+ * How a person is named in the picker — Issue #4827.
+ *
+ * The **GitHub username leads when one is linked**, because that is how operators
+ * recognise people (operator requirement, 2026-09-08). The email follows so two
+ * people with similar logins stay distinguishable, and the org is a display hint —
+ * this picker is platform-wide, so without it an operator has no way to tell two
+ * tenants' same-named members apart.
+ *
+ * A member with no GitHub identity is labelled as such rather than shown with a blank
+ * column. That state is permanent and legitimate (email/invite onboarding), and saying
+ * "no GitHub linked" out loud is what stops an operator reading a missing login as a
+ * loading failure and picking the wrong row.
+ *
+ * Never the id. The whole defect being fixed is that ids are unrecognisable — putting
+ * one back in the label would reintroduce it in a dropdown instead of an input.
+ */
+function describePerson(person: PlatformUser): string {
+  const who = person.email || person.name || person.id;
+  return person.githubUsername ? `${person.githubUsername} — ${who} (${person.orgId})` : `${who} (${person.orgId}, no GitHub linked)`;
+}
+
+/**
+ * The person picker — Issue #4827.
+ *
+ * Replaces a free-text field asking for an internal `users.id`. The server always
+ * refused a wrong id (`require_scope_exists`, a 422 naming the mistake), so nothing was
+ * ever mis-routed; what was missing was any way for an admin to produce a RIGHT id, and
+ * a control an operator cannot satisfy is indistinguishable from a broken one.
+ *
+ * **Platform-wide, not org-scoped** (operator requirement, 2026-09-08). A platform admin
+ * may pin any user in any org, so scoping the list to one org would hide exactly the
+ * people that authority covers. That is also why there is no org selector above it: the
+ * user rung's mapping row carries no org, and asking for one would imply the choice
+ * narrows the rule when it does not.
+ *
+ * **Search is server-side and debounced, with the first page preloaded.** Fetching the
+ * whole member table on mount is the failure mode the endpoint's pagination exists to
+ * prevent; a picker that silently shows only page 1 of a large platform is the other
+ * (#4688's lesson, where a single 100-row page made members #101+ un-cappable with
+ * nothing on screen saying why). Here the truncation is *stated* — see the count note —
+ * because search, not a bounded page walk, is the way through a platform-sized roster.
+ *
+ * **A load failure is surfaced, never rendered as "nobody matches".** An empty picker
+ * that means "we could not ask" reads as "this person does not exist", which sends an
+ * admin to create a user that already exists.
+ *
+ * The selected value is always the canonical `users.id` — the column the resolver and
+ * the server-side check compare against (#4647). The picker keeps the server's 422 as
+ * the real guarantee; it is a usability feature, not the control.
+ */
+function PersonPicker({
+  label,
+  namePrefix,
+  value,
+  onChange,
+  helperText,
+}: {
+  label: string;
+  namePrefix: string;
+  value: string;
+  onChange: (userId: string) => void;
+  helperText?: string;
+}) {
+  const [search, setSearch] = useState('');
+  const [people, setPeople] = useState<PlatformUser[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const debouncedSearch = useDebounce(search, 300);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    listPlatformUsers({ q: debouncedSearch, pageSize: 50 })
+      .then((res) => {
+        if (cancelled) return;
+        setPeople(res.items);
+        setTotal(res.total);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setPeople([]);
+        setTotal(0);
+        setError(rejectionMessage(err, 'The list of people could not be loaded.'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedSearch]);
+
+  /**
+   * The chosen person, remembered so a later search cannot drop them off the list.
+   *
+   * Without this, typing a narrower search after choosing somebody removes the
+   * selection from the `<select>`: the browser reports an empty value, the save button
+   * disables itself, and nothing on screen says why. Held as the person rather than
+   * re-derived from `people`, because the whole point is that they may no longer be in
+   * it. Cleared when `value` is cleared, so a re-opened modal starts empty.
+   */
+  const [chosen, setChosen] = useState<PlatformUser | null>(null);
+  useEffect(() => {
+    if (!value) setChosen(null);
+  }, [value]);
+
+  const options = useMemo(() => {
+    const rows = chosen && !people.some((p) => p.id === chosen.id) ? [chosen, ...people] : people;
+    return rows.map((p) => ({ value: p.id, label: describePerson(p) }));
+  }, [people, chosen]);
+
+  return (
+    <div className="space-y-2">
+      <Input
+        label={`Find ${label.toLowerCase()}`}
+        name={`${namePrefix}-search`}
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search by GitHub username, name, or email"
+        data-testid={`${namePrefix}-search`}
+      />
+
+      <Select
+        label={label}
+        name={namePrefix}
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setChosen(people.find((p) => p.id === e.target.value) ?? null);
+        }}
+        placeholder={loading ? 'Loading people…' : options.length ? 'Select a person' : 'No matching person'}
+        disabled={!options.length}
+        options={options}
+        data-testid={namePrefix}
+        helperText={helperText}
+      />
+
+      {error && (
+        // Stated rather than shown as an empty list: "we could not ask" must never
+        // read as "no such person", which is what gets a duplicate user created.
+        <p className="text-xs text-red-700 dark:text-red-400" data-testid={`${namePrefix}-error`}>
+          {error} This is not a statement that the person does not exist.
+        </p>
+      )}
+
+      {!error && total > options.length && (
+        // The cap is disclosed, not silent. A picker that shows 50 of 900 and says
+        // nothing is read as the complete roster.
+        <p className="text-xs text-gray-500 dark:text-gray-400" data-testid={`${namePrefix}-truncated`}>
+          Showing {options.length} of {total} people. Narrow the search to find someone who is not listed.
+        </p>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -242,15 +402,16 @@ function AddRuleModal({
     user: scopeType === 'user' ? userId : undefined,
   };
 
-  const ready =
-    !!destinationId &&
-    ((scopeType === 'org' && !!orgId) || (scopeType === 'team' && !!orgId && !!teamId) || (scopeType === 'user' && !!userId.trim()));
+  // No `.trim()` on the user id any more: since #4827 it is a canonical id chosen from
+  // a server-sourced list, not something an operator typed, so there is no whitespace
+  // to defend against and trimming would only hide a real id-shape bug.
+  const ready = !!destinationId && ((scopeType === 'org' && !!orgId) || (scopeType === 'team' && !!orgId && !!teamId) || (scopeType === 'user' && !!userId));
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
     try {
-      await setMapping({ ...scope, user: scope.user?.trim() }, destinationId);
+      await setMapping(scope, destinationId);
       onSaved(
         scopeType === 'user'
           ? 'Routing rule saved. This overrides whatever the person selected on their own credentials page.'
@@ -319,13 +480,12 @@ function AddRuleModal({
         )}
 
         {scopeType === 'user' && (
-          <Input
+          <PersonPicker
             label="Person"
-            name="routing-rule-user"
+            namePrefix="routing-rule-user"
             value={userId}
-            onChange={(e) => setUserId(e.target.value)}
-            data-testid="routing-rule-user"
-            helperText="The platform user id. An admin rule here takes precedence over the person's own selection."
+            onChange={setUserId}
+            helperText="An admin rule here takes precedence over the person's own selection."
           />
         )}
 
@@ -542,7 +702,7 @@ function EffectiveLookup() {
     setError(null);
     setResult(null);
     try {
-      setResult(await getEffectiveMapping(userId.trim()));
+      setResult(await getEffectiveMapping(userId));
     } catch (err: unknown) {
       setError(rejectionMessage(err, 'Could not look that person up.'));
     } finally {
@@ -553,21 +713,17 @@ function EffectiveLookup() {
   return (
     <div className="mt-4 border-t border-gray-100 dark:border-gray-800 pt-4">
       <div className="max-w-md">
-        <Input
-          label="Check who serves a person"
-          name="routing-effective-user"
-          value={userId}
-          onChange={(e) => setUserId(e.target.value)}
-          data-testid="routing-effective-input"
-          helperText="The platform user id."
-        />
+        {/* The same picker as the rule form, for the same reason (#4827): this field
+            took a raw `users.id` too, and an operator who cannot name a person cannot
+            check who serves them either. */}
+        <PersonPicker label="Check who serves a person" namePrefix="routing-effective-user" value={userId} onChange={setUserId} />
       </div>
       <Button
         variant="secondary"
         size="sm"
         className="mt-2"
         onClick={handleLookup}
-        disabled={loading || !userId.trim()}
+        disabled={loading || !userId}
         data-testid="routing-effective-lookup"
       >
         {loading ? 'Looking up…' : 'Look up'}

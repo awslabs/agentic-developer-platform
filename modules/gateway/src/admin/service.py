@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.cognito_claims import sync_cognito_role_claims
@@ -39,10 +39,12 @@ from src.shared.models.budget import BudgetConfig, BudgetUsage
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Department, Organization, ServiceAccount, Team, User
 from src.shared.models.usage import BedrockPoolAccount, RateLimitConfig
+from src.shared.models.vault import UserIdentity
 from src.shared.schemas.admin import (
     DepartmentCreateRequest,
     DepartmentResponse,
     DepartmentUpdateRequest,
+    PlatformUserResponse,
     ServiceAccountCreateRequest,
     ServiceAccountResponse,
     TeamCreateRequest,
@@ -1392,6 +1394,98 @@ class AdminService:
                     updated_at=user.updated_at,
                 )
                 for user in users
+            ],
+            total,
+        )
+
+    async def list_platform_users(
+        self,
+        q: str | None = None,
+        page: int = 1,
+        page_size: int | None = None,
+    ) -> tuple[list[PlatformUserResponse], int]:
+        """Every member of the platform, paginated and searchable (Issue #4827).
+
+        Exists because every other member listing in this API is per-org
+        (``list_users_org``, ``list_cognito_users``) while a platform admin authoring a
+        person-scoped rule may legitimately name **any** user in **any** org. Scoping
+        this to the caller's own org would hide exactly the targets that authority
+        covers, and the operator would be back to typing a UUID they cannot know.
+
+        The route is what restricts this to platform admins. This method assumes that
+        check already ran — it applies no tenant filter of its own, by design.
+
+        **No filtering by kind.** Shadow and bot rows are listed alongside humans
+        because ``bedrock_routing.service.require_scope_exists`` accepts any ``users``
+        row, and a picker that omitted rows the server accepts would recreate the very
+        gap this issue closes — a valid target with no way to select it.
+
+        ``github_username`` comes from ``user_identities``, the same table
+        ``getMemberGithubUserId`` reads (#4687): it is the bridge that is actually
+        populated for GitHub-onboarded members, whereas ``users.cognito_username`` is
+        only written on the admin-invite path. Read as a **correlated scalar subquery**
+        rather than a LEFT JOIN on purpose: the unique index on ``user_identities`` is
+        per (provider, provider_user_id, org_id), so one user *can* carry two GitHub
+        rows, and a join would emit that person twice — inflating ``total``, shifting
+        every page boundary, and offering the same option twice in the picker.
+
+        Args:
+            q: Case-insensitive substring match over email, display name, and GitHub
+                username. Omitted/blank returns the unfiltered first page.
+            page: Page number (1-indexed).
+            page_size: Items per page, capped at the admin config maximum.
+
+        Returns:
+            Tuple of (list of members, total matching count).
+        """
+        if page_size is None:
+            page_size = self.config.default_page_size
+
+        page_size = min(page_size, self.config.max_page_size)
+        offset = (page - 1) * page_size
+
+        github_username = (
+            select(UserIdentity.provider_username)
+            .where(
+                UserIdentity.user_id == User.id,
+                func.lower(UserIdentity.provider) == "github",
+            )
+            .order_by(UserIdentity.created_at)
+            .limit(1)
+            .correlate(User)
+            .scalar_subquery()
+        )
+
+        filters = []
+        if q and q.strip():
+            pattern = f"%{q.strip()}%"
+            filters.append(
+                or_(
+                    User.email.ilike(pattern),
+                    User.name.ilike(pattern),
+                    github_username.ilike(pattern),
+                )
+            )
+
+        count_query = select(func.count()).select_from(User).where(*filters)
+        total = (await self.db.execute(count_query)).scalar_one()
+
+        # Ordered by email — a stable, total ordering. Without one, two requests for
+        # the same page can return different rows and a member becomes unreachable
+        # through the picker without anything on screen saying so.
+        query = select(User, github_username.label("github_username")).where(*filters).order_by(User.email).offset(offset).limit(page_size)
+        rows = (await self.db.execute(query)).all()
+
+        return (
+            [
+                PlatformUserResponse(
+                    id=user.id,
+                    org_id=user.org_id,
+                    email=user.email,
+                    name=user.name,
+                    github_username=linked_username,
+                )
+                for user, linked_username in rows
             ],
             total,
         )
