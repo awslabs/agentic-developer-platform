@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { apiClient } from '@/services/api';
+import * as authService from '@/services/auth';
 import {
   generatePKCEChallenge,
   storePKCEVerifier,
@@ -508,3 +509,19 @@ function createMockIdToken(payload: Partial<CognitoIdTokenPayload>): string {
   const base64Payload = btoa(JSON.stringify(fullPayload));
   return `header.${base64Payload}.signature`;
 }
+
+
+describe('post-login redirect (deep-link preservation)', () => {
+  it('round-trips an internal path and clears on read (single-use)', () => {
+    authService.storePostLoginRedirect('/cli-auth?code=ABCD-2345');
+    expect(authService.consumePostLoginRedirect()).toBe('/cli-auth?code=ABCD-2345');
+    expect(authService.consumePostLoginRedirect()).toBeNull();
+  });
+
+  it('rejects non-internal destinations (open-redirect guard)', () => {
+    for (const bad of ['https://evil.example', '//evil.example/x', 'javascript:alert(1)', '']) {
+      authService.storePostLoginRedirect(bad);
+      expect(authService.consumePostLoginRedirect()).toBeNull();
+    }
+  });
+});

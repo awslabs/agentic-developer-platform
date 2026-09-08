@@ -218,6 +218,32 @@ function generateBrokerState(): string {
     .join('');
 }
 
+const POST_LOGIN_REDIRECT_KEY = 'post_login_redirect';
+
+/**
+ * Remember where an unauthenticated user was headed, across the external
+ * OAuth round-trip (GitHub broker or Cognito hosted UI both leave the SPA
+ * entirely, so router state does not survive). Deep links like the CLI
+ * approval page (/cli-auth?code=...) land here via ProtectedRoute → Login.
+ */
+export function storePostLoginRedirect(path: string): void {
+  sessionStorage.setItem(POST_LOGIN_REDIRECT_KEY, path);
+}
+
+/**
+ * Retrieve and clear the stored destination. Single-use, and validated to be
+ * an internal path ("/x..." but not "//host") so a crafted value can never
+ * turn the login flow into an open redirect.
+ */
+export function consumePostLoginRedirect(): string | null {
+  const path = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
+  sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
+  if (!path || !path.startsWith('/') || path.startsWith('//')) {
+    return null;
+  }
+  return path;
+}
+
 /**
  * Store the broker login nonce for the callback (Issue #4133)
  */

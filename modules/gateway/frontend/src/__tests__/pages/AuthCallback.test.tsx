@@ -32,6 +32,7 @@ vi.mock('@/services/auth', () => ({
   parseIdTokenForUser: vi.fn(),
   getBrokerState: vi.fn(),
   exchangeBrokerCode: vi.fn(),
+  consumePostLoginRedirect: vi.fn(),
 }));
 
 import * as authService from '@/services/auth';
@@ -85,6 +86,19 @@ describe('AuthCallback — GitHub broker handoff (#4133)', () => {
         isLoading: false,
       });
       expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true });
+    });
+
+    it('returns to the stored deep link instead of the dashboard', async () => {
+      // The user was headed somewhere specific (e.g. the CLI approval page
+      // opened by `login --web`) when ProtectedRoute bounced them to /login.
+      vi.mocked(authService.getBrokerState).mockReturnValue('nonce-abc');
+      vi.mocked(authService.consumePostLoginRedirect).mockReturnValueOnce('/cli-auth?code=ABCD-2345');
+
+      renderAt('?source=github_broker&code=the-code&state=nonce-abc');
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith('/cli-auth?code=ABCD-2345', { replace: true });
+      });
     });
 
     it('scrubs the code out of the address bar after storing tokens', async () => {

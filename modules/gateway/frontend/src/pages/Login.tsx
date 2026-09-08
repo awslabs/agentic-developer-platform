@@ -7,10 +7,12 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   buildLoginUrl,
   buildGitHubLoginUrl,
   fetchLoginOptions,
+  storePostLoginRedirect,
 } from '@/services/auth';
 import { isCognitoConfigured } from '@/config/cognito';
 import { Spinner } from '@/components/ui/Spinner';
@@ -18,6 +20,7 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 
 export default function Login() {
+  const location = useLocation();
   const [error, setError] = useState<string | null>(null);
   const [isRedirecting, setIsRedirecting] = useState(false);
   // Issue #2746: null = still loading (render enabled, no disabled-flash);
@@ -30,6 +33,18 @@ export default function Login() {
   // redirect_uri_mismatch is the ONLY observable signal that the GitHub App's
   // callback URL has drifted (GitHub exposes no API to read it), so it gets a
   // specific, actionable message instead of a generic failure.
+  // Deep-link preservation: ProtectedRoute sends us the page the user was
+  // trying to reach (e.g. /cli-auth?code=... from `login --web`). Both sign-in
+  // paths leave the SPA for an external provider, so persist it in
+  // sessionStorage for AuthCallback to restore — router state does not survive
+  // the round-trip.
+  useEffect(() => {
+    const from = (location.state as { from?: { pathname?: string; search?: string } } | null)?.from;
+    if (from?.pathname && from.pathname !== '/') {
+      storePostLoginRedirect(`${from.pathname}${from.search ?? ''}`);
+    }
+  }, [location.state]);
+
   useEffect(() => {
     const brokerError = new URLSearchParams(window.location.search).get('error');
     if (!brokerError) return;
