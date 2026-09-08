@@ -4,8 +4,8 @@ Device-authorization-style flow: `bg-cognito-auth.sh login --web` creates a
 pending row, the signed-in browser user approves it on /cli-auth, and the CLI
 redeems it (single-use) to receive tokens minted on the CLI app client.
 
-Revision ID: 028_cli_auth_requests
-Revises: 027_install_tenant_unique
+Revision ID: 038_cli_auth_requests
+Revises: 037_bedrock_account_routing
 Create Date: 2026-09-08
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "028_cli_auth_requests"
-down_revision: str | None = "027_install_tenant_unique"
+revision: str = "038_cli_auth_requests"
+down_revision: str | None = "037_bedrock_account_routing"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

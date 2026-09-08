@@ -283,8 +283,12 @@ resource "aws_cognito_user_pool_client" "cli" {
   name         = "${var.name_prefix}-cli-client"
   user_pool_id = aws_cognito_user_pool.main.id
 
+  # ALLOW_REFRESH_TOKEN_AUTH is deliberately ABSENT: with refresh token
+  # rotation enabled, Cognito rejects it as an explicit flow
+  # ("ALLOW_REFRESH_TOKEN_AUTH is not a permitted ExplicitAuthFlow when
+  # refresh token rotation is enabled") — refresh-token auth is implicit on a
+  # rotation-enabled client.
   explicit_auth_flows = [
-    "ALLOW_REFRESH_TOKEN_AUTH",
     "ALLOW_ADMIN_USER_PASSWORD_AUTH"
   ]
 
