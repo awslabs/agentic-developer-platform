@@ -12,6 +12,7 @@ from src.shared.models.bedrock_routing import (
     BedrockDestinationRegistry,
 )
 from src.shared.models.budget import BudgetConfig, BudgetUsage, PersonBudgetConfig
+from src.shared.models.cli_auth import CliAuthRequest
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import (
     Department,
@@ -38,6 +39,7 @@ from src.shared.models.vault import (
 )
 
 __all__ = [
+    "CliAuthRequest",
     "ActionProvenance",
     "Base",
     "TenantMixin",

@@ -121,6 +121,7 @@ include = ["src*"]
 # N802: BaseHTTPRequestHandler dispatches on do_GET/do_POST/... — the mixedCase
 # names are the stdlib's contract, not ours (Issue #4154 mock upstream gateway).
 "tests/cli/test_bg_cognito_auth_serve.py" = ["N802"]
+"tests/cli/test_bg_cognito_auth_login_web.py" = ["N802"]
 # E402: pytestmark must appear before project imports for pytest collection;
 # this is a deliberate pattern across all e2e test files.
 "tests/e2e/test_*.py" = ["E402"]

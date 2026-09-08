@@ -267,6 +267,65 @@ resource "aws_cognito_user_pool_client" "main" {
   ]
 }
 
+# CLI app client — web CLI login (bg-cognito-auth.sh login --web).
+#
+# A separate client because refresh-token validity is per-client: the SPA
+# keeps its long browser sessions on `main`, while the credential that lands
+# on a laptop's disk is short-lived (default 24 h) and ROTATED — every
+# background refresh invalidates the previous refresh token, so a stolen copy
+# dies the next time the legitimate machine refreshes.
+#
+# No user-facing auth flows: tokens on this client are minted exclusively
+# server-side by the gateway's /auth/cli endpoints via ADMIN_USER_PASSWORD_AUTH
+# (same mechanism the github-auth-broker uses), then kept fresh by the CLI via
+# REFRESH_TOKEN_AUTH. No OAuth flows, no callback URLs, no hosted UI.
+resource "aws_cognito_user_pool_client" "cli" {
+  name         = "${var.name_prefix}-cli-client"
+  user_pool_id = aws_cognito_user_pool.main.id
+
+  explicit_auth_flows = [
+    "ALLOW_REFRESH_TOKEN_AUTH",
+    "ALLOW_ADMIN_USER_PASSWORD_AUTH"
+  ]
+
+  generate_secret = false
+
+  access_token_validity  = var.access_token_validity
+  refresh_token_validity = var.cli_refresh_token_validity
+  id_token_validity      = var.id_token_validity
+
+  token_validity_units {
+    access_token  = "minutes"
+    refresh_token = "minutes"
+    id_token      = "minutes"
+  }
+
+  # Rotation: each REFRESH_TOKEN_AUTH returns a new refresh token and revokes
+  # the old one after a short grace window (network-retry tolerance). The CLI
+  # helper already persists a newly returned refresh token.
+  refresh_token_rotation {
+    feature                    = "ENABLED"
+    retry_grace_period_seconds = 60
+  }
+
+  enable_token_revocation = true
+
+  # Same read set as the SPA client; same deliberately-minimal write set (see
+  # the privilege-escalation comment on `main` above — it applies verbatim).
+  read_attributes = [
+    "email",
+    "name",
+    "custom:org_id",
+    "custom:department_id",
+    "custom:team_id",
+    "custom:role"
+  ]
+  write_attributes = [
+    "email",
+    "name"
+  ]
+}
+
 # User Pool Domain (Cognito-hosted or custom)
 resource "aws_cognito_user_pool_domain" "main" {
   # Cognito domains are globally unique across all AWS accounts. Appending an

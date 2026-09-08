@@ -22,6 +22,7 @@ import {
   buildAnthropicSettings,
   buildBedrockSettings,
   buildCodexConfigToml,
+  buildInstallCommand,
   CODEX_PROXY_PORT,
 } from '@/components/setup/SetupInstructions';
 import * as auth from '@/services/auth';
@@ -182,43 +183,82 @@ describe('SetupInstructions', () => {
     expect(document.body.textContent ?? '').toContain('Log Viewer');
   });
 
-  // --- Structure (Issue #4159) ----------------------------------------------
-  it('renders the three sections in order: connect, set up your tool, verify', () => {
+  // --- Structure: two self-contained tabs -------------------------------------
+  it('renders two sections in order: set up your CLI, verify', () => {
     render(<SetupInstructions />);
 
     const headings = screen
       .getAllByRole('heading', { level: 2 })
       .map((h) => h.textContent?.trim());
 
-    expect(headings).toEqual([
-      'Connect your machine',
-      'Download Helper Scripts',
-      'Set up your tool',
-      'Verify',
-    ]);
+    // 'Download Helper Scripts' renders inside the install step's collapsed
+    // browser-download fallback, between the two section headings.
+    expect(headings).toEqual(['Set up your CLI', 'Download Helper Scripts', 'Verify']);
   });
 
-  it('renders the download cards before the tabbed instructions', () => {
-    // The whole point of the reorder: step 2 says "from the Downloads section
-    // above", so the downloads must precede the tabs in the DOM.
+  it('installs via curl from this gateway — no browser download, no ~/Downloads mv', async () => {
+    // The old flow's install step moved files from ~/Downloads, and the Codex
+    // tab then re-moved a file an earlier step had already moved (which failed).
     render(<SetupInstructions />);
+    expect(document.body.textContent ?? '').toContain(
+      `curl -fsSL ${STUB_ORIGIN}/api/cli/bg-cognito-auth.sh -o ~/bin/bg-cognito-auth.sh`
+    );
+    expect(document.body.textContent ?? '').not.toContain('~/Downloads');
 
-    const downloads = screen.getByRole('heading', { name: 'Download Helper Scripts' });
-    const tabs = screen.getByRole('tablist');
-
-    expect(downloads.compareDocumentPosition(tabs)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    await openCodexTab();
+    expect(document.body.textContent ?? '').toContain(
+      `curl -fsSL ${STUB_ORIGIN}/api/cli/bg-gateway-proxy.py -o ~/bin/bg-gateway-proxy.py`
+    );
+    expect(document.body.textContent ?? '').not.toContain('~/Downloads');
   });
 
-  it('never tells the user to look for the downloads below', () => {
+  it('keeps the browser-download cards available as a fallback', () => {
     render(<SetupInstructions />);
-
-    expect(document.body.textContent ?? '').not.toContain('Downloads section below');
+    expect(screen.getByRole('heading', { name: 'Download Helper Scripts' })).toBeInTheDocument();
   });
 
-  it('renders the Connect CLI panel inside the common section', () => {
+  it('signs in with login --web on both tabs — no token is displayed or pasted', async () => {
     render(<SetupInstructions />);
+    const loginCommand = `~/bin/bg-cognito-auth.sh login --web --gateway-url ${STUB_ORIGIN}/api`;
 
-    expect(screen.getByRole('heading', { name: 'Connect CLI' })).toBeInTheDocument();
+    expect(document.body.textContent ?? '').toContain(loginCommand);
+
+    await openCodexTab();
+    expect(document.body.textContent ?? '').toContain(loginCommand);
+  });
+
+  it('keeps the paste-a-token panel only as the headless fallback', () => {
+    render(<SetupInstructions />);
+    const text = document.body.textContent ?? '';
+
+    // Present (inside the collapsed headless-machine details)…
+    expect(text).toContain('headless machine');
+    expect(text).toContain('import');
+    // …and never as an unconditional numbered step.
+    expect(screen.queryByRole('heading', { name: /^Connect the CLI$/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps each tab self-contained — no cross-tool prerequisites', async () => {
+    render(<SetupInstructions />);
+    // Claude Code tab: no proxy machinery, no python3 requirement.
+    expect(document.body.textContent ?? '').not.toContain('bg-gateway-proxy.py');
+    expect(document.body.textContent ?? '').not.toContain('python3');
+
+    await openCodexTab();
+    // Codex tab: no Claude Code install instruction.
+    expect(document.body.textContent ?? '').not.toContain('@anthropic-ai/claude-code');
+    expect(document.body.textContent ?? '').not.toContain('settings.json');
+  });
+
+  it('never references content by page position (above/below)', async () => {
+    render(<SetupInstructions />);
+    for (const needle of ['section above', 'section below', 'Downloads section']) {
+      expect(document.body.textContent ?? '').not.toContain(needle);
+    }
+    await openCodexTab();
+    for (const needle of ['section above', 'section below', 'Downloads section']) {
+      expect(document.body.textContent ?? '').not.toContain(needle);
+    }
   });
 
   it('defaults to the Claude Code tab', () => {
@@ -247,20 +287,32 @@ describe('SetupInstructions', () => {
     expect(document.body.textContent ?? '').not.toContain('~/.codex/config.toml');
   });
 
-  it('numbers each tool tab as a continuation of the common steps', async () => {
-    // Common section is 1-3; the active tab picks up at 4, so a user reads one
-    // unbroken sequence for their tool rather than restarting at 1.
+  it('numbers each tab from 1 — a tab is one complete flow', async () => {
     render(<SetupInstructions />);
 
-    // Claude Code: two steps → 4, 5.
+    // Claude Code: five steps → 1..5, nothing beyond.
     expect(screen.getByText('1')).toBeInTheDocument();
     expect(screen.getByText('5')).toBeInTheDocument();
     expect(screen.queryByText('6')).not.toBeInTheDocument();
 
-    // Codex: three steps → 4, 5, 6.
+    // Codex: five steps → 1..5, nothing beyond.
     await openCodexTab();
-    expect(screen.getByText('6')).toBeInTheDocument();
-    expect(screen.queryByText('7')).not.toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
+    expect(screen.queryByText('6')).not.toBeInTheDocument();
+  });
+});
+
+describe('buildInstallCommand', () => {
+  it('fetches each file from the gateway into ~/bin and marks the helper executable', () => {
+    expect(buildInstallCommand('https://x/api', ['bg-cognito-auth.sh', 'bg-gateway-proxy.py'])).toBe(
+      [
+        'mkdir -p ~/bin',
+        'curl -fsSL https://x/api/cli/bg-cognito-auth.sh -o ~/bin/bg-cognito-auth.sh',
+        'curl -fsSL https://x/api/cli/bg-gateway-proxy.py -o ~/bin/bg-gateway-proxy.py',
+        'chmod +x ~/bin/bg-cognito-auth.sh',
+      ].join('\n')
+    );
   });
 });
 

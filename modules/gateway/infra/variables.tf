@@ -190,6 +190,12 @@ variable "cognito_refresh_token_validity" {
   default     = 43200
 }
 
+variable "cognito_cli_refresh_token_validity" {
+  type        = number
+  description = "Refresh token validity in minutes for the CLI app client (default: 1440 = 24 hours). Short by design — this is the credential that sits on developer laptops."
+  default     = 1440
+}
+
 variable "cognito_id_token_validity" {
   type        = number
   description = "ID token validity in minutes (default: 60 = 1 hour)"

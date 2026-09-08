@@ -739,6 +739,146 @@ cmd_import() {
 }
 
 # Refresh command
+# Web sign-in: device-authorization-style flow against the gateway's /auth/cli
+# endpoints. No credential is ever displayed or pasted — the browser approves,
+# the CLI polls, tokens arrive minted on the CLI-specific app client (short
+# refresh validity + rotation). This is the primary path for GitHub sign-ins;
+# `import` remains the fallback for headless machines, and `login` (password)
+# for native Cognito users.
+cmd_login_web() {
+    local gateway_url=""
+    local no_browser=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --web)
+                shift # the flag that routed us here
+                ;;
+            --gateway-url)
+                gateway_url="$2"
+                shift 2
+                ;;
+            --no-browser)
+                no_browser=1
+                shift
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    # Fall back to the stored gateway_url so re-login is just `login --web`.
+    if [ -z "${gateway_url}" ] && [ -f "${CONFIG_FILE}" ]; then
+        gateway_url=$(jq -r '.gateway_url // empty' "${CONFIG_FILE}")
+    fi
+    if [ -z "${gateway_url}" ]; then
+        print_error "Gateway URL is required (--gateway-url)"
+        exit 1
+    fi
+    gateway_url="${gateway_url%/}"
+
+    print_info "Starting web sign-in with ${gateway_url}..."
+    local start_response
+    start_response=$(curl -sf -X POST "${gateway_url}/auth/cli/start" \
+        -H "Content-Type: application/json" -d '{}' 2>/dev/null) || {
+        print_error "Could not start a web sign-in. Is the gateway reachable, and does it support web CLI login?"
+        print_info "Fallback: use 'import' (paste a refresh token from Settings) or 'login' (Cognito password)."
+        exit 1
+    }
+
+    local user_code device_code verification_path expires_in interval
+    user_code=$(echo "${start_response}" | jq -r '.user_code // empty')
+    device_code=$(echo "${start_response}" | jq -r '.device_code // empty')
+    verification_path=$(echo "${start_response}" | jq -r '.verification_path // empty')
+    expires_in=$(echo "${start_response}" | jq -r '.expires_in // 600')
+    interval=$(echo "${start_response}" | jq -r '.interval // 3')
+    if [ -z "${user_code}" ] || [ -z "${device_code}" ]; then
+        print_error "Gateway returned an unexpected response to /auth/cli/start."
+        exit 1
+    fi
+
+    # The dashboard shares the gateway origin; strip the API base path.
+    local verify_url="${gateway_url%/api}${verification_path}"
+
+    echo ""
+    echo "  Confirm this code in your browser:  ${user_code}"
+    echo "  ${verify_url}"
+    echo ""
+
+    if [ "${no_browser}" -eq 0 ]; then
+        if command -v open &> /dev/null; then
+            open "${verify_url}" 2>/dev/null || true
+        elif command -v xdg-open &> /dev/null; then
+            xdg-open "${verify_url}" 2>/dev/null || true
+        fi
+    fi
+    print_info "Waiting for approval (Ctrl-C to cancel)..."
+
+    local deadline=$(($(date +%s) + expires_in))
+    local consecutive_failures=0
+    while [ "$(date +%s)" -lt "${deadline}" ]; do
+        # device_code goes via stdin, not argv — argv is visible in `ps`.
+        local response http_code body
+        response=$(printf '{"device_code":"%s"}' "${device_code}" | curl -s -w '\n%{http_code}' \
+            -X POST "${gateway_url}/auth/cli/token" \
+            -H "Content-Type: application/json" --data @- 2>/dev/null) || response=$'\n000'
+        http_code="${response##*$'\n'}"
+        body="${response%$'\n'*}"
+
+        case "${http_code}" in
+            200)
+                local access_token id_token refresh_token token_expires_in client_id user_pool_id region
+                access_token=$(echo "${body}" | jq -r '.access_token // empty')
+                id_token=$(echo "${body}" | jq -r '.id_token // empty')
+                refresh_token=$(echo "${body}" | jq -r '.refresh_token // empty')
+                token_expires_in=$(echo "${body}" | jq -r '.expires_in // 3600')
+                client_id=$(echo "${body}" | jq -r '.client_id // empty')
+                user_pool_id=$(echo "${body}" | jq -r '.user_pool_id // empty')
+                region=$(echo "${body}" | jq -r '.region // "us-east-1"')
+                if [ -z "${access_token}" ] || [ -z "${refresh_token}" ] || [ -z "${client_id}" ]; then
+                    print_error "Gateway returned an incomplete token response."
+                    exit 1
+                fi
+                # client_id comes from the RESPONSE (the CLI app client), not
+                # from discovery — discovery advertises the SPA client, whose
+                # refresh tokens have a different lifetime and no rotation.
+                save_config "${gateway_url}" "${user_pool_id}" "${client_id}" "" "${region}"
+                save_tokens "${id_token}" "${access_token}" "${refresh_token}" "${token_expires_in}"
+                print_success "Signed in. Tokens saved to ${CONFIG_DIR}/ — refresh is automatic from here."
+                return 0
+                ;;
+            202)
+                consecutive_failures=0
+                sleep "${interval}"
+                ;;
+            403)
+                print_error "The sign-in was denied in the browser."
+                exit 1
+                ;;
+            410)
+                print_error "The sign-in request expired or was already used. Run 'login --web' again."
+                exit 1
+                ;;
+            *)
+                # Transient (network blip, pod restart, mint retry). Give up
+                # only after several in a row.
+                consecutive_failures=$((consecutive_failures + 1))
+                if [ "${consecutive_failures}" -ge 5 ]; then
+                    print_error "Gateway kept failing while polling (last HTTP ${http_code}). Try again."
+                    exit 1
+                fi
+                sleep "${interval}"
+                ;;
+        esac
+    done
+
+    print_error "Timed out waiting for browser approval. Run 'login --web' again."
+    exit 1
+}
+
 cmd_refresh() {
     if ! refresh_tokens; then
         exit 1
@@ -968,6 +1108,7 @@ Usage:
 
 Commands:
     login       Authenticate with Cognito and obtain AWS credentials
+    login --web Sign in via the browser — approve once, no password, no copy-paste
     import      Seed the token store from a browser-login refresh token (no password)
     refresh     Refresh tokens and AWS credentials
     logout      Remove stored tokens and credentials
@@ -981,6 +1122,10 @@ Login Options:
     --client-id <id>          Cognito Client ID
     --identity-pool-id <id>   Cognito Identity Pool ID
     --region <region>         AWS region (default: us-east-1)
+
+Web Login Options (login --web):
+    --gateway-url <url>       Gateway URL (falls back to the stored one on re-login)
+    --no-browser              Print the approval URL instead of opening a browser
 
 Import Options (Issue #4145):
     --gateway-url <url>       Gateway URL (required)
@@ -1050,7 +1195,13 @@ main() {
 
     case "${command}" in
         login)
-            cmd_login "$@"
+            # `login --web` is the browser-approval flow (no password, no
+            # copy-paste); bare `login` remains the Cognito-password flow.
+            if [[ " $* " == *" --web "* ]]; then
+                cmd_login_web "$@"
+            else
+                cmd_login "$@"
+            fi
             ;;
         import)
             cmd_import "$@"

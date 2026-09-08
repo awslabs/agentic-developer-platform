@@ -85,17 +85,19 @@ describe('ClaudeSetup', () => {
     expect(screen.getByTestId('import-command')).toBeInTheDocument();
   });
 
-  it('renders the setup sections and the download list', () => {
+  it('renders the setup sections and the download fallback', async () => {
     render(<ClaudeSetup />);
 
-    expect(screen.getByRole('heading', { name: 'Connect your machine' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Set up your tool' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Set up your CLI' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Verify' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Download Helper Scripts' })).toBeInTheDocument();
-    // Two cards: the auth helper, plus the Codex `serve` proxy (Issue #4156).
-    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(2);
-    // Named in more than one place (instructions + download card) — that's fine.
+    // Each tab's download fallback lists only its own files: Claude Code needs
+    // one, Codex needs two (helper + `serve` proxy, Issue #4156).
+    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(1);
     expect(screen.getAllByText('bg-cognito-auth.sh').length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Codex' }));
+    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(2);
     expect(screen.getAllByText('bg-gateway-proxy.py').length).toBeGreaterThan(0);
   });
 

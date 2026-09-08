@@ -237,6 +237,20 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
           "cognito-idp:AdminUpdateUserAttributes"
         ]
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
+      },
+      {
+        # Web CLI login (/auth/cli): mints tokens on the CLI app client the
+        # same way the github-auth-broker does — fresh random permanent
+        # password + admin auth. Only invoked after the signed-in browser
+        # user approves, and only for broker-provisioned GitHub_* users
+        # (who never hold a real password). Scoped to this pool only.
+        Sid    = "CognitoCliLoginMint"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminInitiateAuth"
+        ]
+        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
       }
     ]
   })
@@ -657,6 +671,8 @@ module "cognito" {
   access_token_validity  = var.cognito_access_token_validity
   refresh_token_validity = var.cognito_refresh_token_validity
   id_token_validity      = var.cognito_id_token_validity
+  # Web CLI login: short-lived, rotated refresh tokens for the CLI app client
+  cli_refresh_token_validity = var.cognito_cli_refresh_token_validity
 
   # Issue #60: Provision test users (admins group, test user, test admin)
   create_test_users = var.create_test_users
@@ -1372,6 +1388,15 @@ resource "aws_ssm_parameter" "cognito_client_id" {
   description = "Cognito User Pool Client ID for frontend auth"
   type        = "String"
   value       = module.cognito.cognito_user_pool_client_id
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "cognito_cli_client_id" {
+  name        = "/adp/${var.environment}/gateway/cognito-cli-client-id"
+  description = "Cognito app client ID for web CLI login (BG_COGNITO_CLI_CLIENT_ID)"
+  type        = "String"
+  value       = module.cognito.cli_client_id
 
   tags = local.common_tags
 }

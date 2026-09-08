@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # Cognito OAuth Configuration
     cognito_user_pool_id: str = ""  # e.g., "us-east-1_5rYm3yrrY"
     cognito_client_id: str = ""  # Cognito app client ID
+    # CLI-specific app client (web CLI login). Short refresh validity +
+    # rotation, minted by src/auth/cli_login.py. Empty = feature disabled
+    # (endpoints 503) — safe before the Terraform that creates it applies.
+    cognito_cli_client_id: str = ""
     # Either a hosted-UI domain PREFIX ("bedrockgw-dev-auth") or a custom-domain
     # FQDN ("auth.example.com"). Consumers distinguish them on the presence of a
     # dot, since a prefix is a single DNS label — see agent_service.py, which

@@ -1,28 +1,30 @@
 /**
  * SetupInstructions — how to point Claude Code or Codex at this gateway.
  *
- * Issue #4146 rewrote this end-to-end. The previous content documented an
- * AWS-SSO + `bg-auth.sh` flow that no longer works: it predated both the
- * Cognito helper and GitHub login, told users to write `~/.claude/config.json`
- * with an `apiBaseUrl` key that exists in no file under `cli/`, and shipped
- * unresolved `https://your-gateway-url/v1` placeholders.
+ * Issue #4146 rewrote the content end-to-end (the previous AWS-SSO +
+ * `bg-auth.sh` flow no longer worked). Issue #4159 made it tabbed. This
+ * revision restructures around two principles:
  *
- * Issue #4159 restructured it (content frozen, layout only): the flat 7-step
- * list buried Codex as step 6 inside the Claude Code flow and told users to
- * fetch the helper scripts from a Downloads section that rendered *after* the
- * instructions. It is now three sections — a common "connect your machine"
- * (downloads first, so nothing forward-references), a Claude Code | Codex tab
- * switcher, and a shared verify step.
+ * 1. **Each tab is fully self-contained.** A Codex user never reads a Claude
+ *    Code prerequisite, nothing references a section "above", and each tab
+ *    numbers its steps 1..N. The previous split (common section + tabs that
+ *    continue its numbering) interleaved unnumbered panels between numbered
+ *    steps and told Codex users to re-`mv` a file an earlier step had already
+ *    moved. Shared content is shared at the component level instead, so the
+ *    tabs cannot drift apart.
+ *
+ * 2. **Sign-in is `login --web` — no credential ever passes through a human.**
+ *    The CLI opens the browser, the user clicks Approve, done. The old
+ *    "Reveal refresh token and paste it" panel remains only as a collapsed
+ *    fallback for headless machines.
  *
  * Three invariants worth preserving on edit:
  * - The base URL is resolved at runtime from the real origin. Never a placeholder.
  * - The settings snippets are `JSON.stringify`'d from objects, so the rendered
  *   text cannot drift from the shape asserted in tests (or from `cli/examples/`).
- * - Step numbers are derived from array order and the common-section length, so
- *   each tab reads as one continuous flow and a reorder cannot mis-number them.
+ * - Step numbers are derived from array order — a reorder cannot mis-number them.
  */
 
-import { Fragment } from 'react';
 import { Card, CardTitle, CopyButton, Tabs, TabsList, Tab, TabPanel } from '@/components/ui';
 import { getGatewayBaseUrl } from '@/utils/gatewayUrl';
 import { ScriptDownloadList } from '@/components/setup/ScriptDownload';
@@ -82,6 +84,12 @@ wire_api = "responses"
 env_key = "ADP_GATEWAY_DUMMY"`;
 }
 
+/** One curl per file, into ~/bin — no browser download, no mv from ~/Downloads. */
+export function buildInstallCommand(baseUrl: string, files: string[]): string {
+  const curls = files.map((file) => `curl -fsSL ${baseUrl}/cli/${file} -o ~/bin/${file}`);
+  return ['mkdir -p ~/bin', ...curls, 'chmod +x ~/bin/bg-cognito-auth.sh'].join('\n');
+}
+
 function CodeSnippet({ children, copyValue }: { children: string; copyValue?: string }) {
   return (
     <div className="relative mt-2">
@@ -124,8 +132,85 @@ const CODE = 'bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono';
 interface SetupStep {
   title: string;
   body: React.ReactNode;
-  /** Rendered after this step's card — the panel or card the step points at. */
-  after?: React.ReactNode;
+}
+
+/** Shared tool prerequisites — the helper script's own dependencies. */
+function HelperPrereqItems() {
+  return (
+    <>
+      <li>
+        <code className={CODE}>curl</code>, <code className={CODE}>jq</code> and the{' '}
+        <code className={CODE}>aws</code> CLI v2 available on your PATH
+      </li>
+      <li>Signed in to this dashboard — you already are, or you could not see this page</li>
+    </>
+  );
+}
+
+/**
+ * The sign-in step, identical in both tabs (rendered from this one component
+ * so the tabs cannot drift). Primary path: `login --web` — browser approval,
+ * nothing displayed, nothing pasted. Fallbacks collapsed below it.
+ */
+function SignInStep({ baseUrl }: { baseUrl: string }) {
+  const loginCommand = `~/bin/bg-cognito-auth.sh login --web --gateway-url ${baseUrl}`;
+  return (
+    <>
+      <p>Run this, then click Approve in the browser tab it opens:</p>
+      <CodeSnippet>{loginCommand}</CodeSnippet>
+      <p className="text-gray-500 dark:text-gray-400">
+        The approval page shows the same short code as your terminal — confirm they match and
+        approve. Your machine receives a short-lived credential that refreshes itself in the
+        background; you never see or copy a token. Re-approving takes one click whenever it fully
+        expires (about a day of inactivity).
+      </p>
+      <details className="mt-1">
+        <summary className="cursor-pointer text-primary-600 dark:text-primary-400">
+          On a headless machine (SSH, no browser)? Use a pasted token instead
+        </summary>
+        <div className="mt-2 space-y-2">
+          <p>
+            Where no browser can open, seed the CLI from this browser session: run the{' '}
+            <code className={CODE}>import</code> command below and paste the revealed refresh token
+            when prompted.
+          </p>
+          <ConnectCliPanel />
+        </div>
+      </details>
+      <details className="mt-1">
+        <summary className="cursor-pointer text-primary-600 dark:text-primary-400">
+          Have a Cognito password? (accounts not created via GitHub sign-in)
+        </summary>
+        <p className="mt-2">
+          Use the interactive password flow instead:{' '}
+          <code className={CODE}>~/bin/bg-cognito-auth.sh login --gateway-url {baseUrl}</code>
+        </p>
+      </details>
+    </>
+  );
+}
+
+/** The install step; Codex needs a second file, Claude Code does not. */
+function InstallStep({ baseUrl, files, note }: { baseUrl: string; files: string[]; note?: React.ReactNode }) {
+  return (
+    <>
+      <p>This fetches the helper straight from this gateway — nothing to download by hand:</p>
+      <CodeSnippet>{buildInstallCommand(baseUrl, files)}</CodeSnippet>
+      {note}
+      <details className="mt-1">
+        <summary className="cursor-pointer text-primary-600 dark:text-primary-400">
+          Prefer downloading in the browser?
+        </summary>
+        <div className="mt-2">
+          <ScriptDownloadList files={files} />
+          <p className="mt-2 text-gray-500 dark:text-gray-400">
+            Save the {files.length > 1 ? 'files' : 'file'} to <code className={CODE}>~/bin</code>{' '}
+            and <code className={CODE}>chmod +x ~/bin/bg-cognito-auth.sh</code>.
+          </p>
+        </div>
+      </details>
+    </>
+  );
 }
 
 export function SetupInstructions() {
@@ -134,8 +219,8 @@ export function SetupInstructions() {
   const bedrockSettings = JSON.stringify(buildBedrockSettings(baseUrl), null, 2);
   const codexConfigToml = buildCodexConfigToml();
 
-  // --- Section 1: both tools ------------------------------------------------
-  const commonSteps: SetupStep[] = [
+  // --- Claude Code tab: one self-contained flow, numbered from 1 -------------
+  const claudeCodeSteps: SetupStep[] = [
     {
       title: 'Prerequisites',
       body: (
@@ -144,49 +229,18 @@ export function SetupInstructions() {
             Claude Code installed (
             <code className={CODE}>npm install -g @anthropic-ai/claude-code</code>)
           </li>
-          <li>
-            <code className={CODE}>curl</code> and <code className={CODE}>jq</code> available on
-            your PATH
-          </li>
-          <li>Signed in to this dashboard with GitHub — you already are, or you could not see this page</li>
+          <HelperPrereqItems />
         </ul>
       ),
-      // Downloads come before the step that tells you to install them (Issue #4159).
-      after: <ScriptDownloadList />,
     },
     {
-      title: 'Download the helper script',
-      body: (
-        <>
-          <p>
-            Grab <code className={CODE}>bg-cognito-auth.sh</code> from the Downloads section above,
-            then put it on your PATH and make it executable:
-          </p>
-          <CodeSnippet>{`mkdir -p ~/bin
-mv ~/Downloads/bg-cognito-auth.sh ~/bin/
-chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
-          <p className="text-gray-500 dark:text-gray-400">
-            This is the script Claude Code calls to mint a fresh token on every request.
-          </p>
-        </>
-      ),
+      title: 'Install the helper script',
+      body: <InstallStep baseUrl={baseUrl} files={['bg-cognito-auth.sh']} />,
     },
     {
-      title: 'Connect the CLI',
-      body: (
-        <p>
-          Use the <strong>Connect CLI</strong> panel below: run the{' '}
-          <code className={CODE}>import</code> command it shows and paste your refresh token when
-          prompted. This seeds the CLI from the session this browser already established — you have
-          no Cognito password to type, because signing in with GitHub never created one.
-        </p>
-      ),
-      after: <ConnectCliPanel />,
+      title: 'Sign in',
+      body: <SignInStep baseUrl={baseUrl} />,
     },
-  ];
-
-  // --- Section 2, Claude Code tab -------------------------------------------
-  const claudeCodeSteps: SetupStep[] = [
     {
       title: 'Configure Claude Code',
       body: (
@@ -225,29 +279,40 @@ chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
     },
   ];
 
-  // --- Section 2, Codex tab -------------------------------------------------
+  // --- Codex tab: one self-contained flow, numbered from 1 -------------------
   const codexSteps: SetupStep[] = [
     {
-      title: 'Install the proxy script alongside the helper',
+      title: 'Prerequisites',
       body: (
-        <>
-          <p>
-            Codex reads its credential from an env var once at launch and never asks again — so a
-            manually exported token works for about an hour, then every request 401s until you
-            restart it. <code className={CODE}>serve</code> closes that gap: it runs a small
-            localhost proxy that injects a freshly-refreshed token into every request, so you
-            authenticate once and never touch tokens again.
-          </p>
-          <p>
-            Install <strong>both</strong> files from the Downloads section above —{' '}
-            <code className={CODE}>bg-gateway-proxy.py</code> must sit next to{' '}
-            <code className={CODE}>bg-cognito-auth.sh</code>, because{' '}
-            <code className={CODE}>serve</code> looks for its sibling:
-          </p>
-          <CodeSnippet>{`mv ~/Downloads/bg-cognito-auth.sh ~/Downloads/bg-gateway-proxy.py ~/bin/
-chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
-        </>
+        <ul className="list-disc space-y-1">
+          <li>Codex CLI installed</li>
+          <li>
+            <code className={CODE}>python3</code> (stdlib only — macOS and Linux ship it)
+          </li>
+          <HelperPrereqItems />
+        </ul>
       ),
+    },
+    {
+      title: 'Install the helper script and the local proxy',
+      body: (
+        <InstallStep
+          baseUrl={baseUrl}
+          files={['bg-cognito-auth.sh', 'bg-gateway-proxy.py']}
+          note={
+            <p className="text-gray-500 dark:text-gray-400">
+              Codex needs both files: it reads its credential once at launch and never asks again,
+              so <code className={CODE}>serve</code> runs a small localhost proxy (
+              <code className={CODE}>bg-gateway-proxy.py</code>, which must sit next to the helper)
+              that injects a freshly-refreshed token into every request.
+            </p>
+          }
+        />
+      ),
+    },
+    {
+      title: 'Sign in',
+      body: <SignInStep baseUrl={baseUrl} />,
     },
     {
       title: 'Configure Codex',
@@ -258,6 +323,11 @@ chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
             does not write this file for you — it is yours):
           </p>
           <CodeSnippet>{codexConfigToml}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            Switching models with Codex's in-app picker just works — the proxy adds the{' '}
+            <code className={CODE}>openai.</code> prefix the gateway expects if the picker writes a
+            bare model name.
+          </p>
         </>
       ),
     },
@@ -265,7 +335,6 @@ chmod +x ~/bin/bg-cognito-auth.sh`}</CodeSnippet>
       title: 'Start the proxy, then Codex',
       body: (
         <>
-          <p>Then start the proxy and, in another terminal, Codex:</p>
           <CodeSnippet>{`~/bin/bg-cognito-auth.sh serve          # foreground; Ctrl-C to stop
 ADP_GATEWAY_DUMMY=unused codex         # in a second terminal`}</CodeSnippet>
           <p className="text-gray-500 dark:text-gray-400">
@@ -279,13 +348,10 @@ ADP_GATEWAY_DUMMY=unused codex         # in a second terminal`}</CodeSnippet>
     },
   ];
 
-  /** Tab steps continue the common numbering, so each tool reads as one flow. */
-  const toolStepOffset = commonSteps.length;
-
   const renderToolSteps = (steps: SetupStep[]) => (
     <div className="space-y-6 text-gray-700 dark:text-gray-300">
       {steps.map((step, index) => (
-        <Step key={step.title} index={toolStepOffset + index} title={step.title}>
+        <Step key={step.title} index={index} title={step.title}>
           {step.body}
         </Step>
       ))}
@@ -295,26 +361,8 @@ ADP_GATEWAY_DUMMY=unused codex         # in a second terminal`}</CodeSnippet>
   return (
     <div className="space-y-8">
       <section className="space-y-4">
-        <SectionHeading title="Connect your machine">
-          Same for both tools: get the helper script, then seed it from this browser session.
-        </SectionHeading>
-        {commonSteps.map((step, index) => (
-          <Fragment key={step.title}>
-            <Card>
-              <div className="text-gray-700 dark:text-gray-300">
-                <Step index={index} title={step.title}>
-                  {step.body}
-                </Step>
-              </div>
-            </Card>
-            {step.after}
-          </Fragment>
-        ))}
-      </section>
-
-      <section className="space-y-4">
-        <SectionHeading title="Set up your tool">
-          Pick the CLI you use — the steps below continue from the ones above.
+        <SectionHeading title="Set up your CLI">
+          Pick your tool — each tab is the complete recipe, start to finish.
         </SectionHeading>
         <Card>
           <Tabs defaultValue="claude-code">

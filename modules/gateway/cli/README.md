@@ -39,17 +39,24 @@ cp cli/examples/claude-settings-bedrock-gateway.json ~/.claude/settings.json
 
 Edit `~/.claude/settings.json` and replace `<CLOUDFRONT_DOMAIN>` with your gateway domain.
 
-### Step 3: Login (one-time)
+### Step 3: Sign in (one-time, browser approval — no password, no copy-paste)
 
 ```bash
-~/bin/bg-cognito-auth.sh login \
-  --gateway-url https://<CLOUDFRONT_DOMAIN>/api \
-  --user-pool-id <USER_POOL_ID> \
-  --client-id <CLIENT_ID> \
-  --region us-east-1
+~/bin/bg-cognito-auth.sh login --web --gateway-url https://<CLOUDFRONT_DOMAIN>/api
 ```
 
-It will prompt for username and password. Tokens are saved to `~/.bedrock-gateway/`.
+Your browser opens the dashboard's approval page showing the same short code as
+your terminal — click **Approve** and you're signed in. Tokens are saved to
+`~/.bedrock-gateway/`, minted on a **CLI-specific app client**: the on-disk
+refresh token is short-lived (24 h by default, vs 30 days for the browser) and
+**rotates on every background refresh**, so a stolen copy dies the next time
+your machine refreshes.
+
+Fallbacks:
+- **Cognito password account** (not created via GitHub sign-in): use `login`
+  without `--web` — it prompts for username/password.
+- **Headless machine** (SSH, no browser): use `import` — see the next section.
+- `--no-browser` prints the approval URL instead of opening a browser.
 
 ### Step 4: Launch Claude Code
 
@@ -59,9 +66,14 @@ claude
 
 That's it. Claude Code calls `bg-cognito-auth.sh token` automatically via `apiKeyHelper`, which returns a fresh Cognito JWT. The token auto-refreshes — you won't need to login again for 30 days.
 
-## Signed in with GitHub? Use `import` instead of `login`
+## Headless machine? Use `import` instead of `login --web`
 
-If you signed in to the gateway dashboard with GitHub, you have **no Cognito password** — your account was provisioned with a random one you never see. `login` cannot work for you. Instead, seed the CLI from the session the browser already established:
+`login --web` needs a browser on the same machine. On a box that has none (SSH
+target, container), seed the CLI from a browser session on another machine.
+This also remains the fallback while a deployment hasn't enabled web CLI login
+yet (`login --web` reports it). Note the pasted refresh token is the **SPA
+client's** (30-day, non-rotating) — prefer `login --web` wherever a browser
+exists:
 
 1. Sign in to the dashboard with GitHub.
 2. Open **Settings → Connect CLI**, click **Reveal token**, and copy the refresh token.
@@ -251,6 +263,9 @@ Developer runs `claude`
 ## Auth Commands
 
 ```bash
+# Sign in via browser approval (primary path — no password, no copy-paste)
+bg-cognito-auth.sh login --web --gateway-url https://gateway.example.com/api
+
 # Login (interactive, one-time — requires a Cognito password)
 bg-cognito-auth.sh login --gateway-url https://gateway.example.com/api
 
@@ -337,6 +352,11 @@ See `.github/workflows/gateway-agent-test.yml` for a complete working example.
 
 ## Token Refresh
 
+- `login --web` tokens ride the CLI app client: refresh tokens last 24 hours
+  (deployment-configurable) and ROTATE — each refresh returns a new refresh
+  token and invalidates the old one. The helper already persists the rotated
+  token; just don't copy `tokens.json` between machines (the copy dies on the
+  original's next refresh).
 - Access tokens expire in 60 minutes
 - `bg-cognito-auth.sh token` auto-refreshes 5 minutes before expiry
 - Refresh tokens last 30 days

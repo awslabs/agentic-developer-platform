@@ -19,6 +19,7 @@ const OrgDashboard = lazy(() => import('./pages/OrgDashboard'));
 const DepartmentDashboard = lazy(() => import('./pages/DepartmentDashboard'));
 const LogViewer = lazy(() => import('./pages/LogViewer'));
 const ClaudeSetup = lazy(() => import('./pages/ClaudeSetup'));
+const CliAuth = lazy(() => import('./pages/CliAuth')); // Web CLI login approval (login --web)
 const AgentManagement = lazy(() => import('./pages/AgentManagement')); // Issue #119
 const BudgetManagement = lazy(() => import('./pages/BudgetManagement')); // Issue #185
 const RateLimitManagement = lazy(() => import('./pages/RateLimitManagement')); // Issue #185
@@ -82,6 +83,7 @@ function App() {
               <Route path="/org/:orgId/department/:deptId" element={<DepartmentDashboard />} />
               <Route path="/logs" element={<FeatureGate feature="logs"><LogViewer /></FeatureGate>} /> {/* Issue #3747 */}
               <Route path="/setup" element={<ClaudeSetup />} />
+              <Route path="/cli-auth" element={<CliAuth />} /> {/* Web CLI login approval */}
               <Route path="/agents" element={<AgentManagement />} /> {/* Issue #119 */}
               <Route path="/budgets" element={<BudgetManagement />} /> {/* Issue #185 */}
               <Route path="/ratelimits" element={<RateLimitManagement />} /> {/* Issue #185 */}

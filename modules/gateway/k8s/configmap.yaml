@@ -46,6 +46,9 @@ data:
 
   # Cognito OAuth Configuration
   BG_COGNITO_USER_POOL_ID: "__COGNITO_USER_POOL_ID__"
+  # CLI app client for web CLI login (/auth/cli). Empty until the Terraform
+  # that creates the client applies — endpoints answer 503 until then.
+  BG_COGNITO_CLI_CLIENT_ID: "__COGNITO_CLI_CLIENT_ID__"
   BG_COGNITO_CLIENT_ID: "__COGNITO_CLIENT_ID__"
   BG_COGNITO_DOMAIN: "__COGNITO_DOMAIN__"
 

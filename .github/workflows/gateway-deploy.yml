@@ -188,6 +188,11 @@ jobs:
           REDIS_CACHE_NAME=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-cache-name")
           COGNITO_USER_POOL_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id")
           COGNITO_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")
+          # Web CLI login app client. Deliberately NOT in the required-vars
+          # loop below: the param appears only after the Terraform that adds
+          # the CLI client applies, and deploys before that must not fail —
+          # the /auth/cli endpoints 503 cleanly while this is empty.
+          COGNITO_CLI_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
           COGNITO_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-domain")
           CF_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cloudfront-domain")
           # User-facing origin: the custom domain when gateway-infra published one,
@@ -289,6 +294,7 @@ jobs:
               -e "s|__REDIS_IAM_AUTH__|true|g" \
               -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
               -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
+              -e "s|__COGNITO_CLI_CLIENT_ID__|${COGNITO_CLI_CLIENT_ID}|g" \
               -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
               -e "s|__CORS_ALLOWED_ORIGINS__|${CORS_ORIGINS}|g" \
               -e "s|__GATEWAY_BASE_URL__|${FRONTEND_URL}|g" \

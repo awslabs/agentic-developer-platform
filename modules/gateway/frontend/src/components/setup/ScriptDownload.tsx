@@ -67,7 +67,7 @@ export function ScriptDownload({
   );
 }
 
-export function ScriptDownloadList() {
+export function ScriptDownloadList({ files }: { files?: string[] }) {
   // Both entries are served by GET /api/cli/{script_name}
   // (modules/gateway/src/cli_download/routes.py).
   //
@@ -77,6 +77,10 @@ export function ScriptDownloadList() {
   //
   // Issue #4156: bg-gateway-proxy.py was missing, so Codex users following the
   // `serve` flow could not get the second of the two files it needs.
+  //
+  // `files` filters the cards to the calling tab's own needs: each setup tab is
+  // self-contained, so the Claude Code tab must not advertise the Codex-only
+  // proxy (and its python3 note). Omit it for the full list.
   const scripts: ScriptDownloadProps[] = [
     {
       scriptName: 'bg-cognito-auth.sh',
@@ -94,13 +98,15 @@ export function ScriptDownloadList() {
     },
   ];
 
+  const visible = files ? scripts.filter((script) => files.includes(script.scriptName)) : scripts;
+
   return (
     <div className="space-y-4">
       <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
         Download Helper Scripts
       </h2>
       <div className="space-y-3">
-        {scripts.map((script) => (
+        {visible.map((script) => (
           <ScriptDownload key={script.scriptName} {...script} />
         ))}
       </div>

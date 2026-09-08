@@ -80,6 +80,16 @@ variable "refresh_token_validity" {
   }
 }
 
+variable "cli_refresh_token_validity" {
+  type        = number
+  description = "Refresh token validity in minutes for the CLI app client (default 1440 = 24 hours; deliberately much shorter than the SPA client's)"
+  default     = 1440
+  validation {
+    condition     = var.cli_refresh_token_validity >= 60 && var.cli_refresh_token_validity <= 43200
+    error_message = "CLI refresh token validity must be between 60 minutes (1 hour) and 43200 minutes (30 days)."
+  }
+}
+
 variable "id_token_validity" {
   type        = number
   description = "ID token validity in minutes"
