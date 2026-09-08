@@ -22,6 +22,7 @@ import {
   buildAnthropicSettings,
   buildBedrockSettings,
   buildCodexConfigToml,
+  buildFileWriteCommand,
   buildInstallCommand,
   CODEX_PROXY_PORT,
 } from '@/components/setup/SetupInstructions';
@@ -115,17 +116,22 @@ describe('SetupInstructions', () => {
   });
 
   // --- Rendered JSON must be valid and match cli/examples/ -------------------
-  it('renders a settings snippet that parses and deep-equals the expected shape', () => {
+  it('renders a write-command whose JSON payload parses and deep-equals the expected shape', () => {
     render(<SetupInstructions />);
 
     // The Anthropic-format snippet is the primary one, rendered eagerly on the
-    // default (Claude Code) tab.
+    // default (Claude Code) tab — wrapped in the paste-ready heredoc command.
     const snippet = screen
       .getAllByText((_, el) => el?.tagName === 'PRE' && !!el.textContent?.includes('ANTHROPIC_BASE_URL'))
       .at(0);
     expect(snippet).toBeTruthy();
 
-    const parsed = JSON.parse(snippet!.textContent!);
+    const text = snippet!.textContent!;
+    expect(text.startsWith("mkdir -p ~/.claude\ncat > ~/.claude/settings.json << 'EOF'\n")).toBe(true);
+    expect(text.endsWith('\nEOF')).toBe(true);
+
+    const payload = text.split("<< 'EOF'\n")[1].replace(/\nEOF$/, '');
+    const parsed = JSON.parse(payload);
     expect(parsed).toEqual({
       env: { ANTHROPIC_BASE_URL: `${STUB_ORIGIN}/api` },
       apiKeyHelper: 'bash ~/bin/bg-cognito-auth.sh token',
@@ -210,6 +216,17 @@ describe('SetupInstructions', () => {
       `curl -fsSL ${STUB_ORIGIN}/api/cli/bg-gateway-proxy.py -o ~/bin/bg-gateway-proxy.py`
     );
     expect(document.body.textContent ?? '').not.toContain('~/Downloads');
+  });
+
+  it('writes both config files via paste-ready commands — no editor needed', async () => {
+    render(<SetupInstructions />);
+    expect(document.body.textContent ?? '').toContain("cat > ~/.claude/settings.json << 'EOF'");
+    // Overwrite caution accompanies the command.
+    expect(document.body.textContent ?? '').toContain('merge the JSON shown above');
+
+    await openCodexTab();
+    expect(document.body.textContent ?? '').toContain("cat > ~/.codex/config.toml << 'EOF'");
+    expect(document.body.textContent ?? '').toContain('merge these lines into yours');
   });
 
   it('keeps the browser-download cards available as a fallback', () => {
@@ -300,6 +317,19 @@ describe('SetupInstructions', () => {
     expect(screen.getByText('1')).toBeInTheDocument();
     expect(screen.getByText('5')).toBeInTheDocument();
     expect(screen.queryByText('6')).not.toBeInTheDocument();
+  });
+});
+
+describe('buildFileWriteCommand', () => {
+  it('creates the parent dir and writes via a quoted heredoc (no shell expansion)', () => {
+    expect(buildFileWriteCommand('~/.claude/settings.json', '{ "a": 1 }')).toBe(
+      "mkdir -p ~/.claude\ncat > ~/.claude/settings.json << 'EOF'\n{ \"a\": 1 }\nEOF"
+    );
+  });
+
+  it('round-trips content containing $ and backticks untouched', () => {
+    const content = 'value = "$HOME `whoami`"';
+    expect(buildFileWriteCommand('~/.codex/config.toml', content)).toContain(content);
   });
 });
 

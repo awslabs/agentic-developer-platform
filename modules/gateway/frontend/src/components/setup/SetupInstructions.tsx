@@ -90,6 +90,17 @@ export function buildInstallCommand(baseUrl: string, files: string[]): string {
   return ['mkdir -p ~/bin', ...curls, 'chmod +x ~/bin/bg-cognito-auth.sh'].join('\n');
 }
 
+/**
+ * A paste-ready command that writes a config file, instead of "add this to
+ * the file" — users should not need to know how to drive an editor to get set
+ * up. The quoted 'EOF' heredoc delimiter keeps the shell from expanding
+ * anything inside the content.
+ */
+export function buildFileWriteCommand(path: string, content: string): string {
+  const dir = path.substring(0, path.lastIndexOf('/'));
+  return `mkdir -p ${dir}\ncat > ${path} << 'EOF'\n${content}\nEOF`;
+}
+
 function CodeSnippet({ children, copyValue }: { children: string; copyValue?: string }) {
   return (
     <div className="relative mt-2">
@@ -246,20 +257,20 @@ export function SetupInstructions() {
       body: (
         <>
           <p>
-            Write this to <code className={CODE}>~/.claude/settings.json</code>. The base URL is
-            this deployment's real gateway URL — already filled in for you, and it takes no{' '}
-            <code className={CODE}>/v1</code> suffix (Claude Code appends the API path itself):
+            Run this — it writes <code className={CODE}>~/.claude/settings.json</code> for you. The
+            base URL is this deployment's real gateway URL, already filled in (it takes no{' '}
+            <code className={CODE}>/v1</code> suffix — Claude Code appends the API path itself):
           </p>
-          <CodeSnippet>{anthropicSettings}</CodeSnippet>
+          <CodeSnippet>{buildFileWriteCommand('~/.claude/settings.json', anthropicSettings)}</CodeSnippet>
           <p className="text-gray-500 dark:text-gray-400">
-            Prefer to speak the Bedrock API format instead? Use this variant — same helper, same
-            base URL:
+            This replaces an existing <code className={CODE}>settings.json</code> — if you already
+            have one you care about, merge the JSON shown above into it instead.
           </p>
           <details className="mt-1">
             <summary className="cursor-pointer text-primary-600 dark:text-primary-400">
-              Bedrock-format settings.json
+              Prefer the Bedrock API format? (same helper, same base URL)
             </summary>
-            <CodeSnippet>{bedrockSettings}</CodeSnippet>
+            <CodeSnippet>{buildFileWriteCommand('~/.claude/settings.json', bedrockSettings)}</CodeSnippet>
           </details>
         </>
       ),
@@ -319,10 +330,15 @@ export function SetupInstructions() {
       body: (
         <>
           <p>
-            Add this to <code className={CODE}>~/.codex/config.toml</code> (the helper deliberately
-            does not write this file for you — it is yours):
+            Run this — it writes <code className={CODE}>~/.codex/config.toml</code> for you:
           </p>
-          <CodeSnippet>{codexConfigToml}</CodeSnippet>
+          <CodeSnippet>{buildFileWriteCommand('~/.codex/config.toml', codexConfigToml)}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            This replaces an existing <code className={CODE}>config.toml</code> — if you already use
+            Codex, merge these lines into yours instead, keeping the two{' '}
+            <code className={CODE}>model</code> lines above any <code className={CODE}>[section]</code>{' '}
+            header.
+          </p>
           <p className="text-gray-500 dark:text-gray-400">
             Switching models with Codex's in-app picker just works — the proxy adds the{' '}
             <code className={CODE}>openai.</code> prefix the gateway expects if the picker writes a
