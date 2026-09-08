@@ -70,6 +70,7 @@ _GITHUB_USERNAME_PREFIX = "github_"
 def _is_broker_provisioned(username: str) -> bool:
     return username.lower().startswith(_GITHUB_USERNAME_PREFIX)
 
+
 # Best-effort per-pod flood guard for the unauthenticated /start endpoint.
 # Not a security boundary (multi-pod, in-memory) — it bounds accidental loops
 # and lazy abuse; the DB rows it protects expire in minutes anyway.

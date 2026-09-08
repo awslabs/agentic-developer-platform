@@ -30,6 +30,24 @@ PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEFAULT_PROXY_PORT=9191
 
+# Cross-process refresh lock (Issue #4837)
+#
+# Claude Code (via apiKeyHelper) and the Codex proxy (via `serve`) both call
+# this script's `token`/`refresh` in separate processes against the SAME
+# token file. With refresh-token rotation enabled on the CLI Cognito client,
+# each successful refresh invalidates the previous refresh token — so two
+# uncoordinated refreshes leave whichever one loses the race holding a dead
+# credential ("invalid token"), and a non-atomic write can corrupt the file
+# outright. This lock makes refresh single-flight per machine.
+#
+# mkdir is the lock primitive because it is atomic on POSIX and, unlike
+# flock(1), ships on macOS. A crashed holder leaves the dir behind, so it is
+# treated as stale (and broken) once older than LOCK_STALE_SECONDS.
+LOCK_DIR="${CONFIG_DIR}/refresh.lock"
+LOCK_STALE_SECONDS=30
+LOCK_MAX_WAIT_SECONDS=20
+_LOCK_HELD=0
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -138,6 +156,55 @@ load_config() {
 }
 
 # Save tokens
+# Age in seconds of the lock directory, or empty if it does not exist.
+# Portable across macOS (stat -f %m) and Linux (stat -c %Y).
+_lock_age_seconds() {
+    local mtime now
+    if mtime=$(stat -f %m "${LOCK_DIR}" 2>/dev/null); then
+        :
+    elif mtime=$(stat -c %Y "${LOCK_DIR}" 2>/dev/null); then
+        :
+    else
+        return 1
+    fi
+    now=$(date +%s)
+    echo $((now - mtime))
+}
+
+# Acquire the machine-wide refresh lock, waiting up to LOCK_MAX_WAIT_SECONDS.
+# Returns non-zero if it cannot be taken. Releases automatically on process
+# exit or interrupt so a Ctrl-C'd `token`/`refresh` never wedges the next one.
+_acquire_refresh_lock() {
+    mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
+    local waited=0
+    while :; do
+        if mkdir "${LOCK_DIR}" 2>/dev/null; then
+            _LOCK_HELD=1
+            trap _release_refresh_lock EXIT INT TERM
+            return 0
+        fi
+        # Reclaim a lock abandoned by a crashed process.
+        local age
+        age=$(_lock_age_seconds || true)
+        if [ -n "${age}" ] && [ "${age}" -ge "${LOCK_STALE_SECONDS}" ]; then
+            rmdir "${LOCK_DIR}" 2>/dev/null || rm -rf "${LOCK_DIR}" 2>/dev/null || true
+            continue
+        fi
+        if [ "${waited}" -ge "${LOCK_MAX_WAIT_SECONDS}" ]; then
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
+_release_refresh_lock() {
+    if [ "${_LOCK_HELD}" = "1" ]; then
+        rmdir "${LOCK_DIR}" 2>/dev/null || rm -rf "${LOCK_DIR}" 2>/dev/null || true
+        _LOCK_HELD=0
+    fi
+}
+
 save_tokens() {
     local id_token="$1"
     local access_token="$2"
@@ -146,7 +213,16 @@ save_tokens() {
 
     local expires_at=$(($(date +%s) + expires_in))
 
-    cat > "${TOKEN_FILE}" << EOF
+    # Write-then-rename so a reader (or a concurrent writer) never sees a
+    # half-written token file. mktemp in the same directory keeps the mv on
+    # one filesystem, where rename(2) is atomic.
+    mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
+    local tmp
+    tmp=$(mktemp "${TOKEN_FILE}.XXXXXX") || {
+        print_error "Failed to create a temporary token file in ${CONFIG_DIR}."
+        return 1
+    }
+    cat > "${tmp}" << EOF
 {
     "id_token": "${id_token}",
     "access_token": "${access_token}",
@@ -154,7 +230,8 @@ save_tokens() {
     "expires_at": ${expires_at}
 }
 EOF
-    chmod 600 "${TOKEN_FILE}"
+    chmod 600 "${tmp}"
+    mv -f "${tmp}" "${TOKEN_FILE}"
 }
 
 # Load tokens
@@ -313,8 +390,17 @@ authenticate_user() {
     return 0
 }
 
-# Refresh tokens using refresh token
+# Refresh tokens using refresh token.
+#
+# Pass --if-needed to skip the refresh when the token on disk is still valid
+# (used by the auto-refresh path in `token`); without it the refresh is
+# unconditional (the explicit `refresh` command). Either way the work runs
+# under the machine-wide lock so concurrent callers cannot rotate the refresh
+# token out from under each other (Issue #4837).
 refresh_tokens() {
+    local if_needed=0
+    [ "${1:-}" = "--if-needed" ] && if_needed=1
+
     load_config
 
     if ! load_tokens; then
@@ -322,9 +408,28 @@ refresh_tokens() {
         return 1
     fi
 
+    if ! _acquire_refresh_lock; then
+        print_error "Could not acquire the refresh lock within ${LOCK_MAX_WAIT_SECONDS}s."
+        print_warning "Another refresh may be stuck — remove ${LOCK_DIR} if no other session is running."
+        return 1
+    fi
+
+    # Re-read under the lock: a process that held it before us may have already
+    # rotated the token while we waited. Reusing our now-stale in-memory refresh
+    # token would fail, so adopt whatever is on disk before deciding.
+    load_tokens
+    if [ "${if_needed}" = "1" ]; then
+        local now
+        now=$(date +%s)
+        if [ -n "${EXPIRES_AT}" ] && [ "${EXPIRES_AT}" != "null" ] && [ "${now}" -lt "$((EXPIRES_AT - 300))" ]; then
+            _release_refresh_lock
+            return 0  # Another process already refreshed; nothing to do.
+        fi
+    fi
+
     print_info "Refreshing tokens..."
 
-    local auth_result
+    local auth_result rc=0
     if _use_admin_auth; then
         auth_result=$(aws cognito-idp admin-initiate-auth \
             --auth-flow REFRESH_TOKEN_AUTH \
@@ -332,21 +437,21 @@ refresh_tokens() {
             --client-id "${CLIENT_ID}" \
             --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
             --region "${REGION}" \
-            2>&1) || {
-            print_error "Token refresh failed: ${auth_result}"
-            return 1
-        }
+            2>&1) || rc=$?
     else
         auth_result=$(aws cognito-idp initiate-auth \
             --auth-flow REFRESH_TOKEN_AUTH \
             --client-id "${CLIENT_ID}" \
             --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
             --region "${REGION}" \
-            2>&1) || {
-            print_error "Token refresh failed: ${auth_result}"
-            print_warning "Please run 'login' to re-authenticate."
-            return 1
-        }
+            2>&1) || rc=$?
+    fi
+
+    if [ "${rc}" -ne 0 ]; then
+        _release_refresh_lock
+        print_error "Token refresh failed: ${auth_result}"
+        print_warning "Please run 'login' to re-authenticate."
+        return 1
     fi
 
     local id_token access_token expires_in
@@ -354,7 +459,7 @@ refresh_tokens() {
     access_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.AccessToken')
     expires_in=$(echo "${auth_result}" | jq -r '.AuthenticationResult.ExpiresIn')
 
-    # Refresh token may or may not be returned
+    # Refresh token may or may not be returned (with rotation it always is).
     local new_refresh_token
     new_refresh_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.RefreshToken // empty')
     if [ -z "${new_refresh_token}" ]; then
@@ -362,6 +467,7 @@ refresh_tokens() {
     fi
 
     save_tokens "${id_token}" "${access_token}" "${new_refresh_token}" "${expires_in}"
+    _release_refresh_lock
     print_success "Tokens refreshed successfully!"
 
     return 0
@@ -990,8 +1096,10 @@ cmd_token() {
     local expiry_with_buffer=$((EXPIRES_AT - buffer))
 
     if [ "${current_time}" -ge "${expiry_with_buffer}" ]; then
-        # Token expired or about to expire - try to refresh
-        if ! refresh_tokens >/dev/null 2>&1; then
+        # Token expired or about to expire - try to refresh. --if-needed makes
+        # this a no-op if a concurrent process (the Codex proxy, another Claude
+        # Code call) already refreshed while we waited on the lock (Issue #4837).
+        if ! refresh_tokens --if-needed >/dev/null 2>&1; then
             echo "Token expired. Run: bg-cognito-auth.sh login" >&2
             exit 1
         fi
