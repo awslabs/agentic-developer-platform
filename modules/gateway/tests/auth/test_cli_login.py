@@ -32,7 +32,7 @@ CLI_CLIENT_ID = "cli-client-test-123"
 USER_POOL_ID = "us-east-1_testpool"
 
 
-def _make_claims(username: str = "GitHub_12345", sub: str = "sub-uuid-1") -> CognitoTokenClaims:
+def _make_claims(username: str = "github_12345", sub: str = "sub-uuid-1") -> CognitoTokenClaims:
     now = int(time.time())
     return CognitoTokenClaims(
         sub=sub,
@@ -171,7 +171,7 @@ class TestStart:
 class TestApprove:
     @pytest.mark.asyncio
     async def test_approve_records_the_browser_user(self, db_session: AsyncSession, minter: StubMinter) -> None:
-        client = _make_app(db_session, minter, claims=_make_claims(username="GitHub_777", sub="sub-777"))
+        client = _make_app(db_session, minter, claims=_make_claims(username="github_777", sub="sub-777"))
         body = _start(client)
 
         response = _approve(client, body["user_code"])
@@ -180,7 +180,7 @@ class TestApprove:
 
         row = await _get_row(db_session, body["user_code"])
         assert row.status == "approved"
-        assert row.approved_username == "GitHub_777"
+        assert row.approved_username == "github_777"
         assert row.approved_sub == "sub-777"
 
     def test_approve_normalizes_user_code(self, db_session: AsyncSession, minter: StubMinter) -> None:

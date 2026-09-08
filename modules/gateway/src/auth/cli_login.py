@@ -60,7 +60,15 @@ POLL_INTERVAL_SECONDS = 3
 _USER_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 # Broker-provisioned usernames (github-auth-broker cognito_provisioner.py).
-_GITHUB_USERNAME_PREFIX = "GitHub_"
+# The broker creates "GitHub_<id>", but the pool is case-INsensitive
+# (username_configuration.case_sensitive = false), so Cognito stores and
+# returns the username lowercased ("github_<id>") in token claims. The check
+# must be case-insensitive or every real GitHub user is wrongly refused.
+_GITHUB_USERNAME_PREFIX = "github_"
+
+
+def _is_broker_provisioned(username: str) -> bool:
+    return username.lower().startswith(_GITHUB_USERNAME_PREFIX)
 
 # Best-effort per-pod flood guard for the unauthenticated /start endpoint.
 # Not a security boundary (multi-pod, in-memory) — it bounds accidental loops
@@ -185,7 +193,7 @@ class CliTokenMinter:
 
     def mint(self, username: str, cli_client_id: str) -> dict[str, Any]:
         """Returns AuthenticationResult keys: AccessToken, IdToken, RefreshToken, ExpiresIn."""
-        if not username.startswith(_GITHUB_USERNAME_PREFIX):
+        if not _is_broker_provisioned(username):
             # Defense in depth — approve already refused these. A password
             # reset would lock a native-password user out of `login`.
             raise ValueError("CLI web login mints only for broker-provisioned (GitHub_*) users")
@@ -254,7 +262,7 @@ async def approve_cli_login(
 ) -> dict:
     _require_cli_client_configured()
 
-    if body.action == "approve" and not claims.username.startswith(_GITHUB_USERNAME_PREFIX):
+    if body.action == "approve" and not _is_broker_provisioned(claims.username):
         raise HTTPException(
             status_code=403,
             detail={
