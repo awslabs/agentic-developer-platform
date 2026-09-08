@@ -152,6 +152,12 @@ wire_api = "responses"
 env_key = "ADP_GATEWAY_DUMMY"
 ```
 
+> **Model switching inside Codex just works.** The in-app `/model` picker
+> writes short slugs (`gpt-5.6-sol`) into this file, but the gateway serves
+> models under their prefixed ids (`openai.gpt-5.6-sol`). The proxy adds the
+> missing `openai.` prefix on the way through, so either spelling is fine —
+> the model just has to be one the gateway actually serves.
+
 ### Step 4: Run the proxy, then Codex
 
 ```bash
@@ -177,6 +183,8 @@ codex  ──POST http://127.0.0.1:9191/openai/v1/responses
         │    └─ reuses the cached JWT, or renews ~5 min before the 60-min expiry
         ├─ drops any client Authorization / x-api-key
         ├─ sets Authorization: Bearer <fresh token>
+        ├─ prefixes bare model names with `openai.` on /openai/* requests
+        │    (the in-app /model picker writes short slugs)
         └─ forwards to <gateway_url> and streams the response back verbatim
              (SSE chunks unbuffered — Codex sends stream=true)
 ```
