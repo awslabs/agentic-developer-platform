@@ -499,6 +499,80 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+name "mask() cannot contaminate a stdout return value"
+# -----------------------------------------------------------------------------
+# Regression test for the failure that cost eval run 34170126167 phases 1, 2 and
+# 11. mask() emitted '::add-mask::<secret>' on STDOUT, and its callers are
+# functions whose stdout is a RETURN VALUE read through command substitution —
+# mint_actor_token() masks the token it minted and echoes the actor's org_id. So
+# the caller received "::add-mask::<token>\n<org_id>", interpolated that into
+# request URLs, and curl rejected them locally without writing its output file.
+#
+# The dry-run stub replaces mint_actor_token and never calls mask, so no
+# end-to-end dry run can reach this bug; and mask() is inert unless
+# GITHUB_ACTIONS=true, so it is live-only. This test therefore exercises the real
+# lib/log.sh directly, with GITHUB_ACTIONS set — the only conditions under which
+# the defect appears.
+MASK_PROBE="$TEST_ROOT/mask-probe.sh"
+cat > "$MASK_PROBE" <<'PROBE'
+set -uo pipefail
+RESULTS_FILE="$(mktemp)"; export RESULTS_FILE
+. "$LIB_UNDER_TEST/log.sh"
+# Mirror mint_actor_token's shape: mask a secret, then return a value on stdout.
+returns_a_value() { mask "super-secret-token"; printf '%s' "adp-dev-pentest-org-a"; }
+CAPTURED="$(returns_a_value)"
+printf 'CAPTURED=[%s]\n' "$CAPTURED"
+PROBE
+
+MASK_OUT="$(env -i \
+  PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  HOME="$TEST_ROOT" \
+  GITHUB_ACTIONS=true \
+  LIB_UNDER_TEST="$LIB_DIR" \
+  bash "$MASK_PROBE" 2>/dev/null)"
+
+# The captured value must be EXACTLY the org id — no directive, no newline.
+assert_eq "$MASK_OUT" "CAPTURED=[adp-dev-pentest-org-a]" \
+  "a mask() caller's captured stdout is exactly its return value"
+assert_not_contains "$MASK_OUT" "add-mask" \
+  "the masking directive never appears in the captured return value"
+
+# ...and the directive must still be EMITTED (on stderr), or secrets stop being
+# masked in the Actions log — a fix that simply deleted the echo would pass the
+# assertions above while silently unmasking every token.
+MASK_ERR="$(env -i \
+  PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  HOME="$TEST_ROOT" \
+  GITHUB_ACTIONS=true \
+  LIB_UNDER_TEST="$LIB_DIR" \
+  bash "$MASK_PROBE" 2>&1 >/dev/null)"
+assert_contains "$MASK_ERR" "::add-mask::super-secret-token" \
+  "the secret is still masked, on stderr, so the Actions log stays redacted"
+
+# -----------------------------------------------------------------------------
+name "a status capture is always three digits"
+# -----------------------------------------------------------------------------
+# The same run reported 'GET /api/usage/logs -> 000000' and 'budget
+# person-default surface -> 000000'. A status is three digits; six meant curl's
+# own -w '000' had been concatenated with a '|| echo 000' fallback. That value
+# matched no arm of the retry case statement, so it bypassed the retry policy
+# entirely AND was printed verbatim as though the gateway had answered it.
+#
+# Scoped to api() — the function that actually produced the six-digit status.
+# The `|| echo "000"` idiom appears at other call sites in this eval and in
+# lib/http.sh; those are pre-existing and cannot produce a malformed value now
+# that mask() no longer contaminates the interpolated variables, so they are
+# deliberately left alone rather than swept up here.
+API_FN="$(awk '/^api\(\) \{/,/^\}/' "$EVAL_SCRIPT")"
+assert_not_contains "$API_FN" '|| echo "000")"' \
+  "api() does not append a redundant 000 to curl's own -w output"
+if grep -q '\[0-9\]\[0-9\]\[0-9\]) ;;' "$EVAL_SCRIPT"; then
+  ok "api() normalises any non-three-digit capture to 000 so the retry policy sees it"
+else
+  bad "api() has no three-digit normalisation — a malformed capture can bypass the retry policy"
+fi
+
+# -----------------------------------------------------------------------------
 name "the shared harness is sourced, not re-implemented"
 # -----------------------------------------------------------------------------
 # One clean-room boundary across all evals means a hardening fix lands in every

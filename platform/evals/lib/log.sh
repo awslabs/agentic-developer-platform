@@ -55,9 +55,23 @@ phase() {
 
 # mask() hides a secret from the Actions log the moment it exists. Guarded so a
 # local run does not print the token it is trying to protect.
+#
+# The directive goes to STDERR, never stdout. Actions honours workflow commands on
+# both streams, but a mask() caller is frequently a function whose stdout IS a
+# return value read through command substitution — e.g. mint_actor_token() masks
+# the token it minted and echoes the actor's org_id. On stdout the directive is
+# captured INTO that value, so the caller receives
+# "::add-mask::<token>\n<org_id>" instead of the org id. That value then gets
+# interpolated into request URLs, curl rejects them as malformed (embedded
+# newline) without creating its output file, and the resulting `000` collides
+# with the `|| echo 000` fallback to yield a six-character "000000" status —
+# which reads like a dead gateway but is a local URL rejection. Eval run
+# 34170126167 lost phases 1, 2 and 11 to exactly that, while phase 9 proved the
+# gateway healthy in the same run. stderr keeps the masking and keeps stdout a
+# clean channel for return values.
 mask() {
   if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-    echo "::add-mask::$1"
+    echo "::add-mask::$1" >&2
   fi
 }
 

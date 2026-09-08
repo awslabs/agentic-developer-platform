@@ -286,14 +286,24 @@ api() {  # api <METHOD> <path> [json-body] -> sets API_STATUS / API_BODY
   local out="$WORKDIR/api.out" attempt=0 max_attempts=8
   [ -n "$body" ] && printf '%s' "$body" > "$WORKDIR/api.in"
   while :; do
+    rm -f "$out"
     if [ -n "$body" ]; then
       API_STATUS="$(curl -s -o "$out" -w '%{http_code}' --max-time 60 -X "$method" \
         -K "$ADMIN_CURLRC" -H 'content-type: application/json' \
-        --data-binary "@$WORKDIR/api.in" "${BASE_URL}${path}" || echo "000")"
+        --data-binary "@$WORKDIR/api.in" "${BASE_URL}${path}" || true)"
     else
       API_STATUS="$(curl -s -o "$out" -w '%{http_code}' --max-time 60 -X "$method" \
-        -K "$ADMIN_CURLRC" "${BASE_URL}${path}" || echo "000")"
+        -K "$ADMIN_CURLRC" "${BASE_URL}${path}" || true)"
     fi
+    # curl already prints its own '000' via -w when it fails before a response, so
+    # the old `|| echo 000` fallback CONCATENATED a second one and produced the
+    # six-character "000000" seen in run 34170126167 — a value that matches no
+    # case arm below, so it skipped the retry policy AND got reported verbatim as
+    # if it were a status. Normalise anything that is not exactly three digits.
+    case "$API_STATUS" in
+      [0-9][0-9][0-9]) ;;
+      *) API_STATUS="000" ;;
+    esac
     case "$API_STATUS" in
       502|503|504|000)
         is_app_level_5xx "$out" && break   # the app's own verdict: final
@@ -304,7 +314,9 @@ api() {  # api <METHOD> <path> [json-body] -> sets API_STATUS / API_BODY
       *) break ;;
     esac
   done
-  API_BODY="$(cat "$out")"
+  # curl creates no output file when it rejects the URL locally, so read
+  # defensively rather than emitting a bare `cat: ... No such file` to the log.
+  API_BODY="$(cat "$out" 2>/dev/null || true)"
 }
 
 # api_status / api_body — single-call convenience wrappers. Each still fires
