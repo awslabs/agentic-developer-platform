@@ -34,7 +34,7 @@ curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh | sh -s -- \
 adp login          # approve once in the browser
 adp status         # confirm you are signed in
 adp claude setup   # or: adp codex setup
-claude             # or: adp serve, then codex
+claude             # or: adp codex
 ```
 
 The installer puts `adp`, `bg-cognito-auth.sh` and `bg-gateway-proxy.py` side by
@@ -222,6 +222,15 @@ ADP_GATEWAY_DUMMY=unused codex
 
 That's it. Leave the proxy running as long as you like — token refresh happens
 per request, behind the scenes.
+
+> **With `adp` installed this is one command: `adp codex`.** It health-checks the
+> proxy, starts it in the background if needed, sets `ADP_GATEWAY_DUMMY` itself
+> and hands you into Codex — one terminal, no prefix to remember. The two steps
+> above are what it automates, and remain the path for a hand-installed setup with
+> no `adp`. To make the bare `codex` command work, `adp daemon install` keeps the
+> proxy always-on (macOS); `adp daemon uninstall` reverts it. Claude Code needs
+> none of this — `apiKeyHelper` refreshes per request, so bare `claude` works and
+> `adp claude` is only a fail-fast login check.
 
 ### How it works
 

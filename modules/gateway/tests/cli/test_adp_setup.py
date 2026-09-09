@@ -188,12 +188,19 @@ class TestCodexSetup:
         assert "bg-gateway-proxy.py" in result.stderr
         assert not (adp_home / ".codex" / "config.toml").exists()
 
-    def test_prints_how_to_start_the_proxy(self, run_adp, adp_home: Path) -> None:
+    def test_prints_how_to_launch_codex(self, run_adp, adp_home: Path) -> None:
+        """#4863 replaced the two-terminal `adp serve` hint with `adp codex`.
+
+        The closing hint is the last thing a user reads before their first launch,
+        so it must name the command that actually works in one step — and must not
+        send them back to the dance the launcher exists to remove.
+        """
         _write_session(adp_home)
 
         result = run_adp(["codex", "setup"])
 
-        assert "adp serve" in result.stdout
+        assert "adp codex" in result.stdout
+        assert "ADP_GATEWAY_DUMMY=unused codex" not in result.stdout
 
 
 class TestClaudeSetup:

@@ -163,7 +163,50 @@ describe('SetupInstructions', () => {
     expect(text).toContain('http://127.0.0.1:9191/openai/v1');
     expect(text).toContain('wire_api = "responses"');
     expect(text).toContain('env_key = "ADP_GATEWAY_DUMMY"');
-    expect(text).toContain('ADP_GATEWAY_DUMMY=unused codex');
+  });
+
+  // --- Codex: one-command launch (Issue #4863) --------------------------------
+  //
+  // These assert on the PRIMARY flow only — the copy-paste snippets a user sees
+  // without expanding anything. The raw-script fallback still documents the
+  // two-terminal form on purpose (someone running the scripts by hand has no
+  // `adp` to run), so a whole-body assertion could not express "the primary flow
+  // is one command" and would pass even if the old steps came back.
+  const primarySnippets = () =>
+    Array.from(document.querySelectorAll('pre'))
+      .filter((node) => node.closest('details') === null)
+      .map((node) => node.textContent ?? '')
+      .join('\n');
+
+  it('launches Codex with a single command', async () => {
+    render(<SetupInstructions />);
+    await openCodexTab();
+
+    expect(primarySnippets()).toContain('adp codex');
+  });
+
+  it('does not make the user start a proxy or set a dummy var by hand', async () => {
+    // The two-step dance #4863 removed: `adp serve` in one terminal, then
+    // `ADP_GATEWAY_DUMMY=unused codex` in another. `adp codex` does both.
+    render(<SetupInstructions />);
+    await openCodexTab();
+    const snippets = primarySnippets();
+
+    expect(snippets).not.toContain('ADP_GATEWAY_DUMMY=unused codex');
+    expect(snippets).not.toMatch(/^adp serve\b/m);
+  });
+
+  it('notes that bare codex needs the opt-in daemon, and adp claude is optional', async () => {
+    // The asymmetry is documented, not hidden: Claude Code refreshes its own
+    // token per request, so bare `claude` already works and `adp claude` is a
+    // convenience. A user who thinks otherwise files a bug that is not one.
+    render(<SetupInstructions />);
+    await openCodexTab();
+    const text = document.body.textContent ?? '';
+
+    expect(text).toContain('adp daemon install');
+    expect(text).toContain('adp claude');
+    expect(text).toMatch(/optional/i);
   });
 
   it('does not present a manually exported token as the Codex path', async () => {
@@ -412,8 +455,11 @@ describe('SetupInstructions', () => {
     render(<SetupInstructions />);
     expect(document.body.textContent ?? '').toContain('adp token');
 
+    // #4863 replaced the standalone `adp serve` step with `adp codex`, which
+    // starts the same proxy on demand. Still `adp`-driven — one command instead
+    // of two terminals.
     await openCodexTab();
-    expect(document.body.textContent ?? '').toContain('adp serve');
+    expect(document.body.textContent ?? '').toContain('adp codex');
   });
 
   // --- Issue #4859: the settings snippet must agree with the command above it --

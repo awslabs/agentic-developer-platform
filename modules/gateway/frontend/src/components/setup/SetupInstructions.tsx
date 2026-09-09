@@ -481,16 +481,30 @@ export function SetupInstructions() {
       ),
     },
     {
-      title: 'Start the proxy, then Codex',
+      title: 'Run Codex',
       body: (
         <>
-          <CodeSnippet>{`adp serve                              # foreground; Ctrl-C to stop
-ADP_GATEWAY_DUMMY=unused codex         # in a second terminal`}</CodeSnippet>
+          <CodeSnippet>{'adp codex'}</CodeSnippet>
           <p className="text-gray-500 dark:text-gray-400">
-            Leave the proxy running as long as you like — refresh happens per request, behind the
-            scenes. It injects a freshly-refreshed token into every call. Codex requires{' '}
-            <code className={CODE}>env_key</code> to name an existing env var but never validates its
-            value; the proxy discards whatever arrives and injects the real token.
+            One command, one terminal. It starts the local auth proxy if it is not already running,
+            reuses it if it is, and hands you into Codex — arguments and flags pass straight through
+            (<code className={CODE}>adp codex --model …</code>). The proxy injects a
+            freshly-refreshed token into every call, so a session can outlive the one-hour token.
+          </p>
+          <p className="text-gray-500 dark:text-gray-400">
+            Want the bare <code className={CODE}>codex</code> command to work too? Run{' '}
+            <code className={CODE}>adp daemon install</code> once (macOS) to keep the proxy always
+            up; <code className={CODE}>adp daemon uninstall</code> removes it. For Claude Code there
+            is an <code className={CODE}>adp claude</code> for symmetry, but it is optional — bare{' '}
+            <code className={CODE}>claude</code> already works, because it refreshes its own token
+            per request.
+          </p>
+          <p className="text-gray-500 dark:text-gray-400">
+            Codex requires <code className={CODE}>env_key</code> to name an existing env var but
+            never validates its value, so <code className={CODE}>ADP_GATEWAY_DUMMY</code> is a
+            placeholder rather than a credential — the proxy discards whatever arrives and injects the
+            real token. <code className={CODE}>adp codex</code> sets it for you; nothing secret ever
+            reaches your shell history.
           </p>
           <RawScriptFallback
             baseUrl={baseUrl}

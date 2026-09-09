@@ -10,6 +10,9 @@
 #
 #   * `codex setup` / `claude setup` — idempotent, merge-never-overwrite config
 #     writers, so users stop hand-editing two different tool config files
+#   * `codex` / `claude`             — launchers: preflight the session, and (for
+#     Codex only) ensure the local proxy is up, so launching is one command
+#   * `daemon install|uninstall`     — opt-in always-on proxy, so bare `codex` works
 #   * `status`                       — one read-only "am I set up correctly?"
 #   * `update` / `update --rollback` — re-pull from the gateway that installed us
 #
@@ -18,9 +21,19 @@
 # both tools read it; the per-tool verbs do config wiring only and never
 # authenticate.
 #
+# The two launchers are deliberately ASYMMETRIC in what they do, because the two
+# tools are: Claude Code has an `apiKeyHelper` hook and calls `adp token` itself
+# per request, so bare `claude` already works and `adp claude` adds only a
+# fail-fast preflight. Codex has no such hook — it reads its credential from an
+# env var once at launch — so it needs the loopback proxy running and a value in
+# `ADP_GATEWAY_DUMMY`, which is what `adp codex` stops being a two-terminal
+# chore. That asymmetry is documented, not hidden (Issue #4863).
+#
 # Usage:
 #   adp login | status | logout | token | refresh | import | serve
+#   adp codex [args…] | claude [args…]
 #   adp codex setup | claude setup
+#   adp daemon install | uninstall
 #   adp update [--rollback] | version | help
 
 set -euo pipefail
@@ -38,9 +51,49 @@ PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
 
+# Where a detached proxy's output goes. A backgrounded process with nowhere to
+# write is a process whose failure is invisible, and "Codex 502s on the first
+# request" needs a log to diagnose.
+ADP_LOG_DIR="${HOME}/.adp/logs"
+PROXY_LOG_FILE="${ADP_LOG_DIR}/proxy.log"
+
+# The core's serve pidfile. Read (never written) here, to tell "no proxy" from
+# "a proxy on some other port" — the core refuses to run two, so the second is a
+# distinct, actionable failure rather than a start timeout.
+PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
+
+# Guards the proxy spawn so two concurrent `adp codex` calls cannot both start
+# one. Deliberately NOT the core's refresh.lock: the proxy we spawn calls
+# `token`, which takes that lock, so sharing it would deadlock the readiness
+# poll against the process it is waiting for.
+PROXY_SPAWN_LOCK_DIR="${CONFIG_DIR}/proxy-spawn.lock"
+readonly PROXY_SPAWN_LOCK_STALE_SECONDS=30
+readonly PROXY_SPAWN_LOCK_MAX_WAIT_SECONDS=15
+_PROXY_SPAWN_LOCK_HELD=0
+
+# How long to wait for a just-spawned proxy to accept connections. Generous
+# enough for a cold python3 start, short enough that a proxy which will never
+# come up fails with a legible message instead of hanging the terminal.
+readonly PROXY_READY_TIMEOUT_SECONDS=10
+
+# Opt-in always-on proxy (macOS launchd). Only `adp daemon` touches these.
+LAUNCH_AGENT_LABEL="com.adp.gateway-proxy"
+LAUNCH_AGENT_FILE="${HOME}/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist"
+
+# Marker on the rc line `daemon install` adds, so `uninstall` can remove exactly
+# that line and nothing else. Same shape as install.sh's PATH comment.
+readonly DAEMON_RC_MARKER="# Added by adp daemon install"
+
 # Codex provider block identifiers. The port must equal DEFAULT_PROXY_PORT in
 # bg-cognito-auth.sh and CODEX_PROXY_PORT in frontend SetupInstructions.tsx.
-readonly CODEX_PROXY_PORT=9191
+#
+# ADP_PROXY_PORT overrides it for the two cases where 9191 is not usable: a
+# machine where something else already owns the port, and the test suite, which
+# must not fight the developer's own running proxy. Both the config writer and
+# the launcher read THIS variable, so an override cannot make config.toml's
+# base_url disagree with the port we actually serve on — but a port changed after
+# `codex setup` does require re-running it.
+readonly CODEX_PROXY_PORT="${ADP_PROXY_PORT:-9191}"
 readonly CODEX_PROVIDER="adp-gateway"
 
 # 55 min. Matches cmd_token's refresh-on-expiry behaviour and the /setup page.
@@ -134,6 +187,220 @@ require_session() {
         print_error "Not signed in — run 'adp login' first."
         exit 1
     fi
+}
+
+# --- launcher helpers (Issue #4863) -----------------------------------------
+
+# The preflight both launchers run. Deliberately delegates to the core's
+# `token`, NOT to has_valid_session: an EXPIRED ACCESS TOKEN IS NORMAL — it
+# refreshes on next use, which is exactly what `token` does. Refusing to launch
+# on that would be the "wrongly declares a valid session expired" failure mode.
+# Only a genuinely dead session (no store, or a refresh token the gateway
+# rejects) reaches the hint below.
+require_live_session() {
+    local tool="$1"
+
+    if [ ! -f "${CONFIG_FILE}" ] || [ ! -f "${TOKEN_FILE}" ]; then
+        print_error "Your CLI session has expired. Run: adp login"
+        exit 1
+    fi
+
+    # Output discarded: this is a liveness check, and the token must never reach
+    # a terminal or a log. Only the exit status is used.
+    if ! core token >/dev/null 2>&1; then
+        print_error "Your CLI session has expired. Run: adp login"
+        print_warning "${tool} was not started."
+        exit 1
+    fi
+}
+
+# True when something is accepting connections on the proxy port.
+#
+# A TCP connect, not an HTTP request: every proxy route forwards upstream, so an
+# HTTP probe would spend a real gateway call (and a token refresh) just to learn
+# that a local socket is open. bash's /dev/tcp needs no nc/curl dependency.
+#
+# The connect happens in a SUBSHELL so the descriptor closes when it exits. Doing
+# it in this shell would need a bare `exec 3>&-` to clean up, and a bare `exec`
+# applies its redirections to the shell PERMANENTLY — `exec 3>&- 2>/dev/null`
+# silently sends every later diagnostic, including "session expired", to
+# /dev/null. Keep the probe inside the parentheses.
+proxy_listening() {
+    local port="$1"
+    (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+}
+
+# Age in seconds of the spawn lock, or empty if absent. Portable across macOS
+# (stat -f %m) and Linux (stat -c %Y) — mirrors _lock_age_seconds in the core.
+_spawn_lock_age_seconds() {
+    local mtime now
+    if mtime=$(stat -f %m "${PROXY_SPAWN_LOCK_DIR}" 2>/dev/null); then
+        :
+    elif mtime=$(stat -c %Y "${PROXY_SPAWN_LOCK_DIR}" 2>/dev/null); then
+        :
+    else
+        return 1
+    fi
+    now=$(date +%s)
+    echo $((now - mtime))
+}
+
+_release_proxy_spawn_lock() {
+    if [ "${_PROXY_SPAWN_LOCK_HELD}" = "1" ]; then
+        rmdir "${PROXY_SPAWN_LOCK_DIR}" 2>/dev/null || rm -rf "${PROXY_SPAWN_LOCK_DIR}" 2>/dev/null || true
+        _PROXY_SPAWN_LOCK_HELD=0
+    fi
+}
+
+# mkdir is atomic across processes, which is the whole mechanism. Same
+# stale-reclaim shape as the core's refresh lock (#4837): a lock abandoned by a
+# crashed process must not wedge every later launch.
+_acquire_proxy_spawn_lock() {
+    mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
+    local waited=0
+    while :; do
+        if mkdir "${PROXY_SPAWN_LOCK_DIR}" 2>/dev/null; then
+            _PROXY_SPAWN_LOCK_HELD=1
+            trap _release_proxy_spawn_lock EXIT INT TERM
+            return 0
+        fi
+        local age
+        age=$(_spawn_lock_age_seconds || true)
+        if [ -n "${age}" ] && [ "${age}" -ge "${PROXY_SPAWN_LOCK_STALE_SECONDS}" ]; then
+            rmdir "${PROXY_SPAWN_LOCK_DIR}" 2>/dev/null || rm -rf "${PROXY_SPAWN_LOCK_DIR}" 2>/dev/null || true
+            continue
+        fi
+        if [ "${waited}" -ge "${PROXY_SPAWN_LOCK_MAX_WAIT_SECONDS}" ]; then
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
+# Block until the port accepts connections, or give up. Polls in 0.2s steps so a
+# warm start costs a fraction of a second rather than a full second.
+_wait_for_proxy() {
+    local port="$1"
+    local waited_tenths=0
+    local limit_tenths=$((PROXY_READY_TIMEOUT_SECONDS * 10))
+    while [ "${waited_tenths}" -lt "${limit_tenths}" ]; do
+        if proxy_listening "${port}"; then
+            return 0
+        fi
+        sleep 0.2
+        waited_tenths=$((waited_tenths + 2))
+    done
+    return 1
+}
+
+# Make sure a proxy is listening on CODEX_PROXY_PORT, starting one if not.
+#
+# Idempotent by health-check-first: an already-running proxy (yours, or the
+# launchd agent from `adp daemon install`) is reused, never duplicated. The
+# re-check under the lock is what makes two concurrent `adp codex` calls start
+# exactly one proxy — the loser of the mkdir race observes the winner's proxy
+# instead of racing it to the bind.
+ensure_proxy() {
+    local port="${CODEX_PROXY_PORT}"
+
+    if proxy_listening "${port}"; then
+        print_info "Using the auth proxy already running on 127.0.0.1:${port}."
+        return 0
+    fi
+
+    if ! _acquire_proxy_spawn_lock; then
+        print_error "Could not acquire the proxy start lock within ${PROXY_SPAWN_LOCK_MAX_WAIT_SECONDS}s."
+        print_warning "Another launch may be stuck — remove ${PROXY_SPAWN_LOCK_DIR} if no other session is starting."
+        exit 1
+    fi
+
+    if proxy_listening "${port}"; then
+        _release_proxy_spawn_lock
+        print_info "Using the auth proxy already running on 127.0.0.1:${port}."
+        return 0
+    fi
+
+    # Nothing on our port, but the core keeps ONE pidfile regardless of port and
+    # refuses to start a second proxy. Without this check that refusal surfaces
+    # as a 10s "did not come up" timeout with the real reason buried in the log —
+    # so name it now, with the fix.
+    if [ -f "${PROXY_PID_FILE}" ]; then
+        local existing_pid
+        existing_pid=$(cat "${PROXY_PID_FILE}" 2>/dev/null || true)
+        if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+            _release_proxy_spawn_lock
+            print_error "An auth proxy is already running (pid ${existing_pid}), but not on port ${port}."
+            print_warning "Stop it with 'kill ${existing_pid}', or re-run 'adp codex setup' to use its port."
+            exit 1
+        fi
+    fi
+
+    mkdir -p "${ADP_LOG_DIR}" 2>/dev/null || true
+
+    print_info "Starting the auth proxy on 127.0.0.1:${port} (log: ${PROXY_LOG_FILE})..."
+    # setsid where available so the proxy survives this terminal; nohup covers
+    # the rest. stdin from /dev/null and both streams appended to the log, so a
+    # detached proxy can neither read from nor scribble on the user's terminal.
+    if command -v setsid >/dev/null 2>&1; then
+        setsid nohup bash "$(core_script)" serve --port "${port}" \
+            </dev/null >>"${PROXY_LOG_FILE}" 2>&1 &
+    else
+        nohup bash "$(core_script)" serve --port "${port}" \
+            </dev/null >>"${PROXY_LOG_FILE}" 2>&1 &
+    fi
+    disown 2>/dev/null || true
+
+    if ! _wait_for_proxy "${port}"; then
+        _release_proxy_spawn_lock
+        print_error "The auth proxy did not come up within ${PROXY_READY_TIMEOUT_SECONDS}s."
+        print_warning "See ${PROXY_LOG_FILE}, or run 'adp serve' in the foreground to watch it start."
+        exit 1
+    fi
+
+    # Released only once the proxy is listening: a waiter that took the lock the
+    # moment we spawned would health-check a socket that is not open yet and
+    # spawn a second.
+    _release_proxy_spawn_lock
+    print_success "Auth proxy ready on 127.0.0.1:${port}."
+}
+
+require_tool() {
+    local tool="$1"
+    if ! command -v "${tool}" >/dev/null 2>&1; then
+        print_error "${tool} is not on your PATH — install it first."
+        exit 1
+    fi
+}
+
+# --- codex (launch) ---------------------------------------------------------
+# One command, one terminal. Replaces the `adp serve` + `ADP_GATEWAY_DUMMY=unused
+# codex` two-terminal dance: preflight the session, ensure the proxy, set the
+# placeholder env var Codex insists on, hand over.
+cmd_codex_launch() {
+    require_tool codex
+    require_live_session "Codex"
+    ensure_proxy
+
+    # Codex refuses to start a model provider whose env_key names an unset
+    # variable, but never validates the VALUE — the proxy drops whatever arrives
+    # and injects the real token. So this is a placeholder, not a credential,
+    # and setting it here is what removes it from the user's command line.
+    export ADP_GATEWAY_DUMMY="${ADP_GATEWAY_DUMMY:-unused}"
+
+    # exec, so Codex owns the terminal: job control, Ctrl-C and its exit status
+    # all reach the user directly instead of through a bash wrapper.
+    exec codex "$@"
+}
+
+# --- claude (launch) --------------------------------------------------------
+# Preflight, then hand over. No proxy and no env var by design: Claude Code's
+# apiKeyHelper calls `adp token` per request, so bare `claude` works and keeps
+# working. This verb exists for symmetry and for the fail-fast login hint.
+cmd_claude_launch() {
+    require_tool claude
+    require_live_session "Claude Code"
+    exec claude "$@"
 }
 
 # --- login ------------------------------------------------------------------
@@ -285,10 +552,14 @@ EOF
     mv -f "${tmp}" "${CODEX_CONFIG_FILE}"
     print_success "Wired Codex to the ADP gateway (${CODEX_CONFIG_FILE})."
     echo ""
-    echo "Start the local auth proxy, then Codex in a second terminal:"
+    echo "Run it — one command, one terminal:"
     echo ""
-    echo "  adp serve                         # foreground; Ctrl-C to stop"
-    echo "  ADP_GATEWAY_DUMMY=unused codex"
+    echo "  adp codex"
+    echo ""
+    echo "That starts the local auth proxy if it is not already up, then hands you"
+    echo "into Codex. To make the bare 'codex' command work too, run:"
+    echo ""
+    echo "  adp daemon install"
     echo ""
 }
 
@@ -349,6 +620,156 @@ cmd_claude_setup() {
     echo ""
     echo "  claude"
     echo ""
+}
+
+# --- daemon install / uninstall ---------------------------------------------
+# OPT-IN ONLY. The default is the on-demand `adp codex` launcher: no background
+# service, no rc edit, and the proxy dies with your session. This exists for
+# people who want the bare word `codex` to work, which needs the proxy always up
+# and ADP_GATEWAY_DUMMY exported by the shell rather than by the launcher.
+#
+# Not implemented by shadowing `codex` with a shell function or alias: a wrapper
+# that silently intercepts a binary you installed yourself is too surprising, and
+# is an explicit non-goal of #4863.
+#
+# macOS/launchd only. Adding a second init system (systemd --user) is a separate
+# piece of work, and shipping a half-tested Linux path would be worse than
+# saying so.
+daemon_rc_file() {
+    case "${SHELL:-}" in
+        */zsh) echo "${HOME}/.zshrc" ;;
+        */bash)
+            if [ -f "${HOME}/.bash_profile" ]; then echo "${HOME}/.bash_profile"; else echo "${HOME}/.bashrc"; fi ;;
+        *) echo "" ;;
+    esac
+}
+
+require_launchd() {
+    if [ "$(uname -s)" != "Darwin" ] || ! command -v launchctl >/dev/null 2>&1; then
+        print_error "'adp daemon' needs macOS launchd."
+        print_warning "On Linux, 'adp codex' starts the proxy on demand — no daemon needed."
+        exit 1
+    fi
+}
+
+# Remove our marked rc block if present. Written to be safe to call when the rc
+# file does not exist or has no block, so `uninstall` is idempotent.
+daemon_remove_rc_export() {
+    local rc="$1"
+    [ -n "${rc}" ] && [ -f "${rc}" ] || return 0
+    grep -Fq "${DAEMON_RC_MARKER}" "${rc}" || return 0
+
+    local tmp
+    tmp=$(mktemp "${rc}.XXXXXX")
+    # Drops the marker line and the export that follows it, leaving every other
+    # line — including any ADP_GATEWAY_DUMMY the user set themselves — untouched.
+    awk -v marker="${DAEMON_RC_MARKER}" '
+        index($0, marker) { skip = 1; next }
+        skip && $0 ~ /^export ADP_GATEWAY_DUMMY=/ { skip = 0; next }
+        { skip = 0; print }
+    ' "${rc}" > "${tmp}"
+    mv -f "${tmp}" "${rc}"
+    print_success "Removed the ADP_GATEWAY_DUMMY export from ${rc}."
+}
+
+cmd_daemon_install() {
+    require_launchd
+    require_session
+
+    local core_path
+    core_path="$(core_script)"
+    if [ ! -f "${core_path}" ]; then
+        print_error "Auth helper not found at ${core_path} — reinstall the CLI first."
+        exit 1
+    fi
+
+    mkdir -p "$(dirname "${LAUNCH_AGENT_FILE}")" "${ADP_LOG_DIR}"
+
+    # KeepAlive so a crashed proxy comes back; RunAtLoad so it is up after a
+    # reboot without the user thinking about it. Both streams to the same log the
+    # on-demand launcher uses, so there is one place to look either way.
+    cat > "${LAUNCH_AGENT_FILE}" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${LAUNCH_AGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>${core_path}</string>
+        <string>serve</string>
+        <string>--port</string>
+        <string>${CODEX_PROXY_PORT}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${PROXY_LOG_FILE}</string>
+    <key>StandardErrorPath</key>
+    <string>${PROXY_LOG_FILE}</string>
+</dict>
+</plist>
+EOF
+
+    # Unload first so a re-run picks up a changed plist instead of leaving the
+    # old definition loaded. Failure is expected when nothing is loaded yet.
+    launchctl unload "${LAUNCH_AGENT_FILE}" 2>/dev/null || true
+    if ! launchctl load "${LAUNCH_AGENT_FILE}" 2>/dev/null; then
+        print_warning "Wrote ${LAUNCH_AGENT_FILE} but launchctl load failed."
+        print_warning "Load it at next login, or run: launchctl load ${LAUNCH_AGENT_FILE}"
+    fi
+
+    # Bare `codex` gets ADP_GATEWAY_DUMMY from the shell, since no launcher is
+    # involved to set it. Marked and idempotent so a re-run does not stack lines.
+    local rc
+    rc="$(daemon_rc_file)"
+    if [ -z "${rc}" ]; then
+        print_warning "Unknown shell — add this to your shell config yourself:"
+        printf '\n    export ADP_GATEWAY_DUMMY=unused\n\n' >&2
+    elif [ -f "${rc}" ] && grep -Fq "${DAEMON_RC_MARKER}" "${rc}"; then
+        print_success "${rc} already exports ADP_GATEWAY_DUMMY."
+    else
+        {
+            echo ""
+            echo "${DAEMON_RC_MARKER}"
+            echo "export ADP_GATEWAY_DUMMY=unused"
+        } >> "${rc}"
+        print_success "Added the ADP_GATEWAY_DUMMY export to ${rc}."
+    fi
+
+    print_success "Always-on auth proxy installed (${LAUNCH_AGENT_LABEL})."
+    echo ""
+    echo "Open a new terminal, then run Codex however you like:"
+    echo ""
+    echo "  codex        # bare — the proxy is always up now"
+    echo "  adp codex    # also fine; it finds the running proxy and reuses it"
+    echo ""
+    echo "Undo with: adp daemon uninstall"
+    echo ""
+}
+
+cmd_daemon_uninstall() {
+    require_launchd
+
+    local removed=0
+    if [ -f "${LAUNCH_AGENT_FILE}" ]; then
+        launchctl unload "${LAUNCH_AGENT_FILE}" 2>/dev/null || true
+        rm -f "${LAUNCH_AGENT_FILE}"
+        print_success "Removed ${LAUNCH_AGENT_FILE}."
+        removed=1
+    fi
+
+    daemon_remove_rc_export "$(daemon_rc_file)"
+
+    if [ "${removed}" -eq 0 ]; then
+        print_info "No always-on proxy was installed — nothing to remove."
+    fi
+
+    print_success "Done. 'adp codex' still works — it starts the proxy on demand."
 }
 
 # --- update -----------------------------------------------------------------
@@ -426,9 +847,15 @@ Sign in (one login is shared by every tool):
 Wire up a tool (config only — sign in once, then set up as many as you like):
     codex setup           Point Codex at the local auth proxy
     claude setup          Set Claude Code's apiKeyHelper (merges settings.json)
-    serve                 Run the localhost auth proxy Codex needs
+
+Run a tool:
+    codex [args...]       Launch Codex: starts the auth proxy if needed, then execs
+    claude [args...]      Launch Claude Code (optional — bare 'claude' also works)
+    serve                 Run the localhost auth proxy in the FOREGROUND
 
 Self-management:
+    daemon install        Opt in to an always-on proxy, so bare 'codex' works (macOS)
+    daemon uninstall      Remove it
     update [--rollback]   Re-pull this CLI from your gateway
     version               Print the version
     help                  Show this message
@@ -438,7 +865,14 @@ Day 1, start to finish:
     adp login
     adp status
     adp codex setup        # or: adp claude setup
-    codex                  # or: claude
+    adp codex              # or: claude
+
+Why the two launchers differ:
+    Codex has no hook for refreshing a credential, so it needs the local proxy
+    running and a placeholder in ADP_GATEWAY_DUMMY — 'adp codex' does both for
+    you. Claude Code calls 'adp token' itself on every request, so bare 'claude'
+    already works; 'adp claude' just fails fast with a login hint instead of
+    erroring mid-session. Args after either verb go straight to the tool.
 EOF
 }
 
@@ -454,18 +888,31 @@ main() {
         # Pure pass-throughs. The core owns their flags and their exit codes.
         logout|token|refresh|import|serve)
                  core "${command}" "$@" ;;
+        # `setup` is our own subcommand; anything else — including nothing at all
+        # — is a LAUNCH with passthrough args. Codex and Claude both have rich
+        # flag surfaces we must not shadow, so the tool owns every token we do
+        # not claim, and `--` before an arg that collides with `setup` is the
+        # escape hatch (`adp codex -- setup`).
         codex)
             case "${1:-}" in
                 setup) shift; cmd_codex_setup "$@" ;;
-                "")    print_error "Missing subcommand. Did you mean 'adp codex setup'?"; exit 1 ;;
-                *)     print_error "Unknown 'adp codex' subcommand: $1"; exit 1 ;;
+                --)    shift; cmd_codex_launch "$@" ;;
+                *)     cmd_codex_launch "$@" ;;
             esac
             ;;
         claude)
             case "${1:-}" in
                 setup) shift; cmd_claude_setup "$@" ;;
-                "")    print_error "Missing subcommand. Did you mean 'adp claude setup'?"; exit 1 ;;
-                *)     print_error "Unknown 'adp claude' subcommand: $1"; exit 1 ;;
+                --)    shift; cmd_claude_launch "$@" ;;
+                *)     cmd_claude_launch "$@" ;;
+            esac
+            ;;
+        daemon)
+            case "${1:-}" in
+                install)   shift; cmd_daemon_install "$@" ;;
+                uninstall) shift; cmd_daemon_uninstall "$@" ;;
+                "")        print_error "Missing subcommand: 'adp daemon install' or 'adp daemon uninstall'."; exit 1 ;;
+                *)         print_error "Unknown 'adp daemon' subcommand: $1"; exit 1 ;;
             esac
             ;;
         update)  cmd_update "$@" ;;
