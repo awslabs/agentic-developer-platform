@@ -197,6 +197,7 @@ function tab(name){
               <th class="py-2 pr-4 font-medium">PERSON</th>
               <th class="py-2 pr-4 font-medium">TEAMS</th>
               <th class="py-2 pr-4 font-medium">ROLE</th>
+              <th class="py-2 pr-4 font-medium">SPEND / LIMIT (MONTH)</th>
               <th class="py-2 font-medium"></th>
             </tr>
           </thead>
@@ -210,6 +211,11 @@ function tab(name){
               <td class="py-3 pr-4">
                 <select class="border border-gray-300 rounded-lg text-sm px-2 py-1"><option>Member</option><option>Org admin</option></select>
               </td>
+              <td class="py-3 pr-4">
+                <div class="text-sm">$38 / $75</div>
+                <div class="h-1.5 w-24 bg-gray-100 rounded-full mt-1"><div class="h-1.5 bg-primary-500 rounded-full" style="width:51%"></div></div>
+                <div class="text-xs text-gray-500 mt-0.5">individual limit</div>
+              </td>
               <td class="py-3 text-right space-x-2"><button class="text-primary-600 hover:underline">Teams</button><button class="text-red-600 hover:underline">Remove</button></td>
             </tr>
             <tr>
@@ -220,6 +226,11 @@ function tab(name){
               <td class="py-3 pr-4"><span class="bg-gray-100 rounded px-2 py-0.5 text-xs">web-team</span></td>
               <td class="py-3 pr-4">
                 <select class="border border-gray-300 rounded-lg text-sm px-2 py-1"><option>Org admin</option><option>Member</option></select>
+              </td>
+              <td class="py-3 pr-4">
+                <div class="text-sm text-amber-700 font-medium">$47 / $50</div>
+                <div class="h-1.5 w-24 bg-gray-100 rounded-full mt-1"><div class="h-1.5 bg-amber-500 rounded-full" style="width:94%"></div></div>
+                <div class="text-xs text-gray-500 mt-0.5">org default</div>
               </td>
               <td class="py-3 text-right space-x-2"><button class="text-primary-600 hover:underline">Teams</button><button class="text-red-600 hover:underline">Remove</button></td>
             </tr>
@@ -232,11 +243,16 @@ function tab(name){
               <td class="py-3 pr-4">
                 <select class="border border-gray-300 rounded-lg text-sm px-2 py-1"><option>Member</option><option>Org admin</option></select>
               </td>
+              <td class="py-3 pr-4">
+                <div class="text-sm">$4 / $50</div>
+                <div class="h-1.5 w-24 bg-gray-100 rounded-full mt-1"><div class="h-1.5 bg-primary-500 rounded-full" style="width:8%"></div></div>
+                <div class="text-xs text-gray-500 mt-0.5">org default</div>
+              </td>
               <td class="py-3 text-right space-x-2"><button class="text-primary-600 hover:underline">Teams</button><button class="text-red-600 hover:underline">Remove</button></td>
             </tr>
           </tbody>
         </table>
-        <p class="text-xs text-gray-500 mt-3">People are recognized by their GitHub ID when one is linked. A person can be on several teams; budgets and Bedrock routing follow team membership.</p>
+        <p class="text-xs text-gray-500 mt-3">People are recognized by their GitHub ID when one is linked. A person can be on several teams; budgets and Bedrock routing follow team membership. The spend column shows this month's usage against the person's applicable limit and where that limit comes from (individual &gt; team &gt; org &gt; platform).</p>
       </div>
 
       <!-- Tab: Budget (org-scoped view of the shipped Budget Management panel — reused, not forked) -->
