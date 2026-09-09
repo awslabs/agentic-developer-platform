@@ -62,7 +62,7 @@ export default function ClaudeSetup() {
               Your stored refresh token is no longer valid, so the helper cannot mint a token.
               Re-run{' '}
               <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
-                bg-cognito-auth.sh login --web
+                adp login
               </code>{' '}
               and approve in the browser — one click, no token to copy. This applies to both Claude
               Code and Codex — the same helper mints the token for each.
@@ -70,14 +70,14 @@ export default function ClaudeSetup() {
           </div>
           <div>
             <h4 className="font-semibold text-gray-900 dark:text-white">
-              login --web fails — web sign-in not enabled
+              adp login fails — web sign-in not enabled
             </h4>
             <p className="mt-1">
               This deployment has not provisioned the CLI sign-in backend yet (an administrator
               needs to apply the gateway infrastructure). Until then, use the headless fallback in
               the Sign in step:{' '}
               <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
-                bg-cognito-auth.sh import
+                adp import
               </code>{' '}
               with a revealed refresh token.
             </p>

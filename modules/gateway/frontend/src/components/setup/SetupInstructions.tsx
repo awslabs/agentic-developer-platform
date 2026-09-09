@@ -38,13 +38,30 @@ import { getGatewayBaseUrl } from '@/utils/gatewayUrl';
 import { ScriptDownloadList } from '@/components/setup/ScriptDownload';
 import { ConnectCliPanel } from '@/components/setup/ConnectCliPanel';
 
+/**
+ * The exact value `adp claude setup` writes (Issue #4852 D4, finished in #4859).
+ *
+ * ABSOLUTE, and the install dir rather than a bare `adp`: Claude Code may invoke
+ * the helper from a non-login shell where ~/.adp/bin is not on PATH. It must stay
+ * in step with `adp_path()` in cli/adp + DEFAULT_INSTALL_DIR in cli/install.sh —
+ * a snippet that disagrees with what the command writes is the bug #4859 fixed.
+ */
+export const ADP_API_KEY_HELPER = '~/.adp/bin/adp token';
+
+/**
+ * The hand-installed equivalent, for the raw-script fallback only: someone who
+ * curled the core helper into ~/bin has no ~/.adp/bin, so the snippet above would
+ * point at a path they do not have.
+ */
+export const SCRIPT_API_KEY_HELPER = 'bash ~/bin/bg-cognito-auth.sh token';
+
 /** Anthropic-format settings — mirrors cli/examples/claude-settings-cognito.json */
 export function buildAnthropicSettings(baseUrl: string) {
   return {
     env: {
       ANTHROPIC_BASE_URL: baseUrl,
     },
-    apiKeyHelper: 'bash ~/bin/bg-cognito-auth.sh token',
+    apiKeyHelper: ADP_API_KEY_HELPER,
     // 55 min — matches `cmd_token`'s refresh-on-expiry behaviour. NOT the
     // 300000 from the legacy cli/claude-settings.example.json (bg-auth.sh era).
     apiKeyHelperTtlMs: 3300000,
@@ -62,7 +79,7 @@ export function buildBedrockSettings(baseUrl: string) {
       CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
       ANTHROPIC_BEDROCK_BASE_URL: baseUrl,
     },
-    apiKeyHelper: 'bash ~/bin/bg-cognito-auth.sh token',
+    apiKeyHelper: ADP_API_KEY_HELPER,
     apiKeyHelperTtlMs: 3300000,
     permissions: { allow: ['WebSearch', 'WebFetch'] },
     model: 'global.anthropic.claude-opus-4-6-v1',
@@ -269,18 +286,24 @@ function SignInStep() {
  *
  * `files`/`configPath`/`configBody` keep it tool-specific — the Claude Code tab
  * must not leak the Codex proxy into view, and vice versa.
+ *
+ * `configNote` exists because `configBody` is the same object the primary flow
+ * shows, and that one names `adp`'s installed path. Where the two differ for a
+ * hand-installed setup, this is where we say so.
  */
 function RawScriptFallback({
   baseUrl,
   files,
   configPath,
   configBody,
+  configNote,
   runCommand,
 }: {
   baseUrl: string;
   files: string[];
   configPath: string;
   configBody: string;
+  configNote?: React.ReactNode;
   runCommand: string;
 }) {
   return (
@@ -302,6 +325,7 @@ function RawScriptFallback({
           Write <code className={CODE}>{configPath}</code>:
         </p>
         <CodeSnippet>{buildFileWriteCommand(configPath, configBody)}</CodeSnippet>
+        {configNote}
         <p className="text-gray-500 dark:text-gray-400">
           This replaces the file. If you already have one you care about, merge the content shown
           above into it instead — which is the difference <code className={CODE}>adp</code> makes:
@@ -391,6 +415,13 @@ export function SetupInstructions() {
             files={['bg-cognito-auth.sh']}
             configPath="~/.claude/settings.json"
             configBody={anthropicSettings}
+            configNote={
+              <p className="text-gray-500 dark:text-gray-400">
+                Installing by hand means no <code className={CODE}>~/.adp/bin</code>, so point{' '}
+                <code className={CODE}>apiKeyHelper</code> at the script you just fetched instead:{' '}
+                <code className={CODE}>{SCRIPT_API_KEY_HELPER}</code>
+              </p>
+            }
             runCommand="claude"
           />
         </>

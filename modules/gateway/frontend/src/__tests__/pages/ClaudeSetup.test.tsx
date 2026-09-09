@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ClaudeSetup from '@/pages/ClaudeSetup';
 import * as auth from '@/services/auth';
@@ -22,6 +22,20 @@ vi.mock('@/hooks/useAuth', () => ({
 }));
 
 const STUB_ORIGIN = 'https://d123abc.cloudfront.net';
+
+/**
+ * The Troubleshooting card, by walking up from its heading. Needed because some
+ * commands legitimately appear both here and in the setup steps above, so
+ * page-wide text queries cannot tell the two apart.
+ */
+function getTroubleshootingCard(): HTMLElement {
+  // CardTitle renders an <h3> as a direct child of the Card's <div>, so the
+  // nearest enclosing div IS the card — do not walk past it, or the query
+  // widens back to the whole page.
+  const card = screen.getByText('Troubleshooting').closest('div');
+  if (!card) throw new Error('Troubleshooting card not found');
+  return card as HTMLElement;
+}
 
 describe('ClaudeSetup', () => {
   const realLocation = window.location;
@@ -121,6 +135,32 @@ describe('ClaudeSetup', () => {
     render(<ClaudeSetup />);
 
     expect(screen.getByText(pattern)).toBeInTheDocument();
+  });
+
+  // --- Issue #4859: troubleshooting must use the adp verbs ---------------------
+  it('points troubleshooting at the adp verbs, not the raw helper script', () => {
+    // The page told users to install `adp` and then, in troubleshooting, to run a
+    // script name they may never have installed (it now lives under ~/.adp/bin).
+    // Scoped to the Troubleshooting card: `adp login` also appears (correctly) in
+    // the Sign in step, so a page-wide getByText would match more than one node.
+    render(<ClaudeSetup />);
+    const troubleshooting = within(getTroubleshootingCard());
+
+    expect(troubleshooting.getByText('adp login')).toBeInTheDocument();
+    expect(troubleshooting.getByText('adp import')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['bg-cognito-auth.sh login --web'],
+    ['bg-cognito-auth.sh import'],
+  ])('no longer tells the user to run %s', (needle) => {
+    // Exact-text queries: the collapsed raw-script fallback inside
+    // SetupInstructions legitimately still documents the ~/bin-prefixed script
+    // flow, so this asserts the bare troubleshooting commands are gone rather
+    // than banning the script name page-wide.
+    render(<ClaudeSetup />);
+
+    expect(screen.queryByText(needle)).not.toBeInTheDocument();
   });
 
   it('describes the 401 fix for both tools, not Claude Code only', () => {

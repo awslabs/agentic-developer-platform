@@ -31,10 +31,12 @@ describe('ConnectCliPanel', () => {
   });
 
   it('renders the import command against the real gateway URL', () => {
+    // `adp import`, not the raw helper: #4859 finished the #4852 migration, so the
+    // one command shown here matches the CLI the page told the user to install.
     render(<ConnectCliPanel />);
 
     expect(screen.getByTestId('import-command')).toHaveTextContent(
-      `bg-cognito-auth.sh import --gateway-url ${STUB_ORIGIN}/api`
+      `adp import --gateway-url ${STUB_ORIGIN}/api`
     );
   });
 
@@ -74,6 +76,12 @@ describe('ConnectCliPanel', () => {
     render(<ConnectCliPanel />);
 
     expect(document.body.textContent ?? '').toContain('sessionStorage');
+  });
+
+  it('does not name the raw helper script in the command (Issue #4859)', () => {
+    render(<ConnectCliPanel />);
+
+    expect(screen.getByTestId('import-command').textContent).not.toContain('bg-cognito-auth.sh');
   });
 
   // --- Empty-token fallback --------------------------------------------------

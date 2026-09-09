@@ -24,6 +24,8 @@ import {
   buildCodexConfigToml,
   buildFileWriteCommand,
   buildInstallCommand,
+  ADP_API_KEY_HELPER,
+  SCRIPT_API_KEY_HELPER,
   CODEX_PROXY_PORT,
 } from '@/components/setup/SetupInstructions';
 import * as auth from '@/services/auth';
@@ -134,7 +136,7 @@ describe('SetupInstructions', () => {
     const parsed = JSON.parse(payload);
     expect(parsed).toEqual({
       env: { ANTHROPIC_BASE_URL: `${STUB_ORIGIN}/api` },
-      apiKeyHelper: 'bash ~/bin/bg-cognito-auth.sh token',
+      apiKeyHelper: '~/.adp/bin/adp token',
       apiKeyHelperTtlMs: 3300000,
       permissions: { allow: ['WebSearch', 'WebFetch'] },
       model: 'global.anthropic.claude-opus-4-6-v1',
@@ -414,6 +416,34 @@ describe('SetupInstructions', () => {
     expect(document.body.textContent ?? '').toContain('adp serve');
   });
 
+  // --- Issue #4859: the settings snippet must agree with the command above it --
+  it('renders the adp helper path in the settings snippet the primary flow shows', () => {
+    // The bug: step 4 says to run `adp claude setup`, and the "What it writes"
+    // snippet directly beneath it showed the raw-script helper — so the page
+    // contradicted itself and a user comparing the two assumed a broken setup.
+    render(<SetupInstructions />);
+    const snippet = screen
+      .getAllByText(
+        (_, el) => el?.tagName === 'PRE' && !!el.textContent?.includes('ANTHROPIC_BEDROCK_BASE_URL')
+      )
+      .at(0);
+
+    expect(snippet).toBeTruthy();
+    expect(snippet!.textContent).toContain(ADP_API_KEY_HELPER);
+    expect(snippet!.textContent).not.toContain('bg-cognito-auth.sh');
+  });
+
+  it('shows the script-based helper value only inside the raw-script fallback', () => {
+    // The fallback renders the same settings object, so it must say which value a
+    // hand-installed (~/bin, no ~/.adp) setup needs — otherwise the fallback
+    // sends the user to a path they do not have.
+    render(<SetupInstructions />);
+    const text = document.body.textContent ?? '';
+
+    expect(text).toContain(SCRIPT_API_KEY_HELPER);
+    expect(text).toContain('Prefer to run the scripts yourself');
+  });
+
   it('numbers each tab from 1 — a tab is one complete flow', async () => {
     render(<SetupInstructions />);
 
@@ -472,7 +502,7 @@ describe('settings builders', () => {
         CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
         ANTHROPIC_BEDROCK_BASE_URL: 'https://x/api',
       },
-      apiKeyHelper: 'bash ~/bin/bg-cognito-auth.sh token',
+      apiKeyHelper: '~/.adp/bin/adp token',
       apiKeyHelperTtlMs: 3300000,
       permissions: { allow: ['WebSearch', 'WebFetch'] },
       model: 'global.anthropic.claude-opus-4-6-v1',
@@ -483,6 +513,32 @@ describe('settings builders', () => {
     expect(buildAnthropicSettings('https://x/api').apiKeyHelper).toBe(
       buildBedrockSettings('https://x/api').apiKeyHelper
     );
+  });
+
+  // --- Issue #4859: the snippet must match what `adp claude setup` writes ------
+  it.each([
+    ['buildAnthropicSettings', buildAnthropicSettings],
+    ['buildBedrockSettings', buildBedrockSettings],
+  ])('%s sets apiKeyHelper to the value adp claude setup writes', (_name, build) => {
+    // The load-bearing assertion of #4859. cmd_claude_setup in cli/adp writes
+    // "$(adp_path) token", and adp_path resolves inside DEFAULT_INSTALL_DIR
+    // (~/.adp/bin, per cli/install.sh) — so a user comparing this snippet with
+    // their real settings.json must see the same string.
+    expect(build('https://x/api').apiKeyHelper).toBe(ADP_API_KEY_HELPER);
+    expect(ADP_API_KEY_HELPER).toBe('~/.adp/bin/adp token');
+  });
+
+  it.each([
+    ['buildAnthropicSettings', buildAnthropicSettings],
+    ['buildBedrockSettings', buildBedrockSettings],
+  ])('%s no longer names the raw helper script', (_name, build) => {
+    expect(build('https://x/api').apiKeyHelper).not.toContain('bg-cognito-auth.sh');
+  });
+
+  it('uses an absolute helper path, not a bare adp', () => {
+    // Claude Code may invoke apiKeyHelper from a non-login shell where
+    // ~/.adp/bin is not on PATH, so a bare `adp token` would fail to resolve.
+    expect(ADP_API_KEY_HELPER.startsWith('~/.adp/bin/')).toBe(true);
   });
 });
 
