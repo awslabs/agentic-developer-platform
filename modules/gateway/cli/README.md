@@ -1,15 +1,17 @@
 # Bedrock Gateway CLI Tools
 
-CLI tools for authenticating with the Bedrock Gateway and configuring Claude Code.
+CLI tools for authenticating with the Bedrock Gateway and configuring Claude Code
+or Codex.
 
 ## Contents
 
 | File | Description |
 |------|-------------|
-| `bg-cognito-auth.sh` | Cognito authentication helper (login, import, refresh, token, serve) |
+| `adp` | **The CLI you run.** Thin wrapper: `login`, `status`, `codex setup`, `claude setup`, `update` |
+| `install.sh` | Installer for `adp` — one line, run via `curl … \| sh` from your gateway |
+| `bg-cognito-auth.sh` | Cognito authentication core (login, import, refresh, token, serve). `adp` delegates every auth verb to it |
 | `bg-gateway-proxy.py` | Localhost auth proxy started by `serve` — zero-touch auth for Codex (stdlib python3, no pip installs) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
-| `install.sh` | Installation script |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
 | `examples/claude-settings-cognito.json` | Claude Code settings (Anthropic format via gateway) |
 
@@ -17,9 +19,47 @@ CLI tools for authenticating with the Bedrock Gateway and configuring Claude Cod
 
 ### Prerequisites
 
-- `curl`, `jq`, `aws` CLI v2
-- A Cognito user account (ask your platform admin)
-- Claude Code installed (`npm install -g @anthropic-ai/claude-code`)
+- `curl`, `jq`
+- A Cognito user account (ask your platform admin) — GitHub sign-in counts
+- Claude Code (`npm install -g @anthropic-ai/claude-code`) or the Codex CLI
+
+The `aws` CLI is **not** required. Refresh is routed through the gateway, so
+ordinary users need no AWS credentials of their own.
+
+### Start to finish
+
+```bash
+curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh | sh -s -- \
+    --gateway-url https://<CLOUDFRONT_DOMAIN>/api
+adp login          # approve once in the browser
+adp status         # confirm you are signed in
+adp claude setup   # or: adp codex setup
+claude             # or: adp serve, then codex
+```
+
+The installer puts `adp`, `bg-cognito-auth.sh` and `bg-gateway-proxy.py` side by
+side in `~/.adp/bin` (override with `--prefix`), adds that directory to your PATH,
+and remembers the gateway URL in `~/.bedrock-gateway/config.json` — which is why
+no later command needs a flag. `adp update` re-pulls from the same gateway;
+`adp update --rollback` undoes it. `sh install.sh --uninstall` removes the files
+and leaves your session alone.
+
+**One login is shared by every tool.** `adp login` seeds `~/.bedrock-gateway/`
+once; both `setup` verbs only write config and never authenticate, so adding a
+second tool costs one command and no second sign-in.
+
+The `setup` verbs **merge** into `~/.claude/settings.json` and
+`~/.codex/config.toml` — your existing permissions, hooks, MCP servers and other
+providers survive — and re-running them changes nothing.
+
+> Prefer to read what you run? `curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh -o install.sh`,
+> read it, then `sh install.sh --gateway-url https://<CLOUDFRONT_DOMAIN>/api`.
+
+The rest of this document covers the underlying scripts directly. Everything below
+still works — `adp` wraps it rather than replacing it — and is what to read if you
+want the details, are debugging, or maintain a hand-installed setup.
+
+## Using the scripts directly (no `adp`)
 
 ### Step 1: Install the auth script
 
@@ -27,8 +67,6 @@ CLI tools for authenticating with the Bedrock Gateway and configuring Claude Cod
 cp cli/bg-cognito-auth.sh ~/bin/
 chmod +x ~/bin/bg-cognito-auth.sh
 ```
-
-> **Note:** `install.sh` installs only `bg-auth.sh` (the legacy SigV4 helper). `bg-cognito-auth.sh` must be copied manually, as above.
 
 ### Step 2: Configure Claude Code
 

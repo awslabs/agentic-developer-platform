@@ -218,15 +218,17 @@ describe('SetupInstructions', () => {
     expect(document.body.textContent ?? '').not.toContain('~/Downloads');
   });
 
-  it('writes both config files via paste-ready commands — no editor needed', async () => {
+  it('keeps the paste-ready write-commands in the raw-script fallback', async () => {
+    // Still documented, but no longer the primary path: `adp <tool> setup` merges
+    // instead of overwriting, so the heredoc lives under the fallback details
+    // together with its overwrite caution.
     render(<SetupInstructions />);
     expect(document.body.textContent ?? '').toContain("cat > ~/.claude/settings.json << 'EOF'");
-    // Overwrite caution accompanies the command.
-    expect(document.body.textContent ?? '').toContain('merge the JSON shown above');
+    expect(document.body.textContent ?? '').toContain('This replaces the file');
 
     await openCodexTab();
     expect(document.body.textContent ?? '').toContain("cat > ~/.codex/config.toml << 'EOF'");
-    expect(document.body.textContent ?? '').toContain('merge these lines into yours');
+    expect(document.body.textContent ?? '').toContain('This replaces the file');
   });
 
   it('keeps the browser-download cards available as a fallback', () => {
@@ -302,6 +304,114 @@ describe('SetupInstructions', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Claude Code' }));
     expect(document.body.textContent ?? '').toContain('~/.claude/settings.json');
     expect(document.body.textContent ?? '').not.toContain('~/.codex/config.toml');
+  });
+
+  // --- The adp flow is the primary path (Issue #4852) -------------------------
+  it('leads with the one-line install carrying this gateway url', async () => {
+    // The URL must be both fetched from AND passed in: the route serves a static
+    // file, so the script cannot know which deployment it came from otherwise.
+    render(<SetupInstructions />);
+    const installLine = `curl -fsSL ${STUB_ORIGIN}/api/cli/install.sh | sh -s -- --gateway-url ${STUB_ORIGIN}/api`;
+
+    expect(document.body.textContent ?? '').toContain(installLine);
+
+    await openCodexTab();
+    expect(document.body.textContent ?? '').toContain(installLine);
+  });
+
+  it.each([
+    ['claude-code', 'adp claude setup'],
+    ['codex', 'adp codex setup'],
+  ])('presents the %s tab as install → login → status → setup', async (tab, setupVerb) => {
+    render(<SetupInstructions />);
+    if (tab === 'codex') await openCodexTab();
+    const text = document.body.textContent ?? '';
+
+    expect(text).toContain('adp login');
+    expect(text).toContain('adp status');
+    expect(text).toContain(setupVerb);
+  });
+
+  it('tells the user one login covers every tool', async () => {
+    // The whole point of a single auth verb: adding a second tool is its setup
+    // verb, not another sign-in.
+    render(<SetupInstructions />);
+    expect(document.body.textContent ?? '').toContain('One login covers every tool');
+
+    await openCodexTab();
+    expect(document.body.textContent ?? '').toContain('One login covers every tool');
+  });
+
+  it('does not present a per-tool login verb', async () => {
+    // There is exactly one auth verb; `adp codex login` does not exist and would
+    // imply the token store is per-tool.
+    render(<SetupInstructions />);
+    for (const needle of ['adp codex login', 'adp claude login']) {
+      expect(document.body.textContent ?? '').not.toContain(needle);
+    }
+    await openCodexTab();
+    for (const needle of ['adp codex login', 'adp claude login']) {
+      expect(document.body.textContent ?? '').not.toContain(needle);
+    }
+  });
+
+  it('says the setup verbs merge rather than overwrite', async () => {
+    // The behavioural difference from the raw-script flow, and the reason a user
+    // with an existing config can run these without fear.
+    render(<SetupInstructions />);
+    expect(document.body.textContent ?? '').toContain('merges the gateway settings');
+    expect(document.body.textContent ?? '').toContain('safe to re-run');
+
+    await openCodexTab();
+    expect(document.body.textContent ?? '').toContain('merges a provider block');
+    expect(document.body.textContent ?? '').toContain('safe to re-run');
+  });
+
+  it('documents self-update and its rollback', () => {
+    render(<SetupInstructions />);
+    const text = document.body.textContent ?? '';
+
+    expect(text).toContain('adp update');
+    expect(text).toContain('adp update --rollback');
+  });
+
+  it('offers a read-before-you-run alternative to piping into sh', () => {
+    // Piping a remote script into a shell is a reasonable thing to be wary of.
+    render(<SetupInstructions />);
+    const text = document.body.textContent ?? '';
+
+    expect(text).toContain(`curl -fsSL ${STUB_ORIGIN}/api/cli/install.sh -o install.sh`);
+    expect(text).toContain(`sh install.sh --gateway-url ${STUB_ORIGIN}/api`);
+  });
+
+  it('does not require the aws CLI', async () => {
+    // Gateway users hold no AWS credentials — gateway-routed refresh (#4846) is
+    // what makes that true, and the old prerequisite list was simply wrong.
+    render(<SetupInstructions />);
+    expect(document.body.textContent ?? '').not.toContain('aws');
+
+    await openCodexTab();
+    expect(document.body.textContent ?? '').not.toContain('aws');
+  });
+
+  it('keeps the raw-script flow available per tab', async () => {
+    // Two audiences: people who want to read what they run, and anyone already
+    // set up this way whose working install must not be called wrong.
+    render(<SetupInstructions />);
+    expect(document.body.textContent ?? '').toContain('Prefer to run the scripts yourself');
+    expect(document.body.textContent ?? '').toContain('bg-cognito-auth.sh');
+
+    await openCodexTab();
+    expect(document.body.textContent ?? '').toContain('Prefer to run the scripts yourself');
+    expect(document.body.textContent ?? '').toContain('bg-gateway-proxy.py');
+  });
+
+  it('uses adp for the token helper and the proxy in the primary flow', async () => {
+    render(<SetupInstructions />);
+    expect(document.body.textContent ?? '').toContain('adp token');
+
+    await openCodexTab();
+    expect(document.body.textContent ?? '').toContain('adp serve');
   });
 
   it('numbers each tab from 1 — a tab is one complete flow', async () => {

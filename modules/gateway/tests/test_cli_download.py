@@ -1,18 +1,21 @@
 """
-Unit tests for GET /cli/{script_name} (Issues #4146, #4156).
+Unit tests for GET /cli/{script_name} (Issues #4146, #4156, #4852).
 
-The in-app /setup page's Download buttons hit this route via `window.open`, so it
-must:
-- serve `bg-cognito-auth.sh` and `bg-gateway-proxy.py` as file attachments with no
-  Authorization header (window.open cannot send one),
+The in-app /setup page's Download buttons hit this route via `window.open`, and
+since #4852 the documented one-line install pipes `install.sh` from it into `sh`.
+So it must:
+- serve all four CLI files as attachments with no Authorization header (neither
+  `window.open` nor `curl … | sh` sends one),
 - serve the real on-disk files, not stale vendored copies — the page tells users
   these are the files that `import`, `apiKeyHelper` and `serve` run,
 - reject anything not on the allowlist with a 404, including path traversal.
   `{script_name}` is user input; a filesystem join here would be a traversal bug.
 
-Both files are required together: `bg-cognito-auth.sh serve` looks for
+The files are required together. `bg-cognito-auth.sh serve` looks for
 `bg-gateway-proxy.py` as its sibling, so a Codex user who can download only the
-helper cannot complete the documented flow (Issue #4156).
+helper cannot complete the documented flow (Issue #4156). Since #4852,
+`install.sh` fetches `adp` plus both of those from this same route, so a gap in
+the allowlist breaks the install line rather than just one button.
 """
 
 from pathlib import Path
@@ -27,6 +30,8 @@ test_app = FastAPI()
 test_app.include_router(router)
 client = TestClient(test_app)
 
+ADP_SCRIPT = "adp"
+INSTALL_SCRIPT = "install.sh"
 HELPER_SCRIPT = "bg-cognito-auth.sh"
 PROXY_SCRIPT = "bg-gateway-proxy.py"
 
@@ -34,9 +39,11 @@ PROXY_SCRIPT = "bg-gateway-proxy.py"
 # cannot make these tests pass. tests/ -> <gateway> -> cli/
 CLI_DIR = Path(__file__).resolve().parents[1] / "cli"
 
-# (script_name, expected media type) — the proxy is Python, the helper is shell,
+# (script_name, expected media type) — the proxy is Python, the rest are shell,
 # and serving one as the other is what the media-type assertion guards.
 SERVEABLE = [
+    (ADP_SCRIPT, "text/x-shellscript"),
+    (INSTALL_SCRIPT, "text/x-shellscript"),
     (HELPER_SCRIPT, "text/x-shellscript"),
     (PROXY_SCRIPT, "text/x-python"),
 ]
@@ -76,9 +83,31 @@ class TestCliScriptDownload:
 
         assert resp.content == (CLI_DIR / script_name).read_bytes()
 
-    def test_allowlist_contains_exactly_the_helper_and_the_proxy(self):
-        """Legacy bg-auth.sh (deprecated) and bg-auth.ps1 (no source file) stay out."""
-        assert set(ALLOWED_SCRIPTS) == {HELPER_SCRIPT, PROXY_SCRIPT}
+    def test_allowlist_contains_exactly_the_four_cli_files(self):
+        """Legacy bg-auth.sh (deprecated) and bg-auth.ps1 (no source file) stay
+        out. Pinned as a set so adding a file to cli/ never makes it publicly
+        downloadable by accident — this route is unauthenticated."""
+        assert set(ALLOWED_SCRIPTS) == {ADP_SCRIPT, INSTALL_SCRIPT, HELPER_SCRIPT, PROXY_SCRIPT}
+
+    def test_install_script_is_fetchable_the_way_curl_pipes_it(self):
+        """The documented install line is `curl … | sh`, so this must come back
+        as a runnable POSIX script body and not, say, an HTML error page."""
+        resp = client.get(f"/cli/{INSTALL_SCRIPT}")
+
+        assert resp.status_code == 200
+        assert resp.text.startswith("#!/bin/sh")
+        # The flag the install line passes — if this is missing, every documented
+        # invocation fails on an unknown option.
+        assert "--gateway-url" in resp.text
+
+    def test_installer_can_fetch_every_file_it_asks_for(self):
+        """install.sh downloads these three by name from this route; a mismatch
+        between the two lists is a broken install, not a broken button."""
+        installer = (CLI_DIR / INSTALL_SCRIPT).read_text()
+
+        for name in (ADP_SCRIPT, HELPER_SCRIPT, PROXY_SCRIPT):
+            assert name in installer, f"install.sh no longer installs {name}"
+            assert client.get(f"/cli/{name}").status_code == 200
 
     @pytest.mark.parametrize(
         "script_name",
@@ -90,7 +119,7 @@ class TestCliScriptDownload:
             "../cli/bg-auth.sh",
             "bg-auth.sh",  # deprecated legacy helper — deliberately not serveable
             "bg-auth.ps1",  # never existed in the repo
-            "install.sh",
+            "claude-settings.example.json",
             "README.md",
         ],
     )
