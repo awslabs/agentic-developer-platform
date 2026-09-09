@@ -40,6 +40,12 @@ FLAG_ENV_VAR = "FEATURE_ORCHESTRATION_ENGINE_ENABLED"
 _GATEWAY_ROOT = Path(__file__).resolve().parents[2]
 _FRONTEND_FEATURES = _GATEWAY_ROOT / "frontend" / "src" / "services" / "features.ts"
 _K8S_DEPLOYMENT = _GATEWAY_ROOT / "k8s" / "deployment.yaml"
+_DEPLOY_WORKFLOW = _GATEWAY_ROOT.parents[1] / ".github" / "workflows" / "gateway-deploy.yml"
+
+# The manifest is applied to whichever environment gateway-deploy.yml targets, so
+# the flag's value is rendered per environment rather than written here.
+_FLAG_PLACEHOLDER = f"__{FLAG_ENV_VAR}__"
+_FLAG_SSM_PARAM = "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine"
 
 
 @pytest.fixture(autouse=True)
@@ -154,7 +160,15 @@ class TestWiredToTheStrictHelper:
 
 
 class TestThreePlaceParity:
-    """Backend dict, frontend interface + default, k8s env — or CI fails."""
+    """Backend dict, frontend interface + default, k8s env — or CI fails.
+
+    The k8s half is two assertions rather than one: the manifest declares the var
+    and carries a placeholder, and `gateway-deploy.yml` is what turns that
+    placeholder into a per-environment value with a fail-closed default. Splitting
+    the value out of the manifest is what keeps one environment's opt-in from
+    becoming every environment's (D-R20), so the renderer is now part of the
+    parity surface and is checked as text for the same reason the others are.
+    """
 
     def test_backend_dict_declares_the_flag(self):
         source = Path(inspect.getfile(features_routes)).read_text()
@@ -182,8 +196,14 @@ class TestThreePlaceParity:
         manifest = _K8S_DEPLOYMENT.read_text()
         assert FLAG_ENV_VAR in manifest, f"{FLAG_ENV_VAR!r} missing from k8s/deployment.yaml — the operator has nothing to flip"
 
-    def test_k8s_manifest_ships_the_flag_off(self):
-        """The deployed value, not just the code default, must be off.
+    def test_k8s_manifest_renders_the_flag_per_environment(self):
+        """The manifest must carry the placeholder, never a hard-coded value.
+
+        `k8s/deployment.yaml` is a single file applied verbatim to whichever
+        environment `gateway-deploy.yml` targets, so a literal here is not an
+        environment's opt-in — it is *every* environment's, prod included, on the
+        next deploy. That is the shape ruling D-R20 forbids, and it is why this
+        asserts the absence of a literal rather than the presence of `"false"`.
 
         Asserted on the *active* entry: a commented-out line would satisfy a bare
         substring check while shipping nothing.
@@ -192,7 +212,29 @@ class TestThreePlaceParity:
         active = [line for line in lines if line.startswith("- name:") or line.startswith("value:")]
         assert f"- name: {FLAG_ENV_VAR}" in active, f"{FLAG_ENV_VAR!r} is present but commented out in k8s/deployment.yaml"
         index = active.index(f"- name: {FLAG_ENV_VAR}")
-        assert active[index + 1] == 'value: "false"', f'{FLAG_ENV_VAR!r} must ship as "false"; got {active[index + 1]!r}'
+        assert active[index + 1] == f'value: "{_FLAG_PLACEHOLDER}"', (
+            f"{FLAG_ENV_VAR!r} must ship as the {_FLAG_PLACEHOLDER} placeholder so each environment opts in "
+            f"on its own; got {active[index + 1]!r}. A literal value here arms every environment at once."
+        )
+
+    def test_deploy_workflow_defaults_the_flag_off(self):
+        """The rendered default must be off when nothing opted in.
+
+        Moving the value out of the manifest only preserves fail-closed if the
+        renderer defaults to off. Without this, an environment with no SSM
+        parameter would render an empty value — and an operator reading the
+        manifest would see a placeholder with no way to tell which way it falls.
+        """
+        workflow = _DEPLOY_WORKFLOW.read_text()
+        assert _DEPLOY_WORKFLOW.exists(), f"{_DEPLOY_WORKFLOW} not found"
+        assert _FLAG_PLACEHOLDER in workflow, (
+            f"{_FLAG_PLACEHOLDER} is in the manifest but nothing in gateway-deploy.yml substitutes it — "
+            "the pods would receive the placeholder string verbatim, which is not 'true' and so reads as off, "
+            "but silently and for the wrong reason."
+        )
+        assert f'get_ssm "{_FLAG_SSM_PARAM}" "false"' in workflow, (
+            f'the {FLAG_ENV_VAR!r} render must read {_FLAG_SSM_PARAM} with an explicit "false" default'
+        )
 
 
 class TestLegacyModeRemainsTheDefault:

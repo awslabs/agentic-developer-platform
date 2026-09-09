@@ -133,14 +133,24 @@ spec:
               value: "false"
             - name: FEATURE_LOGS_ENABLED
               value: "false"
-            # Issue #4209: orchestration engine + graph UI. Fail-closed, so absent
-            # would already mean off — set explicitly anyway, because this is the
-            # entry an operator flips to opt an environment in, and the three-place
-            # parity test reads it here. Legacy GitHub-driven mode is the default
-            # and stays fully supported (ruling D-R20); do not flip this to enable
-            # the engine for everyone.
+            # Issue #4209: orchestration engine + graph UI. Fail-closed.
+            #
+            # Rendered PER ENVIRONMENT, not hard-coded. This one file is applied
+            # verbatim to whichever environment gateway-deploy.yml targets, so a
+            # literal "true" here would opt EVERY environment in at once —
+            # including prod — which ruling D-R20 forbids: legacy GitHub-driven
+            # mode is a supported product mode, not a migration state.
+            #
+            # gateway-deploy.yml substitutes this placeholder from
+            # `/adp/<env>/gateway/feature-orchestration-engine`, defaulting to
+            # "false" when the parameter is absent — so the opt-in is an operator
+            # action on ONE environment and the default stays off. Nothing to
+            # merge, nothing to revert: `aws ssm put-parameter` in, delete out.
+            #
+            # Do NOT replace this with a literal, and do NOT use `kubectl set env`
+            # (every deploy re-applies this file and would silently revert it).
             - name: FEATURE_ORCHESTRATION_ENGINE_ENABLED
-              value: "false"
+              value: "__FEATURE_ORCHESTRATION_ENGINE_ENABLED__"
             # Issue #4402 (U-5 of EPIC #4324): the Budget & Spend screen. Fail-closed
             # like the entry above, so absent already means off — but it has to be set
             # HERE rather than with `kubectl set env`, because gateway-deploy.yml

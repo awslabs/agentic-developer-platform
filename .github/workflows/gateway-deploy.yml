@@ -378,9 +378,26 @@ jobs:
           EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-          # Apply the deployment manifest so changes to probes, env,
-          # resource limits, volume mounts, etc. actually propagate.
-          kubectl apply -f modules/gateway/k8s/deployment.yaml -n ${{ env.NAMESPACE }}
+          get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+
+          # Issue #4209 / D-R20: the orchestration graph UI is opt-in PER
+          # ENVIRONMENT. deployment.yaml is one file applied to whichever
+          # environment this workflow targets, so the value cannot live in it —
+          # a literal "true" would arm prod on the next deploy too.
+          #
+          # Absent parameter => "false". `_is_enabled_strict` only accepts the
+          # literal "true", so a missing or malformed value leaves the engine UI
+          # invisible rather than guessing.
+          FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "false")
+          if [ -z "$FEATURE_ORCHESTRATION_ENGINE_ENABLED" ] || [ "$FEATURE_ORCHESTRATION_ENGINE_ENABLED" = "None" ]; then
+            FEATURE_ORCHESTRATION_ENGINE_ENABLED="false"
+          fi
+          echo "orchestration graph UI for ${ENVIRONMENT}: ${FEATURE_ORCHESTRATION_ENGINE_ENABLED}"
+
+          # Render then apply, so changes to probes, env, resource limits, volume
+          # mounts, etc. actually propagate.
+          sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+              modules/gateway/k8s/deployment.yaml | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
           # Stamp the image tag for this build. The manifest has a generic
           # placeholder; this line pins to the commit SHA for audit.
