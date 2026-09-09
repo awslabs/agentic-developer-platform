@@ -127,6 +127,12 @@ save_config() {
     local client_id="$3"
     local identity_pool_id="$4"
     local region="$5"
+    # Optional: "gateway" means refresh through the gateway's /auth/cli/refresh
+    # endpoint instead of calling Cognito directly. Set by `login --web`, whose
+    # CLI app client has refresh-token rotation on — a rotating client can only
+    # be refreshed via the admin API, which the user has no AWS creds for, so the
+    # gateway does it server-side (Issue #4837 follow-up). Empty = direct Cognito.
+    local refresh_via="${6:-}"
 
     cat > "${CONFIG_FILE}" << EOF
 {
@@ -134,7 +140,8 @@ save_config() {
     "user_pool_id": "${user_pool_id}",
     "client_id": "${client_id}",
     "identity_pool_id": "${identity_pool_id}",
-    "region": "${region}"
+    "region": "${region}",
+    "refresh_via": "${refresh_via}"
 }
 EOF
     chmod 600 "${CONFIG_FILE}"
@@ -153,6 +160,7 @@ load_config() {
     CLIENT_ID=$(jq -r '.client_id' "${CONFIG_FILE}")
     IDENTITY_POOL_ID=$(jq -r '.identity_pool_id' "${CONFIG_FILE}")
     REGION=$(jq -r '.region' "${CONFIG_FILE}")
+    REFRESH_VIA=$(jq -r '.refresh_via // empty' "${CONFIG_FILE}")
 }
 
 # Save tokens
@@ -429,41 +437,86 @@ refresh_tokens() {
 
     print_info "Refreshing tokens..."
 
-    local auth_result rc=0
-    if _use_admin_auth; then
-        auth_result=$(aws cognito-idp admin-initiate-auth \
-            --auth-flow REFRESH_TOKEN_AUTH \
-            --user-pool-id "${USER_POOL_ID}" \
-            --client-id "${CLIENT_ID}" \
-            --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
-            --region "${REGION}" \
-            2>&1) || rc=$?
+    local id_token access_token expires_in new_refresh_token
+
+    if [ "${REFRESH_VIA:-}" = "gateway" ]; then
+        # Rotation-enabled CLI client (login --web): only the admin API can
+        # refresh it, and the user holds no AWS creds — so the gateway does the
+        # refresh server-side with its own task role. The refresh token in the
+        # POST body is the sole credential, exactly like Cognito's own endpoint.
+        if [ -z "${GATEWAY_URL}" ] || [ "${GATEWAY_URL}" = "null" ]; then
+            _release_refresh_lock
+            print_error "No gateway_url in config; cannot refresh."
+            print_warning "Run 'bg-cognito-auth.sh login --web' to sign in again."
+            return 1
+        fi
+        local resp http_code body
+        resp=$(printf '{"refresh_token":"%s"}' "${REFRESH_TOKEN}" | curl -s -w '\n%{http_code}' \
+            -X POST "${GATEWAY_URL%/}/auth/cli/refresh" \
+            -H "Content-Type: application/json" --data @- 2>/dev/null) || resp=$'\n000'
+        http_code="${resp##*$'\n'}"
+        body="${resp%$'\n'*}"
+
+        if [ "${http_code}" = "401" ]; then
+            # Terminal: the refresh token is dead/rotated-away. Retrying is futile.
+            _release_refresh_lock
+            print_error "Your CLI session has expired."
+            print_warning "Run 'bg-cognito-auth.sh login --web' to sign in again."
+            return 1
+        fi
+        if [ "${http_code}" != "200" ]; then
+            _release_refresh_lock
+            print_error "Token refresh failed (HTTP ${http_code})."
+            print_warning "Please run 'login --web' to re-authenticate."
+            return 1
+        fi
+
+        id_token=$(echo "${body}" | jq -r '.id_token // empty')
+        access_token=$(echo "${body}" | jq -r '.access_token // empty')
+        expires_in=$(echo "${body}" | jq -r '.expires_in // 3600')
+        new_refresh_token=$(echo "${body}" | jq -r '.refresh_token // empty')
     else
-        auth_result=$(aws cognito-idp initiate-auth \
-            --auth-flow REFRESH_TOKEN_AUTH \
-            --client-id "${CLIENT_ID}" \
-            --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
-            --region "${REGION}" \
-            2>&1) || rc=$?
-    fi
+        local auth_result rc=0
+        if _use_admin_auth; then
+            auth_result=$(aws cognito-idp admin-initiate-auth \
+                --auth-flow REFRESH_TOKEN_AUTH \
+                --user-pool-id "${USER_POOL_ID}" \
+                --client-id "${CLIENT_ID}" \
+                --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
+                --region "${REGION}" \
+                2>&1) || rc=$?
+        else
+            auth_result=$(aws cognito-idp initiate-auth \
+                --auth-flow REFRESH_TOKEN_AUTH \
+                --client-id "${CLIENT_ID}" \
+                --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
+                --region "${REGION}" \
+                2>&1) || rc=$?
+        fi
 
-    if [ "${rc}" -ne 0 ]; then
-        _release_refresh_lock
-        print_error "Token refresh failed: ${auth_result}"
-        print_warning "Please run 'login' to re-authenticate."
-        return 1
-    fi
+        if [ "${rc}" -ne 0 ]; then
+            _release_refresh_lock
+            print_error "Token refresh failed: ${auth_result}"
+            print_warning "Please run 'login' to re-authenticate."
+            return 1
+        fi
 
-    local id_token access_token expires_in
-    id_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.IdToken')
-    access_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.AccessToken')
-    expires_in=$(echo "${auth_result}" | jq -r '.AuthenticationResult.ExpiresIn')
+        id_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.IdToken')
+        access_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.AccessToken')
+        expires_in=$(echo "${auth_result}" | jq -r '.AuthenticationResult.ExpiresIn')
+        new_refresh_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.RefreshToken // empty')
+    fi
 
     # Refresh token may or may not be returned (with rotation it always is).
-    local new_refresh_token
-    new_refresh_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.RefreshToken // empty')
     if [ -z "${new_refresh_token}" ]; then
         new_refresh_token="${REFRESH_TOKEN}"
+    fi
+
+    if [ -z "${id_token}" ] || [ "${id_token}" = "null" ] || [ -z "${access_token}" ] || [ "${access_token}" = "null" ]; then
+        _release_refresh_lock
+        print_error "Refresh returned an incomplete token set."
+        print_warning "Please run 'login --web' to re-authenticate."
+        return 1
     fi
 
     save_tokens "${id_token}" "${access_token}" "${new_refresh_token}" "${expires_in}"
@@ -951,7 +1004,9 @@ cmd_login_web() {
                 # client_id comes from the RESPONSE (the CLI app client), not
                 # from discovery — discovery advertises the SPA client, whose
                 # refresh tokens have a different lifetime and no rotation.
-                save_config "${gateway_url}" "${user_pool_id}" "${client_id}" "" "${region}"
+                # refresh_via=gateway: this client rotates, so refresh must go
+                # through the gateway (the user has no AWS creds for the admin API).
+                save_config "${gateway_url}" "${user_pool_id}" "${client_id}" "" "${region}" "gateway"
                 save_tokens "${id_token}" "${access_token}" "${refresh_token}" "${token_expires_in}"
                 print_success "Signed in. Tokens saved to ${CONFIG_DIR}/ — refresh is automatic from here."
                 return 0

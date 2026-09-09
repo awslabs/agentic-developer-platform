@@ -30,6 +30,16 @@ TOKENS = {
     "region": "us-east-1",
 }
 
+# What /auth/cli/refresh returns: a rotated set (new access/id AND a new refresh
+# token that supersedes the one presented — the CLI must persist it).
+REFRESH_TOKENS = {
+    "token_type": "Bearer",
+    "access_token": "rotated-access-token",
+    "id_token": "rotated-id-token",
+    "refresh_token": "rotated-refresh-token",
+    "expires_in": 3600,
+}
+
 
 class CliLoginHandler(BaseHTTPRequestHandler):
     """Mock gateway /auth/cli endpoints under a /api base path.
@@ -42,6 +52,7 @@ class CliLoginHandler(BaseHTTPRequestHandler):
     poll_statuses: list[int] = []
     requests: list[dict[str, Any]] = []
     start_status: int = 200
+    refresh_status: int = 200
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
@@ -77,6 +88,13 @@ class CliLoginHandler(BaseHTTPRequestHandler):
                 self._send(410, {"detail": {"error": "expired"}})
             else:
                 self._send(status, {"detail": {"error": "boom"}})
+        elif self.path == "/api/auth/cli/refresh":
+            if self.refresh_status == 200:
+                self._send(200, REFRESH_TOKENS)
+            elif self.refresh_status == 401:
+                self._send(401, {"detail": {"error": "refresh_expired"}})
+            else:
+                self._send(self.refresh_status, {"detail": {"error": "refresh_failed"}})
         else:
             self._send(404, {"detail": "not_found"})
 
@@ -95,6 +113,7 @@ def mock_cli_gateway():
     CliLoginHandler.requests = []
     CliLoginHandler.poll_statuses = []
     CliLoginHandler.start_status = 200
+    CliLoginHandler.refresh_status = 200
     server = ThreadingHTTPServer(("127.0.0.1", 0), CliLoginHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -230,3 +249,79 @@ class TestExistingCommandsUnchanged:
         """`login` without --web must keep its password-flow behaviour."""
         result = run_bg_cognito_auth(["login"])
         assert result.returncode != 0
+
+
+class TestRefreshViaGateway:
+    """`login --web` configures refresh to go through the gateway, because the
+    CLI Cognito client rotates and the user holds no AWS creds to hit the admin
+    API directly (Issue #4837 follow-up)."""
+
+    def test_web_login_marks_config_for_gateway_refresh(self, run_web, cognito_home: Path) -> None:
+        CliLoginHandler.poll_statuses = [200]
+        assert run_web().returncode == 0
+        config = json.loads((cognito_home / ".bedrock-gateway" / "config.json").read_text())
+        assert config["refresh_via"] == "gateway"
+
+    @staticmethod
+    def _expire_token_on_disk(cognito_home: Path) -> None:
+        """Force the saved access token past its expiry so the next `token`
+        call refreshes (the real Codex/Claude Code hot path)."""
+        token_file = cognito_home / ".bedrock-gateway" / "tokens.json"
+        data = json.loads(token_file.read_text())
+        data["expires_at"] = 0  # 1970 — well past the 5-minute refresh buffer
+        token_file.write_text(json.dumps(data))
+
+    def test_token_refresh_goes_through_gateway_and_persists_rotated_tokens(self, run_web, run_bg_cognito_auth, cognito_home: Path) -> None:
+        CliLoginHandler.poll_statuses = [200]
+        assert run_web().returncode == 0
+        self._expire_token_on_disk(cognito_home)
+
+        result = run_bg_cognito_auth(["token"])
+        assert result.returncode == 0, result.stderr + result.stdout
+        # `token` prints the (now rotated) access token for apiKeyHelper/serve.
+        assert result.stdout == REFRESH_TOKENS["access_token"]
+
+        # It refreshed against the gateway (not Cognito) with the stored token.
+        refreshes = [r for r in CliLoginHandler.requests if r["path"] == "/api/auth/cli/refresh"]
+        assert refreshes, "expected a POST to /api/auth/cli/refresh"
+        assert json.loads(refreshes[0]["body"]) == {"refresh_token": TOKENS["refresh_token"]}
+
+        # The rotated set replaced the old one on disk.
+        tokens = json.loads((cognito_home / ".bedrock-gateway" / "tokens.json").read_text())
+        assert tokens["access_token"] == REFRESH_TOKENS["access_token"]
+        assert tokens["refresh_token"] == REFRESH_TOKENS["refresh_token"]
+
+    def test_expired_refresh_token_directs_user_to_relogin(self, run_web, run_bg_cognito_auth, cognito_home: Path) -> None:
+        CliLoginHandler.poll_statuses = [200]
+        assert run_web().returncode == 0
+        self._expire_token_on_disk(cognito_home)
+
+        CliLoginHandler.refresh_status = 401
+        # `refresh` surfaces the guidance directly (token swallows stderr).
+        result = run_bg_cognito_auth(["refresh"])
+        assert result.returncode != 0
+        assert "login --web" in (result.stderr + result.stdout)
+
+    def test_no_aws_cli_needed_for_gateway_refresh(self, run_web, run_bg_cognito_auth, cognito_home: Path) -> None:
+        """The whole point: refresh must not shell out to `aws` (the user has no
+        platform creds). Prove it by making `aws` on PATH fail hard and still
+        getting a rotated token out of `token`."""
+        import os
+
+        CliLoginHandler.poll_statuses = [200]
+        assert run_web().returncode == 0
+        self._expire_token_on_disk(cognito_home)
+
+        # A poisoned `aws` that errors if invoked — the gateway path must not touch it.
+        bin_dir = cognito_home / "poison-bin"
+        bin_dir.mkdir()
+        aws = bin_dir / "aws"
+        aws.write_text("#!/usr/bin/env bash\necho 'aws must not be called' >&2\nexit 99\n")
+        aws.chmod(0o755)
+
+        result = run_bg_cognito_auth(
+            ["token"],
+            extra_env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert result.stdout == REFRESH_TOKENS["access_token"]

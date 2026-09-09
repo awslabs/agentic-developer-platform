@@ -46,11 +46,13 @@ def _make_claims(username: str = "github_12345", sub: str = "sub-uuid-1") -> Cog
 
 
 class StubMinter:
-    """Records mint calls; can be told to fail."""
+    """Records mint/refresh calls; can be told to fail."""
 
-    def __init__(self, fail_times: int = 0) -> None:
+    def __init__(self, fail_times: int = 0, refresh_error: Exception | None = None) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.refresh_calls: list[tuple[str, str]] = []
         self._fail_times = fail_times
+        self._refresh_error = refresh_error
 
     def mint(self, username: str, cli_client_id: str) -> dict[str, Any]:
         self.calls.append((username, cli_client_id))
@@ -63,6 +65,23 @@ class StubMinter:
             "RefreshToken": "minted-refresh",
             "ExpiresIn": 3600,
         }
+
+    def refresh(self, refresh_token: str, cli_client_id: str) -> dict[str, Any]:
+        self.refresh_calls.append((refresh_token, cli_client_id))
+        if self._refresh_error is not None:
+            raise self._refresh_error
+        return {
+            "AccessToken": "refreshed-access",
+            "IdToken": "refreshed-id",
+            "RefreshToken": "rotated-refresh",
+            "ExpiresIn": 3600,
+        }
+
+
+def _client_error(code: str) -> Exception:
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": code, "Message": code}}, "AdminInitiateAuth")
 
 
 class StubSettings:
@@ -301,3 +320,58 @@ class TestToken:
 
         second = _poll(client, body["device_code"])
         assert second.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# /refresh (credential-less renewal through the gateway)
+# ---------------------------------------------------------------------------
+
+
+class TestRefresh:
+    def _refresh(self, client: TestClient, token: str = "old-refresh-token-value") -> Any:
+        return client.post("/auth/cli/refresh", json={"refresh_token": token})
+
+    def test_refresh_renews_on_the_cli_client_without_auth_header(self, db_session: AsyncSession, minter: StubMinter) -> None:
+        # No Authorization header: the access token is expired by the time the
+        # CLI refreshes, so the refresh token in the body is the sole credential.
+        client = _make_app(db_session, minter)
+        response = self._refresh(client, token="the-refresh-token")
+        assert response.status_code == 200, response.text
+
+        tokens = response.json()
+        assert tokens["access_token"] == "refreshed-access"
+        assert tokens["id_token"] == "refreshed-id"
+        # Rotation returns a NEW refresh token that the CLI must persist.
+        assert tokens["refresh_token"] == "rotated-refresh"
+        assert tokens["expires_in"] == 3600
+        # Refreshed on the CLI app client, server-side.
+        assert minter.refresh_calls == [("the-refresh-token", CLI_CLIENT_ID)]
+
+    def test_dead_refresh_token_is_401(self, db_session: AsyncSession) -> None:
+        """A rotated-away / revoked token is terminal — the CLI must re-login."""
+        minter = StubMinter(refresh_error=_client_error("NotAuthorizedException"))
+        client = _make_app(db_session, minter)
+        response = self._refresh(client)
+        assert response.status_code == 401
+        assert response.json()["detail"]["error"] == "refresh_expired"
+
+    def test_missing_user_is_401(self, db_session: AsyncSession) -> None:
+        minter = StubMinter(refresh_error=_client_error("UserNotFoundException"))
+        client = _make_app(db_session, minter)
+        assert self._refresh(client).status_code == 401
+
+    def test_transient_cognito_error_is_502(self, db_session: AsyncSession) -> None:
+        """A retryable Cognito hiccup maps to 502, not 401 — the CLI retries."""
+        minter = StubMinter(refresh_error=_client_error("InternalErrorException"))
+        client = _make_app(db_session, minter)
+        response = self._refresh(client)
+        assert response.status_code == 502
+        assert response.json()["detail"]["error"] == "refresh_failed"
+
+    def test_refresh_503_when_not_configured(self, db_session: AsyncSession, minter: StubMinter, monkeypatch) -> None:
+        class Unconfigured(StubSettings):
+            cognito_cli_client_id = ""
+
+        monkeypatch.setattr("src.auth.cli_login.get_settings", lambda: Unconfigured())
+        client = _make_app(db_session, minter)
+        assert self._refresh(client).status_code == 503

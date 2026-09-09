@@ -36,6 +36,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
@@ -95,6 +96,12 @@ class ApproveRequest(BaseModel):
 
 class TokenRequest(BaseModel):
     device_code: str = Field(min_length=16, max_length=256)
+
+
+class RefreshRequest(BaseModel):
+    # Cognito refresh tokens are long JWEs; the bound is a generous sanity cap,
+    # not a security control (the token itself is the credential).
+    refresh_token: str = Field(min_length=16, max_length=8192)
 
 
 def _require_cli_client_configured() -> str:
@@ -210,6 +217,30 @@ class CliTokenMinter:
             ClientId=cli_client_id,
             AuthFlow="ADMIN_USER_PASSWORD_AUTH",
             AuthParameters={"USERNAME": username, "PASSWORD": password},
+        )
+        return response["AuthenticationResult"]
+
+    def refresh(self, refresh_token: str, cli_client_id: str) -> dict[str, Any]:
+        """Renew a CLI-client token set from a refresh token, server-side.
+
+        The CLI app client has refresh-token ROTATION enabled. A rotating client
+        can only be refreshed through the *admin* API — Cognito's public
+        `InitiateAuth` REFRESH_TOKEN_AUTH rejects rotation
+        ("This API does not support refresh token rotation"), and the pool's WAF
+        blocks that public endpoint from developer IPs anyway. Doing it here means
+        the laptop never needs AWS credentials of its own: the gateway's task role
+        already carries cognito-idp:AdminInitiateAuth (it mints the first token in
+        `mint`). With rotation on, AuthenticationResult includes a fresh
+        RefreshToken that supersedes the one passed in.
+
+        Returns AuthenticationResult keys: AccessToken, IdToken, ExpiresIn, and
+        (because rotation is enabled) RefreshToken.
+        """
+        response = self.client.admin_initiate_auth(
+            UserPoolId=self._user_pool_id,
+            ClientId=cli_client_id,
+            AuthFlow="REFRESH_TOKEN_AUTH",
+            AuthParameters={"REFRESH_TOKEN": refresh_token},
         )
         return response["AuthenticationResult"]
 
@@ -355,4 +386,56 @@ async def redeem_cli_login(
         "client_id": cli_client_id,
         "user_pool_id": settings.cognito_user_pool_id,
         "region": settings.aws_region,
+    }
+
+
+@router.post(
+    "/refresh",
+    summary="Renew a CLI token set from a refresh token (no AWS creds on the client)",
+)
+async def refresh_cli_login(
+    body: RefreshRequest,
+    minter: CliTokenMinter = Depends(get_token_minter),
+) -> dict:
+    """Server-side token renewal for `bg-cognito-auth.sh`.
+
+    The CLI app client rotates refresh tokens, and a rotating client can only be
+    refreshed via the admin API (see CliTokenMinter.refresh). Ordinary users hold
+    no AWS credentials, so the CLI cannot call that API itself — it POSTs its
+    refresh token here and the gateway performs the admin refresh with its own
+    task role. Possession of a valid refresh token IS the credential, exactly as
+    with Cognito's native refresh endpoint, so no Authorization header is required
+    (the access token is typically already expired by the time this is called).
+    """
+    cli_client_id = _require_cli_client_configured()
+
+    try:
+        auth_result = minter.refresh(body.refresh_token, cli_client_id)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        # A dead/rotated-away/revoked refresh token, or one minted for a different
+        # client, comes back as NotAuthorized. That is terminal — the CLI must
+        # start a fresh `login --web`, not retry — so map it to 401.
+        if code in ("NotAuthorizedException", "UserNotFoundException"):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "refresh_expired",
+                    "message": "Your CLI session has expired. Run `login --web` to sign in again.",
+                },
+            )
+        logger.exception("CLI token refresh failed (%s)", code)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "refresh_failed", "message": "Could not refresh tokens; the CLI will retry."},
+        )
+
+    return {
+        "token_type": "Bearer",
+        "access_token": auth_result["AccessToken"],
+        "id_token": auth_result.get("IdToken", ""),
+        # With rotation enabled this is a NEW refresh token that supersedes the
+        # one just presented; the CLI must persist it or the next refresh fails.
+        "refresh_token": auth_result.get("RefreshToken", ""),
+        "expires_in": auth_result.get("ExpiresIn", 3600),
     }
