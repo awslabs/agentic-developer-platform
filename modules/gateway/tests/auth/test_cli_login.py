@@ -12,6 +12,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,6 +20,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.cli_login import (
+    CliTokenMinter,
+    _cognito_token_endpoint,
     _get_cognito_claims,
     _start_times,
     get_token_minter,
@@ -30,6 +33,8 @@ from src.shared.models.cli_auth import CliAuthRequest
 
 CLI_CLIENT_ID = "cli-client-test-123"
 USER_POOL_ID = "us-east-1_testpool"
+COGNITO_DOMAIN = "bedrockgw-test-auth"
+TOKEN_ENDPOINT = f"https://{COGNITO_DOMAIN}.auth.us-east-1.amazoncognito.com/oauth2/token"
 
 
 def _make_claims(username: str = "github_12345", sub: str = "sub-uuid-1") -> CognitoTokenClaims:
@@ -66,7 +71,7 @@ class StubMinter:
             "ExpiresIn": 3600,
         }
 
-    def refresh(self, refresh_token: str, cli_client_id: str) -> dict[str, Any]:
+    async def refresh(self, refresh_token: str, cli_client_id: str) -> dict[str, Any]:
         self.refresh_calls.append((refresh_token, cli_client_id))
         if self._refresh_error is not None:
             raise self._refresh_error
@@ -78,16 +83,11 @@ class StubMinter:
         }
 
 
-def _client_error(code: str) -> Exception:
-    from botocore.exceptions import ClientError
-
-    return ClientError({"Error": {"Code": code, "Message": code}}, "AdminInitiateAuth")
-
-
 class StubSettings:
     cognito_cli_client_id = CLI_CLIENT_ID
     cognito_user_pool_id = USER_POOL_ID
     aws_region = "us-east-1"
+    cognito_domain = COGNITO_DOMAIN
 
 
 def _make_app(
@@ -324,54 +324,268 @@ class TestToken:
 
 # ---------------------------------------------------------------------------
 # /refresh (credential-less renewal through the gateway)
+#
+# The CLI app client has refresh-token ROTATION enabled, and BOTH
+# AdminInitiateAuth and InitiateAuth reject REFRESH_TOKEN_AUTH on a rotating
+# client with UnsupportedOperationException. The OAuth2 token endpoint is the
+# only mechanism that works (#4873).
+#
+# These tests therefore drive the REAL CliTokenMinter against a mock token
+# ENDPOINT via httpx.MockTransport. Stubbing the Cognito SDK — which is what the
+# original tests did — is precisely what let the broken admin-API refresh ship
+# green: the real API's rejection was never exercised.
 # ---------------------------------------------------------------------------
 
 
-class TestRefresh:
+class ExplodingCognitoClient:
+    """Any attribute access is a test failure.
+
+    Guard for #4873: refresh must never touch the cognito-idp SDK. If someone
+    reintroduces `admin_initiate_auth`/`initiate_auth` on the refresh path, the
+    attribute lookup raises here and the refresh tests fail loudly rather than
+    passing against a friendly stub.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(
+            f"refresh must use the OAuth2 token endpoint, not the cognito-idp SDK "
+            f"(attempted call: {name!r}). Rotation-enabled clients cannot be "
+            f"refreshed via Admin/InitiateAuth — see #4873."
+        )
+
+
+def _recording_minter(
+    handler: Any,
+    *,
+    domain: str = COGNITO_DOMAIN,
+    region: str = "us-east-1",
+) -> tuple[CliTokenMinter, list[httpx.Request]]:
+    """A real CliTokenMinter whose HTTP calls hit `handler` instead of Cognito."""
+    seen: list[httpx.Request] = []
+
+    def _record(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return handler(request)
+
+    class _Settings(StubSettings):
+        cognito_domain = domain
+        aws_region = region
+
+    minter = CliTokenMinter.__new__(CliTokenMinter)
+    minter._user_pool_id = USER_POOL_ID
+    minter._region = _Settings.aws_region
+    minter._cognito_domain = _Settings.cognito_domain
+    minter._client = ExplodingCognitoClient()
+    minter._http_client = httpx.AsyncClient(transport=httpx.MockTransport(_record))
+    return minter, seen
+
+
+def _token_response(**overrides: Any) -> httpx.Response:
+    body = {
+        "access_token": "refreshed-access",
+        "id_token": "refreshed-id",
+        "refresh_token": "rotated-refresh",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+    }
+    body.update(overrides)
+    return httpx.Response(200, json=body)
+
+
+class TestTokenEndpointUrl:
+    """The URL must be right or every refresh 502s — same outage, silently."""
+
+    def test_domain_prefix_gets_the_regional_host(self) -> None:
+        assert _cognito_token_endpoint("bedrockgw-dev-auth-18057152", "us-east-1") == (
+            "https://bedrockgw-dev-auth-18057152.auth.us-east-1.amazoncognito.com/oauth2/token"
+        )
+
+    def test_prefix_honours_the_configured_region(self) -> None:
+        assert _cognito_token_endpoint("pool-prefix", "eu-west-2") == "https://pool-prefix.auth.eu-west-2.amazoncognito.com/oauth2/token"
+
+    def test_custom_domain_fqdn_is_used_as_is(self) -> None:
+        """A dot means custom domain — appending the regional suffix breaks DNS."""
+        assert _cognito_token_endpoint("auth.example.com", "us-east-1") == "https://auth.example.com/oauth2/token"
+
+
+class TestRefreshTokenEndpointContract:
+    """CliTokenMinter.refresh against a mock token endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_posts_form_encoded_grant_to_the_token_endpoint(self) -> None:
+        minter, seen = _recording_minter(lambda _r: _token_response())
+
+        result = await minter.refresh("the-refresh-token", CLI_CLIENT_ID)
+
+        assert len(seen) == 1
+        request = seen[0]
+        assert str(request.url) == TOKEN_ENDPOINT
+        assert request.method == "POST"
+        assert request.headers["content-type"] == "application/x-www-form-urlencoded"
+
+        form = dict(pair.split("=", 1) for pair in request.content.decode().split("&"))
+        assert form["grant_type"] == "refresh_token"
+        assert form["client_id"] == CLI_CLIENT_ID
+        assert form["refresh_token"] == "the-refresh-token"
+        # Public client (GenerateSecret=null): no secret, no SECRET_HASH.
+        assert "client_secret" not in form
+        assert "SECRET_HASH" not in form
+        # No AWS credentials are needed, so no SigV4 signature is attached.
+        assert "authorization" not in request.headers
+
+        # Normalized to AuthenticationResult keys so the route mapping is unchanged.
+        assert result == {
+            "AccessToken": "refreshed-access",
+            "IdToken": "refreshed-id",
+            "ExpiresIn": 3600,
+            "RefreshToken": "rotated-refresh",
+        }
+
+    @pytest.mark.asyncio
+    async def test_omits_refresh_token_when_endpoint_returns_none(self) -> None:
+        """Never synthesize a rotated token the endpoint did not hand back."""
+        body = {"access_token": "a", "id_token": "i", "expires_in": 3600}
+        minter, _ = _recording_minter(lambda _r: httpx.Response(200, json=body))
+
+        result = await minter.refresh("rt", CLI_CLIENT_ID)
+        assert "RefreshToken" not in result
+
+    @pytest.mark.asyncio
+    async def test_custom_domain_posts_to_that_host(self) -> None:
+        minter, seen = _recording_minter(lambda _r: _token_response(), domain="auth.example.com")
+        await minter.refresh("rt", CLI_CLIENT_ID)
+        assert str(seen[0].url) == "https://auth.example.com/oauth2/token"
+
+    @pytest.mark.asyncio
+    async def test_invalid_grant_raises_expired(self) -> None:
+        from src.auth.cli_login import CliRefreshExpiredError
+
+        minter, _ = _recording_minter(lambda _r: httpx.Response(400, json={"error": "invalid_grant"}))
+        with pytest.raises(CliRefreshExpiredError):
+            await minter.refresh("dead-token", CLI_CLIENT_ID)
+
+    @pytest.mark.asyncio
+    async def test_server_error_raises_unavailable(self) -> None:
+        from src.auth.cli_login import CliRefreshUnavailableError
+
+        minter, _ = _recording_minter(lambda _r: httpx.Response(500, text="boom"))
+        with pytest.raises(CliRefreshUnavailableError):
+            await minter.refresh("rt", CLI_CLIENT_ID)
+
+    @pytest.mark.asyncio
+    async def test_200_without_access_token_raises_unavailable(self) -> None:
+        from src.auth.cli_login import CliRefreshUnavailableError
+
+        minter, _ = _recording_minter(lambda _r: httpx.Response(200, json={"expires_in": 3600}))
+        with pytest.raises(CliRefreshUnavailableError):
+            await minter.refresh("rt", CLI_CLIENT_ID)
+
+
+def _endpoint_app(
+    db_session: AsyncSession,
+    handler: Any,
+    *,
+    domain: str = COGNITO_DOMAIN,
+) -> tuple[TestClient, list[httpx.Request]]:
+    """The real router + the real minter + a mock token endpoint."""
+    minter, seen = _recording_minter(handler, domain=domain)
+    return _make_app(db_session, minter), seen  # type: ignore[arg-type]
+
+
+class TestRefreshRoute:
+    """/auth/cli/refresh end-to-end over the mock token endpoint."""
+
     def _refresh(self, client: TestClient, token: str = "old-refresh-token-value") -> Any:
         return client.post("/auth/cli/refresh", json={"refresh_token": token})
 
-    def test_refresh_renews_on_the_cli_client_without_auth_header(self, db_session: AsyncSession, minter: StubMinter) -> None:
+    def test_refresh_renews_without_auth_header(self, db_session: AsyncSession) -> None:
         # No Authorization header: the access token is expired by the time the
         # CLI refreshes, so the refresh token in the body is the sole credential.
-        client = _make_app(db_session, minter)
+        client, seen = _endpoint_app(db_session, lambda _r: _token_response())
         response = self._refresh(client, token="the-refresh-token")
         assert response.status_code == 200, response.text
 
         tokens = response.json()
+        assert tokens["token_type"] == "Bearer"
         assert tokens["access_token"] == "refreshed-access"
         assert tokens["id_token"] == "refreshed-id"
         # Rotation returns a NEW refresh token that the CLI must persist.
         assert tokens["refresh_token"] == "rotated-refresh"
         assert tokens["expires_in"] == 3600
-        # Refreshed on the CLI app client, server-side.
-        assert minter.refresh_calls == [("the-refresh-token", CLI_CLIENT_ID)]
+        # Refreshed on the CLI app client, through the token endpoint.
+        assert len(seen) == 1
+        assert str(seen[0].url) == TOKEN_ENDPOINT
 
     def test_dead_refresh_token_is_401(self, db_session: AsyncSession) -> None:
         """A rotated-away / revoked token is terminal — the CLI must re-login."""
-        minter = StubMinter(refresh_error=_client_error("NotAuthorizedException"))
-        client = _make_app(db_session, minter)
+        client, _ = _endpoint_app(
+            db_session,
+            lambda _r: httpx.Response(400, json={"error": "invalid_grant", "error_description": "Invalid Refresh Token"}),
+        )
         response = self._refresh(client)
         assert response.status_code == 401
         assert response.json()["detail"]["error"] == "refresh_expired"
 
-    def test_missing_user_is_401(self, db_session: AsyncSession) -> None:
-        minter = StubMinter(refresh_error=_client_error("UserNotFoundException"))
-        client = _make_app(db_session, minter)
-        assert self._refresh(client).status_code == 401
-
-    def test_transient_cognito_error_is_502(self, db_session: AsyncSession) -> None:
-        """A retryable Cognito hiccup maps to 502, not 401 — the CLI retries."""
-        minter = StubMinter(refresh_error=_client_error("InternalErrorException"))
-        client = _make_app(db_session, minter)
+    def test_server_error_is_502(self, db_session: AsyncSession) -> None:
+        """A retryable hiccup maps to 502, not 401 — the CLI retries."""
+        client, _ = _endpoint_app(db_session, lambda _r: httpx.Response(500, text="internal error"))
         response = self._refresh(client)
         assert response.status_code == 502
         assert response.json()["detail"]["error"] == "refresh_failed"
 
-    def test_refresh_503_when_not_configured(self, db_session: AsyncSession, minter: StubMinter, monkeypatch) -> None:
+    def test_timeout_is_502(self, db_session: AsyncSession) -> None:
+        def _timeout(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("token endpoint timed out", request=request)
+
+        client, _ = _endpoint_app(db_session, _timeout)
+        response = self._refresh(client)
+        assert response.status_code == 502
+        assert response.json()["detail"]["error"] == "refresh_failed"
+
+    def test_connection_error_is_502(self, db_session: AsyncSession) -> None:
+        def _refused(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        client, _ = _endpoint_app(db_session, _refused)
+        assert self._refresh(client).status_code == 502
+
+    def test_malformed_400_is_502_not_401(self, db_session: AsyncSession) -> None:
+        """Only invalid_grant means "expired"; other 400s are our bug, so retryable-shaped."""
+        client, _ = _endpoint_app(db_session, lambda _r: httpx.Response(400, json={"error": "invalid_request"}))
+        response = self._refresh(client)
+        assert response.status_code == 502
+        assert response.json()["detail"]["error"] == "refresh_failed"
+
+    def test_refresh_503_when_client_id_not_configured(self, db_session: AsyncSession, monkeypatch) -> None:
         class Unconfigured(StubSettings):
             cognito_cli_client_id = ""
 
         monkeypatch.setattr("src.auth.cli_login.get_settings", lambda: Unconfigured())
-        client = _make_app(db_session, minter)
-        assert self._refresh(client).status_code == 503
+        client, seen = _endpoint_app(db_session, lambda _r: _token_response())
+        response = self._refresh(client)
+        assert response.status_code == 503
+        assert response.json()["detail"]["error"] == "cli_login_not_configured"
+        assert seen == []  # refused before any outbound call
+
+    def test_refresh_503_when_domain_not_configured(self, db_session: AsyncSession, monkeypatch) -> None:
+        """Without cognito_domain there is no token endpoint to POST to."""
+
+        class NoDomain(StubSettings):
+            cognito_domain = ""
+
+        monkeypatch.setattr("src.auth.cli_login.get_settings", lambda: NoDomain())
+        client, seen = _endpoint_app(db_session, lambda _r: _token_response(), domain="")
+        response = self._refresh(client)
+        assert response.status_code == 503
+        assert response.json()["detail"]["error"] == "cli_login_not_configured"
+        assert seen == []
+
+    def test_refresh_never_calls_the_cognito_sdk(self, db_session: AsyncSession) -> None:
+        """Guard for #4873: Admin/InitiateAuth cannot refresh a rotating client.
+
+        The minter's SDK client raises on ANY attribute access, so if refresh
+        reverts to admin_initiate_auth this returns 502 instead of 200.
+        """
+        client, seen = _endpoint_app(db_session, lambda _r: _token_response())
+        assert self._refresh(client).status_code == 200
+        assert len(seen) == 1  # exactly one outbound call: the token endpoint
