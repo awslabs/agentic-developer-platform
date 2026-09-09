@@ -15,7 +15,7 @@ tailwind.config = {
 function show(id){document.getElementById(id).classList.remove('hidden')}
 function hide(id){document.getElementById(id).classList.add('hidden')}
 function tab(name){
-  ['structure','members','connections'].forEach(t => {
+  ['structure','members','budget','routing','connections'].forEach(t => {
     document.getElementById('tab-'+t).classList.toggle('hidden', t!==name);
     const btn = document.getElementById('btn-'+t);
     btn.classList.toggle('border-primary-600', t===name);
@@ -87,7 +87,7 @@ function tab(name){
             <td class="py-3 pr-4">2 departments · 4 teams · 38 members</td>
             <td class="py-3 pr-4 space-x-1">
               <span class="bg-gray-800 text-white rounded px-2 py-0.5 text-xs">GitHub: sophos-eng</span>
-              <span class="bg-gray-100 rounded px-2 py-0.5 text-xs">2 AWS accounts</span>
+              <span class="bg-gray-100 rounded px-2 py-0.5 text-xs">2 routing destinations</span>
             </td>
             <td class="py-3 pr-4 text-gray-500 text-xs">by admin · 2026-09-02</td>
             <td class="py-3 text-right"><button class="text-primary-600 hover:underline font-medium">Open ↓</button></td>
@@ -100,7 +100,7 @@ function tab(name){
             <td class="py-3 pr-4">1 department · 2 teams · 12 members</td>
             <td class="py-3 pr-4 space-x-1">
               <span class="bg-gray-800 text-white rounded px-2 py-0.5 text-xs">GitHub: acme-corp</span>
-              <span class="bg-gray-100 rounded px-2 py-0.5 text-xs">1 AWS account</span>
+              <span class="bg-gray-100 rounded px-2 py-0.5 text-xs">1 routing destination</span>
             </td>
             <td class="py-3 pr-4 text-gray-500 text-xs">via GitHub install · 2026-07-14</td>
             <td class="py-3 text-right"><button class="text-primary-600 hover:underline">Open</button></td>
@@ -135,6 +135,8 @@ function tab(name){
       <div class="border-b border-gray-200 mt-4 mb-4 flex gap-6 text-sm">
         <button id="btn-structure" onclick="tab('structure')" class="pb-2 border-b-2 border-primary-600 text-primary-700 font-medium">Structure</button>
         <button id="btn-members" onclick="tab('members')" class="pb-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">Members</button>
+        <button id="btn-budget" onclick="tab('budget')" class="pb-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">Budget</button>
+        <button id="btn-routing" onclick="tab('routing')" class="pb-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">Bedrock routing</button>
         <button id="btn-connections" onclick="tab('connections')" class="pb-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">Connections</button>
       </div>
 
@@ -237,7 +239,100 @@ function tab(name){
         <p class="text-xs text-gray-500 mt-3">People are recognized by their GitHub ID when one is linked. A person can be on several teams; budgets and Bedrock routing follow team membership.</p>
       </div>
 
-      <!-- Tab: Connections (read-only here; lifecycle is T3) -->
+      <!-- Tab: Budget (org-scoped view of the shipped Budget Management panel — reused, not forked) -->
+      <div id="tab-budget" class="hidden">
+        <div class="grid grid-cols-3 gap-4 mb-4">
+          <div class="border border-gray-200 rounded-lg p-4">
+            <div class="text-xs text-gray-500 font-medium">ORG LIMIT (MONTHLY)</div>
+            <div class="text-xl font-bold mt-1">$2,000</div>
+            <div class="mt-2 h-2 bg-gray-100 rounded-full"><div class="h-2 bg-primary-500 rounded-full" style="width:62%"></div></div>
+            <div class="text-xs text-gray-500 mt-1">$1,240 used (62%)</div>
+          </div>
+          <div class="border border-gray-200 rounded-lg p-4">
+            <div class="text-xs text-gray-500 font-medium">DEFAULT PERSON LIMIT</div>
+            <div class="text-xl font-bold mt-1">$50 <span class="text-sm font-normal text-gray-500">/ month</span></div>
+            <div class="text-xs text-gray-500 mt-2">Applies to members without an individual limit.</div>
+          </div>
+          <div class="border border-gray-200 rounded-lg p-4">
+            <div class="text-xs text-gray-500 font-medium">TOP SPENDER THIS PERIOD</div>
+            <div class="text-xl font-bold mt-1">ml-team</div>
+            <div class="text-xs text-gray-500 mt-2">$640 of the org's $1,240</div>
+          </div>
+        </div>
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-500 border-b border-gray-200">
+              <th class="py-2 pr-4 font-medium">TEAM</th>
+              <th class="py-2 pr-4 font-medium">LIMIT</th>
+              <th class="py-2 pr-4 font-medium">USED</th>
+              <th class="py-2 font-medium"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <tr>
+              <td class="py-3 pr-4">ml-team</td><td class="py-3 pr-4">$800 / mo</td>
+              <td class="py-3 pr-4">$640 <span class="text-amber-600 text-xs">(80%)</span></td>
+              <td class="py-3 text-right"><button class="text-primary-600 hover:underline">Edit limit</button></td>
+            </tr>
+            <tr>
+              <td class="py-3 pr-4">web-team</td><td class="py-3 pr-4">$500 / mo</td>
+              <td class="py-3 pr-4">$310 <span class="text-gray-500 text-xs">(62%)</span></td>
+              <td class="py-3 text-right"><button class="text-primary-600 hover:underline">Edit limit</button></td>
+            </tr>
+            <tr>
+              <td class="py-3 pr-4">platform-team <span class="text-gray-400 text-xs">no team limit</span></td><td class="py-3 pr-4 text-gray-400">org limit applies</td>
+              <td class="py-3 pr-4">$290</td>
+              <td class="py-3 text-right"><button class="text-primary-600 hover:underline">Set limit</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="text-xs text-gray-500 mt-3">Most specific limit wins: individual &gt; team &gt; org &gt; platform. This tab is the org-scoped view of <strong>Budget Management</strong> — the same data and controls, filtered to Sophos. <button class="text-primary-600 hover:underline">Open full Budget Management →</button></p>
+      </div>
+
+      <!-- Tab: Bedrock routing (org-scoped view of the shipped Bedrock Account Routing panel — reused, not forked) -->
+      <div id="tab-routing" class="hidden">
+        <div class="flex justify-between items-center mb-3">
+          <p class="text-sm text-gray-600">Which AWS account serves Bedrock calls for this org, its teams and people.</p>
+          <button class="bg-primary-600 text-white hover:bg-primary-700 rounded-lg px-3 py-1.5 text-sm font-medium">+ Add routing rule</button>
+        </div>
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-500 border-b border-gray-200">
+              <th class="py-2 pr-4 font-medium">SCOPE</th>
+              <th class="py-2 pr-4 font-medium">APPLIES TO</th>
+              <th class="py-2 pr-4 font-medium">DESTINATION</th>
+              <th class="py-2 pr-4 font-medium">STATUS</th>
+              <th class="py-2 font-medium"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <tr>
+              <td class="py-3 pr-4"><span class="bg-gray-100 rounded px-2 py-0.5 text-xs font-medium">ORG</span></td>
+              <td class="py-3 pr-4">Sophos (everyone)</td>
+              <td class="py-3 pr-4 font-mono text-xs">sophos-prod (…4821)</td>
+              <td class="py-3 pr-4"><span class="text-green-700">● Verified 2h ago</span></td>
+              <td class="py-3 text-right space-x-2"><button class="text-primary-600 hover:underline">Edit</button><button class="text-red-600 hover:underline">Remove</button></td>
+            </tr>
+            <tr>
+              <td class="py-3 pr-4"><span class="bg-gray-100 rounded px-2 py-0.5 text-xs font-medium">TEAM</span></td>
+              <td class="py-3 pr-4">ml-team</td>
+              <td class="py-3 pr-4 font-mono text-xs">sophos-ml (…7733)</td>
+              <td class="py-3 pr-4"><span class="text-green-700">● Verified 2h ago</span></td>
+              <td class="py-3 text-right space-x-2"><button class="text-primary-600 hover:underline">Edit</button><button class="text-red-600 hover:underline">Remove</button></td>
+            </tr>
+            <tr class="bg-gray-50 text-gray-500">
+              <td class="py-3 pr-4"><span class="bg-gray-200 rounded px-2 py-0.5 text-xs font-medium">TEAMS WITHOUT A RULE</span></td>
+              <td class="py-3 pr-4">web-team, platform-team, default</td>
+              <td class="py-3 pr-4 font-mono text-xs">sophos-prod (…4821) <span class="italic">via org rule</span></td>
+              <td class="py-3 pr-4">inherited</td>
+              <td class="py-3"></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="text-xs text-gray-500 mt-3">Most specific rule wins: user &gt; team &gt; org &gt; platform default. Destinations are org-registered accounts (see Connections). This tab is the org-scoped view of <strong>Bedrock Account Routing</strong>. <button class="text-primary-600 hover:underline">Open full Bedrock Account Routing →</button></p>
+      </div>
+
+      <!-- Tab: Connections (org-scoped; read-only here — lifecycle is T3) -->
       <div id="tab-connections" class="hidden">
         <table class="w-full text-sm">
           <thead>
@@ -257,13 +352,19 @@ function tab(name){
             </tr>
             <tr>
               <td class="py-3 pr-4"><span class="bg-gray-100 rounded px-2 py-0.5 text-xs">AWS</span></td>
-              <td class="py-3 pr-4"><span class="font-mono text-xs">sophos-prod (…4821)</span></td>
+              <td class="py-3 pr-4"><span class="font-mono text-xs">sophos-prod (…4821)</span> · org-registered routing destination</td>
               <td class="py-3 pr-4"><span class="text-green-700">● Verified 2h ago</span></td>
-              <td class="py-3 text-right"><button class="text-primary-600 hover:underline">View in Routing</button></td>
+              <td class="py-3 text-right"><button class="text-primary-600 hover:underline">View in Routing tab</button></td>
+            </tr>
+            <tr>
+              <td class="py-3 pr-4"><span class="bg-gray-100 rounded px-2 py-0.5 text-xs">AWS</span></td>
+              <td class="py-3 pr-4"><span class="font-mono text-xs">sophos-ml (…7733)</span> · org-registered routing destination</td>
+              <td class="py-3 pr-4"><span class="text-green-700">● Verified 2h ago</span></td>
+              <td class="py-3 text-right"><button class="text-primary-600 hover:underline">View in Routing tab</button></td>
             </tr>
           </tbody>
         </table>
-        <p class="text-xs text-gray-500 mt-3">Connections are how an organization plugs into the outside world. The organization itself lives here, on the platform — GitHub is optional and attached after the fact. <em>(Attach/detach controls ship with T3.)</em></p>
+        <p class="text-xs text-gray-500 mt-3">These are <strong>organization-level</strong> connections: the GitHub App installation and AWS accounts registered for the org's routing rules. People's personal AWS/GitHub links live on their own Credentials page and are never used by org or team rules. <em>(GitHub attach/detach controls ship with T3.)</em></p>
       </div>
     </div>
 
