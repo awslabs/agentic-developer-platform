@@ -450,12 +450,37 @@ refresh_tokens() {
             print_warning "Run 'bg-cognito-auth.sh login --web' to sign in again."
             return 1
         fi
-        local resp http_code body
-        resp=$(printf '{"refresh_token":"%s"}' "${REFRESH_TOKEN}" | curl -s -w '\n%{http_code}' \
-            -X POST "${GATEWAY_URL%/}/auth/cli/refresh" \
-            -H "Content-Type: application/json" --data @- 2>/dev/null) || resp=$'\n000'
-        http_code="${resp##*$'\n'}"
-        body="${resp%$'\n'*}"
+        # Retry TRANSIENT failures a few times before giving up. The refresh
+        # token rotates: the server may have already rotated it (issuing a new
+        # one) even when the response never reached us — a gateway pod rolling
+        # during a deploy, or a brief network drop. Re-presenting the SAME token
+        # is safe *within* Cognito's 60s rotation grace window: it returns the
+        # same freshly-rotated token instead of tripping reuse detection. So a
+        # quick retry lets an interrupted refresh self-heal instead of stranding
+        # the on-disk token (which would log the user out at the next refresh).
+        # The total backoff (2s + 4s) stays well inside the 60s grace. 401 is
+        # terminal (token genuinely dead/expired); other non-200s are not
+        # retried either — only the transient set below.
+        local resp http_code body attempt=0
+        local max_attempts=3
+        while :; do
+            attempt=$((attempt + 1))
+            resp=$(printf '{"refresh_token":"%s"}' "${REFRESH_TOKEN}" | curl -s -w '\n%{http_code}' \
+                -X POST "${GATEWAY_URL%/}/auth/cli/refresh" \
+                -H "Content-Type: application/json" --data @- 2>/dev/null) || resp=$'\n000'
+            http_code="${resp##*$'\n'}"
+            body="${resp%$'\n'*}"
+
+            case "${http_code}" in
+                000 | 408 | 425 | 429 | 500 | 502 | 503 | 504)
+                    if [ "${attempt}" -lt "${max_attempts}" ]; then
+                        sleep $((attempt * 2))
+                        continue
+                    fi
+                    ;;
+            esac
+            break
+        done
 
         if [ "${http_code}" = "401" ]; then
             # Terminal: the refresh token is dead/rotated-away. Retrying is futile.
@@ -1043,6 +1068,19 @@ cmd_login_web() {
 cmd_refresh() {
     if ! refresh_tokens; then
         exit 1
+    fi
+
+    # The web-login CLI client (refresh_via=gateway) deliberately holds NO AWS
+    # credentials — there is no Identity Pool to exchange against. Running the
+    # exchange on that path always fails with "Invalid length for parameter
+    # IdentityPoolId, value: 0" and makes `refresh` (and `adp refresh`) exit
+    # non-zero even though the token refresh above fully succeeded — which trips
+    # any health check or wrapper that keys off the exit code. Refreshing the
+    # gateway tokens IS the whole job here, so stop after it.
+    load_config
+    if [ "${REFRESH_VIA:-}" = "gateway" ] || [ -z "${IDENTITY_POOL_ID:-}" ] || [ "${IDENTITY_POOL_ID:-}" = "null" ]; then
+        print_success "Tokens refreshed successfully!"
+        return 0
     fi
 
     if ! exchange_for_aws_credentials; then
