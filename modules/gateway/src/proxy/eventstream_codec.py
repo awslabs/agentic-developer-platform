@@ -80,6 +80,15 @@ def encode_bedrock_chunk(event_json: bytes) -> bytes:
     return encode_event_message(payload, _CHUNK_HEADERS)
 
 
+#: Keep-alive frame for the binary eventstream path. A pre-encoded Bedrock chunk
+#: carrying an Anthropic ``ping`` event — the protocol's own idle heartbeat, which
+#: the SDK decodes and ignores. An SSE-comment keep-alive cannot be used here:
+#: ``sse_to_eventstream`` drops non-``data:`` lines, so a comment injected upstream
+#: would vanish, and raw SSE bytes injected downstream would corrupt the framing.
+#: Injected only during silence to hold CloudFront's ~60s origin idle timeout open.
+EVENTSTREAM_KEEPALIVE = encode_bedrock_chunk(b'{"type": "ping"}')
+
+
 async def sse_to_eventstream(sse_stream: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     """Re-encode a text-SSE byte stream as AWS binary eventstream frames.
 
