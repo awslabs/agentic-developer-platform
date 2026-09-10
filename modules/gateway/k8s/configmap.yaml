@@ -212,6 +212,19 @@ data:
   # Kill switch: set BG_MANTLE_ENABLED "false" and redeploy; route returns 503.
   BG_MANTLE_ENABLED: "true"
   BG_MANTLE_REGION: "us-east-1"
+  # AWS Bedrock's OpenAI-compatible endpoint (same host family as native
+  # bedrock-runtime). Replaces the earlier preview host bedrock-mantle.*.api.aws,
+  # which never served newer models (gpt-6-astra → 404). {region} is substituted.
+  BG_MANTLE_BASE_URL: "https://bedrock-runtime.{region}.amazonaws.com"
+  # bedrock-runtime serves the flagship OpenAI families ONLY via inference
+  # profiles, so the route rewrites the forwarded body's model to "<prefix>.<model>"
+  # (openai.gpt-6-astra → us.openai.gpt-6-astra). Must match the geo of
+  # BG_MANTLE_REGION (us|eu|apac|global). Set "" to disable the rewrite. Bare
+  # caller ids stay unchanged.
+  BG_MANTLE_INFERENCE_PROFILE_PREFIX: "us"
+  # On-demand OpenAI models (bare id, no inference profile) — exempted from the
+  # prefix rewrite above. gpt-oss is on-demand; gpt-5.6/gpt-6 are profile-only.
+  BG_MANTLE_ON_DEMAND_MODELS: "openai.gpt-oss*"
 
   # =============================================================================
   # Credential-authorization binding (EPIC #3172, S9 #3182).

@@ -8,6 +8,12 @@ This is a **passthrough, not a translation** — the request body is forwarded
 byte-for-byte and the response (including streaming chunks) is returned verbatim.
 It intentionally does NOT touch ``format_translator.py``.
 
+The one exception is the ``model`` field: bedrock-runtime's OpenAI path serves
+models only via cross-region inference profiles, so the forwarded body's model
+id is prefixed with the configured geo prefix (``openai.gpt-6-astra`` →
+``us.openai.gpt-6-astra``) before signing. The caller's bare id is preserved for
+metering/pricing. See ``_apply_inference_profile``.
+
 Governance handled here:
 - **Metering**: the Responses-API ``usage`` block is extracted and written to
   ``usage_logs`` via the same ``UsageService`` the Bedrock proxy uses.
@@ -23,6 +29,7 @@ mantle models).
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import time
@@ -48,6 +55,11 @@ MANTLE_RESPONSES_PATH = "/openai/v1/responses"
 # Model-family dimension recorded on usage_logs.model for OpenAI-model traffic
 # so metering can distinguish it from Claude/Bedrock rows.
 USAGE_MODEL_FAMILY = "openai"
+
+# Bedrock cross-region inference-profile geo prefixes. A model id already starting
+# with one of these is a fully-qualified inference profile — the route must NOT
+# prefix it again (that would produce e.g. "us.us.openai.*").
+_GEO_PREFIXES = ("us.", "eu.", "apac.", "global.", "us-gov.")
 
 # Safety valve for the per-stream partial-line buffer (issue #2828). A well-formed
 # `response.completed` event is well under this; if a line ever exceeds it (e.g. a
@@ -162,17 +174,64 @@ class MantlePassthroughService:
         auth: MantleAuth,
         base_url: str,
         *,
+        inference_profile_prefix: str = "",
+        on_demand_models: str = "",
         http_client: httpx.AsyncClient | None = None,
         timeout: float = 120.0,
     ) -> None:
         self._auth = auth
         self._base_url = base_url.rstrip("/")
+        self._inference_profile_prefix = inference_profile_prefix.strip().rstrip(".")
+        # Glob patterns of models invoked on-demand with the BARE id (no inference
+        # profile exists for them) — these must NOT be geo-prefixed.
+        self._on_demand_patterns = [p.strip() for p in on_demand_models.split(",") if p.strip()]
         self._timeout = timeout
         self._http_client = http_client
 
     @property
     def upstream_url(self) -> str:
         return f"{self._base_url}{MANTLE_RESPONSES_PATH}"
+
+    def _apply_inference_profile(self, body: bytes) -> bytes:
+        """Rewrite the forwarded body's ``model`` to its inference-profile id.
+
+        bedrock-runtime's OpenAI path serves models ONLY via cross-region
+        inference profiles (bare ``openai.gpt-6-astra`` → 400 "on-demand
+        throughput isn't supported"), so the byte-for-byte passthrough would
+        fail for every caller using a bare id. To keep the caller-facing id
+        stable — Codex and the setup UI keep emitting ``openai.gpt-6-astra`` —
+        we prefix ONLY the forwarded body's model with the configured geo prefix
+        (``openai.gpt-6-astra`` → ``us.openai.gpt-6-astra``). The bare id the
+        caller sent is still what the route passes to metering/pricing, so this
+        rewrite is invisible to usage_logs, the allowlist, and cost lookup.
+
+        Returns the body unchanged when: no prefix is configured, the body is not
+        JSON/​is empty, there is no string ``model``, the model is already a
+        fully-qualified inference profile (already carries a geo prefix), or the
+        model is an on-demand model (matches an ``on_demand_models`` glob) — those
+        are invoked with the bare id and have no inference profile, so prefixing
+        them would produce an invalid id. This is the one point where the
+        passthrough re-serializes the body; the signature is computed over these
+        returned bytes, so callers sign what they forward.
+        """
+        prefix = self._inference_profile_prefix
+        if not prefix:
+            return body
+        try:
+            data = json.loads(body) if body else None
+        except (json.JSONDecodeError, ValueError):
+            return body
+        if not isinstance(data, dict):
+            return body
+        model = data.get("model")
+        if not isinstance(model, str) or not model:
+            return body
+        if model.startswith(_GEO_PREFIXES):
+            return body
+        if any(fnmatch.fnmatch(model, pat) for pat in self._on_demand_patterns):
+            return body
+        data["model"] = f"{prefix}.{model}"
+        return json.dumps(data).encode()
 
     def _headers(self, body: bytes) -> dict[str, str]:
         """Build outbound headers, SigV4-signing the exact body bytes.
@@ -213,9 +272,12 @@ class MantlePassthroughService:
             A ``MantleResponse`` for non-streaming calls, or an async byte
             iterator that yields upstream chunks verbatim for streaming calls.
         """
+        # Forward the profile-qualified body (bedrock-runtime needs it); keep the
+        # caller's bare `model` for metering/pricing/logging (passed through below).
+        upstream_body = self._apply_inference_profile(body)
         if stream:
-            return await self._stream(body, context, model=model, request_id=request_id, agent_run_id=agent_run_id)
-        return await self._invoke(body, context, model=model, request_id=request_id, agent_run_id=agent_run_id)
+            return await self._stream(upstream_body, context, model=model, request_id=request_id, agent_run_id=agent_run_id)
+        return await self._invoke(upstream_body, context, model=model, request_id=request_id, agent_run_id=agent_run_id)
 
     async def _invoke(
         self,

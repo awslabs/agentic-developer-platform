@@ -145,8 +145,37 @@ class Settings(BaseSettings):
     # Base URL of the mantle endpoint WITHOUT the trailing path. The route appends
     # the GPT-5.5 quirk path itself ("/openai/v1/responses"). {region} is substituted
     # from mantle_region if the literal "{region}" appears in the value.
-    mantle_base_url: str = "https://bedrock-mantle.{region}.api.aws"
+    #
+    # This is AWS Bedrock's OpenAI-compatible endpoint, which lives on the same
+    # host family as the native Bedrock runtime (bedrock-runtime.<region>.amazonaws.com).
+    # It replaces the earlier preview host bedrock-mantle.<region>.api.aws, which
+    # only served a curated model subset (e.g. gpt-5.6-sol) and never picked up
+    # newer models like gpt-6-astra (returned 404 "model does not exist"). Unlike
+    # that preview host, bedrock-runtime serves OpenAI models ONLY via inference
+    # profiles, so bare on-demand ids are rejected — see
+    # mantle_inference_profile_prefix below, which restores the bare-id UX.
+    mantle_base_url: str = "https://bedrock-runtime.{region}.amazonaws.com"
     mantle_region: str = "us-east-1"
+    # Geo prefix for the cross-region inference profile the mantle route forwards
+    # under. bedrock-runtime rejects bare foundation-model ids for the flagship
+    # OpenAI families on this path ("Invocation ... with on-demand throughput isn't
+    # supported. Retry ... with an inference profile") — gpt-5.6-*/gpt-6-* are
+    # invocable ONLY via their inference profile (us.openai.*, global.openai.*, ...).
+    # To keep the caller's id stable (Codex/config keep using bare openai.gpt-6-astra)
+    # the route rewrites the FORWARDED body's model to "<prefix>.<model>" before
+    # signing, while metering/pricing stay keyed on the bare id. Set to "" to
+    # disable the rewrite (e.g. to point back at a host that maps bare ids itself).
+    # Values: the Bedrock geo prefix for mantle_region — "us", "eu", "apac", or
+    # "global". On-demand models are exempted via mantle_on_demand_models below.
+    mantle_inference_profile_prefix: str = "us"
+    # Comma-separated globs of OpenAI models invoked ON-DEMAND with the bare id (no
+    # inference profile exists for them, so the geo-prefix rewrite above must skip
+    # them — prefixing would yield an invalid id). The gpt-oss family is on-demand;
+    # the gpt-5.6/gpt-6 flagship families are inference-profile-only and SHOULD be
+    # prefixed, so they are deliberately NOT listed here. New flagship models thus
+    # get the profile prefix automatically; only add a pattern here if a future
+    # model is genuinely on-demand on the Responses API.
+    mantle_on_demand_models: str = "openai.gpt-oss*"
     # Upstream auth is SigV4 ONLY (operator decision 2026-07-03; spike #2703 §4-5
     # verified mantle accepts SigV4 with signing name "bedrock"). The gateway pod
     # signs with its ambient IRSA credential chain — no API keys, no Secrets

@@ -369,14 +369,20 @@ resource "aws_iam_role_policy" "gateway_comprehend_pii" {
 # upstream requests with SigV4 using the gateway pod's OWN IRSA credentials —
 # unlike the Claude proxy path, which assumes a cross-account pool role.
 #
-# bedrock-mantle is its OWN service (prefix "bedrock-mantle:"), not part of the
-# "bedrock:" service. The upstream inference call authorizes against
-# bedrock-mantle:CreateInference on the mantle project resource — NOT
-# bedrock:InvokeModel*. Spike #2703 missed this because it tested from a role
-# with AdministratorAccess attached, which masked the real required action;
-# the gateway pod's own role got 401 access_denied until this grant was added
-# (Issue #2817). The bedrock:InvokeModel* statement below is kept because the
-# mantle docs are ambiguous about whether some model paths still check it.
+# The route now targets AWS Bedrock's OpenAI-compatible endpoint on
+# bedrock-runtime.<region>.amazonaws.com (BG_MANTLE_BASE_URL), which authorizes
+# against the native bedrock:InvokeModel* actions on the inference profile and
+# its underlying foundation model — covered by the "MantleBedrockInvoke"
+# statement below (Resource "*"). No IAM change was needed for that migration.
+#
+# The earlier preview host bedrock-mantle.<region>.api.aws is its OWN service
+# (prefix "bedrock-mantle:") and authorized against bedrock-mantle:CreateInference
+# on the mantle project resource — NOT bedrock:InvokeModel*. Spike #2703 missed
+# this because it tested from a role with AdministratorAccess attached, which
+# masked the real required action; the gateway pod's own role got 401
+# access_denied until this grant was added (Issue #2817). The
+# "MantleCreateInference" statement below is now vestigial (the route no longer
+# calls that host) but is retained harmlessly for rollback to the preview host.
 resource "aws_iam_role_policy" "gateway_mantle_bedrock_invoke" {
   count = var.enable_mantle_passthrough ? 1 : 0
   name  = "${local.name_prefix}-policy-gateway-mantle-bedrock-invoke"

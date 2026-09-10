@@ -177,7 +177,14 @@ async def lifespan(app: FastAPI):
 
             base_url = settings.mantle_base_url.replace("{region}", settings.mantle_region)
             auth = make_mantle_auth(settings.mantle_region)
-            set_mantle_service(MantlePassthroughService(auth, base_url))
+            set_mantle_service(
+                MantlePassthroughService(
+                    auth,
+                    base_url,
+                    inference_profile_prefix=settings.mantle_inference_profile_prefix,
+                    on_demand_models=settings.mantle_on_demand_models,
+                )
+            )
             logger.info("Mantle passthrough service initialized", extra={"auth_mode": "sigv4"})
         else:
             logger.info("Mantle passthrough disabled (BG_MANTLE_ENABLED not set)")
