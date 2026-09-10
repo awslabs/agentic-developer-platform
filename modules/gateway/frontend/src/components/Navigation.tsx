@@ -33,7 +33,12 @@ export function Navigation() {
   // These are anchors INTO the system dashboard, so they share its feature gate.
   if (features.system_dashboard && isPlatformAdmin()) {
     if (canViewOrganizations()) {
-      navItems.push({ to: '/admin/system#organizations', label: 'Organizations', icon: '🏢' });
+      // Issue #4841: relabelled from "Organizations" to disambiguate from the structural
+      // panel added below. This entry is an anchor into the system dashboard's
+      // "Top Organizations (24h)" USAGE section; the new entry is where orgs, departments
+      // and teams are actually created and managed. Two links both labelled
+      // "Organizations" gave no way to tell which one did what.
+      navItems.push({ to: '/admin/system#organizations', label: 'Org Usage', icon: '📊' });
     }
     if (canViewPool()) {
       navItems.push({ to: '/admin/system#pool', label: 'Pool Health', icon: '🔄' });
@@ -162,6 +167,18 @@ export function Navigation() {
   // Tenant Org Links page for platform admins (Issue #2954)
   if (isPlatformAdmin()) {
     navItems.push({ to: '/admin/tenant-links', label: 'Tenant Org Links', icon: '🏢' });
+  }
+
+  // Organizations structure panel — orgs, departments, teams (Issue #4841).
+  //
+  // Gated on ORG_READ, which is the permission the underlying list route enforces, so an
+  // ORG ADMIN sees this link too: the server filters the list to their own org and the
+  // dept/team write routes gate on ORG_UPDATE scoped to target_org_id. Creating an
+  // organization is platform-admin-only (the identity router is `require_admin`), so that
+  // button — not this link — carries the narrower gate. This check is COSMETIC: the server
+  // is the boundary on every route the panel calls.
+  if (canViewOrganizations()) {
+    navItems.push({ to: '/admin/organizations', label: 'Organizations', icon: '🏢' });
   }
 
   return (

@@ -34,6 +34,7 @@ const Denied = lazy(() => import('./pages/onboarding/Denied')); // Issue #545
 const AccessRequests = lazy(() => import('./pages/admin/AccessRequests')); // Issue #545
 const IndexingStatus = lazy(() => import('./pages/admin/IndexingStatus')); // Issue #1424
 const TenantOrgLinks = lazy(() => import('./pages/admin/TenantOrgLinks')); // Issue #2954
+const AdminOrganizations = lazy(() => import('./pages/admin/Organizations')); // Issue #4841
 const AgentActivity = lazy(() => import('./pages/AgentActivity')); // Issue #1457
 const AgentRunDashboard = lazy(() => import('./pages/AgentRunDashboard')); // Issue #3633
 const BudgetSpend = lazy(() => import('./pages/BudgetSpend')); // Issue #4402
@@ -96,6 +97,11 @@ function App() {
               <Route path="/admin/access-requests" element={<AccessRequests />} /> {/* Issue #545 */}
               <Route path="/admin/indexing" element={<FeatureGate feature="indexing"><IndexingStatus /></FeatureGate>} /> {/* Issue #1424 */}
               <Route path="/admin/tenant-links" element={<TenantOrgLinks />} /> {/* Issue #2954 */}
+              {/* Issue #4841. No AdminGuard: an org admin legitimately reaches this panel to
+                  manage their OWN org's departments and teams (those routes gate on
+                  ORG_UPDATE scoped to target_org_id). The page itself hides the create-org
+                  button, whose route is platform-admin-only. */}
+              <Route path="/admin/organizations" element={<AdminOrganizations />} />
               <Route path="/activity" element={<AgentActivity />} /> {/* Issue #1457 */}
               <Route path="/runs" element={<AgentRunDashboard />} /> {/* Issue #3633 */}
               {/* Issue #4402. Reachable by a MEMBER: no permission guard, because the

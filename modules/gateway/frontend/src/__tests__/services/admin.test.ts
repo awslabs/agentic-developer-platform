@@ -4,6 +4,7 @@ import {
   getOrganizations,
   getOrganization,
   createOrganization,
+  createOrganizationCanonical,
   updateOrganization,
   deleteOrganization,
   getDepartments,
@@ -141,6 +142,38 @@ describe('Admin Service', () => {
         expect(apiClient.post).toHaveBeenCalledWith('/admin/organizations', { name: 'New Org' });
         expect(result.id).toBe('org-new');
         expect(result.name).toBe('New Org');
+      });
+    });
+
+    describe('createOrganizationCanonical', () => {
+      it('posts the caller-supplied id to the canonical identity route', async () => {
+        vi.mocked(apiClient.post).mockResolvedValue({ id: 'acme-corp', name: 'Acme Corp' });
+
+        const result = await createOrganizationCanonical({ id: 'acme-corp', name: 'Acme Corp' });
+
+        // The `/api` IS doubled on purpose (Issue #4841). apiClient's base is already
+        // `/api` and the identity router mounts at `/api/admin/identity`, so the browser
+        // emits `/api/api/...` and the CloudFront viewer function strips one segment back
+        // to the mount. Dropping one `/api` here 404s in a deployed environment; this
+        // assertion is what catches a well-meaning "cleanup" of the duplicate.
+        expect(apiClient.post).toHaveBeenCalledWith('/api/admin/identity/organizations', {
+          id: 'acme-corp',
+          name: 'Acme Corp',
+        });
+        expect(result).toEqual({ id: 'acme-corp', name: 'Acme Corp' });
+      });
+
+      it('sends the id even when it differs from a slug of the name', async () => {
+        // The route requires an id and never derives one, so whatever the admin confirmed
+        // must reach the server verbatim.
+        vi.mocked(apiClient.post).mockResolvedValue({ id: 'acme-emea', name: 'Acme Corp' });
+
+        await createOrganizationCanonical({ id: 'acme-emea', name: 'Acme Corp' });
+
+        expect(apiClient.post).toHaveBeenCalledWith('/api/admin/identity/organizations', {
+          id: 'acme-emea',
+          name: 'Acme Corp',
+        });
       });
     });
 

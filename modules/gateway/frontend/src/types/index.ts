@@ -206,6 +206,9 @@ export interface Organization {
   settings: Record<string, unknown>;
   // Issue #2984: Member approval policy for auto-join toggle
   memberApprovalPolicy?: string;
+  // Issue #4841: GitHub App installations attached to this org. Empty is a first-class,
+  // fully-functional state ("platform-native", ruling R1) — NOT a missing value.
+  githubInstallationIds?: string[];
   createdAt: string;
 }
 
@@ -214,6 +217,26 @@ export interface OrganizationCreateRequest {
   aws_accounts?: string[];
   role_mappings?: Record<string, string>;
   settings?: Record<string, unknown>;
+}
+
+/**
+ * Body for the CANONICAL org-create route — Issue #4841 (#4839 · T2a), ruling D4=A.
+ *
+ * A separate type from `OrganizationCreateRequest` above, which is the body of the
+ * DEPRECATED `POST /admin/organizations`. The difference is not cosmetic: this route
+ * requires a caller-supplied `id` (`src/admin/identity/schemas.py`
+ * `OrganizationCreateRequest.id`, required, 1–255 chars) and the deprecated one generates
+ * a UUID. Reusing one type for both would make the required field look optional and let a
+ * call compile that the server 422s.
+ *
+ * `plan`, `channels`, `aws_accounts` and `settings` all default server-side and are
+ * omitted here on purpose: this panel creates organizations **GitHub-free** (the whole
+ * point of T2a), so it has nothing to say about channels, and connection lifecycle is T3.
+ */
+export interface OrganizationCanonicalCreateRequest {
+  /** Caller-supplied, immutable after create. See `utils/orgIdentifier.ts`. */
+  id: string;
+  name: string;
 }
 
 export interface OrganizationUpdateRequest {

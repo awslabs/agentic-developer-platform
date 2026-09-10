@@ -202,6 +202,53 @@ describe('Navigation', () => {
     });
   });
 
+  // Issue #4841. Two entries would otherwise both read "Organizations": the
+  // system-dashboard usage anchor and the new structure panel. These pin the
+  // disambiguation so a future edit cannot silently restore the collision.
+  describe('Organizations links (Issue #4841)', () => {
+    it('renders the structure panel for anyone with ORG_READ, including an org admin', () => {
+      // Not platform-admin-gated: the list route filters to the caller's own org, and the
+      // dept/team writes gate on ORG_UPDATE scoped to target_org_id.
+      mockUsePermissions.mockReturnValue(
+        permissions({ isOrgAdmin: () => true, canViewOrganizations: () => true })
+      );
+
+      renderNavigation();
+
+      expect(screen.getByText('Organizations').closest('a')).toHaveAttribute(
+        'href',
+        '/admin/organizations'
+      );
+    });
+
+    it('does NOT render the structure panel without ORG_READ', () => {
+      renderNavigation();
+
+      expect(screen.queryByText('Organizations')).not.toBeInTheDocument();
+    });
+
+    it('labels the system-dashboard usage anchor "Org Usage", not "Organizations"', () => {
+      // A platform admin sees BOTH entries. Before the relabel they were both called
+      // "Organizations", with no way to tell which one managed structure.
+      mockUsePermissions.mockReturnValue(
+        permissions({ isPlatformAdmin: () => true, canViewOrganizations: () => true })
+      );
+
+      renderNavigation();
+
+      expect(screen.getByText('Org Usage').closest('a')).toHaveAttribute(
+        'href',
+        '/admin/system#organizations'
+      );
+      // Exactly one "Organizations" entry, and it is the structure panel.
+      expect(screen.getAllByText('Organizations')).toHaveLength(1);
+      expect(screen.getByText('Organizations').closest('a')).toHaveAttribute(
+        'href',
+        '/admin/organizations'
+      );
+    });
+  });
+
   describe('CLI Setup link (Issue #4159)', () => {
     it('is labelled "CLI Setup", not "Claude Code Setup"', () => {
       // The page covers Codex too; the old label hid that from Codex users.

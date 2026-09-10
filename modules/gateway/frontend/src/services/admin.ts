@@ -3,6 +3,7 @@ import type { PaginatedResponse } from '@/types/api';
 import { AdminRole } from '@/types';
 import type {
   Organization,
+  OrganizationCanonicalCreateRequest,
   OrganizationCreateRequest,
   OrganizationUpdateRequest,
   Department,
@@ -29,6 +30,10 @@ export async function getOrganizations(params?: {
       aws_accounts: string[];
       role_mappings: Record<string, string>;
       settings: Record<string, unknown>;
+      // Issue #4841: the organizations panel distinguishes GitHub-connected from
+      // platform-native orgs. Optional here because the field is absent on older
+      // responses, and `??  []` in the transform maps that to "none".
+      github_installation_ids?: string[];
       created_at: string;
     }>;
     total: number;
@@ -60,6 +65,18 @@ export async function getOrganization(id: string): Promise<Organization> {
   return transformOrganization(response);
 }
 
+/**
+ * @deprecated Targets `POST /admin/organizations`, which ruling D4=A (#4841) deprecates.
+ *
+ * That route generates a UUID id and — unlike the canonical route — creates **no default
+ * department, no default team, and no `channel_tenant_map` claim**. The result is a
+ * structurally incomplete org: `users.team_id` values that point at nothing (there is no
+ * FK to catch it) and an installation resolver that fails closed on later binding writes.
+ *
+ * Use `createOrganizationCanonical()` below. This export is retained only because removing
+ * it is outside T2a's scope; no production code path calls it (its existing service test
+ * still does).
+ */
 export async function createOrganization(data: OrganizationCreateRequest): Promise<Organization> {
   const response = await apiClient.post<{
     id: string;
@@ -70,6 +87,53 @@ export async function createOrganization(data: OrganizationCreateRequest): Promi
     created_at: string;
   }>('/admin/organizations', data);
   return transformOrganization(response);
+}
+
+/**
+ * Create an organization on the CANONICAL route — Issue #4841 (#4839 · T2a), ruling D4=A.
+ *
+ * `POST /api/admin/identity/organizations`. This is the route that produces a *complete*
+ * org, in one transaction: the org row, a default department (`{id}-dept-default`), a
+ * default team (`{id}-team-default`), and the channel mappings
+ * (`src/admin/identity/organizations_service.py`). The deprecated sibling above creates
+ * only the org row, which is why targeting the wrong one is silently corrupting rather
+ * than merely inconsistent.
+ *
+ * **The caller supplies `id`.** It is required by the server schema and immutable after
+ * create — see `utils/orgIdentifier.ts` for the derive-from-name-and-confirm affordance
+ * that produces it.
+ *
+ * **The default department and team are a normal post-condition, not an error.** A caller
+ * rendering the structure tree immediately after this resolves will see both, and must
+ * present them as ordinary rows (#4841 Design, consequence 2).
+ *
+ * **Platform-admin only, and not by permission.** The identity router mounts under
+ * `dependencies=[Depends(require_admin)]` (`src/admin/identity/router.py`), and
+ * `require_admin` checks `is_admin`, which deliberately EXCLUDES `org_admin`
+ * (`src/auth/dependencies.py`). So this is not the `Permission.ORG_CREATE` /
+ * `target_org_id` scoped check the dept/team routes use — an org admin calling it gets a
+ * flat 403 no matter which org they name. Callers gate the affordance on
+ * `isPlatformAdmin()`, matching the route rather than the permission enum.
+ *
+ * Errors are surfaced, not swallowed: the router wraps every failure as a 409 with the
+ * underlying message (including a duplicate id), and that message is the only thing that
+ * tells an admin their identifier is taken.
+ */
+// QUARANTINED-DOUBLE-PREFIX-CALLER (#4330 follow-up): this hits the identity router's
+// double-prefix mount (`/api/admin/identity/...` behind CloudFront's stripped `/api`).
+// The `/api` here is doubled ON PURPOSE — apiClient's base is already `/api`, so the
+// browser emits `/api/api/...` and CloudFront strips one segment back to the mount.
+// Dropping one `/api` 404s. See tests/test_route_prefix_convention.py's
+// QUARANTINED_API_PREFIXED_PATHS, which lists this exact path. When the planned remount
+// lands, THIS call site must change in the same commit as the router — grep this marker.
+export async function createOrganizationCanonical(
+  data: OrganizationCanonicalCreateRequest
+): Promise<{ id: string; name: string }> {
+  const response = await apiClient.post<{
+    id: string;
+    name: string;
+  }>('/api/admin/identity/organizations', data);
+  return { id: response.id, name: response.name };
 }
 
 export async function updateOrganization(
@@ -352,6 +416,11 @@ function transformOrganization(data: {
   role_mappings: Record<string, string>;
   settings: Record<string, unknown>;
   member_approval_policy?: string;
+  // Issue #4841: already on the server's `OrganizationResponse` (admin/schemas.py) and
+  // previously dropped by this transform. The organizations panel needs it to tell a
+  // GitHub-connected org from a platform-native one — mapping "no GitHub" to the same
+  // rendering as "we didn't ask" is the R1 distinction the panel exists to show.
+  github_installation_ids?: string[];
   created_at: string;
 }): Organization {
   return {
@@ -361,6 +430,7 @@ function transformOrganization(data: {
     roleMappings: data.role_mappings,
     settings: data.settings,
     memberApprovalPolicy: data.member_approval_policy,
+    githubInstallationIds: data.github_installation_ids ?? [],
     createdAt: data.created_at,
   };
 }
