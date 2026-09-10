@@ -163,6 +163,11 @@ class CompileResult:
     already_compiled: bool = False
 
 
+# Fields of `LoopProposal` that describe how the plan came to be rather than what
+# it executes, and are therefore NOT part of its identity. See `plan_hash`.
+HASH_EXCLUDED_FIELDS = frozenset({"description", "design_history"})
+
+
 def plan_hash(proposal: LoopProposal) -> str:
     """Stable SHA-256 of a proposal document.
 
@@ -174,8 +179,25 @@ def plan_hash(proposal: LoopProposal) -> str:
     Note this hashes the document as *authored*, including its declared `org_id`.
     That is intended: the hash answers "is this the same document?", and a
     document differing only in declared tenant is not the same document.
+
+    **`description` and `design_history` are excluded (#4885), and that exclusion
+    is load-bearing twice over.**
+
+    Semantically: they are provenance *about* how the plan came to be, not the
+    plan's executable content. Two documents differing only in their use-case
+    sentence describe the same graph, the same waves and the same dependencies —
+    they are the same plan, and the hash answers exactly that question.
+
+    Operationally: `plan_hash` is what idempotency compares. Including the new
+    fields would change the hash of every document that carries them, so a
+    fail-soft retry spanning the #4885 deploy — the worker retries by
+    construction — would no longer match its own in-force plan. It would fall
+    through the idempotency return and be refused 409 as a plan-of-record
+    rewrite, turning a dropped connection into a permanent failure. `EXCLUDED`
+    is a frozenset rather than an inline literal so a field added to it here
+    cannot be forgotten by a reader who only greps for the field name.
     """
-    canonical = json.dumps(proposal.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(proposal.model_dump(mode="json", exclude=HASH_EXCLUDED_FIELDS), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -359,6 +381,14 @@ async def _resolve_flow(repo: OrchestrationRepository, *, proposal: LoopProposal
     node's address, so it is what the document actually identifies. Two tenants
     may each have a `delivery-loop` flow, and they are different flows — which is
     why the lookup is over the tenant's flows and never global.
+
+    The design-loop capture fields (#4885) are written **on creation only**. An
+    existing flow keeps whatever it already has, which is the same rule
+    `title` and `intent_ref` have always followed here: this function resolves a
+    flow, it does not reconcile one. Updating them on every compile would let a
+    later document silently rewrite the recorded design history of a flow whose
+    gates a human already answered — and an amendment (`amend.py` reaches this
+    same path) would overwrite the inception record of the plan it amends.
     """
     for candidate in await repo.list_flows(org_id=org_id):
         if candidate.slug == proposal.flow_slug:
@@ -369,6 +399,13 @@ async def _resolve_flow(repo: OrchestrationRepository, *, proposal: LoopProposal
         slug=proposal.flow_slug,
         title=proposal.title,
         intent_ref=proposal.intent_ref,
+        description=proposal.description,
+        # Dumped to plain JSON, not handed over as the Pydantic model: this value
+        # goes into a JSON column, and `mode="json"` is what turns the validated
+        # `approved_at` datetimes back into the ISO strings the column stores and
+        # the API re-serialises. `None` stays `None` — the absent case must not
+        # become `{}`, which would render as a design history with no stages.
+        design_history=(proposal.design_history.model_dump(mode="json") if proposal.design_history else None),
     )
 
 

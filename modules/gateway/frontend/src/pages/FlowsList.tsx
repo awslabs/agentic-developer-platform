@@ -49,7 +49,15 @@ import {
   type FlowFilters,
   type FlowSort,
 } from '@/hooks/useFlows';
-import type { FlowStatus, FlowSummary, WaveSummary } from '@/types/orchestration';
+import {
+  DESIGN_STAGES,
+  type DesignHistory,
+  type DesignStageName,
+  type DesignStageState,
+  type FlowStatus,
+  type FlowSummary,
+  type WaveSummary,
+} from '@/types/orchestration';
 
 /**
  * The rail's height, as one exported constant.
@@ -175,6 +183,123 @@ function WaveRail({ flow }: { flow: FlowSummary }) {
 }
 
 /**
+ * Per-state presentation for a design gate. One table, so the strip and its
+ * screen-reader sentence cannot disagree about what a state means.
+ *
+ * `skipped` and `not_reached` are visually distinct on purpose (#4885): struck
+ * through versus plain. Collapsing them would tell an operator that a gate their
+ * scope deliberately skipped is still outstanding work.
+ */
+const DESIGN_STAGE_STYLES: Record<DesignStageState, { icon: string; word: string; className: string }> = {
+  approved: {
+    icon: '✓',
+    word: 'approved',
+    className: 'bg-green-100 text-green-900 dark:bg-green-900 dark:text-green-100',
+  },
+  open: {
+    icon: '🚦',
+    word: 'waiting on a human',
+    className: 'bg-amber-100 text-amber-900 ring-1 ring-amber-500 dark:bg-amber-900 dark:text-amber-100',
+  },
+  skipped: {
+    icon: '⊘',
+    word: 'skipped for this scope',
+    className: 'bg-gray-100 text-gray-500 line-through dark:bg-gray-800 dark:text-gray-400',
+  },
+  not_reached: {
+    icon: '○',
+    word: 'not started',
+    className: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400',
+  },
+};
+
+/** Short labels for the strip. The full stage name is in each chip's `title`. */
+const DESIGN_STAGE_LABELS: Record<DesignStageName, string> = {
+  'intent-capture': 'Intent',
+  'reverse-engineering': 'Reverse-eng',
+  'requirements-analysis': 'Requirements',
+  'delivery-planning': 'Planning',
+  'loop-proposal': 'Loop',
+};
+
+/**
+ * The design-gate strip: which of the five AIDLC gates ran, and how they ended.
+ *
+ * **Collapsed unless a gate is open.** A settled history is one line of reassurance
+ * — "✓ 4 of 5 design gates approved" — and spending five chips on it would push the
+ * rollup and wave rail, which describe work still moving, below the fold. An `open`
+ * gate is the one case an operator may need to act on, so that expands.
+ *
+ * Stages are rendered in canonical `DESIGN_STAGES` order, not the order the author
+ * listed them: the strip reads as a sequence, and a document that happens to list
+ * `loop-proposal` first must not render the pipeline backwards. Stages absent from
+ * the document are omitted entirely rather than shown as pending — "not recorded" is
+ * not a state, and inventing one fabricates a gate that may never have existed.
+ *
+ * Renders `null` for a null history. That is the whole no-fabrication contract at
+ * the UI layer: a flow whose design loop was never captured says nothing about it.
+ */
+function DesignStrip({ history }: { history: DesignHistory | null }) {
+  if (!history) return null;
+
+  const byName = new Map(history.stages.map((stage) => [stage.name, stage]));
+  const ordered = DESIGN_STAGES.map((name) => byName.get(name)).filter(
+    (stage): stage is NonNullable<typeof stage> => stage !== undefined,
+  );
+  if (ordered.length === 0) return null;
+
+  const approved = ordered.filter((stage) => stage.state === 'approved').length;
+  const open = ordered.filter((stage) => stage.state === 'open');
+  // "of 5", not "of ordered.length": five gates exist whether or not this document
+  // recorded all of them, and "4 of 4" would imply the design loop was shorter.
+  const summary = `${approved} of ${DESIGN_STAGES.length} design gates approved`;
+
+  if (open.length === 0) {
+    return (
+      <p
+        data-testid="design-strip-collapsed"
+        data-design-scope={history.scope}
+        className="text-xs text-gray-600 dark:text-gray-400"
+      >
+        <span aria-hidden="true">✓ </span>
+        {summary}
+        {/* Scope is what makes a skipped gate legible — "3 of 5" reads as unfinished
+            until you know a poc scope skips one by design. */}
+        <span className="text-gray-500 dark:text-gray-500"> · {history.scope} scope</span>
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-1" data-testid="design-strip" data-design-scope={history.scope}>
+      <div className="flex flex-wrap gap-1">
+        {ordered.map((stage) => {
+          const style = DESIGN_STAGE_STYLES[stage.state];
+          return (
+            <span
+              key={stage.name}
+              data-testid={`design-stage-${stage.name}`}
+              data-state={stage.state}
+              title={`${stage.name} — ${style.word}`}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${style.className}`}
+            >
+              <span aria-hidden="true">{style.icon}</span>
+              {DESIGN_STAGE_LABELS[stage.name]}
+            </span>
+          );
+        })}
+      </div>
+      {/* The chips are colour and glyph; this sentence is the same information for a
+          screen reader and for anyone who cannot tell the ringed chip from its
+          neighbours. Same reasoning as the wave rail's caption. */}
+      <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="design-strip-caption">
+        {summary} · design waiting on a human at {open.map((stage) => stage.name).join(', ')}.
+      </p>
+    </div>
+  );
+}
+
+/**
  * One flow, as a whole-card link into its graph.
  *
  * The card is a `<Link>` rather than a `div` with an onClick: it is genuinely a
@@ -208,6 +333,21 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
           </div>
         </div>
 
+        {/* What this loop is FOR, in the author's words (#4885). Above the progress
+            bars because it is the question an operator scanning a list of flows asks
+            first — a title and a slug say what a plan is called, not what it does.
+            Clamped to two lines: 500 chars would otherwise dominate the card and
+            push the rollup below the fold. Rendered only when present; a null
+            description means nobody recorded one, which is not a blank line. */}
+        {flow.description && (
+          <p
+            data-testid="flow-description"
+            className="mt-2 line-clamp-2 text-sm text-gray-700 dark:text-gray-300"
+          >
+            {flow.description}
+          </p>
+        )}
+
         {/* The two calls to action, surfaced separately from `status`. `status` is
             first-match-wins, so a flow that is both stalled and gated reports only
             `attention_needed` — and the gate still needs answering. */}
@@ -240,6 +380,10 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
               the graph no longer uses. */}
           <RollupBar counts={flow.display_counts} total={flow.total_nodes} />
           <WaveRail flow={flow} />
+          {/* Last: the design loop is how this plan came to exist, which matters
+              less at a glance than what it is doing now. Renders nothing at all when
+              no history was captured. */}
+          <DesignStrip history={flow.design_history} />
         </div>
       </Link>
     </li>

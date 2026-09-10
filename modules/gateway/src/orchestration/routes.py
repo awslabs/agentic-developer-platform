@@ -614,6 +614,17 @@ class FlowSummaryResponse(BaseModel):
     slug: str
     title: str
     intent_ref: str | None
+    # --- The design loop's story (#4885) -----------------------------------
+    # Both ride the flow row already fetched by the page query: no new query, no
+    # change to the join, no change to the statement-count bound #4869 pins.
+    #
+    # `null` means "we do not know" and MUST reach the client as `null`. It is the
+    # honest value for every flow registered before #4885, and the card renders no
+    # stage strip at all for it — an empty or all-pending strip would assert
+    # design gates that never happened. Neither field is defaulted to `""`/`{}`
+    # here for exactly that reason.
+    description: str | None
+    design_history: dict[str, Any] | None
     # One of the six `FlowStatus` values, derived by `derive_flow_status`.
     status: str
     # Surfaced alongside `status` because `status` is first-match-wins: a flow that
@@ -758,6 +769,8 @@ async def list_flows_route(
                 slug=aggregate.flow.slug,
                 title=aggregate.flow.title,
                 intent_ref=aggregate.flow.intent_ref,
+                description=aggregate.flow.description,
+                design_history=aggregate.flow.design_history,
                 status=aggregate.status.value,
                 awaiting_gate_count=aggregate.awaiting_gate_count,
                 stalled_count=aggregate.stalled_count,

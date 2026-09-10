@@ -201,18 +201,27 @@ async def seed_flow(
     intent_ref: str | None = None,
     created_offset: int = 0,
     updated_offset: int | None = None,
+    description: str | None = None,
+    design_history: dict | None = None,
 ) -> OrchestrationFlow:
     """One flow with an explicit `created_at`, so ordering assertions are stable.
 
     `updated_offset=None` leaves `updated_at` NULL — the never-updated case the
     `sort=updated` COALESCE exists for, and the default because most flows are in
     it.
+
+    `description` / `design_history` default to NULL (#4885), which is both the
+    honest value for a flow whose design loop was never recorded and the state
+    every other test in this file wants — so the design-capture fields cannot
+    quietly acquire a default without the absence tests below failing.
     """
     flow = OrchestrationFlow(
         org_id=org_id,
         slug=slug,
         title=title if title is not None else f"Flow {slug}",
         intent_ref=intent_ref,
+        description=description,
+        design_history=design_history,
         created_at=BASE_TIME + timedelta(minutes=created_offset),
         updated_at=(BASE_TIME + timedelta(minutes=updated_offset)) if updated_offset is not None else None,
     )
@@ -1208,6 +1217,131 @@ class TestDeliveryCost:
         costs = await get_cost_by_address_prefixes(session, org_id=ORG_A, address_prefixes=["shared-slug"])
 
         assert sum(cost.amount_usd for cost in costs) == Decimal("1.00")
+
+
+class TestDesignCaptureInTheResponse:
+    """The design story reaches the card — and costs no extra query (#4885).
+
+    Both fields live on `orchestration_flows`, so they ride the row the page query
+    already fetches. That is the whole reason the issue could add them without a
+    join: if either had needed its own read, the constant-query-count guarantee
+    above would have had to be renegotiated.
+
+    `null` must survive the serialiser as `null`. The card renders no stage strip
+    at all for an unknown history, and it can only make that distinction if the
+    absence is transmitted rather than defaulted to `{}` on the way out.
+    """
+
+    HISTORY = {
+        "scope": "poc",
+        "stages": [
+            {"name": "intent-capture", "state": "approved", "approved_at": "2026-09-01T12:05:00Z"},
+            {"name": "reverse-engineering", "state": "skipped"},
+            {"name": "requirements-analysis", "state": "approved", "approved_at": "2026-09-01T12:30:00Z"},
+            {"name": "delivery-planning", "state": "open"},
+            {"name": "loop-proposal", "state": "not_reached"},
+        ],
+    }
+
+    async def test_both_fields_are_returned_when_present(self, session, app_with_router):
+        await seed_flow(
+            session,
+            slug="captured-loop",
+            created_offset=0,
+            description="Delivery plans showed what they were doing but not what they were for.",
+            design_history=self.HISTORY,
+        )
+
+        response = client_for(app_with_router).get(ROUTE)
+
+        assert response.status_code == 200
+        summary = response.json()["flows"][0]
+        assert summary["description"] == "Delivery plans showed what they were doing but not what they were for."
+        assert summary["design_history"]["scope"] == "poc"
+
+    async def test_skipped_and_not_reached_stay_distinct_through_the_response(self, session, app_with_router):
+        """The card strikes through one and greys the other; merging them misreads.
+
+        A skipped stage rendered as pending shows an operator work that is never
+        coming, on a flow that is progressing exactly as intended.
+        """
+        await seed_flow(session, slug="poc-loop", created_offset=0, design_history=self.HISTORY)
+
+        response = client_for(app_with_router).get(ROUTE)
+
+        states = {stage["name"]: stage["state"] for stage in response.json()["flows"][0]["design_history"]["stages"]}
+        assert states["reverse-engineering"] == "skipped"
+        assert states["loop-proposal"] == "not_reached"
+        assert states["delivery-planning"] == "open"
+
+    async def test_an_uncaptured_flow_returns_null_for_both_not_an_empty_object(self, session, app_with_router):
+        """Every flow registered before #4885 is in this state, so it is the common case.
+
+        `null` and not `{}`: the frontend renders nothing at all for an unknown
+        history, and an empty object would instead render an empty stage strip —
+        five pending gates for a design loop that may have fully completed. The
+        keys must still be *present* and null, because `FlowSummaryResponse` is
+        `extra="forbid"` and the client types both as nullable.
+        """
+        await seed_flow(session, slug="historic-loop", created_offset=0)
+
+        response = client_for(app_with_router).get(ROUTE)
+
+        summary = response.json()["flows"][0]
+        assert "description" in summary and "design_history" in summary
+        assert summary["description"] is None
+        assert summary["design_history"] is None
+
+    async def test_the_fields_add_no_query_to_the_page(self, session, app_with_router):
+        """They ride the flow row, so the statement count is unchanged from #4869.
+
+        Compared against an identical page with both fields NULL rather than against
+        a literal: a literal would need updating whenever the page's query plan
+        legitimately changes, and would stop testing this.
+        """
+        repo = OrchestrationRepository(session)
+        for index in range(5):
+            await seed_flow(session, slug=f"bare-{index}", created_offset=index)
+
+        statements, stop = statement_recorder(session)
+        try:
+            await repo.list_flows_page_with_aggregates(org_id=ORG_A, limit=25)
+        finally:
+            stop()
+        without_capture = len(statements)
+
+        for index in range(5, 10):
+            await seed_flow(
+                session,
+                slug=f"captured-{index}",
+                created_offset=index,
+                description="A one-line use case.",
+                design_history=self.HISTORY,
+            )
+
+        statements, stop = statement_recorder(session)
+        try:
+            page = await repo.list_flows_page_with_aggregates(org_id=ORG_A, limit=25)
+        finally:
+            stop()
+
+        assert len(page.flows) == 10
+        assert len(statements) == without_capture, f"the design-capture fields cost an extra query: {without_capture} → {len(statements)}"
+
+    async def test_a_long_description_does_not_break_the_search_filter(self, session, app_with_router):
+        """`q` filters title / slug / intent_ref — deliberately NOT description.
+
+        Searching a 500-char free-text column on every keystroke is a different
+        feature with a different cost, and the issue scopes it out. Pinned so a
+        later "helpful" widening is a deliberate decision.
+        """
+        await seed_flow(session, slug="alpha-loop", title="Alpha", created_offset=0, description="a distinctive needle phrase")
+        await seed_flow(session, slug="beta-loop", title="Beta", created_offset=1)
+
+        response = client_for(app_with_router).get(ROUTE, params={"q": "needle"})
+
+        assert response.status_code == 200
+        assert response.json()["flows"] == [], "description became searchable; that is out of scope for #4885"
 
 
 class TestEndpoint:

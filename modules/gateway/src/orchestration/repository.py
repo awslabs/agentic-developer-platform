@@ -153,8 +153,30 @@ class OrchestrationRepository:
 
     # -- flows --------------------------------------------------------------
 
-    async def create_flow(self, *, org_id: str, slug: str, title: str, intent_ref: str | None = None) -> OrchestrationFlow:
-        flow = OrchestrationFlow(org_id=org_id, slug=slug, title=title, intent_ref=intent_ref)
+    async def create_flow(
+        self,
+        *,
+        org_id: str,
+        slug: str,
+        title: str,
+        intent_ref: str | None = None,
+        description: str | None = None,
+        design_history: dict | None = None,
+    ) -> OrchestrationFlow:
+        """Insert a flow. `description` / `design_history` default to NULL (#4885).
+
+        Both default to `None` rather than to a placeholder, so a caller that does
+        not know the design story writes "we do not know" — the honest value — and
+        a hand-created flow needs no argument at all to get it right.
+        """
+        flow = OrchestrationFlow(
+            org_id=org_id,
+            slug=slug,
+            title=title,
+            intent_ref=intent_ref,
+            description=description,
+            design_history=design_history,
+        )
         self._session.add(flow)
         await self._session.flush()
         return flow

@@ -33,7 +33,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import FlowsList, { WAVE_RAIL_HEIGHT_CLASS } from '@/pages/FlowsList';
 import { Navigation } from '@/components/Navigation';
-import type { FlowList, FlowStatus, FlowSummary, WaveSummary } from '@/types/orchestration';
+import type { DesignHistory, FlowList, FlowStatus, FlowSummary, WaveSummary } from '@/types/orchestration';
 
 vi.mock('@/services/orchestration', () => ({
   listFlows: vi.fn(),
@@ -80,6 +80,10 @@ function makeFlow(overrides: Partial<FlowSummary> = {}): FlowSummary {
     slug: 'aidlc-delivery-loop-4645',
     title: 'Delivery loop for #4645',
     intent_ref: '4645',
+    // Both default to null — the honest state for a flow whose design loop was
+    // never captured (#4885), and the state every other test in this file wants.
+    description: null,
+    design_history: null,
     status: 'queued',
     awaiting_gate_count: 0,
     stalled_count: 0,
@@ -385,6 +389,190 @@ describe('a flow card', () => {
     await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
 
     expect(screen.getByTestId(`flow-card-${makeFlow().id}`).textContent).not.toMatch(/\bpending\b/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The design story on the card (#4885)
+// ---------------------------------------------------------------------------
+
+/** A settled history: four gates approved, reverse-engineering skipped by scope. */
+function settledHistory(): DesignHistory {
+  return {
+    scope: 'poc',
+    stages: [
+      { name: 'intent-capture', state: 'approved', approved_at: '2026-09-01T12:05:00Z' },
+      { name: 'reverse-engineering', state: 'skipped' },
+      { name: 'requirements-analysis', state: 'approved', approved_at: '2026-09-01T12:30:00Z' },
+      { name: 'delivery-planning', state: 'approved', approved_at: '2026-09-01T12:44:00Z' },
+      { name: 'loop-proposal', state: 'approved', approved_at: '2026-09-01T13:02:00Z' },
+    ],
+  };
+}
+
+describe('the design story on a card', () => {
+  beforeEach(() => {
+    mockUseFeatures.mockReturnValue({ features: { orchestration_engine: true }, isLoading: false });
+  });
+
+  it('renders no design strip at all when no history was captured', async () => {
+    // The headline guardrail. Every flow registered before this feature is in this
+    // state, and an empty or all-pending strip would claim five gates that may never
+    // have happened — a fabricated record renders as real and looks authoritative.
+    mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ design_history: null })] }));
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('design-strip')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('design-strip-collapsed')).not.toBeInTheDocument();
+    expect(screen.getByTestId(`flow-card-${makeFlow().id}`).textContent).not.toMatch(/design gate/i);
+  });
+
+  it('renders no description line when none was recorded', async () => {
+    // A null description is "nobody wrote one", not an empty paragraph.
+    mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ description: null })] }));
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('flow-description')).not.toBeInTheDocument();
+  });
+
+  it('shows the use case in the author’s words when there is one', async () => {
+    const description = 'Delivery plans showed what they were doing but not what they were for.';
+    mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ description })] }));
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    expect(screen.getByTestId('flow-description')).toHaveTextContent(description);
+  });
+
+  it('collapses a settled history to one line and names the scope', async () => {
+    // Nothing needs answering, so this is reassurance, not a call to action. Five
+    // chips here would push the rollup and wave rail below the fold.
+    mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ design_history: settledHistory() })] }));
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    const collapsed = screen.getByTestId('design-strip-collapsed');
+    expect(collapsed).toHaveTextContent('4 of 5 design gates approved');
+    // Scope is what makes "4 of 5" legible rather than looking unfinished.
+    expect(collapsed).toHaveTextContent('poc scope');
+    expect(screen.queryByTestId('design-strip')).not.toBeInTheDocument();
+  });
+
+  it('expands when a gate is open, and says which one', async () => {
+    const history: DesignHistory = {
+      scope: 'auto',
+      stages: [
+        { name: 'intent-capture', state: 'approved', approved_at: '2026-09-01T12:05:00Z' },
+        { name: 'reverse-engineering', state: 'skipped' },
+        { name: 'requirements-analysis', state: 'approved', approved_at: '2026-09-01T12:30:00Z' },
+        { name: 'delivery-planning', state: 'open' },
+        { name: 'loop-proposal', state: 'not_reached' },
+      ],
+    };
+    mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ design_history: history })] }));
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    expect(screen.getByTestId('design-strip')).toBeInTheDocument();
+    // The caption carries the same information as the chips, for a screen reader and
+    // for anyone who cannot tell the ringed chip from its neighbours.
+    expect(screen.getByTestId('design-strip-caption')).toHaveTextContent('delivery-planning');
+  });
+
+  it('distinguishes a skipped gate from one not yet reached', async () => {
+    // They must never merge: `skipped` means this loop's scope never runs the gate,
+    // `not_reached` means it will and has not got there. Showing the first as the
+    // second displays outstanding work that is never coming.
+    const history: DesignHistory = {
+      scope: 'poc',
+      stages: [
+        { name: 'reverse-engineering', state: 'skipped' },
+        { name: 'delivery-planning', state: 'open' },
+        { name: 'loop-proposal', state: 'not_reached' },
+      ],
+    };
+    mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ design_history: history })] }));
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    const skipped = screen.getByTestId('design-stage-reverse-engineering');
+    const notReached = screen.getByTestId('design-stage-loop-proposal');
+    expect(skipped).toHaveAttribute('data-state', 'skipped');
+    expect(notReached).toHaveAttribute('data-state', 'not_reached');
+    expect(skipped.className).not.toEqual(notReached.className);
+    // Struck through, so it reads as "ruled out" rather than "outstanding".
+    expect(skipped.className).toContain('line-through');
+    expect(notReached.className).not.toContain('line-through');
+  });
+
+  it('renders the gates in canonical order, not the order the document listed them', async () => {
+    // The strip reads as a pipeline. A document that happens to list the last gate
+    // first must not render the design loop backwards.
+    const history: DesignHistory = {
+      scope: 'auto',
+      stages: [
+        { name: 'loop-proposal', state: 'open' },
+        { name: 'intent-capture', state: 'approved', approved_at: '2026-09-01T12:05:00Z' },
+      ],
+    };
+    mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ design_history: history })] }));
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    const chips = within(screen.getByTestId('design-strip')).getAllByTestId(/^design-stage-/);
+    expect(chips.map((chip) => chip.getAttribute('data-testid'))).toEqual([
+      'design-stage-intent-capture',
+      'design-stage-loop-proposal',
+    ]);
+  });
+
+  it('omits a stage the document did not record rather than showing it pending', async () => {
+    // "Not recorded" is not a state. A partial history is expected — an author omits
+    // what they cannot establish — and the denominator stays 5 either way.
+    const history: DesignHistory = {
+      scope: 'auto',
+      stages: [
+        { name: 'intent-capture', state: 'approved', approved_at: '2026-09-01T12:05:00Z' },
+        { name: 'delivery-planning', state: 'open' },
+      ],
+    };
+    mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ design_history: history })] }));
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('design-stage-reverse-engineering')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('design-stage-loop-proposal')).not.toBeInTheDocument();
+    expect(screen.getByTestId('design-strip-caption')).toHaveTextContent('1 of 5 design gates approved');
+  });
+
+  it('renders nothing for a history whose stage list is empty', async () => {
+    // Defensive: the server rejects an empty list at write time, so this can only
+    // arrive from an older row or a hand-edited payload. Either way there is nothing
+    // to say, and "0 of 5 approved" would read as a stalled design loop.
+    mockListFlows.mockResolvedValue(
+      makeList({ flows: [makeFlow({ design_history: { scope: 'auto', stages: [] } })] })
+    );
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('design-strip')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('design-strip-collapsed')).not.toBeInTheDocument();
+  });
+
+  it('keeps the whole card a single link into the graph', async () => {
+    // The strip and description are inside the anchor, so they must not introduce a
+    // nested interactive element — that would break keyboard traversal of the card.
+    mockListFlows.mockResolvedValue(
+      makeList({ flows: [makeFlow({ description: 'A use case.', design_history: settledHistory() })] })
+    );
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
+
+    const card = screen.getByTestId(`flow-card-${makeFlow().id}`);
+    expect(within(card).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(card).queryByRole('link')).not.toBeInTheDocument();
   });
 });
 

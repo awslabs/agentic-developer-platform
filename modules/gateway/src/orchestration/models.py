@@ -174,6 +174,26 @@ class OrchestrationFlow(Base, TenantMixin):
     # The originating intent issue (e.g. "4120"). Nullable: a flow may be created
     # before its intent issue exists, and hand-run flows have none.
     intent_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # --- The design loop's story (#4885) -----------------------------------
+    # Both captured once at registration, and both NULLABLE with NULL meaning
+    # "we do not know" — never backfilled. For every flow registered before
+    # #4885 that is the honest value, and it is what makes the card able to show
+    # nothing rather than assert a design history that never happened.
+    #
+    # Plain-language use case, taken from the intent issue's mandatory
+    # plain-terms opening — human-written prose that already exists, never a
+    # model-generated summary. Capped at `DESCRIPTION_MAX_LEN` at write time by
+    # `proposal.LoopProposal`; `Text` here rather than `String(500)` because the
+    # cap is a product decision that may move, and moving it should not need DDL.
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The inception record: which of the five AIDLC gates ran, which were skipped
+    # by scope, and which is open. Shape is validated by `proposal.DesignHistory`
+    # at write time, not by the database — the canonical stage names live in
+    # `rules/personas/aidlc.md`, and a CHECK constraint over them would need a
+    # migration every time that list changed.
+    design_history: Mapped[dict | None] = mapped_column(JSON_DOC, nullable=True)
+
     state: Mapped[str] = mapped_column(String(32), nullable=False, default=NodeState.PENDING.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)

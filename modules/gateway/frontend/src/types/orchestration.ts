@@ -192,12 +192,76 @@ export interface WaveSummary {
   display_counts: FlowDisplayCounts;
 }
 
+/**
+ * The five AIDLC design gates, in the order they run.
+ *
+ * Mirrors `DESIGN_STAGES` in `src/orchestration/proposal.py`, which validates
+ * these names at write time — so an unknown name never reaches this type. Used to
+ * render the strip in canonical order and to say "N of 5", both of which must not
+ * depend on the order the author happened to list them in.
+ */
+export const DESIGN_STAGES = [
+  'intent-capture',
+  'reverse-engineering',
+  'requirements-analysis',
+  'delivery-planning',
+  'loop-proposal',
+] as const;
+
+export type DesignStageName = (typeof DESIGN_STAGES)[number];
+
+/**
+ * `skipped` and `not_reached` are **different states and must not be merged.**
+ *
+ * `skipped` means the loop's scope decided this gate never runs — a `poc` scope
+ * skips reverse-engineering, and that is the plan working as intended.
+ * `not_reached` means the gate will run and the loop has not got there yet.
+ * Rendering the first as the second shows an operator outstanding work that is
+ * never coming.
+ */
+export type DesignStageState = 'approved' | 'open' | 'skipped' | 'not_reached';
+
+/** One design gate's outcome. `approved_at` is set only when `state` is `approved`. */
+export interface DesignStage {
+  name: DesignStageName;
+  state: DesignStageState;
+  approved_at?: string | null;
+}
+
+/**
+ * How a loop's design was arrived at — which gates ran, and under which scope.
+ *
+ * `stages` may be partial: an author records only what they know (#4885), and a
+ * stage they cannot establish is omitted rather than guessed. So a consumer must
+ * treat an absent entry as "not recorded", never as a state.
+ */
+export interface DesignHistory {
+  scope: 'auto' | 'poc' | 'workshop';
+  stages: DesignStage[];
+}
+
 /** One flow as the list page reads it: identity plus everything derived. */
 export interface FlowSummary {
   id: string;
   slug: string;
   title: string;
   intent_ref: string | null;
+  /**
+   * The loop's purpose in plain language, capped at 500 chars server-side (#4885).
+   *
+   * `null` means nobody recorded one — true for every flow registered before the
+   * field existed, and for any hand-authored proposal. Render nothing rather than
+   * an empty line: absence is not a blank description.
+   */
+  description: string | null;
+  /**
+   * The design loop's stage record, or `null` when it was never captured.
+   *
+   * **`null` must render no stage strip at all** — not an empty one, and not five
+   * pending gates. A fabricated strip claims gates that may never have happened and
+   * looks authoritative, which is worse than saying nothing.
+   */
+  design_history: DesignHistory | null;
   status: FlowStatus;
   /**
    * Surfaced alongside `status` because `status` is first-match-wins: a flow that

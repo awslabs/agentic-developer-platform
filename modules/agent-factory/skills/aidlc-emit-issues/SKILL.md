@@ -426,6 +426,17 @@ assignment you already hold.
   "org_id": "",
   "spec_revision": "issue-<N>-r1",
   "intent_ref": "<N>",
+  "description": "<the intent issue's plain-terms opening, one or two sentences, <=500 chars>",
+  "design_history": {
+    "scope": "<auto | poc | workshop — the scope this loop actually ran under>",
+    "stages": [
+      {"name": "intent-capture", "state": "approved", "approved_at": "<ISO-8601 UTC of the approval>"},
+      {"name": "reverse-engineering", "state": "skipped"},
+      {"name": "requirements-analysis", "state": "approved", "approved_at": "<ISO-8601 UTC>"},
+      {"name": "delivery-planning", "state": "approved", "approved_at": "<ISO-8601 UTC>"},
+      {"name": "loop-proposal", "state": "open"}
+    ]
+  },
   "nodes": [
     {"address": "<flow_slug>/epic-<EPIC>/wave-<K>/<node-ref>",
      "kind": "story", "title": "<story title>", "issue_ref": "<story issue number>"},
@@ -459,6 +470,33 @@ assignment you already hold.
    hand-declared gate suppresses that default, so declare one only deliberately.
 7. **The edge set MUST be acyclic**, and every endpoint MUST resolve to a declared
    node.
+8. **`description` and `design_history` are OPTIONAL, and omitting them is always
+   allowed. Never guess either one.** They are how the flows list explains what this
+   loop is *for* and which design gates ran (#4885), and you are the only party that
+   knows — nothing downstream reconstructs them, by design. Omit a field, or a single
+   stage entry, whenever you do not know the answer: a missing value renders as
+   "not recorded", while a plausible invented one renders as a real record of a gate
+   that may never have happened, and it looks authoritative. Specifically:
+   - **`description`** is the intent issue's `## The problem in plain terms`
+     opening, compressed to one or two sentences and **at most 500 characters**.
+     Over-length is **rejected, not truncated** — write a shorter one. No file paths,
+     no issue numbers, no jargon: it is read by people scanning a list of loops.
+   - **`design_history.scope`** is the scope this loop genuinely ran under, not the
+     one that was requested if they differ.
+   - **`stages[].name`** is one of exactly `intent-capture`, `reverse-engineering`,
+     `requirements-analysis`, `delivery-planning`, `loop-proposal`. Any other value
+     is refused. List a stage at most once.
+   - **`stages[].state`** is one of `approved`, `open`, `skipped`, `not_reached`, and
+     **`skipped` and `not_reached` mean different things — do not use them
+     interchangeably.** `skipped` means the scope decided this stage never runs (a
+     `poc` scope records `reverse-engineering` as **`skipped`**, never
+     `not_reached`). `not_reached` means it *will* run and the loop has not got there
+     yet. Rendering the first as the second shows an operator work that is never
+     coming.
+   - **`approved_at`** is required on an `approved` stage and forbidden on every
+     other state. Use the ISO-8601 UTC timestamp of the actual gate approval; if you
+     cannot establish it, record the stage as `open` or leave it out rather than
+     inventing a time.
 
 **Validate before committing** — the same rules the engine enforces, run locally:
 
@@ -485,9 +523,15 @@ two-wave document): `aidlc/spaces/issue-4120/construction/loop-proposal/example-
 **What happens after you commit it:** the worker's finish path finds this file,
 fills in `org_id`, and POSTs it to the gateway, which stores it as an **inert
 draft** — visible in the graph UI, executing nothing. The run's closing comment
-names the plan id and the one command a human types to make it live. If the file
+links the flow and names the one command a human types to make it live. If the file
 is absent, registration is silently skipped and the loop stays markdown-only, so
 omitting it is a silent regression rather than a visible error.
+
+Whatever you put in `description` and `design_history` is what an operator reads on
+the flows list before deciding whether to accept the plan — the description as the
+loop's one-line purpose, the stage record as the strip showing which design gates
+were approved, skipped, or still open. A flow that carries neither still registers
+and still runs; its card simply says nothing about where it came from.
 
 ### Step 8: Materialize delivery loop (on loop-proposal approval)
 

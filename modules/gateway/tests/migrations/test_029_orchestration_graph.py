@@ -66,6 +66,17 @@ def _load_migration(filename: str):
 
 MIG_029 = _load_migration("029_orchestration_graph.py")
 
+# Later migrations that ALSO alter the five orchestration tables. The parity check
+# below compares today's models against the live schema, so it must apply every
+# migration that shaped that schema — not just the one this file is named for.
+# 029 alone stopped matching the models the moment #4885 added two columns, and the
+# failure reads as "model/migration drift" when the truth is an incomplete fixture.
+#
+# Append to this list when a migration touches an orchestration table; that is
+# cheaper than the alternative (running the whole alembic chain here), which would
+# couple this file to every unrelated migration in the repo.
+MIGRATIONS_AFTER_029 = [_load_migration("039_flow_design_capture.py")]
+
 
 def _run_migration(sync_conn, fn):
     """Run a migration's upgrade()/downgrade() with alembic's `op` proxy bound.
@@ -456,6 +467,12 @@ class TestModelMigrationParity:
     async def migrated_columns(self):
         engine = await _bare_engine()
         await _upgrade(engine)
+        # Then every later migration that altered these tables — see
+        # MIGRATIONS_AFTER_029. Without them this compares current models against
+        # a stale schema and reports every legitimately added column as drift.
+        for migration in MIGRATIONS_AFTER_029:
+            async with engine.begin() as conn:
+                await conn.run_sync(_run_migration, migration.upgrade)
         async with engine.connect() as conn:
             cols = {t: await conn.run_sync(lambda c, t=t: {x["name"] for x in sa_inspect(c).get_columns(t)}) for t in ORCHESTRATION_TABLES}
         await engine.dispose()

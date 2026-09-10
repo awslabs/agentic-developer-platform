@@ -140,6 +140,14 @@ class DraftRegisteredResponse(BaseModel):
     # The synthesised gate a human answers to make the plan live.
     acceptance_gate_address: str
     accept_command: str
+    # The flows-list URL for this flow (#4885), composed server-side for the same
+    # reason `accept_command` is: the caller puts it in a GitHub comment an
+    # operator clicks, and it is how they actually find their graph. The worker
+    # cannot build it — its `ADP_GATEWAY_ENDPOINT` is the API Gateway invoke URL,
+    # not the user-facing origin, and pasting that would hand an operator a link
+    # to the machine plane. `None` when `gateway_base_url` is unconfigured, so
+    # the comment omits the link rather than rendering a broken relative one.
+    flow_url: str | None
 
 
 # The exact comment body story 1/3's parser recognises. Spelled once, here.
@@ -334,4 +342,22 @@ async def register_draft(
         already_registered=result.already_compiled,
         acceptance_gate_address=gate_address,
         accept_command=ACCEPT_COMMAND,
+        flow_url=_flow_url(result.flow_id),
     )
+
+
+def _flow_url(flow_id: str) -> str | None:
+    """The user-facing URL for a flow, or None when no origin is configured.
+
+    `gateway_base_url` is the CloudFront/custom-domain origin (`BG_GATEWAY_BASE_URL`,
+    set by `gateway-deploy.yml`), the same setting the magic-link builders use. The
+    path matches the SPA route `/flows/:flowId` registered for the #4869 list page.
+
+    Returns `None` rather than a bare path when the setting is empty: a relative
+    URL in a GitHub comment resolves against github.com and 404s, which is worse
+    than no link at all because it looks like the feature is broken.
+    """
+    from src.shared.config import get_settings
+
+    base = get_settings().gateway_base_url.rstrip("/")
+    return f"{base}/flows/{flow_id}" if base else None
