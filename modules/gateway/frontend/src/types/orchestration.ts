@@ -134,3 +134,123 @@ export interface ResumeResult {
   decision_id: string;
   actor_kind: ActorKind;
 }
+
+// ---------------------------------------------------------------------------
+// Issue #4869: the flows list. Mirrors `FlowListResponse` in `routes.py`.
+// ---------------------------------------------------------------------------
+
+/**
+ * The one-word answer to "what is happening with this flow".
+ *
+ * Six members, not five. `empty` is its own status because a flow whose plan
+ * compiled to no nodes is not "queued" — nothing is waiting on anything, and
+ * rendering it as queued would have an operator waiting for work that will never
+ * start.
+ *
+ * Server-derived from the flow's nodes (`derive_flow_status` in
+ * `display_state.py`). It is **not** `OrchestrationFlow.state`, which has no
+ * writer anywhere and is permanently `"pending"` — the API deliberately does not
+ * send it.
+ */
+export type FlowStatus =
+  | 'attention_needed'
+  | 'awaiting_you'
+  | 'running'
+  | 'queued'
+  | 'complete'
+  | 'empty';
+
+/**
+ * Node counts in the five-value display vocabulary (§1.3, via `DisplayState`).
+ *
+ * Always all five keys including zeroes, so a rollup segment renders empty rather
+ * than disappearing. There is no `superseded` key: a superseded attempt was
+ * replaced by another node and counting it would make one piece of work appear
+ * twice.
+ */
+export interface FlowDisplayCounts {
+  queued: number;
+  in_progress: number;
+  gate: number;
+  stalled: number;
+  complete: number;
+}
+
+/**
+ * One wave's rollup, for the rail on a flow card.
+ *
+ * **Array order is the contract.** The server orders waves by first appearance
+ * (`MIN(node.created_at)`), not by `wave_ref` — `wave-10` sorts before `wave-2`
+ * lexicographically, and the rail must render them in the order the plan runs
+ * them. So the rail maps this array as given and never re-sorts it.
+ */
+export interface WaveSummary {
+  epic_ref: string;
+  wave_ref: string;
+  total: number;
+  done: number;
+  display_counts: FlowDisplayCounts;
+}
+
+/** One flow as the list page reads it: identity plus everything derived. */
+export interface FlowSummary {
+  id: string;
+  slug: string;
+  title: string;
+  intent_ref: string | null;
+  status: FlowStatus;
+  /**
+   * Surfaced alongside `status` because `status` is first-match-wins: a flow that
+   * is both stalled and gated reports `attention_needed`, and the card still has
+   * to be able to say "1 waiting on you".
+   */
+  awaiting_gate_count: number;
+  /**
+   * Decision-derived (latest `node_stalled` wins), **not** the count of `failed`
+   * nodes — stall detection writes `failed`, so a stall and a plain failure share
+   * an engine state.
+   */
+  stalled_count: number;
+  display_counts: FlowDisplayCounts;
+  total_nodes: number;
+  epic_count: number;
+  wave_count: number;
+  /** The first wave with unfinished work; null when everything is done. */
+  current_wave_ref: string | null;
+  waves: WaveSummary[];
+  /** Three-valued. `unknown` carries no amount, so absence cannot render `$0.00`. */
+  delivery_cost: CostFigure;
+  created_at: string;
+  updated_at: string | null;
+}
+
+/**
+ * A page of flows, the filtered total, and the unfiltered status chips.
+ *
+ * `total` counts rows matching the **filters across all pages** — not
+ * `flows.length`. `status_counts` is unfiltered and tenant-wide, which is why it
+ * is a separate number: with a filter on, the summary reads "Showing 3 of 5"
+ * while the chips still total 5, because the chips describe the population the
+ * operator is choosing among.
+ */
+export interface FlowList {
+  flows: FlowSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** Keyed by `FlowStatus`, always all six, including zeroes. */
+  status_counts: Record<FlowStatus, number>;
+}
+
+/** Query parameters for the flows list. Mirrors the route's signature. */
+export interface FlowListParams {
+  limit?: number;
+  offset?: number;
+  /** Substring, case-insensitive, over title / slug / intent_ref. */
+  q?: string;
+  status?: FlowStatus;
+  /** `gate > 0 OR stalled_count > 0` — not an alias of `status`. */
+  needs_me?: boolean;
+  /** No `cost`: it lives in another table and cannot be sorted with the page. */
+  sort?: 'created' | 'updated' | 'stalled';
+}

@@ -75,7 +75,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.usage import UsageLog
@@ -92,9 +92,28 @@ __all__ = [
     "NodeCost",
     "UnknownReason",
     "assert_join_key_is_event_id",
+    "escape_like",
     "get_cost_by_address",
+    "get_cost_by_address_prefixes",
     "get_flow_cost",
 ]
+
+
+def escape_like(value: str) -> str:
+    """Escape LIKE metacharacters in `value`, for use with `escape="\\\\"`.
+
+    **Load-bearing, not defensive.** `_` is a legal character in a flow slug *and*
+    the single-character LIKE wildcard, so an unescaped prefix `loop_4645` also
+    matches `loop-4645` — a different flow — and the two flows' costs merge into
+    one figure with nothing indicating it happened. `%` is worse: it widens the
+    match past the subtree entirely.
+
+    Declared once and shared by every LIKE this package builds (the address-prefix
+    cost queries here, the `q` search in `repository.py`). A second copy is a
+    second chance for someone to simplify it away in one place only.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 
 # R-N5c: stamped onto every figure this module returns. A cost figure without its
 # scope reads as "what this cost", not "what this cost in Bedrock tokens".
@@ -278,8 +297,10 @@ async def get_cost_by_address(
     tenant returns no rows rather than that tenant's costs.
     """
     # Escape LIKE metacharacters: an address containing `%` would otherwise widen
-    # the match past its own subtree and pull in unrelated nodes' costs.
-    escaped = address_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    # the match past its own subtree and pull in unrelated nodes' costs. The
+    # expression moved to `escape_like` verbatim when #4869 needed the same rule
+    # for a list of prefixes — same behaviour, one copy instead of two.
+    escaped = escape_like(address_prefix)
 
     query = (
         select(
@@ -294,6 +315,84 @@ async def get_cost_by_address(
             # Exact match OR descendant. The trailing `/` is what stops
             # `flow/epic-1` from matching `flow/epic-10`.
             (UsageLog.graph_address == address_prefix) | (UsageLog.graph_address.like(f"{escaped}/%", escape="\\")),
+        )
+        .group_by(UsageLog.graph_address)
+    )
+
+    rows = (await db.execute(query)).all()
+
+    costs: list[NodeCost] = []
+    for row in rows:
+        status, amount, reason = _classify(row.total_cost_usd, int(row.call_count or 0), absent_reason=UnknownReason.NO_USAGE_ROWS)
+        costs.append(
+            NodeCost(
+                address=row.graph_address,
+                status=status,
+                amount_usd=amount,
+                total_tokens=int(row.total_tokens or 0),
+                call_count=int(row.call_count or 0),
+                reason=reason,
+            )
+        )
+    return costs
+
+
+async def get_cost_by_address_prefixes(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    address_prefixes: list[str],
+) -> list[NodeCost]:
+    """Cost per graph address under ANY of `address_prefixes`, in ONE grouped query.
+
+    Issue #4869. The flows list needs a cost figure per flow for a whole page of
+    flows, and `usage_logs.graph_address` is `{flow.slug}/{epic}/{wave}/{node}` —
+    so a flow's slug *is* its address prefix and one `or_()` of prefix predicates
+    covers the page. Callers attribute each returned address back to its flow by
+    splitting on the first `/` (`proposal.split_address`).
+
+    This is a sibling of `get_cost_by_address`, not a replacement, and it is
+    deliberately **not** built on `get_flow_cost`: that function is node-shaped
+    (it needs the node list per flow to distinguish `NOT_STARTED` from
+    `NOT_COSTABLE`) and has a live caller whose semantics must not shift.
+
+    Each disjunct carries its own `prefix/` separator, so the boundary that stops
+    `loop-4645` matching `loop-46450` survives the `or_()` — the escaping and the
+    trailing `/` are per-prefix, not applied once to the whole clause.
+
+    Args:
+        address_prefixes: Flow slugs (or any address prefix). Empty returns `[]`
+            without a query — an empty `or_()` is `false`, but not issuing the
+            statement at all keeps the endpoint's query count honest.
+
+    Note: `org_id` is filtered in SQL. A prefix belonging to another tenant
+    returns no rows rather than that tenant's costs — which matters more here than
+    in the single-prefix version, since two tenants may run identically-named
+    flows and the page's prefixes come from a list.
+    """
+    if not address_prefixes:
+        return []
+
+    clauses = [
+        # Identical escaping and boundary to `get_cost_by_address` — `_` is a legal
+        # slug character *and* a single-char LIKE wildcard, so without the escape
+        # `loop_4645` matches `loop-4645` and two flows' costs merge into one
+        # figure. The equality disjunct is kept because that one does use the index.
+        (UsageLog.graph_address == prefix) | (UsageLog.graph_address.like(f"{escape_like(prefix)}/%", escape="\\"))
+        for prefix in address_prefixes
+    ]
+
+    query = (
+        select(
+            UsageLog.graph_address,
+            func.sum(UsageLog.cost_usd).label("total_cost_usd"),
+            func.sum(UsageLog.input_tokens + UsageLog.output_tokens).label("total_tokens"),
+            func.count(UsageLog.id).label("call_count"),
+        )
+        .where(
+            UsageLog.org_id == org_id,
+            UsageLog.graph_address.is_not(None),
+            or_(*clauses),
         )
         .group_by(UsageLog.graph_address)
     )

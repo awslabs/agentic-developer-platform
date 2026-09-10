@@ -39,6 +39,7 @@ const AgentRunDashboard = lazy(() => import('./pages/AgentRunDashboard')); // Is
 const BudgetSpend = lazy(() => import('./pages/BudgetSpend')); // Issue #4402
 const Knowledge = lazy(() => import('./pages/Knowledge')); // Issue #1794
 const GraphView = lazy(() => import('./pages/GraphView')); // Issue #4212
+const FlowsList = lazy(() => import('./pages/FlowsList')); // Issue #4869
 const NotFound = lazy(() => import('./pages/NotFound'));
 
 function App() {
@@ -106,6 +107,11 @@ function App() {
               {/* Issue #4212. `orchestration_engine` is fail-CLOSED in
                   ALL_FEATURES_ENABLED, so a pending or failed /features fetch hides
                   this route rather than revealing the new path. */}
+              {/* Issue #4869. The list the nav entry points at; same gate as the
+                  detail view below, so a flag-off environment has neither. React
+                  Router v6 ranks routes by specificity rather than declaration
+                  order, so `/flows` and `/flows/:flowId` do not compete. */}
+              <Route path="/flows" element={<FeatureGate feature="orchestration_engine"><FlowsList /></FeatureGate>} />
               <Route path="/flows/:flowId" element={<FeatureGate feature="orchestration_engine"><GraphView /></FeatureGate>} />
             </Route>
           </Route>

@@ -85,6 +85,20 @@ export function Navigation() {
   // Agent Activity for all authenticated users (Issue #1457)
   navItems.push({ to: '/activity', label: 'Agent Activity', icon: '📋' });
 
+  // Delivery Flows — the orchestration engine's entry point (Issue #4869).
+  //
+  // Feature-gated because `orchestration_engine` is a per-environment opt-in and
+  // `ALL_FEATURES_ENABLED` has it fail-CLOSED (#4209): an environment not running
+  // the engine must not advertise a menu item whose route redirects away.
+  //
+  // Deliberately UNGATED by permission, like /budget above. The endpoint behind it
+  // requires USAGE_READ, which is exactly what a MEMBER has — and that permission
+  // resolves to [] on the ID-token path (#4389), so a client-side check would hide
+  // the page from the operators it exists for.
+  if (features.orchestration_engine) {
+    navItems.push({ to: '/flows', label: 'Delivery Flows', icon: '🔀' });
+  }
+
   // Budget & Spend for all authenticated users (Issue #4402).
   //
   // Deliberately UNGATED by permission, unlike /budgets above. That entry is the admin
