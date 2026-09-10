@@ -37,6 +37,12 @@ UNIT_MODULES = [
     "src.admin.routes",
     "src.admin.identity.router",
     "src.admin.connections.routes",  # Issue #465: GitHub App install + connections
+    # Issue #4842: platform-admin attach/detach of an ORG's GitHub connection.
+    # Separate from src.admin.connections.routes on purpose — that router is the
+    # self-serve path (a user installs the App and it binds to their own tenant);
+    # this one lets a platform admin bind a named installation to any named org,
+    # which is a different actor with different authorization.
+    "src.admin.org_connections.routes",
     "src.admin.tenants.routes",  # Issue #2954: Multi-org-to-tenant linking (rule 3)
     "src.admin.onboarding.handler",  # Issue #538: Self-serve onboarding flow
     "src.pool.routes",

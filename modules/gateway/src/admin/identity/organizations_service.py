@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.installations.guards import assert_new_installation_ids_claimable_by
-from src.shared.models.organization import Department, Organization, Team
+from src.shared.models.organization import CREATED_VIA_OPERATOR, Department, Organization, Team
 from src.shared.models.vault import ChannelTenantMap
 
 from .cognito_sync import CognitoSyncService
@@ -86,6 +86,11 @@ class OrganizationsService:
             settings=settings,
             github_installation_ids=github_ids,
             cognito_client_ids=[],
+            # Issue #4842 (R6=a): stamped, not inherited. This is the canonical
+            # org-create route (D4=A) and it is platform-admin gated, so the
+            # tenant is operator-provisioned by definition. Stating the value
+            # keeps the trust decision in code rather than in a column default.
+            created_via=CREATED_VIA_OPERATOR,
         )
         self._db.add(org)
 

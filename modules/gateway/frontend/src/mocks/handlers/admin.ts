@@ -32,17 +32,21 @@ export const adminHandlers = [
     return HttpResponse.json(org);
   }),
 
-  http.post('/api/admin/organizations', async ({ request }) => {
-    const body = await request.json() as { name: string };
-    const newOrg = {
-      id: `org-${Date.now()}`,
-      name: body.name,
-      aws_accounts: [],
-      role_mappings: {},
-      settings: {},
-      created_at: new Date().toISOString(),
-    };
-    return HttpResponse.json(newOrg, { status: 201 });
+  // Issue #4842 (D4=Option A): this route is deprecated and returns 410 in
+  // production. The mock mirrors that instead of the old 201 — a mock that
+  // succeeds where the real backend refuses is worse than no mock at all,
+  // because a feature built against it passes in dev mode and fails on deploy.
+  // Org creation now goes to POST /api/admin/identity/organizations, which takes
+  // a different body (caller-supplied `id`, plus `plan`/`channels`).
+  http.post('/api/admin/organizations', () => {
+    return HttpResponse.json(
+      {
+        detail:
+          'POST /admin/organizations is no longer available. Use POST /api/admin/identity/organizations, ' +
+          'which also creates the default department, default team, and channel mappings this route omitted.',
+      },
+      { status: 410 }
+    );
   }),
 
   http.patch('/api/admin/organizations/:id', async ({ params, request }) => {

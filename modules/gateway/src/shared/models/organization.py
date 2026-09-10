@@ -67,6 +67,14 @@ class Organization(Base):
     #   "install_autocreate" — self-created shell from the unauthenticated
     #                          no-nonce install callback (NOT trusted)
     # Defaults to "operator" so pre-migration rows grandfather in as trusted.
+    #
+    # Issue #4842 (R6=a): that default is a BACKFILL, not a policy. Every writer
+    # in this codebase passes ``created_via`` explicitly, so no NEW row inherits
+    # trust from a column default — trust is asserted by the path that mints the
+    # row. Three paths (both admin org-create services and the access-request
+    # approval) previously fell through to this default and were therefore
+    # trusted by accident; they now state the value. Keep it that way: a new
+    # creation path that omits the argument silently mints a trusted tenant.
     created_via: Mapped[str] = mapped_column(
         String(32),
         nullable=False,

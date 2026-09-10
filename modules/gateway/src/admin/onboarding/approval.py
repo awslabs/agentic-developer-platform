@@ -17,7 +17,13 @@ from src.admin.identity.identity_index_writer import IdentityIndexWriter
 from src.admin.memberships import upsert_tenant_membership
 from src.shared.models.base import new_uuid, utcnow
 from src.shared.models.onboarding import Tenant, TenantAccessRequest
-from src.shared.models.organization import Department, Organization, Team, User
+from src.shared.models.organization import (
+    CREATED_VIA_OPERATOR,
+    Department,
+    Organization,
+    Team,
+    User,
+)
 from src.shared.models.vault import UserIdentity
 
 logger = logging.getLogger(__name__)
@@ -97,6 +103,12 @@ async def approve_request(
         settings={},
         github_installation_ids=[],
         cognito_client_ids=[],
+        # Issue #4842 (R6=a): stamped, not inherited. An access request only
+        # reaches this function after a platform admin approved it, so the row is
+        # operator-onboarded — the same standing as a directly provisioned
+        # tenant. Recorded explicitly because the alternative is trusting a
+        # column default, and this path had no test proving which value it got.
+        created_via=CREATED_VIA_OPERATOR,
     )
     db.add(org)
 

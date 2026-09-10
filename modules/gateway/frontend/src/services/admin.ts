@@ -4,7 +4,6 @@ import { AdminRole } from '@/types';
 import type {
   Organization,
   OrganizationCanonicalCreateRequest,
-  OrganizationCreateRequest,
   OrganizationUpdateRequest,
   Department,
   Team,
@@ -65,29 +64,18 @@ export async function getOrganization(id: string): Promise<Organization> {
   return transformOrganization(response);
 }
 
-/**
- * @deprecated Targets `POST /admin/organizations`, which ruling D4=A (#4841) deprecates.
- *
- * That route generates a UUID id and — unlike the canonical route — creates **no default
- * department, no default team, and no `channel_tenant_map` claim**. The result is a
- * structurally incomplete org: `users.team_id` values that point at nothing (there is no
- * FK to catch it) and an installation resolver that fails closed on later binding writes.
- *
- * Use `createOrganizationCanonical()` below. This export is retained only because removing
- * it is outside T2a's scope; no production code path calls it (its existing service test
- * still does).
- */
-export async function createOrganization(data: OrganizationCreateRequest): Promise<Organization> {
-  const response = await apiClient.post<{
-    id: string;
-    name: string;
-    aws_accounts: string[];
-    role_mappings: Record<string, string>;
-    settings: Record<string, unknown>;
-    created_at: string;
-  }>('/admin/organizations', data);
-  return transformOrganization(response);
-}
+// Issue #4842 (ruling D4 = Option A): `createOrganization()` used to live here,
+// posting to `/admin/organizations`. That route now returns 410 — it created an
+// `organizations` row without the default department, default team, or channel
+// mappings that every other org-creating path writes, which left the installation
+// resolver failing closed for tenants made through it.
+//
+// This function had no product callers (only its own unit test), so it is removed
+// rather than repointed: the canonical route
+// `POST /api/admin/identity/organizations` takes a DIFFERENT request shape (it
+// requires a caller-supplied `id`, plus `plan` and `channels`), so a silent
+// repoint would have shipped a client that 422s. The typed client for the canonical
+// route (`createOrganizationCanonical`, below) shipped with #4841.
 
 /**
  * Create an organization on the CANONICAL route — Issue #4841 (#4839 · T2a), ruling D4=A.

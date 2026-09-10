@@ -37,7 +37,14 @@ from src.shared.interfaces.budget import IBudgetService
 from src.shared.interfaces.ratelimit import IRateLimitService
 from src.shared.models.budget import BudgetConfig, BudgetUsage
 from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import Department, Organization, ServiceAccount, Team, User
+from src.shared.models.organization import (
+    CREATED_VIA_OPERATOR,
+    Department,
+    Organization,
+    ServiceAccount,
+    Team,
+    User,
+)
 from src.shared.models.usage import BedrockPoolAccount, RateLimitConfig
 from src.shared.models.vault import UserIdentity
 from src.shared.schemas.admin import (
@@ -133,6 +140,11 @@ class AdminService:
             settings=request.settings,
             github_installation_ids=request.github_installation_ids,
             cognito_client_ids=request.cognito_client_ids,
+            # Issue #4842 (R6=a): stamped, not inherited. A platform admin
+            # provisioned this tenant, which is exactly what CREATED_VIA_OPERATOR
+            # means, so the row is trusted BY INTENT rather than because the
+            # column default happens to be a trusted value.
+            created_via=CREATED_VIA_OPERATOR,
         )
 
         self.db.add(org)

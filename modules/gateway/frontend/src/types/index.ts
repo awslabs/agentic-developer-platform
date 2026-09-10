@@ -212,22 +212,14 @@ export interface Organization {
   createdAt: string;
 }
 
-export interface OrganizationCreateRequest {
-  name: string;
-  aws_accounts?: string[];
-  role_mappings?: Record<string, string>;
-  settings?: Record<string, unknown>;
-}
-
 /**
  * Body for the CANONICAL org-create route — Issue #4841 (#4839 · T2a), ruling D4=A.
  *
- * A separate type from `OrganizationCreateRequest` above, which is the body of the
- * DEPRECATED `POST /admin/organizations`. The difference is not cosmetic: this route
- * requires a caller-supplied `id` (`src/admin/identity/schemas.py`
- * `OrganizationCreateRequest.id`, required, 1–255 chars) and the deprecated one generates
- * a UUID. Reusing one type for both would make the required field look optional and let a
- * call compile that the server 422s.
+ * The body of the DEPRECATED `POST /admin/organizations` (`OrganizationCreateRequest`)
+ * was removed with that route's #4842 retirement (410). The difference was not cosmetic:
+ * this route requires a caller-supplied `id` (`src/admin/identity/schemas.py`
+ * `OrganizationCreateRequest.id`, required, 1–255 chars) and the deprecated one generated
+ * a UUID.
  *
  * `plan`, `channels`, `aws_accounts` and `settings` all default server-side and are
  * omitted here on purpose: this panel creates organizations **GitHub-free** (the whole

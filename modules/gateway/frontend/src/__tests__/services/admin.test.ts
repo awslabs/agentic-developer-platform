@@ -3,7 +3,6 @@ import { apiClient } from '@/services/api';
 import {
   getOrganizations,
   getOrganization,
-  createOrganization,
   createOrganizationCanonical,
   updateOrganization,
   deleteOrganization,
@@ -124,26 +123,9 @@ describe('Admin Service', () => {
       });
     });
 
-    describe('createOrganization', () => {
-      it('creates a new organization', async () => {
-        const mockResponse = {
-          id: 'org-new',
-          name: 'New Org',
-          aws_accounts: [],
-          role_mappings: {},
-          settings: {},
-          created_at: '2024-01-01T00:00:00Z',
-        };
-
-        vi.mocked(apiClient.post).mockResolvedValue(mockResponse);
-
-        const result = await createOrganization({ name: 'New Org' });
-
-        expect(apiClient.post).toHaveBeenCalledWith('/admin/organizations', { name: 'New Org' });
-        expect(result.id).toBe('org-new');
-        expect(result.name).toBe('New Org');
-      });
-    });
+    // Issue #4842: the `createOrganization` specs are gone with the function.
+    // `POST /admin/organizations` now returns 410 (ruling D4 = Option A) and the
+    // client export had no product callers.
 
     describe('createOrganizationCanonical', () => {
       it('posts the caller-supplied id to the canonical identity route', async () => {
@@ -664,7 +646,11 @@ describe('Admin Service', () => {
     it('handles network errors', async () => {
       vi.mocked(apiClient.post).mockRejectedValue(new Error('Network error'));
 
-      await expect(createOrganization({ name: 'Test' })).rejects.toThrow('Network error');
+      // Issue #4842: this asserted through `createOrganization` before that export
+      // was removed. Repointed at another POST wrapper rather than deleted — the
+      // coverage being kept is "a rejected POST propagates", which is not specific
+      // to org creation.
+      await expect(createDepartment('org-1', { name: 'Test' })).rejects.toThrow('Network error');
     });
   });
 });

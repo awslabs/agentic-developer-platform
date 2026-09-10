@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,7 +67,6 @@ from src.admin.schemas import (
     CognitoUserListResponse,
     CognitoUserResponse,
     LogQueryResponse,
-    OrganizationCreateRequest,
     OrganizationListResponse,
     OrganizationResponse,
     OrganizationUpdateRequest,
@@ -153,19 +152,45 @@ def get_cognito_service() -> CognitoService | None:
 # Organization Endpoints
 
 
-@router.post("/organizations", response_model=OrganizationResponse, status_code=201)
-async def create_organization(
-    request: OrganizationCreateRequest,
-    service: Annotated[AdminService, Depends(get_admin_service)],
-    access: Annotated[AccessControl, Depends(get_access_control)],
-    current_user: Annotated[TokenContext, Depends(get_current_user)],
-) -> OrganizationResponse:
-    """Create a new organization.
+CANONICAL_ORG_CREATE_ROUTE = "POST /api/admin/identity/organizations"
 
-    Requires platform admin privileges.
+
+@router.post("/organizations", status_code=410, dependencies=[Depends(get_current_user)])
+async def create_organization_gone() -> None:
+    """Deprecated. Use ``POST /api/admin/identity/organizations`` instead.
+
+    Issue #4842 (ruling D4 = Option A): this route is retired because it created
+    an incomplete tenant, not because it duplicated a working one.
+
+    It wrote an ``organizations`` row and nothing else. The canonical route also
+    writes the default department, the default team, and the ``channel_tenant_map``
+    rows — and three of the platform's four org-creating paths write that bundle,
+    so this one was the outlier. Two consequences of the omission were silent:
+
+    * ``users.team_id`` defaults to ``f"{org_id}-team-default"``, a row this route
+      never created, and there is no FK on that column to catch the dangling
+      pointer.
+    * With no ``channel_tenant_map`` row, the installation resolver fails closed
+      for binding writes — that table is the only record that can *grant*
+      installation ownership, whereas ``organizations.github_installation_ids`` is
+      merely an assertion a tenant makes about itself.
+
+    Safe to retire: it had zero product callers. The one client function
+    (``frontend/src/services/admin.ts::createOrganization``) was a dead export
+    referenced only by its own unit test, and is removed in the same change.
+
+    Takes no request body so the 410 is returned for any payload — a caller still
+    on this route must see the pointer, not a 422 about a schema that no longer
+    matters.
     """
-    await access.check_permission(current_user, Permission.ORG_CREATE)
-    return await service.create_organization(request)
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            f"POST /admin/organizations is no longer available. Use {CANONICAL_ORG_CREATE_ROUTE}, "
+            "which also creates the default department, default team, and channel mappings this "
+            "route omitted."
+        ),
+    )
 
 
 @router.get("/organizations", response_model=OrganizationListResponse)
