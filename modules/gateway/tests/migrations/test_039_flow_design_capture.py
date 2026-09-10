@@ -383,7 +383,14 @@ class TestRevisionChain:
 
         parents = {down for down in revisions.values() if down is not None}
         heads = sorted(revision for revision in revisions if revision not in parents)
-        assert heads == ["039_flow_design_capture"], f"expected 039 to be the single head, got {heads}"
+        # Assert *one* head, not that 039 is it. Issue #4840 chained 040 onto 039,
+        # which is the normal, healthy case — a later migration landing does not
+        # mean the chain forked. Pinning the head name here made this test fail on
+        # every subsequent migration, so it followed 033's shape instead (see
+        # test_033_client_tool_capture.py:505-509): exactly one head, and 039 is
+        # either that head or a link something else chained onto.
+        assert len(heads) == 1, f"expected exactly one head, found: {heads}"
+        assert MIG_039.revision in parents or heads == [MIG_039.revision], "039 has been orphaned off the chain"
 
     def test_revision_id_fits_the_alembic_version_column(self):
         """SQLite does not enforce VARCHAR length; Postgres does.

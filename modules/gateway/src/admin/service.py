@@ -1091,6 +1091,57 @@ class AdminService:
             updated_at=team.updated_at,
         )
 
+    async def list_org_teams(
+        self,
+        org_id: str,
+        page: int = 1,
+        page_size: int | None = None,
+    ) -> tuple[list[TeamResponse], int]:
+        """List every team in an org, across all departments (Issue #4840).
+
+        The sibling :meth:`list_teams` is department-scoped, which is the wrong shape
+        for the team pickers in the membership UI (T2a/T2b): assigning a user to a
+        second team means choosing from every team in the org, and a caller should
+        not have to enumerate departments and fan out to build that list.
+
+        Args:
+            org_id: Organization ID
+            page: Page number (1-indexed)
+            page_size: Items per page
+
+        Returns:
+            Tuple of (list of teams, total count)
+        """
+        if page_size is None:
+            page_size = self.config.default_page_size
+
+        page_size = min(page_size, self.config.max_page_size)
+        offset = (page - 1) * page_size
+
+        count_query = select(func.count()).select_from(Team).where(Team.org_id == org_id)
+        total_result = await self.db.execute(count_query)
+        total = total_result.scalar_one()
+
+        query = select(Team).where(Team.org_id == org_id).offset(offset).limit(page_size).order_by(Team.name)
+        result = await self.db.execute(query)
+        teams = result.scalars().all()
+
+        return (
+            [
+                TeamResponse(
+                    id=team.id,
+                    org_id=team.org_id,
+                    department_id=team.department_id,
+                    name=team.name,
+                    description=team.description,
+                    created_at=team.created_at,
+                    updated_at=team.updated_at,
+                )
+                for team in teams
+            ],
+            total,
+        )
+
     async def list_teams(
         self,
         org_id: str,

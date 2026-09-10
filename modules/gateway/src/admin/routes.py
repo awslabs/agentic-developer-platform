@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin import team_memberships
 from src.admin.access_control import AccessControl
 from src.admin.agent_onboarding_schemas import (
     AgentOnboardRequest,
@@ -95,6 +96,10 @@ from src.shared.schemas.admin import (
     ServiceAccountResponse,
     TeamCreateRequest,
     TeamListResponse,
+    TeamMemberAddRequest,
+    TeamMembershipListResponse,
+    TeamMembershipResponse,
+    TeamMembershipSetRequest,
     TeamResponse,
     TeamUpdateRequest,
     UserCreateRequest,
@@ -796,6 +801,147 @@ async def delete_team(
     """Delete a team."""
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
     await service.delete_team(org_id, team_id)
+
+
+@router.get("/organizations/{org_id}/teams", response_model=TeamListResponse)
+async def list_org_teams(
+    org_id: str,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> TeamListResponse:
+    """List every team in the organization, across all departments.
+
+    Issue #4840. Complements the department-scoped listing above: the team pickers
+    in the membership UI need the org-wide set, since assigning a second team means
+    choosing from every team in the org.
+    """
+    await access.check_permission(current_user, Permission.ORG_READ, target_org_id=org_id)
+
+    teams, total = await service.list_org_teams(org_id, page, page_size)
+
+    return TeamListResponse(
+        items=teams,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(page * page_size) < total,
+    )
+
+
+# Team Membership Endpoints (Issue #4840)
+#
+# Many-to-many user<->team membership. Permissions deliberately mirror the sibling
+# team routes above — ORG_UPDATE for writes, ORG_READ for reads, both via
+# check_permission(..., target_org_id=org_id) — rather than introducing a new gating
+# mechanism for the same class of resource. Tenant scoping beyond the permission
+# check (does this user, and this team, actually belong to {org_id}?) is enforced in
+# src/admin/team_memberships.py, which resolves both by (id, org_id) and raises 404
+# for anything outside the org.
+
+
+@router.get("/organizations/{org_id}/users/{user_id}/teams", response_model=TeamMembershipListResponse)
+async def list_user_teams(
+    org_id: str,
+    user_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> TeamMembershipListResponse:
+    """List a user's team memberships, primary first."""
+    await access.check_permission(current_user, Permission.ORG_READ, target_org_id=org_id)
+
+    rows = await team_memberships.list_memberships(db, user_id=user_id, org_id=org_id)
+    return TeamMembershipListResponse(
+        items=[TeamMembershipResponse.model_validate(row) for row in rows],
+        total=len(rows),
+    )
+
+
+@router.put("/organizations/{org_id}/users/{user_id}/teams", response_model=TeamMembershipListResponse)
+async def replace_user_teams(
+    org_id: str,
+    user_id: str,
+    request: TeamMembershipSetRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> TeamMembershipListResponse:
+    """Replace a user's entire team-membership set. Idempotent — the UI's save action.
+
+    The body is the full intended set, not a diff: teams absent from it are removed.
+    More than one ``is_primary`` entry is refused with a stable, machine-readable
+    error code (``team_membership_second_primary``).
+    """
+    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+
+    await team_memberships.replace_memberships(
+        db,
+        user_id=user_id,
+        org_id=org_id,
+        desired=[m.model_dump() for m in request.memberships],
+    )
+    await db.commit()
+
+    refreshed = await team_memberships.list_memberships(db, user_id=user_id, org_id=org_id)
+    return TeamMembershipListResponse(
+        items=[TeamMembershipResponse.model_validate(row) for row in refreshed],
+        total=len(refreshed),
+    )
+
+
+@router.post("/organizations/{org_id}/teams/{team_id}/members", response_model=TeamMembershipResponse, status_code=201)
+async def add_team_member(
+    org_id: str,
+    team_id: str,
+    request: TeamMemberAddRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> TeamMembershipResponse:
+    """Add one membership. Idempotent on ``(user_id, team_id)``.
+
+    Requesting ``is_primary`` when the user already has a different primary team is
+    refused with ``team_membership_second_primary`` rather than silently re-pointing
+    the Cognito claim — use the replace-set endpoint to move a primary deliberately.
+    """
+    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+
+    membership = await team_memberships.add_membership(
+        db,
+        user_id=request.user_id,
+        team_id=team_id,
+        org_id=org_id,
+        role=request.role or team_memberships.DEFAULT_TEAM_ROLE,
+        is_primary=request.is_primary,
+        source=request.source or "admin",
+        external_id=request.external_id,
+    )
+    await db.commit()
+    await db.refresh(membership)
+    return TeamMembershipResponse.model_validate(membership)
+
+
+@router.delete("/organizations/{org_id}/teams/{team_id}/members/{user_id}", status_code=204)
+async def remove_team_member(
+    org_id: str,
+    team_id: str,
+    user_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> None:
+    """Remove one membership. Idempotent.
+
+    Removing the primary promotes the oldest remaining membership, so the user is
+    never left on teams with no primary.
+    """
+    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+
+    await team_memberships.remove_membership(db, user_id=user_id, team_id=team_id, org_id=org_id)
+    await db.commit()
 
 
 # User Management Endpoints

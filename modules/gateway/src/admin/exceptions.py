@@ -118,3 +118,34 @@ class CognitoNotConfiguredError(BedrockGatewayError):
             status_code=503,
             details={"hint": "Cognito integration is required for this endpoint. Please configure the COGNITO_USER_POOL_ID environment variable."},
         )
+
+
+class SecondPrimaryTeamError(BedrockGatewayError):
+    """Raised when a write would give a user a second primary team in one org.
+
+    Issue #4840. A user has at most one primary team per org, because
+    ``users.team_id`` (and therefore the ``custom:team_id`` Cognito claim) can only
+    project ONE team — two primaries make that projection ambiguous, and which team
+    a user appears to be on would depend on row order.
+
+    ``error`` is the stable, machine-readable contract the admin UI (T2b) branches
+    on to surface this to the operator; the message is the human half. Do not
+    change the ``error`` string without updating the UI that asserts on it.
+    """
+
+    ERROR_CODE = "team_membership_second_primary"
+
+    def __init__(self, user_id: str, existing_team_id: str, requested_team_id: str):
+        super().__init__(
+            error=self.ERROR_CODE,
+            message=(
+                f"User already has a primary team ('{existing_team_id}'). A user can have only one primary team per organization — "
+                f"unset the current primary before making '{requested_team_id}' primary, or send the full membership set with exactly one primary."
+            ),
+            status_code=409,
+            details={
+                "user_id": user_id,
+                "existing_primary_team_id": existing_team_id,
+                "requested_primary_team_id": requested_team_id,
+            },
+        )

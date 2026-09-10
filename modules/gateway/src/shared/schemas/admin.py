@@ -139,6 +139,77 @@ class UserListResponse(BaseModel):
     has_more: bool
 
 
+# Team Membership Schemas (Issue #4840)
+# Many-to-many user<->team membership. Before this, the only write path touching a
+# user's team was UserUpdateRequest, which carries name/role and no team field at
+# all — i.e. there was no way to move a user between teams over the API.
+class TeamMembershipRequest(BaseModel):
+    """One desired membership, used by the add and replace-set endpoints."""
+
+    team_id: str = Field(..., min_length=1, max_length=255, description="Team the user is a member of")
+    role: str | None = Field(None, description="Role within the team: member or lead. Anything else is stored as member.")
+    is_primary: bool = Field(
+        default=False,
+        description=(
+            "Whether this is the user's primary team. At most one per user per org — the primary is what projects into the custom:team_id claim."
+        ),
+    )
+    source: str | None = Field(None, max_length=32, description="Provenance of the membership: admin (default) or a directory-sync tag")
+    external_id: str | None = Field(None, max_length=255, description="Directory-system identity for synced memberships")
+
+
+class TeamMemberAddRequest(BaseModel):
+    """Add one user to one team.
+
+    Separate from ``TeamMembershipRequest`` because on this endpoint the team comes
+    from the path and the user from the body, which is the mirror image of the
+    replace-set endpoint (user in path, teams in body).
+    """
+
+    user_id: str = Field(..., min_length=1, max_length=255, description="User to add to the team")
+    role: str | None = Field(None, description="Role within the team: member or lead. Anything else is stored as member.")
+    is_primary: bool = Field(
+        default=False,
+        description="Whether this becomes the user's primary team. Refused if they already have a different primary.",
+    )
+    source: str | None = Field(None, max_length=32, description="Provenance of the membership: admin (default) or a directory-sync tag")
+    external_id: str | None = Field(None, max_length=255, description="Directory-system identity for synced memberships")
+
+
+class TeamMembershipSetRequest(BaseModel):
+    """Replace a user's entire membership set (the admin UI's save action)."""
+
+    memberships: list[TeamMembershipRequest] = Field(
+        ...,
+        description=("The full intended set, not a diff. Teams absent from this list are removed. An empty list removes every membership."),
+    )
+
+
+class TeamMembershipResponse(BaseModel):
+    """Response schema for one team membership."""
+
+    id: str
+    user_id: str
+    team_id: str
+    org_id: str
+    role: str
+    is_primary: bool
+    source: str
+    external_id: str | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class TeamMembershipListResponse(BaseModel):
+    """Response schema for a user's team memberships."""
+
+    items: list[TeamMembershipResponse]
+    total: int
+
+
 class PlatformUserResponse(BaseModel):
     """One person in the platform-wide member picker (Issue #4827).
 
