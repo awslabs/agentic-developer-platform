@@ -14,10 +14,19 @@
 # workers; 769Mi observed under normal load). CPU is included anyway as a
 # cheap backstop against a future CPU-bound regression.
 #
-# Utilization targets are computed against REQUESTS (1Gi / 250m — see
-# deployment.yaml), not limits: memory 75% ≈ 768Mi average, the level normal
-# agent load already reaches, so scale-out starts exactly where today's
-# ceiling was.
+# Utilization targets are computed against REQUESTS (1.25Gi / 250m — see
+# deployment.yaml), not limits: memory 75% ≈ 960Mi. The request was raised
+# from 1Gi specifically so this target sits ABOVE the idle baseline (~800Mi
+# for 4 uvicorn workers + buffers). At 1Gi the 75% line (768Mi) fell BELOW
+# baseline, so the HPA read idle as "over target" and pinned the fleet at 4-5
+# pods doing nothing — leaving almost no burst headroom before the ceiling.
+# Now idle settles toward minReplicas and scale-out fires on genuine
+# load-driven growth past ~960Mi.
+#
+# maxReplicas raised 6 → 12 for 100+ concurrent-user headroom. The gateway is
+# async I/O-bound (CPU idles at 1-2%), so a pod holds many concurrent streams;
+# the binding constraint is memory, and 12 pods × 2Gi limit = 24Gi of ceiling
+# vs 6 pods × 2Gi = 12Gi. EKS Auto Mode provisions nodes to fit the extra pods.
 #
 # Requires the Metrics API: the metrics-server EKS addon (codified in
 # platform/infra/modules/eks/main.tf) must be installed or this HPA sits at
@@ -36,7 +45,7 @@ spec:
     kind: Deployment
     name: bedrockgateway
   minReplicas: 2
-  maxReplicas: 6
+  maxReplicas: 12
   metrics:
     - type: Resource
       resource:

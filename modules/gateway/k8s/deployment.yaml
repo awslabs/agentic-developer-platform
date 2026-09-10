@@ -32,17 +32,21 @@ spec:
           ports:
             - containerPort: 8080
               protocol: TCP
-          # Memory sized for 4 uvicorn workers + streaming/chat-logging buffers:
-          # pods were observed at 769Mi under normal agent load, i.e. 75% of the
-          # old 1Gi limit — one busy burst away from an OOM-kill mid-stream.
-          # Requests raised with limits so the HPA's utilization math (which is
-          # computed against REQUESTS) stays meaningful: 75% of 1Gi ≈ the level
-          # we already reach today. CPU is untouched — the gateway is async
-          # I/O-bound and idles at 1-2% even under full agent traffic.
+          # Memory sized for 4 uvicorn workers + streaming/chat-logging buffers.
+          # The memory REQUEST is 1.25Gi (raised from 1Gi): the HPA's utilization
+          # math is computed against requests, and at a 1Gi request the observed
+          # ~800Mi idle baseline was already 80% — above the 75% scale-out target —
+          # so the autoscaler pinned the fleet at 4-5 pods even at idle and had
+          # almost no burst headroom left before its ceiling. At 1.25Gi the 75%
+          # line is ~960Mi, comfortably above idle baseline, so idle settles toward
+          # minReplicas and scale-out fires only on real load. The 2Gi LIMIT is
+          # unchanged — it stays the OOM ceiling, now with more room above the
+          # request. CPU is untouched: the gateway is async I/O-bound and idles at
+          # 1-2% even under full agent traffic. See k8s/hpa.yaml.
           resources:
             requests:
               cpu: 250m
-              memory: 1Gi
+              memory: 1.25Gi
             limits:
               cpu: 1000m
               memory: 2Gi
