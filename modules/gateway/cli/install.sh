@@ -125,6 +125,24 @@ script_dir() {
     (cd -P "$(dirname "$0")" && pwd)
 }
 
+# The gateway serves everything the CLI needs under an /api prefix
+# (/api/cli/* here, /api/auth/cli/* for login + refresh). bg-cognito-auth.sh
+# reads the stored gateway_url and appends /auth/... to it directly, so the
+# canonical form MUST end in /api. Accept the URL with OR without it — a bare
+# https://<gateway> is exactly what the /setup page and this file's own examples
+# show — and normalize to the /api form. Without this a bare URL breaks two
+# things: the download below 403s (or, worse, the SPA fallback returns index.html
+# with a 200 and we would install HTML as `adp`), and the bare URL then gets
+# persisted, so `adp login` afterwards also hits the wrong path.
+normalize_gateway_url() {
+    [ -z "${GATEWAY_URL}" ] && return 0
+    GATEWAY_URL="${GATEWAY_URL%/}"
+    case "${GATEWAY_URL}" in
+        */api) : ;;
+        *) GATEWAY_URL="${GATEWAY_URL}/api" ;;
+    esac
+}
+
 # Resolve the gateway URL: flag/env, else the one a previous install persisted.
 # Never guessed — a wrong origin would silently install a CLI pointed at another
 # deployment.
@@ -132,7 +150,7 @@ resolve_gateway_url() {
     if [ -z "${GATEWAY_URL}" ] && [ -f "${CONFIG_FILE}" ]; then
         GATEWAY_URL=$(jq -r '.gateway_url // empty' "${CONFIG_FILE}" 2>/dev/null || true)
     fi
-    GATEWAY_URL="${GATEWAY_URL%/}"
+    normalize_gateway_url
 }
 
 require_gateway_url() {
@@ -162,28 +180,56 @@ persist_gateway_url() {
     mv -f "${tmp}" "${CONFIG_FILE}"
 }
 
-# Install one file, from the repo checkout when we are running inside one, else
-# from the gateway's download route.
-install_file() {
-    name="$1"
-    target="${INSTALL_DIR}/${name}"
-    src_dir=$(script_dir)
+# Space-separated list of temp files staged this run. cleanup_staged removes any
+# that survive an early exit, so a failed install leaves nothing behind — never a
+# usable `adp` without the core script it depends on.
+STAGED_TMPS=""
 
-    if [ "${KEEP_PREVIOUS}" = "1" ] && [ -f "${target}" ]; then
-        cp -f "${target}" "${target}.prev"
+cleanup_staged() {
+    for f in ${STAGED_TMPS}; do
+        rm -f "${f}"
+    done
+}
+
+# Reject a "download" that isn't actually one of our scripts. A misrouted request
+# (e.g. the gateway URL missing its /api prefix) can come back as the SPA's
+# index.html with a 200, which curl -f happily accepts — installing that as `adp`
+# is the partial/broken install we are guarding against. Every file we ship
+# starts with a shebang, so anything that doesn't is bogus.
+validate_staged() {
+    name="$1"; tmp="$2"
+    if [ ! -s "${tmp}" ]; then
+        log_error "Downloaded ${name} is empty — refusing to install a broken copy."
+        exit 1
     fi
+    first_line=$(head -n 1 "${tmp}" 2>/dev/null || true)
+    case "${first_line}" in
+        "#!"*) : ;;
+        *)
+            log_error "Downloaded ${name} is not a script — the gateway URL is likely wrong or missing its /api path. Nothing was installed."
+            exit 1 ;;
+    esac
+}
 
-    tmp=$(mktemp "${target}.XXXXXX")
+# Fetch one file into a temp (from the repo checkout when we are running inside
+# one, else from the gateway's download route) and validate it. Registers the
+# temp so cleanup_staged can reclaim it if a later file fails.
+stage_file() {
+    name="$1"
+    tmp="${INSTALL_DIR}/.${name}.tmp.$$"
+    STAGED_TMPS="${STAGED_TMPS} ${tmp}"
+    src_dir=$(script_dir)
 
     if [ -n "${src_dir}" ] && [ -f "${src_dir}/${name}" ]; then
         cp -f "${src_dir}/${name}" "${tmp}"
     else
         require_gateway_url
-        if ! curl -fsSL "${GATEWAY_URL}/cli/${name}" -o "${tmp}"; then
-            rm -f "${tmp}"
-            log_error "Could not download ${name} from ${GATEWAY_URL}/cli/${name}"
+        url="${GATEWAY_URL}/cli/${name}"
+        if ! curl -fsSL "${url}" -o "${tmp}"; then
+            log_error "Could not download ${name} from ${url}"
             exit 1
         fi
+        validate_staged "${name}" "${tmp}"
     fi
 
     # Only the entrypoints need +x; the proxy is run as `python3 <file>`.
@@ -191,6 +237,18 @@ install_file() {
         "${ADP_SCRIPT}"|"${CORE_SCRIPT}") chmod 755 "${tmp}" ;;
         *) chmod 644 "${tmp}" ;;
     esac
+}
+
+# Move a previously staged temp into its final place. Only run once every file
+# has staged successfully, so the install lands all-or-nothing.
+commit_file() {
+    name="$1"
+    target="${INSTALL_DIR}/${name}"
+    tmp="${INSTALL_DIR}/.${name}.tmp.$$"
+
+    if [ "${KEEP_PREVIOUS}" = "1" ] && [ -f "${target}" ]; then
+        cp -f "${target}" "${target}.prev"
+    fi
     mv -f "${tmp}" "${target}"
     log_success "Installed ${target}"
 }
@@ -201,9 +259,23 @@ do_install() {
 
     mkdir -p "${INSTALL_DIR}"
 
-    install_file "${ADP_SCRIPT}"
-    install_file "${CORE_SCRIPT}"
-    install_file "${PROXY_SCRIPT}"
+    # Stage-then-commit: fetch and validate all three files first, and only move
+    # them into place once every one has succeeded. A mid-way failure trips the
+    # trap, cleanup_staged wipes the temps, and the previous install (if any) is
+    # left untouched — no half-finished state where `adp` exists but its core
+    # script does not.
+    trap cleanup_staged EXIT INT TERM
+
+    stage_file "${ADP_SCRIPT}"
+    stage_file "${CORE_SCRIPT}"
+    stage_file "${PROXY_SCRIPT}"
+
+    commit_file "${ADP_SCRIPT}"
+    commit_file "${CORE_SCRIPT}"
+    commit_file "${PROXY_SCRIPT}"
+
+    trap - EXIT INT TERM
+    STAGED_TMPS=""
 
     persist_gateway_url
     log_success "Gateway URL saved: ${GATEWAY_URL}"

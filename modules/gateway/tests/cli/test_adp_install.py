@@ -26,6 +26,9 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -381,3 +384,162 @@ class TestInstalledCliWorks:
 
         assert result.returncode == 0, result.stderr
         assert 'model_provider = "adp-gateway"' in (install_home / ".codex" / "config.toml").read_text()
+
+
+class TestGatewayUrlNormalization:
+    """Every route the CLI uses lives under /api (/api/cli/* to download,
+    /api/auth/cli/* for login + refresh), and bg-cognito-auth.sh appends
+    /auth/... to the stored gateway_url directly. But the /setup page and this
+    file's own examples show a BARE `--gateway-url https://<gw>`. The installer
+    must reconcile the two: normalize to the /api form so both the download here
+    and the URL persisted for `adp login` are correct. Without this a bare URL
+    404/403s (or the SPA fallback returns index.html with a 200 and HTML gets
+    installed as `adp`), and `adp login` afterwards hits the wrong path too."""
+
+    def test_bare_url_is_normalized_to_the_api_path(self, run_install, prefix: Path, install_home: Path) -> None:
+        result = run_install(["--prefix", str(prefix), "--gateway-url", "https://gw.example.com"])
+
+        assert result.returncode == 0, result.stderr
+        config = json.loads((install_home / ".bedrock-gateway" / "config.json").read_text())
+        assert config["gateway_url"] == "https://gw.example.com/api"
+
+    def test_bare_url_with_trailing_slash_is_normalized(self, run_install, prefix: Path, install_home: Path) -> None:
+        result = run_install(["--prefix", str(prefix), "--gateway-url", "https://gw.example.com/"])
+
+        assert result.returncode == 0, result.stderr
+        config = json.loads((install_home / ".bedrock-gateway" / "config.json").read_text())
+        assert config["gateway_url"] == "https://gw.example.com/api"
+
+    def test_url_already_carrying_api_is_left_unchanged(self, run_install, prefix: Path, install_home: Path) -> None:
+        """No double /api/api when the user (or the stored config) already has it."""
+        result = run_install(["--prefix", str(prefix), "--gateway-url", "https://gw.example.com/api/"])
+
+        assert result.returncode == 0, result.stderr
+        config = json.loads((install_home / ".bedrock-gateway" / "config.json").read_text())
+        assert config["gateway_url"] == "https://gw.example.com/api"
+
+
+# ---------------------------------------------------------------------------
+# Download path (curl | sh from outside a checkout): all-or-nothing install.
+# ---------------------------------------------------------------------------
+
+
+class _CliDownloadHandler(BaseHTTPRequestHandler):
+    """Serves the /api/cli/* download route so the curl path can be exercised.
+
+    ``mode`` scripts what the gateway returns:
+      "scripts"  — a valid shebang script for every file (happy path)
+      "html"     — a 200 SPA-fallback index.html for everything (the trap)
+      "adp_only" — a valid `adp`, but 403 for the rest (mid-way failure)
+    """
+
+    mode = "scripts"
+    seen_paths: list[str] = []
+
+    def log_message(self, *args) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        self.__class__.seen_paths.append(self.path)
+        name = self.path.rsplit("/", 1)[-1]
+        if self.mode == "html":
+            self._send(200, b"<!doctype html><html><body>SPA fallback</body></html>\n")
+        elif self.mode == "adp_only":
+            if name == "adp":
+                self._send(200, b"#!/usr/bin/env bash\necho fake-adp\n")
+            else:
+                self._send(403, b"Forbidden\n")
+        else:
+            self._send(200, f"#!/usr/bin/env bash\necho fake {name}\n".encode())
+
+    def _send(self, status: int, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextmanager
+def _cli_download_server(mode: str):
+    _CliDownloadHandler.mode = mode
+    _CliDownloadHandler.seen_paths = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _CliDownloadHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _dir_contents(prefix: Path) -> list[str]:
+    """Every entry in the install dir — installed files AND leftover temps."""
+    if not prefix.exists():
+        return []
+    return sorted(p.name for p in prefix.iterdir())
+
+
+class TestDownloadPathIsAllOrNothing:
+    """Run from outside a checkout (the real `curl | sh` case), install.sh
+    fetches each file from the gateway. A failure part-way through must leave
+    nothing behind — never a usable `adp` without the core script it needs."""
+
+    @pytest.fixture
+    def isolated_install_script(self, install_script: Path, tmp_path: Path) -> Path:
+        """A copy of install.sh with NO sibling CLI files, so script_dir() finds
+        nothing on disk and the gateway-download branch is taken."""
+        d = tmp_path / "isolated"
+        d.mkdir()
+        dst = d / "install.sh"
+        dst.write_bytes(install_script.read_bytes())
+        dst.chmod(0o755)
+        return dst
+
+    @pytest.fixture
+    def run_download_install(self, isolated_install_script: Path, install_home: Path, poisoned_aws: Path):
+        def _run(args: list[str]) -> subprocess.CompletedProcess:
+            env = os.environ.copy()
+            env["HOME"] = str(install_home)
+            env["PATH"] = f"{poisoned_aws}:{env.get('PATH', '')}"
+            env["SHELL"] = "/bin/sh"
+            return subprocess.run(
+                ["sh", str(isolated_install_script), *args],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=60,
+            )
+
+        return _run
+
+    def test_downloads_all_three_from_the_api_cli_route(self, run_download_install, prefix: Path) -> None:
+        with _cli_download_server("scripts") as url:
+            result = run_download_install(["--prefix", str(prefix), "--gateway-url", url])
+
+        assert result.returncode == 0, result.stderr
+        for name in INSTALLED_FILES:
+            assert (prefix / name).is_file(), f"{name} was not installed"
+        # A bare gateway URL was normalized to hit /api/cli/... (not /cli/...).
+        assert "/api/cli/adp" in _CliDownloadHandler.seen_paths
+        assert "/cli/adp" not in _CliDownloadHandler.seen_paths
+
+    def test_html_fallback_body_is_rejected_and_nothing_is_installed(self, run_download_install, prefix: Path) -> None:
+        """A misrouted request returning the SPA's index.html with a 200 must not
+        be installed as `adp` — that is the exact partial/broken install trap."""
+        with _cli_download_server("html") as url:
+            result = run_download_install(["--prefix", str(prefix), "--gateway-url", url])
+
+        assert result.returncode != 0
+        assert "not a script" in (result.stderr + result.stdout).lower()
+        assert _dir_contents(prefix) == [], "must leave no files (or temps) behind"
+
+    def test_a_later_download_failure_rolls_back_the_earlier_files(self, run_download_install, prefix: Path) -> None:
+        """`adp` downloads fine but the core script 403s: because we stage all
+        three before committing any, neither ends up installed."""
+        with _cli_download_server("adp_only") as url:
+            result = run_download_install(["--prefix", str(prefix), "--gateway-url", url])
+
+        assert result.returncode != 0
+        assert _dir_contents(prefix) == [], "a mid-way failure must not leave a partial install"
