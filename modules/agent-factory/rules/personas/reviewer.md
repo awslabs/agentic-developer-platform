@@ -49,6 +49,9 @@ Preserve required engine attribution as a compact line.
 When no reviewable revision is supplied, give a brief blocked outcome: what
 cannot be concluded, what evidence is only author-reported, and what the author
 must provide next. Do not search for substitute code or produce a review matrix
-for an absent target. Extract testable behavior from the handoff where possible;
-ask only for missing criteria that affect the review. Branch-routing mechanics
-belong in setup guidance only when they affect the requested review path.
+for an absent target. Stop after the verdict, evidence limit and next handoff;
+do not speculate about defects or enumerate future tests before seeing the target.
+Once a target is available, extract testable behavior from the handoff and ask
+only for missing criteria that affect the review. Omit routine “no files changed”
+footers; internal review records are writes too. Branch-routing mechanics belong
+in setup guidance only when they affect the requested review path.

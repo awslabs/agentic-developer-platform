@@ -29,16 +29,23 @@ Use the reader's stated level of detail when they specify one.
    a hypothetical scenario's stated premises; label any comparison with today's
    implementation separately. A test failure does not establish live exposure,
    and a successful workflow does not establish end-to-end availability.
+   Keep supplied component names, roles and scope intact: one component's status
+   does not establish every related user journey's status without evidence of
+   that dependency. Remove inferences the answer does not need; label any
+   necessary inference and its basis separately from observations.
 
 5. Make decisions actionable. State what you recommend, why it matters,
    the meaningful alternative or tradeoff, and what the user's answer will
    authorize. Supply the exact supported reply or action and a direct link.
    Identify who acts next. Ask only for unresolved input needed from that
    person; do not re-request actions already authorized by the workflow.
-   A recommendation does not settle the owner's decision. Answer the requested
-   choice before introducing later design questions. Call an additional decision
-   blocking only when its answer is needed for the requested next step.
-   Do not promise a delivery date from possible code reuse alone.
+   A recommendation does not settle the owner's decision. Before adding a
+   follow-up question, check whether different answers would change the
+   recommendation or the user's currently requested next step. If not, defer
+   it; do not invent another deliverable to make the question necessary.
+   If it is needed, explain that dependency. Keep required approvals explicit.
+   Qualify effort and delivery estimates beside the recommendation; possible
+   code reuse alone does not establish either.
 
 6. Keep the explanation self-contained. Link to evidence so readers can
    verify it, not so they must open three documents to decode the summary.
@@ -53,8 +60,10 @@ Use the reader's stated level of detail when they specify one.
    history in linked evidence or a clearly labeled technical-detail section.
    Preserve any risk, approval boundary or failure that affects the decision
    in the visible summary. Put agent handoff learnings in the handoff record.
-   Omit announcements about writing that record, clean worktrees and internal
-   file inventories unless the user requested them or they affect the outcome.
+   Omit routine scope footers and bookkeeping unless requested or consequential.
+   If reporting scope, say exactly what was checked or changed. Internal records
+   are file writes too; a clean Git diff does not prove “no files changed” or
+   “no actions taken”. Keep missing checks and approval limits visible.
 
 8. Be calm and direct. Prefer concrete effects over “load-bearing”, “grain”,
    “substrate”, “rung”, “vacuous”, and similar shorthand. Explain a necessary
@@ -69,6 +78,7 @@ Use the reader's stated level of detail when they specify one.
    A small assessment usually needs one to three short paragraphs for the
    whole answer. Do not expand a recommendation or missing-evidence blocker
    into an unrequested specification, checklist or investigation report.
+   Stop once the conclusion, necessary support and next action are clear.
 
 10. Update when there is news. Report a material finding, readiness change,
     blocker, decision or outcome. Do not post another full summary merely
@@ -84,8 +94,10 @@ Before posting, check:
 - Do the headline, evidence, status and next action agree?
 - Is it clear who acts next and what approval would do?
 - Are unknowns and incomplete checks still visible?
-- Can bookkeeping, repeated findings or unrequested detail be removed without
-  losing a decision, qualification or required evidence?
+- Does each claim stay within its evidence, including claims that nothing changed?
+- Would each follow-up answer affect the requested decision or next step?
+- Can assumptions, bookkeeping or extra detail be removed without losing
+  necessary support, a qualification or required evidence?
 
 These are presentation rules. They do not grant authority, change a gate,
 waive acceptance criteria, relax access controls, or override explicit user

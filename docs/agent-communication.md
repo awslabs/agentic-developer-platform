@@ -30,11 +30,19 @@ personas must not also post a full assessment through a comment tool and then
 return a paraphrased recap. Required PR reviews and gates retain their own
 destinations; the final response links to them with a brief status and next action.
 
-Keep learnings-file announcements and clean-worktree bookkeeping in the run
-record unless requested or consequential. Label supplied or hypothetical evidence
-in the opening, qualify claims where they appear, and accept the premises of a
-hypothetical question. A recommendation does not settle the owner's choice, and
-possible code reuse does not establish a delivery estimate.
+Keep routine scope footers and bookkeeping in the run record unless requested or
+consequential. Internal records are file writes; a clean Git diff does not support
+“no files changed”. Label supplied or hypothetical evidence in the opening and
+preserve its component names, roles and scope. Omit unnecessary inferences rather
+than adding caveats around them. Keep missing checks and approval limits visible.
+
+A recommendation does not settle the owner's choice. Add a follow-up question
+only if different answers would change the recommendation or the user's requested
+next step, and explain that dependency. Defer later design questions otherwise.
+Qualify effort and schedule beside the recommendation, including a recommendation
+to ship by a date; possible code reuse alone does not establish an estimate.
+Stop once the conclusion, necessary support and next action are clear. With no
+review target, the useful response is the verdict, evidence limit and next handoff.
 
 Reviewers lead with verdict, blockers and user impact. Architects lead with
 readiness and decisions. Operations and evaluations name the environment and
@@ -148,3 +156,30 @@ fresh issues, verify the installed prompt revision and compare whole-thread
 repetition, readability and evidence accuracy. Keep necessary caveats visible;
 shorter text alone is not success. These four single runs provide neither an A/B
 comparison nor validation of all personas, AIDLC gates or chat conversations.
+
+### Second pilot and further prompt tuning
+
+After PR #4958, the same scenarios ran in fresh issues:
+[product #4959](https://github.com/aws-e/adp/issues/4959),
+[architect #4960](https://github.com/aws-e/adp/issues/4960),
+[reviewer #4961](https://github.com/aws-e/adp/issues/4961) and
+[operations #4962](https://github.com/aws-e/adp/issues/4962).
+Separate plan comments fell from four to zero and duplicate assessments from
+three to zero. Whole-thread substantive words fell from 7,310 to 1,514; final
+answers alone fell 24.9%. All four reached the expected central conclusion, but
+only architect passed the full unchanged rubric.
+
+Product still bundled a later design decision and overstated an option's unique
+benefit. Reviewer correctly withheld approval but claimed no files changed after
+writing an allowed internal record. Operations inferred an unspecified component's
+purpose and expanded its deployment status into a claim about the user journey.
+The next prompt revision tightens the shared evidence and decision rules, the
+worker's final check and those three personas. The architect persona is unchanged.
+These edits omit unnecessary assumptions, questions and scope footers while
+preserving required checks, reviews and approvals. They do not truncate responses.
+
+The second pilot covers four single runs, not a controlled A/B comparison or a
+human-reader study. Prompt-loading and workflow regression checks cannot establish
+compliance with this further tuning; a fresh live pilot after release is still
+needed. Preserve the same stimuli and rubric for comparison, and separately use
+new scenarios to check whether the evidence and decision rules generalize.

@@ -1255,10 +1255,15 @@ ${AGENT_TYPE === 'operations' ? `For operations, name the target environment and
 - Exact versions, endpoints, resource names that future agents will need
 - NEVER include secrets, API keys, tokens, passwords, or private keys in learnings
 
-Before returning, remove announcements that the learnings file was written or
-the worktree is clean, unless requested or relevant to the task's outcome.
-Keep those details in the run record. Check that qualifications accompany the
-claims they limit and that no recommendation is presented as the owner's decision.
+Writing the required learnings record is a file change, even when no source code
+changed. Do not end with blanket claims such as "no files changed" or "no actions
+taken". Omit routine scope footers and bookkeeping unless requested or consequential;
+when needed, describe the verified scope precisely. Keep missing checks visible.
+Before returning, remove unnecessary assumptions and follow-up questions that
+would not change the recommendation or the user's requested next step. Keep
+qualifications beside their claims and required approvals explicit; a
+recommendation is not the owner's decision. Stop when the conclusion, necessary
+support and next action are clear.
 
 Now, complete the assigned task.`;
 

@@ -108,6 +108,9 @@ When assessing a supplied or synthetic release record, identify that basis in
 the opening and keep every claim within it. A failed test does not establish
 live exploitability; an unrun migration does not by itself establish schema
 incompatibility. No production deployment does not establish production health.
-Do not infer which user journey a screen serves when the record does not say.
-Keep unknowns beside the affected conclusions. Separate no infrastructure
-changes from model-run cost, which may be unknown.
+Preserve the record's component names and scope. An unavailable component does
+not establish that every related user path is unavailable; state that consequence
+only when its dependency is supported. Omit guesses about a component's purpose
+when they are unnecessary to the readiness verdict. Keep necessary unknowns
+beside the affected conclusions. Report infrastructure changes or their absence
+only when relevant and verified; model-run cost may still be unknown.

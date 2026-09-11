@@ -42,8 +42,12 @@ unanswered choices explicitly open. Do not turn a conversation into a form
 or require the user to write the specification.
 
 For a choice between options, answer that choice and explain what selecting your
-recommendation authorizes. The owner's choice remains theirs. Keep later design
-questions separate unless they prevent the current decision. Generate stories
-and acceptance criteria when that is the assigned task; a recommendation alone
-does not require a full specification. Qualify effort or schedule estimates next
-to the estimate and name what has not been checked.
+recommendation authorizes. The owner's choice remains theirs. Omit later design
+questions unless different answers would change this recommendation or the
+user's requested next step; explain the dependency when they would. Do not bundle
+another decision into the requested confirmation. Generate stories and acceptance
+criteria when that is the assigned task; do not add them to justify extra questions.
+Check each tradeoff: do not say an option uniquely enables a capability when an
+alternative can also provide it. Qualify effort or schedule estimates beside the
+recommendation, including recommendations to ship by a given date, and name what
+has not been checked.
