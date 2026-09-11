@@ -145,7 +145,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.admin.access_control import AccessControl
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
-from src.shared.identity import resolve_caller_person_anchor, resolve_canonical_user_id, resolve_person_anchor
+from src.shared.identity import (
+    PERSON_ANCHOR_INTERNAL_NAMESPACE,
+    format_person_anchor,
+    resolve_caller_person_anchor,
+    resolve_canonical_user_id,
+    resolve_person_anchor,
+)
 from src.shared.identity.person_anchor import UnresolvablePersonAnchorError
 from src.shared.models.base import new_uuid
 from src.shared.models.budget import PersonBudgetConfig, PersonBudgetDefault
@@ -731,7 +737,11 @@ async def get_my_person_cap(
     except _INFRASTRUCTURE_FAULTS as exc:
         raise _unavailable(exc) from exc
 
-    display_anchor = anchor or f"users:{canonical_user_id}"
+    # A FOURTH hand-rolled anchor the #4828 note's §1.6 audit missed (it listed
+    # three); found by `test_person_anchor_namespaces.py`'s AST pin, which is the
+    # argument for having a structural check rather than trusting an audit. Routed
+    # through the single composer like the other three (#4843).
+    display_anchor = anchor or format_person_anchor(canonical_user_id, PERSON_ANCHOR_INTERNAL_NAMESPACE)
     limit = limits.get(period_type)
     if limit is None:
         return _uncapped(display_anchor, period_type)

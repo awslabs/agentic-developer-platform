@@ -34,7 +34,11 @@ from typing import Literal
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.shared.identity.providers import IdentityProvider
+from src.shared.identity.person_anchor import (
+    PERSON_ANCHOR_INTERNAL_NAMESPACE,
+    PERSON_ANCHOR_PROVIDER_PRECEDENCE,
+    format_person_anchor,
+)
 from src.shared.models.budget import BudgetUsage, PersonBudgetConfig, PersonBudgetDefault
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import User
@@ -154,27 +158,46 @@ async def read_settled_spend(
     return usage.total_cost_usd if usage else Decimal("0")
 
 
-async def resolve_person_anchor_id(db: AsyncSession, canonical_user_id: str) -> str | None:
-    """The caller's GitHub anchor id, resolved DETERMINISTICALLY.
+async def resolve_person_anchor_identity(db: AsyncSession, canonical_user_id: str) -> tuple[str, str] | None:
+    """The caller's anchor ``(provider, identifier)``, resolved DETERMINISTICALLY.
 
-    ``user_identities`` has no unique constraint on ``(user_id, provider)``, so a
-    person can legitimately hold two GitHub rows (admin-linked second account).
-    An unordered ``LIMIT 1`` here and an independent unordered pick on the
-    authoring side can each choose a DIFFERENT row — a cap stored under
+    Walks ``PERSON_ANCHOR_PROVIDER_PRECEDENCE`` (``github`` then ``directory``,
+    #4843) and returns the first namespace the person holds an identity in, or
+    ``None`` when they hold none. GitHub is tried first, so a person holding both
+    identities resolves to exactly the string they resolved to before #4843 and
+    their live cap keeps enforcing — the precedence order is a compatibility
+    constraint, not a preference (see ``person_anchor.py``'s module docstring).
+
+    Returns the PROVIDER alongside the identifier rather than the composed anchor
+    because both callers need it: the fusion below matches sibling rows on the same
+    provider, and the enforcement layer composes through ``format_person_anchor``.
+
+    ``user_identities`` has no plain unique constraint on ``(user_id, provider)``,
+    so a person can legitimately hold two GitHub rows (admin-linked second
+    account). An unordered ``LIMIT 1`` here and an independent unordered pick on
+    the authoring side can each choose a DIFFERENT row — a cap stored under
     ``github:A`` that enforcement looks up as ``github:B``: the #4511 inert-cap
     class (review fix on #4661). Every anchor pick — this one, the authoring
     resolver in ``shared/identity/person_anchor.py``, and the enforcement layer —
-    must order identically; ``provider_user_id`` ascending is the convention.
+    must order identically: ``is_primary`` descending (#4843's partial unique
+    index, which makes the pick a DB invariant rather than a convention copied
+    across three files) then ``provider_user_id`` ascending, which keeps the order
+    total on un-flagged rows and keeps the result byte-identical to the previous
+    convention.
     """
-    return await db.scalar(
-        select(UserIdentity.provider_user_id)
-        .where(
-            UserIdentity.user_id == canonical_user_id,
-            UserIdentity.provider == IdentityProvider.github,
+    for provider in PERSON_ANCHOR_PROVIDER_PRECEDENCE:
+        provider_user_id = await db.scalar(
+            select(UserIdentity.provider_user_id)
+            .where(
+                UserIdentity.user_id == canonical_user_id,
+                UserIdentity.provider == provider,
+            )
+            .order_by(UserIdentity.is_primary.desc(), UserIdentity.provider_user_id)
+            .limit(1)
         )
-        .order_by(UserIdentity.provider_user_id)
-        .limit(1)
-    )
+        if provider_user_id:
+            return provider.value, provider_user_id
+    return None
 
 
 async def resolve_person_identity(db: AsyncSession, canonical_user_id: str) -> tuple[str, list[str]]:
@@ -193,17 +216,24 @@ async def resolve_person_identity(db: AsyncSession, canonical_user_id: str) -> t
     ledger row is indistinguishable from "no spend".
 
     Returns:
-        ``(anchor, person_user_ids)``. When no GitHub identity is linked the anchor
-        is ``users:<canonical id>`` and the key list is the single canonical id —
-        which is correct, not a degradation: with no anchor there is no evidence of
-        a second ``users`` row to fuse, and inventing one would be a guess. The
-        caller's own canonical id is always present in the list, so a linked
-        identity that fails to resolve can never *shrink* the read below what the
-        single-partition path already covers.
+        ``(anchor, person_user_ids)``. When no identity is linked in any registered
+        provider namespace the anchor is ``users:<canonical id>`` and the key list
+        is the single canonical id — which is correct, not a degradation: with no
+        anchor there is no evidence of a second ``users`` row to fuse, and inventing
+        one would be a guess. The caller's own canonical id is always present in the
+        list, so a linked identity that fails to resolve can never *shrink* the read
+        below what the single-partition path already covers.
     """
-    anchor_id = await resolve_person_anchor_id(db, canonical_user_id)
-    if not anchor_id:
-        return f"users:{canonical_user_id}", [canonical_user_id]
+    resolved = await resolve_person_anchor_identity(db, canonical_user_id)
+    if not resolved:
+        # Composed through `format_person_anchor` like every other anchor in the
+        # codebase (#4843). This was one of the three hand-rolled f-strings the
+        # design note flagged; with a second namespace in play, a spelling that
+        # only *happens* to match the composer's is a write/read mismatch waiting
+        # for the next edit.
+        return format_person_anchor(canonical_user_id, PERSON_ANCHOR_INTERNAL_NAMESPACE), [canonical_user_id]
+
+    anchor_provider, anchor_id = resolved
 
     # No `org_id` filter, deliberately — and this is the one query in the module
     # that is *supposed* to span tenants. `_resolve_via_github_identity` filters by
@@ -216,7 +246,12 @@ async def resolve_person_identity(db: AsyncSession, canonical_user_id: str) -> t
         (
             await db.execute(
                 select(UserIdentity.user_id).where(
-                    UserIdentity.provider == IdentityProvider.github,
+                    # The provider the anchor was RESOLVED in, not a hardcoded
+                    # `github` (#4843): matching a directory object id against
+                    # GitHub's id space would fuse in whichever unrelated person's
+                    # `users` rows happen to share the numeric value — spend
+                    # attributed across two different humans.
+                    UserIdentity.provider == anchor_provider,
                     UserIdentity.provider_user_id == anchor_id,
                 )
             )
@@ -227,7 +262,7 @@ async def resolve_person_identity(db: AsyncSession, canonical_user_id: str) -> t
 
     # Sorted for a deterministic read order, with the caller's own id unioned in so
     # the list is never smaller than the single-partition path's one key.
-    return f"github:{anchor_id}", sorted({canonical_user_id} | set(fused))
+    return format_person_anchor(anchor_id, anchor_provider), sorted({canonical_user_id} | set(fused))
 
 
 async def resolve_person_subs(db: AsyncSession, person_user_ids: list[str]) -> list[str]:

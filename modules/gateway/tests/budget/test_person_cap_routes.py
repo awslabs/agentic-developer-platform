@@ -1146,8 +1146,17 @@ async def test_two_github_rows_author_and_enforce_under_the_same_anchor(session,
     hard cap, the #4511 class). Both sides now order by ``provider_user_id``;
     this pins that the ROUTE-stored anchor equals the ENFORCEMENT-side
     resolution for the same person.
+
+    #4843 changed nothing about this test's substance — only the rename to
+    ``resolve_person_anchor_identity``, which returns ``(provider, identifier)`` so
+    the precedence walk can report WHICH namespace it landed in. The two-row state
+    seeded below stays legal on purpose: ``(user_id, provider)`` is deliberately not
+    plainly unique (three write paths accept a legitimate second account), which is
+    why migration 042 ships a PARTIAL unique index on ``is_primary`` rather than the
+    plain constraint. The property pinned here is unchanged and is the one that
+    matters: both sides resolve the SAME row.
     """
-    from src.budget.person_ledger import resolve_person_anchor_id as _resolve_person_anchor_id
+    from src.budget.person_ledger import resolve_person_anchor_identity as _resolve_person_anchor_identity
     from src.shared.models.vault import UserIdentity
 
     # A second, later-linked GitHub account for the same person. Its id sorts
@@ -1170,9 +1179,9 @@ async def test_two_github_rows_author_and_enforce_under_the_same_anchor(session,
     assert response.status_code == 200
 
     stored_anchor = (await stored_caps(session))[0].person_anchor
-    enforcement_anchor_id = await _resolve_person_anchor_id(session, PERSON_CANONICAL)
+    enforcement_provider, enforcement_anchor_id = await _resolve_person_anchor_identity(session, PERSON_CANONICAL)
 
-    assert stored_anchor == f"github:{enforcement_anchor_id}", (
+    assert stored_anchor == f"{enforcement_provider}:{enforcement_anchor_id}", (
         "authoring and enforcement resolved DIFFERENT anchors for one person — the cap is inert"
     )
 

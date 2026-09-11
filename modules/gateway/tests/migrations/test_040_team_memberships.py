@@ -519,12 +519,35 @@ class TestRevisionChaining:
         """#4123: >32 chars runs upgrade() then overflows the bookkeeping write."""
         assert len(EXPECTED_REVISION) <= 32
 
-    def test_is_the_single_head(self):
-        """No other migration may claim 040 as its down_revision (a second head
-        makes `alembic upgrade head` fail for everyone)."""
+    def test_the_chain_has_exactly_one_head_and_040_is_on_it(self):
+        """Assert *one* head, not that 040 is it (a second head makes
+        `alembic upgrade head` fail for everyone).
+
+        Originally this pinned "nothing chains onto 040", which fails on every
+        subsequent migration — the healthy case, not a fork (#4843 chained
+        041_directory_provider onto 040 in the very next merge). Relaxed to the
+        033/039 shape (see `test_039_flow_design_capture.py`): exactly one head,
+        and 040 is either that head or a link something else chained onto.
+        """
         versions_dir = MIGRATION_PATH.parent
-        claimers = [p.name for p in versions_dir.glob("*.py") if p != MIGRATION_PATH and f'"{EXPECTED_REVISION}"' in p.read_text()]
-        assert claimers == [], f"another migration already chains onto {EXPECTED_REVISION}: {claimers}"
+        revisions: dict[str, str | None] = {}
+        for path in versions_dir.glob("*.py"):
+            tree = ast.parse(path.read_text(), filename=str(path))
+            found: dict[str, str | None] = {}
+            for node in tree.body:
+                targets = [node.target] if isinstance(node, ast.AnnAssign) else getattr(node, "targets", [])
+                names = {t.id for t in targets if isinstance(t, ast.Name)} & {"revision", "down_revision"}
+                if not names or not isinstance(node.value, ast.Constant) or not isinstance(node.value.value, str | None):
+                    continue
+                for name in names:
+                    found[name] = node.value.value
+            if "revision" in found:
+                revisions[found["revision"]] = found.get("down_revision")
+
+        parents = {down for down in revisions.values() if down is not None}
+        heads = sorted(revision for revision in revisions if revision not in parents)
+        assert len(heads) == 1, f"expected exactly one head, found: {heads}"
+        assert EXPECTED_REVISION in parents or heads == [EXPECTED_REVISION], "040 has been orphaned off the chain"
 
     def test_down_revision_target_exists(self):
         versions_dir = MIGRATION_PATH.parent

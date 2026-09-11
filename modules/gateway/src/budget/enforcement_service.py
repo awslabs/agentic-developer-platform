@@ -1467,13 +1467,13 @@ class BudgetEnforcementService:
         # previous me_routes underscore-privates, these carry a stability contract
         # for this second consumer and import no router — the anchor-prefix import
         # stays function-local only for symmetry with `person_anchor.py`'s own note.
-        from src.shared.identity.person_anchor import PERSON_ANCHOR_GITHUB_PREFIX
+        from src.shared.identity.person_anchor import format_person_anchor, is_authorable_person_anchor
 
         from .person_ledger import (
             resolve_applicable_person_limits,
             resolve_individual_person_limits,
             resolve_member_partitions,
-            resolve_person_anchor_id,
+            resolve_person_anchor_identity,
             resolve_person_identity,
             resolve_person_subs,
             resolve_person_team_keys,
@@ -1534,7 +1534,14 @@ class BudgetEnforcementService:
             # anchor pre-query is skipped on this branch (review fix on #4696) —
             # the fusion below derives the anchor anyway; one query, one authority.
             resolved_anchor, person_user_ids = await resolve_person_identity(session, person_user_id)
-            anchor = resolved_anchor if resolved_anchor.startswith(PERSON_ANCHOR_GITHUB_PREFIX) else None
+            # Asks the namespace registry whether a cap can be STORED under this
+            # anchor, rather than testing for the `github:` prefix (#4843). The
+            # prefix test excluded every namespace added after it from the
+            # individual-cap read while the authoring side would happily store one
+            # — a cap that displays a limit and governs nothing, the #4511 class.
+            # `users:` still yields None here: nothing can be authored under the
+            # internal fallback, which is why the write guard refuses it too.
+            anchor = resolved_anchor if is_authorable_person_anchor(resolved_anchor) else None
 
             # TWO org lists, deliberately different (review fix on #4696 — the
             # critical finding): the SPEND denominator may include the
@@ -1563,10 +1570,15 @@ class BudgetEnforcementService:
             # find no default would put that fan-out back on the hot path for every
             # request — the #4689 regression, reintroduced. Limit-first fast path:
             # one anchor lookup, and the fusion is paid only when a row exists.
-            anchor_id = await resolve_person_anchor_id(session, person_user_id)
-            if not anchor_id:
+            resolved = await resolve_person_anchor_identity(session, person_user_id)
+            if not resolved:
                 return None
-            anchor = f"{PERSON_ANCHOR_GITHUB_PREFIX}{anchor_id}"
+            # Composed through the single composer (#4843) — this was the third of
+            # the three hand-rolled anchor f-strings the design note flagged. It is
+            # the ENFORCEMENT side of the comparison a few lines below, so a
+            # spelling that drifts from the authoring side's by one character makes
+            # every cap on the install inert.
+            anchor = format_person_anchor(resolved[1], resolved[0])
             limits = await resolve_individual_person_limits(session, anchor, self_authored_by=person_user_id)
             if not limits:
                 return None

@@ -383,12 +383,13 @@ class TestRevisionChain:
 
         parents = {down for down in revisions.values() if down is not None}
         heads = sorted(revision for revision in revisions if revision not in parents)
-        # Assert *one* head, not that 039 is it. Issue #4840 chained 040 onto 039,
-        # which is the normal, healthy case — a later migration landing does not
-        # mean the chain forked. Pinning the head name here made this test fail on
-        # every subsequent migration, so it followed 033's shape instead (see
-        # test_033_client_tool_capture.py:505-509): exactly one head, and 039 is
-        # either that head or a link something else chained onto.
+        # Assert *one* head, not that 039 is it. Both #4840 (040_team_memberships)
+        # and #4843 (041-043, re-chained onto 040 after #4917 merged first) chained
+        # later migrations onto 039 — the normal, healthy case. Pinning the head
+        # name here made this test fail on every subsequent migration, which trains
+        # people to edit the assertion rather than read it; so it follows 033's
+        # shape instead (see test_033_client_tool_capture.py): exactly one head,
+        # and 039 is either that head or a link something else chained onto.
         assert len(heads) == 1, f"expected exactly one head, found: {heads}"
         assert MIG_039.revision in parents or heads == [MIG_039.revision], "039 has been orphaned off the chain"
 

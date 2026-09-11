@@ -14,7 +14,7 @@ class TestProviderRegistry:
 
     def test_supported_providers_contains_required(self):
         """All required providers are in the set."""
-        required = {"cognito", "github", "slack", "teams", "discord", "email", "whatsapp"}
+        required = {"cognito", "github", "slack", "teams", "discord", "email", "whatsapp", "directory"}
         assert required == SUPPORTED_PROVIDERS
 
     def test_identity_provider_enum_values(self):
@@ -26,6 +26,7 @@ class TestProviderRegistry:
         assert IdentityProvider.discord == "discord"
         assert IdentityProvider.email == "email"
         assert IdentityProvider.whatsapp == "whatsapp"
+        assert IdentityProvider.directory == "directory"
 
     def test_supported_providers_derived_from_enum(self):
         """SUPPORTED_PROVIDERS is derived from the enum (single source of truth)."""
