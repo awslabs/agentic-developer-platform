@@ -42,28 +42,81 @@
  *   impact table: a button an org admin can see that returns an uninterpretable 403.
  *
  * A 403 that arrives anyway is rendered as its server message, never as a blank panel.
+ *
+ * ## Members (Issue #4847 · T2b)
+ *
+ * The Members tab assigns people to teams through T1's membership routes (#4840) and
+ * NEVER through `users.team_id`: that column is a cache the server re-points to follow
+ * the primary membership, and the membership row is the truth. Concretely, "add to
+ * team" is `POST .../teams/{team_id}/members`, "make primary" is
+ * `PUT .../users/{user_id}/teams` with the whole intended set, and "remove" is
+ * `DELETE .../teams/{team_id}/members/{user_id}`. Every one of them is followed by a
+ * refetch rather than a local mutation, because a write can move the primary
+ * server-side (removing the primary promotes the oldest remaining membership).
+ *
+ * The team picker is sourced from the ORG-WIDE teams endpoint, not the
+ * department-scoped list this page already loads for `TeamManagement`: assignment
+ * chooses from every team in the org, and reusing the narrower list would silently
+ * hide the teams outside whichever department is selected above.
+ *
+ * **A third authz rule, on top of the two above.** The batch spend/limit read
+ * (`GET .../member-budgets`) is `require_platform_admin`, because a person limit can
+ * come from a partition-free individual row and serving it to an org admin would
+ * disclose a ceiling governing their members' spend in tenants they have no
+ * membership in (the #4620 ruling). So the spend column is a platform-admin
+ * affordance INSIDE a panel an org admin may otherwise use fully — the request is
+ * skipped rather than fired-and-403'd, and the column simply does not render.
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Card, Input, Modal, ModalFooter, Select, Spinner } from '@/components/ui';
-import { DepartmentList } from '@/components/org/DepartmentList';
-import { TeamManagement } from '@/components/department/TeamManagement';
 import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Modal,
+  ModalFooter,
+  Select,
+  Spinner,
+  Tab,
+  TabPanel,
+  Tabs,
+  TabsList,
+} from '@/components/ui';
+import { DepartmentList } from '@/components/org/DepartmentList';
+import { MemberList, type OrgMember } from '@/components/org/MemberList';
+import { TeamManagement } from '@/components/department/TeamManagement';
+// The GitHub-ID-first person picker the mockup names ("Same searchable picker as
+// Bedrock Account Routing") — reused, not re-implemented (#4830 pattern, #4827).
+import { PersonPicker } from '@/components/bedrock/BedrockAccountRouting';
+import {
+  addTeamMember,
+  assignUserRole,
   createDepartment,
   createOrganizationCanonical,
   createTeam,
   deleteDepartment,
   deleteTeam,
+  getAvailableRoles,
   getDepartments,
+  getMemberBudgets,
+  getOrgTeams,
+  getOrgUsers,
   getOrganizations,
   getTeams,
+  getUserTeams,
+  removeOrgUser,
+  removeTeamMember,
+  replaceUserTeams,
   updateDepartment,
   updateTeam,
+  type MemberBudget,
 } from '@/services/admin';
 import { deriveOrgIdentifier, isValidOrgIdentifier } from '@/utils/orgIdentifier';
 import { usePermissions } from '@/hooks/usePermissions';
 import { formatDate } from '@/utils/format';
-import type { Department, Organization, Team } from '@/types';
+import { AdminRole } from '@/types';
+import type { Department, Organization, Team, TeamMembership } from '@/types';
 
 /**
  * Pull the human-readable message out of whatever the API client threw.
@@ -117,8 +170,55 @@ export default function Organizations() {
   const [isSavingDept, setIsSavingDept] = useState(false);
   const [deletingDept, setDeletingDept] = useState<Department | null>(null);
 
+  // Members tab state (#4847). `activeTab` mirrors the `Tabs` primitive's own
+  // selection for ONE purpose: gating the member reads so opening an org does not
+  // fetch a roster nobody is looking at. `TabPanel` still decides what renders.
+  const [activeTab, setActiveTab] = useState<'structure' | 'members'>('structure');
+  const [members, setMembers] = useState<OrgMember[]>([]);
+  const [orgTeams, setOrgTeams] = useState<Team[]>([]);
+  const [membershipsByUserId, setMembershipsByUserId] = useState<Record<string, TeamMembership[]>>(
+    {}
+  );
+  const [memberBudgets, setMemberBudgets] = useState<Record<string, MemberBudget> | undefined>(
+    undefined
+  );
+  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+
+  // Roster truncation state (#4936 review, M4): the server pages at 50, so member
+  // #51 exists without these — `total`/`hasMore` drive the "showing N of TOTAL"
+  // line and the load-more button, and `membersPage` is the cursor it advances.
+  const [membersTotal, setMembersTotal] = useState(0);
+  const [membersHasMore, setMembersHasMore] = useState(false);
+  const [membersPage, setMembersPage] = useState(1);
+  const [isLoadingMoreMembers, setIsLoadingMoreMembers] = useState(false);
+  /** True when the org has more teams than the 100-per-page picker read returned. */
+  const [orgTeamsTruncated, setOrgTeamsTruncated] = useState(false);
+  /** Client-side filter over the LOADED roster (name / GitHub username / email). */
+  const [memberSearch, setMemberSearch] = useState('');
+  /**
+   * Roles the caller may assign, from the ceiling-filtered `GET /admin/users/roles`
+   * (the same read `OrgDashboard` feeds `UserList` from). `undefined` = not yet
+   * loaded; `[]` = the read failed, in which case `MemberList` falls back to its
+   * static list and the server remains the boundary.
+   */
+  const [assignableRoles, setAssignableRoles] = useState<string[] | undefined>(undefined);
+
+  // "+ Add member" modal state (#4936 review, M2d — the mockup's assign-member modal).
+  const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
+  const [addPersonId, setAddPersonId] = useState('');
+  const [addTeamId, setAddTeamId] = useState('');
+  const [addRole, setAddRole] = useState<'member' | 'org_admin'>('member');
+  const [isAddingMember, setIsAddingMember] = useState(false);
+
   const canManage = canUpdateOrganizations();
   const canView = canViewOrganizations();
+  // The spend column's gate — narrower than the panel's, deliberately. See the header.
+  const canReadMemberBudgets = isPlatformAdmin();
+  // "+ Add member" needs BOTH gates: the writes are ORG_UPDATE, but the person
+  // picker's roster read (`GET /admin/users`, #4827) is platform-admin-only —
+  // showing the modal to an org admin would open on a picker whose one read 403s,
+  // the known-dead-end affordance class this panel's header forbids.
+  const canAddMembers = canManage && canReadMemberBudgets;
 
   const loadOrgs = useCallback(async () => {
     setIsLoadingOrgs(true);
@@ -190,6 +290,225 @@ export default function Organizations() {
     }
     loadTeams(selectedOrgId, selectedDeptId);
   }, [selectedOrgId, selectedDeptId, loadTeams]);
+
+  /**
+   * Load everything the Members tab renders, for one org.
+   *
+   * Four reads, deliberately: the roster, the org-wide team list the picker needs,
+   * one membership read per member, and — only for a platform admin — the batch
+   * spend/limit page. The per-member membership read is the shape T1 ships (a user's
+   * memberships are addressed per user); it is bounded by the roster page size, and
+   * `Promise.all` keeps it one round-trip's latency rather than N.
+   *
+   * The budget read is skipped, not attempted-and-caught, when the caller is not a
+   * platform admin: a known-403 request whose response nothing renders is exactly the
+   * bug class #4841's impact table names, and `budgets` staying `undefined` is what
+   * makes `MemberList` drop the column rather than draw blanks.
+   */
+  const loadMembers = useCallback(
+    async (orgId: string, includeBudgets: boolean, page = 1, append = false) => {
+      // A load-more APPENDS page+1 (roster, memberships, and budgets alike) while a
+      // (re)load replaces from page 1 — after a write the roster is re-read from the
+      // top because the write can have changed any page's contents.
+      (append ? setIsLoadingMoreMembers : setIsLoadingMembers)(true);
+      try {
+        const [roster, teamsResponse] = await Promise.all([
+          getOrgUsers(orgId, { page, pageSize: 50 }),
+          // The team list is page-independent; re-read it only on a full (re)load.
+          append ? Promise.resolve(null) : getOrgTeams(orgId, { page: 1, pageSize: 100 }),
+        ]);
+
+        const memberRows: OrgMember[] = roster.items.map((user) => ({
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          githubUsername: user.githubUsername,
+          role: user.role,
+        }));
+        setMembers((prev) => (append ? [...prev, ...memberRows] : memberRows));
+        setMembersTotal(roster.total);
+        setMembersHasMore(roster.hasMore);
+        setMembersPage(page);
+        if (teamsResponse) {
+          setOrgTeams(teamsResponse.items);
+          // Truncation is DISCLOSED, not silent (#4936 review, M4): a picker showing
+          // 100 of 130 teams with nothing saying so reads as the complete set.
+          setOrgTeamsTruncated(teamsResponse.hasMore);
+        }
+
+        const membershipLists = await Promise.all(
+          memberRows.map((member) => getUserTeams(orgId, member.id))
+        );
+        setMembershipsByUserId((prev) => ({
+          ...(append ? prev : {}),
+          ...Object.fromEntries(memberRows.map((member, i) => [member.id, membershipLists[i]])),
+        }));
+
+        if (includeBudgets) {
+          const budgets = await getMemberBudgets(orgId, { page, pageSize: 50 });
+          setMemberBudgets((prev) => ({
+            ...(append && prev ? prev : {}),
+            ...Object.fromEntries(budgets.items.map((row) => [row.userId, row])),
+          }));
+        } else if (!append) {
+          setMemberBudgets(undefined);
+        }
+      } catch (err) {
+        setError(errorMessage(err, 'Failed to load members for this organization.'));
+      } finally {
+        (append ? setIsLoadingMoreMembers : setIsLoadingMembers)(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!selectedOrgId || activeTab !== 'members') return;
+    loadMembers(selectedOrgId, canReadMemberBudgets);
+  }, [selectedOrgId, activeTab, canReadMemberBudgets, loadMembers]);
+
+  // The role select's option list, fetched once when a managing caller first opens
+  // the Members tab. On failure `[]` is stored (not retried) and `MemberList` falls
+  // back to its static list — the server ceiling-checks the submission either way.
+  useEffect(() => {
+    if (activeTab !== 'members' || !canManage || assignableRoles !== undefined) return;
+    getAvailableRoles()
+      .then(setAssignableRoles)
+      .catch(() => setAssignableRoles([]));
+  }, [activeTab, canManage, assignableRoles]);
+
+  /**
+   * Membership writes — the story's central correctness assertion.
+   *
+   * Each writes a membership ROW through T1's routes and then refetches; none sends a
+   * `team_id` on the user. Each rethrows so `MemberList` keeps its dialog open over a
+   * write that did not happen, and the server's message — notably the 409
+   * `team_membership_second_primary` — is surfaced verbatim by `errorMessage`, never
+   * replaced with a client-side guess at the wording.
+   */
+  const handleAddTeam = async (member: OrgMember, teamId: string) => {
+    if (!selectedOrgId) return;
+    setError(null);
+    try {
+      await addTeamMember(selectedOrgId, teamId, { userId: member.id });
+      setNotice(`Added ${member.name || member.email} to a team.`);
+      await loadMembers(selectedOrgId, canReadMemberBudgets);
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to add the member to that team.'));
+      throw err;
+    }
+  };
+
+  /**
+   * Move the primary by sending the FULL intended set.
+   *
+   * Not `addTeamMember({isPrimary: true})`, which the server refuses with a 409 when a
+   * different primary already exists — correctly, since re-pointing a claim is not a
+   * side effect an add should have. The replace-set endpoint is where exactly one
+   * primary is expressible, so the whole set is rebuilt with the flag moved.
+   */
+  const handleSetPrimary = async (member: OrgMember, teamId: string) => {
+    if (!selectedOrgId) return;
+    setError(null);
+    try {
+      const current = membershipsByUserId[member.id] ?? [];
+      await replaceUserTeams(
+        selectedOrgId,
+        member.id,
+        current.map((m) => ({ teamId: m.teamId, role: m.role, isPrimary: m.teamId === teamId }))
+      );
+      setNotice(`Primary team updated for ${member.name || member.email}.`);
+      await loadMembers(selectedOrgId, canReadMemberBudgets);
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to change the primary team.'));
+      throw err;
+    }
+  };
+
+  const handleRemoveTeam = async (member: OrgMember, teamId: string) => {
+    if (!selectedOrgId) return;
+    setError(null);
+    try {
+      await removeTeamMember(selectedOrgId, teamId, member.id);
+      setNotice(`Removed ${member.name || member.email} from a team.`);
+      await loadMembers(selectedOrgId, canReadMemberBudgets);
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to remove the member from that team.'));
+      throw err;
+    }
+  };
+
+  /**
+   * Change a member's org role — the SAME client call `UserList`/`OrgDashboard`
+   * use (`assignUserRole` → `PUT /admin/organizations/{org}/users/{user}`), not a
+   * fork. The server is the boundary: it refuses roles above the caller's ceiling
+   * and self-changes, and that refusal surfaces here verbatim.
+   */
+  const handleChangeRole = async (member: OrgMember, role: string) => {
+    if (!selectedOrgId) return;
+    setError(null);
+    try {
+      await assignUserRole({ user_id: member.id, role: role as AdminRole, org_id: selectedOrgId });
+      setNotice(`Role updated for ${member.name || member.email}.`);
+      await loadMembers(selectedOrgId, canReadMemberBudgets);
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to change the member role.'));
+      throw err;
+    }
+  };
+
+  /**
+   * Remove a member from the ORGANIZATION (`DELETE .../users/{user}`) — deletes
+   * their memberships and org account access. Deliberately NOT `removeUserRole`,
+   * which is `UserList`'s demote-to-member and keeps the membership row; the two
+   * acts must not be conflated. `MemberList`'s confirmation modal states this.
+   */
+  const handleRemoveMember = async (member: OrgMember) => {
+    if (!selectedOrgId) return;
+    setError(null);
+    try {
+      await removeOrgUser(selectedOrgId, member.id);
+      setNotice(`Removed ${member.name || member.email} from the organization.`);
+      await loadMembers(selectedOrgId, canReadMemberBudgets);
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to remove the member from the organization.'));
+      throw err; // keeps the confirmation open over a removal that did not happen
+    }
+  };
+
+  /**
+   * The assign-member modal's submit (#4936 review, M2d): the T1 add-membership
+   * call, plus a role assignment when "org admin" was chosen. Sequential on
+   * purpose — a person must be IN the org before a role in it means anything, and
+   * if the role half is refused the membership still stands and the server's
+   * refusal is shown rather than silently dropped.
+   */
+  const handleAddMember = async () => {
+    if (!selectedOrgId || !addPersonId || !addTeamId) return;
+    setIsAddingMember(true);
+    setError(null);
+    try {
+      await addTeamMember(selectedOrgId, addTeamId, { userId: addPersonId });
+      if (addRole === 'org_admin') {
+        await assignUserRole({
+          user_id: addPersonId,
+          role: AdminRole.ORG_ADMIN,
+          org_id: selectedOrgId,
+        });
+      }
+      setNotice('Member added.');
+      setIsAddMemberOpen(false);
+      setAddPersonId('');
+      setAddTeamId('');
+      setAddRole('member');
+      await loadMembers(selectedOrgId, canReadMemberBudgets);
+    } catch (err) {
+      // Left open over a write that did not (fully) land; the banner names why.
+      setError(errorMessage(err, 'Failed to add the member.'));
+    } finally {
+      setIsAddingMember(false);
+    }
+  };
 
   const handleNameChange = (value: string) => {
     setNewOrgName(value);
@@ -337,6 +656,17 @@ export default function Organizations() {
 
   const selectedOrg = orgs.find((o) => o.id === selectedOrgId) ?? null;
   const selectedDept = departments.find((d) => d.id === selectedDeptId) ?? null;
+
+  // The Members tab's search — same client-side idiom as the org filter above.
+  const memberQuery = memberSearch.trim().toLowerCase();
+  const visibleMembers = memberQuery
+    ? members.filter(
+        (m) =>
+          (m.name ?? '').toLowerCase().includes(memberQuery) ||
+          (m.githubUsername ?? '').toLowerCase().includes(memberQuery) ||
+          m.email.toLowerCase().includes(memberQuery)
+      )
+    : members;
 
   return (
     <div className="p-6 space-y-6">
@@ -489,61 +819,130 @@ export default function Organizations() {
               </span>
             </h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Structure: departments and the teams inside them.
+              Departments and teams, and the people in them.
             </p>
           </div>
 
-          {isLoadingDepartments ? (
-            <div className="flex justify-center p-8">
-              <Spinner />
-            </div>
-          ) : (
-            <DepartmentList
-              orgId={selectedOrg.id}
-              departments={departments}
-              canManage={canManage}
-              onCreateDepartment={openDeptCreate}
-              onEditDepartment={openDeptEdit}
-              onDeleteDepartment={setDeletingDept}
-            />
-          )}
+          {/* The `Tabs` primitive owns which panel renders; `activeTab` mirrors its
+              `onChange` purely so the member reads can be gated on the tab being open —
+              opening an org should not fetch a roster nobody is looking at. */}
+          <Tabs
+            defaultValue="structure"
+            onChange={(value) => setActiveTab(value as 'structure' | 'members')}
+          >
+            <TabsList>
+              <Tab value="structure">Structure</Tab>
+              <Tab value="members">Members</Tab>
+            </TabsList>
 
-          {/* Every organization starts with a default department and team. Rendered as
-              ordinary rows above; this line is why they are there, so their presence never
-              reads as an error (#4841 Design, consequence 2). */}
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            Every organization starts with a default department and team — rename them or add
-            your own.
-          </p>
-
-          {departments.length > 0 && (
-            <div className="space-y-3">
-              <Select
-                name="department-select"
-                label="Teams in department"
-                value={selectedDeptId}
-                onChange={(e) => setSelectedDeptId(e.target.value)}
-                options={departments.map((d) => ({ value: d.id, label: d.name }))}
-                className="max-w-sm"
-              />
-
-              {isLoadingTeams ? (
+            <TabPanel value="structure" className="space-y-4">
+              {isLoadingDepartments ? (
                 <div className="flex justify-center p-8">
                   <Spinner />
                 </div>
               ) : (
-                selectedDept && (
-                  <TeamManagement
-                    teams={teams}
-                    canManage={canManage}
-                    onCreateTeam={handleCreateTeam}
-                    onUpdateTeam={handleUpdateTeam}
-                    onDeleteTeam={handleDeleteTeam}
-                  />
-                )
+                <DepartmentList
+                  orgId={selectedOrg.id}
+                  departments={departments}
+                  canManage={canManage}
+                  onCreateDepartment={openDeptCreate}
+                  onEditDepartment={openDeptEdit}
+                  onDeleteDepartment={setDeletingDept}
+                />
               )}
-            </div>
-          )}
+
+              {/* Every organization starts with a default department and team. Rendered as
+                  ordinary rows above; this line is why they are there, so their presence never
+                  reads as an error (#4841 Design, consequence 2). */}
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Every organization starts with a default department and team — rename them or
+                add your own.
+              </p>
+
+              {departments.length > 0 && (
+                <div className="space-y-3">
+                  <Select
+                    name="department-select"
+                    label="Teams in department"
+                    value={selectedDeptId}
+                    onChange={(e) => setSelectedDeptId(e.target.value)}
+                    options={departments.map((d) => ({ value: d.id, label: d.name }))}
+                    className="max-w-sm"
+                  />
+
+                  {isLoadingTeams ? (
+                    <div className="flex justify-center p-8">
+                      <Spinner />
+                    </div>
+                  ) : (
+                    selectedDept && (
+                      <TeamManagement
+                        teams={teams}
+                        canManage={canManage}
+                        onCreateTeam={handleCreateTeam}
+                        onUpdateTeam={handleUpdateTeam}
+                        onDeleteTeam={handleDeleteTeam}
+                      />
+                    )
+                  )}
+                </div>
+              )}
+            </TabPanel>
+
+            <TabPanel value="members" className="space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                {/* Client-side over the LOADED roster (name / GitHub ID / email) —
+                    acceptable per the review; the load-more below is how the rest
+                    of a large org gets into the filterable set. */}
+                <Input
+                  name="member-search"
+                  aria-label="Search members"
+                  placeholder="Search name or GitHub ID…"
+                  value={memberSearch}
+                  onChange={(e) => setMemberSearch(e.target.value)}
+                  className="max-w-xs"
+                />
+                {canAddMembers && (
+                  <Button onClick={() => setIsAddMemberOpen(true)}>+ Add member</Button>
+                )}
+              </div>
+              <MemberList
+                members={visibleMembers}
+                membershipsByUserId={membershipsByUserId}
+                teams={orgTeams}
+                budgets={memberBudgets}
+                onAddTeam={handleAddTeam}
+                onSetPrimary={handleSetPrimary}
+                onRemoveTeam={handleRemoveTeam}
+                onChangeRole={canManage ? handleChangeRole : undefined}
+                onRemoveMember={canManage ? handleRemoveMember : undefined}
+                availableRoles={assignableRoles}
+                defaultTeamId={`${selectedOrg.id}-team-default`}
+                teamsTruncated={orgTeamsTruncated}
+                isLoading={isLoadingMembers}
+                canManage={canManage}
+              />
+              {membersHasMore && (
+                // Truncation is stated, not silent (M4): without this line member
+                // #51 is invisible with nothing on screen saying the list is cut.
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    Showing {members.length} of {membersTotal} members
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    isLoading={isLoadingMoreMembers}
+                    onClick={() =>
+                      loadMembers(selectedOrg.id, canReadMemberBudgets, membersPage + 1, true)
+                    }
+                  >
+                    Load more
+                  </Button>
+                </div>
+              )}
+            </TabPanel>
+          </Tabs>
         </div>
       )}
 
@@ -643,6 +1042,90 @@ export default function Organizations() {
             </Button>
             <Button variant="danger" onClick={handleDeleteDept} isLoading={isSavingDept}>
               Delete
+            </Button>
+          </ModalFooter>
+        </div>
+      </Modal>
+
+      {/* "+ Add member" — the mockup's assign-member modal (#4936 review, M2d).
+          Person via the reused Bedrock-routing picker (GitHub-ID-first, server-side
+          search over the platform roster), team from the org-wide list, role as the
+          mockup's radio pair. The submit is T1's membership create plus, for "org
+          admin", the same role call UserList uses — the server bounds both. */}
+      <Modal
+        isOpen={isAddMemberOpen}
+        onClose={() => {
+          if (!isAddingMember) setIsAddMemberOpen(false);
+        }}
+        title={`Add member to ${selectedOrg?.name ?? 'organization'}`}
+      >
+        <div className="space-y-4">
+          <PersonPicker
+            label="Person"
+            namePrefix="add-member-person"
+            value={addPersonId}
+            onChange={setAddPersonId}
+            helperText="GitHub ID shown first when linked."
+          />
+
+          <div>
+            <Select
+              name="add-member-team"
+              label="Team"
+              value={addTeamId}
+              onChange={(e) => setAddTeamId(e.target.value)}
+              options={orgTeams.map((team) => ({ value: team.id, label: team.name }))}
+              placeholder="Select a team…"
+            />
+            {orgTeamsTruncated && (
+              <p
+                className="mt-1 text-xs text-amber-600 dark:text-amber-400"
+                data-testid="add-member-teams-truncated"
+              >
+                Not every team is listed — this organization has more teams than one page
+                shows.
+              </p>
+            )}
+          </div>
+
+          <fieldset>
+            <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">Role</legend>
+            <div className="mt-1 flex gap-4 text-sm text-gray-700 dark:text-gray-300">
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="add-member-role"
+                  checked={addRole === 'member'}
+                  onChange={() => setAddRole('member')}
+                />
+                Member
+              </label>
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="add-member-role"
+                  checked={addRole === 'org_admin'}
+                  onChange={() => setAddRole('org_admin')}
+                />
+                Org admin
+              </label>
+            </div>
+          </fieldset>
+
+          <ModalFooter>
+            <Button
+              variant="secondary"
+              onClick={() => setIsAddMemberOpen(false)}
+              disabled={isAddingMember}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAddMember}
+              isLoading={isAddingMember}
+              disabled={!addPersonId || !addTeamId}
+            >
+              Add member
             </Button>
           </ModalFooter>
         </div>

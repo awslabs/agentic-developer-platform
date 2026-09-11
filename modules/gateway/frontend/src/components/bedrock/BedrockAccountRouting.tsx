@@ -172,8 +172,14 @@ function describePerson(person: PlatformUser): string {
  * The selected value is always the canonical `users.id` — the column the resolver and
  * the server-side check compare against (#4647). The picker keeps the server's 422 as
  * the real guarantee; it is a usability feature, not the control.
+ *
+ * Exported for the Members panel's add-member modal (#4847, PR #4936 review M2): the
+ * mockup names this exact picker ("Same searchable picker as Bedrock Account
+ * Routing"), and a second GitHub-ID-first person picker would be the fork the story
+ * forbids. Note the roster read (`listPlatformUsers`) is platform-admin-only, so a
+ * caller must gate the affordance accordingly.
  */
-function PersonPicker({
+export function PersonPicker({
   label,
   namePrefix,
   value,

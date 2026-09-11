@@ -1423,3 +1423,102 @@ class PersonDefaultResponse(BaseModel):
     updated_at: str | None = Field(
         description="ISO-8601 instant the default was last authored, or `null` when none is authored.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Member spend-against-limit, list-shaped — Issue #4847 (T2b)
+# ---------------------------------------------------------------------------
+#
+# The admin console's Members panel renders one row per person: this month's spend,
+# the limit that applies to them, and which rung of the ladder that limit came from.
+# Every other surface answering that question answers it for ONE person
+# (`/budget/person-cap/{anchor}`) or for the caller (`/me/budget/person-cap`), so a
+# panel listing thirty members had no read to make but thirty of them.
+#
+# Deliberately READ-ONLY and deliberately composed from the SHARED resolvers
+# (`resolve_applicable_person_limits`, `read_person_partition_spend`) rather than from
+# queries of its own. That is the standing rule in `person_ledger.py`: the displayed
+# number IS the enforced number, and a second summation is how a dashboard and a 402
+# come to disagree about whether somebody is over their limit. There is no new budget
+# logic here — only an existing figure, per member, in one response.
+
+
+class MemberBudgetResponse(BaseModel):
+    """One member's month spend against the limit that governs them — #4847.
+
+    Both money fields are strings at their column's precision (contract rule 1), and
+    each is rendered at the precision of the column it came from, not a shared one:
+    ``spend_usd`` is ``NUMERIC(14,6)`` and ``limit_usd`` is ``NUMERIC(10,2)``.
+
+    ``limit_usd`` is ``None`` exactly when nothing governs this person for the period
+    — no individual row and no default at any rung — and ``limit_status`` says so
+    (contract rule 2). A ``0.00`` here would render as somebody who may spend
+    nothing, which is the opposite of what an absent rule means, and it is the
+    difference between a usage bar the panel must not draw and one showing 0%.
+    """
+
+    user_id: str = Field(
+        description=(
+            "The canonical `users.id`. The column the membership routes and the "
+            "person-scoped rule resolvers both key on, so a client can join this row "
+            "to a membership row without re-deriving an identity."
+        )
+    )
+    person_anchor: str | None = Field(
+        description=(
+            "The cross-org person key the individual limit would be stored against, "
+            "or `null` for a member with no linked identity to anchor one to. `null` "
+            "is a legitimate permanent state (email/invite onboarding), never an "
+            "error: such a member can hold no individual row, but a DEFAULT still "
+            "governs them — skipping the ladder's top rung is not skipping the ladder."
+        )
+    )
+    spend_usd: str = Field(
+        description=(
+            "Settled spend for this period in THIS organization, at 6dp. Scoped to "
+            "the org in the path, not the person's cross-org total: this is an "
+            "org-admin-facing panel and the figure is read per partition. A true "
+            "`0.000000` when the person has no settled row — a measurement, not a "
+            "fallback."
+        )
+    )
+    limit_usd: str | None = Field(
+        description=(
+            "The limit that GOVERNS this person for the period, at 2dp, or `null` when nothing does. `null` is NOT `0.00` — see `limit_status`."
+        ),
+    )
+    limit_status: CapStatus = Field(
+        description="`capped` when any rule governs this person for the period, `uncapped` when none does at any rung.",
+    )
+    source: PersonLimitSource | None = Field(
+        description=(
+            "Which rung supplied `limit_usd` — the same values, with the same "
+            "meanings, as `PersonCapResponse.source`. `null` only when "
+            "`limit_status` is `uncapped`. Reported so the panel can label the "
+            "number's provenance (`individual limit` / `team default` / `org "
+            "default`) instead of implying every figure was set for that one person."
+        ),
+    )
+    source_label: str | None = Field(
+        description=(
+            "The same provenance in prose, composed server-side so this panel, the "
+            "402 text and the person's own screen name the rung identically. "
+            "`null` when uncapped."
+        ),
+    )
+
+
+class MemberBudgetListResponse(BaseModel):
+    """Month spend and applicable limit for a page of an organization's members — #4847."""
+
+    items: list[MemberBudgetResponse]
+    total: int
+    page: int
+    page_size: int
+    has_more: bool
+    period_type: Literal["daily", "weekly", "monthly"] = Field(
+        description="The calendar period every row was resolved for, echoed back so a client cannot mislabel the column it renders.",
+    )
+    period_start: str = Field(
+        description="ISO-8601 date the period began — the `period_start` the spend rows were read at, so the figure is reproducible.",
+    )

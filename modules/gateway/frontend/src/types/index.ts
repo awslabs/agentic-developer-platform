@@ -264,6 +264,41 @@ export interface Team {
   createdAt: string;
 }
 
+// Team membership types — Issue #4840 (model + REST), consumed by #4847 (T2b).
+//
+// A person belongs to MANY teams, one of which is primary. Before this the frontend
+// had no membership representation at all: team membership was implicit in
+// `CognitoUser.teamId` — a single value, which cannot express the multi-team reality
+// this type exists for. `users.team_id` remains a *cache* that follows the primary;
+// the membership row is the truth, and the UI writes rows, never the pointer.
+export interface TeamMembership {
+  id: string;
+  /** The canonical `users.id` — the column the server's membership routes key on. */
+  userId: string;
+  teamId: string;
+  orgId: string;
+  /** Role WITHIN the team (`member` / `lead`) — distinct from the admin role. */
+  role: string;
+  /**
+   * At most one of a user's memberships per org is primary. The primary is what
+   * projects into the `custom:team_id` claim, and therefore the team whose budget
+   * and Bedrock routing rules the person follows.
+   */
+  isPrimary: boolean;
+  /** Provenance: `admin` for console writes, or a directory-sync tag. */
+  source: string;
+  externalId: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+/** One desired membership in a replace-set write. */
+export interface TeamMembershipInput {
+  teamId: string;
+  role?: string;
+  isPrimary?: boolean;
+}
+
 // Pool types
 export interface PoolAccount {
   id: string;

@@ -48,15 +48,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.auth.dependencies import get_current_user
 from src.budget.person_cap_routes import router as person_cap_router
+from src.budget.utils import get_period_start_end
 from src.shared.database import get_db
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.identity.providers import IdentityProvider
 from src.shared.models.base import Base
-from src.shared.models.budget import PersonBudgetConfig, PersonBudgetDefault
+from src.shared.models.budget import BudgetUsage, PersonBudgetConfig, PersonBudgetDefault
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import User
 from src.shared.models.vault import UserIdentity
 from src.shared.schemas.auth import TokenContext
+from src.shared.schemas.budget import PeriodType
 
 ORG_ID = "org-4629"
 OTHER_ORG_ID = "org-4629-other"
@@ -1055,7 +1057,19 @@ def test_the_only_targeted_route_is_the_platform_admin_one():
     # `{scope}` (#4690) names a SCOPE, not a person, so it is not a second targeted
     # path in the sense above — but it accepts a target all the same and carries the
     # same gate, pinned by `test_every_scope_route_requires_platform_admin` below.
-    assert other_paths == {"/me/budget/person-cap", "/budget/person-default/{scope}"}
+    #
+    # `/admin/organizations/{org_id}/member-budgets` (#4847) names an ORG, and returns
+    # a row per member of it — so it discloses, in bulk, the same partition-free
+    # figure the anchor route does one at a time. This pin firing on it is the pin
+    # working: it forced the gate to be chosen deliberately, and the choice was the
+    # same `require_platform_admin`, pinned by
+    # `test_member_budgets_route_requires_platform_admin` below. It is listed here
+    # rather than under `targeted` because it accepts no person parameter.
+    assert other_paths == {
+        "/me/budget/person-cap",
+        "/budget/person-default/{scope}",
+        "/admin/organizations/{org_id}/member-budgets",
+    }
 
 
 def test_every_scope_route_requires_platform_admin():
@@ -1809,3 +1823,262 @@ async def test_d2h_a_default_aimed_at_a_nonexistent_scope_is_422(session, seeded
 
     rows = (await session.execute(_select(PersonBudgetDefault))).scalars().all()
     assert rows == []
+
+
+# ===========================================================================
+# The Members panel's spend-against-limit list — Issue #4847 (#4839 · T2b)
+#
+# Same authority model as the anchor route, for the same reason, and that is the
+# first thing asserted: this route returns a partition-free limit for a whole page
+# of members, so if an org admin could call it, the #4620 inversion would arrive in
+# bulk rather than one person at a time.
+# ===========================================================================
+
+
+def test_member_budgets_route_requires_platform_admin():
+    """The structural pin, matching ``test_every_scope_route_requires_platform_admin``.
+
+    Source-level because the behavioural 403s below can only cover today's callers.
+    The gate on this route is the load-bearing decision of #4847's backend half —
+    the whole reason the panel treats the spend column as a platform-admin
+    affordance while the Members tab itself is ``ORG_READ`` — so it gets a check
+    that fails if a later edit swaps it for an org-scoped `check_permission`, which
+    would read as *stricter* code while actually widening disclosure.
+    """
+    import inspect
+
+    from src.budget import person_cap_routes as module
+
+    source = inspect.getsource(module.list_member_budgets)
+    assert "require_platform_admin(current_user)" in source
+    # And it is the FIRST authority statement, before the org is read — so a
+    # non-admin cannot use a 404-vs-403 difference to enumerate organizations.
+    assert source.index("require_platform_admin") < source.index("select(func.count())")
+
+
+async def test_member_budgets_denied_to_org_admin(session, seeded):
+    """An org admin is refused — the #4620 ruling, applied to the list shape.
+
+    They legitimately administer this org's membership (that is T2b's panel), but
+    the limit in each row can come from a partition-free individual row, so serving
+    it here would disclose ceilings governing their members' spend in tenants the
+    org admin has no membership in. Denied for their OWN org's members, which is the
+    case someone would reach for as the exception.
+    """
+    await seed_cap(session, PERSON_ANCHOR, "75.00")
+
+    async with client_for(session, context_for(ORG_ADMIN_SUB)) as client:
+        response = await client.get(f"/admin/organizations/{ORG_ID}/member-budgets")
+
+    assert response.status_code == 403, response.text
+    assert "75.00" not in response.text, "a denial must not leak the limits it refused to list"
+
+
+async def test_member_budgets_denied_to_plain_member(session, seeded):
+    async with client_for(session, context_for(PERSON_SUB)) as client:
+        response = await client.get(f"/admin/organizations/{ORG_ID}/member-budgets")
+
+    assert response.status_code == 403, response.text
+
+
+async def test_member_budgets_reports_spend_against_the_applicable_limit(session, seeded):
+    """The panel's column: settled month spend, the governing limit, and its rung.
+
+    The individual row is seeded for one person only, so the OTHER seeded members
+    must come back on a different rung (or uncapped) — a route that reported one
+    person's limit for everybody would pass a single-row assertion.
+    """
+    await seed_cap(session, PERSON_ANCHOR, "75.00")
+    period_start, _ = get_period_start_end(PeriodType.MONTHLY)
+    session.add(
+        BudgetUsage(
+            org_id=ORG_ID,
+            entity_type="root_user",
+            entity_id=PERSON_CANONICAL,
+            period_start=period_start,
+            period_type="monthly",
+            total_cost_usd=Decimal("38.500000"),
+        )
+    )
+    await session.commit()
+
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        response = await client.get(f"/admin/organizations/{ORG_ID}/member-budgets")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["period_type"] == "monthly"
+    assert body["period_start"] == period_start.isoformat()
+
+    rows = {row["user_id"]: row for row in body["items"]}
+    person = rows[PERSON_CANONICAL]
+    # Spend at the ledger column's 6dp, the limit at the cap column's 2dp — each at
+    # its own precision (contract rule 1), not a shared one.
+    assert person["spend_usd"] == "38.500000"
+    assert person["limit_usd"] == "75.00"
+    assert person["limit_status"] == "capped"
+    assert person["person_anchor"] == PERSON_ANCHOR
+    # `admin`: the row was authored by somebody other than the member (seed_cap's
+    # default author), so it is an admin grant. A row the member authored on
+    # THEMSELVES reports `own` — the two labels are pinned per rung below.
+    assert person["source"] == "admin"
+    assert person["source_label"] == "individual limit"
+
+    colleague = rows[COLLEAGUE_CANONICAL]
+    assert colleague["spend_usd"] == "0.000000", "no settled row is a true zero, not a fallback"
+    assert colleague["limit_usd"] is None
+    assert colleague["limit_status"] == "uncapped"
+    assert colleague["source"] is None, "nothing governs them; there is no rung to name"
+
+
+async def test_member_budgets_uncapped_is_not_a_zero_limit(session, seeded):
+    """Contract rule 2 on this shape: absent is not ``0.00``.
+
+    A zeroed limit renders as somebody who may spend nothing — the opposite of what
+    no rule means — and it is the difference between a usage bar the panel must not
+    draw and one showing 0%.
+    """
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        response = await client.get(f"/admin/organizations/{ORG_ID}/member-budgets")
+
+    assert response.status_code == 200, response.text
+    for row in response.json()["items"]:
+        assert row["limit_usd"] is None
+        assert row["limit_status"] == "uncapped"
+        assert row["source_label"] is None
+
+
+async def test_member_budgets_reports_a_default_as_the_governing_limit(session, seeded):
+    """A member with no individual row is still governed — by the org default.
+
+    The rung matters to the panel: it labels the number's provenance, and rendering
+    a default as if it were set for that one person invites an admin to explain a
+    figure nobody authored for them.
+    """
+    session.add(
+        PersonBudgetDefault(
+            scope_type="org",
+            scope_id_org=ORG_ID,
+            period_type="monthly",
+            budget_amount_usd=Decimal("50.00"),
+            enforcement_mode="hard",
+            authored_by_user_id="seed",
+        )
+    )
+    await session.commit()
+
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        response = await client.get(f"/admin/organizations/{ORG_ID}/member-budgets")
+
+    assert response.status_code == 200, response.text
+    rows = {row["user_id"]: row for row in response.json()["items"]}
+    colleague = rows[COLLEAGUE_CANONICAL]
+    assert colleague["limit_usd"] == "50.00"
+    assert colleague["limit_status"] == "capped"
+    assert colleague["source"] == "org_default"
+    assert colleague["source_label"] == "org default", "the v4 contract's third-person label, not the ladder's second-person prose"
+
+
+async def test_member_budgets_is_scoped_to_the_org_in_the_path(session, seeded):
+    """Only members of ``{org_id}``, and only that partition's spend.
+
+    The spend half is deliberately org-scoped rather than the person's cross-org
+    total: it is the one figure here that belongs to the organization being
+    administered. A member of another tenant must not appear at all.
+    """
+    period_start, _ = get_period_start_end(PeriodType.MONTHLY)
+    session.add(
+        BudgetUsage(
+            org_id=OTHER_ORG_ID,
+            entity_type="root_user",
+            entity_id=PERSON_CANONICAL,
+            period_start=period_start,
+            period_type="monthly",
+            total_cost_usd=Decimal("999.000000"),
+        )
+    )
+    await session.commit()
+
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        response = await client.get(f"/admin/organizations/{ORG_ID}/member-budgets")
+
+    body = response.json()
+    assert FOREIGN_CANONICAL not in {row["user_id"] for row in body["items"]}, "a member of another org must not appear"
+    person = next(row for row in body["items"] if row["user_id"] == PERSON_CANONICAL)
+    assert person["spend_usd"] == "0.000000", "another partition's dollars are not this org's column"
+
+
+async def test_member_budgets_read_fault_is_a_503_not_a_zero(session, seeded):
+    """Rule 5 on this shape: a broken read never renders as "nobody has spent anything".
+
+    A page of ``0.000000`` rows is indistinguishable from a quiet month, so a fault
+    that surfaced as a 200 would show an admin a calm panel while the figures behind
+    it were unknown.
+    """
+    with patch(
+        "src.budget.person_cap_routes.read_person_partition_spend",
+        side_effect=OperationalError("SELECT", {}, Exception("ledger unreachable")),
+    ):
+        async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+            response = await client.get(f"/admin/organizations/{ORG_ID}/member-budgets")
+
+    assert response.status_code == 503, response.text
+
+
+async def test_member_budgets_page_size_is_bounded(session, seeded):
+    """The fan-out is per member, so an unbounded page is several hundred reads."""
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        response = await client.get(f"/admin/organizations/{ORG_ID}/member-budgets?page_size=500")
+
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize(
+    ("rung", "expected_source", "expected_label"),
+    [
+        ("individual_admin", "admin", "individual limit"),
+        ("individual_self", "own", "individual limit (self-set)"),
+        ("team_default", "team_default", "team default"),
+        ("org_default", "org_default", "org default"),
+        ("platform_default", "platform_default", "platform default"),
+    ],
+)
+async def test_member_budgets_source_labels_are_third_person(session, seeded, rung, expected_source, expected_label):
+    """M1 (PR #4936 review): one pinned label per ``PersonLimitSource`` value.
+
+    The ladder's own ``scope_label`` is second-person prose composed for the person
+    the limit governs — forwarding it verbatim showed an admin "a limit set for YOU
+    by a platform administrator" under somebody ELSE's spend. This surface maps the
+    ``source`` enum to the v4 contract's third-person names instead, including the
+    self-authored distinction the data allows (``authored_by_user_id`` matching the
+    member's own canonical id).
+    """
+    if rung == "individual_admin":
+        await seed_cap(session, PERSON_ANCHOR, "75.00", authored_by=PLATFORM_ADMIN_CANONICAL)
+    elif rung == "individual_self":
+        await seed_cap(session, PERSON_ANCHOR, "75.00", authored_by=PERSON_CANONICAL)
+    else:
+        scope_type = rung.removesuffix("_default")
+        session.add(
+            PersonBudgetDefault(
+                scope_type=scope_type,
+                scope_id_org=None if scope_type == "platform" else ORG_ID,
+                scope_id_team=TEAM_ID if scope_type == "team" else None,
+                period_type="monthly",
+                budget_amount_usd=Decimal("50.00"),
+                enforcement_mode="hard",
+                authored_by_user_id="seed",
+            )
+        )
+        await session.commit()
+
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        response = await client.get(f"/admin/organizations/{ORG_ID}/member-budgets")
+
+    assert response.status_code == 200, response.text
+    person = next(row for row in response.json()["items"] if row["user_id"] == PERSON_CANONICAL)
+    assert person["source"] == expected_source
+    assert person["source_label"] == expected_label
+    # The defect class being pinned: prose addressed to the member shown to a third
+    # party. No label on this surface may speak in the second person.
+    assert "you" not in person["source_label"].lower()

@@ -133,12 +133,12 @@ denies on, is a 422 that disagrees with the 402 it exists to predict.
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, or_, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -157,24 +157,31 @@ from src.shared.models.base import new_uuid
 from src.shared.models.budget import PersonBudgetConfig, PersonBudgetDefault
 from src.shared.models.organization import Organization, User
 from src.shared.schemas.auth import TokenContext
+from src.shared.schemas.budget import PeriodType
 
 from .enforcement_service import _INFRASTRUCTURE_FAULTS
 from .person_ledger import (
     PersonLimit,
     PersonLimitSource,
+    read_person_partition_spend,
     resolve_applicable_person_limits,
     resolve_member_partitions,
     resolve_person_identity,
+    resolve_person_subs,
     resolve_person_team_keys,
 )
 from .schemas import (
     CAP_PLACES,
+    SPEND_PLACES,
+    MemberBudgetListResponse,
+    MemberBudgetResponse,
     PersonCapRequest,
     PersonCapResponse,
     PersonDefaultRequest,
     PersonDefaultResponse,
     format_money,
 )
+from .utils import get_period_start_end
 
 logger = logging.getLogger("bedrockgateway.budget")
 
@@ -1073,3 +1080,197 @@ async def delete_person_default(
         raise _default_unavailable(exc) from exc
 
     logger.info("person_default_deleted scope_type=%s period=%s", scope_type, period_type)
+
+
+# ---------------------------------------------------------------------------
+# The admin console's Members panel: spend-against-limit, one row per member.
+# Issue #4847 (#4839 · T2b). READ-ONLY.
+# ---------------------------------------------------------------------------
+#
+# **Why a new route rather than the panel calling an existing one per member.** Every
+# read above answers "which limit governs this person" for exactly ONE person — the
+# caller (`/me/budget/person-cap`) or a named anchor (`/budget/person-cap/{anchor}`).
+# A panel listing a page of members had no read to make but one per row, and it also
+# had no read at all for their SPEND, which lives on the `/me` surface and is
+# therefore unavailable for anybody but the caller. This is those two figures, for a
+# page of members, in one org-scoped response.
+#
+# **Why it composes and computes nothing.** `resolve_applicable_person_limits` and
+# `read_person_partition_spend` are called verbatim — the same functions enforcement
+# calls. That is the standing rule (`person_ledger`): the displayed number IS the
+# enforced number, and a second summation is how a panel and a 402 come to disagree.
+# So this endpoint adds no budget logic, no new table, and no write.
+#
+# **Why platform-admin-only, when the Members panel itself is ORG_READ.** The limit
+# reported here can come from a partition-free individual row, and
+# `/budget/person-cap/{anchor}` is platform-admin-only for exactly that reason by the
+# #4620 ruling: an org admin reading it would read a figure that governs the person's
+# spend in every OTHER tenant they work in. That ruling does not weaken because the
+# figure arrives in a list. The panel therefore treats this column as a
+# platform-admin affordance and an org admin manages membership without it — which is
+# also what the operator's "admin-gated like GET /admin/users" asks for, since that
+# endpoint is `require_platform_admin` too.
+#
+# The SPEND half is org-scoped on purpose (`org_id` from the path, not the person's
+# cross-org total): it is the one figure here that belongs to the organization being
+# administered.
+
+
+# A per-member fan-out: each row runs the ladder plus a bounded number of 5-filter
+# row reads. Capped harder than the 100 the sibling admin listings allow, because
+# the cost here is per member rather than per page — a page of 200 would be several
+# hundred sequential reads behind one request.
+_MEMBER_BUDGET_MAX_PAGE_SIZE = 50
+
+# Third-person source labels for the Members panel — PR #4936 review (M1).
+#
+# The ladder's own `scope_label` is second-person prose composed for the PERSON the
+# limit governs ("your own limit", "a limit set for you by a platform
+# administrator") because its consumers are the self read and the 402/422 text that
+# person sees. This surface shows the same limit to an ADMIN under somebody ELSE's
+# spend, where that prose misaddresses the reader — so the rung is re-labelled here
+# to the v4 UI contract's third-person names (`individual limit` / `team default` /
+# `org default` / `platform default`). Only the LABEL is composed locally: the
+# amount, the rung, and the `source` enum still come off the shared ladder verbatim,
+# so the number rendered remains the number enforced.
+_MEMBER_SOURCE_LABELS: dict[PersonLimitSource, str] = {
+    "own": "individual limit (self-set)",
+    "admin": "individual limit",
+    "team_default": "team default",
+    "org_default": "org default",
+    "platform_default": "platform default",
+}
+
+
+@router.get("/admin/organizations/{org_id}/member-budgets", response_model=MemberBudgetListResponse)
+async def list_member_budgets(
+    org_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    period_type: PersonCapPeriod = "monthly",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=_MEMBER_BUDGET_MAX_PAGE_SIZE)] = _MEMBER_BUDGET_MAX_PAGE_SIZE,
+) -> MemberBudgetListResponse:
+    """Month spend and applicable limit for a page of an organization's members.
+
+    **Platform admin only** — see the block comment above. An org admin gets a 403
+    here even for their own members, consistent with
+    ``GET /budget/person-cap/{anchor}``, because an individual limit row is
+    partition-free: reporting it discloses a ceiling that governs the person's spend
+    in tenants the org admin has no membership in.
+
+    Every figure is composed from the shared resolvers, so a number rendered here is
+    the number enforcement compares against.
+
+    Returns:
+        ``200`` with one row per member of ``org_id`` on this page. A member with no
+        settled spend reports a true ``0.000000``; a member nothing governs reports
+        ``limit_usd=null`` with ``limit_status="uncapped"`` rather than a ``0.00``.
+
+    Raises:
+        HTTPException:
+            ``401`` when unauthenticated;
+            ``403`` for any caller who is not a platform admin;
+            ``422`` for a non-calendar ``period_type`` (the ``Literal``, before any
+            handler code runs);
+            ``503`` when a table is unreadable — never a ``200`` whose zeroes read
+            as "nobody has spent anything".
+    """
+    # Authority first, before the org is read, so a non-admin cannot use a
+    # 404-vs-403 difference to learn which organizations exist.
+    AccessControl(db).require_platform_admin(current_user)
+
+    period_start, _ = get_period_start_end(PeriodType(period_type))
+
+    try:
+        total = await db.scalar(select(func.count()).select_from(User).where(User.org_id == org_id)) or 0
+        members = (
+            (
+                await db.execute(
+                    select(User)
+                    .where(User.org_id == org_id)
+                    # Deterministic order, so page 2 cannot repeat or skip a member
+                    # that page 1 already showed.
+                    .order_by(User.id)
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        items = [await _compose_member_budget(db, member, org_id=org_id, period_type=period_type, period_start=period_start) for member in members]
+    except _INFRASTRUCTURE_FAULTS as exc:
+        raise _unavailable(exc) from exc
+
+    return MemberBudgetListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(page * page_size) < total,
+        period_type=period_type,
+        period_start=period_start.isoformat(),
+    )
+
+
+async def _compose_member_budget(
+    db: AsyncSession,
+    member: User,
+    *,
+    org_id: str,
+    period_type: str,
+    period_start: date,
+) -> MemberBudgetResponse:
+    """One member's row: their org spend, and the limit the ladder says governs them.
+
+    ``resolve_person_identity`` fuses the member's ``users`` rows across tenants
+    before the spend read, because a person onboarded into two orgs has two canonical
+    ids and therefore two ledger keys. The fused key set is then read against THIS
+    org's partition only — the fusion decides which keys are the same person, the
+    partition decides which dollars this panel may report.
+
+    ``self_authored_by`` is the MEMBER's canonical id, so a surviving self-authored
+    row (the pre-ruling C3 generation) reports ``own`` and is labelled
+    ``individual limit (self-set)``, distinct from an admin-granted
+    ``individual limit`` (PR #4936 review, M1). Passing the member rather than the
+    caller is correct here because the question this column answers is about the
+    MEMBER's limit provenance, not the caller's authority — and ``source_label`` is
+    re-composed below in third person, so no "your own limit" prose can leak to the
+    admin. A row self-authored under one of the person's OTHER canonical ids falls
+    back conservatively to ``admin``.
+    """
+    anchor, person_user_ids = await resolve_person_identity(db, member.id)
+    person_subs = await resolve_person_subs(db, person_user_ids)
+
+    cloud, direct = await read_person_partition_spend(db, org_id, person_user_ids, person_subs, PeriodType(period_type), period_start)
+
+    # A member with no linked identity in any registered provider namespace gets the
+    # internal `users:<id>` anchor from `resolve_person_identity`. They can hold no
+    # individual row keyed on it, so the ladder's top rung is skipped — but a DEFAULT
+    # still governs them, which is the whole point of a default. Passing None for the
+    # anchor is how `resolve_applicable_person_limits` is told to skip that rung
+    # without skipping the ladder.
+    is_internal_anchor = anchor.startswith(f"{PERSON_ANCHOR_INTERNAL_NAMESPACE}:")
+    limits = await resolve_applicable_person_limits(
+        db,
+        person_anchor=None if is_internal_anchor else anchor,
+        org_ids=await resolve_member_partitions(db, person_user_ids, org_id),
+        team_keys=await resolve_person_team_keys(db, person_user_ids),
+        self_authored_by=member.id,
+    )
+    limit = limits.get(period_type)
+
+    return MemberBudgetResponse(
+        user_id=member.id,
+        person_anchor=None if is_internal_anchor else anchor,
+        spend_usd=format_money(cloud + direct, SPEND_PLACES),
+        limit_usd=None if limit is None else format_money(Decimal(limit.amount), CAP_PLACES),
+        limit_status="uncapped" if limit is None else "capped",
+        source=None if limit is None else limit.source,
+        # NOT `limit.scope_label`, which is second-person prose addressed to the
+        # person the limit governs. This panel's reader is an admin looking at
+        # somebody else's row — see `_MEMBER_SOURCE_LABELS`.
+        source_label=None if limit is None else _MEMBER_SOURCE_LABELS[limit.source],
+    )

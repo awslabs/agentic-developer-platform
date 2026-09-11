@@ -122,6 +122,16 @@ class UserResponse(BaseModel):
     cognito_sub: str | None = None
     cognito_username: str | None = None
     role: str | None = None
+    # The linked GitHub login, for the members panel's person label (Issue #4847).
+    #
+    # Optional and defaulted because only ``list_users_org`` fills it: it is a
+    # per-row identity lookup, and the write-shaped endpoints sharing this schema
+    # (create/update user) have no reason to pay for it.
+    #
+    # NOT ``cognito_username``, which is already on this payload and looks like the
+    # shortcut: that column is only written on the admin-invite path, so it is NULL
+    # for exactly the GitHub-onboarded population the label is for (#4687).
+    github_username: str | None = None
     created_at: datetime
     updated_at: datetime | None = None
 

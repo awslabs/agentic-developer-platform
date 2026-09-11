@@ -1429,6 +1429,15 @@ class AdminService:
         """
         List all users in an organization with pagination.
 
+        ``github_username`` is carried for the members panel's person label (Issue
+        #4847), read from ``user_identities`` as a correlated scalar subquery for the
+        reason ``list_platform_users`` documents at length: the unique index there is
+        per (provider, provider_user_id, org_id), so one user CAN hold two GitHub rows
+        and a LEFT JOIN would emit that person twice — inflating ``total`` and shifting
+        every page boundary. It is the same subquery, kept as its own expression rather
+        than shared, because that method applies no tenant filter by design and this one
+        must (``User.org_id == org_id``).
+
         Args:
             org_id: Organization ID
             page: Page number (1-indexed)
@@ -1443,15 +1452,29 @@ class AdminService:
         page_size = min(page_size, self.config.max_page_size)
         offset = (page - 1) * page_size
 
+        github_username = (
+            select(UserIdentity.provider_username)
+            .where(
+                UserIdentity.user_id == User.id,
+                func.lower(UserIdentity.provider) == "github",
+            )
+            .order_by(UserIdentity.created_at)
+            .limit(1)
+            .correlate(User)
+            .scalar_subquery()
+        )
+
         # Get total count
         count_query = select(func.count()).select_from(User).where(User.org_id == org_id)
         total_result = await self.db.execute(count_query)
         total = total_result.scalar_one()
 
         # Get paginated results
-        query = select(User).where(User.org_id == org_id).offset(offset).limit(page_size).order_by(User.email)
+        query = (
+            select(User, github_username.label("github_username")).where(User.org_id == org_id).offset(offset).limit(page_size).order_by(User.email)
+        )
         result = await self.db.execute(query)
-        users = result.scalars().all()
+        rows = result.all()
 
         return (
             [
@@ -1464,10 +1487,11 @@ class AdminService:
                     cognito_sub=user.cognito_sub,
                     cognito_username=user.cognito_username,
                     role=user.role,
+                    github_username=linked_username,
                     created_at=user.created_at,
                     updated_at=user.updated_at,
                 )
-                for user in users
+                for user, linked_username in rows
             ],
             total,
         )

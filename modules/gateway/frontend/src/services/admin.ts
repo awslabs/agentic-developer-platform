@@ -7,6 +7,8 @@ import type {
   OrganizationUpdateRequest,
   Department,
   Team,
+  TeamMembership,
+  TeamMembershipInput,
   UserRole,
   UserRoleAssignRequest,
   IndexRunListResponse,
@@ -287,6 +289,160 @@ export async function deleteTeam(orgId: string, teamId: string): Promise<void> {
   await apiClient.delete(`/admin/organizations/${orgId}/teams/${teamId}`);
 }
 
+/**
+ * Every team in the organization, across all departments — Issue #4840.
+ *
+ * Distinct from `getTeams`, which is DEPARTMENT-scoped and therefore cannot answer
+ * "which teams may I assign this person to": assigning a second team means choosing
+ * from the whole org, and a picker built from the department-scoped list would
+ * silently hide every team outside the department the admin happens to be viewing.
+ * The server ships this route for exactly that reason.
+ */
+export async function getOrgTeams(
+  orgId: string,
+  params?: { page?: number; pageSize?: number }
+): Promise<PaginatedResponse<Team>> {
+  const query = buildQueryString({
+    page: params?.page || 1,
+    page_size: params?.pageSize || 100,
+  });
+  const response = await apiClient.get<{
+    items: Array<{
+      id: string;
+      department_id: string;
+      name: string;
+      description?: string;
+      created_at: string;
+    }>;
+    total: number;
+    page: number;
+    page_size: number;
+    has_more: boolean;
+  }>(`/admin/organizations/${orgId}/teams${query}`);
+
+  const items = Array.isArray(response?.items) ? response.items : [];
+  return {
+    items: items.map(transformTeam),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 100,
+    hasMore: response?.has_more ?? false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Team membership — Issue #4840's REST surface, consumed by #4847 (T2b).
+//
+// These four calls are the ONLY supported way to change who is on a team. In
+// particular none of them touches `users.team_id`: that column is a cache which the
+// server re-points to follow the primary membership, and writing it directly (via
+// `assignUserRole`, whose body carries no team field anyway) would drift the pointer
+// from the membership table the moment the UI was used.
+// ---------------------------------------------------------------------------
+
+function transformTeamMembership(data: {
+  id: string;
+  user_id: string;
+  team_id: string;
+  org_id: string;
+  role: string;
+  is_primary: boolean;
+  source: string;
+  external_id?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+}): TeamMembership {
+  return {
+    id: data.id,
+    userId: data.user_id,
+    teamId: data.team_id,
+    orgId: data.org_id,
+    role: data.role,
+    isPrimary: data.is_primary,
+    source: data.source,
+    externalId: data.external_id ?? null,
+    createdAt: data.created_at,
+    updatedAt: data.updated_at ?? null,
+  };
+}
+
+type TeamMembershipWire = Parameters<typeof transformTeamMembership>[0];
+
+/** A user's team memberships in one org, primary first (the server orders them). */
+export async function getUserTeams(orgId: string, userId: string): Promise<TeamMembership[]> {
+  const response = await apiClient.get<{ items: TeamMembershipWire[]; total: number }>(
+    `/admin/organizations/${orgId}/users/${userId}/teams`
+  );
+  const items = Array.isArray(response?.items) ? response.items : [];
+  return items.map(transformTeamMembership);
+}
+
+/**
+ * Replace a user's ENTIRE membership set — the deliberate way to move a primary.
+ *
+ * The body is the full intended set, not a diff: teams absent from it are removed.
+ * This is the endpoint to use when changing which team is primary, because
+ * `addTeamMember` refuses a second primary (409
+ * `team_membership_second_primary`) rather than silently re-pointing the claim —
+ * here the whole set arrives at once, so exactly one primary is expressible.
+ */
+export async function replaceUserTeams(
+  orgId: string,
+  userId: string,
+  memberships: TeamMembershipInput[]
+): Promise<TeamMembership[]> {
+  const response = await apiClient.put<{ items: TeamMembershipWire[]; total: number }>(
+    `/admin/organizations/${orgId}/users/${userId}/teams`,
+    {
+      memberships: memberships.map((m) => ({
+        team_id: m.teamId,
+        role: m.role,
+        is_primary: m.isPrimary ?? false,
+      })),
+    }
+  );
+  const items = Array.isArray(response?.items) ? response.items : [];
+  return items.map(transformTeamMembership);
+}
+
+/**
+ * Add one membership. Idempotent on `(user_id, team_id)`.
+ *
+ * `isPrimary` is refused with a 409 when the user already has a different primary
+ * team — use `replaceUserTeams` to move a primary. Callers must surface the server's
+ * message rather than pre-empting it with a client-side guess.
+ */
+export async function addTeamMember(
+  orgId: string,
+  teamId: string,
+  data: { userId: string; role?: string; isPrimary?: boolean }
+): Promise<TeamMembership> {
+  const response = await apiClient.post<TeamMembershipWire>(
+    `/admin/organizations/${orgId}/teams/${teamId}/members`,
+    {
+      user_id: data.userId,
+      role: data.role,
+      is_primary: data.isPrimary ?? false,
+    }
+  );
+  return transformTeamMembership(response);
+}
+
+/**
+ * Remove one membership. Idempotent.
+ *
+ * Removing the primary promotes the oldest remaining membership server-side, so a
+ * person is never left on teams with no primary — which is why the caller must
+ * refetch rather than mutating its local copy: the primary may have moved.
+ */
+export async function removeTeamMember(
+  orgId: string,
+  teamId: string,
+  userId: string
+): Promise<void> {
+  await apiClient.delete(`/admin/organizations/${orgId}/teams/${teamId}/members/${userId}`);
+}
+
 // User role endpoints
 // Note: The backend doesn't have a dedicated user roles list endpoint.
 // Instead, we get users from the organization and transform their role info.
@@ -394,6 +550,19 @@ export async function removeUserRole(userId: string, orgId?: string): Promise<vo
   await apiClient.put(`/admin/organizations/${orgId}/users/${userId}`, {
     role: AdminRole.MEMBER,
   });
+}
+
+/**
+ * Remove a person from the organization entirely — PR #4936 review (M2b).
+ *
+ * NOT the same act as `removeUserRole` above, which demotes to member and keeps the
+ * membership row precisely so the user does not become a no-row principal. This one
+ * calls the server's `DELETE /admin/organizations/{orgId}/users/{userId}` (org-update
+ * gated), which deletes the user from the org — database row and, where configured,
+ * their Cognito account. Callers must confirm before firing it; there is no undo.
+ */
+export async function removeOrgUser(orgId: string, userId: string): Promise<void> {
+  await apiClient.delete(`/admin/organizations/${orgId}/users/${userId}`);
 }
 
 // Transform functions
@@ -646,6 +815,11 @@ export async function getCognitoUsers(
  * that needs a usable user key must read it from here, where `cognito_sub` is
  * carried explicitly. `cognitoSub` is nullable: members who have never signed
  * in have no sub, and callers must not treat them as selectable.
+ *
+ * Issue #4847 adds `githubUsername` — the members panel labels people by their
+ * GitHub login where one is linked. `null` is a legitimate permanent state (a
+ * member who signed up by email), not missing data, and the panel says so rather
+ * than leaving the cell blank.
  */
 export async function getOrgUsers(
   orgId: string,
@@ -657,6 +831,7 @@ export async function getOrgUsers(
     name: string | null;
     cognitoSub: string | null;
     role: string | null;
+    githubUsername: string | null;
   }>;
   total: number;
   page: number;
@@ -674,6 +849,7 @@ export async function getOrgUsers(
       name: string | null;
       cognito_sub: string | null;
       role: string | null;
+      github_username: string | null;
     }>;
     total: number;
     page: number;
@@ -689,6 +865,7 @@ export async function getOrgUsers(
       name: user.name,
       cognitoSub: user.cognito_sub,
       role: user.role,
+      githubUsername: user.github_username ?? null,
     })),
     total: response?.total ?? 0,
     page: response?.page ?? 1,
@@ -775,6 +952,81 @@ export async function listPlatformUsers(params?: {
     total: response?.total ?? 0,
     page: response?.page ?? 1,
     pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
+  };
+}
+
+/** One member's month spend against the limit that governs them — Issue #4847. */
+export interface MemberBudget {
+  /** Canonical `users.id` — joins this row to the member listing and to memberships. */
+  userId: string;
+  /** Settled spend in THIS org for the period, a decimal string at 6dp. */
+  spendUsd: string;
+  /**
+   * The limit that governs them, a decimal string at 2dp, or `null` when NOTHING
+   * does — at any rung. `null` is not `"0.00"`: a zero would render as somebody who
+   * may spend nothing, and it is the difference between drawing no usage bar and
+   * drawing one at 0%.
+   */
+  limitUsd: string | null;
+  /**
+   * Which rung of the ladder supplied `limitUsd` — `own`/`admin` for an individual
+   * row, or `team_default`/`org_default`/`platform_default`. `null` when uncapped.
+   * Rendered as the source label so an admin can see a figure came from a default
+   * rather than something authored for that one person.
+   */
+  source: string | null;
+  sourceLabel: string | null;
+  isCapped: boolean;
+}
+
+/**
+ * Month spend + applicable limit for a page of an org's members — Issue #4847.
+ *
+ * **Platform-admin only, and that is not the same gate as the Members panel.** The
+ * limit can come from a partition-free individual row, so serving it to an org admin
+ * would disclose a ceiling governing their members' spend in tenants they have no
+ * membership in — the #4620 ruling, which `GET /budget/person-cap/{anchor}` follows
+ * for the same reason. Callers therefore treat this column as a platform-admin
+ * affordance and render the panel without it for an org admin, rather than firing a
+ * request that will 403.
+ *
+ * No spend/limit logic client-side: the server composes both figures from the same
+ * resolvers enforcement uses, so what is rendered is what is enforced.
+ */
+export async function getMemberBudgets(
+  orgId: string,
+  params?: { page?: number; pageSize?: number }
+): Promise<{ items: MemberBudget[]; total: number; hasMore: boolean }> {
+  const query = buildQueryString({
+    page: params?.page || 1,
+    page_size: params?.pageSize || 50,
+  });
+  const response = await apiClient.get<{
+    items: Array<{
+      user_id: string;
+      person_anchor: string | null;
+      spend_usd: string;
+      limit_usd: string | null;
+      limit_status: string;
+      source: string | null;
+      source_label: string | null;
+    }>;
+    total: number;
+    has_more: boolean;
+  }>(`/admin/organizations/${orgId}/member-budgets${query}`);
+
+  const items = Array.isArray(response?.items) ? response.items : [];
+  return {
+    items: items.map((row) => ({
+      userId: row.user_id,
+      spendUsd: row.spend_usd,
+      limitUsd: row.limit_usd,
+      source: row.source,
+      sourceLabel: row.source_label,
+      isCapped: row.limit_status === 'capped',
+    })),
+    total: response?.total ?? 0,
     hasMore: response?.has_more ?? false,
   };
 }
