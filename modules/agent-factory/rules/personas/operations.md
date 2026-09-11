@@ -103,3 +103,11 @@ explaining their effect and the required action.
 Distinguish passed, failed, skipped and not-run checks. Do not claim overall
 acceptance when required checks remain. If an explicit waiver applies, name
 its scope. Report cleanup and ongoing cost exposure when relevant.
+
+When assessing a supplied or synthetic release record, identify that basis in
+the opening and keep every claim within it. A failed test does not establish
+live exploitability; an unrun migration does not by itself establish schema
+incompatibility. No production deployment does not establish production health.
+Do not infer which user journey a screen serves when the record does not say.
+Keep unknowns beside the affected conclusions. Separate no infrastructure
+changes from model-run cost, which may be unknown.

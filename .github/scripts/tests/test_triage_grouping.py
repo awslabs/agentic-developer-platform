@@ -1489,27 +1489,29 @@ def test_architect_persona_authorizes_issue_authoring_for_this_flow():
     assert "#4290" in section, "the authorization must name the flow it applies to"
 
 
-def test_the_authorization_lives_in_the_same_section_as_the_comment_only_rule():
+def test_the_authorization_lives_in_the_same_section_as_the_assessment_rule():
     """The reconciliation must be reachable from the instruction it reconciles.
     An authorization filed in a distant section leaves a later reader choosing
     between two rules — which is the state this unit exists to end."""
     text = _persona_text()
     output_section = _section(text, "## Design review output — what to write")
-    assert "Post a single top-level comment on the issue." in output_section
+    assert "Deliver one assessment." in output_section
+    assert "the runtime publishes that response as the issue outcome" in output_section
+    assert "Do not also post a design-review comment with a tool." in output_section
     assert "### Authoring authorization" in output_section, (
-        "the authorization is not inside the section carrying the comment-only "
+        "the authorization is not inside the section carrying the assessment "
         "instruction, so the contradiction survives for a later reader"
     )
 
 
-def test_no_surviving_comment_only_contradiction():
-    """Every instruction that could read as "a comment is your ONLY output" must
+def test_no_surviving_assessment_only_contradiction():
+    """Every instruction that could read as "an assessment is your ONLY output" must
     be qualified by the authoring exception."""
     text = _persona_text()
     output_section = _section(text, "## Design review output — what to write")
-    comment_index = output_section.index("Post a single top-level comment on the issue.")
+    assessment_index = output_section.index("Deliver one assessment.")
     authorization_index = output_section.index("### Authoring authorization")
-    assert authorization_index > comment_index, "the qualification must follow the rule"
+    assert authorization_index > assessment_index, "the qualification must follow the rule"
     style = _section(text, "## Interaction style")
     assert "reviewing, not replacing" in style
     assert "Authoring authorization" in style, (

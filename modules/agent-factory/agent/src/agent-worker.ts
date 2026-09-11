@@ -978,17 +978,26 @@ ${wrapUntrusted(commentsContext)}
 
 ### Step 1: Analyze and Plan
 - Read the issue carefully to understand what's being asked
-- Research as needed (web search for external docs, grep/glob for codebase)
+- Identify whether the task is a bounded assessment, repository review, implementation or deployment
+- Research only what the requested conclusion needs; use supplied evidence for a bounded scenario
 - Create a clear plan for the assigned role and task
 
 ### Step 2: Post Your Plan
-Before substantive work, post a short plan appropriate to your role using
+For a small read-only assessment answerable from the supplied material, skip a
+separate plan comment and return the answer as your final response. Do not launch
+a repository scan or create specification artifacts just to fill a role template.
+If the task is hypothetical, assess its stated premises; do not replace them with
+today's implementation. A missing review target calls for a brief blocked outcome.
+
+For implementation, substantial investigation or a workflow that requires a plan,
+post a short plan before substantive work using
 \`gh issue comment ${ISSUE_NUMBER} --body-file <plan-file>\`.
-Explain the capability/problem, intended outcome, main steps and how you will
-verify it. A reviewer plans a review; an architect plans an assessment; an AIDLC
-agent names the current stage and gate. Do not announce implementation unless
-implementation is your assigned work. Include only consequential file paths.
-Existing approval gates still apply; this plan does not create a new gate.
+Use a few sentences for the intended outcome, main steps and verification.
+Match the plan to your role; do not announce implementation for an assessment.
+Existing approval gates and required AIDLC plan artifacts still apply; the small
+assessment exception does not bypass them or authorize execution.
+Apply phase templates when the task is part of that workflow, not merely because
+the persona has those templates available.
 
 ### Step 3: Execute Your Plan
 - Follow your plan step by step
@@ -1059,9 +1068,14 @@ Failing to run these checks is a process bug. PRs that land with lint/test failu
 
 ${AGENT_TYPE === 'reviewer' ? `### Step 3.4: Spec-vs-diff Review (MANDATORY for @agent-reviewer)
 
-You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the PR description, verify against the code.
+When assigned a PR review, treat it as an INDEPENDENT review — don't trust the PR description, verify against the code.
 
-**If you cannot find PR_NUMBER in the environment**, stop and report the setup failure in an issue comment — don't proceed with an unscoped review.
+**If you cannot find PR_NUMBER in the environment**, do not proceed with an unscoped
+PR review. If the task deliberately supplies no review target, return a brief final
+response explaining what cannot be assessed and asking the author for the revision
+and its check results. Otherwise report the missing review setup in your final
+response. Do not select an unrelated PR or manufacture a review/security result.
+The steps below apply once the assigned review target is available.
 
 1. **Identify the PR and the driving issue:**
    \`\`\`bash
@@ -1145,7 +1159,12 @@ You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the 
 
 **DO NOT merge without completing /security-review.**
 ` : ''}${AGENT_TYPE === 'operations' ? `### Step 3.5: Execution (MANDATORY for @agent-operations)
-**You are the DEPLOYMENT agent. Your job is to EXECUTE infrastructure changes, not just prepare them.**
+**For authorized deployment work, execute and verify the requested infrastructure changes.**
+
+The following execution steps apply only to an authorized deployment task. For
+an assessment of a supplied record, assess that record and label its provenance;
+do not run deployment commands or treat absent deployment authorization as a
+blocker. Keep conclusions within the supplied evidence.
 
 When working on deployment tasks:
 
@@ -1175,10 +1194,9 @@ When working on deployment tasks:
 **DO NOT just create YAML files, PRs, or documentation without attempting actual deployment.**
 **DO NOT consider your task complete until you have either deployed OR clearly stated why you could not.**
 ` : ''}### Step 4: Report Results
-- Summarize what you accomplished
-- List files created/modified
-- Note any issues encountered
-- Recommend next steps
+- Return the outcome once in your final response, following Completion Summary Format
+- Name the meaningful result, remaining blockers and next owner/action
+- Include file changes only when they help the user assess the requested work
 
 ## Available Tools
 
@@ -1216,9 +1234,12 @@ prepared design, PR opened, code merged, deployment and verified acceptance.
 A run ending does not establish any of those states. Do not use a generic
 "Task Complete" heading when work or required checks remain.
 
-The runtime publishes this final report. Do not post a second copy merely to
-announce completion. Required gate comments, PR reviews and audit records still
-belong in their designated places; link to them from the final report.
+The runtime publishes your final response as the issue's outcome. For an issue
+assessment, do not first use \`gh issue comment\` to publish the assessment and
+then return a recap: both would appear on the same issue. Return the full answer
+only here. Required gate comments, formal PR reviews and audit records still
+belong in their designated places; link to those with a brief status and next
+action rather than repeating their findings in the final response.
 Keep technical inventories, commands and long test matrices below the summary
 or in linked evidence. Critical caveats must remain visible.
 
@@ -1233,6 +1254,11 @@ ${AGENT_TYPE === 'operations' ? `For operations, name the target environment and
 - Gotchas, workarounds, and things that took multiple attempts
 - Exact versions, endpoints, resource names that future agents will need
 - NEVER include secrets, API keys, tokens, passwords, or private keys in learnings
+
+Before returning, remove announcements that the learnings file was written or
+the worktree is clean, unless requested or relevant to the task's outcome.
+Keep those details in the run record. Check that qualifications accompany the
+claims they limit and that no recommendation is presented as the owner's decision.
 
 Now, complete the assigned task.`;
 

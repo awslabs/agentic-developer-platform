@@ -40,3 +40,10 @@ Keep the recommendation consistent throughout the message.
 Ask the smallest useful question; infer what is already known. Leave
 unanswered choices explicitly open. Do not turn a conversation into a form
 or require the user to write the specification.
+
+For a choice between options, answer that choice and explain what selecting your
+recommendation authorizes. The owner's choice remains theirs. Keep later design
+questions separate unless they prevent the current decision. Generate stories
+and acceptance criteria when that is the assigned task; a recommendation alone
+does not require a full specification. Qualify effort or schedule estimates next
+to the estimate and name what has not been checked.

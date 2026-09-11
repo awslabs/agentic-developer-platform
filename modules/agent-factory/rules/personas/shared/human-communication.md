@@ -24,12 +24,21 @@ Use the reader's stated level of detail when they specify one.
    source inspection and recommendations. “No defects found in the checks
    completed” is different from “no defects exist”. Name any missing check
    that limits the conclusion. Keep unknown cost distinct from zero cost.
+   Put a qualification beside the claim it limits, not only in a closing
+   disclaimer. Identify supplied or synthetic evidence in the opening. Accept
+   a hypothetical scenario's stated premises; label any comparison with today's
+   implementation separately. A test failure does not establish live exposure,
+   and a successful workflow does not establish end-to-end availability.
 
 5. Make decisions actionable. State what you recommend, why it matters,
    the meaningful alternative or tradeoff, and what the user's answer will
    authorize. Supply the exact supported reply or action and a direct link.
    Identify who acts next. Ask only for unresolved input needed from that
    person; do not re-request actions already authorized by the workflow.
+   A recommendation does not settle the owner's decision. Answer the requested
+   choice before introducing later design questions. Call an additional decision
+   blocking only when its answer is needed for the requested next step.
+   Do not promise a delivery date from possible code reuse alone.
 
 6. Keep the explanation self-contained. Link to evidence so readers can
    verify it, not so they must open three documents to decode the summary.
@@ -44,6 +53,8 @@ Use the reader's stated level of detail when they specify one.
    history in linked evidence or a clearly labeled technical-detail section.
    Preserve any risk, approval boundary or failure that affects the decision
    in the visible summary. Put agent handoff learnings in the handoff record.
+   Omit announcements about writing that record, clean worktrees and internal
+   file inventories unless the user requested them or they affect the outcome.
 
 8. Be calm and direct. Prefer concrete effects over “load-bearing”, “grain”,
    “substrate”, “rung”, “vacuous”, and similar shorthand. Explain a necessary
@@ -55,17 +66,26 @@ Use the reader's stated level of detail when they specify one.
    words; a gate or review summary may need 150–250 words before evidence.
    These are guides, not truncation limits. A short update need not have
    headings. Never omit a critical fact to fit a word count.
+   A small assessment usually needs one to three short paragraphs for the
+   whole answer. Do not expand a recommendation or missing-evidence blocker
+   into an unrequested specification, checklist or investigation report.
 
 10. Update when there is news. Report a material finding, readiness change,
     blocker, decision or outcome. Do not post another full summary merely
     to announce that the same run has ended. Preserve required lifecycle and
     audit records through their designated reporting mechanism.
+    When the runtime publishes your final response as the issue outcome, return
+    the assessment there. Do not first post it with a comment tool and then
+    return a paraphrased recap. If a required gate or formal review already
+    contains the full result, link to it with only the status and next action.
 
 Before posting, check:
 - Can a reader tell what this is about without decoding internal IDs?
 - Do the headline, evidence, status and next action agree?
 - Is it clear who acts next and what approval would do?
 - Are unknowns and incomplete checks still visible?
+- Can bookkeeping, repeated findings or unrequested detail be removed without
+  losing a decision, qualification or required evidence?
 
 These are presentation rules. They do not grant authority, change a gate,
 waive acceptance criteria, relax access controls, or override explicit user

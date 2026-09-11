@@ -19,6 +19,23 @@ presentation, not authority, acceptance criteria or approval gates.
   in linked evidence. Keep required handoff learnings in their separate record.
 - Update when something changes; avoid repeating the full report at run shutdown.
 
+For a small assessment answerable from supplied material, the worker returns
+the answer directly without a separate plan comment, broad repository scan or
+unrequested specification. The architect has an explicit bounded-assessment
+mode for this. Implementation reviews still inspect relevant code and schema;
+required AIDLC plan artifacts and approval gates remain in place.
+
+The runtime publishes the final response as the issue outcome. Assessment
+personas must not also post a full assessment through a comment tool and then
+return a paraphrased recap. Required PR reviews and gates retain their own
+destinations; the final response links to them with a brief status and next action.
+
+Keep learnings-file announcements and clean-worktree bookkeeping in the run
+record unless requested or consequential. Label supplied or hypothetical evidence
+in the opening, qualify claims where they appear, and accept the premises of a
+hypothetical question. A recommendation does not settle the owner's choice, and
+possible code reuse does not establish a delivery estimate.
+
 Reviewers lead with verdict, blockers and user impact. Architects lead with
 readiness and decisions. Operations and evaluations name the environment and
 separate passed, failed, skipped and not-run checks. Product and intent agents
@@ -108,3 +125,26 @@ runs. Ask a reader to identify the outcome, current state, next owner/action
 and approval consequence without opening another document. Check that critical
 caveats remain visible and compare duplicate-comment counts with earlier runs.
 These checks evaluate the intended improvement beyond prompt and renderer tests.
+
+## Findings from the September 2026 pilot
+
+Four assessment-only runs after PR #4953 exercised
+[product #4954](https://github.com/aws-e/adp/issues/4954),
+[architect #4955](https://github.com/aws-e/adp/issues/4955),
+[reviewer #4956](https://github.com/aws-e/adp/issues/4956) and
+[operations #4957](https://github.com/aws-e/adp/issues/4957). Their runtime notices
+separated run completion from feature completion, but three personas posted a
+separate assessment and repeated it in the final response. Product added an
+unrequested decision; architect challenged a hypothetical premise using the
+current codebase; operations strengthened synthetic test evidence into claims
+about live exposure. Reviewer correctly withheld approval for a missing revision
+but still produced a long, repeated answer.
+
+Those observations motivated the bounded-assessment path, explicit single-outcome
+instructions, bookkeeping check and evidence rules above. Regression checks verify
+prompt assembly and existing workflow contracts; they cannot establish whether
+models follow the new wording. After release, repeat the same four scenarios in
+fresh issues, verify the installed prompt revision and compare whole-thread
+repetition, readability and evidence accuracy. Keep necessary caveats visible;
+shorter text alone is not success. These four single runs provide neither an A/B
+comparison nor validation of all personas, AIDLC gates or chat conversations.
