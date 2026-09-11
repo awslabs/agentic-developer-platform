@@ -236,12 +236,15 @@ variable "enable_github_auth_broker" {
 }
 
 variable "github_auth_allowlist_mode" {
-  type        = string
-  description = "Allowlist mode for GitHub auth broker: 'org' (GitHub org membership), 'explicit' (not implemented in the broker; denies), or 'open' (no enforcement — requires github_auth_allow_open_signup). Issue #3986: defaults to 'org' so the shipped default fails closed."
+  type = string
+  # Issue #4844: 'platform' added. It is a mode this variable ACCEPTS, not one any
+  # environment is set to — flipping an environment to it is a deliberate operator
+  # action after a verified deploy and smoke test, never part of a merge.
+  description = "Allowlist mode for GitHub auth broker: 'org' (GitHub org membership), 'platform' (≥1 platform org membership — #4844), 'explicit' (not implemented in the broker; denies), or 'open' (no enforcement — requires github_auth_allow_open_signup). Issue #3986: defaults to 'org' so the shipped default fails closed."
   default     = "org"
   validation {
-    condition     = contains(["org", "explicit", "open"], var.github_auth_allowlist_mode)
-    error_message = "Allowlist mode must be 'org', 'explicit', or 'open'."
+    condition     = contains(["org", "platform", "explicit", "open"], var.github_auth_allowlist_mode)
+    error_message = "Allowlist mode must be 'org', 'platform', 'explicit', or 'open'."
   }
   # Cross-variable checks are gated on enable_github_auth_broker so that
   # deployments with the broker disabled (the default) are unaffected by the
@@ -254,6 +257,13 @@ variable "github_auth_allowlist_mode" {
     condition     = !var.enable_github_auth_broker || var.github_auth_allowlist_mode != "open" || var.github_auth_allow_open_signup
     error_message = "github_auth_allowlist_mode = 'open' disables allowlist enforcement entirely; set github_auth_allow_open_signup = true to acknowledge this."
   }
+  # Issue #4844: no validation is needed to guarantee 'platform' mode has a
+  # projection to read. Both identity-index tables are unconditional resources of
+  # this root module and their names are passed to both Lambdas unconditionally
+  # (see the module "cognito" and module "github_auth_broker" blocks in main.tf),
+  # so IDENTITY_INDEX_TABLE cannot be empty in a deployed environment. The
+  # Lambda-side guard for an unset table (reader ⇒ UNAVAILABLE ⇒ deny) remains as
+  # defence in depth, and is covered by the fail-closed tests.
 }
 
 variable "github_auth_allowed_orgs" {

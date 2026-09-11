@@ -199,11 +199,40 @@ def _signup_event(username: str = "GitHub_20402445") -> dict:
 
 @pytest.mark.parametrize("verdict,exc", ALL_READER_BEHAVIOURS)
 def test_pre_signup_open_mode_still_confirms(pre_signup, verdict, exc):
+    """Issue #4844: 'open' now also needs ALLOW_OPEN_SIGNUP, as the broker always has.
+
+    The shadow-mode guarantee this test exists for is unchanged and still asserted:
+    whatever the projection says, an open-mode sign-up is confirmed. Only the
+    precondition moved — the mode alone was a divergence from the broker (#3986),
+    so the flag is now set here the way Terraform sets it in every environment.
+    """
     ctx, fake = _patch_reader(verdict, exc)
-    with ctx, patch.object(pre_signup, "ALLOWLIST_MODE", "open"):
+    with (
+        ctx,
+        patch.object(pre_signup, "ALLOWLIST_MODE", "open"),
+        patch.object(pre_signup, "ALLOW_OPEN_SIGNUP", True),
+    ):
         result = pre_signup.handler(_signup_event(), None)
     assert result["response"]["autoConfirmUser"] is True
     fake.check_platform_membership.assert_called_once()
+
+
+@pytest.mark.parametrize("verdict,exc", ALL_READER_BEHAVIOURS)
+def test_pre_signup_open_mode_without_the_flag_denies_regardless_of_the_read(pre_signup, verdict, exc):
+    """The other half of #4844's alignment, still shadow-safe.
+
+    An unflagged 'open' denies for the *misconfiguration*, never because of what
+    the projection said — the denial must be identical across all four reader
+    behaviours, which is what parametrising this proves.
+    """
+    ctx, _ = _patch_reader(verdict, exc)
+    with (
+        ctx,
+        patch.object(pre_signup, "ALLOWLIST_MODE", "open"),
+        patch.object(pre_signup, "ALLOW_OPEN_SIGNUP", False),
+        pytest.raises(Exception, match="misconfiguration"),
+    ):
+        pre_signup.handler(_signup_event(), None)
 
 
 @pytest.mark.parametrize("verdict,exc", ALL_READER_BEHAVIOURS)
@@ -262,8 +291,17 @@ def test_pre_signup_refuses_to_guess_a_non_numeric_id(pre_signup, username):
 
 
 def test_pre_signup_skips_the_read_when_no_numeric_id(pre_signup):
+    """A login-shaped userName yields no id, so the shadow read is skipped, not guessed.
+
+    Issue #4844 added the ALLOW_OPEN_SIGNUP precondition to 'open' mode; the
+    assertion about the *read* is unchanged.
+    """
     ctx, fake = _patch_reader("eligible", None)
-    with ctx, patch.object(pre_signup, "ALLOWLIST_MODE", "open"):
+    with (
+        ctx,
+        patch.object(pre_signup, "ALLOWLIST_MODE", "open"),
+        patch.object(pre_signup, "ALLOW_OPEN_SIGNUP", True),
+    ):
         result = pre_signup.handler(_signup_event(username="GitHub_octocat"), None)
     assert result["response"]["autoConfirmUser"] is True
     fake.check_platform_membership.assert_not_called()

@@ -166,11 +166,18 @@ variable "github_oauth_client_secret" {
 
 variable "pre_signup_allowlist_mode" {
   type        = string
-  description = "Allowlist mode for Pre Sign-Up trigger: 'org' (GitHub org membership), 'explicit' (DDB allowlist), or 'open' (allow all)"
+  description = "Allowlist mode for Pre Sign-Up trigger: 'org' (GitHub org membership), 'platform' (≥1 platform org membership — #4844), 'explicit' (DDB allowlist), or 'open' (allow all — requires pre_signup_allow_open_signup)"
   default     = "org"
   validation {
-    condition     = contains(["org", "explicit", "open"], var.pre_signup_allowlist_mode)
-    error_message = "Allowlist mode must be 'org', 'explicit', or 'open'."
+    condition     = contains(["org", "platform", "explicit", "open"], var.pre_signup_allowlist_mode)
+    error_message = "Allowlist mode must be 'org', 'platform', 'explicit', or 'open'."
+  }
+  # Issue #4844: 'open' now requires the same acknowledgement flag the broker has
+  # required since #3986. Caught in the plan rather than at runtime, where it
+  # would surface as a total sign-up denial.
+  validation {
+    condition     = var.pre_signup_allowlist_mode != "open" || var.pre_signup_allow_open_signup
+    error_message = "pre_signup_allowlist_mode = 'open' disables allowlist enforcement entirely; set pre_signup_allow_open_signup = true to acknowledge this."
   }
 }
 
@@ -178,6 +185,12 @@ variable "pre_signup_allowed_orgs" {
   type        = string
   description = "Comma-separated list of GitHub org names allowed to sign up (used when allowlist_mode is 'org')"
   default     = ""
+}
+
+variable "pre_signup_allow_open_signup" {
+  type        = bool
+  description = "Escape hatch (#3986/#4844): honour pre_signup_allowlist_mode = 'open'. Mirrors the broker's allow_open_signup so both copies of the allowlist agree."
+  default     = false
 }
 
 variable "github_token_secret_arn" {

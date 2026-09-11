@@ -28,8 +28,10 @@ Environment variables:
                             when unset it is derived from the request context
                             (domainName + stage) at runtime (#2708).
   FRONTEND_URL            — Frontend origin (e.g., https://d1g6cal2ts4iis.cloudfront.net)
-  ALLOWLIST_MODE          — "org" (default), "open", or "explicit". Anything
-                            other than "org" denies sign-in; see #3986.
+  ALLOWLIST_MODE          — "org" (default), "platform", "open", or "explicit".
+                            "org" gates on GitHub org membership; "platform"
+                            gates on platform org membership (#4844). Anything
+                            that does not explicitly grant denies; see #3986.
   ALLOWED_ORGS            — Comma-separated list of allowed GitHub orgs.
                             Required for ALLOWLIST_MODE=org; empty denies.
   ALLOW_OPEN_SIGNUP       — "true" to honour ALLOWLIST_MODE=open. Without it,
@@ -40,9 +42,12 @@ Environment variables:
                             legacy tokens-in-URL redirect; see
                             _emit_session_handoff for why that fallback exists.
   IDENTITY_INDEX_TABLE    — Identity-index table carrying the member_org_ids
-                            projection (#4849). Read-only, SHADOW MODE: the
-                            verdict is logged, never enforced. Unset ⇒ the read
-                            reports UNAVAILABLE and login is unaffected.
+                            projection (#4849). Read-only. Under
+                            ALLOWLIST_MODE=platform this is the authority for
+                            sign-in eligibility (#4844) and MUST be set: unset ⇒
+                            the read reports UNAVAILABLE ⇒ every sign-in is
+                            denied. Under every other mode the read is SHADOW
+                            MODE (logged, never enforced) and unset is harmless.
   USER_IDENTITY_INDEX_TABLE   — v2 identity-index table for the same read (#537).
   USER_IDENTITY_INDEX_V2_READ — "true" to read v2 first, legacy as fallback.
   LOG_LEVEL               — Logging level (default: INFO)
@@ -358,19 +363,36 @@ def _handle_start(event: dict) -> dict:
     }
 
 
-def _check_allowlist(github_login: str, github_token: str) -> str | None:
+def _check_allowlist(github_login: str, github_token: str, github_id: str = "") -> str | None:
     """Decide whether a GitHub user may sign in.
 
-    Issue #3986: fail closed. Only ``org`` mode grants access; every other mode
-    — including an unset, typo'd, or explicitly ``open`` ALLOWLIST_MODE — denies,
-    mirroring the pre-signup trigger's unknown-mode→deny behaviour.
+    Issue #3986: fail closed. Every mode that does not explicitly grant — an
+    unset, typo'd, or misconfigured ALLOWLIST_MODE — denies, mirroring the
+    pre-signup trigger's unknown-mode→deny behaviour.
+
+    Granting modes are ``org`` (GitHub org membership) and, since #4844,
+    ``platform`` (at least one platform org membership; GitHub only proves *who*
+    you are, it no longer decides *whether you belong*).
+
+    Args:
+        github_login: GitHub login, used by ``org`` mode's GitHub API check.
+        github_token: The signing-in user's OAuth token, used as the org-check
+            fallback when no org token is configured.
+        github_id: The GitHub numeric account id, used by ``platform`` mode. The
+            membership projection is keyed on the **id**, not the login, because
+            logins are renameable — passing a login here would look up the wrong
+            user (or nobody) rather than fail.
 
     Returns None when the user is allowed, otherwise the error code to redirect
-    with. ``org_check_unavailable`` distinguishes "we could not verify" from
-    ``not_authorized`` ("verified, not a member") so a missing org token or an
-    unapproved OAuth App doesn't look like a legitimate denial.
+    with. The "could not verify" codes (``org_check_unavailable``,
+    ``membership_check_unavailable``) are distinct from ``not_authorized``
+    ("verified, not a member") so a missing org token, an unapproved OAuth App,
+    or an unreachable projection table doesn't look like a legitimate denial.
     """
     mode = ALLOWLIST_MODE.strip().lower()
+
+    if mode == "platform":
+        return _check_platform_membership_mode(github_id, github_login)
 
     if mode == "org":
         orgs = [o.strip() for o in ALLOWED_ORGS.split(",") if o.strip()]
@@ -405,6 +427,61 @@ def _check_allowlist(github_login: str, github_token: str) -> str | None:
     return "not_authorized"
 
 
+def _check_platform_membership_mode(github_id: str, github_login: str) -> str | None:
+    """``ALLOWLIST_MODE=platform``: eligibility from platform membership (#4844).
+
+    Implements C6 of ``docs/design-notes/4828-platform-native-org-team-user.md``.
+    Allow iff the GitHub identity resolves to a user holding at least one platform
+    org membership. GitHub stays the way you prove who you are; it stops deciding
+    whether you belong. That is what lets an admin-created org's members sign in
+    with no GitHub-org relationship at all, and it is the shape directory sync
+    will feed later.
+
+    The predicate is **row existence**, not ``is_active``: that flag marks which
+    single workspace a user currently has selected, so filtering on it would deny
+    every member whose selected workspace is a different org (and everyone with
+    no selection). The projection this reads is built without an ``is_active``
+    filter for exactly that reason (``src/admin/memberships.py`` ::
+    ``project_member_org_ids``).
+
+    Fail-CLOSED, unlike the #4849 shadow wrapper below. An unavailable membership
+    source denies; it does not fall through to another mode. A raising read also
+    denies: swallowing the exception was correct while the verdict was inert, but
+    once it is authoritative, swallowing is fail-*open* — precisely the class of
+    bug that makes a login path grant access it cannot justify.
+    """
+    try:
+        from membership_eligibility import ELIGIBLE, NOT_ELIGIBLE, check_platform_membership
+
+        verdict = check_platform_membership(str(github_id))
+    except Exception as e:
+        # Includes ImportError: if the shared reader is missing from the zip, the
+        # mode cannot be enforced, so it must not appear to pass. See
+        # infra/modules/cognito/pre_signup.tf and scripts/deploy-broker.sh for the
+        # packaging that must keep it present.
+        logger.exception("ALLOWLIST_MODE=platform: membership read raised for github_id=%s; denying sign-in: %s", github_id, e)
+        return "membership_check_unavailable"
+
+    if verdict == ELIGIBLE:
+        logger.info("ALLOWLIST_MODE=platform: %s (id=%s) holds a platform membership; allowing", github_login, github_id)
+        return None
+
+    if verdict == NOT_ELIGIBLE:
+        logger.warning("ALLOWLIST_MODE=platform: %s (id=%s) holds no platform membership; denying", github_login, github_id)
+        return "not_authorized"
+
+    # UNAVAILABLE (or any verdict this code does not recognise): the read did not
+    # complete, so nothing has been proven. Deny, but attributably — collapsing
+    # this into not_authorized is the exact ambiguity #3986 was filed to fix.
+    logger.error(
+        "ALLOWLIST_MODE=platform: membership source unavailable for %s (id=%s) (verdict=%r); denying",
+        github_login,
+        github_id,
+        verdict,
+    )
+    return "membership_check_unavailable"
+
+
 def _log_membership_eligibility_shadow(github_id, github_login: str, denial: str | None) -> None:
     """Log what the membership-eligibility read would decide (Issue #4849).
 
@@ -412,7 +489,15 @@ def _log_membership_eligibility_shadow(github_id, github_login: str, denial: str
     the new read path cannot break login: this Lambda is the single enforcement
     point for GitHub sign-in, and an exception here would be a total outage for a
     code path that is not even supposed to have an opinion yet.
+
+    Issue #4844: skipped under ``ALLOWLIST_MODE=platform``, where the same read is
+    the live decision and has already been logged with its real outcome. Shadowing
+    an enforcing read would double every DynamoDB call inside Cognito's
+    non-negotiable trigger budget and log a "would_agree" line that can only ever
+    say True.
     """
+    if ALLOWLIST_MODE.strip().lower() == "platform":
+        return
     try:
         from membership_eligibility import check_platform_membership
 
@@ -500,7 +585,7 @@ def _handle_callback(event: dict) -> dict:
         # not fire PreSignUp_ExternalProvider, and the pre-signup trigger
         # deliberately passes PreSignUp_AdminCreateUser through, so the broker is
         # the only enforcement point for GitHub sign-in (#3986).
-        denial = _check_allowlist(github_user["login"], github_token)
+        denial = _check_allowlist(github_user["login"], github_token, str(github_user["id"]))
 
         # Issue #4849, SHADOW MODE: exercise the membership-eligibility read and
         # log what it *would* decide. Deliberately does not affect `denial` —

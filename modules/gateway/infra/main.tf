@@ -691,6 +691,23 @@ module "cognito" {
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
 
+  # Issue #4844: pass the allowlist configuration EXPLICITLY, from the same root
+  # variables that configure the broker. This block previously passed no
+  # pre_signup_* arguments at all, so the trigger ran the child module's defaults
+  # ("org" + an empty org list = deny-all if it ever fired) while the broker ran
+  # whatever the environment set — deny-vs-open divergence between two copies of
+  # one rule, in one environment. Introducing a new mode on top of unset defaults
+  # is the exact shape of the ALLOWLIST_MODE / ALLOW_OPEN_SIGNUP outage in
+  # CLAUDE.md, so the two copies are now configured together, in one deploy unit.
+  #
+  # This changes NO deployed behaviour today: pre-signup is not the live gate for
+  # GitHub sign-in (admin_create_user does not fire PreSignUp_ExternalProvider —
+  # see lambda/github-auth-broker/handler.py), so what it would have decided has
+  # never been consulted. It stops the two from drifting further.
+  pre_signup_allowlist_mode    = var.github_auth_allowlist_mode
+  pre_signup_allowed_orgs      = var.github_auth_allowed_orgs
+  pre_signup_allow_open_signup = var.github_auth_allow_open_signup
+
   # Issue #4849: membership-eligibility projection read (shadow mode). Referencing
   # the tables directly is safe HERE — they are resources of this root module, so
   # this is root -> child, not the child -> root reference that would close the

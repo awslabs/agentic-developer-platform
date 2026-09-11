@@ -189,6 +189,12 @@ resource "aws_lambda_function" "pre_signup" {
       GITHUB_TOKEN_SECRET_ARN = var.github_token_secret_arn
       LOG_LEVEL               = var.environment == "prod" ? "INFO" : "DEBUG"
 
+      # Issue #4844: 'open' mode now requires this acknowledgement in BOTH copies
+      # of the allowlist (the broker has required it since #3986). Code and env var
+      # ship in this same apply — splitting them is the ALLOWLIST_MODE /
+      # ALLOW_OPEN_SIGNUP outage recorded in CLAUDE.md.
+      ALLOW_OPEN_SIGNUP = var.pre_signup_allow_open_signup ? "true" : "false"
+
       # Issue #4849: membership-eligibility projection tables (shadow-mode read).
       # Env var and code ship in this same apply — the ALLOWLIST_MODE /
       # ALLOW_OPEN_SIGNUP outage recorded in CLAUDE.md came from splitting them.

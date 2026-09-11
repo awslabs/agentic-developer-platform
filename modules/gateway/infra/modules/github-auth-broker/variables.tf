@@ -50,12 +50,12 @@ variable "frontend_url" {
 }
 
 variable "allowlist_mode" {
-  description = "Allowlist mode: 'org' (GitHub org membership), 'explicit' (not implemented; denies), or 'open' (no enforcement — requires allow_open_signup). Issue #3986: defaults to 'org' so the module fails closed."
+  description = "Allowlist mode: 'org' (GitHub org membership), 'platform' (≥1 platform org membership — #4844), 'explicit' (not implemented; denies), or 'open' (no enforcement — requires allow_open_signup). Issue #3986: defaults to 'org' so the module fails closed."
   type        = string
   default     = "org"
   validation {
-    condition     = contains(["org", "explicit", "open"], var.allowlist_mode)
-    error_message = "Allowlist mode must be 'org', 'explicit', or 'open'."
+    condition     = contains(["org", "platform", "explicit", "open"], var.allowlist_mode)
+    error_message = "Allowlist mode must be 'org', 'platform', 'explicit', or 'open'."
   }
   validation {
     condition     = var.allowlist_mode != "org" || trimspace(var.allowed_orgs) != ""
