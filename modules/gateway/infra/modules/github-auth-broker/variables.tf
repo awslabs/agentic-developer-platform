@@ -111,3 +111,41 @@ variable "enable_reserved_concurrency" {
 # --- API Gateway variables (Issue #525, removed in Issue #1011) ---
 # The route is now defined in the api-gateway module's OpenAPI body.
 # The broker module only needs to expose its invoke_arn as an output.
+
+# -----------------------------------------------------------------------------
+# Membership-eligibility projection read (Issue #4849)
+# -----------------------------------------------------------------------------
+# The broker reads `member_org_ids` off the identity-index rows to answer "does
+# this GitHub identity hold any platform org membership?" without a gateway call
+# (the standing rule after the 2026-07-05 dispatch outage: a non-VPC Lambda must
+# never synchronously call the internal gateway).
+#
+# Passed in as values rather than resolved here: this module sits on the
+# cloudfront -> api_gateway -> github_auth_broker -> cloudfront cycle documented at
+# modules/gateway/infra/main.tf:723-736.
+#
+# All default to empty/false so the read is inert until wired.
+
+variable "identity_index_table_name" {
+  description = "Name of the legacy identity-index DynamoDB table (Issue #4849 eligibility read)"
+  type        = string
+  default     = ""
+}
+
+variable "user_identity_index_table_name" {
+  description = "Name of the v2 user-identity-index DynamoDB table (Issue #4849 eligibility read)"
+  type        = string
+  default     = ""
+}
+
+variable "identity_index_table_arns" {
+  description = "ARNs of the identity-index tables the broker may GetItem from. Empty grants nothing."
+  type        = list(string)
+  default     = []
+}
+
+variable "user_identity_index_v2_read" {
+  description = "Read the v2 user-identity-index table first, falling back to the legacy table. Mirrors the webhook-ingress reader's flag (#537)."
+  type        = string
+  default     = "false"
+}

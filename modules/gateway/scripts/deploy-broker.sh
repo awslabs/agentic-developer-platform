@@ -91,10 +91,17 @@ else
   # Copy the handler + sibling modules flat into the build dir.
   if [ "$DRY_RUN" = false ]; then
     ( cd "$LAMBDA_SRC_DIR" && for f in *.py; do [ -f "$f" ] && cp "$f" build/; done )
+    # Issue #4849: the shared membership-eligibility reader lives outside this dir
+    # (lambda/shared/) so the pre-signup Lambda can package the same file instead
+    # of a divergent copy. Must stay in lockstep with
+    # .github/workflows/github-auth-broker-deploy.yml — this script is documented
+    # as replicating that workflow exactly, and a file added to one but not the
+    # other means the CI deploy and the manual deploy ship different code.
+    cp "${MODULE_ROOT}/lambda/shared/membership_eligibility.py" "${BUILD_DIR}/"
     ( cd "$BUILD_DIR" && find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true; \
       rm -f "$ZIP_PATH"; zip -r -q "$ZIP_PATH" . )
   else
-    echo -e "${BLUE}[dry-run]${NC} cp *.py -> build/ ; zip -r broker.zip ."
+    echo -e "${BLUE}[dry-run]${NC} cp *.py + shared/membership_eligibility.py -> build/ ; zip -r broker.zip ."
   fi
   [ "$DRY_RUN" = false ] && ok "Built $(du -h "$ZIP_PATH" 2>/dev/null | cut -f1) $ZIP_PATH"
 fi

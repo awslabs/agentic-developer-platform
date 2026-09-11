@@ -734,3 +734,9 @@ variable "cloudfront_enable_ipv6" {
   type        = bool
   default     = true
 }
+
+variable "user_identity_index_v2_read" {
+  type        = string
+  description = "Issue #4849: whether the auth Lambdas' membership-eligibility read tries the v2 user-identity-index table before the legacy one. String, not bool, because it is passed straight through to a Lambda env var. Mirrors the webhook-ingress reader's USER_IDENTITY_INDEX_V2_READ flag (#537) so all readers can be moved together."
+  default     = "false"
+}

@@ -11,7 +11,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.admin.memberships import is_admin_level_role, upsert_tenant_membership
+from src.admin.memberships import is_admin_level_role, project_member_org_ids, upsert_tenant_membership
 from src.shared.models.organization import User
 from src.shared.models.vault import UserIdentity
 
@@ -125,6 +125,14 @@ class UsersService:
                 )
             except Exception:
                 logger.exception("DDB write-through failed for user %s (non-fatal)", user.id)
+
+        # Issue #4849: sync_user_identities above calls put_user_identity WITHOUT
+        # member_org_ids, which takes the UpdateItem branch that deliberately
+        # *preserves* an existing member_org_ids — correct for wipe-safety, but it
+        # means a membership written by this path was never projected. Must run
+        # after the identity rows exist, so the targeted update has a row to hit.
+        if is_admin_level_role(req.role):
+            await project_member_org_ids(self._db, user_id=user.id, writer=self._identity_writer)
 
         # Step 5: Post-commit — Cognito user creation + invite
         dept_id = f"{org_id}-dept-default"

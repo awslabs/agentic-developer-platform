@@ -101,6 +101,12 @@ jobs:
             --implementation cp \
             --python-version 3.12 \
             -r "${LAMBDA_SRC_DIR}/requirements.txt"
+          # Issue #4849: the shared membership-eligibility reader lives outside the
+          # broker dir (modules/gateway/lambda/shared/) so the pre-signup Lambda
+          # packages the same file rather than a divergent copy. Must stay in
+          # lockstep with modules/gateway/scripts/deploy-broker.sh, which is
+          # documented as replicating this job exactly.
+          cp modules/gateway/lambda/shared/membership_eligibility.py "${BUILD_DIR}/"
           # Copy all Python source modules (exclude tests, build/, __pycache__)
           cd "${LAMBDA_SRC_DIR}"
           for f in *.py; do

@@ -691,6 +691,18 @@ module "cognito" {
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
 
+  # Issue #4849: membership-eligibility projection read (shadow mode). Referencing
+  # the tables directly is safe HERE — they are resources of this root module, so
+  # this is root -> child, not the child -> root reference that would close the
+  # cloudfront/api_gateway/broker cycle documented elsewhere in this file.
+  identity_index_table_name      = aws_dynamodb_table.identity_index.name
+  user_identity_index_table_name = aws_dynamodb_table.user_identity_index.name
+  identity_index_table_arns = [
+    aws_dynamodb_table.identity_index.arn,
+    aws_dynamodb_table.user_identity_index.arn,
+  ]
+  user_identity_index_v2_read = var.user_identity_index_v2_read
+
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 
@@ -1592,6 +1604,17 @@ module "github_auth_broker" {
   # Issue #4133: encrypt the session-handoff code table with the existing
   # gateway DynamoDB CMK.
   dynamodb_kms_key_arn = aws_kms_key.dynamodb.arn
+
+  # Issue #4849: membership-eligibility projection read (shadow mode). Safe as a
+  # direct reference because the tables are root-module resources — the cycle
+  # documented above is about the *broker* module referencing back into the root.
+  identity_index_table_name      = aws_dynamodb_table.identity_index.name
+  user_identity_index_table_name = aws_dynamodb_table.user_identity_index.name
+  identity_index_table_arns = [
+    aws_dynamodb_table.identity_index.arn,
+    aws_dynamodb_table.user_identity_index.arn,
+  ]
+  user_identity_index_v2_read = var.user_identity_index_v2_read
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn

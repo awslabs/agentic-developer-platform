@@ -12,7 +12,12 @@ from src.admin.cognito_service import CognitoService, CognitoServiceError
 from src.admin.config import get_admin_config
 from src.admin.exceptions import PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
 from src.admin.installations.guards import assert_new_installation_ids_claimable_by
-from src.admin.memberships import is_admin_level_role, set_membership_role, upsert_tenant_membership
+from src.admin.memberships import (
+    is_admin_level_role,
+    project_member_org_ids,
+    set_membership_role,
+    upsert_tenant_membership,
+)
 from src.admin.schemas import (
     BudgetConfigResponse,
     BudgetConfigUpdateRequest,
@@ -1351,7 +1356,8 @@ class AdminService:
         # tenant_memberships row that now carries that authority (#3987/#3998) —
         # same transaction as the users row. The role-assignment ceiling is
         # enforced by the caller (routes.py::add_user -> require_assignable_role).
-        if is_admin_level_role(request.role):
+        wrote_membership = is_admin_level_role(request.role)
+        if wrote_membership:
             await upsert_tenant_membership(
                 self.db,
                 user_id=user.id,
@@ -1362,6 +1368,11 @@ class AdminService:
 
         await self.db.commit()
         await self.db.refresh(user)
+
+        # Issue #4849: project the new membership to the DDB identity rows. This
+        # path wrote a membership but never projected it.
+        if wrote_membership:
+            await project_member_org_ids(self.db, user_id=user.id)
 
         return UserResponse(
             id=user.id,
@@ -1717,6 +1728,11 @@ class AdminService:
 
         await self.db.commit()
         await self.db.refresh(user)
+
+        # Issue #4849: a role change can *create* the membership row (when the
+        # user had none in this tenant), so the org list can change here too.
+        if request.role is not None:
+            await project_member_org_ids(self.db, user_id=user.id)
 
         # Post-commit, best-effort: the authority is already durable.
         if request.role is not None and user.cognito_sub:

@@ -202,3 +202,42 @@ variable "enable_reserved_concurrency" {
   type        = bool
   default     = true
 }
+
+# -----------------------------------------------------------------------------
+# Membership-eligibility projection read (Issue #4849)
+# -----------------------------------------------------------------------------
+# The pre-signup trigger reads `member_org_ids` off the identity-index rows to
+# answer "does this GitHub identity hold any platform org membership?" without a
+# gateway call. Names/ARNs arrive as variables rather than cross-module
+# references: the tables live in the gateway root module, and referencing back
+# into the root from here would close the cloudfront -> api_gateway ->
+# github_auth_broker -> cloudfront dependency loop documented at
+# modules/gateway/infra/main.tf:723-736.
+#
+# All default to empty/false so the read is inert until wired: an unset table name
+# makes check_platform_membership return UNAVAILABLE, which in shadow mode is a
+# log line and nothing more.
+
+variable "identity_index_table_name" {
+  description = "Name of the legacy identity-index DynamoDB table (Issue #4849 eligibility read)"
+  type        = string
+  default     = ""
+}
+
+variable "user_identity_index_table_name" {
+  description = "Name of the v2 user-identity-index DynamoDB table (Issue #4849 eligibility read)"
+  type        = string
+  default     = ""
+}
+
+variable "identity_index_table_arns" {
+  description = "ARNs of the identity-index tables the pre-signup Lambda may GetItem from. Empty grants nothing."
+  type        = list(string)
+  default     = []
+}
+
+variable "user_identity_index_v2_read" {
+  description = "Read the v2 user-identity-index table first, falling back to the legacy table. Mirrors the webhook-ingress reader's flag (#537) so all readers move together."
+  type        = string
+  default     = "false"
+}

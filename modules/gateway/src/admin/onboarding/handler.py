@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.admin.access_control import AccessControl
 from src.admin.config import AdminRole, Permission
 from src.admin.exceptions import InvalidScopeError
-from src.admin.memberships import upsert_tenant_membership
+from src.admin.memberships import project_member_org_ids, upsert_tenant_membership
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.models.onboarding import TenantAccessRequest, TenantMembership
@@ -491,36 +491,10 @@ async def _create_memberships_for_matches(
     # Flush to catch constraint violations within the transaction
     await db.flush()
 
-    # Issue #3134: Write-through member_org_ids to DDB after creating memberships.
-    # Best-effort — failures are logged but don't block the onboarding flow.
-    try:
-        from src.admin.identity.identity_index_writer import IdentityIndexWriter
-        from src.shared.models.vault import UserIdentity
-
-        # Collect all org_ids from existing + new memberships
-        all_stmt = select(TenantMembership.tenant_id).where(
-            TenantMembership.user_id == user_id,
-        )
-        all_org_ids = list((await db.execute(all_stmt)).scalars().all())
-
-        # Find user's GitHub identity for DDB key
-        identity_stmt = select(UserIdentity).where(
-            UserIdentity.user_id == user_id,
-            UserIdentity.provider == "github",
-        )
-        github_identity = (await db.execute(identity_stmt)).scalar_one_or_none()
-        if github_identity and github_identity.provider_user_id:
-            writer = IdentityIndexWriter()
-            await writer.update_user_membership_orgs(
-                provider_user_id=github_identity.provider_user_id,
-                member_org_ids=all_org_ids,
-                provider="github",
-            )
-    except Exception:
-        logger.exception(
-            "onboarding: failed to update member_org_ids for user=%s (non-fatal)",
-            user_id,
-        )
+    # Issue #3134's member_org_ids write-through used to live here. Issue #4849
+    # moved it to each caller's post-commit point: this function only flushes, so
+    # projecting here published memberships that a caller's later rollback erased.
+    # Callers must call admin.memberships.project_member_org_ids after committing.
 
 
 async def sync_memberships_on_login(
@@ -549,6 +523,8 @@ async def sync_memberships_on_login(
         github_login=github_login,
     )
     await db.commit()
+    # Issue #4849: project post-commit (see project_member_org_ids' docstring).
+    await project_member_org_ids(db, user_id=user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +668,8 @@ async def submit_access_request(
                     github_login=github_login,
                 )
                 await db.commit()
+                # Issue #4849: project post-commit.
+                await project_member_org_ids(db, user_id=user.id)
 
         return response
 
@@ -754,31 +732,9 @@ async def submit_access_request(
             )
             await db.commit()
 
-            # Issue #3134: Write-through member_org_ids after auto-approve
-            try:
-                from src.shared.models.vault import UserIdentity
-
-                all_stmt = select(TenantMembership.tenant_id).where(
-                    TenantMembership.user_id == user.id,
-                )
-                all_org_ids = list((await db.execute(all_stmt)).scalars().all())
-
-                identity_stmt = select(UserIdentity).where(
-                    UserIdentity.user_id == user.id,
-                    UserIdentity.provider == "github",
-                )
-                github_identity = (await db.execute(identity_stmt)).scalar_one_or_none()
-                if github_identity and github_identity.provider_user_id:
-                    await writer.update_user_membership_orgs(
-                        provider_user_id=github_identity.provider_user_id,
-                        member_org_ids=all_org_ids,
-                        provider="github",
-                    )
-            except Exception:
-                logger.exception(
-                    "auto-approve: failed to update member_org_ids for user=%s (non-fatal)",
-                    user.id,
-                )
+            # Issue #3134: Write-through member_org_ids after auto-approve.
+            # Issue #4849: consolidated into admin/memberships.py.
+            await project_member_org_ids(db, user_id=user.id, writer=writer)
 
         return AccessRequestResponse(
             status="approved",

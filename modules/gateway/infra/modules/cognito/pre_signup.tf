@@ -10,10 +10,25 @@
 #
 
 # Package the Lambda code
+# Issue #4849: multi-source archive so the shared membership_eligibility reader
+# ships alongside the handler. The handler imports it lazily inside a try/except,
+# so a missing file degrades to a logged warning rather than a cold-start
+# ImportError — but see modules/gateway/infra/modules/budget-lambda/main.tf:80
+# (#4391) for what happens when a shared module a handler needs is left out of the
+# archive: the Lambda ImportErrors on cold start and the whole function stops.
 data "archive_file" "pre_signup" {
   type        = "zip"
-  source_file = "${path.module}/lambda/pre_signup.py"
   output_path = "${path.module}/lambda/pre_signup.zip"
+
+  source {
+    content  = file("${path.module}/lambda/pre_signup.py")
+    filename = "pre_signup.py"
+  }
+
+  source {
+    content  = file("${path.root}/../lambda/shared/membership_eligibility.py")
+    filename = "membership_eligibility.py"
+  }
 }
 
 # IAM Role for the Lambda function
@@ -68,7 +83,7 @@ resource "aws_iam_role_policy" "pre_signup_dynamodb" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Effect = "Allow"
         Action = [
@@ -90,7 +105,23 @@ resource "aws_iam_role_policy" "pre_signup_dynamodb" {
         ]
         Resource = [var.kms_key_arn]
       }
-    ]
+      # Issue #4849: read the membership-eligibility projection (member_org_ids on
+      # the identity-index rows). GetItem only — this Lambda is a reader; the
+      # gateway API is the sole writer of these tables. ARNs arrive as a variable
+      # rather than a cross-module reference: the tables live in the gateway ROOT
+      # module, and referencing back into the root from here would close the
+      # documented cloudfront -> api_gateway -> broker -> cloudfront dependency
+      # loop (modules/gateway/infra/main.tf:723-736).
+      # Conditional because an empty Resource list is a malformed policy, not an
+      # empty grant — it fails the apply.
+      ], length(var.identity_index_table_arns) > 0 ? [
+      {
+        Sid      = "IdentityIndexProjectionRead"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = var.identity_index_table_arns
+      }
+    ] : [])
   })
 }
 
@@ -142,6 +173,13 @@ resource "aws_lambda_function" "pre_signup" {
       ALLOWLIST_TABLE         = aws_dynamodb_table.signup_allowlist.name
       GITHUB_TOKEN_SECRET_ARN = var.github_token_secret_arn
       LOG_LEVEL               = var.environment == "prod" ? "INFO" : "DEBUG"
+
+      # Issue #4849: membership-eligibility projection tables (shadow-mode read).
+      # Env var and code ship in this same apply — the ALLOWLIST_MODE /
+      # ALLOW_OPEN_SIGNUP outage recorded in CLAUDE.md came from splitting them.
+      IDENTITY_INDEX_TABLE        = var.identity_index_table_name
+      USER_IDENTITY_INDEX_TABLE   = var.user_identity_index_table_name
+      USER_IDENTITY_INDEX_V2_READ = var.user_identity_index_v2_read
     }
   }
 

@@ -1284,6 +1284,13 @@ async def _create_installer_membership(
             user_id,
             tenant_id,
         )
+        # Issue #4849: still refresh the projection. Nothing was written here, so
+        # this is a pure read of already-committed state — and a reinstall is the
+        # one recurring event that can heal a user whose membership predates
+        # consistent write-through, or whose projection write previously failed.
+        from src.admin.memberships import project_member_org_ids
+
+        await project_member_org_ids(db, user_id=user_id)
         return
 
     # Determine is_active: only if user has NO memberships at all
@@ -1315,40 +1322,14 @@ async def _create_installer_membership(
         is_active,
     )
 
-    # Issue #3134: Write-through member_org_ids to DDB identity rows.
-    # After creating the membership, update the user's DDB rows so the
+    # Issue #3134: Write-through member_org_ids to DDB identity rows so the
     # webhook Lambda can enforce trigger_policy without a gateway call.
-    try:
-        from sqlalchemy import select as sa_select
+    # Issue #4849: consolidated into admin/memberships.py — see that helper for
+    # the wipe-safety, is_active and multi-identity semantics. Runs post-commit
+    # (above) by design.
+    from src.admin.memberships import project_member_org_ids
 
-        from src.admin.identity.identity_index_writer import IdentityIndexWriter
-        from src.shared.models.vault import UserIdentity
-
-        # Collect all org_ids the user has memberships for
-        all_memberships_stmt = sa_select(TenantMembership.tenant_id).where(
-            TenantMembership.user_id == user_id,
-        )
-        all_memberships = (await db.execute(all_memberships_stmt)).scalars().all()
-        member_org_ids = list(all_memberships)
-
-        # Find the user's GitHub provider_user_id for the DDB update
-        identity_stmt = sa_select(UserIdentity).where(
-            UserIdentity.user_id == user_id,
-            UserIdentity.provider == "github",
-        )
-        github_identity = (await db.execute(identity_stmt)).scalar_one_or_none()
-        if github_identity and github_identity.provider_user_id:
-            writer = IdentityIndexWriter()
-            await writer.update_user_membership_orgs(
-                provider_user_id=github_identity.provider_user_id,
-                member_org_ids=member_org_ids,
-                provider="github",
-            )
-    except Exception:
-        logger.exception(
-            "install-callback: failed to update member_org_ids for user=%s (non-fatal)",
-            user_id,
-        )
+    await project_member_org_ids(db, user_id=user_id)
 
 
 async def _auto_switch_active_tenant(

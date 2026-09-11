@@ -29,11 +29,15 @@ Two invariants every caller needs and none should re-implement:
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.onboarding import TenantMembership
+
+if TYPE_CHECKING:
+    from src.admin.identity.identity_index_writer import IdentityIndexWriter
 
 logger = logging.getLogger(__name__)
 
@@ -226,3 +230,137 @@ async def upsert_tenant_membership(
         joined_via,
     )
     return membership
+
+
+async def project_member_org_ids(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    writer: IdentityIndexWriter | None = None,
+) -> bool:
+    """Write ``user_id``'s full membership org list to the DDB identity projection.
+
+    Issue #4849. The single implementation of the ``member_org_ids`` write-through.
+    Before this, four call sites each had their own copy, differing in the org-id
+    query, how they resolved the GitHub id, which writer method they called, and
+    whether they ran before or after commit — and five *other* membership-write
+    call sites had no projection at all. Callers now call this instead.
+
+    **Call this AFTER your commit, not before.** The projection is a read-optimized
+    copy of committed Postgres state; publishing it from inside an open transaction
+    advertises memberships that a subsequent rollback erases, and a reader has no
+    way to detect that. This is why the projection is not written from inside
+    :func:`upsert_tenant_membership` / :func:`set_membership_role`, which
+    deliberately flush without committing so the caller owns the transaction.
+
+    **Never raises.** A projection failure must not turn a committed membership
+    write into an error response to the user: the Postgres row is authoritative and
+    already durable, and reconciliation
+    (``scripts/backfill_member_org_ids.py``) is the designed repair path. Failures
+    are logged and reported via the return value.
+
+    **No ``is_active`` filter.** ``is_active`` marks which single membership is the
+    user's currently-selected workspace, not whether the membership is real — at
+    most one row per user carries it. Every membership the user holds belongs in the
+    projection. (The ``switch_tenant`` paths that flip this flag therefore do NOT
+    need to project: they change which row is active, never the set of tenant ids.)
+
+    **Fans out over every GitHub identity.** ``user_identities`` is uniquely indexed
+    on ``(provider, provider_user_id, org_id)`` — per-org, so one user can hold
+    several GitHub identity rows. The previous copies all used
+    ``scalar_one_or_none()``, which raises on a multi-org user and silently
+    projected nothing.
+
+    **The org set is computed per GITHUB ACCOUNT, not per user row.** The DDB key
+    is ``(provider, provider_user_id)`` — one row per GitHub account — but the
+    per-org unique index above means one GitHub account can legitimately map to N
+    ``users.id`` rows (one per org it joined). A projection computed as
+    ``WHERE user_id = :the_mutated_user`` would therefore *clobber* the sibling
+    users' orgs off the shared key: an org2 admin creating a user that claims
+    GitHub id 123 would shrink the key to ``["org2"]`` and a fail-closed reader
+    would start denying the same account's real org1 memberships. So for each
+    GitHub id this user holds, the projected list is the UNION of
+    ``tenant_memberships.tenant_id`` across ALL user rows holding that identity —
+    exactly the GROUP BY-``provider_user_id`` semantics of the reconciliation
+    script (``scripts/backfill_member_org_ids.py``), so reconciliation and
+    write-through can never disagree.
+
+    Args:
+        db: Session to read committed membership state through.
+        user_id: ``users.id`` whose projection should be refreshed.
+        writer: Optional injected writer (tests, and callers that already built one).
+
+    Returns:
+        True if every identity row was projected (including the vacuous case of a
+        user with no GitHub identity); False if any write failed or errored.
+    """
+    try:
+        from src.admin.identity.identity_index_writer import IdentityIndexWriter
+        from src.shared.models.vault import UserIdentity
+
+        identities = list(
+            (
+                await db.execute(
+                    select(UserIdentity).where(
+                        UserIdentity.user_id == user_id,
+                        UserIdentity.provider == "github",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        provider_user_ids = {i.provider_user_id for i in identities if i.provider_user_id}
+
+        if not provider_user_ids:
+            # Nothing to project onto. Not an error: a user can hold memberships
+            # before any GitHub identity is linked, and the identity-creation path
+            # projects when it lands.
+            logger.info(
+                "member_org_ids projection: user=%s has no github identity; nothing to project",
+                user_id,
+            )
+            return True
+
+        writer = writer or IdentityIndexWriter()
+        ok = True
+        for provider_user_id in sorted(provider_user_ids):
+            # Union across every user row holding this GitHub identity — the
+            # backfill script's semantics (see docstring). NOT just this user's
+            # memberships: that would clobber sibling users off the shared key.
+            member_org_ids = sorted(
+                set(
+                    (
+                        await db.execute(
+                            select(TenantMembership.tenant_id)
+                            .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
+                            .where(
+                                UserIdentity.provider == "github",
+                                UserIdentity.provider_user_id == provider_user_id,
+                            )
+                            .distinct()
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            )
+            if not await writer.update_user_membership_orgs(
+                provider_user_id=provider_user_id,
+                member_org_ids=member_org_ids,
+                provider="github",
+            ):
+                ok = False
+                logger.warning(
+                    "member_org_ids projection: write failed for user=%s github_id=%s orgs=%s",
+                    user_id,
+                    provider_user_id,
+                    member_org_ids,
+                )
+        return ok
+    except Exception:
+        logger.exception(
+            "member_org_ids projection: failed for user=%s (non-fatal; Postgres is authoritative)",
+            user_id,
+        )
+        return False

@@ -39,6 +39,12 @@ Environment variables:
                             (#4133). When UNSET the broker falls back to the
                             legacy tokens-in-URL redirect; see
                             _emit_session_handoff for why that fallback exists.
+  IDENTITY_INDEX_TABLE    — Identity-index table carrying the member_org_ids
+                            projection (#4849). Read-only, SHADOW MODE: the
+                            verdict is logged, never enforced. Unset ⇒ the read
+                            reports UNAVAILABLE and login is unaffected.
+  USER_IDENTITY_INDEX_TABLE   — v2 identity-index table for the same read (#537).
+  USER_IDENTITY_INDEX_V2_READ — "true" to read v2 first, legacy as fallback.
   LOG_LEVEL               — Logging level (default: INFO)
 """
 
@@ -399,6 +405,30 @@ def _check_allowlist(github_login: str, github_token: str) -> str | None:
     return "not_authorized"
 
 
+def _log_membership_eligibility_shadow(github_id, github_login: str, denial: str | None) -> None:
+    """Log what the membership-eligibility read would decide (Issue #4849).
+
+    Shadow only — never changes the sign-in outcome. Wrapped so that a fault in
+    the new read path cannot break login: this Lambda is the single enforcement
+    point for GitHub sign-in, and an exception here would be a total outage for a
+    code path that is not even supposed to have an opinion yet.
+    """
+    try:
+        from membership_eligibility import check_platform_membership
+
+        verdict = check_platform_membership(str(github_id))
+        logger.info(
+            "membership-eligibility SHADOW: github_id=%s login=%s verdict=%s live_outcome=%s would_agree=%s",
+            github_id,
+            github_login,
+            verdict,
+            "denied" if denial else "allowed",
+            (verdict == "eligible") == (denial is None),
+        )
+    except Exception as e:
+        logger.warning("membership-eligibility SHADOW: read raised (ignored): %s", e)
+
+
 def _handle_callback(event: dict) -> dict:
     """
     Handle GitHub OAuth callback:
@@ -471,6 +501,14 @@ def _handle_callback(event: dict) -> dict:
         # deliberately passes PreSignUp_AdminCreateUser through, so the broker is
         # the only enforcement point for GitHub sign-in (#3986).
         denial = _check_allowlist(github_user["login"], github_token)
+
+        # Issue #4849, SHADOW MODE: exercise the membership-eligibility read and
+        # log what it *would* decide. Deliberately does not affect `denial` —
+        # T5 (#4844) is what makes this authoritative, behind a new ALLOWLIST_MODE.
+        # Keeping the read live but inert is what lets the projection's accuracy be
+        # measured against real sign-ins before it can lock anyone out.
+        _log_membership_eligibility_shadow(github_user["id"], github_user["login"], denial)
+
         if denial:
             return _redirect_with_error(denial)
 
