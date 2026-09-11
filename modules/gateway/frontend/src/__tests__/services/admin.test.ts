@@ -20,6 +20,7 @@ import {
   removeUserRole,
   getMemberGithubUserId,
   listPlatformUsers,
+  transformOrganization,
 } from '@/services/admin';
 import { AdminRole } from '@/types';
 
@@ -188,6 +189,125 @@ describe('Admin Service', () => {
         await deleteOrganization('org-1');
 
         expect(apiClient.delete).toHaveBeenCalledWith('/admin/organizations/org-1');
+      });
+    });
+
+    /**
+     * Issue #4929 — the org transform must consume only fields its route actually sends.
+     *
+     * Until this fix, ONE transform served two server schemas and read the union of their
+     * fields, so `role_mappings` and `member_approval_policy` — which the canonical
+     * identity route has never sent — were mapped from every response. The bug was
+     * invisible because no test ever fed a CANONICAL-shaped response through the
+     * transform; these are those tests. Wave 1 check 36 is the same assertion against a
+     * live response.
+     */
+    describe('transformOrganization — canonical route wire contract (#4929)', () => {
+      /**
+       * A response shaped exactly like `OrganizationResponse` in
+       * `src/admin/identity/schemas.py`, including the fields this client does not read
+       * (`plan`, `channels`, `cognito_client_ids`) so the fixture stays a faithful sample
+       * of the live payload rather than a trimmed-to-fit one.
+       */
+      const canonicalResponse = {
+        id: 'acme-corp',
+        name: 'Acme Corp',
+        plan: 'enterprise',
+        channels: { github: [{ installation_id: '12345678' }], slack: [], whatsapp: [] },
+        aws_accounts: [
+          { account_id: '123456789012', role_arn: 'arn:aws:iam::123456789012:role/Bedrock', external_id: null },
+        ],
+        settings: { user_auto_provision_mode: 'github_oauth' },
+        github_installation_ids: ['12345678'],
+        cognito_client_ids: ['abc123client'],
+        created_at: '2026-09-01T00:00:00Z',
+      };
+
+      it('maps a canonical-shaped response without depending on fields that route never sends', () => {
+        const org = transformOrganization(canonicalResponse);
+
+        expect(org.id).toBe('acme-corp');
+        expect(org.name).toBe('Acme Corp');
+        expect(org.settings).toEqual({ user_auto_provision_mode: 'github_oauth' });
+        expect(org.githubInstallationIds).toEqual(['12345678']);
+        expect(org.createdAt).toBe('2026-09-01T00:00:00Z');
+      });
+
+      it('leaves roleMappings and memberApprovalPolicy ABSENT, not coerced to empty values', () => {
+        const org = transformOrganization(canonicalResponse);
+
+        // `in` rather than a falsy check: `{}` and `''` are falsy too, and coercing to
+        // those is exactly the failure mode here — the panel would render "no policy
+        // configured" for an org that has one. Absence has to be absence.
+        expect('roleMappings' in org).toBe(false);
+        expect('memberApprovalPolicy' in org).toBe(false);
+      });
+
+      it('projects the canonical aws_accounts objects down to account ids', () => {
+        // The canonical route sends `list[AwsAccountEntry]` where the deprecated one sends
+        // `list[str]`. Declaring `string[]` for both would be the same class of untrue
+        // wire type this split exists to remove.
+        expect(transformOrganization(canonicalResponse).awsAccounts).toEqual(['123456789012']);
+      });
+
+      it('treats an org with no routing destinations as empty, not as an error', () => {
+        const org = transformOrganization({ ...canonicalResponse, aws_accounts: [], github_installation_ids: [] });
+
+        expect(org.awsAccounts).toEqual([]);
+        expect(org.githubInstallationIds).toEqual([]);
+      });
+    });
+
+    /**
+     * Issue #4929 regression guard: the DEPRECATED route still sends both fields, and every
+     * current read path (`getOrganizations`, `getOrganization`, `updateOrganization`) still
+     * targets it. Repointing those is #4847's work — until then this is the live behaviour.
+     */
+    describe('deprecated route still populates both fields (#4929 regression guard)', () => {
+      it('populates roleMappings and memberApprovalPolicy from a deprecated-shaped response', async () => {
+        vi.mocked(apiClient.get).mockResolvedValue({
+          id: 'org-1',
+          name: 'Org 1',
+          aws_accounts: ['123456789012'],
+          role_mappings: { admin: 'arn:aws:iam::123456789012:role/Admin' },
+          settings: {},
+          member_approval_policy: 'require_admin_approval',
+          github_installation_ids: ['12345678'],
+          created_at: '2024-01-01T00:00:00Z',
+        });
+
+        const org = await getOrganization('org-1');
+
+        expect(apiClient.get).toHaveBeenCalledWith('/admin/organizations/org-1');
+        expect(org.roleMappings).toEqual({ admin: 'arn:aws:iam::123456789012:role/Admin' });
+        expect(org.memberApprovalPolicy).toBe('require_admin_approval');
+        expect(org.awsAccounts).toEqual(['123456789012']);
+        expect(org.githubInstallationIds).toEqual(['12345678']);
+      });
+
+      it('keeps the list read on the deprecated route with both fields intact', async () => {
+        vi.mocked(apiClient.get).mockResolvedValue({
+          items: [
+            {
+              id: 'org-1',
+              name: 'Org 1',
+              aws_accounts: ['123456789012'],
+              role_mappings: { admin: 'arn:aws:iam::123456789012:role/Admin' },
+              settings: {},
+              member_approval_policy: 'auto_approve_org_members',
+              created_at: '2024-01-01T00:00:00Z',
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 50,
+          has_more: false,
+        });
+
+        const result = await getOrganizations();
+
+        expect(result.items[0].roleMappings).toEqual({ admin: 'arn:aws:iam::123456789012:role/Admin' });
+        expect(result.items[0].memberApprovalPolicy).toBe('auto_approve_org_members');
       });
     });
   });

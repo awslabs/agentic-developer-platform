@@ -43,7 +43,7 @@ export async function getOrganizations(params?: {
 
   const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: items.map(transformOrganization),
+    items: items.map(transformDeprecatedOrganization),
     total: response?.total ?? 0,
     page: response?.page ?? 1,
     pageSize: response?.page_size ?? 50,
@@ -61,7 +61,7 @@ export async function getOrganization(id: string): Promise<Organization> {
     member_approval_policy?: string;
     created_at: string;
   }>(`/admin/organizations/${id}`);
-  return transformOrganization(response);
+  return transformDeprecatedOrganization(response);
 }
 
 // Issue #4842 (ruling D4 = Option A): `createOrganization()` used to live here,
@@ -136,7 +136,7 @@ export async function updateOrganization(
     settings: Record<string, unknown>;
     created_at: string;
   }>(`/admin/organizations/${id}`, data);
-  return transformOrganization(response);
+  return transformDeprecatedOrganization(response);
 }
 
 export async function deleteOrganization(id: string): Promise<void> {
@@ -397,29 +397,127 @@ export async function removeUserRole(userId: string, orgId?: string): Promise<vo
 }
 
 // Transform functions
+
+// ---------------------------------------------------------------------------
+// Organization wire shapes — ONE PER ROUTE (Issue #4929)
+//
+// There are two server schemas behind `Organization`, and until #4929 a single
+// inline wire type served both, typed as the UNION of their fields:
+//
+//   deprecated `/admin/organizations`            → src/admin/schemas.py
+//       sends `role_mappings` AND `member_approval_policy`
+//   canonical  `/api/admin/identity/organizations` → src/admin/identity/schemas.py
+//       `OrganizationResponse` sends NEITHER
+//
+// So the transform read two fields the canonical route has never sent, and
+// `role_mappings` was even declared REQUIRED — meaning a canonical response did
+// not satisfy the declared type at all. No test caught it because no test fed a
+// canonical response through the transform, which is precisely the #3675 shape
+// (frontend types, mocks and the eval all agreeing on a field the backend never
+// sends). Wave 1 check 36 is the contract test that does compare them.
+//
+// The split below is per-route with a shared core: the core keeps the common
+// fields from drifting, and each wire type declares ONLY what its own route
+// actually returns. Do not re-merge them, and do not widen the canonical backend
+// schema to feed a client convenience — `role_mappings` is authz-adjacent data.
+// ---------------------------------------------------------------------------
+
+/** The fields BOTH org routes return, with identical meaning and identical JSON. */
+type SharedOrganizationWire = {
+  id: string;
+  name: string;
+  settings: Record<string, unknown>;
+  // Issue #4841: the organizations panel needs this to tell a GitHub-connected org from
+  // a platform-native one — mapping "no GitHub" to the same rendering as "we didn't ask"
+  // is the R1 distinction the panel exists to show. Both routes send it.
+  github_installation_ids?: string[];
+  created_at: string;
+};
+
+/**
+ * Maps the fields common to both routes. `awsAccounts` is passed in already
+ * normalized because the two routes disagree on its element shape (see below) —
+ * that is the one field a shared core cannot map for them.
+ */
+function transformSharedOrganizationFields(
+  data: SharedOrganizationWire,
+  awsAccounts: string[]
+): Organization {
+  return {
+    id: data.id,
+    name: data.name,
+    awsAccounts,
+    settings: data.settings,
+    githubInstallationIds: data.github_installation_ids ?? [],
+    createdAt: data.created_at,
+  };
+}
+
+/**
+ * CANONICAL-route transform — `GET /api/admin/identity/organizations`, whose response
+ * schema is `OrganizationResponse` in `src/admin/identity/schemas.py`. That schema is the
+ * source of truth for the parameter type below; every field here is one the live route
+ * actually returns.
+ *
+ * `roleMappings` and `memberApprovalPolicy` are deliberately ABSENT from the result rather
+ * than coerced to `{}` / `''`. The canonical route does not carry them, and a blank value
+ * would render as though the org had none configured — the #3675 symptom moved rather than
+ * fixed. They are optional on `Organization` so the compiler forces consumers to handle
+ * absence explicitly (see `pages/OrgDashboard.tsx`).
+ *
+ * `aws_accounts` differs in SHAPE between the routes, not just in presence: the deprecated
+ * route sends `list[str]` of account ids, the canonical one sends `list[AwsAccountEntry]`
+ * (`{account_id, role_arn, external_id}`). Declaring `string[]` here would be the same
+ * class of lie this split exists to remove, so it is typed as the objects the route really
+ * sends and projected down to the ids `Organization.awsAccounts` holds. Kept on one line so
+ * the #4929 contract check's wire-field parser sees only top-level fields.
+ *
+ * NOTE ON SHAPE: Wave 1 check 36 parses this function by name, matching `^function
+ * transformOrganization(data: {` through `^}): Organization {`, and diffs the field list
+ * against a live canonical response. Keep the inline object-literal parameter type and the
+ * `function` declaration form (the export is a separate statement below, on purpose) — a
+ * refactor to `export function`, an extracted named type, or a multi-line nested type would
+ * make the check parse nothing and pass vacuously.
+ */
 function transformOrganization(data: {
+  id: string;
+  name: string;
+  aws_accounts: Array<{ account_id: string; role_arn: string; external_id?: string | null }>;
+  settings: Record<string, unknown>;
+  github_installation_ids?: string[];
+  created_at: string;
+}): Organization {
+  const awsAccounts = (data.aws_accounts ?? []).map((account) => account.account_id);
+  return transformSharedOrganizationFields(data, awsAccounts);
+}
+
+// `transformOrganization` has no product caller yet — every read path still targets the
+// deprecated route (repointing them is #4847's job, not this defect's). It is exported so
+// its contract is under test now, before #4847 depends on it, rather than being deleted as
+// unused and re-invented later.
+export { transformOrganization };
+
+/**
+ * DEPRECATED-route transform — `/admin/organizations`, response schema
+ * `OrganizationResponse` in `src/admin/schemas.py`. Every current read path uses this one.
+ *
+ * This route DOES send `role_mappings` (required) and `member_approval_policy` (defaulted,
+ * so always present), which is why those two fields are mapped here and only here.
+ */
+function transformDeprecatedOrganization(data: {
   id: string;
   name: string;
   aws_accounts: string[];
   role_mappings: Record<string, string>;
   settings: Record<string, unknown>;
   member_approval_policy?: string;
-  // Issue #4841: already on the server's `OrganizationResponse` (admin/schemas.py) and
-  // previously dropped by this transform. The organizations panel needs it to tell a
-  // GitHub-connected org from a platform-native one — mapping "no GitHub" to the same
-  // rendering as "we didn't ask" is the R1 distinction the panel exists to show.
   github_installation_ids?: string[];
   created_at: string;
 }): Organization {
   return {
-    id: data.id,
-    name: data.name,
-    awsAccounts: data.aws_accounts,
+    ...transformSharedOrganizationFields(data, data.aws_accounts),
     roleMappings: data.role_mappings,
-    settings: data.settings,
     memberApprovalPolicy: data.member_approval_policy,
-    githubInstallationIds: data.github_installation_ids ?? [],
-    createdAt: data.created_at,
   };
 }
 

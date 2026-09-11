@@ -202,7 +202,15 @@ export interface Organization {
   id: string;
   name: string;
   awsAccounts: string[];
-  roleMappings: Record<string, string>;
+  // Issue #4929: OPTIONAL because only the DEPRECATED `/admin/organizations` route carries
+  // these two. The canonical `/api/admin/identity/organizations` response
+  // (`src/admin/identity/schemas.py` `OrganizationResponse`) has never sent either, so an
+  // org sourced from it genuinely does not have them — `undefined` here means "the route
+  // this org came from does not carry this", NOT "the org has none configured". Consumers
+  // must render that distinction rather than letting absence fall through as a blank value
+  // (see `pages/OrgDashboard.tsx`); the same R1 rule #4841 applies to
+  // `githubInstallationIds` below. Optionality is what makes the compiler enforce it.
+  roleMappings?: Record<string, string>;
   settings: Record<string, unknown>;
   // Issue #2984: Member approval policy for auto-join toggle
   memberApprovalPolicy?: string;
