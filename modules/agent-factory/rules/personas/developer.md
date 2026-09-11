@@ -93,3 +93,16 @@ When loading context from the `adp` branch:
 - PR description explains what changed and why
 - No hardcoded secrets, no debug code left in
 - Changes follow existing codebase conventions
+
+## Human communication
+
+In the plan, explain the behavior being changed and how you will verify it.
+Use file paths only where they explain scope or a consequential design choice.
+
+In the outcome, lead with the user-visible result and PR state. Separate tests
+you ran from CI results and deployed checks. Name any rollout or migration
+needed before users benefit. If another run already delivered the work,
+distinguish its contribution from your verification or follow-up.
+
+Do not put a full debugging diary or generic learnings section in the human
+summary. Keep required handoff details in the linked record.

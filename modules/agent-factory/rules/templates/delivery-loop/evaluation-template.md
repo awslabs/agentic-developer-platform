@@ -36,6 +36,14 @@ If any check fails:
 4. Re-run this evaluation after the defect PR merges + deploys.
 5. This issue closes ONLY when ALL checks pass in a single run.
 6. Post the passing transcript as a comment before closing.
+
+## Evaluation report
+Lead with whether [capability] is ready in [named environment]. Give passed,
+failed, skipped and not-run counts, and name any required check still missing.
+For failures, explain the affected user workflow, next owner/action and defect
+link. Keep critical caveats visible. Put the exact commands and transcript in
+a technical-details section beneath the summary. Partial checks cannot establish
+overall acceptance; the all-checks-pass closure rule above still applies.
 ```
 
 ---

@@ -12,6 +12,7 @@
  * - operations: Infrastructure, deployment, monitoring
  */
 
+import { loadHumanCommunication } from './human-communication';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
@@ -764,6 +765,8 @@ function loadRules(): string {
     rules.push(`## Agent Memory\n${fs.readFileSync(memoryRules, 'utf-8')}`);
   }
 
+  rules.push(loadHumanCommunication([path.join(rulesDir, 'personas')]));
+
   return rules.join('\n\n---\n\n');
 }
 
@@ -976,31 +979,16 @@ ${wrapUntrusted(commentsContext)}
 ### Step 1: Analyze and Plan
 - Read the issue carefully to understand what's being asked
 - Research as needed (web search for external docs, grep/glob for codebase)
-- Create a clear, numbered implementation plan
+- Create a clear plan for the assigned role and task
 
 ### Step 2: Post Your Plan
-**Before doing any implementation work**, post your plan to the issue using:
-\`\`\`bash
-gh issue comment ${ISSUE_NUMBER} --body "## 📋 Implementation Plan
-
-**Agent**: @agent-${AGENT_TYPE}
-**Issue**: #${issue.number}
-
-### Analysis
-[Your analysis of what needs to be done]
-
-### Implementation Steps
-1. [Step 1 - be specific]
-2. [Step 2 - be specific]
-3. [Continue as needed...]
-
-### Expected Deliverables
-- [File/artifact 1]
-- [File/artifact 2]
-
----
-Starting implementation..."
-\`\`\`
+Before substantive work, post a short plan appropriate to your role using
+\`gh issue comment ${ISSUE_NUMBER} --body-file <plan-file>\`.
+Explain the capability/problem, intended outcome, main steps and how you will
+verify it. A reviewer plans a review; an architect plans an assessment; an AIDLC
+agent names the current stage and gate. Do not announce implementation unless
+implementation is your assigned work. Include only consequential file paths.
+Existing approval gates still apply; this plan does not create a new gate.
 
 ### Step 3: Execute Your Plan
 - Follow your plan step by step
@@ -1095,39 +1083,21 @@ You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the 
 5. **Check for committed files that should not exist:**
    The repo's AGENTS.md at the root defines a set of "must not commit" rules (e.g. \`agent_learning/*.md\`, \`tfplan\` files, anything under \`.terraform/\`). Grep the diff's file list for violations — these are HIGH-confidence merge blockers and the agent should propose fixes.
 
-6. **Categorize every finding by confidence:**
-   - **HIGH**: certain merge blocker, verified against code
-   - **MEDIUM**: likely issue, worth discussing before merge
-   - **LOW**: nice-to-have, file as a follow-up
+6. **Label each finding independently:**
+   - Impact severity: high / medium / low, with the practical consequence
+   - Confidence: high / medium / low, with the evidence or uncertainty
+   - Approval impact: blocker / discussion needed / optional follow-up
+   Existing acceptance, security and prohibited-file requirements remain blockers.
 
-7. **Write the review summary to a file:**
-   \`\`\`bash
-   mkdir -p data/code-review
-   cat > data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md <<'SUMMARY'
-   # Review of PR #$PR_NUMBER
-
-   ## Driving issue
-   - #$ISSUE_NUMBER: <issue title>
-
-   ## Acceptance criteria checklist
-   - [x|✗] <criterion 1> — <where in diff it's satisfied OR why it's not>
-   - [x|✗] <criterion 2> — ...
-
-   ## Findings (by confidence)
-
-   ### HIGH — merge blockers
-   - <file:line>: <concrete issue + exact line in diff>
-
-   ### MEDIUM — discuss before merge
-   - ...
-
-   ### LOW — follow-up candidates
-   - ...
-
-   ## Recommendation
-   APPROVE / REQUEST CHANGES / BLOCK
-   SUMMARY
-   \`\`\`
+7. **Write the review summary to a file** at
+   \`data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md\`:
+   - Start with verdict (APPROVE / REQUEST CHANGES / BLOCK), reviewed revision,
+     blocker count and the most important consequence.
+   - Describe each blocker in plain language, then evidence, file/line and fix.
+   - State validation gaps and outstanding required checks. Keep optional
+     follow-ups separate and retain the required engine attribution line.
+   - Follow with the full acceptance-criteria checklist (satisfied/missing,
+     evidence per criterion) and detailed findings. Do not bury blockers below it.
 
 8. **Post the review summary to the PR:**
    \`\`\`bash
@@ -1137,7 +1107,7 @@ You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the 
 9. **Only after Step 8:** proceed to the security review step below.
 
 **DO NOT approve a PR if**:
-- Any HIGH finding is unresolved
+- Any merge-blocking finding is unresolved
 - Any acceptance criterion from the issue is ✗
 - Any file committed to the PR matches a "must not commit" rule in AGENTS.md
 
@@ -1238,50 +1208,26 @@ ${beadsPrimeContext}` : ''}
 
 ## Completion Summary Format
 
-**IMPORTANT**: When your work is complete, your FINAL message must be a well-structured summary that stakeholders can easily read and understand. Use this EXACT format:
+Your FINAL message is the human outcome report. Follow the shared writing rules
+and your persona's format. Start with the capability/problem and its actual
+state, including any blocker; then evidence, limitations and next owner/action.
+Use a few connected paragraphs or brief sections when helpful. Distinguish a
+prepared design, PR opened, code merged, deployment and verified acceptance.
+A run ending does not establish any of those states. Do not use a generic
+"Task Complete" heading when work or required checks remain.
 
-\`\`\`
-## ✅ Task Complete: [Brief title of what was accomplished]
+The runtime publishes this final report. Do not post a second copy merely to
+announce completion. Required gate comments, PR reviews and audit records still
+belong in their designated places; link to them from the final report.
+Keep technical inventories, commands and long test matrices below the summary
+or in linked evidence. Critical caveats must remain visible.
 
-### What Was Done
-[2-4 bullet points describing the key accomplishments in business terms. Focus on OUTCOMES, not just actions. Example: "Deployed agent-mail service to EKS cluster" not "Ran kubectl apply"]
-
-### Key Deliverables
-| Deliverable | Status | Location/Details |
-|-------------|--------|------------------|
-| [e.g., Docker image] | ✅ Ready | [e.g., ECR: xxx.dkr.ecr...] |
-| [e.g., K8s manifests] | ✅ Created | [e.g., k8s/agent-mail/] |
-| [e.g., PR] | ✅ Opened | [e.g., #268] |
-
-### Verification
-[How can someone verify this work is complete? Include specific commands or URLs]
-
-### Next Steps
-[What should happen next? Who/what is unblocked by this work?]
-
-### Issues Encountered (if any)
-[Only include if there were significant issues. Briefly describe and how resolved]
-
-${AGENT_TYPE === 'operations' ? `### Deployment Status (REQUIRED for @agent-operations)
-| Action | Status | Details |
-|--------|--------|---------|
-| Deployment Executed? | ✅ Yes / ❌ No | [If No, explain WHY: awaiting approval, missing creds, etc.] |
-| Service Running? | ✅ Yes / ❌ No / N/A | [Status check result] |
-| Endpoint Accessible? | ✅ Yes / ❌ No / N/A | [URL/IP or reason not accessible] |
-
-**If deployment was NOT executed, clearly explain why and what is needed to proceed.**
-` : ''}### Learnings
-[Document insights that would help future work on this codebase or similar tasks:
-- Gotchas or non-obvious configurations discovered
-- Useful patterns or approaches that worked well
-- Things that didn't work and why
-- Recommendations for improving the process
-Keep each learning to 1-2 sentences. These help future agents and humans avoid repeating mistakes.]
-\`\`\`
-
-Your summary will be posted to the parent issue for stakeholders to review. Make it clear, concise, and actionable.
-
-**Also write learnings to file**: After posting your summary, save detailed learnings to \`agent_learning/{date}-issue-{number}-learnings.md\`. This file is read by future agents — make it HIGH QUALITY:
+${AGENT_TYPE === 'operations' ? `For operations, name the target environment and state separately whether
+ deployment ran, the service is running, and the endpoint was checked. Report
+ passed, failed, skipped and not-run checks; explain missing deployment or
+ acceptance checks and the next action. Include relevant cleanup/cost exposure.
+` : ''}
+**Write handoff learnings to file**: Before returning your final report, save detailed learnings to \`agent_learning/{date}-issue-{number}-learnings.md\`. This file is read by future agents — make it HIGH QUALITY:
 - What worked and what didn't (specific commands, configurations, error messages)
 - Key technical decisions and why they were made
 - Gotchas, workarounds, and things that took multiple attempts
@@ -2059,7 +2005,7 @@ async function main(): Promise<void> {
 
     // Initialize live status comment (edit-in-place progress)
     const token = process.env.GH_APP_TOKEN || process.env.GITHUB_TOKEN || GITHUB_TOKEN;
-    activeLiveComment = new LiveStatusComment(createWorkerStages(), {
+    activeLiveComment = new LiveStatusComment(createWorkerStages(AGENT_TYPE), {
       owner: REPO_OWNER,
       repo: REPO_NAME,
       issueNumber: parseInt(ISSUE_NUMBER),
@@ -2110,12 +2056,8 @@ Working on this task...`);
       );
     }
 
-    // Mark analyze through PR stages as complete (agent handles all internally)
+    // The runtime observes execution ending, not implementation/test/PR outcomes.
     activeLiveComment.transition(1, 'complete');
-    activeLiveComment.transition(2, 'complete');
-    activeLiveComment.transition(3, 'complete');
-    activeLiveComment.transition(4, 'complete');
-    activeLiveComment.transition(5, 'complete');
 
     // Complete task in Beads (if claimed)
     if (beadsAvailable && beadsTaskId) {
@@ -2156,25 +2098,24 @@ Working on this task...`);
     // Status will be set to Done automatically by GitHub project automation
     // when the PR is merged and the issue is closed.
 
-    // Finalize live status comment with success summary
-    const runDuration = Date.now() - (activeLiveComment.getStages()[0]?.startedAt || Date.now());
-    await activeLiveComment.finalizeSuccess({
-      durationMs: runDuration,
-      details: result ? result.substring(0, 500) : undefined,
-    }).catch(err => log('WARN', `Could not finalize live comment: ${(err as Error).message}`));
-
-    // Post completion to main issue
-    const summary = `## @agent-${AGENT_TYPE} Completed
-
-**Task**: #${issue.number} - ${issue.title}
-**Status**: Done
-**Completed**: ${new Date().toISOString()}
-${beadsTaskId ? `**Beads ID**: ${beadsTaskId}` : ''}
-
-### Summary
-${result}`;
-
-    await postToMainIssue(mainIssueNumber, summary);
+    // Publish one full outcome without cutting away qualifications or blockers.
+    const outcome = result || 'The run ended without an outcome report. Task completion has not been verified.';
+    let outcomeUrl: string | undefined;
+    try {
+      await activeLiveComment.finalizeSuccess({ details: outcome });
+      outcomeUrl = activeLiveComment.getCommentUrl() || undefined;
+    } catch (err) {
+      log('WARN', `Could not finalize live comment: ${(err as Error).message}`);
+    }
+    if (outcomeUrl) {
+      writeResultMetadata({ outcome_comment_url: outcomeUrl });
+      if (mainIssueNumber && mainIssueNumber !== issue.number) {
+        await postToMainIssue(mainIssueNumber,
+          `Agent run ended for **${issue.title}** (#${issue.number}). [Outcome, remaining work and next action](${outcomeUrl}).`);
+      }
+    } else {
+      await postToMainIssue(mainIssueNumber, outcome);
+    }
 
     log('INFO', 'Work completed successfully');
     agentSucceeded = true;
@@ -2182,6 +2123,13 @@ ${result}`;
   } catch (error) {
     const err = error as Error;
     log('ERROR', `Agent failed: ${err.message}`);
+    if (activeLiveComment) {
+      await activeLiveComment.finalizeFailure({
+        error: err.message,
+        durationMs: activeLiveComment.getDurationMs(),
+      }).catch(finalizeErr => log('WARN', `Could not finalize live comment: ${finalizeErr.message}`));
+    }
+
 
     // Report failure to Beads (if task was claimed)
     if (beadsAvailable && beadsTaskId) {

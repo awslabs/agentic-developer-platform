@@ -67,8 +67,10 @@ usage() {
 # --- Distilled persona pack resolution (issue #2891, #2945) -----------------
 # Resolved up-front so BOTH the AGENTS.md render (further below) and the review /
 # review-diff prompt calibration (this issue) share the exact same file. Missing
-# file → every consumer is a byte-identical no-op vs. prior behavior.
+# specialist file → task calibration is unchanged; shared writing policy can
+# still be included in AGENTS.md.
 CODEX_DISTILLED_DIR="${CODEX_DISTILLED_DIR:-$PWD/.adp-rules/personas/codex-distilled}"
+COMMUNICATION_FILE="${CODEX_DISTILLED_DIR}/../shared/human-communication.md"
 AGENT_TYPE="${AGENT_TYPE:-developer}"
 DISTILLED_FILE="${CODEX_DISTILLED_DIR}/${AGENT_TYPE}.md"
 
@@ -218,7 +220,7 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 # from repo-controlled paths (injection surface, spike §3.4).
 #
 # Safety:
-#   * Missing distilled file        → no-op (byte-identical to prior behavior).
+#   * Missing specialist + policy  → no-op (byte-identical to prior behavior).
 #   * No pre-existing $PWD/AGENTS.md → write distilled; trap-delete on EXIT
 #                                      (covers success, failure, timeout).
 #   * Pre-existing $PWD/AGENTS.md    → save original bytes, write distilled-first
@@ -243,6 +245,8 @@ AGENTS_RENDERED=0
 AGENTS_PATH="$PWD/AGENTS.md"
 AGENTS_BACKUP=""
 
+# Invoked indirectly by the EXIT trap below.
+# shellcheck disable=SC2329
 _restore_agents_md() {
     [ "${AGENTS_RENDERED}" -eq 1 ] || return 0
     if [ -n "${AGENTS_BACKUP}" ] && [ -f "${AGENTS_BACKUP}" ]; then
@@ -254,20 +258,27 @@ _restore_agents_md() {
     fi
 }
 
-if [ -f "${DISTILLED_FILE}" ]; then
+# Place both policy and specialist conventions before repository text so a
+# large repository AGENTS.md cannot truncate the shared policy out of the pack.
+_render_persona_pack() {
+    if [ -f "${DISTILLED_FILE}" ]; then cat "${DISTILLED_FILE}"; fi
+    if [ -f "${COMMUNICATION_FILE}" ]; then
+        printf '\n'
+        cat "${COMMUNICATION_FILE}"
+    fi
+}
+
+if [ -f "${DISTILLED_FILE}" ] || [ -f "${COMMUNICATION_FILE}" ]; then
     if [ -f "${AGENTS_PATH}" ]; then
-        # Repo ships its own AGENTS.md. Preserve original bytes, then write the
-        # distilled block FIRST followed by the original content.
         AGENTS_BACKUP="$(mktemp)"
         cp -f "${AGENTS_PATH}" "${AGENTS_BACKUP}"
         {
-            cat "${DISTILLED_FILE}"
+            _render_persona_pack
             printf '\n'
             cat "${AGENTS_BACKUP}"
         } > "${AGENTS_PATH}"
     else
-        # No repo AGENTS.md: render the distilled file as AGENTS.md.
-        cp -f "${DISTILLED_FILE}" "${AGENTS_PATH}"
+        _render_persona_pack > "${AGENTS_PATH}"
     fi
     AGENTS_RENDERED=1
     trap _restore_agents_md EXIT

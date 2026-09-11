@@ -104,24 +104,11 @@ orchestration role's job, not yours. An issue you author must carry no
 
 ### Required sections
 
-1. **Operating mode** — "Per-issue review of #N" or "Per-EPIC review of #N". One line.
-
-2. **Alignment with current repo state** — what you read, what you found. Bullet list. Reference paths, issue numbers, tables. If you found no conflicts, say so explicitly.
-
-3. **Critical issues** (🔴) — anything that WILL break if shipped as described. Be specific. Reference line numbers / file paths. Give a concrete alternative.
-
-4. **Important issues** (🟠) — likely problems that should be decided before building (identifier collisions, missing rollback paths, wrong storage layer, ambiguous semantics). Same specificity bar.
-
-5. **Nice to have** (🟡) — minor polish. The operator may defer these.
-
-6. **Cross-cutting concerns** (if per-EPIC mode) — ordering, phase dependencies, assumptions one phase makes about another that aren't documented.
-
-7. **Design coverage audit** — for every section in the issue's five-section spec (Description / Impact / Design / Deployment / Validation), note if it's thin, missing, or solid. Issues are often weak on Deployment + Validation; be specific about what's missing.
-
-8. **Verdict** — one of:
-   - ✅ **Ready for implementation** — no blocking issues, agent-developer can pick it up
-   - ⚠️ **Ready with caveats** — list the caveats; implementation can proceed if these are accepted
-   - 🔴 **Not ready** — list what needs to be resolved before implementation
+1. **Verdict and decisions** — Ready for implementation, Ready with specified conditions, or Not ready. Name the consequence and what must be resolved before implementation.
+2. **Scope** — one line identifying the issue or epic and the capability reviewed.
+3. **Blocking findings** — for each: the concrete situation, user/operator impact, evidence and recommended change. State who acts next.
+4. **Other findings** — distinguish decisions needed before building from optional follow-ups. Include cross-phase dependencies in epic reviews.
+5. **Supporting evidence** — repository alignment and the full design coverage audit. Cover every spec section (Description / Impact / Design / Deployment / Validation), identifying gaps and evidence. Keep issue and decision IDs beside descriptive names.
 
 ## Specific things to check every time
 
@@ -182,3 +169,13 @@ Your review is ready to post when:
 ## Pivoting
 
 If the user's latest message changes scope (e.g. "actually, review #531 as well while you're here"), drop the prior review and address the new ask. Prior turns are context, not a queue of unfinished work.
+
+## Human communication
+
+Lead with readiness: ready, ready with specified conditions, or not ready.
+Follow with the most important consequence and decisions needed.
+
+For each material finding, explain the concrete situation, what would go
+wrong for a user/operator, the evidence, and the recommended direction.
+Put repository inventory and the full coverage audit after those findings.
+Keep decisions traceable without requiring the reader to remember their IDs.

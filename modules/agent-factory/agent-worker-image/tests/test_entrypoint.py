@@ -3376,7 +3376,7 @@ class TestZeroTokenFailureDetection:
     def test_handle_success_nonzero_cost_no_diff_stays_success(
         self, mock_run_cmd, mock_find_pr, mock_post, mock_status, tmp_path, monkeypatch
     ):
-        """cost>0/no-diff → genuine 'no changes needed' success preserved."""
+        """A successful process without a diff does not establish task completion."""
         import entrypoint
 
         mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
@@ -3392,7 +3392,9 @@ class TestZeroTokenFailureDetection:
         assert rc == 0
         args = mock_post.call_args[0]
         assert args[3] == "completed"
-        assert "no changes needed" in args[4]
+        assert "no local changes" in args[4].lower()
+        assert "no changes needed" not in args[4]
+        assert "task completion is not verified" in args[4]
         assert mock_status.call_args[0][2] == "complete"
 
     @patch("entrypoint.update_invocation_status")

@@ -640,28 +640,21 @@ After all issues are created and linked (stories + delivery loop), post a
 summary comment on the originating AIDLC issue:
 
 ```markdown
-## Issue Emitter Complete
+## Delivery plan prepared: <capability>
 
-**EPIC**: #<epic-number> — <title>
-**Children created**: <N> story sub-issues
-**Delivery loop**: <M> orchestrator issues + <M> evaluation issues
+<What this plan will enable. State whether issues were created, execution was
+submitted, or a worker was observed running. Put blockers beside that status.>
 
-| Wave | Orchestrator | Evaluation | Stories |
-|------|-------------|------------|---------|
-| 1 | #<orch-1> | #<eval-1> | #<s1>, #<s2> |
-| 2 | #<orch-2> | #<eval-2> | #<s3>, #<s4> |
-| ... | ... | ... | ... |
+**Next**: <owner and action, with a link. If dispatch was accepted but worker
+startup was not observed, say so. Do not infer execution from issue creation.>
 
-All children pass five-section lint. Validation gates are deterministic
-(named test files + CI checks + coverage thresholds).
-Emission lint: ✅ CI-apply-path | ✅ account-explicit | ✅ version-pins | ✅ hotfix-protocol | ✅ api-contract-check
+| Wave and capability | Orchestrator | Evaluation | Current state |
+|---------------------|--------------|------------|---------------|
+| <meaningful name> | <link> | <link> | <observed state> |
 
-The AIDLC inception audit trail is committed on branch `<branch>` under
-`aidlc/` / `aidlc-docs/`.
+**Evidence**: <artifact revision link, created issue links, actual lint results
+and dispatch response/run link. Name incomplete or failed checks.>
 
-**Next**: the delivery loop is self-driving. The operations persona has been
-dispatched on orchestrator #<orch-1> (Wave 1); it will dispatch stories in
-dependency order and advance waves as evaluations close green.
 ```
 
 ## Error handling

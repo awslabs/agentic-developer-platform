@@ -46,7 +46,7 @@ export interface LiveStatusCommentOptions {
 export interface SuccessSummary {
   prUrl?: string;
   artifacts?: string[];
-  durationMs: number;
+  durationMs?: number;
   /** Optional additional markdown to append */
   details?: string;
 }
@@ -64,7 +64,7 @@ function stageCheckbox(status: StageStatus): string {
   switch (status) {
     case 'complete': return '[x]';
     case 'in_progress': return '[~]';
-    case 'skipped': return '[x]'; // show as done with note
+    case 'skipped': return '[ ]';
     case 'pending':
     default: return '[ ]';
   }
@@ -110,6 +110,8 @@ export class LiveStatusComment {
   private activityLog: string[] = [];
   private static readonly MAX_ACTIVITY_LINES = 10;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
+  private finished = false;
+  private inFlightUpdates = new Set<Promise<void>>();
 
   constructor(stages: StageDefinition[], options: LiveStatusCommentOptions) {
     this.stages = stages.map(s => ({ ...s }));
@@ -131,6 +133,16 @@ export class LiveStatusComment {
   /** Returns the comment ID once posted (null before post()). */
   getCommentId(): number | null {
     return this.commentId;
+  }
+
+  getCommentUrl(): string | null {
+    return this.commentId
+      ? `https://github.com/${this.options.owner}/${this.options.repo}/issues/${this.options.issueNumber}#issuecomment-${this.commentId}`
+      : null;
+  }
+
+  getDurationMs(): number {
+    return Date.now() - this.runStartTime;
   }
 
   /** Returns a shallow copy of current stages (for testing/inspection). */
@@ -197,12 +209,16 @@ export class LiveStatusComment {
    * Mark the run as successful and replace the comment with a final summary.
    */
   async finalizeSuccess(summary: SuccessSummary): Promise<void> {
+    this.finished = true;
     this.cancelPendingUpdate();
     if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+    await Promise.allSettled([...this.inFlightUpdates]);
     const lines: string[] = [
-      '## Agent Complete',
+      '## Agent run ended',
       '',
-      `**Duration**: ${formatDuration(summary.durationMs)}`,
+      `**Duration**: ${formatDuration(summary.durationMs ?? this.getDurationMs())}`,
+      '',
+      summary.details || 'No outcome report was provided. Task completion has not been verified.',
     ];
     if (summary.prUrl) {
       lines.push(`**PR**: ${summary.prUrl}`);
@@ -214,16 +230,17 @@ export class LiveStatusComment {
       }
     }
     // Include stage summary
-    lines.push('', '### Stages');
+    lines.push('', '<details><summary>Run stages</summary>', '');
     for (const stage of this.stages) {
       const elapsed = stage.startedAt && stage.completedAt
         ? ` (${formatElapsed(stage.completedAt - stage.startedAt)})`
         : '';
-      lines.push(`- [x] ${stage.label}${elapsed}`);
+      const suffix = stage.status === 'skipped' ? ' (skipped)'
+        : stage.status === 'pending' ? ' (not run)'
+        : stage.status === 'in_progress' ? ' (completion not recorded)' : '';
+      lines.push(`- ${stageCheckbox(stage.status)} ${stage.label}${elapsed}${suffix}`);
     }
-    if (summary.details) {
-      lines.push('', summary.details);
-    }
+    lines.push('', '</details>');
     await this.updateComment(lines.join('\n'));
   }
 
@@ -231,8 +248,10 @@ export class LiveStatusComment {
    * Mark the run as failed and replace the comment with a failure summary.
    */
   async finalizeFailure(summary: FailureSummary): Promise<void> {
+    this.finished = true;
     this.cancelPendingUpdate();
     if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+    await Promise.allSettled([...this.inFlightUpdates]);
     const lines: string[] = [
       '## Agent Failed',
       '',
@@ -269,6 +288,7 @@ export class LiveStatusComment {
    * Force an immediate update (bypasses rate limit). Use sparingly.
    */
   async flush(): Promise<void> {
+    if (this.finished) return;
     this.cancelPendingUpdate();
     if (this.commentId) {
       await this.updateComment(this.renderBody());
@@ -304,16 +324,16 @@ export class LiveStatusComment {
     }
 
     if (this.activityLog.length > 0) {
-      lines.push('', '### Recent activity', '```');
+      lines.push('', '<details><summary>Technical activity</summary>', '', '```');
       for (const entry of this.activityLog) lines.push(entry);
-      lines.push('```');
+      lines.push('```', '', '</details>');
     }
 
     return lines.join('\n');
   }
 
   private scheduleUpdate(): void {
-    if (!this.commentId) return;
+    if (!this.commentId || this.finished) return;
 
     const now = Date.now();
     const elapsed = now - this.lastUpdateTime;
@@ -337,9 +357,11 @@ export class LiveStatusComment {
     this.lastUpdateTime = Date.now();
     const body = this.renderBody();
     // Fire and forget — don't block stage transitions on network
-    this.updateComment(body).catch(err => {
+    const update = this.updateComment(body).catch(err => {
       this.log('WARN', `Failed to update status comment: ${(err as Error).message}`);
     });
+    this.inFlightUpdates.add(update);
+    void update.finally(() => this.inFlightUpdates.delete(update));
   }
 
   private cancelPendingUpdate(): void {
@@ -355,7 +377,7 @@ export class LiveStatusComment {
     const resp = await this.apiRequest('PATCH', url, { body });
     if (!resp.ok) {
       const text = await resp.text();
-      this.log('WARN', `Comment update failed: ${resp.status} ${text.substring(0, 200)}`);
+      throw new Error(`Comment update failed: ${resp.status} ${text.substring(0, 200)}`);
     }
   }
 
@@ -389,14 +411,18 @@ export class LiveStatusComment {
 /**
  * Create a standard set of stages for agent-worker runs.
  */
-export function createWorkerStages(): StageDefinition[] {
+export function createWorkerStages(persona = 'developer'): StageDefinition[] {
+  // Only expose lifecycle events the worker can observe. Task-level progress
+  // belongs in the agent's report, not in fabricated completed checkboxes.
+  const labels: Record<string, string> = {
+    developer: 'Development run', reviewer: 'Review run', architect: 'Architecture assessment run',
+    operations: 'Operations run', aidlc: 'Inception run', pm: 'Coordination run',
+    product: 'Product planning run', 'intent-refinement': 'Intent refinement run',
+    'exception-diagnoser': 'Diagnosis run', codex: 'Supervised run',
+  };
   return [
     { label: 'Setup', status: 'pending' },
-    { label: 'Analyze', status: 'pending' },
-    { label: 'Plan', status: 'pending' },
-    { label: 'Implement', status: 'pending' },
-    { label: 'Verify', status: 'pending' },
-    { label: 'PR', status: 'pending' },
+    { label: labels[persona] || 'Agent run', status: 'pending' },
   ];
 }
 

@@ -855,28 +855,56 @@ def test_pyyaml_is_installed_by_script_tests():
     )
 
 
+def _assert_preflight_workflow_scope(changed: set[str]):
+    """Protect the scan pipeline; restrict this unit when its artifacts change."""
+    assert ".github/workflows/security-scan.yml" not in changed
+    unit_paths = {str(p.relative_to(REPO_ROOT)) for p in (SCRIPT_PATH, POLICY_PATH, TERRAFORM_PATH)}
+    if changed.isdisjoint(unit_paths):
+        return
+    workflows = {p for p in changed if p.startswith(".github/workflows/")}
+    allowed = {
+        ".github/workflows/security-agent-nightly.yml",
+        ".github/workflows/script-tests.yml",
+    }
+    assert workflows <= allowed, (
+        f"unexpected workflow changes alongside the preflight unit: {sorted(workflows - allowed)}"
+    )
+
+
 def test_existing_security_scan_workflow_is_untouched():
-    """Regression check from the issue: security-scan.yml is not modified."""
+    """Keep security-scan unchanged without blocking unrelated workflow work."""
     completed = subprocess.run(  # nosec B603 - fixed argv, no shell
-        ["git", "diff", "--name-only", "origin/main", "--", ".github/workflows/"],
+        ["git", "diff", "--name-only", "origin/main", "--"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
     if completed.returncode != 0:
         pytest.skip("origin/main not available for comparison")
+    _assert_preflight_workflow_scope(set(completed.stdout.splitlines()))
 
-    changed = {line for line in completed.stdout.split() if line}
-    assert ".github/workflows/security-scan.yml" not in changed
 
-    # The only workflows this unit may touch are its own and the test binding.
-    allowed = {
-        ".github/workflows/security-agent-nightly.yml",
-        ".github/workflows/script-tests.yml",
-    }
-    assert changed <= allowed, (
-        f"unexpected workflow changes: {sorted(changed - allowed)}"
-    )
+def test_unrelated_workflow_changes_do_not_change_preflight_scope():
+    _assert_preflight_workflow_scope({".github/workflows/aidlc-gate-nudge.yml"})
+
+
+@pytest.mark.parametrize("artifact", [SCRIPT_PATH, POLICY_PATH, TERRAFORM_PATH])
+def test_preflight_artifact_changes_still_reject_unrelated_workflows(artifact):
+    with pytest.raises(AssertionError, match="unexpected workflow changes"):
+        _assert_preflight_workflow_scope({
+            str(artifact.relative_to(REPO_ROOT)), ".github/workflows/aidlc-gate-nudge.yml",
+        })
+
+
+def test_preflight_scan_protection_applies_even_without_unit_changes():
+    with pytest.raises(AssertionError):
+        _assert_preflight_workflow_scope({".github/workflows/security-scan.yml"})
+
+
+def test_preflight_can_update_its_own_workflow_binding():
+    _assert_preflight_workflow_scope({
+        str(SCRIPT_PATH.relative_to(REPO_ROOT)), ".github/workflows/security-agent-nightly.yml",
+    })
 
 
 def test_no_secret_material_in_the_new_artifacts():

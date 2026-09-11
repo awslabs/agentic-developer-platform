@@ -207,7 +207,7 @@ describe('LiveStatusComment', () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const body = JSON.parse(mockFetch.mock.calls[0][1].body).body as string;
-      expect(body).toContain('Agent Complete');
+      expect(body).toContain('Agent run ended');
       expect(body).toContain('45s');
       expect(body).toContain('https://github.com/org/repo/pull/99');
       expect(body).toContain('report.md');
@@ -215,6 +215,58 @@ describe('LiveStatusComment', () => {
       expect(body).toContain('[x] Stage 1');
       expect(body).toContain('All tests pass.');
     });
+  });
+
+  it('keeps incomplete stages and late caveats visible, using the real run clock', async () => {
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(201, { id: 200 }))
+      .mockResolvedValue(mockFetchResponse(200));
+    const comment = new LiveStatusComment([
+      { label: 'Setup', status: 'complete' }, // no startedAt: original <1s bug
+      { label: 'Review', status: 'in_progress' },
+      { label: 'Deploy', status: 'pending' },
+      { label: 'Browser checks', status: 'skipped' },
+    ], makeOptions());
+    await comment.post();
+    jest.advanceTimersByTime(83 * 60 * 1000);
+    const report = 'One story merged, four in review. '.repeat(30) + 'Dispatch is blocked; deployment not checked.';
+    await comment.finalizeSuccess({ details: report });
+    const body = JSON.parse(mockFetch.mock.calls.at(-1)![1].body).body;
+    expect(body).toContain('1h 23m');
+    expect(body).toContain(report);
+    expect(body).toContain('[ ] Deploy (not run)');
+    expect(body).toContain('[ ] Browser checks (skipped)');
+    expect(body).toContain('Review (completion not recorded)');
+    expect(body).not.toContain('[x] Deploy');
+    expect(comment.getCommentUrl()).toBe('https://github.com/test-org/test-repo/issues/42#issuecomment-200');
+  });
+
+  it('reports publication failure so the worker can use its fallback', async () => {
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(201, { id: 200 }))
+      .mockResolvedValue(mockFetchResponse(403));
+    const comment = new LiveStatusComment(makeStages(), makeOptions());
+    await comment.post();
+    await expect(comment.finalizeSuccess({})).rejects.toThrow('Comment update failed: 403');
+  });
+
+  it('waits for an earlier progress update before publishing the final outcome', async () => {
+    let finishProgress!: (response: Response) => void;
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(201, { id: 200 }))
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { finishProgress = resolve; }))
+      .mockResolvedValue(mockFetchResponse(200));
+    const comment = new LiveStatusComment(makeStages(), makeOptions());
+    await comment.post();
+    jest.advanceTimersByTime(5001);
+    comment.transition(0, 'in_progress');
+    const finalized = comment.finalizeSuccess({ details: 'Review still blocked.' });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    finishProgress(mockFetchResponse(200));
+    await finalized;
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(mockFetch.mock.calls[2][1].body).body).toContain('Review still blocked.');
+    comment.appendActivity('late event');
+    await comment.flush();
+    jest.advanceTimersByTime(60000);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
   describe('finalizeFailure()', () => {
@@ -275,12 +327,12 @@ describe('LiveStatusComment', () => {
 });
 
 describe('Factory helpers', () => {
-  it('createWorkerStages returns 6 pending stages', () => {
+  it('createWorkerStages exposes only observable lifecycle stages', () => {
     const stages = createWorkerStages();
-    expect(stages).toHaveLength(6);
+    expect(stages).toHaveLength(2);
     expect(stages.every(s => s.status === 'pending')).toBe(true);
     expect(stages.map(s => s.label)).toEqual([
-      'Setup', 'Analyze', 'Plan', 'Implement', 'Verify', 'PR',
+      'Setup', 'Development run',
     ]);
   });
 
@@ -292,4 +344,11 @@ describe('Factory helpers', () => {
       'Planning', 'Approval', 'Execution', 'Finalize',
     ]);
   });
+});
+
+it.each(['reviewer', 'architect', 'aidlc', 'operations'])('does not invent implementation or PR stages for %s', persona => {
+  const labels = createWorkerStages(persona).map(s => s.label);
+  expect(labels).not.toContain('Implement');
+  expect(labels).not.toContain('PR');
+  expect(labels).toHaveLength(2);
 });

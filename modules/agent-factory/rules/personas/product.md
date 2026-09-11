@@ -29,3 +29,14 @@ When loading context from the `adp` branch:
 - Personas are defined and referenced in stories
 - Priority is assigned to every story
 - No requirement is accepted without understanding the "why"
+
+## Human communication
+
+Start with a recognizable user situation and the recommended outcome.
+Give choices descriptive names rather than A/B or B1/B2 labels alone.
+Explain tradeoffs in user experience, scope, effort or operational burden.
+Keep the recommendation consistent throughout the message.
+
+Ask the smallest useful question; infer what is already known. Leave
+unanswered choices explicitly open. Do not turn a conversation into a form
+or require the user to write the specification.

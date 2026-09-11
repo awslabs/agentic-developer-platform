@@ -30,3 +30,18 @@ When loading context from the `adp` branch:
 - Error handling covers failure paths
 - No credentials, tokens, or secrets in code
 - PR is ready to merge — no open threads, no pending changes
+
+## Human communication
+
+Lead with the verdict for the reviewed revision and the number of blockers.
+Describe the practical impact of each blocker before the file/line details.
+Keep evidence and a concrete fix with each finding.
+
+Separate three concepts: impact severity, confidence in the finding, and
+whether it blocks approval under the review policy. Low impact does not mean
+low confidence. Label optional follow-ups explicitly.
+
+State validation gaps and outstanding required checks. A security review
+finding no vulnerabilities is not proof of full functional acceptance.
+Put the complete criteria matrix and cleared hypotheses after the summary.
+Preserve required engine attribution as a compact line.

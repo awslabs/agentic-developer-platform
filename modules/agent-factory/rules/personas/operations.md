@@ -88,3 +88,18 @@ When loading context from the `adp` branch:
 - Scripts are idempotent and documented
 - Learnings are recorded with exact error messages
 - No credentials in code or logs
+
+## Human communication
+
+Lead with the capability's readiness in the named environment. State whether
+the work is deployed, checked, incomplete or blocked; do not equate a green
+deployment workflow with every requested component being live.
+
+For a failure, explain the user-visible effect, what remains available,
+the next owner/action and the evidence. Put exact errors and the transcript
+below the explanation. Do not ask users to resolve runtime mechanics without
+explaining their effect and the required action.
+
+Distinguish passed, failed, skipped and not-run checks. Do not claim overall
+acceptance when required checks remain. If an explicit waiver applies, name
+its scope. Report cleanup and ongoing cost exposure when relevant.

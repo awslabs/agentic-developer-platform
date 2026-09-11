@@ -2133,6 +2133,15 @@ def _register_authored_draft(persona: str, issue: int) -> str:
     return draft_registration_note(work_dir=WORK_DIR, issue=issue)
 
 
+def _outcome_report_link(meta: dict | None, repo: str, issue: int) -> str:
+    """Reference the worker's single outcome report without trusting arbitrary URLs."""
+    url = (meta or {}).get("outcome_comment_url")
+    prefix = f"https://github.com/{repo}/issues/{issue}#issuecomment-"
+    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix):].isdigit():
+        return f"\n\n[Outcome, remaining work and next action]({url})."
+    return ""
+
+
 def _handle_success(
     repo: str,
     issue: int,
@@ -2179,7 +2188,7 @@ def _handle_success(
             # Backfill it before returning — this is the path #1723 missed
             # (the backfill was only wired into the entrypoint-creates-PR block,
             # which this early return never reaches).
-            logger.info("No agent changes beyond WIP commit")
+            logger.info("No local changes or unpushed commits remain")
 
             # Distinguish a genuine "no changes needed" verdict from an
             # infrastructure failure the SDK swallowed (issue #2883). A run that
@@ -2220,7 +2229,11 @@ def _handle_success(
             # entrypoint finds nothing left to push. Registration therefore has to
             # be wired here too, not only on the PR-creating path below.
             draft_note = _register_authored_draft(persona, issue)
-            summary = f"Agent `{persona}` finished — no changes needed."
+            if self_pr:
+                git_outcome = f"PR #{self_pr} is open: https://github.com/{repo}/pull/{self_pr}."
+            else:
+                git_outcome = "No local changes remain to push; task completion is not verified by this check."
+            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(meta, repo, issue)
             _post_comment(
                 repo,
                 issue,
@@ -2233,7 +2246,7 @@ def _handle_success(
                 message_id,
                 arrived_at,
                 "complete",
-                summary=f"{persona} — no changes needed",
+                summary=f"{persona} — run ended; " + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
             return 0
 
@@ -2242,6 +2255,8 @@ def _handle_success(
 
         # Create PR if one doesn't already exist on this branch
         pr_already_exists = False
+        existing_pr_number = ""
+        transcript_only = False
         try:
             existing_pr = run_cmd(
                 [
@@ -2277,6 +2292,7 @@ def _handle_success(
                 "skipping PR creation (review was delivered as PR comments)",
                 branch,
             )
+            transcript_only = True
             pr_already_exists = True  # skip the create block below
 
         if not pr_already_exists:
@@ -2300,7 +2316,7 @@ def _handle_success(
             )
             # On success: write pointer + provenance for the PR (fail-soft)
             _write_outbound_correlation(repo, f"pr:{branch}", "pr_create")
-        else:
+        elif existing_pr_number:
             # The agent opened its OWN PR (via the SDK's `gh pr create`), so the
             # entrypoint's marker-prepend above was skipped. Agent-authored PR
             # bodies therefore carry NO adp-* correlation marker — which means
@@ -2309,7 +2325,13 @@ def _handle_success(
             # edit the PR body to prepend the marker if it isn't already there.
             _ensure_pr_body_marker(repo, existing_pr_number, branch)
         draft_note = _register_authored_draft(persona, issue)
-        summary = f"Agent `{persona}` completed. PR opened on branch `{branch}`."
+        if transcript_only:
+            git_outcome = f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+        elif existing_pr_number:
+            git_outcome = f"PR #{existing_pr_number} is open: https://github.com/{repo}/pull/{existing_pr_number}."
+        else:
+            git_outcome = f"PR opened on branch `{branch}`; merge and deployment are not verified by this check."
+        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(_read_result_metadata(), repo, issue)
         _post_comment(
             repo,
             issue,
@@ -2322,7 +2344,7 @@ def _handle_success(
             message_id,
             arrived_at,
             "complete",
-            summary=f"{persona} — completed, PR on {branch}",
+            summary=f"{persona} — run ended; " + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )
     except subprocess.CalledProcessError as exc:
         logger.error("Post-agent git/PR step failed: %s", exc.stderr or exc)

@@ -29,3 +29,13 @@ When loading context from the `adp` branch:
 - Blocked work is identified and escalated
 - Status updates are posted to the correct issues
 - Workflow state is saved so the next PM run can resume
+
+## Human communication
+
+Summarize progress by capability, not only by issue count. Explain what can
+be used now, what the next dependency prevents, and who owns the next action.
+Keep story implementation detail on the story. A wave table should include
+short meaningful names and distinguish merged, deployed and accepted.
+
+If progress stops, state the blocker and the handoff. Do not label the wave
+complete because coordination for this run ended.
