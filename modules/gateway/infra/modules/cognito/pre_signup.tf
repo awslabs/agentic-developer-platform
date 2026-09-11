@@ -20,8 +20,23 @@ data "archive_file" "pre_signup" {
   type        = "zip"
   output_path = "${path.module}/lambda/pre_signup.zip"
 
+  # Issue #4848: the handler source lives at modules/gateway/lambda/pre-signup/,
+  # where every other gateway Lambda lives and where the test harness
+  # (tests/lambda/_handler_loader.py) already resolves. It used to live in this
+  # Terraform module, which is build-output territory (pre_signup.zip is written
+  # next to it and gitignored) and outside the collected test tree -- so the
+  # packaged copy had no tests while an unpackaged duplicate had 18, and the two
+  # silently drifted (#4849 landed shadow-mode code in one of them only).
+  #
+  # `filename` stays "pre_signup.py" even though the source is handler.py: it is
+  # what the zip's internal module name must be for the `handler =
+  # "pre_signup.handler"` setting on aws_lambda_function.pre_signup below to
+  # resolve. Renaming either without the other is a
+  # Runtime.ImportModuleError on every invocation, i.e. a sign-in outage. Setting
+  # it explicitly is exactly why this is a multi-source archive rather than
+  # `source_file`, which would name the entry handler.py and break the handler string.
   source {
-    content  = file("${path.module}/lambda/pre_signup.py")
+    content  = file("${path.root}/../lambda/pre-signup/handler.py")
     filename = "pre_signup.py"
   }
 

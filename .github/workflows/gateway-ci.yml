@@ -9,6 +9,15 @@ on:
       # edit used to trigger no workflow at all — so bg-cognito-auth.sh changes
       # shipped untested. Keep cli/ in lockstep with the suite that covers it.
       - 'modules/gateway/cli/**'
+      # Issue #4848: same gap as #4145, on the auth Lambdas. Editing anything under
+      # lambda/ used to trigger no workflow at all — which is how the pre-signup
+      # trigger came to exist as two near-identical copies, one packaged and
+      # untested, the other tested and unpackaged, drifting apart unobserved (#4849
+      # landed shadow-mode code in only one of them). tests/lambda/ covers this tree
+      # now, so keep the two in lockstep: a handler edit must re-run the suite that
+      # asserts its behavior. These files are the GitHub sign-in path — an
+      # unobserved change here is a login outage, not a failed test.
+      - 'modules/gateway/lambda/**'
       - 'modules/gateway/pyproject.toml'
       - 'modules/gateway/Dockerfile'
       - 'modules/gateway/frontend/src/**'

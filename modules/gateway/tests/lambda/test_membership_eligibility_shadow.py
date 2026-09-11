@@ -24,7 +24,7 @@ import pytest
 # Puts modules/gateway/lambda/shared on sys.path, where membership_eligibility
 # lives — the same import surface both Lambdas get once packaged (deploy-broker.sh
 # and pre_signup.tf each copy that file in flat beside the handler).
-from ._handler_loader import load_handler  # noqa: F401
+from ._handler_loader import load_handler
 
 _GATEWAY_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -34,8 +34,8 @@ def _load(mod_name: str, path: Path, *extra_syspath: Path) -> ModuleType:
 
     Not ``_handler_loader.load_handler``: the broker's handler imports its sibling
     modules flat (``from allowlist import …``), which only resolves with its own
-    directory on ``sys.path`` — that is the layout the zip has at runtime. And the
-    pre-signup file under test is not named ``handler.py`` at all.
+    directory on ``sys.path`` — that is the layout the zip has at runtime. Only the
+    broker needs this; pre-signup uses the shared loader (#4848).
 
     A failed exec is evicted from ``sys.modules`` so a broken import surfaces on
     every test rather than leaving a half-initialised module cached for later ones.
@@ -66,15 +66,14 @@ def broker() -> ModuleType:
 def pre_signup() -> ModuleType:
     """Load the pre-signup trigger that is actually DEPLOYED.
 
-    ``infra/modules/cognito/pre_signup.tf`` packages
-    ``infra/modules/cognito/lambda/pre_signup.py``; ``lambda/pre-signup/handler.py``
-    is an unpackaged duplicate (T0a / #4848 owns that cleanup). Testing the copy
-    Terraform ships is the only version that proves anything about production.
+    Since #4848 there is only one copy: ``infra/modules/cognito/pre_signup.tf``
+    packages ``lambda/pre-signup/handler.py`` (entered in the zip as
+    ``pre_signup.py`` to match the ``pre_signup.handler`` handler string). The
+    former ``infra/modules/cognito/lambda/pre_signup.py`` duplicate is deleted, so
+    "the deployed copy" and "the tested copy" are now the same file and this
+    fixture can use the shared handler loader like every other lambda suite.
     """
-    return _load(
-        "cognito_deployed_pre_signup",
-        _GATEWAY_ROOT / "infra" / "modules" / "cognito" / "lambda" / "pre_signup.py",
-    )
+    return load_handler("pre-signup")
 
 
 # Every verdict the reader can return, plus a raise. None of them may change an

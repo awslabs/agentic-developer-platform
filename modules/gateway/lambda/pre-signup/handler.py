@@ -112,6 +112,11 @@ def handler(event: dict, context) -> dict:
 
     logger.info(f"Processing sign-up for GitHub user: {github_username}")
 
+    # Issue #4849, SHADOW MODE: exercise the membership-eligibility read and log
+    # what it would decide. Does not affect the outcome below — T5 (#4844) is what
+    # makes it authoritative. See _log_membership_eligibility_shadow.
+    _log_membership_eligibility_shadow(username, github_username)
+
     mode = ALLOWLIST_MODE.lower()
 
     if mode == "open":
@@ -142,6 +147,51 @@ def handler(event: dict, context) -> dict:
     else:
         logger.error(f"Unknown ALLOWLIST_MODE: {ALLOWLIST_MODE}; denying sign-up")
         raise Exception("Sign-up is currently disabled due to misconfiguration.")
+
+
+def _extract_github_user_id(username: str) -> str:
+    """Extract the numeric GitHub account id from the Cognito userName.
+
+    For external providers the userName is ``<ProviderName>_<providerUserId>``,
+    which for the GitHub IdP is ``GitHub_<numeric id>``. The id — not the login —
+    is what the identity-index projection is keyed on, because logins are
+    renameable. Deliberately does NOT fall back to the login/email the way
+    ``_extract_github_username`` does: a login is not a valid key here, and
+    guessing one would look up the wrong user rather than fail.
+    """
+    if "_" in username:
+        candidate = username.split("_", 1)[1]
+        if candidate.isdigit():
+            return candidate
+    return ""
+
+
+def _log_membership_eligibility_shadow(username: str, github_username: str) -> None:
+    """Log what the membership-eligibility read would decide (Issue #4849).
+
+    Shadow only — never changes the sign-up outcome, and never raises: a fault in
+    a read that has no opinion yet must not be able to deny a sign-up.
+    """
+    try:
+        from membership_eligibility import check_platform_membership
+
+        github_id = _extract_github_user_id(username)
+        if not github_id:
+            logger.info(
+                "membership-eligibility SHADOW: no numeric github id in userName=%r; skipping",
+                username,
+            )
+            return
+        verdict = check_platform_membership(github_id)
+        logger.info(
+            "membership-eligibility SHADOW: github_id=%s login=%s verdict=%s (mode=%s, outcome unaffected)",
+            github_id,
+            github_username,
+            verdict,
+            ALLOWLIST_MODE,
+        )
+    except Exception as e:
+        logger.warning(f"membership-eligibility SHADOW: read raised (ignored): {e}")
 
 
 def _extract_github_username(username: str, user_attributes: dict) -> str:
