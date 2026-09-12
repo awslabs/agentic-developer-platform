@@ -841,6 +841,19 @@ def _describe_vault_fetch_failure(exc: Exception, secret_path: str) -> str:
     return f"failed to read tenant secret {secret_path} — {detail}"
 
 
+def _checkout_existing_work_branch(branch: str) -> None:
+    """Extend a remote branch even when clone --depth only mapped main.
+
+    A bare `fetch origin branch` otherwise updates FETCH_HEAD alone: checkout
+    fails, and finalization later cannot push the missing local branch. Register
+    the mapping before fetching so checkout also establishes a usable upstream.
+    Never reset an existing local branch or discard its changes.
+    """
+    run_cmd(["git", "remote", "set-branches", "--add", "origin", branch], cwd=WORK_DIR)
+    run_cmd(["git", "fetch", "origin", branch], cwd=WORK_DIR)
+    run_cmd(["git", "checkout", branch], cwd=WORK_DIR)
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -1352,6 +1365,7 @@ def main() -> int:
     # issue, so concurrent-run race conditions don't apply here.
     branch_name = f"agent/issue-{issue}"
     wip_sha: str = ""
+    work_branch_ready = False
     try:
         # Detect whether the remote branch exists. Use subprocess.run directly
         # because run_cmd hardcodes check=True; we want to inspect returncode.
@@ -1396,8 +1410,7 @@ def main() -> int:
                     "Branch %s exists with open PR; extending instead of resetting",
                     branch_name,
                 )
-                run_cmd(["git", "fetch", "origin", branch_name], cwd=WORK_DIR)
-                run_cmd(["git", "checkout", branch_name], cwd=WORK_DIR)
+                _checkout_existing_work_branch(branch_name)
             elif persona in PERSONAS_EXTENDING_BRANCH:
                 # (a-aidlc) AIDLC stages commit artifacts sequentially on one
                 # branch without opening a PR until the end. Never delete the
@@ -1409,8 +1422,7 @@ def main() -> int:
                     branch_name,
                     persona,
                 )
-                run_cmd(["git", "fetch", "origin", branch_name], cwd=WORK_DIR)
-                run_cmd(["git", "checkout", branch_name], cwd=WORK_DIR)
+                _checkout_existing_work_branch(branch_name)
             else:
                 # (a) Stale branch, no PR — delete it and start fresh from main.
                 logger.info(
@@ -1429,6 +1441,7 @@ def main() -> int:
             # First run on this issue — clean creation
             run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
 
+        work_branch_ready = True
         run_cmd(
             ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
             cwd=WORK_DIR,
@@ -1440,12 +1453,16 @@ def main() -> int:
         logger.info("WIP branch %s created; sha=%s", branch_name, wip_sha[:7])
     except Exception as exc:
         bootstrap_log.step_error(7, "wip_branch", exc)
-        # Issue #4030 deliberately does NOT write status=failed here. Unlike the
-        # other bootstrap error exits this one does not re-raise: it falls back
-        # to the default-branch sha and the run continues to in_progress. Marking
-        # the row failed would be a lie, and would be overwritten moments later.
-        logger.warning("WIP branch creation failed (non-fatal): %s", exc)
-        # Fall back to default-branch HEAD sha for the Check Run
+        # Never launch the model on main after a failed branch checkout. A WIP
+        # commit/push failure remains nonfatal once the work branch is ready.
+        if not work_branch_ready:
+            _fail_bootstrap_status(
+                message_id, arrived_at, f"could not prepare work branch {branch_name}"
+            )
+            bootstrap_log.close()
+            raise
+        logger.warning("WIP commit/push failed (non-fatal): %s", exc)
+        # Fall back to the current work-branch HEAD sha for the Check Run
         try:
             sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
             wip_sha = sha_result.stdout.strip()

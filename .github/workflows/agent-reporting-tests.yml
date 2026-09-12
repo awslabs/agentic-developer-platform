@@ -44,6 +44,8 @@ jobs:
           src/github-comments.test.ts
           src/human-communication.test.ts
           src/agent-worker-prompt-order.test.ts
+      - name: Verify memory reads and writes from shallow clones
+        run: npm test -- --runInBand --runTestsByPath src/memory.test.ts
 
   python-reporting:
     name: Transcript handoff and shared instructions
@@ -65,3 +67,8 @@ jobs:
           modules/agent-factory/agent-worker-image/tests/test_gateway_communication_policy.py
           modules/agent-factory/agent-worker-image/tests/test_stage_personas.py
           modules/agent-factory/agent-worker-image/tests/test_run_codex.py
+      - name: Verify repeat-run branch setup and final push from shallow clones
+        run: >-
+          python -m pytest -q
+          modules/agent-factory/agent-worker-image/tests/test_shallow_work_branch.py
+          modules/agent-factory/agent-worker-image/tests/test_bootstrap_failure_status.py
