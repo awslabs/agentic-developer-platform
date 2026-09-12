@@ -44,6 +44,15 @@ Claude input is additive: uncached input, cache reads and cache writes together
 form the context length. Select context thresholds from the published model and
 route rather than the OpenAI-wide threshold.
 
+For Claude, exclude batch rows before route and context selection unless
+upstream evidence explicitly confirms batch. Missing or unknown serving tiers
+remain estimated, but they cannot make offline batch rates candidates for an
+online request. This restriction also applies when falling back from an
+unpublished route. If the stored model rows contain only batch variants, use
+the existing model-specific bundled fallback with its provenance rather than
+reintroducing batch rows or dropping measured usage. OpenAI selection is
+unchanged. Previously saved decisions continue to replay their embedded rates.
+
 New Claude decisions use version 2 and embed the selected rates, raw usage,
 provenance, routing evidence, exact Decimal cost and rounded ledger cost. Unknown
 write duration or serving context must carry an estimate reason; it must not be
@@ -69,6 +78,12 @@ stream lifetime without leaking between requests. Compute one Claude decision
 and share it between usage persistence and the S3 settlement event. Streaming
 buffers and schemas must retain cache duration counters and the distinction
 between missing evidence and measured zero.
+
+Capture the provider's nested `usage.service_tier` as well as upstream tier
+metadata. Streaming responses can report it under `message.usage` in the start
+event and omit it from later deltas; omission must not erase confirmed evidence.
+Missing, unknown or conflicting upstream tiers remain estimated. A requested
+tier alone cannot establish the served tier.
 
 Completed usage must still reach settlement if response translation fails or
 the client disconnects. Preserve the request's pricing task through cancellation

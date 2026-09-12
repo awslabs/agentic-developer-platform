@@ -7,7 +7,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from pricing_policy import RoutingEvidence, canonical_billing_model_id, is_anthropic_model
-from pricing_policy.policy import geography_from_model_prefix
+from pricing_policy.policy import ServiceTier, geography_from_model_prefix
 from src.chat_logging.service import StreamingResponseBuffer
 
 
@@ -21,6 +21,7 @@ class PricingCapture:
     decision: dict[str, Any] | None = None
     finalization_task: asyncio.Task[None] | None = field(default=None, repr=False)
     buffer: StreamingResponseBuffer = field(default_factory=StreamingResponseBuffer)
+    _served_tier_conflict: bool = field(default=False, repr=False)
 
     @property
     def is_claude(self) -> bool:
@@ -49,12 +50,41 @@ class PricingCapture:
             geography=geography,
         )
 
+    def _capture_served_tier(self, *values: Any) -> None:
+        if self.routing is None or self._served_tier_conflict:
+            return
+        recognized = {value.strip().lower() for value in values if isinstance(value, str) and value.strip().lower() in ServiceTier.ALL}
+        if self.routing.served_service_tier is not None:
+            recognized.add(self.routing.served_service_tier)
+        if len(recognized) > 1:
+            # Conflicting upstream facts cannot certify either tier. Keep the
+            # conflict sticky so a later event cannot silently restore certainty.
+            self._served_tier_conflict = True
+            self.routing = replace(self.routing, served_service_tier_raw="conflicting_upstream_tiers")
+        elif recognized:
+            # Compare normalized values, but keep the actual upstream spelling
+            # as provenance. A consistent later event need not replace it.
+            raw = (
+                self.routing.served_service_tier_raw
+                if self.routing.served_service_tier is not None
+                else next(value for value in values if isinstance(value, str) and value.strip().lower() in recognized)
+            )
+            self.routing = replace(self.routing, served_service_tier_raw=raw)
+        else:
+            raw = next((value for value in values if isinstance(value, str) and value.strip()), None)
+            if raw is not None:
+                self.routing = replace(self.routing, served_service_tier_raw=raw)
+
     def response(self, body: dict[str, Any], metadata: dict[str, Any]) -> None:
         self.response_body.update(body)
         self.raw_usage.update(body.get("usage") or {})
-        served = metadata.get("serviceTier") or body.get("service_tier")
-        if self.routing and isinstance(served, str):
-            self.routing = replace(self.routing, served_service_tier_raw=served)
+        usage = body.get("usage") or {}
+        if self.is_claude:
+            self._capture_served_tier(usage.get("service_tier"), metadata.get("serviceTier"), body.get("service_tier"))
+        else:
+            served = metadata.get("serviceTier") or body.get("service_tier")
+            if self.routing and isinstance(served, str):
+                self.routing = replace(self.routing, served_service_tier_raw=served)
 
     def chunk(self, chunk: bytes) -> None:
         try:
@@ -66,6 +96,13 @@ class PricingCapture:
         self.buffer.add_chunk(event)
         self.raw_usage.update(self.buffer.usage)
         message = event.get("message") or {}
-        served = event.get("service_tier") or message.get("service_tier")
-        if self.routing and isinstance(served, str):
-            self.routing = replace(self.routing, served_service_tier_raw=served)
+        start_usage = message.get("usage") or {}
+        delta_usage = event.get("usage") or {}
+        if self.is_claude:
+            self._capture_served_tier(
+                start_usage.get("service_tier"), delta_usage.get("service_tier"), event.get("service_tier"), message.get("service_tier")
+            )
+        else:
+            served = event.get("service_tier") or message.get("service_tier")
+            if self.routing and isinstance(served, str):
+                self.routing = replace(self.routing, served_service_tier_raw=served)

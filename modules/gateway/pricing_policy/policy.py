@@ -862,6 +862,17 @@ def _row_total_cost(row: RateRow, usage: NormalizedUsage) -> Decimal:
     return cost
 
 
+def model_rate_candidates(rows: tuple[RateRow, ...], model_id: str, *, served_service_tier: str | None = None) -> tuple[RateRow, ...]:
+    """Current selection candidates, excluding offline Claude batch ambiguity.
+
+    A missing/unknown online serving tier does not make offline batch pricing
+    eligible. Explicit batch evidence remains available to generic/offline
+    callers. OpenAI selection and saved-decision replay retain their contracts.
+    """
+    exclude_batch = is_anthropic_model(model_id) and served_service_tier != ServiceTier.BATCH
+    return tuple(row for row in rows if row.model_id == model_id and not (exclude_batch and row.service_tier == ServiceTier.BATCH))
+
+
 def select_rate_row(
     *,
     rows: tuple[RateRow, ...],
@@ -890,7 +901,7 @@ def select_rate_row(
     # row across every model. That priced a gpt-5.5 request off a gpt-5.6-cyber
     # row at 0.09625 instead of 0.0385 — a 2.5x overcharge, from a call site that
     # passed the whole generation because the signature let it.
-    rows = tuple(r for r in rows if r.model_id == evidence.billing_model_id)
+    rows = model_rate_candidates(rows, evidence.billing_model_id, served_service_tier=evidence.served_service_tier)
 
     if not rows:
         raise UnsupportedVariantError(f"no published rates for {evidence.billing_model_id}")

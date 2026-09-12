@@ -16,7 +16,7 @@ from pricing_policy import (
     normalize_usage,
     resolve_curated_non_openai,
 )
-from pricing_policy.policy import staleness_reasons
+from pricing_policy.policy import model_rate_candidates, staleness_reasons
 from pricing_policy.storage import utc_now_iso
 from src.budget import pricing_v2_reader
 from src.shared.database import get_session_factory
@@ -79,13 +79,13 @@ def _bundled_estimate_row(model_id, evidence, snapshot):
 
 def decision_from_state(*, request_id, org_id, usage, evidence, state):
     snapshot = load_snapshot()
-    rows = tuple(row for row in state.rows if row.model_id == evidence.billing_model_id)
+    rows = model_rate_candidates(state.rows, evidence.billing_model_id, served_service_tier=evidence.served_service_tier)
     reasons = set(state.reasons)
     database = state.from_database
     if not rows:
         # A rollout can expose an OpenAI-only generation before Claude's seed.
         # Retain the model's published bundled rates and their provenance.
-        rows = tuple(row for row in snapshot.rates if row.model_id == evidence.billing_model_id)
+        rows = model_rate_candidates(snapshot.rates, evidence.billing_model_id, served_service_tier=evidence.served_service_tier)
         database = False
         reasons.add(EstimateReason.BOOTSTRAP_FALLBACK)
         if not rows:

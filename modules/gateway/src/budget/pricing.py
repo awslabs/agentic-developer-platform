@@ -24,7 +24,7 @@ from pricing_policy import (
     quantize_ledger,
     select_rate_row,
 )
-from pricing_policy.policy import geography_from_model_prefix
+from pricing_policy.policy import geography_from_model_prefix, model_rate_candidates
 from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -129,8 +129,8 @@ class PricingService:
 
             snapshot = load_snapshot()
             billing_id = canonical_billing_model_id(model_id, snapshot=snapshot)
-            rows = tuple(row for row in cached_rate_state().rows if row.model_id == billing_id)
-            snapshot = replace(snapshot, rates=rows or tuple(row for row in snapshot.rates if row.model_id == billing_id))
+            rows = model_rate_candidates(cached_rate_state().rows, billing_id)
+            snapshot = replace(snapshot, rates=rows or model_rate_candidates(snapshot.rates, billing_id))
             if is_anthropic_model(billing_id):
                 if not snapshot.rates:
                     # A retired/excluded Claude model still has its historical
@@ -184,9 +184,9 @@ class PricingService:
 
             state = state or cached_rate_state()
             billing_id = canonical_billing_model_id(model_id)
-            rows = tuple(row for row in state.rows if row.model_id == billing_id)
+            rows = model_rate_candidates(state.rows, billing_id)
             if not rows:
-                rows = tuple(row for row in load_snapshot().rates if row.model_id == billing_id)
+                rows = model_rate_candidates(load_snapshot().rates, billing_id)
             if rows:
                 usage = normalize_usage(
                     {"input_tokens": input_tokens, "output_tokens": output_tokens},
