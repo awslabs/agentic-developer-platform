@@ -100,7 +100,8 @@ def validate_jwt(token: str) -> dict[str, Any] | None:
         return claims
 
     except PyJWTError as e:
-        logger.error(f"JWT validation failed: {e}")
+        # JWT/JWKS errors can contain attacker-controlled token header values.
+        logger.error("JWT validation failed (%s)", type(e).__name__)
         return None
     except (URLError, TimeoutError) as e:
         logger.error(f"Failed to fetch JWKS: {e}")
@@ -334,19 +335,71 @@ def extract_bearer_token(auth_header: str | None) -> str | None:
     return parts[1]
 
 
+def _single_event_value(event: dict[str, Any], single_key: str, multi_key: str, name: str, *, ignore_case: bool = False) -> str | None:
+    """Read one credential, accepting API Gateway's consistent single/multi mirror.
+
+    Repeated values (even identical ones), case-variant header duplicates, and
+    inconsistent mirrors are ambiguous and must never pick an arbitrary user.
+    """
+    values = []
+    for key in (single_key, multi_key):
+        fields = event.get(key) or {}
+        matches = [value for field, value in fields.items() if (field.lower() if ignore_case else field) == name]
+        if len(matches) > 1:
+            raise ValueError("Ambiguous authentication credentials")
+        if not matches:
+            continue
+        value = matches[0]
+        if key == multi_key:
+            if not isinstance(value, list) or len(value) != 1:
+                raise ValueError("Ambiguous authentication credentials")
+            value = value[0]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Empty or malformed authentication credentials")
+        values.append(value)
+    if len(set(values)) > 1:
+        raise ValueError("Inconsistent authentication credentials")
+    return values[0] if values else None
+
+
+def _extract_request_token(event: dict[str, Any]) -> str | None:
+    """Accept query JWTs only at the WebSocket $connect authorization boundary."""
+    auth_header = _single_event_value(event, "headers", "multiValueHeaders", "authorization", ignore_case=True)
+    request_context = event.get("requestContext") or {}
+    websocket_connect = (
+        event.get("type") == "REQUEST"
+        and request_context.get("routeKey") == "$connect"
+        and request_context.get("eventType") == "CONNECT"
+        and event.get("methodArn", "").endswith("/$connect")
+    )
+    if websocket_connect:
+        query_token = _single_event_value(event, "queryStringParameters", "multiValueQueryStringParameters", "token")
+        if query_token is not None:
+            if auth_header is not None or event.get("authorizationToken") is not None:
+                raise ValueError("Multiple authentication transports")
+            return query_token
+    return extract_bearer_token(auth_header)
+
+
 def _redact_sensitive_event(event: dict[str, Any]) -> dict[str, Any]:
     """Create a redacted copy of the event for safe logging."""
     redacted = event.copy()
 
-    # Redact headers
-    if "headers" in redacted and redacted["headers"]:
-        redacted["headers"] = {
-            k: "[REDACTED]" if k.lower() in ("authorization", "x-api-key", "cookie") else v for k, v in redacted["headers"].items()
-        }
+    sensitive_headers = {"authorization", "proxy-authorization", "x-api-key", "cookie", "x-amz-security-token"}
+    sensitive_query = sensitive_headers | {"token", "access_token", "id_token", "refresh_token", "x-amz-signature", "x-amz-credential"}
+    for key, names in (
+        ("headers", sensitive_headers),
+        ("multiValueHeaders", sensitive_headers),
+        ("queryStringParameters", sensitive_query),
+        ("multiValueQueryStringParameters", sensitive_query),
+    ):
+        if redacted.get(key):
+            redacted[key] = {k: "[REDACTED]" if k.lower() in names else v for k, v in redacted[key].items()}
 
-    # Redact authorizationToken if present (TOKEN authorizer format)
-    if "authorizationToken" in redacted:
-        redacted["authorizationToken"] = "[REDACTED]"
+    # Alternate API Gateway event formats can repeat the same credentials here.
+    for key in ("authorizationToken", "identitySource", "rawQueryString"):
+        if key in redacted:
+            redacted[key] = "[REDACTED]"
 
     return redacted
 
@@ -362,13 +415,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # Get the method ARN for the policy
     method_arn = event.get("methodArn", "*")
 
-    # Try to extract Authorization header
-    headers = event.get("headers", {}) or {}
-    # Handle both lowercase and mixed case header names
-    auth_header = headers.get("Authorization") or headers.get("authorization")
-
-    # Check for Bearer token first
-    token = extract_bearer_token(auth_header)
+    try:
+        token = _extract_request_token(event)
+    except ValueError:
+        logger.warning("Ambiguous or malformed authentication credentials - denying")
+        return generate_policy(principal_id="unauthorized", effect="Deny", resource=method_arn)
     if token:
         # Optional network allowlist, scoped to this branch on purpose. The IAM
         # branch below serves agents and in-cluster callers whose source address
@@ -391,7 +442,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 "X-Agent-Id": claims.get("sub", ""),
                 "X-Agent-OrgId": claims.get("custom:org_id", "default"),
                 "X-Agent-TeamId": claims.get("custom:team_id", ""),
+                "X-Agent-DepartmentId": claims.get("custom:department_id", ""),
                 "X-Agent-UserId": claims.get("sub", ""),
+                "X-Agent-Email": claims.get("email", ""),
+                "X-Agent-Tenant": claims.get("custom:tenant_id", ""),
+                "X-Agent-Role": claims.get("custom:role", ""),
                 "X-Agent-AccountType": claims.get("custom:account_type", "user"),
                 "X-Agent-Scope": claims.get("custom:scope", "personal"),
                 "X-Agent-BudgetConfigId": claims.get("custom:budget_config_id", ""),

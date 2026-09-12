@@ -5,30 +5,35 @@
 # Uses moto for DynamoDB mocking and unittest.mock for JWT mocking.
 # =============================================================================
 
-import os
-import sys
+import copy
+import json
+import time
 from unittest import mock
 
+import jwt
 import pytest
 from botocore.exceptions import ClientError
+from cryptography.hazmat.primitives.asymmetric import rsa
 
-# Set environment variables before importing handler
-os.environ["COGNITO_USER_POOL_ID"] = "us-east-1_TestPool"
-os.environ["COGNITO_REGION"] = "us-east-1"
-os.environ["AGENT_REGISTRY_TABLE"] = "test-agent-registry"
+from ._handler_loader import load_handler
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(__file__))
+handler = load_handler("api-authorizer")
+extract_bearer_token = handler.extract_bearer_token
+generate_policy = handler.generate_policy
+lambda_handler = handler.lambda_handler
+lookup_agent_in_registry = handler.lookup_agent_in_registry
+parse_role_arn_from_user_arn = handler.parse_role_arn_from_user_arn
+source_ip_allowed = handler.source_ip_allowed
 
-import handler  # noqa: E402
-from handler import (  # noqa: E402
-    extract_bearer_token,
-    generate_policy,
-    lambda_handler,
-    lookup_agent_in_registry,
-    parse_role_arn_from_user_arn,
-    source_ip_allowed,
-)
+
+@pytest.fixture(autouse=True)
+def reset_handler(monkeypatch):
+    monkeypatch.setattr(handler, "COGNITO_USER_POOL_ID", "us-east-1_TestPool")
+    monkeypatch.setattr(handler, "COGNITO_REGION", "us-east-1")
+    monkeypatch.setattr(handler, "AGENT_REGISTRY_TABLE", "test-agent-registry")
+    monkeypatch.setattr(handler, "IP_ALLOWLIST_SSM_PARAM", "")
+    monkeypatch.setattr(handler, "_dynamodb_client", None)
+
 
 # =============================================================================
 # Test Fixtures
@@ -50,14 +55,20 @@ def mock_dynamodb():
         client = boto3.client("dynamodb", region_name="us-east-1")
         client.create_table(
             TableName="test-agent-registry",
-            KeySchema=[{"AttributeName": "role_arn", "KeyType": "HASH"}],
+            KeySchema=[{"AttributeName": "agent_id", "KeyType": "HASH"}],
             AttributeDefinitions=[
+                {"AttributeName": "agent_id", "AttributeType": "S"},
                 {"AttributeName": "role_arn", "AttributeType": "S"},
                 {"AttributeName": "org_id", "AttributeType": "S"},
                 {"AttributeName": "team_id", "AttributeType": "S"},
                 {"AttributeName": "owner", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "by-role-arn",
+                    "KeySchema": [{"AttributeName": "role_arn", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
                 {
                     "IndexName": "by-org-team",
                     "KeySchema": [
@@ -80,6 +91,7 @@ def mock_dynamodb():
             TableName="test-agent-registry",
             Item={
                 "role_arn": {"S": "arn:aws:iam::123456789012:role/test-agent"},
+                "agent_id": {"S": "test-agent"},
                 "agent_name": {"S": "test-agent"},
                 "org_id": {"S": "default"},
                 "team_id": {"S": "platform"},
@@ -96,6 +108,7 @@ def mock_dynamodb():
             TableName="test-agent-registry",
             Item={
                 "role_arn": {"S": "arn:aws:iam::123456789012:role/disabled-agent"},
+                "agent_id": {"S": "disabled-agent"},
                 "agent_name": {"S": "disabled-agent"},
                 "org_id": {"S": "default"},
                 "team_id": {"S": "platform"},
@@ -108,8 +121,6 @@ def mock_dynamodb():
         )
 
         # Reset the global DynamoDB client in the handler module
-        import handler
-
         handler._dynamodb_client = None
 
         yield client
@@ -135,7 +146,7 @@ def valid_jwt_claims():
 def api_gateway_event():
     """Base API Gateway event."""
     return {
-        "type": "TOKEN",
+        "type": "REQUEST",
         "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/GET/test",
         "headers": {},
         "requestContext": {
@@ -201,8 +212,7 @@ def test_parse_role_arn_with_path():
     """Test parsing role ARN with path."""
     user_arn = "arn:aws:sts::123456789012:assumed-role/path/to/my-role/session"
     role_arn = parse_role_arn_from_user_arn(user_arn)
-    # The regex only captures the first path component after assumed-role/
-    assert role_arn == "arn:aws:iam::123456789012:role/path"
+    assert role_arn == "arn:aws:iam::123456789012:role/path/to/my-role"
 
 
 def test_parse_role_arn_empty():
@@ -288,18 +298,12 @@ def test_lookup_agent_disabled(mock_dynamodb):
     assert agent is None
 
 
-def test_lookup_agent_no_table():
-    """Test lookup when table is not configured."""
-    original_table = os.environ.get("AGENT_REGISTRY_TABLE")
-    os.environ["AGENT_REGISTRY_TABLE"] = ""
-    try:
-        import handler
-
-        handler._dynamodb_client = None
-        agent = lookup_agent_in_registry("arn:aws:iam::123456789012:role/test-agent")
-        assert agent is None
-    finally:
-        os.environ["AGENT_REGISTRY_TABLE"] = original_table
+def test_lookup_agent_no_table(monkeypatch):
+    """An unconfigured registry denies without an AWS request."""
+    monkeypatch.setattr(handler, "AGENT_REGISTRY_TABLE", "")
+    with mock.patch.object(handler, "get_dynamodb_client") as client:
+        assert lookup_agent_in_registry("arn:aws:iam::123456789012:role/test-agent") is None
+    client.assert_not_called()
 
 
 # =============================================================================
@@ -311,7 +315,7 @@ def test_handler_valid_jwt(api_gateway_event, valid_jwt_claims):
     """Test handler with valid JWT token."""
     api_gateway_event["headers"]["Authorization"] = "Bearer valid-token"
 
-    with mock.patch("handler.validate_jwt") as mock_validate:
+    with mock.patch.object(handler, "validate_jwt") as mock_validate:
         mock_validate.return_value = valid_jwt_claims
 
         result = lambda_handler(api_gateway_event, None)
@@ -329,7 +333,7 @@ def test_handler_expired_jwt(api_gateway_event):
     """Test handler with expired JWT token returns deny."""
     api_gateway_event["headers"]["Authorization"] = "Bearer expired-token"
 
-    with mock.patch("handler.validate_jwt") as mock_validate:
+    with mock.patch.object(handler, "validate_jwt") as mock_validate:
         mock_validate.return_value = None  # Validation failed
 
         result = lambda_handler(api_gateway_event, None)
@@ -414,7 +418,7 @@ def test_handler_lowercase_authorization_header(api_gateway_event, valid_jwt_cla
     """Test handler handles lowercase Authorization header."""
     api_gateway_event["headers"]["authorization"] = "Bearer valid-token"
 
-    with mock.patch("handler.validate_jwt") as mock_validate:
+    with mock.patch.object(handler, "validate_jwt") as mock_validate:
         mock_validate.return_value = valid_jwt_claims
 
         result = lambda_handler(api_gateway_event, None)
@@ -443,7 +447,7 @@ def test_handler_jwt_defaults_for_missing_claims(api_gateway_event):
         "iat": 1000000000,
     }
 
-    with mock.patch("handler.validate_jwt") as mock_validate:
+    with mock.patch.object(handler, "validate_jwt") as mock_validate:
         mock_validate.return_value = minimal_claims
 
         result = lambda_handler(api_gateway_event, None)
@@ -537,7 +541,7 @@ def test_handler_jwt_denied_from_disallowed_ip(api_gateway_event, valid_jwt_clai
     api_gateway_event["headers"]["Authorization"] = "Bearer valid-token"
     _event_from(api_gateway_event, "203.0.113.9")
 
-    with mock.patch("handler.validate_jwt") as mock_validate:
+    with mock.patch.object(handler, "validate_jwt") as mock_validate:
         mock_validate.return_value = valid_jwt_claims
         result = lambda_handler(api_gateway_event, None)
 
@@ -550,7 +554,7 @@ def test_handler_jwt_allowed_from_allowed_ip(api_gateway_event, valid_jwt_claims
     api_gateway_event["headers"]["Authorization"] = "Bearer valid-token"
     _event_from(api_gateway_event, "52.3.162.184")
 
-    with mock.patch("handler.validate_jwt") as mock_validate:
+    with mock.patch.object(handler, "validate_jwt") as mock_validate:
         mock_validate.return_value = valid_jwt_claims
         result = lambda_handler(api_gateway_event, None)
 
@@ -572,11 +576,10 @@ def test_handler_iam_path_ignores_ip_allowlist(api_gateway_event, ip_allowlist):
     api_gateway_event["requestContext"]["identity"]["userArn"] = "arn:aws:sts::123456789012:assumed-role/test-agent-role/session"
     _event_from(api_gateway_event, "10.0.42.7")
 
-    with mock.patch("handler.lookup_agent_in_registry") as mock_lookup:
+    with mock.patch.object(handler, "lookup_agent_in_registry") as mock_lookup:
         mock_lookup.return_value = {
-            "agent_id": {"S": "test-agent"},
-            "enabled": {"BOOL": True},
-            "org_id": {"S": "test-org"},
+            "agent_id": "test-agent",
+            "org_id": "test-org",
         }
         result = lambda_handler(api_gateway_event, None)
 
@@ -593,12 +596,217 @@ def test_handler_iam_path_does_not_read_allowlist(api_gateway_event, ip_allowlis
     spy = mock.Mock(return_value=False)
     monkeypatch.setattr(handler, "source_ip_allowed", spy)
 
-    with mock.patch("handler.lookup_agent_in_registry") as mock_lookup:
-        mock_lookup.return_value = {"agent_id": {"S": "a"}, "enabled": {"BOOL": True}}
+    with mock.patch.object(handler, "lookup_agent_in_registry") as mock_lookup:
+        mock_lookup.return_value = {"agent_id": "a"}
         lambda_handler(api_gateway_event, None)
 
     spy.assert_not_called()
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+# Issue #5012: browser WebSocket REQUEST events carry the access JWT in the
+# query string. These tests live under tests/ so gateway-ci collects them.
+@pytest.fixture
+def websocket_event():
+    return {
+        "type": "REQUEST",
+        "methodArn": "arn:aws:execute-api:us-east-1:123456789012:ws123/v1/$connect",
+        "headers": {"Host": "ws123.execute-api.us-east-1.amazonaws.com", "Upgrade": "websocket"},
+        "multiValueHeaders": {"Upgrade": ["websocket"]},
+        "queryStringParameters": {"token": "browser-access-jwt"},
+        "multiValueQueryStringParameters": {"token": ["browser-access-jwt"]},
+        "requestContext": {
+            "routeKey": "$connect",
+            "eventType": "CONNECT",
+            "connectionId": "test-connection",
+            "identity": {"sourceIp": "203.0.113.9"},
+        },
+    }
+
+
+def _effect(result):
+    return result["policyDocument"]["Statement"][0]["Effect"]
+
+
+@pytest.mark.parametrize("absent_map", [None, "queryStringParameters", "multiValueQueryStringParameters"])
+def test_browser_connect_validates_query_jwt_and_forwards_identity(websocket_event, valid_jwt_claims, absent_map):
+    if absent_map:
+        websocket_event[absent_map] = None
+    valid_jwt_claims.update(
+        {
+            "custom:department_id": "test-department",
+            "custom:role": "member",
+            "custom:tenant_id": "test-tenant",
+            "email": "member@example.com",
+        }
+    )
+    original = copy.deepcopy(websocket_event)
+    with mock.patch.object(handler, "validate_jwt", return_value=valid_jwt_claims) as validate:
+        result = lambda_handler(websocket_event, None)
+    validate.assert_called_once_with("browser-access-jwt")
+    assert _effect(result) == "Allow"
+    assert result["policyDocument"]["Statement"][0]["Resource"] == websocket_event["methodArn"]
+    assert result["principalId"] == "user-123"
+    assert {
+        key: result["context"][key]
+        for key in ("X-Agent-UserId", "X-Agent-OrgId", "X-Agent-TeamId", "X-Agent-DepartmentId", "X-Agent-Role", "X-Agent-Email", "X-Agent-Tenant")
+    } == {
+        "X-Agent-UserId": "user-123",
+        "X-Agent-OrgId": "test-org",
+        "X-Agent-TeamId": "test-team",
+        "X-Agent-DepartmentId": "test-department",
+        "X-Agent-Role": "member",
+        "X-Agent-Email": "member@example.com",
+        "X-Agent-Tenant": "test-tenant",
+    }
+    assert websocket_event == original
+
+
+@pytest.mark.parametrize("query", [{}, {"token": ""}, {"token": None}, {"token": " "}, {"Token": "unsupported-name"}])
+def test_browser_connect_missing_or_empty_token_denied(websocket_event, query):
+    websocket_event["queryStringParameters"] = query
+    websocket_event["multiValueQueryStringParameters"] = None
+    with mock.patch.object(handler, "validate_jwt") as validate:
+        assert _effect(lambda_handler(websocket_event, None)) == "Deny"
+    validate.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"multiValueQueryStringParameters": {"token": ["browser-access-jwt", "other-user"]}},
+        {"multiValueQueryStringParameters": {"token": ["browser-access-jwt", "browser-access-jwt"]}},
+        {"multiValueQueryStringParameters": {"token": ["other-user"]}},
+        {"multiValueQueryStringParameters": {"token": []}},
+        {"multiValueQueryStringParameters": {"token": "not-an-array"}},
+        {"headers": {"Authorization": "Bearer browser-access-jwt"}},
+        {"headers": {"Authorization": "Bearer other-user"}},
+        {"multiValueHeaders": {"aUtHoRiZaTiOn": ["Bearer browser-access-jwt"]}},
+        {"authorizationToken": "Bearer browser-access-jwt"},
+    ],
+)
+def test_browser_connect_ambiguous_credentials_denied_without_iam_fallback(websocket_event, changes):
+    websocket_event.update(changes)
+    websocket_event["requestContext"]["identity"]["userArn"] = "arn:aws:sts::123456789012:assumed-role/test-agent/session"
+    with mock.patch.object(handler, "validate_jwt") as validate, mock.patch.object(handler, "lookup_agent_in_registry") as lookup:
+        assert _effect(lambda_handler(websocket_event, None)) == "Deny"
+    validate.assert_not_called()
+    lookup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"type": "TOKEN"},
+        {"methodArn": "arn:aws:execute-api:us-east-1:123456789012:api/dev/GET/test"},
+        {"requestContext": {"routeKey": "$default", "eventType": "MESSAGE"}},
+        {"requestContext": {"routeKey": "$connect", "eventType": "MESSAGE"}},
+        {"requestContext": {}},
+    ],
+)
+def test_query_token_is_not_an_http_or_message_authentication_transport(websocket_event, changes):
+    websocket_event.update(changes)
+    with mock.patch.object(handler, "validate_jwt") as validate:
+        assert _effect(lambda_handler(websocket_event, None)) == "Deny"
+    validate.assert_not_called()
+
+
+def test_http_header_and_iam_behavior_is_preserved(api_gateway_event, valid_jwt_claims):
+    api_gateway_event["queryStringParameters"] = {"token": "ignored-on-http"}
+    api_gateway_event["headers"] = {"aUtHoRiZaTiOn": "Bearer http-jwt"}
+    api_gateway_event["multiValueHeaders"] = {"Authorization": ["Bearer http-jwt"]}
+    with mock.patch.object(handler, "validate_jwt", return_value=valid_jwt_claims) as validate:
+        assert _effect(lambda_handler(api_gateway_event, None)) == "Allow"
+    validate.assert_called_once_with("http-jwt")
+    api_gateway_event["headers"] = {"Authorization": "AWS4-HMAC-SHA256 Credential=example"}
+    api_gateway_event["multiValueHeaders"] = None
+    api_gateway_event["requestContext"]["identity"]["userArn"] = "arn:aws:sts::123456789012:assumed-role/test-agent/session"
+    with mock.patch.object(handler, "lookup_agent_in_registry", return_value={"agent_id": "agent-123"}):
+        result = lambda_handler(api_gateway_event, None)
+    assert _effect(result) == "Allow"
+    assert result["context"]["X-Auth-Source"] == "iam"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"headers": {"Authorization": "Bearer a", "authorization": "Bearer a"}},
+        {"multiValueHeaders": {"Authorization": ["Bearer a", "Bearer b"]}},
+        {"headers": {"Authorization": "Bearer a"}, "multiValueHeaders": {"Authorization": ["Bearer b"]}},
+    ],
+)
+def test_ambiguous_authorization_headers_denied(api_gateway_event, changes):
+    api_gateway_event.update(changes)
+    with mock.patch.object(handler, "validate_jwt") as validate:
+        assert _effect(lambda_handler(api_gateway_event, None)) == "Deny"
+    validate.assert_not_called()
+
+
+def test_browser_connect_still_enforces_source_allowlist(websocket_event, ip_allowlist):
+    ip_allowlist("198.51.100.0/24")
+    with mock.patch.object(handler, "validate_jwt") as validate:
+        assert _effect(lambda_handler(websocket_event, None)) == "Deny"
+    validate.assert_not_called()
+
+
+@pytest.fixture(scope="module")
+def signing_key():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.mark.parametrize("invalid", [None, "expired", "issuer", "signature", "missing-sub", "malformed"])
+def test_browser_jwt_uses_real_signature_and_claim_validation(websocket_event, valid_jwt_claims, signing_key, invalid, caplog):
+    claims = valid_jwt_claims.copy()
+    if invalid == "expired":
+        claims["exp"] = int(time.time()) - 100
+    elif invalid == "issuer":
+        claims["iss"] = "https://different-pool.example.com"
+    elif invalid == "missing-sub":
+        del claims["sub"]
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048) if invalid == "signature" else signing_key
+    token = jwt.encode(claims, key, algorithm="RS256", headers={"kid": "test-key"})
+    if invalid == "malformed":
+        token = "not-a-jwt"
+    websocket_event["queryStringParameters"]["token"] = token
+    websocket_event["multiValueQueryStringParameters"]["token"] = [token]
+    with mock.patch("jwt.PyJWKClient") as jwks, mock.patch.object(handler, "lookup_agent_in_registry") as lookup:
+        jwks.return_value.get_signing_key_from_jwt.return_value.key = signing_key.public_key()
+        result = lambda_handler(websocket_event, None)
+    assert _effect(result) == ("Deny" if invalid else "Allow")
+    lookup.assert_not_called()
+    assert token not in caplog.text
+
+
+def test_sensitive_event_fields_are_redacted_without_mutating_event(websocket_event, caplog):
+    secrets = [f"sensitive-value-{i:02d}" for i in range(16)]
+    websocket_event.update(
+        {
+            "headers": {"aUtHoRiZaTiOn": secrets[0], "X-API-Key": secrets[1], "Cookie": secrets[2], "X-Amz-Security-Token": secrets[3]},
+            "multiValueHeaders": {"Authorization": [secrets[4]], "cookie": [secrets[5]], "x-api-key": [secrets[6]]},
+            "queryStringParameters": {"token": secrets[7], "safe": "visible"},
+            "multiValueQueryStringParameters": {"token": [secrets[8], secrets[9]], "access_token": [secrets[10]]},
+            "authorizationToken": secrets[11],
+            "identitySource": [secrets[12]],
+            "rawQueryString": f"token={secrets[13]}",
+        }
+    )
+    websocket_event["queryStringParameters"].update({"X-Amz-Signature": secrets[14], "id_token": secrets[15]})
+    original = copy.deepcopy(websocket_event)
+    redacted = handler._redact_sensitive_event(websocket_event)
+    serialized = json.dumps(redacted)
+    assert redacted["queryStringParameters"]["safe"] == "visible"
+    assert redacted["requestContext"]["connectionId"] == "test-connection"
+    assert _effect(lambda_handler(websocket_event, None)) == "Deny"
+    for secret in secrets:
+        assert secret not in serialized
+        assert secret not in caplog.text
+    assert websocket_event == original
+
+
+def test_jwks_error_does_not_log_untrusted_token_header(websocket_event, caplog):
+    from jwt.exceptions import PyJWKClientError
+
+    with mock.patch("jwt.PyJWKClient") as jwks:
+        jwks.return_value.get_signing_key_from_jwt.side_effect = PyJWKClientError("untrusted-kid-secret")
+        assert _effect(lambda_handler(websocket_event, None)) == "Deny"
+    assert "untrusted-kid-secret" not in caplog.text
+    assert "PyJWKClientError" in caplog.text
