@@ -29,7 +29,10 @@ pytestmark = pytest.mark.asyncio
 def mock_cognito_sync():
     """Stub the Cognito invite so create_user makes no AWS calls."""
     mock = AsyncMock()
-    mock.create_user_and_invite = AsyncMock(return_value={"Username": "stub"})
+    mock.create_user_and_invite = AsyncMock(
+        side_effect=lambda **kw: {"Username": kw["email"], "Attributes": [{"Name": "sub", "Value": "sub-" + kw["email"]}]}
+    )
+    mock.ensure_user_group = AsyncMock()
     mock.delete_user = AsyncMock(return_value=True)
     return mock
 
@@ -106,10 +109,12 @@ async def test_platform_admin_role_is_stored_as_org_admin(db_session: AsyncSessi
     assert rows[0].role == "org_admin"
 
 
-async def test_member_level_create_writes_no_membership(db_session: AsyncSession, seeded_org, mock_cognito_sync):
-    """Unchanged behaviour for non-admin creates — no membership, no elevation."""
+async def test_member_level_create_writes_member_membership(db_session: AsyncSession, seeded_org, mock_cognito_sync):
+    """Ordinary native users get explicit least-privilege membership."""
     svc = UsersService(db_session, cognito_sync=mock_cognito_sync)
     result = await svc.create_user("gate-org", UserCreateRequest(email="plain@test.com", role="member", send_invite=False))
 
     rows = list((await db_session.execute(select(TenantMembership).where(TenantMembership.user_id == result.id))).scalars().all())
-    assert rows == []
+    assert len(rows) == 1
+    assert rows[0].role == "member"
+    assert rows[0].tenant_id == "gate-org"

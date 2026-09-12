@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, timedelta
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +21,9 @@ from src.admin.memberships import (
     set_membership_role,
     upsert_tenant_membership,
 )
+
+if TYPE_CHECKING:
+    from src.admin.identity.identity_index_writer import IdentityIndexWriter
 from src.admin.schemas import (
     BudgetConfigResponse,
     BudgetConfigUpdateRequest,
@@ -1315,32 +1319,24 @@ class AdminService:
         if not team:
             raise ResourceNotFoundError("Team", team_id)
 
-        # Check for existing user with same email in org
+        # Use the same durable provisioning and immutable-subject linking as
+        # the identity API. Username is not a Cognito sub, and a failed AWS
+        # write must not silently become a successful local-only user.
+        if cognito_service:
+            from src.admin.identity.cognito_sync import CognitoSyncService
+            from src.admin.identity.schemas import UserCreateRequest as IdentityUserCreateRequest
+            from src.admin.identity.users_service import UsersService
+
+            created = await UsersService(self.db, cognito_sync=CognitoSyncService(cognito_service)).create_user(
+                org_id,
+                IdentityUserCreateRequest(email=request.email, team_id=team_id, name=request.name, role=request.role),
+            )
+            return UserResponse(**created.model_dump())
+
+        # Legacy database-only mode retains its existing conflict behavior.
         existing = await self.db.execute(select(User).where(User.org_id == org_id, User.email == request.email))
         if existing.scalar_one_or_none():
             raise ResourceConflictError("User", "email", request.email)
-
-        cognito_sub = None
-        cognito_username = None
-
-        # Create user in Cognito if service provided
-        if cognito_service:
-            try:
-                cognito_user = cognito_service.create_user(
-                    email=request.email,
-                    org_id=org_id,
-                    dept_id=team.department_id,
-                    team_id=team_id,
-                    name=request.name,
-                    role=request.role,
-                )
-                cognito_sub = cognito_user.get("Username")
-                cognito_username = request.email
-
-                # Add user to org group
-                cognito_service.add_user_to_group(request.email, f"org-{org_id}")
-            except CognitoServiceError:
-                pass  # Continue without Cognito, will create local user
 
         user = User(
             org_id=org_id,
@@ -1348,8 +1344,8 @@ class AdminService:
             email=request.email,
             name=request.name,
             role=request.role,
-            cognito_sub=cognito_sub,
-            cognito_username=cognito_username,
+            cognito_sub=None,
+            cognito_username=None,
         )
 
         self.db.add(user)
@@ -1813,6 +1809,7 @@ class AdminService:
         org_id: str,
         user_id: str,
         cognito_service: CognitoService | None = None,
+        identity_writer: "IdentityIndexWriter | None" = None,
     ) -> bool:
         """
         Remove a user.
@@ -1900,7 +1897,7 @@ class AdminService:
                 "This member has related records that must be retained and cannot be deleted. No membership changes were saved."
             ) from exc
 
-        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=github_ids)
+        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=github_ids, writer=identity_writer)
 
         # Never remove the login for a database deletion that rolled back.
         if cognito_service and username:

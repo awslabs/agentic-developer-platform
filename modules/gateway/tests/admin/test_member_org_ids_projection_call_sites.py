@@ -444,7 +444,10 @@ def _users_service(db: AsyncSession, writer: MagicMock):
     from src.admin.identity.users_service import UsersService
 
     cognito_sync = MagicMock()
-    cognito_sync.create_user_and_invite = AsyncMock()
+    cognito_sync.create_user_and_invite = AsyncMock(
+        side_effect=lambda **kw: {"Username": kw["email"], "Attributes": [{"Name": "sub", "Value": "sub-" + kw["email"]}]}
+    )
+    cognito_sync.ensure_user_group = AsyncMock()
     writer.sync_user_identities = AsyncMock(return_value=None)
     return UsersService(db, cognito_sync=cognito_sync, identity_writer=writer)
 
@@ -477,9 +480,8 @@ async def test_users_service_create_admin_projects_the_membership(db_session: As
     assert kwargs["member_org_ids"] == ["create-org"]
 
 
-async def test_users_service_create_member_does_not_project(db_session: AsyncSession):
-    """A member-level create writes no membership row, so there is no new org
-    to publish — pins the is_admin_level_role gate on the projection."""
+async def test_users_service_create_member_projects_membership(db_session: AsyncSession):
+    """Ordinary native members publish their explicit org membership too."""
     from src.admin.identity.schemas import UserCreateRequest, UserIdentityInput
 
     team = await _org(db_session, "create-org-2")
@@ -499,7 +501,8 @@ async def test_users_service_create_member_does_not_project(db_session: AsyncSes
         ),
     )
 
-    writer.update_user_membership_orgs.assert_not_awaited()
+    writer.update_user_membership_orgs.assert_awaited()
+    assert writer.update_user_membership_orgs.await_args.kwargs["member_org_ids"] == ["create-org-2"]
 
 
 @patch.dict(os.environ, V2_ON)

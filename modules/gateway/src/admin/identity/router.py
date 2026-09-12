@@ -196,13 +196,19 @@ async def create_user(
     # gates *which role* they may grant. Raised as-is (BedrockGatewayError carries
     # its own status code) so it is never swallowed by the 409 handler below.
     await AccessControl(db).require_assignable_role(current_user, req.role, target_org_id=org_id)
+    if req.cognito_identity:
+        AccessControl(db).require_platform_admin(current_user)
 
     svc = UsersService(db, identity_writer=IdentityIndexWriter())
     try:
         return await svc.create_user(org_id, req)
+    except BedrockGatewayError:
+        raise
+    except IntegrityError as e:
+        raise HTTPException(status_code=409, detail="User conflicts with an existing identity") from e
     except Exception as e:
-        logger.error("Failed to create user in org %s: %s", org_id, e)
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        logger.exception("Failed to create user in org %s", org_id)
+        raise HTTPException(status_code=500, detail="Failed to create user") from e
 
 
 @router.get("/organizations/{org_id}/users", response_model=UserListResponse)

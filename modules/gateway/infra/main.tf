@@ -239,6 +239,23 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
       },
       {
+        # Native identity lifecycle (#5010). Keep every write scoped to the
+        # gateway pool; GetGroup is needed for idempotent CreateGroup retries.
+        Sid    = "CognitoIdentityLifecycle"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminDeleteUser",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+          "cognito-idp:AdminListGroupsForUser",
+          "cognito-idp:CreateGroup",
+          "cognito-idp:GetGroup",
+          "cognito-idp:DeleteGroup"
+        ]
+        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
+      },
+      {
         # Web CLI login (/auth/cli): mints tokens on the CLI app client the
         # same way the github-auth-broker does — fresh random permanent
         # password + admin auth. Only invoked after the signed-in browser
