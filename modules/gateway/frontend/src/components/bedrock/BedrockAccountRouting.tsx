@@ -44,6 +44,14 @@
  * every authored row platform-wide, so this table is the real inventory and can be read
  * as one.
  *
+ * **The org and team pickers source from the tenancy model** (#4947). Teams come from
+ * `GET /admin/organizations/{org}/teams` — the `teams` table — and the value submitted is
+ * a `teams.id`, because that is the namespace the request-path resolver compares against
+ * (`custom:team_id` ← `users.team_id` ← the member's primary `teams.id`). The panel
+ * previously read the Cognito-derived group list, which knew nothing about a team created
+ * in the tenancy admin console, so the team rung could not be authored for any org built
+ * that way at all.
+ *
  * The panel assumes it is mounted only for a platform admin; `BudgetManagement` does the
  * gating. That gate is an affordance — every route enforces `require_platform_admin`
  * server-side, which is the actual boundary.
@@ -54,7 +62,8 @@ import { Alert, Button, Card, Input, Modal, Select } from '@/components/ui';
 import { ConnectAwsForm } from '@/components/aws/ConnectAwsForm';
 import { useToast } from '@/contexts/ToastContext';
 import { useDebounce } from '@/hooks/useDebounce';
-import { getOrganizations, getCognitoTeams, listPlatformUsers, type PlatformUser } from '@/services/admin';
+import { getOrganizations, getOrgTeams, listPlatformUsers, type PlatformUser } from '@/services/admin';
+import type { Team } from '@/types';
 import {
   deleteMapping,
   getEffectiveMapping,
@@ -87,15 +96,43 @@ function shortAccount(accountId: string): string {
 }
 
 /**
+ * Every team in one org, keyed by `teams.id`, plus whether that read was COMPLETE.
+ *
+ * `complete` is what licenses the "team not found" flag: a truncated page or a failed
+ * request means "we could not ask", and rendering that as "no such team" would send an
+ * admin to re-create a team that exists — the same distinction `PersonPicker` draws for
+ * people, applied to the rung above.
+ */
+interface OrgTeamIndex {
+  byId: Map<string, Team>;
+  complete: boolean;
+}
+
+/**
  * The scope in the "APPLIES TO" column, from the row's own ids.
  *
  * Built from the response rather than from whatever the form held, so a row always
  * describes the scope the server actually stored.
+ *
+ * **The team rung names the team, and says when it cannot** — Issue #4947. `scope_id_team`
+ * is a `teams.id`; a row authored before this panel read the tenancy model holds a Cognito
+ * *group name* in that column instead, which the resolver compares against `users.team_id`
+ * and never matches. Such a rule reads back as configured routing and governs nobody — the
+ * #4511 inert-config class — so it is rendered with its raw id and flagged rather than
+ * hidden or silently prettified. The flag is withheld unless the org's team list was read
+ * in full, per `OrgTeamIndex.complete`.
  */
-function describeMappingScope(mapping: MappingSummary): string {
-  if (mapping.scope_type === 'org') return mapping.scope_id_org ?? '—';
-  if (mapping.scope_type === 'team') return `${mapping.scope_id_org ?? '?'} / ${mapping.scope_id_team ?? '?'}`;
-  return mapping.scope_id_user ?? '—';
+function describeMappingScope(mapping: MappingSummary, teamIndex?: OrgTeamIndex): { text: string; unresolvedTeam: boolean } {
+  if (mapping.scope_type === 'org') return { text: mapping.scope_id_org ?? '—', unresolvedTeam: false };
+  if (mapping.scope_type === 'team') {
+    const teamId = mapping.scope_id_team;
+    const team = teamId ? teamIndex?.byId.get(teamId) : undefined;
+    return {
+      text: `${mapping.scope_id_org ?? '?'} / ${team?.name ?? teamId ?? '?'}`,
+      unresolvedTeam: !!teamId && !team && !!teamIndex?.complete,
+    };
+  }
+  return { text: mapping.scope_id_user ?? '—', unresolvedTeam: false };
 }
 
 /**
@@ -334,6 +371,7 @@ function AddRuleModal({
   onClose,
   onSaved,
   orgs,
+  orgsTruncated,
   destinations,
   initialScope,
 }: {
@@ -341,6 +379,7 @@ function AddRuleModal({
   onClose: () => void;
   onSaved: (message: string) => void;
   orgs: Array<{ id: string; name: string }>;
+  orgsTruncated: boolean;
   destinations: DestinationSummary[];
   initialScope?: MappingScope;
 }) {
@@ -349,7 +388,9 @@ function AddRuleModal({
   const [orgId, setOrgId] = useState('');
   const [teamId, setTeamId] = useState('');
   const [userId, setUserId] = useState('');
-  const [teams, setTeams] = useState<string[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [teamsTruncated, setTeamsTruncated] = useState(false);
+  const [teamsError, setTeamsError] = useState<string | null>(null);
   const [destinationId, setDestinationId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -366,20 +407,51 @@ function AddRuleModal({
     setError(null);
   }, [isOpen, initialScope]);
 
-  // Teams are per-org, so the list reloads with the org and the previously picked team is
-  // cleared — a team id from another org is exactly the cross-tenant mistake the two-id
-  // scope form exists to prevent (#4344).
+  /**
+   * The org's teams, from the TENANCY MODEL — Issue #4947.
+   *
+   * `getOrgTeams` is `GET /admin/organizations/{org}/teams` (#4840), the org-wide list
+   * over the `teams` table. It replaces `getCognitoTeams`, which derived a list by
+   * scanning the Cognito user pool for distinct `custom:team_id` attribute *values* and
+   * therefore knows nothing about a team created in the tenancy admin console: for an org
+   * built that way the picker came back empty and the team rung was unauthorable.
+   *
+   * **The option value is `teams.id`, which is the namespace the resolver matches.**
+   * `BedrockRoutingResolver` compares `scope_id_team` to `TokenContext.team_id` — the
+   * `custom:team_id` claim, which is projected from `users.team_id`, which
+   * `admin/team_memberships.py` keeps pointed at the member's primary `teams.id`. Storing
+   * anything else (a name, a Cognito group) yields a rule that reads back as configured
+   * routing and fires for nobody. `require_scope_exists` refuses one server-side; this
+   * picker is why an admin does not hit that refusal.
+   *
+   * Teams are per-org, so the list reloads with the org and the previously picked team is
+   * cleared — a team id from another org is exactly the cross-tenant mistake the two-id
+   * scope form exists to prevent (#4344).
+   *
+   * A failed read is held as an ERROR, never as an empty list: "we could not ask" reading
+   * as "this org has no teams" is what sends an admin to create a team that exists.
+   */
   useEffect(() => {
     if (scopeType !== 'team' || !orgId) {
       setTeams([]);
+      setTeamsTruncated(false);
+      setTeamsError(null);
       return;
     }
     let cancelled = false;
-    getCognitoTeams(orgId, { pageSize: 100 })
+    getOrgTeams(orgId, { pageSize: 100 })
       .then((res) => {
-        if (!cancelled) setTeams(res.items.map((t) => t.groupName));
+        if (cancelled) return;
+        setTeams(res.items);
+        setTeamsTruncated(res.hasMore);
+        setTeamsError(null);
       })
-      .catch(() => undefined);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setTeams([]);
+        setTeamsTruncated(false);
+        setTeamsError(rejectionMessage(err, 'The list of teams could not be loaded.'));
+      });
     return () => {
       cancelled = true;
     };
@@ -457,32 +529,76 @@ function AddRuleModal({
         </div>
 
         {scopeType !== 'user' && (
-          <Select
-            label="Organization"
-            name="routing-rule-org"
-            value={orgId}
-            onChange={(e) => {
-              setOrgId(e.target.value);
-              setTeamId('');
-              // The in-scope destination set changes with the org, so a destination
-              // picked for the previous one must not survive the switch.
-              setDestinationId('');
-            }}
-            placeholder="Select an organization"
-            options={orgs.map((o) => ({ value: o.id, label: o.name || o.id }))}
-          />
+          <div>
+            <Select
+              label="Organization"
+              name="routing-rule-org"
+              value={orgId}
+              onChange={(e) => {
+                setOrgId(e.target.value);
+                setTeamId('');
+                // The in-scope destination set changes with the org, so a destination
+                // picked for the previous one must not survive the switch.
+                setDestinationId('');
+              }}
+              placeholder="Select an organization"
+              options={orgs.map((o) => ({ value: o.id, label: o.name || o.id }))}
+            />
+            {orgsTruncated && (
+              // The org read is a single page (#4914's caveat, #4936's M4 pattern). An
+              // admin whose org is on page 2 must be told the list is cut rather than
+              // conclude their org was never created.
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400" data-testid="routing-orgs-truncated">
+                Not every organization is listed — this platform has more organizations than one page shows.
+              </p>
+            )}
+          </div>
         )}
 
         {scopeType === 'team' && (
-          <Select
-            label="Team"
-            name="routing-rule-team"
-            value={teamId}
-            onChange={(e) => setTeamId(e.target.value)}
-            placeholder={orgId ? 'Select a team' : 'Select an organization first'}
-            disabled={!orgId}
-            options={teams.map((t) => ({ value: t, label: t }))}
-          />
+          <div>
+            <Select
+              label="Team"
+              name="routing-rule-team"
+              value={teamId}
+              onChange={(e) => setTeamId(e.target.value)}
+              placeholder={
+                !orgId
+                  ? 'Select an organization first'
+                  : teamsError
+                    ? 'The teams could not be loaded'
+                    : teams.length
+                      ? 'Select a team'
+                      : 'This organization has no teams'
+              }
+              disabled={!orgId || !teams.length}
+              // The value is `teams.id` — see the load effect above. The name is the
+              // label only; a rule authored against a name governs nobody.
+              options={teams.map((t) => ({ value: t.id, label: t.name || t.id }))}
+            />
+            {teamsError && (
+              // Stated, not shown as an empty list, for the same reason `PersonPicker`
+              // states its own failure: an absence of options must not read as an
+              // absence of teams.
+              <p className="mt-1 text-xs text-red-700 dark:text-red-400" data-testid="routing-rule-teams-error">
+                {teamsError} This is not a statement that the organization has no teams.
+              </p>
+            )}
+            {teamsTruncated && (
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400" data-testid="routing-rule-teams-truncated">
+                Not every team is listed — this organization has more teams than one page shows.
+              </p>
+            )}
+            {!teamsError && (
+              // The tenancy list can offer a team nobody is on yet, whereas the old
+              // Cognito-derived list could not by construction. The server refuses such a
+              // rule (it would govern nobody), so the condition is disclosed here rather
+              // than met as a surprise refusal on save.
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="routing-rule-team-empty-note">
+                A team with no members yet cannot be routed — the rule would govern nobody, and saving it is refused.
+              </p>
+            )}
+          </div>
         )}
 
         {scopeType === 'user' && (
@@ -556,10 +672,12 @@ function AddRuleModal({
  */
 function RemoveRuleModal({
   mapping,
+  teamIndex,
   onClose,
   onRemoved,
 }: {
   mapping: MappingSummary | null;
+  teamIndex?: OrgTeamIndex;
   onClose: () => void;
   onRemoved: (message: string) => void;
 }) {
@@ -590,7 +708,7 @@ function RemoveRuleModal({
       <div className="space-y-4">
         {mapping && (
           <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="routing-remove-scope">
-            {mapping.scope_type.toUpperCase()} · {describeMappingScope(mapping)} → {mapping.destination_label} (
+            {mapping.scope_type.toUpperCase()} · {describeMappingScope(mapping, teamIndex).text} → {mapping.destination_label} (
             {shortAccount(mapping.destination_account_id)})
           </p>
         )}
@@ -784,6 +902,10 @@ export function BedrockAccountRouting() {
   const [destinations, setDestinations] = useState<DestinationSummary[] | null>(null);
   const [destinationsError, setDestinationsError] = useState<string | null>(null);
   const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
+  /** True when the platform has more orgs than the single page below returned. */
+  const [orgsTruncated, setOrgsTruncated] = useState(false);
+  /** `teams.id` → team, per org, for the rules table's APPLIES TO column (#4947). */
+  const [teamIndexes, setTeamIndexes] = useState<Map<string, OrgTeamIndex>>(new Map());
   const [scopeFilter, setScopeFilter] = useState('all');
   const [showAddRule, setShowAddRule] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
@@ -838,13 +960,49 @@ export function BedrockAccountRouting() {
     let cancelled = false;
     getOrganizations({ pageSize: 100 })
       .then((res) => {
-        if (!cancelled) setOrgs(res.items.map((o) => ({ id: o.id, name: o.name })));
+        if (cancelled) return;
+        setOrgs(res.items.map((o) => ({ id: o.id, name: o.name })));
+        // Disclosed rather than silent (#4914): a single page is all this read fetches.
+        setOrgsTruncated(res.hasMore);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, []);
+
+  /**
+   * The team names behind the team-scoped rules on screen — Issue #4947.
+   *
+   * One read per org that actually has a team rule, so the cost tracks the table rather
+   * than the platform's org count. A read that fails or truncates is recorded as
+   * `complete: false`, which suppresses the "team not found" flag: an unresolvable id is
+   * only newsworthy when we know the list we compared it against was whole.
+   */
+  const teamRuleOrgIds = useMemo(
+    () => Array.from(new Set((mappings ?? []).filter((m) => m.scope_type === 'team' && m.scope_id_org).map((m) => m.scope_id_org as string))).sort(),
+    [mappings]
+  );
+
+  useEffect(() => {
+    if (!teamRuleOrgIds.length) {
+      setTeamIndexes(new Map());
+      return;
+    }
+    let cancelled = false;
+    Promise.all(
+      teamRuleOrgIds.map((orgId) =>
+        getOrgTeams(orgId, { pageSize: 100 })
+          .then((res): [string, OrgTeamIndex] => [orgId, { byId: new Map(res.items.map((t) => [t.id, t])), complete: !res.hasMore }])
+          .catch((): [string, OrgTeamIndex] => [orgId, { byId: new Map(), complete: false }])
+      )
+    ).then((entries) => {
+      if (!cancelled) setTeamIndexes(new Map(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [teamRuleOrgIds]);
 
   const handleChanged = useCallback((message: string) => {
     setConfirmation(message);
@@ -944,7 +1102,9 @@ export function BedrockAccountRouting() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                  {visibleMappings.map((mapping) => (
+                  {visibleMappings.map((mapping) => {
+                    const scope = describeMappingScope(mapping, mapping.scope_id_org ? teamIndexes.get(mapping.scope_id_org) : undefined);
+                    return (
                     <tr
                       key={mapping.id}
                       // The mockup greys a self-selected row: it is somebody's own choice,
@@ -955,7 +1115,22 @@ export function BedrockAccountRouting() {
                       <td className="py-3 pr-4">
                         <span className="bg-gray-100 dark:bg-gray-800 rounded px-2 py-0.5 text-xs font-medium">{mapping.scope_type.toUpperCase()}</span>
                       </td>
-                      <td className="py-3 pr-4">{describeMappingScope(mapping)}</td>
+                      <td className="py-3 pr-4">
+                        {scope.text}
+                        {scope.unresolvedTeam && (
+                          // Kept visible and flagged, never hidden (#4947): a rule whose
+                          // team id names nothing is one the resolver cannot match, so it
+                          // governs nobody while reading back as configured routing. An
+                          // admin can only re-author it if they can see it.
+                          <span
+                            className="ml-2 text-xs text-amber-700 dark:text-amber-400"
+                            title="This rule's team id does not name a team in this organization, so no request can match it. Re-author the rule against a current team."
+                            data-testid={`routing-mapping-team-not-found-${mapping.id}`}
+                          >
+                            team not found — this rule matches nobody
+                          </span>
+                        )}
+                      </td>
                       <td className="py-3 pr-4 font-mono text-xs">
                         {mapping.destination_label} ({shortAccount(mapping.destination_account_id)})
                         {mapping.source === 'self' && <span className="italic ml-1">(self-selected)</span>}
@@ -988,7 +1163,8 @@ export function BedrockAccountRouting() {
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
 
                   {/* Rung 4 rendered as the fact it is. There is no platform row to
                       author — rung 4 is the ABSENCE of a mapping (§1.2) — so this is a
@@ -1088,10 +1264,16 @@ export function BedrockAccountRouting() {
         onClose={() => setShowAddRule(false)}
         onSaved={handleChanged}
         orgs={orgs}
+        orgsTruncated={orgsTruncated}
         destinations={destinations ?? []}
       />
 
-      <RemoveRuleModal mapping={removing} onClose={() => setRemoving(null)} onRemoved={handleChanged} />
+      <RemoveRuleModal
+        mapping={removing}
+        teamIndex={removing?.scope_id_org ? teamIndexes.get(removing.scope_id_org) : undefined}
+        onClose={() => setRemoving(null)}
+        onRemoved={handleChanged}
+      />
 
       <RegisterDestinationModal isOpen={showRegister} onClose={() => setShowRegister(false)} onRegistered={handleChanged} orgs={orgs} />
     </section>

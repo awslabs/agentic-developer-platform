@@ -39,6 +39,7 @@ import userEvent from '@testing-library/user-event';
 import { BedrockAccountRouting } from '@/components/bedrock/BedrockAccountRouting';
 import { ToastProvider } from '@/contexts/ToastContext';
 import type { DestinationSummary, MappingSummary } from '@/types/bedrockRouting';
+import type { Team } from '@/types';
 
 vi.mock('@/services/bedrockRouting', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/bedrockRouting')>();
@@ -56,7 +57,7 @@ vi.mock('@/services/bedrockRouting', async (importOriginal) => {
 
 vi.mock('@/services/admin', () => ({
   getOrganizations: vi.fn(),
-  getCognitoTeams: vi.fn(),
+  getOrgTeams: vi.fn(),
   listPlatformUsers: vi.fn(),
 }));
 
@@ -69,7 +70,7 @@ import {
   registerDestination,
   verifyDestination,
 } from '@/services/bedrockRouting';
-import { getOrganizations, getCognitoTeams, listPlatformUsers } from '@/services/admin';
+import { getOrganizations, getOrgTeams, listPlatformUsers } from '@/services/admin';
 
 const mockListMappings = listMappings as ReturnType<typeof vi.fn>;
 const mockSetMapping = setMapping as ReturnType<typeof vi.fn>;
@@ -79,7 +80,7 @@ const mockListDestinations = listDestinations as ReturnType<typeof vi.fn>;
 const mockRegisterDestination = registerDestination as ReturnType<typeof vi.fn>;
 const mockVerifyDestination = verifyDestination as ReturnType<typeof vi.fn>;
 const mockGetOrgs = getOrganizations as ReturnType<typeof vi.fn>;
-const mockGetTeams = getCognitoTeams as ReturnType<typeof vi.fn>;
+const mockGetTeams = getOrgTeams as ReturnType<typeof vi.fn>;
 const mockListPeople = listPlatformUsers as ReturnType<typeof vi.fn>;
 
 const ACME_PROD: DestinationSummary = {
@@ -157,9 +158,46 @@ const ORG_RULE: MappingSummary = {
   updated_at: '2026-09-01T00:00:00Z',
 };
 
+/**
+ * The org's teams as the TENANCY MODEL returns them — Issue #4947.
+ *
+ * `id` is deliberately UUID-shaped and shares no substring with `name`, because the whole
+ * defect class here is an id/label confusion: the resolver matches `scope_id_team` against
+ * `users.team_id`, which is a `teams.id`. A picker submitting the display name would store
+ * a rule that reads back as configured routing and fires for nobody, and an assertion that
+ * could pass by matching either string would not notice.
+ */
+const APP_DEV: Team = {
+  id: '49470000-0000-4000-8000-0000000000a1',
+  departmentId: 'dept-eng',
+  name: 'App-Dev',
+  createdAt: '2026-09-01T00:00:00Z',
+};
+
+const PLATFORM_ADMIN_TEAM: Team = {
+  id: '49470000-0000-4000-8000-0000000000b2',
+  departmentId: 'dept-eng',
+  name: 'Platform-admin',
+  createdAt: '2026-09-01T00:00:00Z',
+};
+
 const TEAM_RULE: MappingSummary = {
   ...ORG_RULE,
   id: 'map-team',
+  scope_type: 'team',
+  scope_id_team: APP_DEV.id,
+  scope: `team:acme:${APP_DEV.id}`,
+};
+
+/**
+ * A rule authored before the panel read the tenancy model: `scope_id_team` holds a Cognito
+ * group NAME, which names no `teams.id` and so can never match a request. It must stay on
+ * screen and be flagged — hiding it would leave an admin unable to re-author the only rule
+ * they need to fix.
+ */
+const LEGACY_COGNITO_TEAM_RULE: MappingSummary = {
+  ...ORG_RULE,
+  id: 'map-legacy-team',
   scope_type: 'team',
   scope_id_team: 'platform-eng',
   scope: 'team:acme:platform-eng',
@@ -181,8 +219,8 @@ const RULE_ON_BROKEN: MappingSummary = {
   ...ORG_RULE,
   id: 'map-broken',
   scope_type: 'team',
-  scope_id_team: 'data-science',
-  scope: 'team:acme:data-science',
+  scope_id_team: PLATFORM_ADMIN_TEAM.id,
+  scope: `team:acme:${PLATFORM_ADMIN_TEAM.id}`,
   destination_id: 'dest-broken',
   destination_account_id: '000011112222',
   destination_label: 'legacy-acct',
@@ -252,10 +290,10 @@ beforeEach(() => {
     hasMore: false,
   });
   mockGetTeams.mockResolvedValue({
-    items: [{ groupName: 'platform-eng', description: null, createdAt: null, updatedAt: null }],
-    total: 1,
+    items: [APP_DEV, PLATFORM_ADMIN_TEAM],
+    total: 2,
     page: 1,
-    pageSize: 50,
+    pageSize: 100,
     hasMore: false,
   });
   mockListPeople.mockResolvedValue({ items: [CASEY, DANA], total: 2, page: 1, pageSize: 50, hasMore: false });
@@ -294,7 +332,7 @@ describe('the authored scope reaches the wire intact', () => {
 
     await openAddRule(user, 'team');
     await user.selectOptions(screen.getByLabelText('Organization'), 'acme');
-    await user.selectOptions(await screen.findByLabelText('Team'), 'platform-eng');
+    await user.selectOptions(await screen.findByLabelText('Team'), APP_DEV.id);
     await user.selectOptions(screen.getByLabelText('Destination'), 'dest-acme');
     await user.click(screen.getByTestId('routing-rule-save'));
 
@@ -302,7 +340,7 @@ describe('the authored scope reaches the wire intact', () => {
     // team — the #4344 collision class.
     await waitFor(() =>
       expect(mockSetMapping).toHaveBeenCalledWith(
-        expect.objectContaining({ scope_type: 'team', org: 'acme', team: 'platform-eng' }),
+        expect.objectContaining({ scope_type: 'team', org: 'acme', team: APP_DEV.id }),
         'dest-acme',
       ),
     );
@@ -538,6 +576,205 @@ describe('the person rung is authored from a picker, not a typed id', () => {
     await openAddRule(user, 'user');
     await user.selectOptions(screen.getByLabelText('Destination'), 'dest-acme');
     expect(screen.getByTestId('routing-rule-save')).toBeDisabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group 1c — the team rung is sourced from the tenancy model (Issue #4947)
+// ---------------------------------------------------------------------------
+
+/**
+ * The team picker's SOURCE, and the id namespace it submits.
+ *
+ * The defect: teams came from `getCognitoTeams` — a list derived by scanning the Cognito
+ * user pool for distinct `custom:team_id` *values* — so an org whose teams live in the
+ * tenancy tables offered nothing at all and its team rung could not be authored. Three
+ * properties, each with a silent failure mode:
+ *
+ * - **The source is the tenancy endpoint.** Asserted on the CALL, because a picker
+ *   populated from the wrong list is empty rather than wrong, and an empty dropdown reads
+ *   as "this org has no teams".
+ * - **What reaches the wire is `teams.id`**, the namespace the resolver compares against
+ *   (`custom:team_id` ← `users.team_id` ← primary `teams.id`). A rule storing a display
+ *   name reads back as configured routing and matches no request — #4511 on the surface
+ *   that decides whose bill pays. The fixtures' ids share no substring with their names so
+ *   this assertion cannot pass by coincidence.
+ * - **Nothing is silently absent.** A truncated list, a failed read, and a legacy rule
+ *   whose id no longer resolves each get said out loud; each one's natural silent
+ *   rendering is a different wrong conclusion for the admin.
+ */
+describe('the team rung is sourced from the tenancy model', () => {
+  it('populates the team picker from the org-wide tenancy list, scoped to the chosen org', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'team');
+    await user.selectOptions(screen.getByLabelText('Organization'), 'acme');
+
+    // The endpoint, and the org. A team list read for the wrong org is the #4344
+    // cross-tenant mistake with a friendly dropdown in front of it.
+    await waitFor(() => expect(mockGetTeams).toHaveBeenCalledWith('acme', expect.objectContaining({ pageSize: 100 })));
+
+    const options = within(await screen.findByLabelText('Team'))
+      .getAllByRole('option')
+      .map((o) => (o as HTMLOptionElement).value);
+    expect(options).toContain(APP_DEV.id);
+    expect(options).toContain(PLATFORM_ADMIN_TEAM.id);
+  });
+
+  it('labels a team by name while submitting its teams.id', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'team');
+    await user.selectOptions(screen.getByLabelText('Organization'), 'acme');
+
+    // Recognisable label, canonical value — the `PersonPicker` contract one rung up.
+    const option = await within(await screen.findByLabelText('Team')).findByRole('option', { name: 'App-Dev' });
+    expect(option).toHaveValue(APP_DEV.id);
+
+    await user.selectOptions(screen.getByLabelText('Team'), APP_DEV.id);
+    await user.selectOptions(screen.getByLabelText('Destination'), 'dest-acme');
+    await user.click(screen.getByTestId('routing-rule-save'));
+
+    await waitFor(() => expect(mockSetMapping).toHaveBeenCalled());
+    const [scope] = mockSetMapping.mock.calls[0];
+    // The id namespace the resolver matches — NOT the name the operator read. This is
+    // the assertion the defect class turns on in either direction.
+    expect(scope.team).toBe(APP_DEV.id);
+    expect(scope.team).not.toBe(APP_DEV.name);
+  });
+
+  it('re-reads the team list for the new org and drops the previous org’s team', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'team');
+    await user.selectOptions(screen.getByLabelText('Organization'), 'acme');
+    await user.selectOptions(await screen.findByLabelText('Team'), APP_DEV.id);
+    await user.selectOptions(screen.getByLabelText('Organization'), 'globex');
+
+    // A `teams.id` is unique only inside its org, so a team surviving an org switch
+    // could author a rule against another tenant's row (#4344).
+    await waitFor(() => expect(mockGetTeams).toHaveBeenCalledWith('globex', expect.anything()));
+    expect((screen.getByLabelText('Team') as HTMLSelectElement).value).toBe('');
+    expect(screen.getByTestId('routing-rule-save')).toBeDisabled();
+  });
+
+  it('does not ask for teams until an organization is chosen', async () => {
+    const user = userEvent.setup();
+    // No team-scoped rule on screen, so the rules table drives no team read of its own
+    // and any call here would have come from the form.
+    mockListMappings.mockResolvedValue([ORG_RULE]);
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'team');
+
+    // The endpoint is org-scoped; there is no org-less form of it to call. The control
+    // says "select an organization first" rather than sitting empty and unexplained.
+    expect(mockGetTeams).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Team')).toBeDisabled();
+    expect(screen.getByText('Select an organization first')).toBeInTheDocument();
+  });
+
+  it('says the teams could not be read rather than showing an org with no teams', async () => {
+    const user = userEvent.setup();
+    mockGetTeams.mockRejectedValue({ message: 'Service unavailable' });
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'team');
+    await user.selectOptions(screen.getByLabelText('Organization'), 'acme');
+
+    // An empty dropdown during an outage reads as "this org has no teams", which sends
+    // an admin to create teams that already exist — the `PersonPicker` lesson, one rung
+    // up. This is also the failure the original defect wore: silence.
+    const error = await screen.findByTestId('routing-rule-teams-error');
+    expect(error).toHaveTextContent('Service unavailable');
+    expect(error).toHaveTextContent(/not a statement that the organization has no teams/i);
+  });
+
+  it('discloses a truncated team list', async () => {
+    const user = userEvent.setup();
+    mockGetTeams.mockResolvedValue({ items: [APP_DEV], total: 130, page: 1, pageSize: 100, hasMore: true });
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'team');
+    await user.selectOptions(screen.getByLabelText('Organization'), 'acme');
+
+    // One page is what the read fetches. Silence would present it as the complete set.
+    expect(await screen.findByTestId('routing-rule-teams-truncated')).toBeInTheDocument();
+  });
+
+  it('discloses a truncated organization list', async () => {
+    const user = userEvent.setup();
+    mockGetOrgs.mockResolvedValue({
+      items: [{ id: 'acme', name: 'Acme Corp' }],
+      total: 140,
+      page: 1,
+      pageSize: 100,
+      hasMore: true,
+    });
+    renderPanel();
+    await waitFor(() => expect(mockListMappings).toHaveBeenCalled());
+
+    await openAddRule(user, 'team');
+
+    // #4914's caveat: the org read is page 1 only. An admin whose org is on page 2 must
+    // be told the list is cut, not left to conclude their org was never created.
+    expect(await screen.findByTestId('routing-orgs-truncated')).toBeInTheDocument();
+  });
+
+  it('renders a team rule by its team NAME', async () => {
+    renderPanel();
+
+    // The stored id is unrecognisable on its own; the row exists to be read.
+    const row = await screen.findByTestId(`routing-mapping-${TEAM_RULE.id}`);
+    await waitFor(() => expect(row).toHaveTextContent('App-Dev'));
+    expect(screen.queryByTestId(`routing-mapping-team-not-found-${TEAM_RULE.id}`)).not.toBeInTheDocument();
+  });
+
+  it('keeps a legacy rule whose team id no longer resolves, flagged rather than hidden', async () => {
+    mockListMappings.mockResolvedValue([ORG_RULE, TEAM_RULE, LEGACY_COGNITO_TEAM_RULE]);
+    renderPanel();
+
+    // The pre-tenancy rule holds a Cognito group name where a `teams.id` belongs, so no
+    // request can match it. Hiding it would leave the admin unable to find and re-author
+    // the one rule that needs fixing; showing it unflagged would present dead routing as
+    // live. Both readings are wrong in the expensive direction.
+    const row = await screen.findByTestId(`routing-mapping-${LEGACY_COGNITO_TEAM_RULE.id}`);
+    expect(row).toHaveTextContent('platform-eng');
+    expect(await screen.findByTestId(`routing-mapping-team-not-found-${LEGACY_COGNITO_TEAM_RULE.id}`)).toHaveTextContent(/matches nobody/i);
+  });
+
+  it('withholds the “team not found” flag when the team list could not be read', async () => {
+    mockListMappings.mockResolvedValue([LEGACY_COGNITO_TEAM_RULE]);
+    mockGetTeams.mockRejectedValue({ message: 'Service unavailable' });
+    renderPanel();
+
+    // "We could not ask" is not "that team does not exist". Flagging on a failed read
+    // would tell an admin to re-author a rule that may be perfectly correct.
+    const row = await screen.findByTestId(`routing-mapping-${LEGACY_COGNITO_TEAM_RULE.id}`);
+    expect(row).toHaveTextContent('platform-eng');
+    await waitFor(() => expect(mockGetTeams).toHaveBeenCalled());
+    expect(screen.queryByTestId(`routing-mapping-team-not-found-${LEGACY_COGNITO_TEAM_RULE.id}`)).not.toBeInTheDocument();
+  });
+
+  it('withholds the flag when the team list was truncated', async () => {
+    mockListMappings.mockResolvedValue([LEGACY_COGNITO_TEAM_RULE]);
+    mockGetTeams.mockResolvedValue({ items: [APP_DEV], total: 130, page: 1, pageSize: 100, hasMore: true });
+    renderPanel();
+
+    // The unresolved id may simply be on page 2. Same reasoning as the failed read: the
+    // flag is a claim about a complete comparison.
+    await waitFor(() => expect(mockGetTeams).toHaveBeenCalled());
+    expect(await screen.findByTestId(`routing-mapping-${LEGACY_COGNITO_TEAM_RULE.id}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`routing-mapping-team-not-found-${LEGACY_COGNITO_TEAM_RULE.id}`)).not.toBeInTheDocument();
   });
 });
 
@@ -839,7 +1076,7 @@ describe('removing a rule', () => {
     // tenant's rung.
     await waitFor(() =>
       expect(mockDeleteMapping).toHaveBeenCalledWith(
-        expect.objectContaining({ scope_type: 'team', org: 'acme', team: 'platform-eng' }),
+        expect.objectContaining({ scope_type: 'team', org: 'acme', team: APP_DEV.id }),
       ),
     );
   });
