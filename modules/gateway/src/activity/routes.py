@@ -16,10 +16,16 @@ from typing import Annotated, Literal
 
 import boto3
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.activity.control_schemas import (
+    ControlCommandResponse,
+    ControlPingResponse,
+    ControlStateResponse,
+)
+from src.activity.control_service import ControlError, ControlService, validate_command_body
 from src.activity.cost_service import get_cost_by_date_range, get_cost_by_run_ids
 from src.activity.schemas import (
     ChainListResponse,
@@ -750,3 +756,137 @@ async def get_admin_invocation_transcript(
 
     content = await _fetch_transcript(item.transcript_key)
     return PlainTextResponse(content=content, media_type="text/markdown")
+
+
+# ---------------------------------------------------------------------------
+# Live run controls — Issue #3960 (S1 foundations)
+#
+# Browsers reach these under `/api/activity/invocations/{id}/agent/...`; the
+# `/api` prefix is stripped by CloudFront before the origin, which is why the
+# router is mounted without it (the convention asserted app-wide by
+# tests/test_route_prefix_convention.py).
+#
+# Every handler is a thin adapter over `ControlService`. Nothing here decides who
+# may control a run, which status an outcome maps to, or where a request is
+# forwarded — those live in the service so this module and
+# `orchestration/controls.py` cannot drift into two different answers. The only
+# work done here is what genuinely belongs at the HTTP edge: reading the body
+# size before parsing, translating the service's typed error into an
+# `HTTPException`, and resolving the caller's canonical identity.
+# ---------------------------------------------------------------------------
+
+
+def get_control_service() -> ControlService:
+    """Provide the control service; overridden via dependency_overrides in tests."""
+    return ControlService()
+
+
+async def _control_identity(current_user: TokenContext, db: AsyncSession) -> tuple[str, str]:
+    """Resolve the (canonical user id, tenant id) the control gate authorizes on.
+
+    The canonical id is required rather than the raw token subject because
+    invocation rows are keyed by the canonical `users.id`, not by the Cognito
+    sub — the same resolution the detail endpoint performs. `org_id` is used for
+    the tenant, never `attributed_org_id`: that field is caller-influenced for
+    billing attribution, so authorizing on it would let a caller nominate the
+    tenant whose runs they may control.
+    """
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    return canonical_user_id, current_user.org_id
+
+
+def _raise_control_error(exc: ControlError) -> None:
+    """Translate a service-layer control error into its HTTP response."""
+    raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+async def _validated_command_body(action: str, request: Request) -> str:
+    """Read the raw body and validate it through the shared control validator.
+
+    The validation itself — the 413 byte cap applied before parsing, the 400 for
+    malformed or non-object bodies, the `extra="forbid"` schema check and the UUID
+    requirement — lives in `control_service.validate_command_body`, not here.
+    That move is #3960 review finding F1: this module had the only copy, and
+    `orchestration/controls.py`'s verb routes take no body parameter, so none of
+    it ran on that adapter. Reading the raw bytes is the one part that genuinely
+    belongs at the HTTP edge; deciding what a valid command is does not.
+    """
+    return validate_command_body(action, await request.body())
+
+
+@router.get("/activity/invocations/{invocation_id}/agent/ping", response_model=ControlPingResponse)
+async def ping_invocation_agent(
+    invocation_id: Annotated[str, Path(min_length=1, max_length=128)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ControlPingResponse:
+    """Check whether this run's control channel is reachable.
+
+    Side-effect free, which is what makes it safe to ship before any verb works:
+    it exercises browser auth, tenant and owner authorization, target validation,
+    the NetworkPolicy and the pod's token check without changing run state.
+    """
+    user_id, tenant_id = await _control_identity(current_user, db)
+    try:
+        return await control.ping(invocation_id, user_id=user_id, tenant_id=tenant_id)
+    except ControlError as exc:
+        _raise_control_error(exc)
+
+
+@router.get("/activity/invocations/{invocation_id}/agent/state", response_model=ControlStateResponse)
+async def get_invocation_agent_state(
+    invocation_id: Annotated[str, Path(min_length=1, max_length=128)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ControlStateResponse:
+    """Read current control capabilities, phase and bounded command history.
+
+    This is the read contract the dashboard polls. A GET never starts an
+    assistant turn and never spends model tokens — it is served from state the
+    worker already recorded.
+    """
+    user_id, tenant_id = await _control_identity(current_user, db)
+    try:
+        return await control.get_state(invocation_id, user_id=user_id, tenant_id=tenant_id)
+    except ControlError as exc:
+        _raise_control_error(exc)
+
+
+@router.post("/activity/invocations/{invocation_id}/agent/{action}")
+async def command_invocation_agent(
+    invocation_id: Annotated[str, Path(min_length=1, max_length=128)],
+    action: Annotated[Literal["pause", "resume", "steer", "abort"], Path()],
+    request: Request,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ControlCommandResponse:
+    """Submit a control command.
+
+    All four verbs are authenticated and authorized here in S1 and answer 501
+    once authorized, because the alternative — omitting the routes until each
+    story lands — would leave the authorization path for the most dangerous verb
+    (abort, cross-tenant, on someone else's run) untested until the story that
+    implements it. The gate is proven now; the behaviour arrives later.
+
+    A 501 from this route is a promise that nothing happened: `authorize_command`
+    reaches the unsupported-verb check before any transport call exists.
+    """
+    try:
+        await _validated_command_body(action, request)
+    except ControlError as exc:
+        _raise_control_error(exc)
+
+    user_id, tenant_id = await _control_identity(current_user, db)
+    try:
+        control.authorize_command(invocation_id, action, user_id=user_id, tenant_id=tenant_id)
+    except ControlError as exc:
+        _raise_control_error(exc)
+
+    # Unreachable while SUPPORTED_ACTIONS is empty: authorize_command raises 501
+    # for every verb in S1. Retained as the declared success shape so the story
+    # that enables a verb wires its implementation here rather than inventing a
+    # response contract (revival-design §2).
+    raise HTTPException(status_code=501, detail=f"{action} is not implemented in this deployment")

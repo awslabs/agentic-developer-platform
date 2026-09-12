@@ -114,6 +114,37 @@ locals {
     "                    value: \"1\"",
   ]) : ""
 
+  # Live-control env vars for the agent-worker container (Issue #3960).
+  #
+  # POD_IP is unconditional and the rest are flag-gated, which is deliberate. The
+  # worker binds its control listener to POD_IP explicitly and REFUSES to start
+  # the listener if POD_IP is absent — it never falls back to 0.0.0.0, because a
+  # wildcard bind would make the port reachable on every interface the pod has,
+  # which is precisely what the ingress NetworkPolicy exists to prevent. Supplying
+  # the address always (rather than only with the flag) means enabling the feature
+  # is one variable, not two, and there is no configuration in which the flag is on
+  # and the bind address is missing.
+  #
+  # There is no way to inject the control TOKEN here, and that is the point: it is
+  # minted inside the pod by `secrets.token_urlsafe` per run (entrypoint.py) and
+  # written straight to the invocation row. A token in a manifest would be one
+  # value shared by every run, visible in `kubectl describe`, and unrotatable.
+  agent_control_env_block = var.agent_control_enabled ? join("\n", [
+    "                  # ── Live run control (Issue #3960) ───────────────────────────",
+    "                  # Strict flag: the worker starts a listener ONLY on the exact",
+    "                  # string \"true\". Read independently of the gateway's own flag —",
+    "                  # neither side can activate the other.",
+    "                  - name: FEATURE_AGENT_CONTROL_ENABLED",
+    "                    value: \"true\"",
+    "                  - name: ADP_CONTROL_PORT",
+    "                    value: \"${var.agent_control_port}\"",
+    "                  # The control token expires with the pod. Rendered from the",
+    "                  # same variable as activeDeadlineSeconds below so the",
+    "                  # credential's lifetime and the pod's cannot drift apart.",
+    "                  - name: ADP_POD_DEADLINE_SECONDS",
+    "                    value: \"${var.agent_pod_deadline_seconds}\"",
+  ]) : ""
+
   keda_trigger_auth_yaml = <<-YAML
     apiVersion: keda.sh/v1alpha1
     kind: TriggerAuthentication
@@ -277,8 +308,29 @@ locals {
                   # gh_token_broker_enabled variable for the rollback caveat.
                   - name: ADP_GH_TOKEN_BROKER_ENABLED
                     value: "${var.gh_token_broker_enabled ? "1" : "0"}"
+                  # Issue #3960: the pod's own IP, from the downward API. The
+                  # control listener binds to THIS address specifically; with the
+                  # variable absent the worker logs an error and starts no
+                  # listener rather than binding every interface. Unconditional
+                  # (not flag-gated) so the flag alone turns the feature on.
+                  - name: POD_IP
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+${local.agent_control_env_block}
 ${local.otel_env_block}
 ${local.knowledge_layer_env_block}
+                # Issue #3960: declared so the port is visible in `kubectl
+                # describe pod` and to `kubectl port-forward`. containerPort is
+                # documentation to the API server, NOT a control — it neither
+                # opens nor closes anything, which is why the ingress
+                # NetworkPolicy (scaledjob-netpol.tf) is the actual boundary.
+                # Declared unconditionally so the manifest does not change shape
+                # when the flag flips.
+                ports:
+                  - name: agent-control
+                    containerPort: ${var.agent_control_port}
+                    protocol: TCP
                 resources:
                   requests:
                     cpu: "1"

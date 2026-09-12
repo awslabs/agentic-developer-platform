@@ -45,6 +45,10 @@ htmlcov/
 coverage.xml
 modules/gateway/frontend/coverage/
 modules/gateway/frontend/playwright-report/
+# jest --coverage output for the agent module (agent-control-ci.yml runs it)
+modules/agent-factory/agent/coverage/
+# pytest --cov-report=json output for the worker control gate (#3960)
+modules/agent-factory/agent-worker-image/coverage-control.json
 
 # Environment
 .env
@@ -64,3 +68,7 @@ agent_learning/
 .adp-scratch/
 docs/bedrock-agentcore-dg.pdf
 config/deployment.yml
+
+# Live-control evaluation evidence (#3960). The harness's default --evidence-dir;
+# result.json can carry environment identifiers and must never be committed.
+test-results/

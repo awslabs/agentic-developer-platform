@@ -103,6 +103,10 @@ function features(overrides: Partial<FeatureFlags> = {}): FeatureFlags {
     gitlab: false,
     orchestration_engine: false,
     budget_spend: true,
+    // Issue #3960. Declared `false` because this returns a full FeatureFlags: a
+    // missing key would be `undefined`, which reads as off for a gate but is not
+    // the same as declaring it off — and a later flag flip here would be silent.
+    agent_control: false,
     ...overrides,
   };
 }

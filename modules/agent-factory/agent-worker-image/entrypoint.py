@@ -14,14 +14,18 @@ Idempotency: uses envelope message_id to prevent duplicate comments/branches.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -33,6 +37,10 @@ from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
 from lib.engine_registration import draft_registration_note
+from lib.invocation_status import (
+    clear_control_endpoint,
+    register_control_endpoint,
+)
 from lib.invocation_status import update_status as update_invocation_status
 from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
@@ -1698,6 +1706,13 @@ def main() -> int:
         token_mode=_token_mode,
     )
 
+    # Issue #3960: mint the control token and register this pod's control endpoint.
+    # Ordered deliberately AFTER the in_progress write and BEFORE the agent exec:
+    # registration targets a row that exists, and the child env carries the token
+    # before the process that starts the listener is created. No-op when the flag
+    # is off; on failure control is unavailable and the run proceeds unchanged.
+    control_registered = _setup_agent_control(agent_env, message_id, arrived_at)
+
     # Flush bootstrap logs to CloudWatch before entering the agent phase.
     # From here on, the Node agent SDK / OTEL handles observability.
     bootstrap_log.step_success(8, "bootstrap_complete")
@@ -1723,6 +1738,12 @@ def main() -> int:
     # Terminate sigv4-proxy if it was started
     if proxy_process is not None:
         _stop_sigv4_proxy(proxy_process)
+
+    # Issue #3960: revoke the control credential as soon as the agent process is
+    # gone. Before the terminal handlers, not after: those make GitHub API calls
+    # that can take seconds or fail, and the window where a token remains valid
+    # for a pod whose agent has already exited should be as short as possible.
+    _teardown_agent_control(message_id, arrived_at, control_registered)
 
     # Issue #4186 (Phase 1): persist the SDK session id the Node worker
     # captured, so the identifier outlives the process that created it.
@@ -2043,6 +2064,249 @@ def _read_result_metadata() -> dict | None:
         return data if isinstance(data, dict) else None
     except Exception:
         return None
+
+
+# Absolute ceiling on a control token's lifetime (Issue #3960). Applied on top of
+# the pod deadline, so raising `agent_pod_deadline_seconds` cannot quietly extend
+# how long a leaked credential stays valid.
+MAX_CONTROL_TOKEN_TTL_SECONDS = 6 * 60 * 60
+
+
+def _is_agent_control_enabled() -> bool:
+    """Strict, fail-closed read of the worker's own control flag (Issue #3960).
+
+    Only the exact string ``"true"`` enables. Read here rather than inherited from
+    any gateway-side decision: the gateway runs an independent reader, and a
+    gateway flag that could start a listener in a pod would let one config change
+    open a port the ingress NetworkPolicy may not yet cover (revival-design §3).
+    """
+    return os.environ.get("FEATURE_AGENT_CONTROL_ENABLED", "").strip() == "true"
+
+
+def _control_port() -> int:
+    """The pinned control port. Pinned because the ingress policy names one port.
+
+    Reads ``ADP_CONTROL_PORT`` — the name the ScaledJob template renders from
+    ``var.agent_control_port`` (scaledjob.tf) and the same name the Node listener
+    reads (agent-worker.ts). One name across all three sides is deliberate: an
+    earlier revision read ``AGENT_CONTROL_PORT`` here while Terraform injected
+    ``ADP_CONTROL_PORT``, so a configured non-default port was silently ignored
+    and the pod bound 8770 while the policy allowed the configured port. Nothing
+    errors in that state; the listener is simply unreachable.
+
+    Invalid or absent values resolve to the default rather than to an arbitrary
+    port: a pod listening on a port the policy does not cover is unreachable, and
+    that failure surfaces as a mysterious timeout rather than a config error.
+    """
+    raw = os.environ.get("ADP_CONTROL_PORT", "").strip()
+    if raw.isdigit() and 0 < int(raw) < 65536:
+        return int(raw)
+    return 8770
+
+
+def _setup_agent_control(
+    agent_env: dict,
+    message_id: str,
+    arrived_at: str,
+) -> bool:
+    """Mint a per-run control token and register this pod's control endpoint.
+
+    Issue #3960. Returns True when the run's control channel is registered and the
+    child env carries what the listener needs to start.
+
+    **The token is minted here, in the pod, and never travels inbound.** It is
+    generated with ``secrets.token_urlsafe`` (a CSPRNG — never ``random``), handed
+    to the Node worker through its env, and written to the invocation row so the
+    gateway can present it. No component outside this pod chooses it, so a
+    compromised gateway cannot pick a token for a pod, and a token cannot be
+    reused across runs.
+
+    **Registration precedes the listener, and both are gated on the flag.** When
+    the flag is off, nothing is minted, nothing is written and no port is
+    advertised — the row is byte-identical to a run without this feature (FR-1.1).
+
+    **The token's lifetime is bounded by the pod's, not by a fixed window.** The
+    expiry is derived from ``ADP_POD_DEADLINE_SECONDS`` — the same
+    ``activeDeadlineSeconds`` Kubernetes enforces on this pod — so a token cannot
+    outlive the process it authenticates; a leaked token from a finished run is
+    already expired even if terminal cleanup never ran.
+
+    **The generation is assigned by the invocation row, not read from config.**
+    ``register_control_endpoint`` returns it from an atomic increment, so a retry
+    pod for the same message gets a strictly higher number than the attempt it
+    replaces and the listener's generation check has something real to compare.
+
+    Fail-soft but *loud*: any failure returns False, is logged, and leaves control
+    unavailable. Control is an observability/intervention add-on; it must never
+    abort the run it is attached to. What it must not do is fail silently, since
+    the UI would then offer a channel that does not exist (FR-1.12, NFR-10).
+    """
+    if not _is_agent_control_enabled():
+        logger.info("Agent control disabled (FEATURE_AGENT_CONTROL_ENABLED not 'true')")
+        return False
+
+    # The pod IP arrives via the downwardAPI. Absent means the deployment did not
+    # project it — treated as a hard stop, never as a licence to bind every
+    # interface, which is the whole point of the explicit-bind requirement.
+    pod_ip = os.environ.get("POD_IP", "").strip()
+    if not pod_ip:
+        logger.error(
+            "Agent control enabled but POD_IP is not set — control unavailable. "
+            "The scaledjob must project status.podIP via the downwardAPI."
+        )
+        return False
+
+    try:
+        # 32 bytes of CSPRNG entropy. `secrets`, not `random`: `random` is
+        # deterministic from its seed and is not a credential source.
+        token = secrets.token_urlsafe(32)
+        port = _control_port()
+
+        # Bound by the pod deadline so the credential cannot outlive the listener
+        # that honours it.
+        expires_at = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() + _control_token_ttl_seconds()),
+        )
+
+        # The generation comes back from the write. It is not computed here: see
+        # register_control_endpoint for why the row is the only source that
+        # actually differs between attempts.
+        generation = register_control_endpoint(
+            message_id,
+            arrived_at,
+            address=pod_ip,
+            port=port,
+            token=token,
+            token_expires_at=expires_at,
+        )
+        if generation is None:
+            # Deliberately does NOT start the listener. An unregistered listener is
+            # an open port nothing can reach through the policy and nothing knows
+            # the token for: pure attack surface with no capability.
+            logger.error(
+                "Control endpoint registration failed — not starting listener "
+                "(control_registration_failed)"
+            )
+            return False
+
+        # Child env only. os.environ is untouched so the token does not leak into
+        # any other subprocess this entrypoint spawns (gh, git, the sigv4 proxy).
+        agent_env["ADP_CONTROL_TOKEN"] = token
+        agent_env["ADP_CONTROL_PORT"] = str(port)
+        agent_env["ADP_CONTROL_BIND_ADDRESS"] = pod_ip
+        agent_env["ADP_CONTROL_GENERATION"] = str(generation)
+
+        # Armed only after the write succeeded, so there is no path where a
+        # teardown is scheduled for a registration that never happened.
+        _install_control_teardown_guard(message_id, arrived_at)
+
+        logger.info(
+            "Agent control registered: port=%d generation=%d expires_at=%s",
+            port,
+            generation,
+            expires_at,
+        )
+        return True
+    except Exception as exc:
+        logger.error("Agent control setup failed (control unavailable): %s", exc)
+        return False
+
+
+def _control_token_ttl_seconds() -> int:
+    """Token TTL, bounded by the deadline Kubernetes actually enforces.
+
+    Reads ``ADP_POD_DEADLINE_SECONDS``, which the ScaledJob renders from the same
+    ``var.agent_pod_deadline_seconds`` it passes to ``activeDeadlineSeconds``. The
+    two therefore cannot drift: whatever wall-clock limit the pod is killed at is
+    the limit the credential expires at.
+
+    Falls back to ``MAX_CONTROL_TOKEN_TTL_SECONDS`` when unset or unparseable, and
+    never exceeds it. The cap is not redundant with the deadline: an operator can
+    raise ``agent_pod_deadline_seconds``, and an unbounded TTL would silently turn
+    a leaked token into a near-permanent one. A too-short TTL only costs the
+    ability to control a long run's tail; a too-long one is a live credential for
+    a pod that no longer exists.
+    """
+    raw = os.environ.get("ADP_POD_DEADLINE_SECONDS", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return min(int(raw), MAX_CONTROL_TOKEN_TTL_SECONDS)
+    return MAX_CONTROL_TOKEN_TTL_SECONDS
+
+
+# Registered control channel awaiting teardown, or None. Module-level because the
+# backstops that consume it — an atexit hook and a SIGTERM handler — cannot be
+# passed arguments (Issue #3960).
+_pending_control_teardown: tuple[str, str] | None = None
+
+
+def _install_control_teardown_guard(message_id: str, arrived_at: str) -> None:
+    """Arrange for the control credential to be revoked however this pod ends.
+
+    The normal path calls :func:`_teardown_agent_control` right after the agent
+    process exits, which is where teardown *should* happen — as early as possible.
+    This guard exists for the paths that never reach that line:
+
+    * an exception anywhere in the post-agent handling (PR creation, check-run
+      finalisation, S3 upload — all of which make network calls that can raise),
+    * ``activeDeadlineSeconds`` expiring, which is a SIGTERM from Kubernetes,
+    * a node drain or eviction, likewise SIGTERM.
+
+    Without it, those endings leave a live token and a pod IP on the row. That is
+    the dangerous residue: pod IPs get reused, so a stale address eventually names
+    somebody else's pod, and the token stays valid until its expiry. The gateway
+    defends independently (it refuses terminal runs and checks expiry), but a
+    credential should not depend on a second component declining to use it.
+
+    SIGTERM is handled rather than left to the default so the revocation happens
+    inside the grace period; the handler then re-raises the signal with the default
+    disposition so the exit status and observable behaviour are unchanged.
+    """
+    global _pending_control_teardown
+    _pending_control_teardown = (message_id, arrived_at)
+
+    atexit.register(_revoke_pending_control)
+    try:
+        signal.signal(signal.SIGTERM, _control_sigterm_handler)
+    except (ValueError, OSError) as exc:
+        # Only possible off the main thread. Not fatal: atexit still covers the
+        # exception paths, and control is an add-on that must never break a run.
+        logger.warning("Could not install control teardown signal handler: %s", exc)
+
+
+def _control_sigterm_handler(signum, _frame) -> None:
+    """Revoke the control credential, then die exactly as SIGTERM would have."""
+    _revoke_pending_control()
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _revoke_pending_control() -> None:
+    """Idempotent backstop: clear the control record if it has not been cleared.
+
+    Idempotent by clearing the pending key first, so the normal-path call, the
+    atexit hook and a SIGTERM arriving mid-teardown cannot produce a second write.
+    """
+    global _pending_control_teardown
+    pending, _pending_control_teardown = _pending_control_teardown, None
+    if pending is None:
+        return
+    try:
+        clear_control_endpoint(*pending)
+    except Exception as exc:
+        logger.warning("Control endpoint teardown failed (non-fatal): %s", exc)
+
+
+def _teardown_agent_control(message_id: str, arrived_at: str, was_registered: bool) -> None:
+    """Remove the control token and address at terminal teardown.
+
+    Skipped entirely when registration never happened, so a flag-off run performs
+    no control writes at all — including no deletes, which would otherwise be an
+    observable difference from a run predating the feature.
+    """
+    if not was_registered:
+        return
+    _revoke_pending_control()
 
 
 def _record_session_id(message_id: str, arrived_at: str) -> str | None:

@@ -72,15 +72,18 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.activity.control_schemas import ControlPingResponse, ControlStateResponse
+from src.activity.control_service import ControlError, ControlService, validate_command_body
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
+from src.shared.identity import resolve_canonical_user_id
 from src.shared.models.base import utcnow
 from src.shared.schemas.auth import TokenContext
 
@@ -511,25 +514,39 @@ async def list_flow_decisions(
     ]
 
 
-# --- R-O3f: declared seam, deliberately not implemented ----------------------
+# --- Per-run live controls: adapters over the shared control service ---------
 #
-# Per-run pause / steer / abort is declared here as an interface and NOT
-# implemented. The requirement is explicit that shipping a control which *appears*
-# to pause a run without doing so is worse than shipping nothing: an operator who
-# believes a run is paused stops watching it. So the seam answers 501 with a body
-# that says so, and there is no code path here that touches run state.
+# Issue #3960 replaces the R-O3f hardcoded-501 seam with adapters over
+# `activity/control_service.py`. The seam's requirement is *preserved*, not
+# discarded: a control that appears to pause a run without doing so is worse than
+# shipping nothing, so these still answer 501 for every verb — but now because
+# the shared service reports the verb unsupported, after it has authenticated the
+# caller, authorized tenant and owner, and checked the flag and the run's
+# lifecycle. The difference matters on the day a verb is implemented: the
+# authorization path these routes use is the one already under test, so enabling
+# a verb is a change in one place rather than a new gate written here.
 #
-# It is a real route rather than a comment because the contract is what the next
-# story implements against, and an undeclared seam gets re-designed from scratch.
+# `run_id` here is the invocation/event identifier Agent Activity uses — NOT an
+# orchestration node id and never a pod name. An orchestration caller holding a
+# node id must resolve its currently-bound invocation through the repository
+# first; there is no path from an id of any other kind to a pod address
+# (revival-design §2).
+#
+# Gate approval and loop-resume above keep their own semantics and permissions.
+# They act on promotion state through the engine's state machine; these act on a
+# live pod through a tenant-and-owner check. Sharing a permission between them
+# would put a softer door into whichever room needs the stronger one.
 
-_NOT_IMPLEMENTED_DETAIL = "per-run pause/steer/abort is a declared interface only (R-O3f) and is not implemented; no run state was changed"
+_CONTROL_ACTIONS = ("pause", "resume", "steer", "abort")
 
 
 class RunControlResponse(BaseModel):
     """The declared shape of a per-run control outcome (R-O3f).
 
-    Declared so the next story implements against a contract rather than
-    inventing one. Nothing returns this yet — the seam returns 501.
+    Retained field-for-field. Issue #3960 extends this contract additively
+    through `activity/control_schemas.py::ControlCommandResponse`, which adds
+    `command_id` and `command_status` while keeping `run_id`, `action` and
+    `state` — so the shape declared here stays honoured rather than replaced.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -539,28 +556,152 @@ class RunControlResponse(BaseModel):
     state: str
 
 
-@router.post("/runs/{run_id}/pause", status_code=501)
+def get_run_control_service() -> ControlService:
+    """Provide the control service; overridden via dependency_overrides in tests.
+
+    Deliberately the same class the activity routes resolve, so a test that
+    proves the authorization contract on one adapter is proving it for the other.
+    """
+    return ControlService()
+
+
+async def _run_control_identity(current_user: TokenContext, db: AsyncSession) -> tuple[str, str]:
+    """Resolve the (canonical user id, tenant id) this adapter authorizes on.
+
+    Identical to the activity adapter's resolution, and identical for the same
+    reason: rows are keyed by the canonical `users.id` rather than the Cognito
+    sub, and `org_id` is the authenticated-only tenant field. Reading
+    `attributed_org_id` instead would let a caller nominate the tenant whose runs
+    they may control.
+    """
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    return canonical_user_id, current_user.org_id
+
+
+async def _run_control(
+    run_id: str,
+    action: str,
+    control: ControlService,
+    current_user: TokenContext,
+    db: AsyncSession,
+    request: Request,
+) -> None:
+    """Validate the body, apply the shared authorization gate, report the status.
+
+    One helper for all four verbs so no verb can accidentally acquire a weaker
+    check than its siblings — abort in particular, which is the most damaging
+    one to get wrong on another tenant's run.
+
+    The body validation is #3960 review finding F1. These routes previously
+    declared no body parameter at all, so the 413 cap, the `extra="forbid"`
+    rejection of `actor`/`target`/`token` and the UUID check ran only on the
+    activity adapter. Harmless while no verb accepts a payload; a real hole the
+    moment one does, on the adapter that had no body tests. Both adapters now
+    call `control_service.validate_command_body`, which is also why it moved out
+    of `activity/routes.py` — a shared authorization gate with a per-edge
+    validation policy is still two policies.
+
+    Validation precedes authorization here, matching the activity adapter, so
+    the ordering W1-05 pins (400 outranks 501) holds identically on both.
+    """
+    try:
+        validate_command_body(action, await request.body())
+    except ControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    user_id, tenant_id = await _run_control_identity(current_user, db)
+    try:
+        control.authorize_command(run_id, action, user_id=user_id, tenant_id=tenant_id)
+    except ControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    # Unreachable while no verb is supported: the gate raises 501 first. Kept as
+    # the declared success seam so the implementing story wires its behaviour
+    # here instead of inventing a second response contract.
+    raise HTTPException(status_code=501, detail=f"{action} is not implemented in this deployment")
+
+
+@router.post("/runs/{run_id}/pause")
 async def pause_run(
-    run_id: Annotated[str, Path(min_length=1, max_length=64)],
+    run_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: Request,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_run_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """Declared seam only (R-O3f). Always 501 — never silently succeeds."""
-    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED_DETAIL)
+    """Pause a live run — authorized here, not yet implemented (501)."""
+    await _run_control(run_id, "pause", control, current_user, db, request)
 
 
-@router.post("/runs/{run_id}/steer", status_code=501)
+@router.post("/runs/{run_id}/resume")
+async def resume_run(
+    run_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: Request,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_run_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """Resume a paused run — authorized here, not yet implemented (501).
+
+    New in #3960: the original seam declared pause/steer/abort but not resume,
+    which would have left the two adapters offering different verb sets. Note
+    this is distinct from `POST /orchestration/nodes/{node_id}/resume` above —
+    that clears a halted or failed *node* in the engine's state machine, and is
+    human-only for reasons documented there. This one releases a live pod's pause
+    barrier.
+    """
+    await _run_control(run_id, "resume", control, current_user, db, request)
+
+
+@router.post("/runs/{run_id}/steer")
 async def steer_run(
-    run_id: Annotated[str, Path(min_length=1, max_length=64)],
+    run_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: Request,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_run_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """Declared seam only (R-O3f). Always 501 — never silently succeeds."""
-    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED_DETAIL)
+    """Steer a live run — authorized here, not yet implemented (501)."""
+    await _run_control(run_id, "steer", control, current_user, db, request)
 
 
-@router.post("/runs/{run_id}/abort", status_code=501)
+@router.post("/runs/{run_id}/abort")
 async def abort_run(
-    run_id: Annotated[str, Path(min_length=1, max_length=64)],
+    run_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: Request,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_run_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """Declared seam only (R-O3f). Always 501 — never silently succeeds."""
-    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED_DETAIL)
+    """Abort a live run — authorized here, not yet implemented (501)."""
+    await _run_control(run_id, "abort", control, current_user, db, request)
+
+
+@router.get("/runs/{run_id}/ping", response_model=ControlPingResponse)
+async def ping_run(
+    run_id: Annotated[str, Path(min_length=1, max_length=128)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_run_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ControlPingResponse:
+    """Check control reachability for a run — the same slice the activity route serves."""
+    user_id, tenant_id = await _run_control_identity(current_user, db)
+    try:
+        return await control.ping(run_id, user_id=user_id, tenant_id=tenant_id)
+    except ControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/runs/{run_id}/state", response_model=ControlStateResponse)
+async def get_run_control_state(
+    run_id: Annotated[str, Path(min_length=1, max_length=128)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_run_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ControlStateResponse:
+    """Read control state for a run — the same contract the activity route serves."""
+    user_id, tenant_id = await _run_control_identity(current_user, db)
+    try:
+        return await control.get_state(run_id, user_id=user_id, tenant_id=tenant_id)
+    except ControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

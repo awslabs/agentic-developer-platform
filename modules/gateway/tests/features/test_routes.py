@@ -51,6 +51,7 @@ class TestFeaturesDefaults:
             "FEATURE_GITLAB_ENABLED",
             "FEATURE_ORCHESTRATION_ENGINE_ENABLED",
             "FEATURE_BUDGET_SPEND_ENABLED",
+            "FEATURE_AGENT_CONTROL_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -72,6 +73,11 @@ class TestFeaturesDefaults:
                 # Issue #4402: fail-closed, so the documented rollback ("flip the flag
                 # off — screen and nav vanish") holds when the var is absent entirely.
                 "budget_spend": False,
+                # Issue #3960: fail-closed, and the strictest case in this dict. The
+                # flag gates a channel into a running pod, and the rollout invariant
+                # is that ordinary workloads stay off — so "absent" must mean off,
+                # not "off until someone sets it to something unparseable".
+                "agent_control": False,
             }
         }
 

@@ -340,3 +340,56 @@ data:
   IDENTITY_INDEX_TABLE: "adp-__ENVIRONMENT__-identity-index"
   USER_IDENTITY_INDEX_TABLE: "adp-__ENVIRONMENT__-user-identity-index"
   USER_IDENTITY_INDEX_V2_WRITE: "true"
+
+  # =============================================================================
+  # Live agent run control (Issue #3960)
+  # =============================================================================
+  # The authenticated control path: gateway proxy -> in-pod control listener. All
+  # four verbs (pause/resume/steer/abort) are UNSUPPORTED in this story — an
+  # authorized caller on a live run gets 501 — so turning this on does not make any
+  # control action work. What it turns on is the route surface, the ping/state read
+  # path, and the capability report (all verbs false).
+  #
+  # Read directly via os.environ in activity/control_service.py, NOT BG_-prefixed,
+  # matching the sibling activity settings (AGENT_RUN_LOGS_BUCKET,
+  # WEBHOOK_EVENTS_TABLE) rather than the Pydantic settings model.
+  #
+  # The flag itself is NOT here — it lives in k8s/deployment.yaml as the
+  # __FEATURE_AGENT_CONTROL_ENABLED__ placeholder, rendered per environment by
+  # gateway-deploy.yml from /adp/<env>/gateway/feature-agent-control (default
+  # "false"), exactly like FEATURE_ORCHESTRATION_ENGINE_ENABLED (#4209 / D-R20).
+  #
+  # This file is applied verbatim to whichever environment the workflow targets, so
+  # a literal here would arm EVERY environment at once. It also matters for how the
+  # flag gets turned on: the one legitimate "true" is an operator-created isolated
+  # fixture (evaluation #3967), and that has to be an `aws ssm put-parameter`
+  # against one environment — not an edit to a committed file that the next deploy
+  # of every other environment would pick up.
+  #
+  # The reader is STRICT (features/routes.py::_is_enabled_strict): absent or any
+  # value other than "true" means off. Note the worker reads its own
+  # FEATURE_AGENT_CONTROL_ENABLED byte-exactly and independently — neither this
+  # namespace nor the gateway's copy can start a listener in an agent pod.
+
+  # The single port the gateway dials and the worker binds. It must equal
+  # var.agent_control_port in modules/agent-factory/webhook-ingress/infra — the same
+  # value is also the only port the control-listener ingress NetworkPolicy admits,
+  # so a mismatch here is not a fallback: every control request becomes a 409
+  # "unavailable" while the pod sits there listening on the other port.
+  AGENT_CONTROL_PORT: "8770"
+
+  # Comma-separated CIDRs the gateway will dial a control listener inside. This is
+  # the SSRF boundary for a proxy that, unlike every other outbound path here,
+  # deliberately targets PRIVATE addresses — so the usual "reject private IPs"
+  # validator (internal/credential_routes.py) is the mirror image of what is needed
+  # and must not be reused.
+  #
+  # FAIL-CLOSED: empty or unset denies every control request (409, "not
+  # configured"). That is why this is not defaulted to a convenient wide range —
+  # an operator who forgets it gets a clear misconfiguration rather than a gateway
+  # willing to dial any private address, including link-local metadata.
+  #
+  # Substituted by gateway-deploy.yml from the cluster's pod CIDR. Loopback,
+  # unspecified, multicast, reserved, link-local/IMDS and global addresses are
+  # rejected in code regardless of what is listed here.
+  AGENT_CONTROL_CLUSTER_POD_CIDRS: "__AGENT_CONTROL_CLUSTER_POD_CIDRS__"

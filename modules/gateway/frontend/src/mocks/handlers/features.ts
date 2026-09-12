@@ -18,10 +18,14 @@ export const featuresHandlers = [
         system_dashboard: true,
         logs: true,
         // Fail-closed add-ons: mocked as the real endpoint ships them (Issues
-        // #3773, #4209, #4402), so no test silently exercises an opted-in path.
+        // #3773, #4209, #4402, #3960), so no test silently exercises an opted-in
+        // path. agent_control especially: the verbs are all unsupported in S1, so
+        // a test that saw it as `true` would be exercising a UI for a control
+        // path that answers 501.
         gitlab: false,
         orchestration_engine: false,
         budget_spend: false,
+        agent_control: false,
       },
     });
   }),

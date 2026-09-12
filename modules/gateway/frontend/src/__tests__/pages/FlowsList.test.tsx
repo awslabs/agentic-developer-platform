@@ -205,6 +205,8 @@ function features(overrides: Record<string, unknown> = {}) {
     gitlab: false,
     budget_spend: false,
     orchestration_engine: false,
+    // Issue #3960 — off, like every other flag in this fixture.
+    agent_control: false,
     ...overrides,
   };
 }

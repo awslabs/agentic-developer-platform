@@ -60,6 +60,10 @@ import { CheckRunStreamer, computeCodexCostUsd } from './components/checkRunStre
 // Codex Event Watcher — stream Codex delegation sub-steps to the live page
 // while a codex-bridge delegation is in flight (issue #2884, EPIC #2702).
 import { CodexEventWatcher } from './components/codexEventWatcher';
+// Issue #3960: live-control foundations. Both modules are transport/SDK-isolated
+// so the control surface is unit-testable without starting a run.
+import { ControlListener, SUPPORTED_ACTIONS } from './control-listener';
+import { ControlStateStore } from './control-state';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -1956,6 +1960,44 @@ async function main(): Promise<void> {
   let agentSucceeded = false;
   let agentResult = '';
 
+  // Issue #3960: the in-pod control listener. Declared outside the try so the
+  // finally block can close the port on every exit path — including a thrown
+  // error — rather than only on the success path.
+  let controlListener: ControlListener | null = null;
+  try {
+    // Started here, after config resolution and before the SDK query, so a
+    // state read is answerable for the whole life of the run. Everything the
+    // listener needs was placed in this process's env by the entrypoint, which
+    // only does so when the flag is on and registration succeeded — so an
+    // unregistered listener cannot exist.
+    const controlStore = new ControlStateStore({
+      generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
+      // No verbs in S1: every capability reports false and every verb answers 501.
+      supportedActions: SUPPORTED_ACTIONS,
+    });
+    const listener = new ControlListener({
+      bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
+      port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),
+      token: process.env.ADP_CONTROL_TOKEN || '',
+      generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
+      store: controlStore,
+      logger: (level, message, context) => log(level.toUpperCase(), message, context),
+    });
+    const outcome = await listener.start();
+    if (outcome.started) {
+      controlListener = listener;
+      log('INFO', `Control listener started on port ${outcome.port}`);
+    } else if (outcome.reason !== 'disabled') {
+      // A failure to start is logged at WARN and the run continues: control is an
+      // add-on, and refusing to work without it would make an intervention
+      // channel a new way for ordinary runs to die. 'disabled' is silent because
+      // it is the normal state for every ordinary workload.
+      log('WARN', `Control listener unavailable (${outcome.reason}): ${outcome.detail ?? ''}`);
+    }
+  } catch (err) {
+    log('WARN', `Control listener setup failed (non-blocking): ${(err as Error).message}`);
+  }
+
   try {
     await ensureAdpBranch();
   } catch (err) {
@@ -2244,6 +2286,20 @@ Please check the workflow logs for details.`);
         });
       } catch (expErr) {
         log('WARN', `[experience-save] Hook failed (non-blocking): ${(expErr as Error).message}`);
+      }
+    }
+
+    // Issue #3960: close the control port before the process exits. Placed with
+    // the other teardown rather than after it because `process.exit` below is
+    // unconditional — anything past that line never runs. Awaited so the socket
+    // is actually closed rather than merely asked to close, and wrapped because a
+    // teardown throw here would mask the run's real outcome.
+    if (controlListener) {
+      try {
+        await controlListener.stop();
+        log('INFO', 'Control listener stopped');
+      } catch (err) {
+        log('WARN', `Control listener stop failed: ${(err as Error).message}`);
       }
     }
 

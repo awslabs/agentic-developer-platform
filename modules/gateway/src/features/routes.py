@@ -85,5 +85,17 @@ async def get_features(_current_user=Depends(get_current_user)):
             # `_is_enabled` the screen would be live in every environment the moment
             # the SPA deployed, and unsetting the var would not turn it off again.
             "budget_spend": _is_enabled_strict("FEATURE_BUDGET_SPEND_ENABLED"),
+            # Fail-closed: the live run-control channel (Issue #3960). Strict for a
+            # stronger reason than the flags above — this one gates a channel that
+            # reaches into a running pod, and its rollout invariant is that ordinary
+            # workloads stay off until the abort writer and its readers are deployed.
+            # A fail-open default would enable it in every environment the moment the
+            # gateway shipped, which is precisely the state the invariant forbids.
+            #
+            # Note this flag is read independently by the worker, which runs its own
+            # strict reader. Answering true here cannot start a listener in a pod: a
+            # gateway-side flag that could activate worker capabilities would make one
+            # config change enable a listener the ingress policy may not yet cover.
+            "agent_control": _is_enabled_strict("FEATURE_AGENT_CONTROL_ENABLED"),
         }
     }

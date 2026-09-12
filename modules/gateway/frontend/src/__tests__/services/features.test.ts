@@ -54,23 +54,48 @@ describe('features service', () => {
 
     it('declares every flag the FeatureFlags interface requires', () => {
       // A missing key would be `undefined` at runtime — falsy for a gate, but
-      // silently so. Typed exhaustively here so a new flag must be added to the
-      // default object too.
-      const keys: Array<keyof FeatureFlags> = [
-        'chat',
-        'knowledge',
-        'indexing',
-        'connections',
-        'credentials',
-        'system_dashboard',
-        'logs',
-        'gitlab',
-        'orchestration_engine',
-      ];
-      for (const key of keys) {
+      // silently so.
+      //
+      // `Record<keyof FeatureFlags, true>` rather than the `Array<keyof
+      // FeatureFlags>` this used to be: an array of key names is NOT an
+      // exhaustiveness check. Every entry typechecks individually and a missing
+      // one is simply an array with fewer elements, so a new flag added to the
+      // interface never fails this test. `budget_spend` (#4402) had already
+      // leaked past it that way before #3960 added a tenth flag. A Record with
+      // no index signature must name every key or `tsc` reports the missing
+      // one, so the list cannot drift from the interface again.
+      const required: Record<keyof FeatureFlags, true> = {
+        chat: true,
+        knowledge: true,
+        indexing: true,
+        connections: true,
+        credentials: true,
+        system_dashboard: true,
+        logs: true,
+        gitlab: true,
+        orchestration_engine: true,
+        budget_spend: true,
+        agent_control: true,
+      };
+      for (const key of Object.keys(required) as Array<keyof FeatureFlags>) {
         expect(ALL_FEATURES_ENABLED).toHaveProperty(key);
         expect(typeof ALL_FEATURES_ENABLED[key]).toBe('boolean');
       }
+    });
+
+    it('keeps agent_control fail-closed — Issue #3960', () => {
+      // The strictest default in the object, and the one whose fail-open cost is
+      // highest. `useFeatures` returns ALL_FEATURES_ENABLED while the fetch is in
+      // flight AND when it has failed, so `true` here would render pause / steer /
+      // abort buttons on every page load before the flags arrive, and keep
+      // rendering them through any backend outage — precisely when the control
+      // path cannot deliver. An operator who clicks Abort then and sees no error
+      // has been told a run stopped when it is still running.
+      expect(ALL_FEATURES_ENABLED.agent_control).toBe(false);
+    });
+
+    it('keeps budget_spend fail-closed too', () => {
+      expect(ALL_FEATURES_ENABLED.budget_spend).toBe(false);
     });
   });
 

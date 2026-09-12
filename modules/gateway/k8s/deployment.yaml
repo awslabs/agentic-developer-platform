@@ -165,6 +165,26 @@ spec:
             # the SPA.
             - name: FEATURE_BUDGET_SPEND_ENABLED
               value: "true"
+            # Issue #3960: the live-run control path (gateway proxy -> in-pod control
+            # listener). Rendered per environment from
+            # /adp/<env>/gateway/feature-agent-control, defaulting to "false" —
+            # same mechanism and same reason as the entry two above.
+            #
+            # Per-environment matters more here than for a UI screen. Turning this
+            # on opens an authenticated channel into a running agent pod, and the
+            # rollout invariant for this story is that ordinary workloads stay off:
+            # the one legitimate "true" is an operator-created isolated fixture
+            # (evaluation #3967), which is an `aws ssm put-parameter` against a
+            # single environment, not a committed literal every environment
+            # inherits on its next deploy.
+            #
+            # Note this flag does not make any control verb work — all four are
+            # unsupported in S1 and an authorized caller on a live run gets 501. It
+            # gates the route surface, the ping/state read path and the capability
+            # report. It also cannot start a listener in an agent pod: the worker
+            # reads its own copy of FEATURE_AGENT_CONTROL_ENABLED independently.
+            - name: FEATURE_AGENT_CONTROL_ENABLED
+              value: "__FEATURE_AGENT_CONTROL_ENABLED__"
             # - name: FEATURE_KNOWLEDGE_ENABLED
             #   value: "false"
             # - name: FEATURE_INDEXING_ENABLED

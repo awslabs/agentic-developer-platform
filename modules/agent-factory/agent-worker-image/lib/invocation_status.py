@@ -181,3 +181,203 @@ def update_status(
                     )
     except Exception as exc:
         logger.warning("Failed to update invocation status (non-fatal): %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Live control registration — Issue #3960
+# ---------------------------------------------------------------------------
+
+# Schema version for the control record. Written explicitly so a gateway reading
+# a record it does not understand can refuse rather than guess: a future field
+# rename would otherwise make an old pod look like it has no control endpoint,
+# which is indistinguishable from a pod that never started a listener.
+CONTROL_RECORD_VERSION = 1
+
+# The control fields, named once. `clear_control_endpoint` removes exactly this
+# set, so a field added here cannot be left behind at teardown — a stale token
+# and address surviving into a terminal row is precisely how a dead pod's IP
+# stays addressable after the pod is gone (and IPs get reused).
+_CONTROL_ATTRIBUTES = (
+    "control_version",
+    "control_address",
+    "control_port",
+    "control_token",
+    "control_token_expires_at",
+    "control_generation",
+    "control_registered_at",
+)
+
+
+def register_control_endpoint(
+    event_id: str,
+    arrived_at: str,
+    *,
+    address: str,
+    port: int,
+    token: str,
+    token_expires_at: str,
+) -> int | None:
+    """Record where this pod's control listener is reachable, and with what token.
+
+    Issue #3960. This is the gateway's only source for the address, port and
+    bearer token of a live run's control channel; there is no service discovery
+    and the gateway holds no Kubernetes client.
+
+    **The generation is assigned here, by the row, not supplied by the caller.**
+    It is an atomic DynamoDB ``ADD`` on ``control_generation``, so each successful
+    registration for a given key returns a strictly higher number than the last.
+    That matters because a generation is only useful if it actually changes
+    between attempts: the pod has no per-attempt identity of its own to derive
+    one from (a Job retry pod inherits an identical env, and Kubernetes exposes no
+    "which attempt am I" field), so a value read from configuration would be the
+    same constant on every attempt and the listener's generation check would
+    compare it against itself forever. The row is the one thing that outlives the
+    pod, which makes it the only honest source. The gateway reads the same
+    attribute it was incremented on, so the two sides cannot disagree.
+
+    Unlike :func:`update_status`, this reports failure instead of swallowing it.
+    The reason is that ``update_status`` is fail-soft by design — a lost status
+    transition degrades a dashboard — whereas a lost control registration
+    produces a run that looks controllable in the UI and is not, with no signal
+    anywhere that registration failed. The caller is expected to log and meter a
+    ``None`` (FR-1.12, NFR-10). Exceptions are still contained: control is an
+    add-on capability and must never abort the run it observes.
+
+    The token is a credential. It is written to DynamoDB because the gateway must
+    present it, but it is never logged here, never returned, and is removed by
+    :func:`clear_control_endpoint` at terminal teardown.
+
+    Returns:
+        The generation assigned to this registration, or None on any failure —
+        including a missing table, missing key, invalid arguments, an absent row,
+        or a response that does not carry the new generation back. None is
+        returned rather than a guessed generation because the caller hands the
+        value to the in-pod listener while the gateway reads it from the row: a
+        guess that disagreed with the stored value would make the listener reject
+        every command the gateway sent, which is indistinguishable from an attack.
+    """
+    table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
+    if not table:
+        logger.warning("Cannot register control endpoint: WEBHOOK_EVENTS_TABLE not set")
+        return None
+
+    if not event_id or not arrived_at:
+        logger.warning(
+            "Cannot register control endpoint: missing key (event_id=%r arrived_at=%r)",
+            event_id,
+            arrived_at,
+        )
+        return None
+
+    # Validated rather than trusted. A blank address or a zero port would produce
+    # a row the gateway treats as registered but cannot connect to, turning a
+    # config bug into an unexplained 409 at click time.
+    if not address or not token or not isinstance(port, int) or port <= 0:
+        logger.warning(
+            "Cannot register control endpoint: invalid parameters (address_set=%s port=%r token_set=%s)",
+            bool(address),
+            port,
+            bool(token),
+        )
+        return None
+
+    try:
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        response = _get_client().update_item(
+            TableName=table,
+            Key={
+                "event_id": {"S": event_id},
+                "arrived_at": {"S": arrived_at},
+            },
+            # ADD, not SET, for control_generation: ADD is applied atomically by
+            # DynamoDB and treats an absent attribute as 0, so the first attempt
+            # lands on 1 and each retry lands one higher without the pod needing
+            # to read the current value first (a read-then-write would race two
+            # attempts into the same generation, which is the bug this replaces).
+            UpdateExpression=(
+                "SET control_version = :v, control_address = :a, control_port = :p, "
+                "control_token = :t, control_token_expires_at = :e, "
+                "control_registered_at = :r "
+                "ADD control_generation :one"
+            ),
+            ExpressionAttributeValues={
+                ":v": {"N": str(CONTROL_RECORD_VERSION)},
+                ":a": {"S": address},
+                ":p": {"N": str(port)},
+                ":t": {"S": token},
+                ":e": {"S": token_expires_at},
+                ":r": {"S": now_iso},
+                ":one": {"N": "1"},
+            },
+            ConditionExpression="attribute_exists(event_id)",
+            # The assigned generation has to come back from the same call that
+            # assigned it. Re-reading the row afterwards would return whatever a
+            # concurrent attempt had incremented it to since.
+            ReturnValues="UPDATED_NEW",
+        )
+        raw_generation = (
+            (response or {}).get("Attributes", {}).get("control_generation", {}).get("N")
+        )
+        if raw_generation is None:
+            logger.warning(
+                "Control endpoint write succeeded but returned no generation — "
+                "treating registration as failed (control unavailable)"
+            )
+            return None
+        generation = int(raw_generation)
+
+        # Deliberately logs the address, port and generation but not the token.
+        logger.info(
+            "Registered control endpoint: event_id=%s port=%d generation=%d",
+            event_id,
+            port,
+            generation,
+        )
+        return generation
+    except Exception as exc:
+        # Contained but loud. The caller decides what to do with None; what must
+        # not happen is a silent pass that leaves the UI claiming control exists.
+        logger.warning("Failed to register control endpoint (control unavailable): %s", exc)
+        return None
+
+
+def clear_control_endpoint(event_id: str, arrived_at: str) -> bool:
+    """Remove the control endpoint and token at terminal teardown.
+
+    Issue #3960. Two reasons this is not optional:
+
+    1. **The token is a credential.** Leaving it in a terminal row extends its
+       lifetime indefinitely beyond the process it authenticated.
+    2. **Pod IPs are reused.** An address left behind on a finished run points at
+       whatever pod holds that IP next. A gateway that trusted a stale address
+       would be sending one tenant's control commands at another tenant's pod —
+       which is why the terminal status alone is not considered sufficient
+       protection, and the fields are actually removed.
+
+    Best-effort by nature: the pod may be killed before this runs, which is why
+    the gateway independently refuses control for a terminal run and independently
+    checks token expiry rather than relying on this cleanup having happened.
+
+    Returns:
+        True if the fields were removed, False otherwise.
+    """
+    table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
+    if not table or not event_id or not arrived_at:
+        logger.debug("Skipping control endpoint clear (table or key missing)")
+        return False
+
+    try:
+        _get_client().update_item(
+            TableName=table,
+            Key={
+                "event_id": {"S": event_id},
+                "arrived_at": {"S": arrived_at},
+            },
+            UpdateExpression="REMOVE " + ", ".join(_CONTROL_ATTRIBUTES),
+            ConditionExpression="attribute_exists(event_id)",
+        )
+        logger.info("Cleared control endpoint: event_id=%s", event_id)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to clear control endpoint (non-fatal): %s", exc)
+        return False
