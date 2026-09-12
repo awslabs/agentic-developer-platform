@@ -352,3 +352,66 @@ it.each(['reviewer', 'architect', 'aidlc', 'operations'])('does not invent imple
   expect(labels).not.toContain('PR');
   expect(labels).toHaveLength(2);
 });
+
+describe('live implementation explanations', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-12T08:00:00Z'));
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(201, { id: 321 }))
+      .mockResolvedValue(mockFetchResponse(200));
+  });
+  afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
+
+  const lastBody = () => JSON.parse(mockFetch.mock.calls.at(-1)![1].body).body as string;
+
+  it('publishes through the existing throttle and retains the explanation timestamp across heartbeats', async () => {
+    const comment = new LiveStatusComment(makeStages(), makeOptions());
+    await comment.post();
+    const explanation = 'The gateway forwards chunks as they arrive.\n\nThe test checks first-event delivery before completion.';
+    comment.setExplanation(explanation);
+    comment.appendActivity('Bash  run the regression suite');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(5000);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(lastBody()).toContain(explanation);
+    expect(lastBody().indexOf('### Agent explanation')).toBeLessThan(lastBody().indexOf('### Progress'));
+    expect(lastBody()).toContain('_Reported 2026-09-12T08:00:00.000Z_');
+    jest.advanceTimersByTime(30000);
+    expect(lastBody()).toContain('_Reported 2026-09-12T08:00:00.000Z_');
+    expect(lastBody()).toContain(explanation);
+  });
+
+  it('coalesces updates, ignores empty or duplicate text, and separates explanations from the rolling tool log', async () => {
+    const comment = new LiveStatusComment(makeStages(), makeOptions());
+    await comment.post();
+    comment.setExplanation('Initial hypothesis.');
+    comment.setExplanation('The first test disproved the initial hypothesis.');
+    comment.setExplanation('   ');
+    for (let i = 0; i < 20; i++) comment.appendActivity(`tool ${i}`);
+    jest.advanceTimersByTime(5000);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(lastBody()).toContain('The first test disproved the initial hypothesis.');
+    expect(lastBody()).not.toContain('Initial hypothesis.');
+    comment.setExplanation('The first test disproved the initial hypothesis.');
+    jest.advanceTimersByTime(5000);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds Unicode displays with a marker and preserves the last explanation on failure', async () => {
+    const comment = new LiveStatusComment(makeStages(), makeOptions());
+    await comment.post();
+    comment.setExplanation('界🌍'.repeat(10000));
+    await comment.flush();
+    expect(Buffer.byteLength(lastBody())).toBeLessThan(60 * 1024);
+    expect(lastBody()).toContain('Explanation shortened');
+    expect(lastBody()).not.toContain('\ufffd');
+    comment.setExplanation('The job failed before collecting any tests. Coverage remains unmeasured.');
+    await comment.finalizeFailure({ error: 'collection failed', durationMs: 10000 });
+    expect(lastBody()).toContain('Coverage remains unmeasured.');
+    const count = mockFetch.mock.calls.length;
+    comment.setExplanation('Late message must not replace the outcome.');
+    jest.advanceTimersByTime(30000);
+    expect(mockFetch).toHaveBeenCalledTimes(count);
+  });
+});

@@ -499,10 +499,38 @@ def _is_already_completed(repo: str, issue: int, token: str) -> bool:
     return False
 
 
+def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
+    """Read GitHub's bounded display and the independent explanation archive.
+
+    Older workers only wrote the GitHub display. Preserve it as a clearly
+    labeled fallback; never describe that potentially clipped record as full.
+    Each read is best-effort so one missing artifact cannot hide the other.
+    """
+    def read(name: str) -> str:
+        try:
+            with open(os.path.join(directory, name), "r", encoding="utf-8") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            return ""
+        except Exception as exc:
+            logger.warning("Could not read report %s (non-fatal): %s", name, exc)
+            return ""
+
+    github_text = read("adp-check-run-final.md")
+    transcript_text = read("adp-run-transcript.md")
+    if not transcript_text.strip():
+        transcript_text = (
+            "_Archive source: GitHub display fallback. The independent explanation "
+            "transcript was unavailable; this record may be truncated or incomplete._\n\n"
+            + github_text
+        ) if github_text else ""
+    return github_text, transcript_text
+
+
 def _upload_transcript_to_s3(
     final_text: str, repo: str, issue: int, message_id: str, arrived_at: str, persona: str
 ) -> str | None:
-    """Upload the full untruncated transcript to S3 (best-effort).
+    """Upload the captured explanation transcript or labeled fallback (best-effort).
 
     Object key: {persona}/{org}/{repo_name}/issue-{issue}/{timestamp}-{run_id}.md
 
@@ -539,7 +567,7 @@ def _upload_transcript_to_s3(
             Body=final_text.encode("utf-8"),
             ContentType="text/markdown",
         )
-        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text))
+        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text.encode("utf-8")))
         return key
     except Exception as exc:
         logger.warning("Failed to upload transcript to S3 (non-fatal): %s", exc)
@@ -1695,17 +1723,9 @@ def main() -> int:
             repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url
         )
 
-    # Read the final rendered Markdown written by CheckRunStreamer (if any).
-    # This preserves the full per-turn transcript across the process boundary.
-    # Read outside the check-run block so S3 upload can use it independently.
-    final_text: str = ""
-    cr_final_path = "/tmp/adp-check-run-final.md"
-    try:
-        if os.path.exists(cr_final_path):
-            with open(cr_final_path, "r", encoding="utf-8") as fh:
-                final_text = fh.read()
-    except Exception:
-        pass
+    # GitHub's clipped display is separate from the readable explanation archive.
+    # Read outside the check-run block so archival remains independent of finalize.
+    final_text, transcript_text = _read_run_reports()
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
@@ -1754,11 +1774,11 @@ def main() -> int:
         except Exception as exc:
             logger.warning("Failed to finalize check run (non-fatal): %s", exc)
 
-    # Persist full untruncated transcript to S3 (best-effort, non-fatal).
-    # Issue #3057: transcripts exceed the GitHub Check Run 65,535-char limit;
-    # S3 gives us a durable, auditable archive.
+    # Persist the independent transcript, preserving explanations beyond GitHub's
+    # display limit. This includes captured explanations and selected previews,
+    # not raw tool results or a complete terminal log. Upload remains best-effort.
     transcript_key = _upload_transcript_to_s3(
-        final_text, repo, issue, message_id, arrived_at, persona
+        transcript_text, repo, issue, message_id, arrived_at, persona
     )
 
     # Issue #4187: a run the gateway stopped on a spend cap is neither a success

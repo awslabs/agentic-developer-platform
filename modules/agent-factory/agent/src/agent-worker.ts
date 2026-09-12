@@ -13,6 +13,7 @@
  */
 
 import { loadHumanCommunication } from './human-communication';
+import { assistantText } from './reporting-text';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
@@ -1243,7 +1244,9 @@ only here. Required gate comments, formal PR reviews and audit records still
 belong in their designated places; link to those with a brief status and next
 action rather than repeating their findings in the final response.
 Keep technical inventories, commands and long test matrices below the summary
-or in linked evidence. Critical caveats must remain visible.
+or in linked evidence. For implementation work, include the shared policy's
+walkthrough of the mechanism, decisions and reproducible verification in the
+final response. Critical caveats must remain visible.
 
 ${AGENT_TYPE === 'operations' ? `For operations, name the target environment and state separately whether
  deployment ran, the service is running, and the endpoint was checked. Report
@@ -1506,9 +1509,9 @@ Now, complete the assigned task.`;
                 codexCostUsd: computeCodexCostUsd(codexUsage.inputTokens, codexUsage.outputTokens),
               });
             }
-            // Stream tool_use to the live status comment so users watching the
-            // issue page see what the agent is currently doing.
+            // Publish intentional explanations as well as technical activity.
             if (activeLiveComment) {
+              activeLiveComment.setExplanation(assistantText(assistantMsg.message.content));
               for (const block of assistantMsg.message.content) {
                 if (block.type === 'tool_use' && typeof block.name === 'string') {
                   const inputPreview = JSON.stringify(block.input ?? {}).slice(0, 80);

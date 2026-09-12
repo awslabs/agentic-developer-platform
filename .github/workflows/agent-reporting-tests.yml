@@ -1,0 +1,67 @@
+name: Agent Reporting Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'modules/agent-factory/agent/**'
+      - 'modules/agent-factory/agent-worker-image/**'
+      - 'modules/agent-factory/rules/personas/**'
+      - 'modules/agent-factory/skills/codex-bridge/**'
+      - 'modules/agent-factory/gateway/app/personas/**'
+      - '.github/workflows/agent-reporting-tests.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-reporting-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  node-reporting:
+    name: Agent explanations and GitHub reporting
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: modules/agent-factory/agent
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+      - run: npm ci --include=dev
+      - run: npm run build -- --noEmit
+      - name: Verify explanation capture, bounded publication and independent archival
+        run: >-
+          npm test -- --runInBand --runTestsByPath
+          src/reporting-text.test.ts
+          src/components/checkRunStreamer.test.ts
+          src/components/checkRunStreamer.token-rotation.test.ts
+          src/github-comments.test.ts
+          src/human-communication.test.ts
+          src/agent-worker-prompt-order.test.ts
+
+  python-reporting:
+    name: Transcript handoff and shared instructions
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest boto3 requests PyJWT pyyaml
+      - name: Verify complete explanation uploads, fallback and packaged prompts
+        run: >-
+          python -m pytest -q
+          modules/agent-factory/agent-worker-image/tests/test_transcript_upload.py
+          modules/agent-factory/agent-worker-image/tests/test_communication_reporting.py
+          modules/agent-factory/agent-worker-image/tests/test_gateway_communication_policy.py
+          modules/agent-factory/agent-worker-image/tests/test_stage_personas.py
+          modules/agent-factory/agent-worker-image/tests/test_run_codex.py

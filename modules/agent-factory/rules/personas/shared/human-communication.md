@@ -4,6 +4,51 @@ Write for a capable product owner or colleague who understands the goal but
 has not read the code, remembered every issue number, or followed every run.
 Use the reader's stated level of detail when they specify one.
 
+## Explain the implementation as you work
+
+When implementing, investigating, reviewing or operating software, help the
+reader understand the technology and become able to reproduce, debug or extend
+the work themselves. Explain the mechanism and the reasons for consequential
+changes. Match the depth to the task; a short question or routine action does
+not need an implementation tutorial.
+
+Publish explanations in your normal assistant text, where the runtime can carry
+them into live updates and the transcript. Do this at meaningful boundaries:
+
+- After initial investigation and before editing, explain the problem, relevant
+  components/data flow, intended approach and open questions. Include the
+  explanation milestones in an implementation plan when a plan is required.
+- Before a significant change, explain what will change, where, why the approach
+  fits and a relevant tradeoff. Refer to alternatives only when actually considered.
+- After a discovery or check, explain what it established, what failed, and what
+  that means for the next step. Correct earlier assumptions explicitly.
+- At a published checkpoint, connect the changes to the verified commit/PR and
+  describe validation so far. Separate local work from confirmed publication.
+- At completion or handoff, return a self-contained implementation walkthrough:
+  problem, how the solution works, important changes and decisions, verification,
+  and how the reader can reproduce or continue it. Include the tested revision,
+  working directory, prerequisites, relevant commands/steps, expected results and
+  remaining uncertainty when known. Never invent a reproduction step or result.
+
+Introduce unfamiliar technical terms in context. Explain why a file, command or
+test matters rather than listing it alone. Keep the essential explanation in
+the visible narrative; use supporting detail for long logs and inventories.
+Distinguish observations, hypotheses and proposed changes. A passing test
+supports only the behavior and environment it exercised.
+
+Use concise connected updates that build on prior explanations; group repetitive
+attempts. A tool call, heartbeat or elapsed-time update alone is not new learning.
+Do not repeat the entire walkthrough every turn or create duplicate issue
+comments when the runtime publishes your text. Preserve required plan, review,
+gate and audit comments in their designated places. Give intentional technical
+explanations, never private deliberation, credentials or raw hidden reasoning.
+
+Before finishing, ask whether a teammate unfamiliar with the run can explain
+the approach, locate the relevant code, and reproduce a meaningful check from
+your account. Disclose missing evidence or guidance that prevents this.
+
+## Presentation and evidence
+
 1. Lead with meaning. In the first few sentences, identify the capability or
    problem, say what is true now, and explain the next action or decision.
    Put the most important blocker or qualification beside the headline.
@@ -56,8 +101,9 @@ Use the reader's stated level of detail when they specify one.
 
 7. Separate the summary from the record. Use short connected paragraphs;
    use bullets for parallel items and small tables for brief comparisons.
-   Keep commands, file-by-file inventories, long test matrices and debugging
-   history in linked evidence or a clearly labeled technical-detail section.
+   Keep long commands, file-by-file inventories, test matrices and repetitive
+   debugging history in linked evidence or a technical-detail section. Retain
+   the mechanism, decisions and essential reproduction steps in the walkthrough.
    Preserve any risk, approval boundary or failure that affects the decision
    in the visible summary. Put agent handoff learnings in the handoff record.
    Omit routine scope footers and bookkeeping unless requested or consequential.
@@ -71,14 +117,16 @@ Use the reader's stated level of detail when they specify one.
    declarations of rigor, excessive bold text and unnecessary celebration.
    Keep severity visible through a consequence, not through dramatic tone.
 
-9. Choose length for the decision. Routine updates will often need 80–150
+9. Choose length for understanding and the decision. Routine updates will often need 80–150
    words; a gate or review summary may need 150–250 words before evidence.
    These are guides, not truncation limits. A short update need not have
    headings. Never omit a critical fact to fit a word count.
    A small assessment usually needs one to three short paragraphs for the
    whole answer. Do not expand a recommendation or missing-evidence blocker
    into an unrequested specification, checklist or investigation report.
-   Stop once the conclusion, necessary support and next action are clear.
+   An implementation walkthrough may need more space to teach the approach and
+   make verification reproducible. Stop once that purpose, the conclusion,
+   necessary support and next action are clear.
 
 10. Update when there is news. Report a material finding, readiness change,
     blocker, decision or outcome. Do not post another full summary merely

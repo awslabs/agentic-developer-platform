@@ -9,6 +9,7 @@
  */
 
 import { validateBaseUrl } from './lib/url-guard';
+import { truncateUtf8 } from './reporting-text';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -107,6 +108,8 @@ export class LiveStatusComment {
   private pendingUpdate: ReturnType<typeof setTimeout> | null = null;
   private runStartTime: number;
   private latestMessage = '';
+  private latestExplanation = '';
+  private explanationAt = '';
   private activityLog: string[] = [];
   private static readonly MAX_ACTIVITY_LINES = 10;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
@@ -181,6 +184,17 @@ export class LiveStatusComment {
     this.scheduleUpdate();
   }
 
+  /** Keep the latest authored explanation visible, separate from tool/heartbeat activity. */
+  setExplanation(text: string): void {
+    if (this.finished || !text.trim()) return;
+    const excerpt = truncateUtf8(text.trim(), 16 * 1024,
+      '\n\n_Explanation shortened for this GitHub display._');
+    if (excerpt === this.latestExplanation) return;
+    this.latestExplanation = excerpt;
+    this.explanationAt = new Date().toISOString();
+    this.scheduleUpdate();
+  }
+
   /**
    * Transition a stage to a new status. Triggers a rate-limited comment update.
    */
@@ -223,6 +237,7 @@ export class LiveStatusComment {
     if (summary.prUrl) {
       lines.push(`**PR**: ${summary.prUrl}`);
     }
+    if (!summary.details) lines.push(...this.explanationLines());
     if (summary.artifacts && summary.artifacts.length > 0) {
       lines.push('', '**Artifacts**:');
       for (const a of summary.artifacts) {
@@ -271,6 +286,7 @@ export class LiveStatusComment {
         lines.push(`- ${step}`);
       }
     }
+    lines.push(...this.explanationLines());
     // Include stage summary showing where it failed
     lines.push('', '### Stages');
     for (const stage of this.stages) {
@@ -297,11 +313,18 @@ export class LiveStatusComment {
 
   // ─── Private ─────────────────────────────────────────────────────────────
 
+  private explanationLines(): string[] {
+    return this.latestExplanation
+      ? ['', '### Agent explanation', '', `_Reported ${this.explanationAt}_`, '', this.latestExplanation]
+      : [];
+  }
+
   private renderBody(): string {
     const now = Date.now();
     const elapsed = formatElapsed(now - this.runStartTime);
     const lines: string[] = [
       `## Agent running — ${elapsed} elapsed (updated ${new Date(now).toISOString().slice(11, 19)} UTC)`,
+      ...this.explanationLines(),
       '',
       '### Progress',
     ];
