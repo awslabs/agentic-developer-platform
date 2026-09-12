@@ -37,6 +37,20 @@ Generating implementation for [Unit Name] based on functional design.
 - Database: [From architecture]
 - Testing: [Framework]
 
+## Branch Checkpoint Strategy
+- Branch: [Task branch]
+- First useful checkpoint: [Concrete milestone]
+- Later checkpoints: [Concrete milestones]
+- Cadence: About every 15 minutes at safe boundaries while changes accumulate,
+  and before long validation; inspect, selectively stage, commit, push and verify
+  the remote SHA before reporting a checkpoint.
+- Visibility: [Reuse existing PR; open an early draft only if automation is known
+  to respect draft status for review/evaluation and wave advancement, otherwise
+  use commit links]. Report completed scope,
+  remaining work, and checks passed/failed/not run.
+- Readiness: Checkpoints remain incomplete until validation and applicable
+  AI-DLC approvals are satisfied; they do not trigger review or the next wave.
+
 ---
 
 ## File Generation Checklist
@@ -189,6 +203,10 @@ curl -X GET http://localhost:3000/api/[endpoint]
 ```
 
 ## Step 6: Create Pull Request
+Reuse the checkpoint PR if one exists; otherwise create it now. Complete the
+required pre-submit checks before marking a draft ready or proceeding to the
+review handoff below. An earlier draft checkpoint does not trigger Steps 7–8.
+
 @agent-developer creates PR:
 - Title: `[Unit] Implement [Unit Name]`
 - Body: Reference to design docs, summary of changes

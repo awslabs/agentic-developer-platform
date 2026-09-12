@@ -16,7 +16,8 @@ import { loadHumanCommunication } from './human-communication';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
-import { createSpillHooks, TmpSpillStore } from './utils/spill';
+import { TmpSpillStore } from './utils/spill';
+import { createWorkerToolHooks, developerCheckpointGuidance } from './developer-checkpoints';
 import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh } from './token-refresh';
 import { AuthWatchdog } from './lib/authWatchdog';
 import { fetchBrokeredToken, isBrokerEnabled } from './lib/githubTokenBroker';
@@ -998,6 +999,7 @@ Existing approval gates and required AIDLC plan artifacts still apply; the small
 assessment exception does not bypass them or authorize execution.
 Apply phase templates when the task is part of that workflow, not merely because
 the persona has those templates available.
+${developerCheckpointGuidance(AGENT_TYPE)}
 
 ### Step 3: Execute Your Plan
 - Follow your plan step by step
@@ -1039,9 +1041,9 @@ Before editing or creating any code file, read and internalize \`docs/agent-codi
 
 Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
-## Pre-submit checks (MANDATORY before creating a PR)
+## Pre-submit checks (MANDATORY before requesting review)
 
-Before you push your branch and open the PR, run the linters and tests for the module(s) you touched. A PR that lands with red CI wastes the reviewer's time, trains everyone to ignore the signal, and ships bugs the linter would have caught.
+Before requesting review or marking a draft PR ready, run the linters and tests for the module(s) you touched. Incomplete branch checkpoints and draft PRs may be published before these finish, with their check status clearly stated. They are not a review handoff and do not relax merge gates.
 
 ### Module → check commands
 
@@ -1056,7 +1058,7 @@ Before you push your branch and open the PR, run the linters and tests for the m
 ### Rules
 
 - **Run ALL commands for EVERY module you touched.** If your diff spans two modules, run two sets of checks.
-- **If any command fails**, fix the underlying issue before pushing. Do NOT suppress warnings with \`# noqa\` or \`eslint-disable\` unless the rule genuinely doesn't apply — and note why in a comment.
+- **If any command fails**, fix the underlying issue before requesting review. You may push an incomplete checkpoint with the failure disclosed. Do NOT suppress warnings with \`# noqa\` or \`eslint-disable\` unless the rule genuinely doesn't apply — and note why in a comment.
 - **If a check fails on code you didn't touch** (pre-existing debt), note it in the PR description as "pre-existing on main: <file>:<line> <rule>" and move on. Don't clean up unrelated debt in the same PR (surgical changes principle from \`docs/agent-coding-guidelines.md\`).
 - **Auto-fix tools are fine**: \`ruff check --fix\`, \`ruff format\`, \`eslint --fix\`. Treat their output as code you wrote — review the diff before committing.
 
@@ -1451,7 +1453,8 @@ Now, complete the assigned task.`;
             // otherwise be re-sent on every remaining turn and force an early
             // (lossy) compaction. The hook fails open — a storage error leaves
             // the original output in place.
-            hooks: createSpillHooks({
+            hooks: createWorkerToolHooks({
+              agentType: AGENT_TYPE,
               store: buildWorkerSpillStore(),
               log: (msg) => log('INFO', msg),
             }),
