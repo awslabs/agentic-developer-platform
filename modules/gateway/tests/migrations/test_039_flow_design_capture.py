@@ -367,21 +367,21 @@ class TestRevisionChain:
 
     def test_the_chain_still_has_exactly_one_head(self):
         """Parsed statically across every version file, so a rebase collision fails here."""
-        revisions: dict[str, str | None] = {}
+        revisions: dict[str, str | tuple[str, ...] | None] = {}
         for path in MIGRATIONS_DIR.glob("*.py"):
             tree = ast.parse(path.read_text(), filename=str(path))
-            found: dict[str, str | None] = {}
+            found: dict[str, str | tuple[str, ...] | None] = {}
             for node in tree.body:
                 targets = [node.target] if isinstance(node, ast.AnnAssign) else getattr(node, "targets", [])
                 names = {t.id for t in targets if isinstance(t, ast.Name)} & {"revision", "down_revision"}
-                if not names or not isinstance(node.value, ast.Constant) or not isinstance(node.value.value, str | None):
+                if not names or not isinstance(node.value, ast.Constant | ast.Tuple):
                     continue
                 for name in names:
-                    found[name] = node.value.value
+                    found[name] = ast.literal_eval(node.value)
             if "revision" in found:
                 revisions[found["revision"]] = found.get("down_revision")
 
-        parents = {down for down in revisions.values() if down is not None}
+        parents = {parent for down in revisions.values() if down is not None for parent in ((down,) if isinstance(down, str) else down)}
         heads = sorted(revision for revision in revisions if revision not in parents)
         # Assert *one* head, not that 039 is it. Both #4840 (040_team_memberships)
         # and #4843 (041-043, re-chained onto 040 after #4917 merged first) chained

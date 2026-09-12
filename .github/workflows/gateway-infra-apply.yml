@@ -37,7 +37,7 @@ on:
         default: ''
 
 concurrency:
-  group: tf-apply-gateway-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
+  group: gateway-release-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
 
 env:

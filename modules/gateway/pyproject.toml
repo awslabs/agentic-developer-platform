@@ -52,6 +52,16 @@ dev = [
     "pytest-timeout==2.3.1",
     "aiosqlite>=0.20.0",
     "psycopg2-binary>=2.9.9",
+    # Issue #4969: a real PostgreSQL 16 server for tests/migrations/. The V2
+    # pricing schema is built out of NUMERIC(14,10), JSONB, identity columns,
+    # plpgsql triggers, SELECT ... FOR UPDATE and the 42P01/42703 error codes the
+    # feature-detecting readers key on — none of which SQLite has, so a SQLite run
+    # would report green while testing none of the behavior that matters. Ships a
+    # self-contained binary: no Docker, no root, no host port.
+    # Marker: pgserver publishes wheels for <=3.12 only. CI's Test job runs 3.12,
+    # so these tests execute there; on a 3.13 interpreter the fixtures skip
+    # (importorskip) rather than fail.
+    "pgserver>=0.1.4; python_version < '3.13'",
 ]
 # Issue #20: Playwright browser tests for frontend smoke testing
 browser = [
@@ -114,7 +124,13 @@ markers = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "pricing_policy*"]
+
+# Issue #4969: the rate snapshots are data, not code, so setuptools would omit
+# them from an installed/built distribution and `load_snapshot()` would raise
+# FileNotFoundError at runtime while working fine from a source checkout.
+[tool.setuptools.package-data]
+pricing_policy = ["snapshots/*.json"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/cli/conftest.py" = ["N802", "E501"]

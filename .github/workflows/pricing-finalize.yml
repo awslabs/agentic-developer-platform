@@ -1,0 +1,75 @@
+name: Gateway Pricing Finalize
+
+# Resume after the reviewed pricing infra apply when the first release's hard
+# finalization gate found missing infrastructure. Run at the reviewed release ref.
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: 'Full commit SHA of the already deployed and reviewed gateway release.'
+        required: true
+      account_id:
+        description: 'Target AWS account. Empty uses deployment config.'
+        required: false
+        default: ''
+      environment:
+        description: 'Target environment.'
+        required: false
+        default: 'dev'
+      customer_account_id:
+        description: 'Customer-linked AWS account, when using cross-account deployment.'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted customer AWS credential label.'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP user UUID for customer credential resolution.'
+        required: false
+        default: ''
+
+concurrency:
+  group: gateway-release-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  finalize:
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_sha }}
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+      - name: Install kubectl
+        run: |
+          set -euo pipefail
+          if ! command -v kubectl >/dev/null; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+      - name: Verify release pricing and activate its schedule
+        env:
+          PRICING_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PRICING_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "A full release SHA is required" >&2; exit 1; }
+          [ "$(git rev-parse HEAD)" = "$PRICING_RELEASE_SHA" ] || { echo "Checkout does not match the release SHA" >&2; exit 1; }
+          PRICING_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+          PRICING_IMAGE="${PRICING_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_SHA}"
+          python3 modules/gateway/scripts/pricing-rollout.py finalize \
+            --account-id "$PRICING_ACCOUNT" --environment "$ENVIRONMENT" \
+            --expected-image "$PRICING_IMAGE"

@@ -1095,6 +1095,7 @@ class BudgetEnforcementService:
         model_id: str,
         input_tokens: int,
         output_tokens: int,
+        actual_cost_usd: Decimal | None = None,
     ) -> None:
         """Adjust this request's reservation from estimate to settled actual (#4287).
 
@@ -1126,7 +1127,7 @@ class BudgetEnforcementService:
         if not store.enabled:
             return
 
-        actual_cost = self._pricing.calculate_cost(model_id, input_tokens, output_tokens)
+        actual_cost = actual_cost_usd if actual_cost_usd is not None else self._pricing.calculate_cost(model_id, input_tokens, output_tokens)
 
         targets = [
             ReservationTarget(
@@ -2269,6 +2270,7 @@ async def reconcile_budget_reservation(
     model_id: str,
     input_tokens: int,
     output_tokens: int,
+    actual_cost_usd: Decimal | None = None,
 ) -> None:
     """Metering-side entry point for reservation reconciliation (Issue #4287).
 
@@ -2292,6 +2294,7 @@ async def reconcile_budget_reservation(
             model_id=model_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            **({"actual_cost_usd": actual_cost_usd} if actual_cost_usd is not None else {}),
         )
     except Exception as exc:
         logger.warning(f"Budget reservation reconcile failed: {exc}")

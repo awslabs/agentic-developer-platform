@@ -431,25 +431,25 @@ class TestRevisionChain:
         """
         import ast
 
-        revisions: dict[str, str | None] = {}
+        revisions: dict[str, str | tuple[str, ...] | None] = {}
         for path in MIGRATIONS_DIR.glob("*.py"):
             if path.name == "__init__.py":
                 continue
             tree = ast.parse(path.read_text(), filename=str(path))
-            found: dict[str, str | None] = {}
+            found: dict[str, str | tuple[str, ...] | None] = {}
             for node in tree.body:
                 if not isinstance(node, ast.AnnAssign | ast.Assign):
                     continue
                 targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
                 names = {t.id for t in targets if isinstance(t, ast.Name)} & {"revision", "down_revision"}
-                if not names or not isinstance(node.value, ast.Constant):
+                if not names or not isinstance(node.value, ast.Constant | ast.Tuple):
                     continue
                 for name in names:
-                    found[name] = node.value.value
+                    found[name] = ast.literal_eval(node.value)
             if "revision" in found:
                 revisions[found["revision"]] = found.get("down_revision")
 
-        parents = {down for down in revisions.values() if down is not None}
+        parents = {parent for down in revisions.values() if down is not None for parent in ((down,) if isinstance(down, str) else down)}
         heads = sorted(rev for rev in revisions if rev not in parents)
 
         assert len(heads) == 1, f"expected exactly one head, got {heads}"

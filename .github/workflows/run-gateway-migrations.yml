@@ -3,6 +3,16 @@ name: Run Gateway Alembic Migrations (one-shot)
 on:
   workflow_dispatch:
     inputs:
+      account_id:
+        description: "Target AWS account; empty uses deployment config."
+        required: false
+        type: string
+        default: ''
+      expected_image:
+        description: "Expected gateway release image; empty uses current deployment image"
+        required: false
+        type: string
+        default: ''
       environment:
         description: "Target environment (default: dev)"
         required: false
@@ -25,6 +35,16 @@ on:
         default: ''
   workflow_call:
     inputs:
+      account_id:
+        description: "Target AWS account; empty uses deployment config."
+        required: false
+        type: string
+        default: ''
+      expected_image:
+        description: "Expected gateway release image; empty uses current deployment image"
+        required: false
+        type: string
+        default: ''
       environment:
         description: "Target environment (default: dev)"
         required: false
@@ -58,6 +78,7 @@ jobs:
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
+          account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
@@ -72,18 +93,15 @@ jobs:
           EKS_CLUSTER="adp-${ENVIRONMENT:-dev}-eks-cluster"
           aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" >/dev/null
 
-      - name: Run alembic
+      - name: Migrate and verify activated pricing on the release image
+        env:
+          PRICING_EXPECTED_IMAGE: ${{ inputs.expected_image }}
         run: |
           set -euo pipefail
-          NS="adp-gateway"
-          POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
-          echo "Using $NS/$POD"
-          # Show current revision
-          echo "=== Before ==="
-          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current || true
-          echo
-          echo "=== Upgrade ==="
-          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic upgrade head
-          echo
-          echo "=== After ==="
-          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current
+          PRICING_IMAGE_ARGS=()
+          if [ -n "$PRICING_EXPECTED_IMAGE" ]; then
+            PRICING_IMAGE_ARGS=(--expected-image "$PRICING_EXPECTED_IMAGE")
+          fi
+          python3 modules/gateway/scripts/pricing-rollout.py migrate \
+            --account-id "${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}" \
+            --environment "$ENVIRONMENT" "${PRICING_IMAGE_ARGS[@]}"

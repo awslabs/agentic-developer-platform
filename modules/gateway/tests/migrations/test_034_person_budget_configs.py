@@ -625,7 +625,7 @@ class TestRevisionChain:
             module = _load_migration(path.name)
             revisions.add(module.revision)
             if module.down_revision:
-                parents.add(module.down_revision)
+                parents.update((module.down_revision,) if isinstance(module.down_revision, str) else module.down_revision)
 
         heads = revisions - parents
         assert len(heads) == 1, f"expected exactly one head, found: {sorted(heads)}"
@@ -640,10 +640,13 @@ class TestRevisionChain:
             if path.name.startswith("__"):
                 continue
             module = _load_migration(path.name)
-            down_of[module.revision] = module.down_revision
+            down_of[module.revision] = (module.down_revision,) if isinstance(module.down_revision, str) else (module.down_revision or ())
         chain = set()
-        cursor = next(iter(heads))
-        while cursor is not None and cursor not in chain:
+        pending = list(heads)
+        while pending:
+            cursor = pending.pop()
+            if cursor in chain:
+                continue
             chain.add(cursor)
-            cursor = down_of.get(cursor)
+            pending.extend(down_of.get(cursor, ()))
         assert MIG_034.revision in chain, "034 has been orphaned off the head's down_revision chain"

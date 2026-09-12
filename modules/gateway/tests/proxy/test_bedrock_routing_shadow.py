@@ -40,6 +40,7 @@ import pytest
 
 from src.proxy.bedrock_routing import BedrockTarget, resolve_shadow_target
 from src.shared.schemas.auth import TokenContext
+from tests.proxy.pricing_fixtures import price_fixture_usage
 
 PLATFORM_ACCOUNT = "999988887777"
 MAPPED_ACCOUNT = "111111111111"
@@ -607,13 +608,13 @@ class TestBothBedrockPathsCapture:
         from src.proxy.mantle_service import MantlePassthroughService
 
         _CapturingUsageService.calls = []
-        service = MantlePassthroughService.__new__(MantlePassthroughService)
+        service = MantlePassthroughService(MagicMock(), "https://bedrock-mantle.us-east-1.api.aws")
 
         with (
             patch("src.proxy.mantle_service.get_session_factory", _session_factory),
             patch("src.proxy.mantle_service.UsageService", _CapturingUsageService),
             patch("src.proxy.mantle_service.reconcile_budget_reservation", AsyncMock()),
-            patch("src.proxy.mantle_service.pricing_service", SimpleNamespace(calculate_cost=lambda *a: 0.001)),
+            patch("src.proxy.mantle_service.price_completed_usage", AsyncMock(side_effect=price_fixture_usage)),
             patch(
                 "src.proxy.mantle_service.resolve_shadow_target",
                 AsyncMock(return_value=BedrockTarget(account_id=MAPPED_ACCOUNT, rung="org")),
@@ -637,13 +638,13 @@ class TestBothBedrockPathsCapture:
         from src.proxy.mantle_service import MantlePassthroughService
 
         _CapturingUsageService.calls = []
-        service = MantlePassthroughService.__new__(MantlePassthroughService)
+        service = MantlePassthroughService(MagicMock(), "https://bedrock-mantle.us-east-1.api.aws")
 
         with (
             patch("src.proxy.mantle_service.get_session_factory", _session_factory),
             patch("src.proxy.mantle_service.UsageService", _CapturingUsageService),
             patch("src.proxy.mantle_service.reconcile_budget_reservation", AsyncMock()),
-            patch("src.proxy.mantle_service.pricing_service", SimpleNamespace(calculate_cost=lambda *a: 0.001)),
+            patch("src.proxy.mantle_service.price_completed_usage", AsyncMock(side_effect=price_fixture_usage)),
             patch("src.proxy.mantle_service.resolve_shadow_target", AsyncMock(return_value=None)),
         ):
             await service._log_usage(

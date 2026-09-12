@@ -993,9 +993,10 @@ module "budget_lambda" {
   # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
   enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
 
-  # Issue #4592: unknown-model-pricing alarm notifications. Reuses the existing
-  # budget alarm topics — a model priced at the default rate is a budget-accuracy
-  # problem, so it should reach whoever already owns budget alarms.
+  pricing_refresh_timeout = var.pricing_refresh_timeout
+
+  # Existing topics are reused; empty input provisions the pricing SNS -> SQS
+  # operational inbox inside this module (no manual subscription confirmation).
   alarm_actions = var.budget_alarm_sns_topic_arns
 
   # Ensure the psycopg2 layer zip is built+uploaded before this module's

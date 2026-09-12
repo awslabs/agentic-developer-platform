@@ -1379,15 +1379,15 @@ class TestRevisionChain:
         """
         revisions: set[str] = set()
         parents: set[str] = set()
-        down_of: dict[str, str | None] = {}
+        down_of: dict[str, tuple[str, ...]] = {}
         for path in MIGRATIONS_DIR.glob("*.py"):
             if path.name.startswith("__"):
                 continue
             module = _load_migration(path.name)
             revisions.add(module.revision)
-            down_of[module.revision] = module.down_revision
+            down_of[module.revision] = (module.down_revision,) if isinstance(module.down_revision, str) else (module.down_revision or ())
             if module.down_revision:
-                parents.add(module.down_revision)
+                parents.update((module.down_revision,) if isinstance(module.down_revision, str) else module.down_revision)
 
         heads = revisions - parents
         assert len(heads) == 1, f"expected exactly one head, found: {sorted(heads)}"
@@ -1396,10 +1396,13 @@ class TestRevisionChain:
         # path from the head back to the root". Deliberately not "in parents or is
         # the head", which is a tautology given a single head.
         chain: set[str] = set()
-        cursor: str | None = next(iter(heads))
-        while cursor is not None and cursor not in chain:
+        pending = list(heads)
+        while pending:
+            cursor = pending.pop()
+            if cursor in chain:
+                continue
             chain.add(cursor)
-            cursor = down_of.get(cursor)
+            pending.extend(down_of.get(cursor, ()))
         assert MIG_037.revision in chain, "037 has been orphaned off the head's down_revision chain"
 
     def test_models_are_registered_for_autogenerate_and_create_all(self):

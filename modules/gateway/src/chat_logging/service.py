@@ -123,6 +123,7 @@ class ChatLoggingService:
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
         root_human_id: str = "",
+        pricing_decision: dict[str, Any] | None = None,
     ) -> None:
         """Fire-and-forget log a chat interaction.
 
@@ -166,6 +167,7 @@ class ChatLoggingService:
                 response_body=response_body,
                 headers=headers,
                 root_human_id=root_human_id,
+                pricing_decision=pricing_decision,
             ),
             name=f"chat_log_{request_id}",
         )
@@ -185,6 +187,7 @@ class ChatLoggingService:
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
         root_human_id: str = "",
+        pricing_decision: dict[str, Any] | None = None,
     ) -> None:
         """Implementation of chat logging.
 
@@ -233,6 +236,7 @@ class ChatLoggingService:
                 user_id=user_id,
                 team_id=team_id,
                 root_human_id=root_human_id,
+                pricing_decision=pricing_decision,
                 account_type=account_type,
                 model=model,
                 api_format=api_format,
@@ -295,6 +299,7 @@ class ChatLoggingService:
         pii_types_found: list[str],
         patterns_matched: list[str],
         headers_scrubbed: list[str],
+        pricing_decision: dict[str, Any] | None = None,
     ) -> ChatLog:
         """Build the ChatLog record from components.
 
@@ -358,6 +363,7 @@ class ChatLoggingService:
             request=request,
             response=response,
             scrubbing=scrubbing,
+            pricing_decision=pricing_decision,
         )
 
     @property
@@ -468,6 +474,7 @@ def create_streaming_logging_wrapper(
     headers: dict[str, str] | None,
     start_time: float,
     root_human_id: str = "",
+    pricing_decision: dict[str, Any] | None = None,
 ) -> Any:
     """Create a streaming response wrapper that buffers chunks for logging.
 
@@ -547,6 +554,7 @@ def create_streaming_logging_wrapper(
                 response_body=reconstructed_response,
                 headers=headers,
                 root_human_id=root_human_id,
+                pricing_decision=pricing_decision,
             )
 
         except Exception as e:

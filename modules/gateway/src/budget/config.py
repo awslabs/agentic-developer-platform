@@ -179,52 +179,21 @@ class BudgetConfig(BaseSettings):
     budget_warning_threshold_percent: float = 80.0
     budget_critical_threshold_percent: float = 95.0
 
-    # Model pricing (cost per 1000 tokens in USD)
-    model_pricing: dict[str, dict[str, Decimal]] = {
-        # Claude models
-        "claude-3-5-sonnet-20241022": {
-            "input": Decimal("0.003"),
-            "output": Decimal("0.015"),
-        },
-        "claude-3-5-sonnet-20240620": {
-            "input": Decimal("0.003"),
-            "output": Decimal("0.015"),
-        },
-        "claude-3-5-haiku-20241022": {
-            "input": Decimal("0.0008"),
-            "output": Decimal("0.004"),
-        },
-        "claude-3-opus-20240229": {
-            "input": Decimal("0.015"),
-            "output": Decimal("0.075"),
-        },
-        "claude-3-sonnet-20240229": {
-            "input": Decimal("0.003"),
-            "output": Decimal("0.015"),
-        },
-        "claude-3-haiku-20240307": {
-            "input": Decimal("0.00025"),
-            "output": Decimal("0.00125"),
-        },
-        # Legacy Claude models
-        "claude-2.1": {
-            "input": Decimal("0.008"),
-            "output": Decimal("0.024"),
-        },
-        "claude-2.0": {
-            "input": Decimal("0.008"),
-            "output": Decimal("0.024"),
-        },
-        "claude-instant-1.2": {
-            "input": Decimal("0.0008"),
-            "output": Decimal("0.0024"),
-        },
-        # Default pricing for unknown models
-        "default": {
-            "input": Decimal("0.003"),
-            "output": Decimal("0.015"),
-        },
-    }
+    # Model pricing: REMOVED in issue #4969.
+    #
+    # This was the third independently hand-maintained rate table in the module
+    # (with src/budget/pricing.py and lambda/shared/pricing_fallback.py), and the
+    # most stale of the three: it was keyed by short names like
+    # "claude-3-5-sonnet-20241022" rather than Bedrock ids, so every modern
+    # caller missed it and silently took its "default" row — a $3/$15 estimate
+    # for traffic that might be Opus at $5/$25.
+    #
+    # It also sat on a pydantic BaseSettings with env_prefix BG_BUDGET_, which
+    # made the whole nested rate table settable from one environment variable.
+    # A rate is published by AWS, not configured per deployment.
+    #
+    # Its only reader was src/budget/utils.py::calculate_model_cost, which now
+    # calls the shared pricing_policy resolver directly.
 
     # Database settings
     budget_usage_batch_size: int = 100

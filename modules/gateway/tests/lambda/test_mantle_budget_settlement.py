@@ -101,7 +101,13 @@ async def test_responses_settle_person_and_tenant_budgets(metering, monkeypatch,
     bridge = MagicMock()
     monkeypatch.setattr(tracker, "upsert_budget_usage", settle)
     monkeypatch.setattr(tracker, "bridge_cost_to_usage_logs", bridge)
-    tracker.process_chat_log(MagicMock(), event, tracker.MODEL_PRICING, chat_log_s3_key="metered.json")
+    # The bundled bootstrap generation, which is what a tracker on a pre-migration
+    # database prices from. #4969: this used to be the flat `MODEL_PRICING` table,
+    # which had no geography, tier or context dimension for gpt-5.5 to be priced on.
+    from pricing_policy.storage import V2RateCache
+
+    rate_source = V2RateCache().state(monotonic=0.0, now_iso="2026-09-12T00:00:00+00:00")
+    tracker.process_chat_log(MagicMock(), event, rate_source, chat_log_s3_key="metered.json")
 
     expected_entities = {("org", "tenant"), ("team", "team"), ("user", "worker" if hosted else "cognito-sub")}
     if hosted:
@@ -112,7 +118,7 @@ async def test_responses_settle_person_and_tenant_budgets(metering, monkeypatch,
         assert {(args[2], args[3]) for args in calls} == expected_entities
         assert all(args[1] == "tenant" and args[6] == Decimal("0.0385") and args[7] == 2000 for args in calls)
     usage_service.log_request.assert_awaited_once()
-    assert usage_service.log_request.await_args.kwargs["cost_usd"] == 0.0385
+    assert usage_service.log_request.await_args.kwargs["cost_usd"] == Decimal("0.038500")
     bridge.assert_called_once()
 
 

@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - 'modules/gateway/src/**'
+      - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/build-budget-lambda-archives.py'
+      - '.github/workflows/pricing-finalize.yml'
+      - '.github/workflows/run-gateway-migrations.yml'
       - 'modules/gateway/tests/**'
       # Issue #4145: tests/cli/ exercises the shell helpers in cli/, but a CLI-only
       # edit used to trigger no workflow at all — so bg-cognito-auth.sh changes
@@ -18,6 +22,14 @@ on:
       # asserts its behavior. These files are the GitHub sign-in path — an
       # unobserved change here is a login outage, not a failed test.
       - 'modules/gateway/lambda/**'
+      # Issue #4969: the shared pricing policy and its immutable rate snapshots.
+      # tests/pricing_policy/ pins the hand-calculated cost oracles and the rate
+      # inventory itself, so an edit here must re-run them. Same gap as #4145/#4848:
+      # without this path a pricing-only PR triggers no workflow and reports green,
+      # and a wrong rate is a billing defect that reaches customers' invoices.
+      - 'modules/gateway/pricing_policy/**'
+      - 'modules/gateway/alembic/versions/**'
+      - 'modules/gateway/infra/modules/budget-lambda/**'
       - 'modules/gateway/pyproject.toml'
       - 'modules/gateway/Dockerfile'
       - 'modules/gateway/frontend/src/**'
@@ -44,14 +56,30 @@ on:
       - '.github/scripts/validate_loop_proposal.py'
       - 'aidlc/spaces/issue-4120/construction/loop-proposal/**'
       - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/gateway-deploy.yml'
       - '.github/workflows/gateway-smoke.yml'
+      - 'codebuild/bs-gateway-build.yml'
+      - 'codebuild/bs-gateway-smoke.yml'
+      - 'platform/scripts/zip-source.sh'
     branches:
       - main
   push:
     paths:
       - 'modules/gateway/src/**'
+      - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/build-budget-lambda-archives.py'
+      - '.github/workflows/pricing-finalize.yml'
+      - '.github/workflows/run-gateway-migrations.yml'
+      - 'modules/gateway/pricing_policy/**'
+      - 'modules/gateway/alembic/versions/**'
+      - 'modules/gateway/infra/modules/budget-lambda/**'
       - 'modules/gateway/pyproject.toml'
       - 'modules/gateway/Dockerfile'
+      - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/gateway-deploy.yml'
+      - 'codebuild/bs-gateway-build.yml'
+      - 'codebuild/bs-gateway-smoke.yml'
+      - 'platform/scripts/zip-source.sh'
     branches:
       - main
 
@@ -81,8 +109,8 @@ jobs:
       - name: Run Ruff
         working-directory: modules/gateway
         run: |
-          ruff check src/ tests/
-          ruff format --check src/ tests/
+          ruff check src/ tests/ pricing_policy/
+          ruff format --check src/ tests/ pricing_policy/
 
       # Issue #4199: the advisory half of the loop-proposal contract. Runs from
       # the repo root (the script adds modules/gateway to sys.path itself) over
@@ -143,10 +171,16 @@ jobs:
       - name: Run Tests
         working-directory: modules/gateway
         run: |
-          pytest tests/ -v --tb=short \
+          # Exercise the real migration subprocess and merge graph first, so a
+          # runner/dependency problem fails before the longer application suite.
+          pytest tests/migrations/ -v --tb=short \
             -m "not live_only" \
             --timeout=60 \
-            --cov=src --cov-report=xml
+            --cov=src --cov-report=
+          pytest tests/ --ignore=tests/migrations -v --tb=short \
+            -m "not live_only" \
+            --timeout=60 \
+            --cov=src --cov-append --cov-report=xml
 
       - name: Upload Coverage
         # Coverage upload is informational — it must never fail the Test gate.

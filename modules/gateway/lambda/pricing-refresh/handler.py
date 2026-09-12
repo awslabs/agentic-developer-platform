@@ -1,303 +1,205 @@
-"""
-Pricing Refresh Lambda Handler.
+"""Daily complete-generation AWS Bedrock rate publication (issue #4969).
 
-Runs daily via EventBridge schedule. Fetches real-time model pricing from
-the AWS Pricing API and writes to the model_pricing table in RDS.
-
-Issue #234: Budget Usage Tracking Lambda
-
-Environment Variables:
-    DB_HOST: RDS hostname
-    DB_PORT: RDS port (default: 5432)
-    DB_NAME: Database name (default: bedrockgateway)
-    DB_USERNAME: Database username (default: bgadmin)
-    AWS_REGION: AWS region (default: us-east-1)
+Operational failures raise so Lambda asynchronous retries/destination work. A
+partial refresh commits a complete fresh+retained generation, then raises; it
+never overwrites prior rates with fallbacks or renews retained verification ages.
 """
 
-import json
+from __future__ import annotations
+
 import logging
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
-from decimal import Decimal
-from typing import Any
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 import boto3
+from botocore.config import Config
 
-# Add shared module to path for local Lambda deployment
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
-
+sys.path.insert(0, os.path.dirname(__file__))
 from db import get_db_connection
-from pricing_fallback import MODEL_PRICING
+from publication import PointerConflictError, RefreshDeferredError, publish, read_active
 
-# Configure logging
-logger = logging.getLogger()
+from pricing_policy.aws_sources import CARD_BASE, CARD_SLUGS, CATALOG_BASE, SourceValidationError, parse_catalog, parse_model_card
+from pricing_policy.policy import load_snapshot
+
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+FETCH_SECONDS = 120
+# libpq honors this for the existing shared connection helper as well.
+os.environ.setdefault("PGCONNECT_TIMEOUT", "5")
 
-# AWS Pricing API is only available in us-east-1 and ap-south-1
-PRICING_API_REGION = "us-east-1"
+
+class PartialRefreshError(RuntimeError):
+    """A complete mixed generation committed, but some sources need retry."""
 
 
-def extract_model_pricing_from_product(product: dict[str, Any]) -> dict[str, Any] | None:
-    """
-    Extract model pricing from AWS Pricing API product data.
-
-    The AWS Pricing API returns complex nested JSON with pricing dimensions.
-    This function parses the structure to extract per-token pricing.
-
-    Args:
-        product: Product data from AWS Pricing API
-
-    Returns:
-        Dict with model_id, input_price, output_price, or None if not parseable
-    """
-    try:
-        attributes = product.get("product", {}).get("attributes", {})
-        model_id = attributes.get("modelId")
-
-        if not model_id:
-            return None
-
-        # Extract pricing from terms
-        terms = product.get("terms", {})
-        on_demand = terms.get("OnDemand", {})
-
-        if not on_demand:
-            return None
-
-        input_price = None
-        output_price = None
-
-        # Parse pricing dimensions
-        for term_id, term_data in on_demand.items():
-            price_dimensions = term_data.get("priceDimensions", {})
-
-            for dim_id, dim_data in price_dimensions.items():
-                description = dim_data.get("description", "").lower()
-                unit = dim_data.get("unit", "").lower()
-                price_per_unit = dim_data.get("pricePerUnit", {})
-                usd_price = price_per_unit.get("USD")
-
-                if usd_price is None:
-                    continue
-
-                price = Decimal(usd_price)
-
-                # Normalize price to per-1000-tokens
-                # AWS Pricing API may report per-token or per-1000-tokens
-                if "1000" in unit or "1k" in unit:
-                    pass  # Already per 1000
-                elif "token" in unit:
-                    price = price * Decimal("1000")
-
-                # Determine if input or output pricing
-                if "input" in description:
-                    input_price = price
-                elif "output" in description:
-                    output_price = price
-
-        if input_price is not None and output_price is not None:
-            return {
-                "model_id": model_id,
-                "input_price": input_price,
-                "output_price": output_price,
+def emit_metrics(values, *, rows=()):
+    now = datetime.now(UTC)
+    dimensions = [{"Name": "FunctionName", "Value": os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "pricing-refresh")}]
+    data = [{"MetricName": name, "Value": value, "Unit": "None", "Dimensions": dimensions, "Timestamp": now} for name, value in values.items()]
+    source_ages = {}
+    for row in rows:
+        age = max(0, (now - datetime.fromisoformat(row.verified_at.replace("Z", "+00:00"))).total_seconds() / 3600)
+        source = "bulk_catalog" if ".gpt-oss-" in row.model_id else "model_card"
+        key = (row.model_id, source)
+        source_ages[key] = max(age, source_ages.get(key, 0))
+    for (model, source), age in source_ages.items():
+        data.append(
+            {
+                "MetricName": "PricingSourceVerifiedAgeHours",
+                "Value": age,
+                "Unit": "None",
+                "Timestamp": now,
+                "Dimensions": dimensions + [{"Name": "ModelId", "Value": model}, {"Name": "Source", "Value": source}],
             }
-
-        return None
-
-    except Exception as e:
-        logger.warning(f"Error parsing product: {e}")
-        return None
-
-
-def fetch_bedrock_pricing() -> list[dict[str, Any]]:
-    """
-    Fetch Bedrock model pricing from AWS Pricing API.
-
-    Returns:
-        List of dicts with model_id, input_price, output_price
-    """
-    pricing_client = boto3.client("pricing", region_name=PRICING_API_REGION)
-    models = []
-
-    try:
-        # Paginate through all Bedrock products
-        paginator = pricing_client.get_paginator("get_products")
-
-        for page in paginator.paginate(
-            ServiceCode="AmazonBedrock",
-            FormatVersion="aws_v1",
-        ):
-            for price_item_str in page.get("PriceList", []):
-                try:
-                    product = json.loads(price_item_str)
-                    model_pricing = extract_model_pricing_from_product(product)
-
-                    if model_pricing:
-                        models.append(model_pricing)
-                        logger.debug(f"Found pricing for {model_pricing['model_id']}")
-
-                except json.JSONDecodeError:
-                    continue
-
-        logger.info(f"Fetched pricing for {len(models)} models from AWS Pricing API")
-
-    except Exception as e:
-        logger.error(f"Error fetching from AWS Pricing API: {e}", exc_info=True)
-        raise
-
-    return models
-
-
-def upsert_model_pricing(
-    conn,
-    model_id: str,
-    input_price: Decimal,
-    output_price: Decimal,
-    source: str = "pricing_api",
-):
-    """
-    Upsert model pricing into the database.
-
-    Args:
-        conn: Database connection
-        model_id: Model ID
-        input_price: Input price per 1000 tokens
-        output_price: Output price per 1000 tokens
-        source: Pricing source ('pricing_api' or 'fallback')
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO model_pricing (
-                model_id, input_price_per_1k_tokens, output_price_per_1k_tokens,
-                source, updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (model_id)
-            DO UPDATE SET
-                input_price_per_1k_tokens = EXCLUDED.input_price_per_1k_tokens,
-                output_price_per_1k_tokens = EXCLUDED.output_price_per_1k_tokens,
-                source = EXCLUDED.source,
-                updated_at = EXCLUDED.updated_at
-            """,
-            (
-                model_id,
-                float(input_price),
-                float(output_price),
-                source,
-                datetime.now(UTC),
-            ),
         )
+    if source_ages:
+        data.append(
+            {
+                "MetricName": "PricingOldestVerifiedAgeHours",
+                "Value": max(source_ages.values()),
+                "Unit": "None",
+                "Timestamp": now,
+                "Dimensions": dimensions,
+            }
+        )
+    # Failing to publish the heartbeat is itself operational failure, never swallowed.
+    boto3.client("cloudwatch", config=Config(connect_timeout=3, read_timeout=3, retries={"total_max_attempts": 2})).put_metric_data(
+        Namespace="ADP/Gateway", MetricData=data
+    )
 
 
-def load_fallback_pricing(conn) -> int:
-    """
-    Load hardcoded fallback pricing into the database.
-
-    Called when AWS Pricing API fails.
-
-    Args:
-        conn: Database connection
-
-    Returns:
-        Number of models loaded
-    """
-    count = 0
-    for model_id, pricing in MODEL_PRICING.items():
-        if model_id == "default":
-            continue
-
+def fetch_source(url, limit, deadline):
+    """Fixed AWS HTTPS URLs only; bounded size, per-read timeout and total budget."""
+    error = None
+    for _ in range(2):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("pricing source deadline exhausted")
         try:
-            upsert_model_pricing(
-                conn,
-                model_id,
-                pricing["input"],
-                pricing["output"],
-                source="fallback",
-            )
-            count += 1
-        except Exception as e:
-            logger.warning(f"Failed to insert fallback pricing for {model_id}: {e}")
+            request = Request(url, headers={"User-Agent": "ADP-Bedrock-Pricing/2", "Accept": "text/markdown, application/json"})
+            with urlopen(request, timeout=min(10, remaining)) as response:  # noqa: S310 -- fixed AWS URLs
+                if not response.url.startswith("https://"):
+                    raise SourceValidationError("AWS source redirected to non-HTTPS")
+                parts, length = [], 0
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("pricing source deadline exhausted")
+                    chunk = response.read(min(65536, limit + 1 - length))
+                    if not chunk:
+                        return b"".join(parts)
+                    parts.append(chunk)
+                    length += len(chunk)
+                    if length > limit:
+                        raise SourceValidationError(f"source exceeds {limit} byte limit: {url}")
+        except (URLError, OSError, TimeoutError) as exc:
+            error = exc
+    raise RuntimeError(f"AWS source transport failure: {url}") from error
 
-    return count
+
+def fetch_rates(templates, deadline):
+    jobs = [("card", model, CARD_BASE + slug + ".md", 1024 * 1024) for model, slug in CARD_SLUGS.items()]
+    regions = sorted({row.region for row in templates if ".gpt-oss-" in row.model_id})
+    jobs.extend(("catalog", region, CATALOG_BASE + "/" + region + "/index.json", 10 * 1024 * 1024) for region in regions)
+    fresh, failures = [], []
+    pool = ThreadPoolExecutor(max_workers=4)
+    futures = {pool.submit(fetch_source, url, limit, deadline): (kind, identity, url) for kind, identity, url, limit in jobs}
+    try:
+        for future in as_completed(futures, timeout=max(0, deadline - time.monotonic())):
+            kind, identity, url = futures[future]
+            try:
+                content = future.result()
+            except SourceValidationError:
+                raise
+            except Exception as exc:
+                logger.warning("AWS pricing transport failure for %s: %s", url, exc)
+                failures.append(url)
+                continue
+            verified_at = datetime.now(UTC).isoformat()
+            try:
+                rows = (
+                    parse_model_card(content, identity, templates, source_url=url, verified_at=verified_at)
+                    if kind == "card"
+                    else parse_catalog(content, identity, source_url=url, verified_at=verified_at)
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                raise SourceValidationError(f"invalid AWS publication {url}: {exc}") from exc
+            fresh.extend(rows)
+            if time.monotonic() >= deadline:
+                break
+        failures.extend(url for future, (_, _, url) in futures.items() if not future.done())
+    except TimeoutError:
+        failures.extend(url for future, (_, _, url) in futures.items() if not future.done())
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return tuple(fresh), tuple(sorted(set(failures)))
 
 
-def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    """
-    Lambda handler for EventBridge scheduled events.
-
-    Fetches model pricing from AWS Pricing API and updates the database.
-    Falls back to hardcoded pricing if the API fails.
-
-    Args:
-        event: EventBridge event
-        context: Lambda context
-
-    Returns:
-        Response dict with status
-    """
-    logger.info("Pricing refresh Lambda invoked")
-
-    api_models_count = 0
-    fallback_models_count = 0
-    source_used = "pricing_api"
-    error_message = None
-
+def handler(event, context):
+    # Neither manual invocations nor scheduled payloads can shrink trusted coverage.
+    forbidden = {"required_variants", "manifest", "retirements", "retirement_list", "bundled_required", "sources", "source_urls", "rates"}
+    if not isinstance(event, dict) or forbidden.intersection(event):
+        raise ValueError("invocation payload cannot override trusted pricing coverage or sources")
+    emit_metrics({"PricingRefreshAttempt": 1})
     try:
         with get_db_connection() as conn:
-            # Try to fetch from AWS Pricing API first
+            state = read_active(conn)
+        snapshot = load_snapshot()
+        # Existing keys are retained even if no longer in the bundled manifest.
+        templates = {row.variant_key: row for row in snapshot.rates}
+        templates.update({row.variant_key: row for row in state.rows})
+        deadline = time.monotonic() + FETCH_SECONDS
+        if context is not None and hasattr(context, "get_remaining_time_in_millis"):
+            deadline = min(deadline, time.monotonic() + context.get_remaining_time_in_millis() / 1000 - 50)
+        fresh, failures = fetch_rates(tuple(templates.values()), deadline)
+        for attempt in range(3):
             try:
-                models = fetch_bedrock_pricing()
-
-                if models:
-                    for model in models:
-                        upsert_model_pricing(
-                            conn,
-                            model["model_id"],
-                            model["input_price"],
-                            model["output_price"],
-                            source="pricing_api",
-                        )
-                        api_models_count += 1
-
-                    logger.info(f"Updated {api_models_count} models from AWS Pricing API")
-                else:
-                    # No models found - fall back to hardcoded pricing
-                    logger.warning("No models found from AWS Pricing API, using fallback")
-                    fallback_models_count = load_fallback_pricing(conn)
-                    source_used = "fallback"
-
-            except Exception as e:
-                # AWS Pricing API failed - use fallback
-                logger.error(f"AWS Pricing API failed: {e}, using fallback")
-                error_message = str(e)
-                fallback_models_count = load_fallback_pricing(conn)
-                source_used = "fallback"
-
-    except Exception as e:
-        logger.error(f"Database connection error: {e}", exc_info=True)
-        return {
-            "statusCode": 500,
-            "body": json.dumps(
-                {
-                    "error": "database_connection_failed",
-                    "message": str(e),
-                }
-            ),
+                with get_db_connection() as conn:
+                    generation, revision, candidate = publish(conn, state.revision, fresh, snapshot.required_variants)
+                break
+            except PointerConflictError:
+                if attempt == 2:
+                    raise
+                with get_db_connection() as conn:
+                    state = read_active(conn)
+        metrics = {
+            "PricingRequiredVariantsMissing": 0,
+            "PricingVariantsRetained": len(candidate.retained_keys),
+            "PricingVariantsFresh": len(candidate.fresh_keys),
         }
-
-    result = {
-        "statusCode": 200,
-        "body": json.dumps(
-            {
-                "source": source_used,
-                "api_models_updated": api_models_count,
-                "fallback_models_loaded": fallback_models_count,
-                "error": error_message,
-            }
-        ),
-    }
-
-    logger.info(f"Completed: {result['body']}")
-    return result
+        partial = bool(candidate.retained_keys or failures)
+        metrics["PricingRefreshPartial" if partial else "PricingRefreshSuccess"] = 1
+        emit_metrics(metrics, rows=candidate.rows)
+        logger.info(
+            "Published pricing generation=%s revision=%s variants=%s retained=%s failed_sources=%s",
+            generation,
+            revision,
+            len(candidate.rows),
+            len(candidate.retained_keys),
+            failures,
+        )
+        if partial:
+            raise PartialRefreshError(
+                f"generation {generation} committed with {len(candidate.retained_keys)} retained variants; failed sources={failures}"
+            )
+        return {
+            "status": "published",
+            "generation_id": generation,
+            "pointer_revision": revision,
+            "variants": len(candidate.rows),
+            "content_sha256": candidate.content_sha256,
+        }
+    except RefreshDeferredError as exc:
+        emit_metrics({"PricingRefreshDeferred": 1})
+        return {"status": "deferred", "reason": str(exc)}
+    except PartialRefreshError:
+        raise
+    except Exception:
+        logger.exception("Pricing refresh rejected; last committed generation retained")
+        emit_metrics({"PricingRefreshRejected": 1})
+        raise

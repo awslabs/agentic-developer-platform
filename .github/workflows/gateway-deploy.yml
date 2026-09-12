@@ -11,9 +11,19 @@ on:
       - 'modules/gateway/lambda/budget-usage-tracker/**'
       - 'modules/gateway/lambda/pricing-refresh/**'
       - 'modules/gateway/lambda/shared/pricing_fallback.py'
-      - 'modules/gateway/lambda/shared/db.py'
+      - 'modules/gateway/lambda/shared/*.py'
+      - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - 'modules/gateway/lambda/shared/root_principal.py'
+      # Issue #4969: shared pricing policy, vendored into both budget Lambda zips
+      # AND baked into the gateway image. A change here must redeploy all three or
+      # the estimator and the settlement path run different rates.
+      - 'modules/gateway/pricing_policy/**'
       - '.github/workflows/gateway-deploy.yml'
+      - '.github/workflows/run-gateway-migrations.yml'
+      - '.github/workflows/pricing-finalize.yml'
+      - 'codebuild/bs-gateway-build.yml'
+      - 'modules/gateway/pyproject.toml'
     branches:
       - main
   workflow_dispatch:
@@ -38,6 +48,12 @@ on:
         description: 'Deployment environment (dev/staging/prod).'
         required: false
         default: 'dev'
+
+concurrency:
+  # Serialize with infra and standalone finalization. Account aliases (empty
+  # platform input vs an explicit account ID) must not produce different locks.
+  group: gateway-release-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
@@ -95,7 +111,15 @@ jobs:
             # even after the fix had merged. Force a backend rebuild.
             BACKEND=true
           fi
-          if echo "$CHANGED" | grep -qE '^modules/gateway/lambda/(budget-usage-tracker/|pricing-refresh/|shared/(pricing_fallback|db|root_principal)\.py$)'; then
+          if echo "$CHANGED" | grep -qE '^modules/gateway/lambda/(budget-usage-tracker/|pricing-refresh/|shared/.*\.py$)'; then
+            BUDGET_LAMBDAS=true
+            BACKEND=true
+          fi
+          # #4969: pricing_policy ships in three artifacts — both Lambda zips and
+          # the gateway image. Updating only some of them leaves the pre-request
+          # estimator and the settlement authority on different rates, which is the
+          # exact class of drift this package was introduced to eliminate.
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/pricing_policy/|modules/gateway/scripts/(pricing-rollout|build-budget-lambda-archives)\.py|\.github/workflows/(gateway-deploy|run-gateway-migrations|pricing-finalize)\.yml|codebuild/bs-gateway-build\.yml|modules/gateway/pyproject\.toml)'; then
             BUDGET_LAMBDAS=true
             BACKEND=true
           fi
@@ -109,6 +133,8 @@ jobs:
     runs-on: arc-runner-org
     needs: changes
     if: needs.changes.outputs.backend == 'true'
+    outputs:
+      release_image: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ github.sha }}
     # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
     permissions:
       contents: read
@@ -133,20 +159,10 @@ jobs:
         # producers in the backend. Keep both archives in sync with budget-lambda/main.tf.
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          from zipfile import ZipFile
-
-          source = Path('modules/gateway/lambda')
-          for name in ('budget-usage-tracker', 'pricing-refresh'):
-              files = [source / name / 'handler.py', source / 'shared/db.py', source / 'shared/pricing_fallback.py']
-              if name == 'budget-usage-tracker':
-                  files.append(source / 'shared/root_principal.py')
-              with ZipFile(f'/tmp/{name}.zip', 'w') as archive:
-                  for path in files:
-                      archive.write(path, path.name)
-          PY
-          for name in budget-usage-tracker pricing-refresh; do
+          python3 modules/gateway/scripts/pricing-rollout.py quiesce \
+            --account-id "${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}" --environment "$ENVIRONMENT"
+          python3 modules/gateway/scripts/build-budget-lambda-archives.py --output /tmp
+          for name in pricing-refresh budget-usage-tracker; do
             function="arn:aws:lambda:${AWS_REGION}:${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}:function:bedrockgw-${ENVIRONMENT}-${name}"
             if ! aws lambda get-function-configuration --function-name "$function" \
                 --query FunctionName --output text >/dev/null 2>/tmp/budget-function-error; then
@@ -701,18 +717,52 @@ jobs:
     # workflow_dispatch (fresh-account deploys need migrations to run unconditionally).
     if: |
       always() &&
-      (needs.changes.outputs.migrations == 'true' || github.event_name == 'workflow_dispatch') &&
+      (needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch') &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
     uses: ./.github/workflows/run-gateway-migrations.yml
     with:
+      expected_image: ${{ needs.deploy-backend.outputs.release_image }}
+      account_id: ${{ inputs.account_id || '' }}
       environment: ${{ inputs.environment || 'dev' }}
       customer_account_id: ${{ inputs.customer_account_id || '' }}
       customer_aws_label: ${{ inputs.customer_aws_label || '' }}
       customer_user_id: ${{ inputs.customer_user_id || '' }}
 
+  finalize-pricing:
+    name: Verify and activate daily pricing
+    needs: [deploy-backend, run-migrations]
+    if: needs.deploy-backend.result == 'success' && needs.run-migrations.result == 'success'
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+      - name: Verify release pricing and enable the schedule
+        env:
+          PRICING_RELEASE_IMAGE: ${{ needs.deploy-backend.outputs.release_image }}
+        run: |
+          set -euo pipefail
+          if ! command -v kubectl >/dev/null; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          python3 modules/gateway/scripts/pricing-rollout.py finalize \
+            --account-id "${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}" --environment "$ENVIRONMENT" \
+            --expected-image "$PRICING_RELEASE_IMAGE"
+          # First rollout requires reviewed budget-lambda infra. If this gate
+          # fails, apply that reviewed plan, then dispatch pricing-finalize.yml
+          # at this release ref. The schedule stays disabled on failure.
+
   smoke-test:
     name: Post-deploy Smoke Test
-    needs: [deploy-backend, deploy-frontend, run-migrations]
+    needs: [deploy-backend, deploy-frontend, run-migrations, finalize-pricing]
     # Issue #3031: Real-token smoke against the deployed gateway.
     # Runs after backend + frontend + migrations are done. Skipped dependencies
     # are fine (e.g. frontend-only push still triggers smoke if backend succeeded
@@ -721,7 +771,8 @@ jobs:
       always() &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped') &&
       (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped') &&
-      (needs.run-migrations.result == 'success' || needs.run-migrations.result == 'skipped')
+      (needs.run-migrations.result == 'success' || needs.run-migrations.result == 'skipped') &&
+      (needs.finalize-pricing.result == 'success' || needs.finalize-pricing.result == 'skipped')
     uses: ./.github/workflows/gateway-smoke.yml
     # Graceful skip: when the smoke token hasn't been captured yet, the workflow
     # exits cleanly (token step exits 0 → subsequent steps skip → job succeeds).

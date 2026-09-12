@@ -1,6 +1,7 @@
+import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from importlib import import_module
 
 from fastapi import Depends, FastAPI, Request
@@ -197,7 +198,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize mantle passthrough service: {e}")
 
-    yield
+    from src.budget.pricing_decisions import maintain_pricing_cache, refresh_pricing_cache
+
+    # The shared refresh boundary caps reads at five seconds and records failure.
+    await refresh_pricing_cache()
+    pricing_task = asyncio.create_task(maintain_pricing_cache(), name="pricing_cache_refresh")
+    try:
+        yield
+    finally:
+        pricing_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await pricing_task
 
     # Issue #144: Shutdown tracing on app shutdown
     shutdown_tracing()

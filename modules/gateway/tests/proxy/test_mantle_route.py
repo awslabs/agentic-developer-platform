@@ -322,7 +322,10 @@ class TestMantlePassthrough:
             await svc.create_response(b"{}", token_context, stream=False, model="openai.gpt-5.5", request_id="req-1")
 
         kwargs = mock_usage.log_request.await_args.kwargs
-        assert kwargs["cost_usd"] == pytest.approx(0.0385)
+        from decimal import Decimal
+
+        assert kwargs["cost_usd"] == Decimal("0.038500")
+        assert isinstance(kwargs["cost_usd"], Decimal)
         assert kwargs["cost_usd"] > 0
 
 

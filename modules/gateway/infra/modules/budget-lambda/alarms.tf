@@ -28,7 +28,7 @@ resource "aws_cloudwatch_metric_alarm" "unknown_model_pricing" {
   alarm_name        = "${var.name_prefix}-unknown-model-pricing"
   alarm_description = <<-EOT
     A model id was billed at the generic "default" fallback rate because it is
-    missing from MODEL_PRICING in modules/gateway/lambda/shared/pricing_fallback.py.
+    missing from the active/shared pricing inventory.
 
     Cost records for that model are computed at the wrong rate (the default is
     Sonnet-tier, so Opus-class models underbill ~40% on output). Budget caps
@@ -37,9 +37,9 @@ resource "aws_cloudwatch_metric_alarm" "unknown_model_pricing" {
 
     Remediation: find the offending id in
     /aws/lambda/${var.name_prefix}-budget-usage-tracker ("Unknown model ..."),
-    add an entry with ALL FOUR keys (input, output, cache_read_input,
-    cache_creation_input) to MODEL_PRICING, then dispatch
-    gateway-infra-apply.yml to ship the updated Lambda.
+    verify the model/source mapping and publish its supported pricing variant.
+    If the bundled manifest or curated policy needs changing, ship a reviewed
+    shared pricing_policy snapshot to the gateway and both budget Lambdas.
 
     Note: historical rows already written at the default rate are not
     retroactively repriced.
@@ -53,7 +53,7 @@ resource "aws_cloudwatch_metric_alarm" "unknown_model_pricing" {
   threshold           = 0
   evaluation_periods  = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = var.alarm_actions
+  alarm_actions       = local.pricing_alarm_actions
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-unknown-model-pricing"

@@ -530,21 +530,21 @@ class TestRevisionChaining:
         and 040 is either that head or a link something else chained onto.
         """
         versions_dir = MIGRATION_PATH.parent
-        revisions: dict[str, str | None] = {}
+        revisions: dict[str, str | tuple[str, ...] | None] = {}
         for path in versions_dir.glob("*.py"):
             tree = ast.parse(path.read_text(), filename=str(path))
-            found: dict[str, str | None] = {}
+            found: dict[str, str | tuple[str, ...] | None] = {}
             for node in tree.body:
                 targets = [node.target] if isinstance(node, ast.AnnAssign) else getattr(node, "targets", [])
                 names = {t.id for t in targets if isinstance(t, ast.Name)} & {"revision", "down_revision"}
-                if not names or not isinstance(node.value, ast.Constant) or not isinstance(node.value.value, str | None):
+                if not names or not isinstance(node.value, ast.Constant | ast.Tuple):
                     continue
                 for name in names:
-                    found[name] = node.value.value
+                    found[name] = ast.literal_eval(node.value)
             if "revision" in found:
                 revisions[found["revision"]] = found.get("down_revision")
 
-        parents = {down for down in revisions.values() if down is not None}
+        parents = {parent for down in revisions.values() if down is not None for parent in ((down,) if isinstance(down, str) else down)}
         heads = sorted(revision for revision in revisions if revision not in parents)
         assert len(heads) == 1, f"expected exactly one head, found: {heads}"
         assert EXPECTED_REVISION in parents or heads == [EXPECTED_REVISION], "040 has been orphaned off the chain"

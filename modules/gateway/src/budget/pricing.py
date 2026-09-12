@@ -1,262 +1,49 @@
-"""
-Bedrock Model Pricing Service.
+"""Pre-request budget estimates using the active V2 pricing cache.
 
-This module provides centralized cost calculation for Bedrock models.
-Pricing is based on AWS Bedrock published rates as of January 2024.
+OpenAI quotes select one conservative published variant for the measured/estimated
+context and available routing evidence. Startup and background async reads keep
+this process cache current; a synchronous inference estimate does no database I/O.
+The derived flat tables remain public compatibility views, and non-OpenAI curated
+pricing behavior is preserved. Completed Mantle requests use durable decisions,
+not this estimator.
 """
 
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
+from pricing_policy import (
+    RoutingEvidence,
+    is_openai_model,
+    legacy_flat_rates,
+    legacy_flat_table,
+    load_snapshot,
+    normalize_billing_model_id,
+    normalize_usage,
+    price_from_rate_row,
+    quantize_ledger,
+    select_rate_row,
+)
+from pricing_policy.policy import geography_from_model_prefix
 from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-# Pricing per 1000 tokens (USD)
-# Source: AWS Bedrock pricing page (https://aws.amazon.com/bedrock/pricing/)
-# Last updated: January 2024
-MODEL_PRICING: dict[str, dict[str, Decimal]] = {
-    # Claude Opus 5 ($5/$25 per MTok — platform.claude.com models overview)
-    "global.anthropic.claude-opus-5": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-    },
-    "anthropic.claude-opus-5": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-    },
-    # Claude Opus 4.x ($5/$25 per MTok). Previously absent from this table,
-    # so all 4.x traffic (including the agent-worker default opus-4-6) was
-    # billed at the "default" fallback ($3/$15) — a silent underprice.
-    "global.anthropic.claude-opus-4-8": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-    },
-    "global.anthropic.claude-opus-4-7": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-    },
-    "global.anthropic.claude-opus-4-6-v1": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-    },
-    "global.anthropic.claude-opus-4-5-20251101-v1:0": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-    },
-    # Claude Sonnet/Haiku 4.x ($3/$15, $1/$5 per MTok)
-    "global.anthropic.claude-sonnet-4-6": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-    },
-    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-    },
-    "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
-        "input": Decimal("0.001"),
-        "output": Decimal("0.005"),
-    },
-    # Claude 3.5 models (latest)
-    "anthropic.claude-3-5-sonnet-20241022-v2:0": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-    },
-    "anthropic.claude-3-5-haiku-20241022-v1:0": {
-        "input": Decimal("0.0008"),
-        "output": Decimal("0.004"),
-    },
-    # Claude 3 models
-    "anthropic.claude-3-opus-20240229-v1:0": {
-        "input": Decimal("0.015"),
-        "output": Decimal("0.075"),
-    },
-    "anthropic.claude-3-sonnet-20240229-v1:0": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-    },
-    "anthropic.claude-3-haiku-20240307-v1:0": {
-        "input": Decimal("0.00025"),
-        "output": Decimal("0.00125"),
-    },
-    # Claude 2.x models (legacy)
-    "anthropic.claude-v2:1": {
-        "input": Decimal("0.008"),
-        "output": Decimal("0.024"),
-    },
-    "anthropic.claude-v2": {
-        "input": Decimal("0.008"),
-        "output": Decimal("0.024"),
-    },
-    "anthropic.claude-instant-v1": {
-        "input": Decimal("0.0008"),
-        "output": Decimal("0.0024"),
-    },
-    # Amazon Titan Text models
-    "amazon.titan-text-express-v1": {
-        "input": Decimal("0.0002"),
-        "output": Decimal("0.0006"),
-    },
-    "amazon.titan-text-lite-v1": {
-        "input": Decimal("0.00015"),
-        "output": Decimal("0.0002"),
-    },
-    "amazon.titan-text-premier-v1:0": {
-        "input": Decimal("0.0005"),
-        "output": Decimal("0.0015"),
-    },
-    # Amazon Titan Embed models (text)
-    "amazon.titan-embed-text-v1": {
-        "input": Decimal("0.0001"),
-        "output": Decimal("0"),  # Embeddings don't have output tokens
-    },
-    "amazon.titan-embed-text-v2:0": {
-        "input": Decimal("0.00002"),
-        "output": Decimal("0"),
-    },
-    # Cohere models
-    "cohere.command-text-v14": {
-        "input": Decimal("0.0015"),
-        "output": Decimal("0.002"),
-    },
-    "cohere.command-light-text-v14": {
-        "input": Decimal("0.0003"),
-        "output": Decimal("0.0006"),
-    },
-    "cohere.command-r-v1:0": {
-        "input": Decimal("0.0005"),
-        "output": Decimal("0.0015"),
-    },
-    "cohere.command-r-plus-v1:0": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-    },
-    # Meta Llama models
-    "meta.llama3-8b-instruct-v1:0": {
-        "input": Decimal("0.0003"),
-        "output": Decimal("0.0006"),
-    },
-    "meta.llama3-70b-instruct-v1:0": {
-        "input": Decimal("0.00265"),
-        "output": Decimal("0.0035"),
-    },
-    "meta.llama3-1-8b-instruct-v1:0": {
-        "input": Decimal("0.00022"),
-        "output": Decimal("0.00022"),
-    },
-    "meta.llama3-1-70b-instruct-v1:0": {
-        "input": Decimal("0.00099"),
-        "output": Decimal("0.00099"),
-    },
-    "meta.llama3-1-405b-instruct-v1:0": {
-        "input": Decimal("0.00532"),
-        "output": Decimal("0.016"),
-    },
-    "meta.llama3-2-1b-instruct-v1:0": {
-        "input": Decimal("0.0001"),
-        "output": Decimal("0.0001"),
-    },
-    "meta.llama3-2-3b-instruct-v1:0": {
-        "input": Decimal("0.00015"),
-        "output": Decimal("0.00015"),
-    },
-    "meta.llama3-2-11b-instruct-v1:0": {
-        "input": Decimal("0.00016"),
-        "output": Decimal("0.00016"),
-    },
-    "meta.llama3-2-90b-instruct-v1:0": {
-        "input": Decimal("0.00072"),
-        "output": Decimal("0.00072"),
-    },
-    # Mistral models
-    "mistral.mistral-7b-instruct-v0:2": {
-        "input": Decimal("0.00015"),
-        "output": Decimal("0.0002"),
-    },
-    "mistral.mixtral-8x7b-instruct-v0:1": {
-        "input": Decimal("0.00045"),
-        "output": Decimal("0.0007"),
-    },
-    "mistral.mistral-large-2402-v1:0": {
-        "input": Decimal("0.004"),
-        "output": Decimal("0.012"),
-    },
-    "mistral.mistral-small-2402-v1:0": {
-        "input": Decimal("0.001"),
-        "output": Decimal("0.003"),
-    },
-    # AI21 Jurassic models
-    "ai21.j2-ultra-v1": {
-        "input": Decimal("0.0125"),
-        "output": Decimal("0.0125"),
-    },
-    "ai21.j2-mid-v1": {
-        "input": Decimal("0.0125"),
-        "output": Decimal("0.0125"),
-    },
-    # OpenAI models served via bedrock-mantle Responses API (Issue #2792, route #2709).
-    # Source: AWS Bedrock pricing page (https://aws.amazon.com/bedrock/pricing/),
-    # OpenAI section, retrieved 2026-07-03. Published per-1M-token rates converted
-    # to per-1000-token (÷1000) to match this table's unit.
-    #   GPT-5.5 (US East, in-region parity):  $5.50/1M in, $33.00/1M out
-    #   gpt-oss-120b (Standard tier):          $0.1545/1M in, $0.6180/1M out
-    "openai.gpt-5.5": {
-        "input": Decimal("0.0055"),
-        "output": Decimal("0.033"),
-    },
-    # GPT-5.6 family (GA 2026-07-13; smoke-verified via gateway in #3904).
-    # Rates retrieved 2026-07-28: Sol $5.50/$33.00, Terra $2.75/$16.50,
-    # Luna $1.10/$6.60 per 1M tokens (US East).
-    "openai.gpt-5.6-sol": {
-        "input": Decimal("0.0055"),
-        "output": Decimal("0.033"),
-    },
-    "openai.gpt-5.6-terra": {
-        "input": Decimal("0.00275"),
-        "output": Decimal("0.0165"),
-    },
-    "openai.gpt-5.6-luna": {
-        "input": Decimal("0.0011"),
-        "output": Decimal("0.0066"),
-    },
-    "openai.gpt-oss-120b": {
-        "input": Decimal("0.0001545"),
-        "output": Decimal("0.000618"),
-    },
-    # Default fallback pricing (conservative estimate)
-    "default": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-    },
-}
+# The flat rate table, DERIVED from the shared snapshot (issue #4969). Built once
+# at import: the snapshot file is immutable, so re-deriving per call would only
+# repeat work. Includes the conservative "default" row the old literal had.
+MODEL_PRICING: dict[str, dict[str, Decimal]] = legacy_flat_table()
 
-# Alias mappings for common model name variations
+# Alias mappings for common model name variations.
+#
+# Also derived: the curated aliases carry the short forms (`opus5`, `sonnet46`,
+# `claude-3-5-sonnet`, ...) that model_resolver.py emits, and the OpenAI models'
+# own alias lists carry the profile-prefixed forms. Both are in the snapshot, so
+# neither is maintained here any more.
 MODEL_ALIASES: dict[str, str] = {
-    # Claude Opus 5 / 4.x aliases (match model_resolver.py short aliases)
-    "opus5": "global.anthropic.claude-opus-5",
-    "claude-opus-5": "global.anthropic.claude-opus-5",
-    "opus48": "global.anthropic.claude-opus-4-8",
-    "opus47": "global.anthropic.claude-opus-4-7",
-    "opus46": "global.anthropic.claude-opus-4-6-v1",
-    "sonnet46": "global.anthropic.claude-sonnet-4-6",
-    "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    # Claude 3.5 aliases
-    "claude-3-5-sonnet": "anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "claude-3-5-sonnet-20241022": "anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "claude-3-5-haiku": "anthropic.claude-3-5-haiku-20241022-v1:0",
-    "claude-3-5-haiku-20241022": "anthropic.claude-3-5-haiku-20241022-v1:0",
-    # Claude 3 aliases
-    "claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0",
-    "claude-3-opus-20240229": "anthropic.claude-3-opus-20240229-v1:0",
-    "claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-    "claude-3-sonnet-20240229": "anthropic.claude-3-sonnet-20240229-v1:0",
-    "claude-3-haiku": "anthropic.claude-3-haiku-20240307-v1:0",
-    "claude-3-haiku-20240307": "anthropic.claude-3-haiku-20240307-v1:0",
-    # Legacy Claude aliases
-    "claude-2.1": "anthropic.claude-v2:1",
-    "claude-2": "anthropic.claude-v2",
-    "claude-instant-1.2": "anthropic.claude-instant-v1",
+    **load_snapshot().curated_non_openai.get("aliases", {}),
+    **load_snapshot().alias_map,
 }
 
 # Default output token estimate for pre-request budget check
@@ -294,6 +81,10 @@ class PricingService:
             pricing_table: Optional custom pricing table (for testing)
         """
         self._pricing = pricing_table or MODEL_PRICING
+        # A caller-supplied table is authoritative and gets no snapshot fallback:
+        # a test that injects three models means three models, and silently
+        # widening it to the full snapshot would make such a test unable to fail.
+        self._use_shared_resolver = pricing_table is None
 
     def resolve_model_id(self, model_id: str) -> str:
         """
@@ -331,15 +122,63 @@ class PricingService:
 
         Returns:
             Dict with 'input' and 'output' prices per 1000 tokens
+            (may also include 'cache_read_input' and 'cache_creation_input')
         """
+        if self._use_shared_resolver and is_openai_model(model_id):
+            from src.budget.pricing_v2_reader import cached_rate_state
+
+            snapshot = replace(load_snapshot(), rates=cached_rate_state().rows)
+            return legacy_flat_rates(model_id, snapshot=snapshot)[0]
         resolved_id = self.resolve_model_id(model_id)
 
         if resolved_id in self._pricing:
             return self._pricing[resolved_id]
 
+        if self._use_shared_resolver:
+            # Issue #4969: defer to the shared resolver rather than dropping
+            # straight to "default". It applies the cross-region prefix and
+            # version-suffix normalization the two tables used to implement
+            # separately (#4592), so `us.anthropic.claude-opus-4-8` finds its
+            # published rate here exactly as it does in settlement.
+            rates, known = legacy_flat_rates(model_id)
+            if known:
+                return rates
+            logger.debug(f"Using default pricing for unknown model: {model_id}")
+            return rates
+
         # Log and return default pricing
         logger.debug(f"Using default pricing for unknown model: {model_id}")
         return self._pricing["default"]
+
+    def quote_cost(self, model_id: str, input_tokens: int, output_tokens: int, *, state=None) -> tuple[Decimal, Decimal, Decimal]:
+        """Quote OpenAI from one cached V2 generation, without request-path I/O."""
+        if self._use_shared_resolver and is_openai_model(model_id):
+            from src.budget.pricing_v2_reader import cached_rate_state
+
+            state = state or cached_rate_state()
+            billing_id = normalize_billing_model_id(model_id)
+            rows = tuple(row for row in state.rows if row.model_id == billing_id)
+            if rows:
+                usage = normalize_usage({"input_tokens": input_tokens, "output_tokens": output_tokens}, api_format="openai")
+                row, _ = select_rate_row(
+                    rows=rows,
+                    usage=usage,
+                    evidence=RoutingEvidence(
+                        original_model_id=model_id, billing_model_id=billing_id, geography=geography_from_model_prefix(model_id)
+                    ),
+                    short_threshold=load_snapshot().short_context_max_input_tokens,
+                )
+                exact, _ = price_from_rate_row(row, usage)
+                return quantize_ledger(exact), row.input_price_per_1k_tokens, row.output_price_per_1k_tokens
+            # Missing models use the explicit generic estimate, never an old
+            # OpenAI flat literal or a fabricated variant from another model.
+            pricing = load_snapshot().curated_non_openai["rates"]["default"]
+            input_rate, output_rate = Decimal(pricing["input"]), Decimal(pricing["output"])
+        else:
+            pricing = self.get_model_pricing(model_id)
+            input_rate, output_rate = pricing["input"], pricing["output"]
+        exact = (Decimal(input_tokens) * input_rate + Decimal(output_tokens) * output_rate) / Decimal("1000")
+        return quantize_ledger(exact), input_rate, output_rate
 
     def calculate_cost(
         self,
@@ -358,6 +197,8 @@ class PricingService:
         Returns:
             Total cost in USD (Decimal)
         """
+        if self._use_shared_resolver and is_openai_model(model_id):
+            return self.quote_cost(model_id, input_tokens, output_tokens)[0]
         pricing = self.get_model_pricing(model_id)
 
         input_cost = (Decimal(input_tokens) / Decimal("1000")) * pricing["input"]

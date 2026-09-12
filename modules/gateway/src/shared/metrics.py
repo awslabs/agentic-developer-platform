@@ -96,6 +96,11 @@ def _get_unit(metric_name: str) -> str:
     """Get the unit for a metric."""
     units = {
         "RequestCount": "Count",
+        "PricingCacheAgeSeconds": "Seconds",
+        "PricingCacheRefreshFailure": "Count",
+        "PricingUnknownVariant": "Count",
+        "PricingStaleRate": "Count",
+        "UnknownModelPricing": "Count",
         "RequestLatencyMs": "Milliseconds",
         "TokensIn": "Count",
         "TokensOut": "Count",

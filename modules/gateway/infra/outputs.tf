@@ -198,6 +198,20 @@ output "pricing_refresh_lambda_name" {
   value       = var.enable_chat_logging ? module.budget_lambda[0].pricing_refresh_lambda_name : ""
 }
 
+output "pricing_refresh_operations" {
+  description = "Pricing rollout/inspection resources; null when chat logging is disabled."
+  value = var.enable_chat_logging ? {
+    function_name           = module.budget_lambda[0].pricing_refresh_lambda_name
+    tracker_function_name   = module.budget_lambda[0].usage_tracker_lambda_name
+    schedule_rule_name      = module.budget_lambda[0].pricing_refresh_schedule_rule_name
+    schedule_rule_arn       = module.budget_lambda[0].pricing_refresh_schedule_rule_arn
+    delivery_failure_queue  = module.budget_lambda[0].pricing_delivery_failure_queue
+    execution_failure_queue = module.budget_lambda[0].pricing_execution_failure_queue
+    alarm_topic_arns        = module.budget_lambda[0].pricing_alarm_topic_arns
+    alarm_inbox             = module.budget_lambda[0].pricing_alarm_inbox
+  } : null
+}
+
 # =============================================================================
 # API Gateway Outputs (Issue #236)
 # =============================================================================

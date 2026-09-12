@@ -31,8 +31,18 @@ import boto3
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
 
 from db import get_db_connection
-from pricing_fallback import MODEL_PRICING, calculate_cost, resolve_model_id
+from pricing_fallback import resolve_model_id
+from pricing_legacy_reader import get_legacy_rates
+from pricing_settlement import (
+    InvalidPricingDecisionError,
+    MissingUsageError,
+    compatibility_snapshot,
+    settle_chat_log,
+)
+from pricing_v2_reader import cache_failure_age_seconds, get_rate_state
 from root_principal import unqualify_root_principal_id
+
+from pricing_policy import is_openai_model
 
 # Configure logging
 logger = logging.getLogger()
@@ -41,10 +51,11 @@ logger.setLevel(logging.INFO)
 # S3 client
 s3_client = boto3.client("s3")
 
-# In-memory pricing cache with TTL
-_pricing_cache: dict[str, dict[str, Any]] = {}
-_pricing_cache_time: float = 0
-_PRICING_CACHE_TTL = 3600  # 1 hour
+# Issue #4969: the former module-level pricing cache and its 1-hour TTL are gone.
+# Caching now lives in `pricing_v2_reader`/`pricing_policy.storage`, which has the
+# retention rule this one lacked: a failed read keeps the last known good
+# generation rather than reverting to bundled rates, because the bundle is by
+# definition older and reverting would silently reprice live traffic.
 
 # Issue #4300: the settled-ledger entity_type for the human who initiated an
 # agent chain.
@@ -115,71 +126,57 @@ def get_period_starts(timestamp: datetime) -> dict[str, datetime]:
     }
 
 
-def load_pricing_from_db(conn) -> dict[str, dict[str, Decimal]]:
-    """
-    Load pricing from the model_pricing database table.
+def emit_pricing_metrics(reasons=()):
+    age = cache_failure_age_seconds()
+    values = {"PricingCacheAgeSeconds": age}
+    if age > 0:
+        values["PricingCacheRefreshFailure"] = 1
+    for reason, metric in (
+        ("unknown_model", "UnknownModelPricing"),
+        ("unsupported_variant", "PricingUnknownVariant"),
+        ("stale_rate_source", "PricingStaleRate"),
+    ):
+        if reason in reasons:
+            values[metric] = 1
+    print(
+        json.dumps(
+            {
+                "_aws": {
+                    "Timestamp": int(time.time() * 1000),
+                    "CloudWatchMetrics": [
+                        {"Namespace": "ADP/Gateway", "Dimensions": [[]], "Metrics": [{"Name": key, "Unit": "None"} for key in values]}
+                    ],
+                },
+                **values,
+            }
+        )
+    )
 
-    Args:
-        conn: Database connection
+
+def get_rate_source(conn):
+    """
+    Get the rate rows to settle with, from the active V2 pricing generation.
+
+    Issue #4969: replaces the former `model_pricing` flat-table load. That table
+    is keyed on model_id alone, so it could not express geography, service tier,
+    context tier or cache rates — a GovCloud long-context Priority request
+    settled at the same rate as an in-region short-context Flex one. Its rows
+    also included `source='fallback'` OpenAI prices that were simply wrong (up to
+    5x for Luna). Reading V2 instead is what stops those rows affecting current
+    settlement.
+
+    The reader keeps its own process-wide cache with the retention rules in
+    `pricing_policy.storage`, so the 1-hour TTL this function used to implement
+    is gone from here on purpose: a read failure now retains the last known good
+    generation instead of silently reverting to bundled rates.
 
     Returns:
-        Dict mapping model_id to pricing info
+        A `RateSourceState`: rows, provenance and any estimate reasons the way
+        those rows were obtained implies.
     """
-    pricing = {}
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT model_id, input_price_per_1k_tokens, output_price_per_1k_tokens
-                FROM model_pricing
-                """
-            )
-            for row in cur.fetchall():
-                model_id, input_price, output_price = row
-                pricing[model_id] = {
-                    "input": Decimal(str(input_price)),
-                    "output": Decimal(str(output_price)),
-                }
-        logger.info(f"Loaded {len(pricing)} models from model_pricing table")
-    except Exception as e:
-        logger.warning(f"Failed to load pricing from database: {e}")
-
-    return pricing
-
-
-def get_pricing_table(conn) -> dict[str, dict[str, Any]]:
-    """
-    Get pricing table with caching.
-
-    Tries to load from database first, falls back to hardcoded pricing.
-
-    Args:
-        conn: Database connection
-
-    Returns:
-        Dict mapping model_id to pricing info
-    """
-    global _pricing_cache, _pricing_cache_time
-
-    now = time.monotonic()
-
-    # Check cache TTL
-    if _pricing_cache and (now - _pricing_cache_time) < _PRICING_CACHE_TTL:
-        return _pricing_cache
-
-    # Try to load from database
-    db_pricing = load_pricing_from_db(conn)
-
-    if db_pricing:
-        _pricing_cache = db_pricing
-        _pricing_cache_time = now
-        return db_pricing
-
-    # Fall back to hardcoded pricing
-    logger.info("Using fallback hardcoded pricing table")
-    _pricing_cache = MODEL_PRICING
-    _pricing_cache_time = now
-    return MODEL_PRICING
+    state = get_rate_state(conn)
+    emit_pricing_metrics(state.reasons)
+    return state
 
 
 def parse_chat_log(chat_log: dict[str, Any]) -> dict[str, Any] | None:
@@ -308,7 +305,7 @@ def upsert_budget_usage(
                 entity_id,
                 period_start.date(),
                 period_type,
-                float(cost),
+                cost,
                 tokens,
             ),
         )
@@ -344,7 +341,7 @@ def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal, chat_log_s3_
                     chat_log_s3_key = COALESCE(chat_log_s3_key, %s)
                 WHERE request_id = %s AND (cost_usd = 0 OR chat_log_s3_key IS NULL)
                 """,
-                (float(cost), chat_log_s3_key, request_id),
+                (cost, chat_log_s3_key, request_id),
             )
             updated = cur.rowcount > 0
             if updated:
@@ -361,7 +358,7 @@ def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal, chat_log_s3_
         return False
 
 
-def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, Any], chat_log_s3_key: str | None = None):
+def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_key: str | None = None):
     """
     Process a single chat log and record usage.
 
@@ -377,7 +374,9 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     Args:
         conn: Database connection
         chat_log: Parsed chat log dictionary
-        pricing_table: Model pricing table
+        rate_source: `RateSourceState` from `get_rate_source` — the rows of the
+            active V2 generation, their provenance, and the estimate reasons the
+            way they were obtained implies (issue #4969)
         chat_log_s3_key: Optional S3 object key for the chat log payload
     """
     parsed = parse_chat_log(chat_log)
@@ -407,17 +406,38 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     # Resolve cross-region model ID
     resolved_model_id = resolve_model_id(model_id)
 
-    # Calculate cost (Issue #1486: includes cache token costs)
-    cost = calculate_cost(
-        resolved_model_id,
-        input_tokens,
-        output_tokens,
-        pricing_table,
-        cache_read_input_tokens=cache_read_input_tokens,
-        cache_creation_input_tokens=cache_creation_input_tokens,
+    # Issue #4969: settle from the durable decision the gateway attached, or —
+    # for a legacy OpenAI event that carries none — from the pinned bundle,
+    # marked estimated. Never recompute a present decision: it was priced against
+    # one immutable generation at response time, and re-pricing it here would make
+    # the amount depend on when this S3 event happened to be delivered.
+    #
+    # A malformed decision raises. It must NOT degrade to a re-price, which would
+    # silently defeat the reproducibility the decision exists to provide. It
+    # propagates to the per-record handler in `lambda_handler`, which counts the
+    # record as an error and leaves it for investigation without poisoning the
+    # other records in the batch.
+    settlement = settle_chat_log(
+        parsed,
+        chat_log=chat_log,
+        rows=rate_source.rows,
+        # The COMPATIBILITY snapshot, not the current one: it supplies the curated
+        # non-OpenAI policy and the context threshold used to price a legacy event,
+        # and pinning it means re-settling the same event after a new snapshot
+        # ships cannot change its amount.
+        snapshot=compatibility_snapshot(),
+        generation_id=rate_source.generation_id,
+        pointer_revision=rate_source.pointer_revision,
+        source_reasons=rate_source.reasons,
+        legacy_rates=get_legacy_rates(conn) if chat_log.get("pricing_decision") is None and not is_openai_model(model_id) else None,
     )
+    emit_pricing_metrics(settlement.reasons)
+    logger.info(
+        "Pricing settlement: request=%s reused=%s estimated=%s reasons=%s", request_id, settlement.reused, settlement.estimated, settlement.reasons
+    )
+    cost = settlement.cost
     # Issue #1486: total_tokens includes cache tokens for accurate consumption tracking
-    total_tokens = input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens
+    total_tokens = settlement.total_tokens
 
     logger.info(
         f"Processing: model={model_id}, resolved={resolved_model_id}, "
@@ -533,8 +553,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     try:
         with get_db_connection() as conn:
-            # Load pricing table (cached for 1 hour)
-            pricing_table = get_pricing_table(conn)
+            # Issue #4969: read the active V2 generation once per invocation. The
+            # reader caches across invocations in this container and retains the
+            # last known good generation through a read failure, so this is not the
+            # per-record cost it appears to be.
+            rate_source = get_rate_source(conn)
 
             # Process each S3 record
             for record in event.get("Records", []):
@@ -562,7 +585,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     chat_log = json.loads(body)
 
                     # Process the chat log (issue #1616: pass S3 key for traceability)
-                    process_chat_log(conn, chat_log, pricing_table, chat_log_s3_key=key)
+                    process_chat_log(conn, chat_log, rate_source, chat_log_s3_key=key)
                     # Per-record commit: one bad record must not poison the
                     # shared connection or roll back other records' writes.
                     conn.commit()
@@ -570,6 +593,25 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON in {key}: {e}")
+                    error_count += 1
+                except InvalidPricingDecisionError as e:
+                    # Issue #4969: a decision was present and failed validation.
+                    # Logged distinctly because the remedy is different from any
+                    # other record error: the amount is NOT recoverable by retry
+                    # (a retry validates the same bad payload), and it means either
+                    # a gateway bug or a tampered settlement event. Never fall back
+                    # to re-pricing the request — that would silently defeat the
+                    # durable decision and bill an amount nobody quoted.
+                    logger.error(f"Invalid pricing decision in {key}, record not settled: {e}", exc_info=True)
+                    conn.rollback()
+                    error_count += 1
+                except MissingUsageError as e:
+                    # Issue #4968 preserved: a log with no usable token counts is
+                    # not settled and not counted as zero. A zero-cost row would
+                    # look like a free request and permanently under-report that
+                    # tenant's spend, so it is surfaced as an error instead.
+                    logger.error(f"No usable token counts in {key}, record not settled: {e}")
+                    conn.rollback()
                     error_count += 1
                 except Exception as e:
                     logger.error(f"Error processing record: {e}", exc_info=True)

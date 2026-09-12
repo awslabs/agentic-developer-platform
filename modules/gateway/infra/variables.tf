@@ -725,8 +725,19 @@ variable "agent_context_ingestion_queue_arn" {
 
 variable "budget_alarm_sns_topic_arns" {
   type        = list(string)
-  description = "SNS topic ARNs notified by budget-enforcement alarms. Empty means the alarms still evaluate and are visible in the console but page nobody — set this in any environment where uncapped spend matters."
+  description = "SNS topic ARNs notified by budget alarms. When empty, pricing alarms use a dedicated encrypted SNS topic with an SQS operational inbox; other budget-enforcement alarms remain console-only."
   default     = []
+}
+
+variable "pricing_refresh_timeout" {
+  description = "Pricing refresh Lambda timeout in seconds; includes bounded source fetches, publication and metrics."
+  type        = number
+  default     = 180
+
+  validation {
+    condition     = var.pricing_refresh_timeout >= 180 && var.pricing_refresh_timeout <= 900
+    error_message = "Pricing refresh needs at least 180 seconds for its 120-second source deadline and publication; Lambda permits at most 900."
+  }
 }
 
 # =============================================================================
