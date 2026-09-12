@@ -140,6 +140,22 @@ run "default_operational_delivery" {
     )
     error_message = "Freshness and anomaly alarms require different missing-data semantics; preserve the tracker S3 account boundary."
   }
+
+  # AWS rejects service wildcards in topic policies, even though IAM accepts
+  # them. This service contract is documented in the SNS API permissions table.
+  assert {
+    condition = (
+      jsondecode(aws_sns_topic_policy.pricing_alarms[0].policy).Statement[1].Effect == "Deny" &&
+      jsondecode(aws_sns_topic_policy.pricing_alarms[0].policy).Statement[1].Principal == "*" &&
+      jsondecode(aws_sns_topic_policy.pricing_alarms[0].policy).Statement[1].Condition.Bool["aws:SecureTransport"] == "false" &&
+      contains(jsondecode(aws_sns_topic_policy.pricing_alarms[0].policy).Statement[1].Action, "sns:Publish") &&
+      alltrue([
+        for action in jsondecode(aws_sns_topic_policy.pricing_alarms[0].policy).Statement[1].Action :
+        can(regex("^sns:(AddPermission|DeleteTopic|GetDataProtectionPolicy|GetTopicAttributes|ListSubscriptionsByTopic|ListTagsForResource|Publish|PutDataProtectionPolicy|RemovePermission|SetTopicAttributes|Subscribe)$", action))
+      ])
+    )
+    error_message = "Transport denial must use explicit SNS topic-policy actions accepted by the service."
+  }
 }
 
 run "supplied_notification_topics" {

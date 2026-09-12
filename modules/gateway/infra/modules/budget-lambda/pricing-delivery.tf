@@ -140,7 +140,21 @@ resource "aws_sns_topic_policy" "pricing_alarms" {
         Sid       = "DenyInsecureTransport"
         Effect    = "Deny"
         Principal = "*"
-        Action    = "sns:*"
+        # SNS topic policies reject the service wildcard. Cover the documented
+        # topic-policy actions explicitly, including data protection and tags.
+        Action = [
+          "sns:AddPermission",
+          "sns:DeleteTopic",
+          "sns:GetDataProtectionPolicy",
+          "sns:GetTopicAttributes",
+          "sns:ListSubscriptionsByTopic",
+          "sns:ListTagsForResource",
+          "sns:Publish",
+          "sns:PutDataProtectionPolicy",
+          "sns:RemovePermission",
+          "sns:SetTopicAttributes",
+          "sns:Subscribe",
+        ]
         Resource  = aws_sns_topic.pricing_alarms[0].arn
         Condition = { Bool = { "aws:SecureTransport" = "false" } }
       }
