@@ -179,7 +179,10 @@ def lambda_handler(event, context):
         # Persist the authorized claims keyed by connection_id so we can
         # reinject them on every message — otherwise the webchat adapter
         # drops all messages for lack of a resolvable sub (issue #88).
-        _persist_connection_claims(connection_id, event.get("requestContext", {}).get("authorizer", {}))
+        try:
+            _persist_connection_claims(connection_id, event.get("requestContext", {}).get("authorizer", {}))
+        except ConnectionClaimsError as error:
+            return _connection_claims_failure(event, connection_id, error, notify=False)
         return {"statusCode": 200, "body": "Connected"}
     if route_key == "$disconnect":
         _forget_connection(connection_id)
@@ -189,7 +192,10 @@ def lambda_handler(event, context):
     # inject them back into event.requestContext.authorizer.claims so the
     # adapter's claims.get("sub") path works without re-authenticating.
     if connection_id:
-        _restore_connection_claims(event, connection_id)
+        try:
+            _restore_connection_claims(event, connection_id)
+        except ConnectionClaimsError as error:
+            return _connection_claims_failure(event, connection_id, error, notify=True)
 
     # Stage C (#186): handle upload-token and upload-complete routes.
     # These arrive as WebSocket messages with action: "upload-token" or "upload-complete".
@@ -249,9 +255,42 @@ def lambda_handler(event, context):
 CONNECTION_CLAIMS_TTL_SECONDS = 24 * 3600
 
 
+class ConnectionClaimsError(Exception):
+    """A WebSocket cannot continue without a durable authenticated identity."""
+
+    def __init__(self, code: str, message: str, status_code: int):
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+
+
+def _connection_claims_failure(
+    event: dict, connection_id: str, error: ConnectionClaimsError, *, notify: bool
+) -> dict:
+    payload = {
+        "type": "response",
+        "status": "failed",
+        "code": error.code,
+        "error": str(error),
+        "content": str(error),
+    }
+    if notify:
+        body = parse_body(event)
+        if not isinstance(body, dict):
+            body = {}
+        payload["session_id"] = body.get("session_id", "")
+        # WebSocket proxy integrations discard Lambda return bodies. Push the
+        # failure directly: Chat handles status=failed and clears its spinner;
+        # upload callers use request_id/error to reject the pending request.
+        _send_ws_response(connection_id, body.get("request_id", ""), payload)
+    return {"statusCode": error.status_code, "body": json.dumps(payload)}
+
+
 def _persist_connection_claims(connection_id: str, authorizer_ctx: dict) -> None:
     if not connection_id:
-        return
+        raise ConnectionClaimsError(
+            "connection_identity_missing", "Chat connection is invalid. Please reconnect.", 401
+        )
     # The gateway's custom authorizer puts claims under X-Agent-* context keys;
     # also accept Cognito-JWT-native "claims" dict as a fallback.
     claims = authorizer_ctx.get("claims", {})
@@ -275,10 +314,12 @@ def _persist_connection_claims(connection_id: str, authorizer_ctx: dict) -> None
     if not sub:
         logger.warning(
             "Connection %s authorized but no sub/X-Agent-UserId in authorizer context; "
-            "downstream messages will be dropped by the adapter.",
+            "rejecting connection.",
             connection_id,
         )
-        return
+        raise ConnectionClaimsError(
+            "connection_identity_missing", "Chat identity is missing. Please sign in again.", 401
+        )
     try:
         item: dict[str, Any] = {
             "session_id": f"conn#{connection_id}",
@@ -307,6 +348,12 @@ def _persist_connection_claims(connection_id: str, authorizer_ctx: dict) -> None
         )
     except Exception as e:
         logger.error("Failed to persist connection claims for %s: %s", connection_id, e)
+        raise ConnectionClaimsError(
+            "connection_identity_unavailable",
+            "Chat could not save your sign-in session. Please reconnect and retry. "
+            "If this continues, contact your ADP administrator.",
+            503,
+        ) from e
 
 
 def _forget_connection(connection_id: str) -> None:
@@ -321,34 +368,50 @@ def _forget_connection(connection_id: str) -> None:
 def _restore_connection_claims(event: dict, connection_id: str) -> None:
     """Re-inject persisted claims into event.requestContext.authorizer.claims
     so adapters can use the normal claims.get("sub") path."""
+    # An authenticated native claims context needs no restoration. Real API
+    # Gateway WebSocket message events omit this context after $connect.
+    if event.get("requestContext", {}).get("authorizer", {}).get("claims", {}).get("sub"):
+        return
     try:
-        resp = sessions_table.get_item(Key={"session_id": f"conn#{connection_id}"})
-        item = resp.get("Item") or {}
-        if not item.get("sub"):
-            return
-        request_context = event.setdefault("requestContext", {})
-        authorizer = request_context.setdefault("authorizer", {})
-        claims = authorizer.setdefault("claims", {})
-        # setdefault: don't overwrite if a real authorizer context is somehow
-        # already present on this invocation.
-        claims.setdefault("sub", item["sub"])
-        if item.get("email"):
-            claims.setdefault("email", item["email"])
-        if item.get("tenant_id"):
-            claims.setdefault("custom:tenant_id", item["tenant_id"])
-        # Stage A (#184): restore extended identity claims.
-        if item.get("org_id"):
-            claims.setdefault("custom:org_id", item["org_id"])
-        if item.get("team_id"):
-            claims.setdefault("custom:team_id", item["team_id"])
-        if item.get("department_id"):
-            claims.setdefault("custom:department_id", item["department_id"])
-        if item.get("account_type"):
-            claims.setdefault("custom:account_type", item["account_type"])
-        if item.get("role"):
-            claims.setdefault("custom:role", item["role"])
+        resp = sessions_table.get_item(
+            Key={"session_id": f"conn#{connection_id}"}, ConsistentRead=True
+        )
     except Exception as e:
-        logger.warning("Failed to restore connection claims for %s: %s", connection_id, e)
+        logger.error("Failed to restore connection claims for %s: %s", connection_id, e)
+        raise ConnectionClaimsError(
+            "connection_identity_unavailable",
+            "Chat could not restore your sign-in session. Please reconnect and retry. "
+            "If this continues, contact your ADP administrator.",
+            503,
+        ) from e
+    item = resp.get("Item") or {}
+    if not item.get("sub") or item.get("expires_at", 0) <= time.time():
+        raise ConnectionClaimsError(
+            "connection_identity_expired",
+            "Your chat sign-in session has expired. Please reconnect or sign in again.",
+            401,
+        )
+    request_context = event.setdefault("requestContext", {})
+    authorizer = request_context.setdefault("authorizer", {})
+    # A complete native authorizer context returned above. Restore the durable
+    # identity as a unit rather than mixing it with an incomplete context.
+    claims = {"sub": item["sub"]}
+    authorizer["claims"] = claims
+    if item.get("email"):
+        claims.setdefault("email", item["email"])
+    if item.get("tenant_id"):
+        claims.setdefault("custom:tenant_id", item["tenant_id"])
+    # Stage A (#184): restore extended identity claims.
+    if item.get("org_id"):
+        claims.setdefault("custom:org_id", item["org_id"])
+    if item.get("team_id"):
+        claims.setdefault("custom:team_id", item["team_id"])
+    if item.get("department_id"):
+        claims.setdefault("custom:department_id", item["department_id"])
+    if item.get("account_type"):
+        claims.setdefault("custom:account_type", item["account_type"])
+    if item.get("role"):
+        claims.setdefault("custom:role", item["role"])
 
 
 # ─── Stage C (#186): Upload handlers ──────────────────────────

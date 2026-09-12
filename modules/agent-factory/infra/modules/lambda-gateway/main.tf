@@ -131,6 +131,29 @@ resource "aws_iam_role_policy" "ingest_dynamodb" {
   })
 }
 
+# DynamoDB data-plane access also needs Decrypt on the table's customer-managed
+# key (#5013). The identity-index policy below grants a different module's key.
+# No key administration or direct KMS use is needed by the ingest Lambda.
+resource "aws_iam_role_policy" "ingest_dynamodb_kms" {
+  name = "dynamodb-kms"
+  role = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt", "kms:DescribeKey"]
+      Resource = var.dynamodb_kms_key_arn
+      Condition = {
+        StringEquals = {
+          "kms:ViaService"    = "dynamodb.${var.aws_region}.amazonaws.com"
+          "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
+    }]
+  })
+}
+
 # Issue #4233: read access to the identity-index for the chat-dispatch tenant
 # gate's ownership layer. GetItem reads the org_installation reverse row; Query
 # covers installation_resolver's forward-scan fallback when that row is missing.
@@ -344,6 +367,13 @@ resource "aws_iam_role_policy" "response_dynamodb" {
       Resource = [var.sessions_table_arn, "${var.sessions_table_arn}/index/*"]
     }]
   })
+}
+
+# Response routing uses the same encrypted sessions table as ingest.
+resource "aws_iam_role_policy" "response_dynamodb_kms" {
+  name   = "dynamodb-kms"
+  role   = aws_iam_role.response.id
+  policy = aws_iam_role_policy.ingest_dynamodb_kms.policy
 }
 
 resource "aws_iam_role_policy" "response_apigw" {
