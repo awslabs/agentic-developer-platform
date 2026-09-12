@@ -314,6 +314,10 @@ describe('MemberList', () => {
       // Still open — a 409 about "a different primary" is only interpretable while
       // you can see which team you were promoting.
       expect(screen.getByRole('heading', { name: /Teams for/ })).toBeInTheDocument();
+      expect(within(screen.getByRole('dialog')).getByRole('alert')).toHaveTextContent(
+        'User already has a primary team.'
+      );
+      expect(screen.getByRole('button', { name: 'Make primary' })).toBeEnabled();
     });
 
     it('discloses a truncated team list instead of presenting page 1 as complete', async () => {
@@ -441,13 +445,14 @@ describe('MemberList', () => {
 
       await user.click(within(dialog).getByRole('button', { name: 'Remove member' }));
       expect(onRemoveMember).toHaveBeenCalledWith(JANE);
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     });
 
-    it('keeps the confirmation open when the removal is refused', async () => {
-      const onRemoveMember = vi.fn().mockRejectedValue({
+    it('shows a refusal inside the confirmation and allows a successful retry', async () => {
+      const onRemoveMember = vi.fn().mockRejectedValueOnce({
         error: 'access_denied',
         message: 'Access denied: org:update required for sophos',
-      });
+      }).mockResolvedValueOnce(undefined);
       const user = userEvent.setup();
       renderList({ onRemoveMember });
 
@@ -457,8 +462,30 @@ describe('MemberList', () => {
       );
 
       await waitFor(() => expect(onRemoveMember).toHaveBeenCalled());
-      // Still open over a removal that did not happen; the caller's banner says why.
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      const dialog = screen.getByRole('dialog');
+      expect(within(dialog).getByRole('alert')).toHaveTextContent('Access denied: org:update required for sophos');
+      expect(within(dialog).getByRole('button', { name: 'Remove member' })).toBeEnabled();
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled();
+      await user.click(within(dialog).getByRole('button', { name: 'Remove member' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(onRemoveMember).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      [{ detail: 'This member has retained records.' }, 'This member has retained records.'],
+      [new Error('Network unavailable'), 'Network unavailable'],
+      [{ error: 'internal_error' }, 'Failed to remove the member. Please try again.'],
+    ])('shows failed removal details and clears them when reopening', async (failure, message) => {
+      const user = userEvent.setup();
+      renderList({ onRemoveMember: vi.fn().mockRejectedValue(failure) });
+      const remove = within(memberRow('Jane Doe')).getByRole('button', { name: 'Remove' });
+      await user.click(remove);
+      await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove member' }));
+      expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent(message);
+      await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      await user.click(remove);
+      expect(within(screen.getByRole('dialog')).queryByRole('alert')).not.toBeInTheDocument();
     });
 
     it('offers no Remove affordance without the callback', () => {

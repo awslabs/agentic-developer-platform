@@ -4,13 +4,14 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.cognito_claims import sync_cognito_role_claims
 from src.admin.cognito_service import CognitoService, CognitoServiceError
 from src.admin.config import get_admin_config
-from src.admin.exceptions import PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
+from src.admin.exceptions import MemberRemovalConflictError, PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
 from src.admin.installations.guards import assert_new_installation_ids_claimable_by
 from src.admin.memberships import (
     is_admin_level_role,
@@ -48,10 +49,11 @@ from src.shared.models.organization import (
     Organization,
     ServiceAccount,
     Team,
+    TeamMembership,
     User,
 )
 from src.shared.models.usage import BedrockPoolAccount, RateLimitConfig
-from src.shared.models.vault import UserIdentity
+from src.shared.models.vault import UserCredential, UserIdentity
 from src.shared.schemas.admin import (
     DepartmentCreateRequest,
     DepartmentResponse,
@@ -1791,7 +1793,8 @@ class AdminService:
         """
         Remove a user.
 
-        Deletes user from Cognito (if service provided) and database.
+        Delete the org-local account and its owned rows atomically. Refresh the
+        sign-in projection and remove an unshared Cognito login only after commit.
 
         Args:
             org_id: Organization ID
@@ -1810,15 +1813,59 @@ class AdminService:
         if not user:
             raise ResourceNotFoundError("User", user_id)
 
-        # Delete from Cognito if service provided
-        if cognito_service and user.cognito_username:
+        if await self.db.scalar(
+            select(TenantMembership.id).where(TenantMembership.user_id == user_id, TenantMembership.tenant_id != org_id).limit(1)
+        ):
+            raise MemberRemovalConflictError(
+                "This account also holds membership in another organization. Remove those memberships before deleting this account."
+            )
+
+        github_ids = set(
+            (
+                await self.db.execute(select(UserIdentity.provider_user_id).where(UserIdentity.user_id == user_id, UserIdentity.provider == "github"))
+            ).scalars()
+        )
+        username = user.cognito_username
+        if (user.cognito_sub or username) and github_ids:
+            shared_login = await self.db.scalar(
+                select(TenantMembership.id)
+                .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
+                .where(
+                    UserIdentity.provider == "github",
+                    UserIdentity.provider_user_id.in_(github_ids),
+                    TenantMembership.user_id != user_id,
+                )
+                .limit(1)
+            )
+            if shared_login:
+                raise MemberRemovalConflictError(
+                    "This account owns the sign-in used by another organization. "
+                    "Remove its other organization memberships before deleting this account."
+                )
+
+        try:
+            # ORM delete(User) tries to NULL the non-null backref foreign keys.
+            # Delete the owned rows explicitly, then the scoped user, so the
+            # operation also works on SQLite installations without FK cascades.
+            for model in (TeamMembership, TenantMembership, UserIdentity, UserCredential):
+                await self.db.execute(delete(model).where(model.user_id == user_id))
+            await self.db.execute(delete(User).where(User.id == user_id, User.org_id == org_id))
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise MemberRemovalConflictError(
+                "This member has related records that must be retained and cannot be deleted. No membership changes were saved."
+            ) from exc
+
+        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=github_ids)
+
+        # Never remove the login for a database deletion that rolled back.
+        if cognito_service and username:
             try:
-                cognito_service.delete_user(username=user.cognito_username)
+                cognito_service.delete_user(username=username)
             except CognitoServiceError:
                 pass  # Non-critical
 
-        await self.db.delete(user)
-        await self.db.commit()
         return True
 
     # Service Account Management

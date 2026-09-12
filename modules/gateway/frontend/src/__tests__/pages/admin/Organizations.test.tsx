@@ -848,12 +848,12 @@ describe('Organizations admin panel', () => {
       );
 
       await waitFor(() =>
-        expect(screen.getByRole('alert')).toHaveTextContent(
+        expect(within(screen.getByRole('dialog')).getByRole('alert')).toHaveTextContent(
           'User user-jane already has primary team sophos-team-ml in org sophos.'
         )
       );
       // Not swallowed and not replaced with a client-side guess at the wording.
-      expect(screen.getByRole('alert')).not.toHaveTextContent('Failed to change the primary team.');
+      expect(within(screen.getByRole('dialog')).getByRole('alert')).not.toHaveTextContent('Failed to change the primary team.');
     });
 
     it('removes a membership and refetches so the chip disappears', async () => {
@@ -1020,6 +1020,24 @@ describe('Organizations admin panel', () => {
       await waitFor(() => expect(mockRemoveOrgUser).toHaveBeenCalledWith('sophos', 'user-jane'));
       // Refetched, so the roster reflects the deletion.
       await waitFor(() => expect(mockGetOrgUsers.mock.calls.length).toBeGreaterThan(1));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    });
+
+    it('shows a failed org removal in the dialog and updates the roster after retry', async () => {
+      mockRemoveOrgUser.mockRejectedValueOnce({ message: 'Removal could not be saved.' }).mockResolvedValueOnce(undefined);
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await user.click(within(screen.getByText('Jane Doe').closest('tr')!).getByRole('button', { name: 'Remove' }));
+      await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove member' }));
+      const dialog = screen.getByRole('dialog');
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent('Removal could not be saved.');
+      expect(within(dialog).getByRole('button', { name: 'Remove member' })).toBeEnabled();
+
+      mockGetOrgUsers.mockResolvedValue({ ...ORG_USERS, items: [], total: 0 });
+      await user.click(within(dialog).getByRole('button', { name: 'Remove member' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.queryByText('Jane Doe')).not.toBeInTheDocument();
     });
 
     it('filters the loaded roster by name or GitHub username, client-side', async () => {

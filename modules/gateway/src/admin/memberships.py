@@ -237,6 +237,7 @@ async def project_member_org_ids(
     *,
     user_id: str,
     writer: IdentityIndexWriter | None = None,
+    provider_user_ids: set[str] | None = None,
 ) -> bool:
     """Write ``user_id``'s full membership org list to the DDB identity projection.
 
@@ -289,6 +290,9 @@ async def project_member_org_ids(
         db: Session to read committed membership state through.
         user_id: ``users.id`` whose projection should be refreshed.
         writer: Optional injected writer (tests, and callers that already built one).
+        provider_user_ids: GitHub IDs captured before deleting a user. Supply the
+            snapshot AFTER commit so removed identities can still have their
+            projection refreshed from the surviving membership rows.
 
     Returns:
         True if every identity row was projected (including the vacuous case of a
@@ -298,19 +302,20 @@ async def project_member_org_ids(
         from src.admin.identity.identity_index_writer import IdentityIndexWriter
         from src.shared.models.vault import UserIdentity
 
-        identities = list(
-            (
-                await db.execute(
-                    select(UserIdentity).where(
-                        UserIdentity.user_id == user_id,
-                        UserIdentity.provider == "github",
+        if provider_user_ids is None:
+            identities = list(
+                (
+                    await db.execute(
+                        select(UserIdentity).where(
+                            UserIdentity.user_id == user_id,
+                            UserIdentity.provider == "github",
+                        )
                     )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-        provider_user_ids = {i.provider_user_id for i in identities if i.provider_user_id}
+            provider_user_ids = {i.provider_user_id for i in identities if i.provider_user_id}
 
         if not provider_user_ids:
             # Nothing to project onto. Not an error: a user can hold memberships

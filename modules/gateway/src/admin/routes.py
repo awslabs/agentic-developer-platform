@@ -1186,6 +1186,14 @@ async def remove_user(
     Requires org admin privileges.
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+    target = await service.get_user_authz_state(org_id, user_id)
+    await access.require_modifiable_target(
+        current_user,
+        target.membership_role,
+        target_is_platform_admin=(target.users_role or "").strip().lower() in PLATFORM_LEVEL_ROLES,
+    )
+    if current_user.user_id in {target.cognito_sub, target.user_id}:
+        raise AccessDeniedError(message="Cannot remove your own account")
     await service.remove_user(org_id, user_id, cognito_service)
 
 

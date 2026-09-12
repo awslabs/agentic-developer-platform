@@ -70,6 +70,13 @@ class ResourceConflictError(BedrockGatewayError):
         )
 
 
+class MemberRemovalConflictError(BedrockGatewayError):
+    """A member cannot be deleted without affecting retained data or another org."""
+
+    def __init__(self, message: str):
+        super().__init__(error="member_removal_conflict", message=message, status_code=409)
+
+
 class InvalidScopeError(BedrockGatewayError):
     """Raised when a user tries to access resources outside their scope."""
 

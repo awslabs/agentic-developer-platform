@@ -8,11 +8,11 @@
  * ## Purely presentational, exactly like `UserList`
  *
  * This component owns dialog state and nothing else. Every write is a caller
- * callback, and a REJECTED promise deliberately keeps the dialog open so the
- * caller's error banner is read next to the context that produced it — the common
+ * callback, and a REJECTED promise keeps the dialog open with an inline error
+ * beside the action that produced it — the common
  * failure here is the 409 second-primary refusal, which is only interpretable
- * while you can still see which team you were promoting. Reporting the error is the
- * caller's job; `UserList` states the same contract for the same reason.
+ * while you can still see which team you were promoting. A page banner alone is
+ * hidden behind the modal and makes a refused request look stuck.
  *
  * ## The membership row is the truth; `users.team_id` is a cache of it
  *
@@ -180,6 +180,7 @@ export function MemberList({
   const [removing, setRemoving] = useState<OrgMember | null>(null);
   const [teamToAdd, setTeamToAdd] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   /** Which member's role select is in flight — disables just that row's control. */
   const [roleUpdating, setRoleUpdating] = useState<string | null>(null);
 
@@ -195,19 +196,28 @@ export function MemberList({
     if (isSubmitting) return;
     setManaging(null);
     setTeamToAdd('');
+    setSubmitError(null);
   };
 
-  // One submit wrapper for all three writes: each keeps the dialog open on
-  // rejection so the caller's banner is read in context, and none mutates a local
+  // Keep failures visible inside the active dialog and allow retry. None mutates a local
   // copy — the caller refetches, because a write can move the primary (removing
   // the primary promotes the oldest remaining membership server-side).
   const submit = async (action: () => Promise<unknown> | void, onSuccess?: () => void) => {
     setIsSubmitting(true);
+    setSubmitError(null);
     try {
       await action();
       onSuccess?.();
-    } catch {
-      // Left open on failure; the caller surfaces the server's message.
+    } catch (error) {
+      const fallback = removing
+        ? 'Failed to remove the member. Please try again.'
+        : 'Failed to update team membership. Please try again.';
+      const response =
+        error && typeof error === 'object'
+          ? (error as { message?: unknown; detail?: unknown })
+          : {};
+      const message = response.message || response.detail;
+      setSubmitError(typeof message === 'string' && message ? message : fallback);
     } finally {
       setIsSubmitting(false);
     }
@@ -349,7 +359,14 @@ export function MemberList({
       align: 'right',
       render: (member) => (
         <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={() => setManaging(member)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSubmitError(null);
+              setManaging(member);
+            }}
+          >
             Teams
           </Button>
           {onRemoveMember && (
@@ -357,7 +374,10 @@ export function MemberList({
               variant="ghost"
               size="sm"
               className="text-red-600 hover:text-red-700 dark:text-red-400"
-              onClick={() => setRemoving(member)}
+              onClick={() => {
+                setSubmitError(null);
+                setRemoving(member);
+              }}
             >
               Remove
             </Button>
@@ -404,6 +424,11 @@ export function MemberList({
         title={managing ? `Teams for ${managing.name || managing.email}` : 'Teams'}
       >
         <div className="space-y-4">
+          {submitError && (
+            <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+              {submitError}
+            </p>
+          )}
           <div className="space-y-2">
             {managingRows.length === 0 ? (
               <p className="text-sm text-gray-600 dark:text-gray-400">
@@ -518,6 +543,11 @@ export function MemberList({
         size="sm"
       >
         <div className="space-y-4">
+          {submitError && (
+            <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+              {submitError}
+            </p>
+          )}
           <p className="text-sm text-gray-700 dark:text-gray-300">
             Remove <strong>{removing?.name || removing?.email}</strong> from this
             organization? This deletes their team memberships and their account access for
