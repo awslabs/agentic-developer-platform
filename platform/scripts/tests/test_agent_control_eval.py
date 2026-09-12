@@ -1014,7 +1014,16 @@ def gateway_stub(**overrides):
                 dict(overrides.get("unknown_body", {"detail": "not found"})),
             )
         if auth != f"Bearer {OWNER_TOKEN}":
-            return reply(404, dict(overrides.get("nonowner_body", {"detail": "not found"})))
+            # `nonowner_body_by_verb` bends the refusal for ONE verb and leaves the
+            # rest correct, so a test can make the enumeration oracle appear on the
+            # verb it names. A global `nonowner_body` would fail on `pause` first —
+            # W1-02 visits it before `steer` — and satisfy a steer-specific
+            # assertion without ever reaching steer.
+            per_verb = overrides.get("nonowner_body_by_verb", {})
+            body = per_verb.get(url.rsplit("/", 1)[-1]) or overrides.get(
+                "nonowner_body", {"detail": "not found"}
+            )
+            return reply(404, dict(body))
         if flag_off:
             return reply(overrides.get("flag_off_status", 503), {"detail": "disabled"})
         if "msg-term" in url:
@@ -1545,20 +1554,81 @@ class TestEveryVerbGetsTheBodyItsSchemaRequires:
         assert results["W1-02"].status == _mod.STATUS_FAILED
         assert "unknown_run returned 400, expected 404" in results["W1-02"].message
 
-    def test_the_stub_rejects_a_steer_with_no_instruction(self):
-        """Pins the stub to the product's schema so this cannot re-escape.
+    def test_the_body_schema_predicate_mirrors_the_two_request_models(self):
+        """The predicate's own contract: what each model accepts and refuses.
 
-        The stub accepting a key-only body for every verb is the actual root
-        cause: it was more permissive than the gateway, so no test could see the
-        divergence the live evaluation then hit.
+        This is a unit test of the mirror, not of the stub. The stub integration
+        is exercised separately below, because a stub that stopped consulting
+        this predicate would still satisfy these three lines.
         """
         assert body_schema_error("/a/steer", {"command_id": "id-1"}) is not None
         assert body_schema_error("/a/steer", {"command_id": "id-1", "instruction": ""}) is not None
         assert body_schema_error("/a/steer", {"command_id": "id-1", "instruction": "go"}) is None
-
-    def test_the_stub_rejects_a_reason_taking_verb_carrying_an_instruction(self):
-        """`extra="forbid"`: the fix must be per-verb, not "add it everywhere"."""
+        # `extra="forbid"`: the fix must be per-verb, not "add it everywhere".
         assert body_schema_error("/a/pause", {"command_id": "i", "instruction": "x"}) is not None
+
+    @pytest.mark.parametrize(
+        ("adapter", "path"),
+        [
+            ("activity", "/activity/invocations/msg-live/agent/{verb}"),
+            ("orchestration", "/orchestration/runs/msg-live/{verb}"),
+        ],
+    )
+    def test_the_stub_gateway_rejects_a_steer_missing_its_instruction(
+        self, adapter: str, path: str
+    ):
+        """Drives the stub's request path, not the predicate it calls.
+
+        The stub accepting a key-only body for every verb is the actual escape
+        mechanism: it was more permissive than the gateway, so the harness could
+        send `steer` a body the real deployment rejects and every test still
+        passed. Pinning that requires putting a request through the stub — if the
+        stub stops consulting the schema predicate, this authenticated owner steer
+        falls through to the unsupported-verb 501 and these assertions fail.
+
+        Both adapters, because a one-sided fix is how the two edges drift.
+        """
+        client = gateway_stub()
+
+        def owner_post(body: dict) -> _mod.Observation:
+            return _mod.Probe("https://gw", client).request(
+                "POST", path.format(verb="steer"), role="owner", token=OWNER_TOKEN, json_body=body
+            )
+
+        assert owner_post({"command_id": "id-1"}).status == 400, adapter
+        assert owner_post({"command_id": "id-1", "instruction": ""}).status == 400, adapter
+        # The 400s above are the missing instruction and nothing else: the same
+        # request carrying one reaches the authorization answer behind it.
+        assert owner_post({"command_id": "id-1", "instruction": "go"}).status == 501, adapter
+
+    @pytest.mark.parametrize(
+        ("adapter", "path"),
+        [
+            ("activity", "/activity/invocations/msg-live/agent/{verb}"),
+            ("orchestration", "/orchestration/runs/msg-live/{verb}"),
+        ],
+    )
+    def test_the_stub_gateway_rejects_an_instruction_on_a_reason_taking_verb(
+        self, adapter: str, path: str
+    ):
+        """The other half of `extra="forbid"`, also through the stub's path.
+
+        Without this the stub would accept "add `instruction` everywhere", which
+        is the wrong fix: on pause/resume/abort that field is an unknown one and
+        the product answers 400.
+        """
+        client = gateway_stub()
+        probe = _mod.Probe("https://gw", client)
+
+        observation = probe.request(
+            "POST",
+            path.format(verb="pause"),
+            role="owner",
+            token=OWNER_TOKEN,
+            json_body={"command_id": "id-1", "instruction": "go"},
+        )
+
+        assert observation.status == 400, adapter
 
     @pytest.mark.parametrize(
         ("override", "check_id"),
@@ -1603,17 +1673,31 @@ class TestEveryVerbGetsTheBodyItsSchemaRequires:
         """The enumeration oracle now applies to the verb that never reached it.
 
         Before the fix, steer's three refusals were all the same 400, so a
-        distinguishable 404 on steer specifically could not have been caught. It
-        can be now — which is the evidence the fix bought.
+        distinguishable 404 on steer specifically could not have been caught.
+
+        The divergence is planted on `steer` ALONE and the earlier verbs keep
+        answering correctly, so the check has to walk past pause and resume to
+        fail — and the failure message has to name steer. A global override would
+        fail on `pause` (W1-02's first verb) and satisfy a steer-specific
+        assertion without steer ever being probed.
         """
-        results = run_driver(
-            tmp_path,
-            config=live_config(tmp_path),
-            client=gateway_stub(nonowner_body={"detail": "you do not own this run"}),
+        client = gateway_stub(
+            nonowner_body_by_verb={"steer": {"detail": "you do not own this run"}}
         )
+
+        results = run_driver(tmp_path, config=live_config(tmp_path), client=client)
 
         assert results["W1-02"].status == _mod.STATUS_FAILED
         assert "enumerate" in results["W1-02"].message
+        assert "/steer" in results["W1-02"].message, results["W1-02"].message
+        # Reached by walking the ladder, not by tripping on the first verb: pause
+        # and resume were probed and answered their indistinguishable 404s.
+        answered = [(url, status) for url, status in client.answered if status == 404]
+        assert any(url.endswith("/pause") for url, _ in answered)
+        assert any(url.endswith("/steer") for url, _ in answered)
+        # And the failing observation is recorded as evidence for the operator.
+        evidence = json.dumps(results["W1-02"].to_evidence())
+        assert "you do not own this run" in evidence
 
     def test_the_terminal_and_flag_off_legs_still_hold_for_their_verb(
         self, tmp_path: Path
