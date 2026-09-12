@@ -87,6 +87,8 @@ export interface ControlListenerConfig {
   port: number;
   /** Per-run bearer token, self-minted by the entrypoint. */
   token: string;
+  /** UTC expiry persisted with this token's registration by the entrypoint. */
+  tokenExpiresAt: string;
   /** Run generation. A request declaring a different generation is stale. */
   generation: number;
   store: ControlStateStore;
@@ -108,11 +110,17 @@ export class ControlListener {
   private server: http.Server | null = null;
   private readonly config: ControlListenerConfig;
   private readonly tokenBuffer: Buffer;
+  private readonly tokenExpiresAt: number;
   private readonly log: (level: string, message: string, context?: Record<string, unknown>) => void;
 
   constructor(config: ControlListenerConfig) {
     this.config = config;
     this.tokenBuffer = Buffer.from(config.token ?? '', 'utf8');
+    // Accept the UTC format the registration writer emits, never an implicit
+    // local date or an unbounded credential when configuration is absent.
+    this.tokenExpiresAt = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(config.tokenExpiresAt ?? '')
+      ? Date.parse(config.tokenExpiresAt)
+      : Number.NaN;
     this.log =
       config.logger ??
       ((level, message, context) => {
@@ -145,6 +153,10 @@ export class ControlListener {
       // An unauthenticated command endpoint is strictly worse than no endpoint.
       this.log('error', 'control listener not started: no control token', { reason: 'missing_token' });
       return { started: false, reason: 'misconfigured', detail: 'missing control token' };
+    }
+    if (!Number.isFinite(this.tokenExpiresAt) || this.tokenExpiresAt <= Date.now()) {
+      this.log('error', 'control listener not started: invalid or expired token lifetime', { reason: 'invalid_token_expiry' });
+      return { started: false, reason: 'misconfigured', detail: 'invalid or expired control token expiry' };
     }
     if (!Number.isInteger(this.config.port) || this.config.port <= 0) {
       this.log('error', 'control listener not started: invalid port', { reason: 'invalid_port' });
@@ -270,6 +282,11 @@ export class ControlListener {
    * on it.
    */
   private authenticate(req: http.IncomingMessage): boolean {
+    // The gateway also checks the registered expiry, but a caller with the pod
+    // token must not bypass that limit by reaching this socket directly.
+    if (Date.now() >= this.tokenExpiresAt) {
+      return false;
+    }
     const header = req.headers.authorization;
     if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
       return false;
