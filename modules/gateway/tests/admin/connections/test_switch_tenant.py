@@ -5,13 +5,14 @@ Verifies:
 - 403 when caller has no membership for target tenant
 - cognito_sub ≠ users.id fixture (access-token-shaped — #3021/#3027 bug class)
 - Post-switch get_connections returns is_active_tenant=true for the new tenant
-- No-op when target is already active
+- Claim resynchronization when target is already active
 - Exactly one active membership after switch (DB constraint respected)
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -26,6 +27,14 @@ from src.shared.schemas.auth import TokenContext
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def strict_claims(monkeypatch):
+    writer = AsyncMock(side_effect=lambda subject, values: ({}, values))
+    monkeypatch.setattr("src.auth.workspaces.CognitoWorkspaceClaims.set", writer)
+    return writer
+
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -185,7 +194,7 @@ async def test_switch_tenant_403_no_membership(db_session: AsyncSession):
         await switch_tenant(body=body, current_user=token, db=db_session)
 
     assert exc_info.value.status_code == 403
-    assert "No membership" in exc_info.value.detail
+    assert "do not have membership" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -234,8 +243,8 @@ async def test_switch_tenant_cognito_sub_not_users_id(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_switch_tenant_noop_when_already_active(db_session: AsyncSession):
-    """No-op when target is already the active tenant — returns immediately."""
+async def test_switch_tenant_resyncs_when_already_active(db_session: AsyncSession):
+    """Selecting an already-active membership still repairs stale Cognito claims."""
     from src.admin.connections.routes import switch_tenant
     from src.admin.connections.schemas import SwitchTenantRequest
 
@@ -292,7 +301,7 @@ async def test_switch_tenant_403_user_not_found(db_session: AsyncSession):
         await switch_tenant(body=body, current_user=token, db=db_session)
 
     assert exc_info.value.status_code == 403
-    assert "User not found" in exc_info.value.detail
+    assert "do not have membership" in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -302,9 +311,7 @@ async def test_switch_tenant_403_user_not_found(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_post_switch_get_connections_reflects_new_active(db_session: AsyncSession):
-    """After switch, get_connections returns is_active_tenant=true for the NEW tenant
-    without token refresh (server-side read of DB state — Issue #3071 design).
-    """
+    """Connections stay pinned to the signed org until token refresh."""
     from src.admin.connections.routes import get_connections, switch_tenant
     from src.admin.connections.schemas import SwitchTenantRequest
 
@@ -340,12 +347,14 @@ async def test_post_switch_get_connections_reflects_new_active(db_session: Async
     await switch_tenant(body=body, current_user=token, db=db_session)
 
     # Call get_connections with the SAME token (still says tenant-a)
-    # Server should prefer DB is_active (now tenant-b) over token claim
+    # The old token stays in tenant-a until a refresh.
     resp = await get_connections(current_user=token, db=db_session)
 
     assert len(resp.connections) == 2
     by_login = {c.account_login: c for c in resp.connections}
 
-    # tenant-b should now be the active tenant (even though token says tenant-a)
-    assert by_login["beta-gh"].is_active_tenant is True
-    assert by_login["alpha-gh"].is_active_tenant is False
+    assert by_login["beta-gh"].is_active_tenant is False
+    assert by_login["alpha-gh"].is_active_tenant is True
+    refreshed = token.model_copy(update={"org_id": "tenant-b", "attributed_org_id": "tenant-b"})
+    response = await get_connections(current_user=refreshed, db=db_session)
+    assert {c.account_login: c.is_active_tenant for c in response.connections} == {"alpha-gh": False, "beta-gh": True}

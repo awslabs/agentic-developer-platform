@@ -320,9 +320,23 @@ class TestInstallCallbackRoute:
 
 
 class TestGetConnectionsRoute:
-    def test_returns_connections_list(self, app, mock_db):
+    @pytest.fixture(autouse=True)
+    def mock_memberships(self):
+        with patch(
+            "src.shared.identity.workspaces.memberships_for_login",
+            new=AsyncMock(return_value=(None, {})),
+        ) as memberships:
+            yield memberships
+
+    def test_returns_connections_list(self, app, mock_db, mock_memberships):
         user = _make_user()
         client = _make_client(app, user=user, mock_db=mock_db)
+        login = MagicMock(id="canonical-user")
+        local_user = MagicMock(id="org-local-user")
+        mock_memberships.return_value = (
+            login,
+            {"org-002": (login, None), "org-001": (local_user, None)},
+        )
 
         connections_result = ConnectionsListResponse(
             connections=[
@@ -341,10 +355,19 @@ class TestGetConnectionsRoute:
         with patch(
             "src.admin.connections.routes.list_connections",
             new=AsyncMock(return_value=connections_result),
-        ):
+        ) as list_mock:
             resp = client.get("/admin/connections")
 
         assert resp.status_code == 200
+        mock_memberships.assert_awaited_once_with(mock_db, user.user_id, username=user.cognito_username)
+        list_mock.assert_awaited_once_with(
+            caller_org_id="org-001",
+            caller_user_id=user.user_id,
+            db=mock_db,
+            member_tenant_ids=["org-002", "org-001"],
+            caller_is_admin=False,
+            caller_pg_user_id="org-local-user",
+        )
         body = resp.json()
         assert len(body["connections"]) == 1
         assert body["connections"][0]["account_login"] == "acme-test"
@@ -357,11 +380,19 @@ class TestGetConnectionsRoute:
         with patch(
             "src.admin.connections.routes.list_connections",
             new=AsyncMock(return_value=ConnectionsListResponse(connections=[])),
-        ):
+        ) as list_mock:
             resp = client.get("/admin/connections")
 
         assert resp.status_code == 200
         assert resp.json()["connections"] == []
+        list_mock.assert_awaited_once_with(
+            caller_org_id=user.org_id,
+            caller_user_id=user.user_id,
+            db=mock_db,
+            member_tenant_ids=None,
+            caller_is_admin=False,
+            caller_pg_user_id=None,
+        )
 
     def test_returns_500_on_service_error(self, app, mock_db):
         user = _make_user()
@@ -370,10 +401,21 @@ class TestGetConnectionsRoute:
         with patch(
             "src.admin.connections.routes.list_connections",
             new=AsyncMock(side_effect=RuntimeError("DB error")),
-        ):
+        ) as list_mock:
             resp = client.get("/admin/connections")
 
         assert resp.status_code == 500
+        list_mock.assert_awaited_once()
+
+    def test_membership_lookup_failure_does_not_list_connections(self, app, mock_db, mock_memberships):
+        client = _make_client(app, user=_make_user(), mock_db=mock_db)
+        mock_memberships.side_effect = RuntimeError("Membership lookup failed")
+
+        with patch("src.admin.connections.routes.list_connections", new=AsyncMock()) as list_mock:
+            resp = client.get("/admin/connections")
+
+        assert resp.status_code == 500
+        list_mock.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

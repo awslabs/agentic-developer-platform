@@ -25,7 +25,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.sts_assume_service import STSAssumeError, assume_role
 from src.shared.database import get_db
-from src.shared.models.organization import User
 from src.shared.models.vault import UserCredential
 from src.shared.schemas.auth import TokenContext
 from src.shared.services.routing_probe import (
@@ -49,7 +48,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/credentials/aws", tags=["aws-connect"])
 
 
-async def _resolve_user_id(cognito_sub: str, db: AsyncSession) -> str:
+async def _resolve_user_id(cognito_sub: str, db: AsyncSession, *, org_id: str = "", username: str = "") -> str:
     """Resolve a Cognito sub (what TokenContext.user_id actually holds) to
     the Postgres `users.id` UUID required by user_credentials.user_id FK.
 
@@ -57,9 +56,9 @@ async def _resolve_user_id(cognito_sub: str, db: AsyncSession) -> str:
     registered user — but defensive in case someone signed in without going
     through onboarding).
     """
-    stmt = select(User).where(User.cognito_sub == cognito_sub)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+    from src.shared.identity.workspaces import login_user, workspace_user
+
+    user = await workspace_user(db, cognito_sub, org_id, username=username) if org_id else await login_user(db, cognito_sub)
     if user is None:
         raise HTTPException(
             status_code=404,
@@ -149,7 +148,7 @@ async def connect_start(
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
 ) -> ConnectStartResponse:
     # Resolve Cognito sub → Postgres users.id (FK on user_credentials.user_id)
-    db_user_id = await _resolve_user_id(token_context.user_id, db)
+    db_user_id = await _resolve_user_id(token_context.user_id, db, org_id=token_context.org_id, username=token_context.cognito_username)
 
     # Resolve effective org_id — falls back to users.org_id when token is empty
     # (Issue #600: GitHub-federated users may have empty org_id in token)
@@ -235,7 +234,7 @@ async def connect_verify(
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
 ) -> ConnectVerifyResponse:
     # Resolve Cognito sub → Postgres users.id for the scoped lookup
-    db_user_id = await _resolve_user_id(token_context.user_id, db)
+    db_user_id = await _resolve_user_id(token_context.user_id, db, org_id=token_context.org_id, username=token_context.cognito_username)
 
     # Resolve effective org_id — falls back to users.org_id when token is empty
     # (Issue #600: GitHub-federated users may have empty org_id in token)

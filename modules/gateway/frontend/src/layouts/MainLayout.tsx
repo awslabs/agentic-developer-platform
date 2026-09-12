@@ -1,3 +1,4 @@
+import { WorkspaceSelector } from '@/components/WorkspaceSelector';
 import { Outlet } from 'react-router-dom';
 import { Navigation } from '@/components/Navigation';
 import { MobileNav } from '@/components/MobileNav';
@@ -63,6 +64,7 @@ export function MainLayout() {
               </button>
             </div>
           </div>
+          {user && <WorkspaceSelector />}
         </div>
       </header>
 

@@ -75,6 +75,9 @@ def sync_cognito_role_claims(
     department_id: str = "",
     metric_namespace: str = "ADP/Onboarding",
     metric_prefix: str = "OnboardingApproval",
+    only_if_current_org: bool = False,
+    previous_role: str | None = None,
+    workspace_roles: dict[str, str] | None = None,
 ) -> None:
     """Write role/org/team onto the Cognito user's custom: attributes.
 
@@ -104,6 +107,12 @@ def sync_cognito_role_claims(
         role: Value for ``custom:role``.
         team_id: Value for ``custom:team_id``.
         department_id: Optional value for ``custom:department_id``.
+        only_if_current_org: For role edits, update only the role in the selected
+            org. Do not replace workspace claims from a different membership.
+            Callers serialize this against workspace selection using the login
+            row lock.
+        previous_role: Display role before this edit, for explicit global-role changes.
+        workspace_roles: Current membership roles by org, used on global demotion.
         metric_namespace: CloudWatch namespace for failure/skip metrics.
         metric_prefix: Metric-name prefix identifying the calling flow, so an
             operator can tell an onboarding sync failure from a role-update one.
@@ -124,6 +133,34 @@ def sync_cognito_role_claims(
         import boto3
 
         client = boto3.client("cognito-idp", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        if only_if_current_org:
+            users = client.list_users(UserPoolId=pool_id, Filter=f'sub = "{cognito_sub}"', Limit=1).get("Users", [])
+            if not users:
+                raise RuntimeError("Cognito login not found for role synchronization")
+            current = {item["Name"]: item["Value"] for item in users[0].get("Attributes", [])}
+            if current.get("sub") != cognito_sub:
+                raise RuntimeError("Cognito login does not match the role target")
+            platform_roles = {"platform_admin", "admin"}
+            current_org = current.get("custom:org_id", "")
+            if role in platform_roles:
+                # A platform-admin grant applies across all workspaces.
+                effective_role = role
+            elif previous_role in platform_roles:
+                # Global demotion must clear the platform claim even if the
+                # edited account is in a different org. Restore the SELECTED
+                # org's membership role, not the edited org's role.
+                effective_role = (workspace_roles or {}).get(current_org, "member")
+            elif current.get("custom:role") in platform_roles:
+                # Editing an org-local member role cannot revoke global admin.
+                return
+            elif current_org != org_id:
+                return
+            else:
+                effective_role = role
+            client.admin_update_user_attributes(
+                UserPoolId=pool_id, Username=users[0]["Username"], UserAttributes=[{"Name": "custom:role", "Value": effective_role}]
+            )
+            return
         try:
             client.admin_update_user_attributes(
                 UserPoolId=pool_id,

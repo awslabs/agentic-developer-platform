@@ -226,6 +226,13 @@ async def resolve_person_identity(db: AsyncSession, canonical_user_id: str) -> t
     """
     resolved = await resolve_person_anchor_identity(db, canonical_user_id)
     if not resolved:
+        from src.shared.identity.workspaces import linked_user_ids, login_subject_for_user, login_user
+
+        user = await db.get(User, canonical_user_id)
+        subject = await login_subject_for_user(db, user) if user else None
+        login = await login_user(db, subject) if subject else None
+        if login:
+            return format_person_anchor(login.id, PERSON_ANCHOR_INTERNAL_NAMESPACE), sorted(await linked_user_ids(db, login))
         # Composed through `format_person_anchor` like every other anchor in the
         # codebase (#4843). This was one of the three hand-rolled f-strings the
         # design note flagged; with a second namespace in play, a spelling that

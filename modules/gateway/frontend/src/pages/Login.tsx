@@ -49,7 +49,9 @@ export default function Login() {
     const brokerError = new URLSearchParams(window.location.search).get('error');
     if (!brokerError) return;
     setError(
-      brokerError === 'redirect_uri_mismatch'
+      brokerError === 'workspace_refresh_required'
+        ? 'Please sign in again to finish switching organizations.'
+        : brokerError === 'redirect_uri_mismatch'
         ? 'GitHub rejected the sign-in because the App’s configured callback URL does not match this deployment. A platform administrator can fix this in Settings → Connections (“Re-validate config” shows the expected callback URL).'
         : `Sign-in failed: ${brokerError}`
     );

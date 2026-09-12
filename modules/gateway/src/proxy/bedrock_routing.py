@@ -235,6 +235,13 @@ class BedrockRoutingResolver:
 
         if not context.user_id:
             return None
+        if context.account_type == "human" and context.org_id:
+            from src.shared.identity.workspaces import workspace_user
+
+            user = await workspace_user(session, context.user_id, context.org_id, username=context.cognito_username)
+            # A legacy membership may point at a user row in another org. Its
+            # personal AWS override must not follow into this workspace.
+            return user.id if user and user.org_id == context.org_id else None
         return (
             await session.execute(select(User.id).where(or_(User.cognito_sub == context.user_id, User.id == context.user_id)).limit(1))
         ).scalar_one_or_none()

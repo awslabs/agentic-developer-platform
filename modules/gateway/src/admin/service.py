@@ -1,5 +1,6 @@
 """Admin service for organization CRUD, pool management, and configuration."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, timedelta
@@ -1679,10 +1680,12 @@ class AdminService:
             )
         ).scalar_one_or_none()
 
+        from src.shared.identity.workspaces import login_subject_for_user
+
         return UserAuthzState(
             user_id=user.id,
             org_id=user.org_id,
-            cognito_sub=user.cognito_sub,
+            cognito_sub=await login_subject_for_user(self.db, user),
             users_role=user.role,
             membership_role=membership.role if membership else None,
         )
@@ -1740,6 +1743,7 @@ class AdminService:
         if not user:
             raise ResourceNotFoundError("User", user_id)
 
+        previous_role = user.role
         if request.name is not None:
             user.name = request.name
 
@@ -1760,16 +1764,36 @@ class AdminService:
         if request.role is not None:
             await project_member_org_ids(self.db, user_id=user.id)
 
-        # Post-commit, best-effort: the authority is already durable.
-        if request.role is not None and user.cognito_sub:
-            sync_cognito_role_claims(
-                cognito_sub=user.cognito_sub,
-                org_id=org_id,
-                role=request.role,
-                team_id=user.team_id or "",
-                metric_namespace="ADP/Admin",
-                metric_prefix="UserRoleUpdate",
-            )
+        # Post-commit, best-effort. Serialize the claims cache write against
+        # workspace selection, including secondary native-Cognito placements.
+        if request.role is not None:
+            from src.shared.identity.workspaces import login_subject_for_user, login_user, memberships_for_login
+
+            subject = await login_subject_for_user(self.db, user)
+            login = await login_user(self.db, subject) if subject else None
+            if login:
+                await self.db.execute(select(User.id).where(User.id == login.id).with_for_update())
+                workspace_roles = None
+                if previous_role in {"platform_admin", "admin"}:
+                    from src.admin.config import membership_role_to_admin_role
+
+                    _, memberships = await memberships_for_login(self.db, subject)
+                    workspace_roles = {
+                        org: membership_role_to_admin_role(pair[1].role if pair[1] else "member").value for org, pair in memberships.items()
+                    }
+                await asyncio.to_thread(
+                    sync_cognito_role_claims,
+                    cognito_sub=subject,
+                    org_id=org_id,
+                    role=request.role,
+                    team_id=user.team_id or "",
+                    metric_namespace="ADP/Admin",
+                    metric_prefix="UserRoleUpdate",
+                    only_if_current_org=True,
+                    previous_role=previous_role,
+                    workspace_roles=workspace_roles,
+                )
+                await self.db.commit()
 
         return UserResponse(
             id=user.id,
@@ -1807,7 +1831,7 @@ class AdminService:
         Raises:
             ResourceNotFoundError: If user not found
         """
-        result = await self.db.execute(select(User).where(User.id == user_id, User.org_id == org_id))
+        result = await self.db.execute(select(User).where(User.id == user_id, User.org_id == org_id).with_for_update())
         user = result.scalar_one_or_none()
 
         if not user:
@@ -1826,6 +1850,25 @@ class AdminService:
             ).scalars()
         )
         username = user.cognito_username
+        if user.cognito_sub:
+            from src.shared.identity.workspaces import PLACEMENT_VERIFICATION
+
+            linked_membership = await self.db.scalar(
+                select(TenantMembership.id)
+                .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
+                .where(
+                    UserIdentity.provider == "cognito",
+                    UserIdentity.provider_user_id == user.cognito_sub,
+                    UserIdentity.verification_method == PLACEMENT_VERIFICATION,
+                    TenantMembership.user_id != user_id,
+                )
+                .limit(1)
+            )
+            if linked_membership:
+                raise MemberRemovalConflictError(
+                    "This account owns the sign-in used by another organization. "
+                    "Remove its other organization memberships before deleting this account."
+                )
         if (user.cognito_sub or username) and github_ids:
             shared_login = await self.db.scalar(
                 select(TenantMembership.id)

@@ -97,6 +97,7 @@ export interface User {
   // misleading "org admin" badge.
   role?: AdminRole;
   orgId?: string;
+  teamId?: string;
   deptId?: string;
   permissions: Permission[];
   createdAt: string;
@@ -168,6 +169,7 @@ export interface CognitoIdTokenPayload {
   name?: string;
   picture?: string;
   'cognito:username': string;
+  'cognito:groups'?: string[];
   'custom:org_id'?: string;
   'custom:department_id'?: string;
   'custom:team_id'?: string;

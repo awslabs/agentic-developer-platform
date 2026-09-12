@@ -157,7 +157,7 @@ async def resolve_user_entity_id(db: AsyncSession, org_id: str, supplied_id: str
         UnresolvableUserEntityError: 422; nothing is persisted.
     """
     user_row = await _resolve_user_row(db, org_id, supplied_id)
-    return _require_sub(user_row, supplied_id)
+    return await _require_sub(db, user_row, supplied_id)
 
 
 async def resolve_root_user_entity_id(db: AsyncSession, org_id: str, supplied_id: str) -> str:
@@ -251,6 +251,12 @@ async def _resolve_user_row(db: AsyncSession, org_id: str, supplied_id: str) -> 
     if user_row is not None:
         return user_row
 
+    from src.shared.identity.workspaces import workspace_user
+
+    user_row = await workspace_user(db, candidate, org_id)
+    if user_row is not None and user_row.org_id == org_id:
+        return user_row
+
     # 3. Cognito username of the form GitHub_<github_user_id>.
     if candidate.lower().startswith(_GITHUB_USERNAME_PREFIX):
         github_user_id = candidate[len(_GITHUB_USERNAME_PREFIX) :]
@@ -305,7 +311,7 @@ async def _resolve_via_github_identity(db: AsyncSession, org_id: str, github_use
     return user_row
 
 
-def _require_sub(user_row: User, supplied_id: str) -> str:
+async def _require_sub(db: AsyncSession, user_row: User, supplied_id: str) -> str:
     """Return the row's ``cognito_sub``, or raise if it has none.
 
     ``users.cognito_sub`` is nullable (shadow users, invited-but-never-logged-in
@@ -314,9 +320,12 @@ def _require_sub(user_row: User, supplied_id: str) -> str:
     422 is the honest answer. Deliberately NOT applied on the ``root_user`` path,
     where the canonical id is the key and always exists (#4536).
     """
-    if not user_row.cognito_sub:
+    from src.shared.identity.workspaces import login_subject_for_user
+
+    subject = await login_subject_for_user(db, user_row)
+    if not subject:
         raise UnresolvableUserEntityError(
             supplied_id,
             "the user has not signed in yet, so they have no identity the budget engine can match",
         )
-    return user_row.cognito_sub
+    return subject

@@ -26,9 +26,9 @@ transaction).
 is a partial unique index over non-NULL subs (#700), so copying the sub onto a
 second row raises ``IntegrityError`` in production — and would pass CI, since
 SQLite never builds the partial index (the divergence ``memberships.py`` warns
-about). The sub is not needed here either: sign-in resolves the person through
-their GitHub identity and the membership projection, which is what the identity
-copies below feed.
+about). The canonical sub stays on the login row. An explicit Cognito identity
+link connects that login to the placement, so native and GitHub users can select
+this workspace without duplicating the unique login row.
 
 Flushes but does NOT commit — the caller owns the transaction, so the users row,
 the identities and the membership land atomically or not at all. The caller is also
@@ -76,8 +76,8 @@ async def _resolve_org(db: AsyncSession, org_id: str) -> Organization:
 async def _github_identities(db: AsyncSession, user_id: str) -> list[UserIdentity]:
     """The person's GitHub identity rows, oldest first.
 
-    GitHub only: ``cognito`` rows are per-sub and the mirror row deliberately has no
-    sub, so copying one would assert a Cognito identity for a row that cannot own it.
+    Cognito links are written separately by ``link_login_to_workspace``, which
+    verifies ownership and marks the authorized placement explicitly.
     """
     rows = (
         (
@@ -105,6 +105,14 @@ async def _existing_row_in_org(db: AsyncSession, *, person: User, org_id: str) -
     """
     if person.org_id == org_id:
         return person
+
+    from src.shared.identity.workspaces import login_subject_for_user, workspace_user
+
+    subject = await login_subject_for_user(db, person)
+    if subject:
+        linked = await workspace_user(db, subject, org_id)
+        if linked and linked.org_id == org_id:
+            return linked
 
     provider_user_ids = [i.provider_user_id for i in await _github_identities(db, person.id) if i.provider_user_id]
     if provider_user_ids:
@@ -226,6 +234,16 @@ async def add_user_to_org(db: AsyncSession, *, user_id: str, org_id: str, role: 
         logger.info("org member: minted users row user=%s org=%s from platform user=%s", target.id, org_id, person.id)
 
     await _mirror_identities(db, source=person, target=target)
+
+    # Bind the stable login to this org-local row, including native Cognito
+    # accounts. This link is issued by authorized placement, never email lookup
+    # during authentication.
+    from src.shared.identity.workspaces import link_login_to_workspace
+
+    try:
+        await link_login_to_workspace(db, person, target)
+    except ValueError as exc:
+        raise ResourceConflictError("User", "login_identity", str(exc)) from exc
 
     await upsert_tenant_membership(db, user_id=target.id, tenant_id=org_id, role=role, joined_via=JOINED_VIA)
     return target

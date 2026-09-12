@@ -3,7 +3,6 @@
 import logging
 import time
 
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.config import (
@@ -17,8 +16,6 @@ from src.admin.config import (
     membership_role_to_admin_role,
 )
 from src.admin.exceptions import AccessDeniedError, InvalidRoleError, InvalidScopeError
-from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import User
 from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger(__name__)
@@ -106,7 +103,7 @@ class AccessControl:
         self._role_cache[key] = (time.monotonic() + ttl, value)
 
     async def _resolve_membership_role(self, context: TokenContext) -> tuple[AdminRole, str | None] | None:
-        """Resolve the caller's role from their active tenant membership.
+        """Resolve the caller's role from their token's tenant membership.
 
         ``tenant_memberships`` (migration 021) is the authority for org-level
         role; the token supplies identity only. Returns ``(role, tenant_id)``
@@ -128,35 +125,15 @@ class AccessControl:
         if self.db is None:
             return None
 
-        pg_user_id = (
-            await self.db.execute(select(User.id).where(or_(User.cognito_sub == context.user_id, User.id == context.user_id)).limit(1))
-        ).scalar_one_or_none()
-        if not pg_user_id:
-            return None
+        from src.shared.identity.workspaces import memberships_for_login
 
-        rows = (
-            await self.db.execute(
-                select(TenantMembership.tenant_id, TenantMembership.role, TenantMembership.is_active).where(
-                    TenantMembership.user_id == pg_user_id,
-                )
-            )
-        ).all()
-        if not rows:
+        _, memberships = await memberships_for_login(self.db, context.user_id, username=context.cognito_username)
+        pair = memberships.get(context.org_id)
+        if pair is None or pair[1] is None:
             return None
-
-        # Prefer the is_active row: after a switch-tenant call the token still
-        # carries the previous org_id until refresh, but the DB is the source of
-        # truth for the active workspace (matches the effective_org_id logic in
-        # admin/connections/routes.py). Falling back to the token's org_id keeps
-        # single-tenant callers working when no row is flagged active.
-        active = next((r for r in rows if r[2]), None)
-        if active is None:
-            active = next((r for r in rows if r[0] == context.org_id), None)
-        if active is None:
-            return None
-
-        tenant_id, stored_role, _ = active
-        return membership_role_to_admin_role(stored_role), tenant_id
+        # A token is pinned to one org. A different session's selected workspace
+        # must never lend its role to this token's org/team/billing context.
+        return membership_role_to_admin_role(pair[1].role), context.org_id
 
     async def get_user_role(self, context: TokenContext) -> tuple[AdminRole, str | None, str | None]:
         """
@@ -164,7 +141,7 @@ class AccessControl:
 
         Authority model (Issue #3987): the token establishes *identity*; the
         database establishes *authority*. Org-level role comes from the caller's
-        active ``tenant_memberships`` row. Platform admin remains a token claim
+        token-scoped ``tenant_memberships`` row. Platform admin remains a token claim
         (``is_admin``) — a tracked follow-up will back it with a server-side
         platform-admin membership lookup.
 

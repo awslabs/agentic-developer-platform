@@ -24,7 +24,7 @@ path."*
 
 There is no target parameter at any position on any route here. No ``user_id``, no
 ``scope``, no ``destination_id``. The anchor is
-``resolve_canonical_user_id(db, token.user_id)``, derived from the validated token, so a
+the selected workspace's org-local user, derived from the validated token, so a
 request naming somebody else cannot be *formed* — nothing has to notice and refuse it.
 This is the argument ``person_cap_routes`` makes for ``/me/budget/person-cap`` and the
 reason ``personCap.ts`` carries the same note on the client.
@@ -84,7 +84,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.auth.dependencies import get_current_user
 from src.auth.vault_routes import get_secrets_manager
 from src.shared.database import get_db
-from src.shared.identity import resolve_canonical_user_id
 from src.shared.models.base import new_uuid
 from src.shared.models.bedrock_routing import BedrockAccountMapping, BedrockDestinationRegistry
 from src.shared.models.vault import UserCredential
@@ -129,7 +128,10 @@ async def _caller_id(db: AsyncSession, current_user: TokenContext) -> str:
     FK, so an unprovisioned caller has no connections to select and every write refuses
     before it can store anything.
     """
-    return await resolve_canonical_user_id(db, current_user.user_id)
+    from src.shared.identity.workspaces import workspace_user
+
+    user = await workspace_user(db, current_user.user_id, current_user.org_id, username=current_user.cognito_username)
+    return user.id if user and user.org_id == current_user.org_id else current_user.user_id
 
 
 async def _own_connections(db: AsyncSession, user_id: str) -> list[UserCredential]:
