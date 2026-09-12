@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'platform/infra/**'
+      - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'environments/dev/platform.tfvars'
       - 'environments/dev/backend.tfvars'
     branches:
@@ -52,6 +53,13 @@ jobs:
           fi
           aws --version
           terraform version | head -1
+
+      - name: Test Bedrock invocation logging infrastructure
+        run: |
+          for module in platform/infra/modules/bedrock-invocation-logging modules/agent-factory/infra/modules/runner-iam; do
+            terraform -chdir="$module" init -backend=false -input=false
+            terraform -chdir="$module" test -no-color
+          done
 
       # Auto-detect runner's public IP for EKS API endpoint restriction.
       # Matches the pattern used by deploy-all.sh (3-URL fallback + empty guard).

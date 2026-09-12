@@ -143,3 +143,21 @@ variable "securityagent_log_retention_days" {
   type        = number
   default     = 30
 }
+
+variable "manage_bedrock_invocation_logging" {
+  description = "Own the account/region Bedrock logging singleton in this platform state. Set false before first apply when another state owns it."
+  type        = bool
+  default     = true
+}
+
+variable "bedrock_invocation_logging_enabled" {
+  description = "Enable provider invocation logging. False removes the logging configuration but retains its destinations and encryption key."
+  type        = bool
+  default     = true
+}
+
+variable "bedrock_invocation_log_retention_days" {
+  description = "Retention for Bedrock invocation logs in CloudWatch and S3 (must be a finite CloudWatch retention value)"
+  type        = number
+  default     = 30
+}
