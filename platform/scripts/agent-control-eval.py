@@ -106,6 +106,26 @@ STATUS_NOT_RUN = "not_run"
 # The four verbs, all of which must answer 501 in S1.
 CONTROL_VERBS: tuple[str, ...] = ("pause", "resume", "steer", "abort")
 
+# `steer` is the one verb whose request model REQUIRES its free text: pause,
+# resume and abort take the idempotency key plus an optional `reason`, while
+# steer takes the key plus a non-empty length-bounded `instruction`
+# (control_schemas.py: ControlCommandRequest vs ControlSteerRequest, both
+# `extra="forbid"`).
+#
+# Mirrored here, not imported: the harness runs standalone against a URL and must
+# not acquire the gateway's dependency tree. `valid_command_body` below is the
+# single place that renders it, and a test pins that the shapes are per-verb — so
+# a schema change on the gateway side surfaces as a harness test to update rather
+# than as a silent 400 in a live evaluation.
+STEER_VERB = "steer"
+
+# Short and deliberately inert. Every command in wave 1 is refused — by
+# authorization, by the terminal-row gate, or by the 501 that follows both — so
+# this text is never delivered to an agent. It is bounded well under
+# MAX_INSTRUCTION_CHARS (4000) so it cannot be confused with the oversize probe
+# in W1-05, which is a *different* leg that must keep being rejected.
+STEER_INSTRUCTION = "evaluation probe: no action required"
+
 # Both adapters that reach the shared control service. W1-02 requires the
 # identical authorization behaviour on each, which is the whole point of there
 # being one `control_service.py`: a path template pair here is what proves the
@@ -122,6 +142,31 @@ ADAPTERS: dict[str, dict[str, str]] = {
         "state": "/orchestration/runs/{run_id}/state",
     },
 }
+
+
+def valid_command_body(verb: str, command_id: str) -> dict:
+    """The body a given verb's request model accepts, for the ladder probes.
+
+    Every check that exercises the *authorization* ladder — 401, three
+    indistinguishable 404s, 410 on a terminal row, 503 with the flag off, 501 for
+    an authorized owner — must send a body that passes schema validation first,
+    because body validation deliberately precedes the authorization gate on both
+    adapters (control_service.validate_command_body). A key-only body sent to
+    `steer` therefore collapses every rung of that ladder into one 400, and the
+    check reports a failure the deployment does not have.
+
+    This is a one-body-per-verb helper rather than one shared literal because that
+    shared literal was the defect: three of the four verbs accepted it, so the
+    fourth's authorization behaviour was never observed at all.
+
+    It is NOT used for the invalid-body legs of W1-05 (malformed JSON, an
+    `actor`/`target`/`token` over-reach, an oversized payload). Those bodies are
+    supposed to be rejected — routing them through here would retire the
+    ordering guarantee that a 400 outranks the 501.
+    """
+    if verb == STEER_VERB:
+        return {"command_id": command_id, "instruction": STEER_INSTRUCTION}
+    return {"command_id": command_id}
 
 
 @dataclass(frozen=True)
@@ -768,10 +813,13 @@ class Driver:
         owner = self._token("owner")
         nonowner = self._token("nonowner")
         other_tenant = self._token("other_tenant")
-        body = {"command_id": self._require("command_id")}
+        command_id = self._require("command_id")
 
         for adapter, paths in ADAPTERS.items():
             for verb in CONTROL_VERBS:
+                # Per-verb, because body validation runs before authorization: a
+                # body `steer` rejects turns all five rungs below into one 400.
+                body = valid_command_body(verb, command_id)
                 anonymous = self.probe.request(
                     "POST", paths["verb"].format(run_id=live, verb=verb), json_body=body
                 )
@@ -994,7 +1042,7 @@ class Driver:
         owner = self._token("owner")
         nonowner = self._token("nonowner")
         other_tenant = self._token("other_tenant")
-        body = {"command_id": self._require("command_id")}
+        body = valid_command_body("pause", self._require("command_id"))
 
         for adapter, paths in ADAPTERS.items():
             path = paths["verb"].format(run_id=terminal, verb="pause")
@@ -1140,7 +1188,7 @@ class Driver:
                 paths["verb"].format(run_id=run_id, verb="pause"),
                 role="owner",
                 token=owner,
-                json_body={"command_id": self._require("command_id")},
+                json_body=valid_command_body("pause", self._require("command_id")),
             )
             self.probe.log.append(observation)
             if observation.status != 503:

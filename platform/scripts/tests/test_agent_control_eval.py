@@ -915,11 +915,45 @@ IDENTITY_ENV = {
 }
 
 
+def body_schema_error(url: str, body: object) -> str | None:
+    """Mirror of the gateway's per-verb request models, or None if the body is valid.
+
+    One predicate, used by both the stub gateway below and the assertions that the
+    harness sends a schema-valid body. Two copies would be free to drift, which is
+    the shape of the defect this exists to pin: the stub's idea of a valid body was
+    looser than the product's, so nothing could see that the harness was sending
+    `steer` something the real gateway rejects.
+
+    Mirrors `control_schemas.py`: both models are `extra="forbid"`, so `reason` on
+    a steer and `instruction` on a pause are each an unknown field, and steer's
+    `instruction` has `min_length=1`.
+    """
+    is_steer = url.endswith("/steer")
+    allowed = {"command_id", "instruction"} if is_steer else {"command_id", "reason"}
+    fields = body if isinstance(body, dict) else {}
+    if not fields.get("command_id"):
+        return "command_id is required"
+    unknown = sorted(set(fields) - allowed)
+    if unknown:
+        return f"fields this verb forbids: {unknown}"
+    if is_steer and not fields.get("instruction"):
+        return "instruction is required"
+    return None
+
+
 def gateway_stub(**overrides):
     """A fake gateway answering the way a correct S1 deployment does.
 
     Overrides let one test bend a single response — which is how a "the harness
     would notice" assertion is written without hand-building a whole client.
+
+    The stub answers on request *shape*, so it must hold the product's per-verb
+    body schema (ControlCommandRequest vs ControlSteerRequest) and the product's
+    ordering (validate the body, then authorize). An earlier version accepted a
+    key-only body for every verb, which made it strictly more permissive than the
+    gateway — so the harness could send `steer` a body the real deployment rejects
+    with 400 and every test still passed. That divergence, not the harness body
+    itself, is why the defect reached a live evaluation.
     """
     caps = overrides.get("capabilities", {v: False for v in _mod.CONTROL_VERBS})
     state_body = {
@@ -935,6 +969,11 @@ def gateway_stub(**overrides):
     }
     state_body.update(overrides.get("state_extra", {}))
 
+    # Every (url, status) the stub answered, in call order. Lets a test assert the
+    # ladder a specific verb actually observed, which is the difference between
+    # "the check passed" and "the check reached the question it exists to ask".
+    answered: list[tuple[str, int]] = []
+
     def handler(method, url, headers=None, content=None, json=None, timeout=None):
         response = MagicMock()
         auth = (headers or {}).get("Authorization")
@@ -943,6 +982,7 @@ def gateway_stub(**overrides):
         def reply(status, body):
             response.status_code = status
             response.json = lambda: body
+            answered.append((url, status))
             return response
 
         if url.endswith("/state"):
@@ -957,8 +997,22 @@ def gateway_stub(**overrides):
             return reply(overrides.get("malformed_status", 400), {"detail": "invalid json"})
         if json and any(key in json for key in ("actor", "target", "token")):
             return reply(overrides.get("overreach_status", 400), {"detail": "forbidden field"})
+        # Per-verb schema, in the product's order: this precedes every
+        # authorization answer below, so a body the verb's model rejects is a 400
+        # even where a 404 or a 501 would otherwise be due. `steer` requires a
+        # non-empty `instruction`; the other three forbid the field outright
+        # (`extra="forbid"`), so sending it everywhere would not be a fix either.
+        schema_error = body_schema_error(url, json)
+        if schema_error:
+            return reply(overrides.get("schema_status", 400), {"detail": schema_error})
         if "msg-unknown" in url:
-            return reply(404, dict(overrides.get("unknown_body", {"detail": "not found"})))
+            # `unknown_status` is overridable so a test can put a *body-validation*
+            # rejection where the indistinguishable 404 belongs — the real fault
+            # the steer false negative was masquerading as (#5015).
+            return reply(
+                overrides.get("unknown_status", 404),
+                dict(overrides.get("unknown_body", {"detail": "not found"})),
+            )
         if auth != f"Bearer {OWNER_TOKEN}":
             return reply(404, dict(overrides.get("nonowner_body", {"detail": "not found"})))
         if flag_off:
@@ -969,6 +1023,7 @@ def gateway_stub(**overrides):
 
     client = MagicMock()
     client.request.side_effect = handler
+    client.answered = answered
     return client
 
 
@@ -1350,6 +1405,226 @@ class TestDriverOutcomes:
 
         for check_id, result in results.items():
             assert result.to_evidence()["evidence"], check_id
+
+
+class TestEveryVerbGetsTheBodyItsSchemaRequires:
+    """The per-verb request body, and the ladder it makes observable (#5015).
+
+    `steer` is the only verb whose model requires its free text
+    (`ControlSteerRequest.instruction`, `min_length=1`); the other three take the
+    idempotency key plus an optional `reason`. The harness used to send one
+    key-only body to all four, and because body validation deliberately precedes
+    the authorization gate, every rung of steer's ladder — 401, three
+    indistinguishable 404s, 501 — collapsed into a single 400. The evaluation
+    reported `W1-02 failed: activity/steer: unknown_run returned 400, expected
+    404` against a correct deployment, and the authorization proof for the one
+    verb that carries free-form text to an agent was never actually observed.
+
+    Two things have to hold at once here, and they pull in opposite directions:
+    the *valid* bodies must now be valid per verb, and the *deliberately invalid*
+    bodies must stay invalid. Loosening the second to fix the first would retire
+    W1-05's ordering guarantee, which is the failure mode this class watches for.
+    """
+
+    # ---- the helper's own contract ------------------------------------
+
+    def test_steer_carries_an_instruction(self):
+        body = _mod.valid_command_body("steer", "id-1")
+
+        assert body["instruction"]
+        assert body["command_id"] == "id-1"
+
+    @pytest.mark.parametrize("verb", ["pause", "resume", "abort"])
+    def test_the_reason_taking_verbs_keep_the_key_only_body(self, verb: str):
+        """`extra="forbid"` cuts both ways: an `instruction` here is a 400 too.
+
+        This is the "per-verb body applied to the wrong verbs" blast radius — the
+        three reason-taking verbs would start failing on a valid-body path and
+        hide a real refusal-ordering regression behind the noise.
+        """
+        assert _mod.valid_command_body(verb, "id-1") == {"command_id": "id-1"}
+
+    def test_the_instruction_is_bounded_well_under_the_schema_cap(self):
+        """MAX_INSTRUCTION_CHARS is 4000; the probe text must not approach it.
+
+        A long instruction would blur into W1-05's oversize leg, which is a
+        different observation that must keep answering 413.
+        """
+        assert 0 < len(_mod.STEER_INSTRUCTION) <= 200
+
+    def test_every_verb_is_covered_by_the_helper(self):
+        """No verb may fall through to a body its own model rejects."""
+        for verb in _mod.CONTROL_VERBS:
+            assert body_schema_error(f"/x/{verb}", _mod.valid_command_body(verb, "id-1")) is None
+
+    # ---- what the harness actually sends -------------------------------
+
+    def test_the_harness_sends_a_valid_body_to_every_verb_on_both_adapters(
+        self, tmp_path: Path
+    ):
+        """Observed off the wire, not asserted about the helper in isolation.
+
+        The defect was not in a body-shaping function — there wasn't one. It was
+        in what the checks passed to the probe, so this reads the recorded calls.
+        """
+        client = gateway_stub()
+        run_driver(tmp_path, config=live_config(tmp_path), client=client)
+
+        posts = [
+            call
+            for call in client.request.call_args_list
+            if call.args[0] == "POST" and call.kwargs.get("json") is not None
+        ]
+        # Only the legs that are *supposed* to be valid: W1-05 sends over-reaching
+        # bodies on purpose and they must keep being rejected.
+        ladder = [
+            call
+            for call in posts
+            if not any(k in call.kwargs["json"] for k in ("actor", "target", "token"))
+        ]
+        assert ladder, "no ladder probes were recorded at all"
+        for call in ladder:
+            url = call.args[1]
+            error = body_schema_error(url, call.kwargs["json"])
+            assert error is None, f"{url} was sent a body the gateway rejects: {error}"
+
+        # And specifically: steer was reached on both adapters, with an
+        # instruction. Without this, a future edit that stopped probing steer
+        # entirely would satisfy the loop above vacuously.
+        steered = [c for c in ladder if c.args[1].endswith("/steer")]
+        assert {"/activity/" in c.args[1] for c in steered} == {True, False}
+        for call in steered:
+            assert call.kwargs["json"]["instruction"]
+
+    def test_the_authorization_ladder_is_observed_for_steer(self, tmp_path: Path):
+        """The whole point: steer must reach 401 / 404×3 / 501, not one 400.
+
+        Asserted on the statuses the gateway actually answered for the steer
+        route, because "W1-02 passed" alone would also be true of a harness that
+        stopped probing steer. The smoke test in the issue asks for exactly this
+        shape — 401, three identical 404s, and 501 — recorded for the free-text
+        verb.
+        """
+        client = gateway_stub()
+        results = run_driver(tmp_path, config=live_config(tmp_path), client=client)
+
+        assert results["W1-02"].status == _mod.STATUS_PASSED
+
+        for adapter_marker in ("/activity/", "/orchestration/"):
+            ladder = [
+                status
+                for url, status in client.answered
+                if url.endswith("/steer") and adapter_marker in url
+            ]
+            # W1-02's five rungs, in the order the check drives them. Slicing
+            # rather than comparing the whole list: W1-05 also posts to /steer,
+            # and its rejections are a different check's business.
+            assert ladder[:5] == [401, 404, 404, 404, 501], adapter_marker
+            assert 400 not in ladder[:5], (
+                f"{adapter_marker}steer answered a body-validation rejection inside the "
+                "authorization ladder — the #5015 false negative"
+            )
+
+    # ---- the fix must not have made the harness blind ------------------
+
+    def test_a_body_rejection_where_the_unknown_run_refusal_belongs_still_fails(
+        self, tmp_path: Path
+    ):
+        """The real fault this false negative was masquerading as.
+
+        If a deployment ever answers 400 where the indistinguishable 404 is due,
+        W1-02 must still fail. Making the harness send a valid body must not be
+        the same thing as teaching it to accept 400 as a pass — that would retire
+        the steer authorization ladder permanently and let a regression where one
+        tenant can steer another tenant's agent through the gate.
+        """
+        results = run_driver(
+            tmp_path, config=live_config(tmp_path), client=gateway_stub(unknown_status=400)
+        )
+
+        assert results["W1-02"].status == _mod.STATUS_FAILED
+        assert "unknown_run returned 400, expected 404" in results["W1-02"].message
+
+    def test_the_stub_rejects_a_steer_with_no_instruction(self):
+        """Pins the stub to the product's schema so this cannot re-escape.
+
+        The stub accepting a key-only body for every verb is the actual root
+        cause: it was more permissive than the gateway, so no test could see the
+        divergence the live evaluation then hit.
+        """
+        assert body_schema_error("/a/steer", {"command_id": "id-1"}) is not None
+        assert body_schema_error("/a/steer", {"command_id": "id-1", "instruction": ""}) is not None
+        assert body_schema_error("/a/steer", {"command_id": "id-1", "instruction": "go"}) is None
+
+    def test_the_stub_rejects_a_reason_taking_verb_carrying_an_instruction(self):
+        """`extra="forbid"`: the fix must be per-verb, not "add it everywhere"."""
+        assert body_schema_error("/a/pause", {"command_id": "i", "instruction": "x"}) is not None
+
+    @pytest.mark.parametrize(
+        ("override", "check_id"),
+        [
+            ({"malformed_status": 501}, "W1-05"),
+            ({"oversize_status": 400}, "W1-05"),
+            ({"overreach_status": 200}, "W1-05"),
+        ],
+    )
+    def test_the_invalid_body_legs_still_expect_their_rejections(
+        self, tmp_path: Path, override: dict, check_id: str
+    ):
+        """W1-05 covers all four verbs, and the fix must not have weakened it.
+
+        Re-asserted here rather than left to the shared status table above so the
+        relationship is explicit: these three legs are the ones a careless fix
+        would have routed through the valid-body helper.
+        """
+        results = run_driver(
+            tmp_path, config=live_config(tmp_path), client=gateway_stub(**override)
+        )
+
+        assert results[check_id].status == _mod.STATUS_FAILED
+
+    def test_malformed_bodies_still_outrank_the_unsupported_verb_answer(
+        self, tmp_path: Path
+    ):
+        """The reviewed validate-before-authorize decision, still pinned.
+
+        A malformed body must answer 400 even for a verb that would otherwise
+        answer 501. W1-05 asserts it; this confirms it still holds on a stub whose
+        schema check now sits ahead of the authorization answers, i.e. that the
+        stub models the ordering rather than accidentally inverting it.
+        """
+        results = run_driver(
+            tmp_path, config=live_config(tmp_path), client=gateway_stub()
+        )
+
+        assert results["W1-05"].status == _mod.STATUS_PASSED
+
+    def test_the_refusal_bodies_are_still_compared_for_steer(self, tmp_path: Path):
+        """The enumeration oracle now applies to the verb that never reached it.
+
+        Before the fix, steer's three refusals were all the same 400, so a
+        distinguishable 404 on steer specifically could not have been caught. It
+        can be now — which is the evidence the fix bought.
+        """
+        results = run_driver(
+            tmp_path,
+            config=live_config(tmp_path),
+            client=gateway_stub(nonowner_body={"detail": "you do not own this run"}),
+        )
+
+        assert results["W1-02"].status == _mod.STATUS_FAILED
+        assert "enumerate" in results["W1-02"].message
+
+    def test_the_terminal_and_flag_off_legs_still_hold_for_their_verb(
+        self, tmp_path: Path
+    ):
+        """W1-06's 410/404 and W1-08's 503 also send a command body."""
+        results = run_driver(
+            tmp_path, config=live_config(tmp_path), client=gateway_stub()
+        )
+
+        assert results["W1-06"].status == _mod.STATUS_PASSED
+        assert results["W1-08"].status == _mod.STATUS_PASSED
 
 
 class TestNoCredentialReachesEvidence:
