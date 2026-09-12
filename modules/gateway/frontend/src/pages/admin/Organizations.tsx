@@ -70,6 +70,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
+  Alert,
   Badge,
   Button,
   Card,
@@ -90,6 +91,7 @@ import { TeamManagement } from '@/components/department/TeamManagement';
 // Bedrock Account Routing") — reused, not re-implemented (#4830 pattern, #4827).
 import { PersonPicker } from '@/components/bedrock/BedrockAccountRouting';
 import {
+  addOrgMember,
   addTeamMember,
   assignUserRole,
   createDepartment,
@@ -111,6 +113,7 @@ import {
   updateDepartment,
   updateTeam,
   type MemberBudget,
+  type PlatformUser,
 } from '@/services/admin';
 import { deriveOrgIdentifier, isValidOrgIdentifier } from '@/utils/orgIdentifier';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -134,6 +137,37 @@ function errorMessage(error: unknown, fallback: string): string {
   }
   if (error instanceof Error && error.message) return error.message;
   return fallback;
+}
+
+/**
+ * Name the picked person for the confirmation step.
+ *
+ * GitHub login first, then name, then email — the order the picker's own label uses,
+ * so the person the admin reads in the confirmation is recognisably the one they just
+ * chose. Falls back to the id only when there is nothing else: an unrecognisable
+ * confirmation is still better than an empty subject in a sentence granting org access.
+ */
+function describeAddPerson(person: PlatformUser | null, fallbackId: string): string {
+  if (!person) return fallbackId;
+  return person.githubUsername || person.name || person.email || person.id;
+}
+
+/**
+ * True when a membership write was refused because the person is not in this org.
+ *
+ * Issue #4943. The team-add route resolves the person by `(users.id, org_id)` and
+ * raises `resource_not_found` for anything outside the path org — deliberately, so a
+ * caller cannot distinguish another tenant's member from a nonexistent one. Matched on
+ * the stable `error` code rather than the message text, and NOT on the bare HTTP
+ * status: a 404 from some other cause must not be answered with "shall I add them to
+ * the organization?".
+ */
+function isNotInThisOrg(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    (error as { error?: unknown }).error === 'resource_not_found'
+  );
 }
 
 export default function Organizations() {
@@ -209,6 +243,33 @@ export default function Organizations() {
   const [addTeamId, setAddTeamId] = useState('');
   const [addRole, setAddRole] = useState<'member' | 'org_admin'>('member');
   const [isAddingMember, setIsAddingMember] = useState(false);
+  /**
+   * The picked ROSTER ROW, not just its id (#4943).
+   *
+   * The row carries `orgId`, and that is the only thing on the client that can tell
+   * "this person is already in the org" from "this person must be brought in first" —
+   * the difference between a one-step add and the confirmation step below. `null` when
+   * nothing is picked, or when the picker could not name the row; a null is "not
+   * known", never "not in this org", so the confirm step is not offered on it and the
+   * server's 404 remains the trigger.
+   */
+  const [addPerson, setAddPerson] = useState<PlatformUser | null>(null);
+  /**
+   * The add-member modal's OWN error line (#4943 · root cause 1).
+   *
+   * The page-level `error` banner renders at the top of the panel, behind the open
+   * modal — so the 404 the server correctly returned three times was never visible,
+   * and the admin saw a dialog that had simply stopped responding. An error produced
+   * by a control inside the modal has to be rendered inside the modal, next to that
+   * control.
+   */
+  const [addMemberError, setAddMemberError] = useState<string | null>(null);
+  /**
+   * Set when the picked person is not in this org yet, which turns "Add member" into
+   * an explicit two-part decision — join the org AND join the team — rather than a
+   * silent extra write behind a button whose label says neither.
+   */
+  const [addNeedsOrgJoin, setAddNeedsOrgJoin] = useState(false);
 
   const canManage = canUpdateOrganizations();
   const canView = canViewOrganizations();
@@ -476,35 +537,79 @@ export default function Organizations() {
     }
   };
 
+  /** Close the add-member modal and forget everything it was holding. */
+  const resetAddMember = () => {
+    setIsAddMemberOpen(false);
+    setAddPersonId('');
+    setAddPerson(null);
+    setAddTeamId('');
+    setAddRole('member');
+    setAddMemberError(null);
+    setAddNeedsOrgJoin(false);
+  };
+
   /**
-   * The assign-member modal's submit (#4936 review, M2d): the T1 add-membership
-   * call, plus a role assignment when "org admin" was chosen. Sequential on
-   * purpose — a person must be IN the org before a role in it means anything, and
-   * if the role half is refused the membership still stands and the server's
-   * refusal is shown rather than silently dropped.
+   * The assign-member modal's submit (#4936 review, M2d; fixed by #4943).
+   *
+   * Two grains, in order, because they are two different decisions:
+   *
+   * 1. **Into the ORG** (`addOrgMember`) — only when the person is not a member yet.
+   *    The picker lists the PLATFORM roster while the team-add route is org-scoped, so
+   *    for anybody from another org this step is what makes the next one possible at
+   *    all: without it the server resolves `(users.id, org_id)`, finds nothing, and
+   *    404s. That refusal was correct, which is why the fix is a missing step and not
+   *    a loosened check. It also returns the person's id **in this org**, which is a
+   *    different id from the roster's and the only one the team add can use.
+   * 2. **Into the TEAM** (`addTeamMember`) — the membership row, as before.
+   *
+   * The org step is gated behind an explicit confirmation (`addNeedsOrgJoin`), never
+   * performed silently: bringing somebody into an organization is a bigger act than
+   * putting an existing member on a team, and the button said only the latter.
+   *
+   * Whichever call is refused, its message is rendered INSIDE the modal and the
+   * submitting state is released, so the dialog can be corrected or dismissed. A 404
+   * from the team add is also treated as "not in this org" — the confirmation step is
+   * offered on it, so a stale roster row (or a person the picker could not describe)
+   * still reaches the same recovery instead of dead-ending.
+   *
+   * **The org-admin refusal is the server's, surfaced verbatim.** `addOrgMember` is
+   * platform-admin-only (its roster is), and its 403 names what an org admin *can* do
+   * and the access-request path for what they cannot. It is not restated as a
+   * client-side rule here: this modal is already gated on `canAddMembers`, so a
+   * hand-written refusal would be unreachable copy that could drift from the boundary
+   * actually enforcing it.
    */
   const handleAddMember = async () => {
     if (!selectedOrgId || !addPersonId || !addTeamId) return;
     setIsAddingMember(true);
     setError(null);
+    setAddMemberError(null);
     try {
-      await addTeamMember(selectedOrgId, addTeamId, { userId: addPersonId });
-      if (addRole === 'org_admin') {
+      let memberId = addPersonId;
+      if (addNeedsOrgJoin) {
+        const joined = await addOrgMember(selectedOrgId, { userId: addPersonId, role: addRole });
+        memberId = joined.id;
+      }
+      await addTeamMember(selectedOrgId, addTeamId, { userId: memberId });
+      if (addRole === 'org_admin' && !addNeedsOrgJoin) {
+        // Already a member, so the role is a change to an existing membership. When
+        // the org step ran it carried the role itself, and repeating it here would be
+        // a second write asserting what already holds.
         await assignUserRole({
-          user_id: addPersonId,
+          user_id: memberId,
           role: AdminRole.ORG_ADMIN,
           org_id: selectedOrgId,
         });
       }
       setNotice('Member added.');
-      setIsAddMemberOpen(false);
-      setAddPersonId('');
-      setAddTeamId('');
-      setAddRole('member');
+      resetAddMember();
       await loadMembers(selectedOrgId, canReadMemberBudgets);
     } catch (err) {
-      // Left open over a write that did not (fully) land; the banner names why.
-      setError(errorMessage(err, 'Failed to add the member.'));
+      // The modal stays OPEN over a write that did not (fully) land, and says why
+      // where the admin is looking — the page banner behind it is what made this
+      // read as a dead button.
+      setAddMemberError(errorMessage(err, 'Failed to add the member.'));
+      if (isNotInThisOrg(err)) setAddNeedsOrgJoin(true);
     } finally {
       setIsAddingMember(false);
     }
@@ -902,8 +1007,26 @@ export default function Organizations() {
                   onChange={(e) => setMemberSearch(e.target.value)}
                   className="max-w-xs"
                 />
-                {canAddMembers && (
+                {canAddMembers ? (
                   <Button onClick={() => setIsAddMemberOpen(true)}>+ Add member</Button>
+                ) : (
+                  canManage && (
+                    /* The org admin's refusal, stated rather than implied by an absent
+                       button (#4943). Bringing a person INTO an organization is
+                       platform-admin-only — both writes it needs are — so the affordance
+                       stays hidden; but "no button and no explanation" is the same
+                       dead end as the modal that never spoke. What an org admin CAN do
+                       (assign people who are already members to teams, below) and how
+                       to get somebody new in are both named. */
+                    <p
+                      className="text-xs text-gray-500 dark:text-gray-400"
+                      data-testid="add-member-org-admin-refusal"
+                    >
+                      Only a platform administrator can add a person to this organization.
+                      You can assign the members below to teams; to have somebody new added,
+                      use an access request.
+                    </p>
+                  )
                 )}
               </div>
               <MemberList
@@ -1055,7 +1178,7 @@ export default function Organizations() {
       <Modal
         isOpen={isAddMemberOpen}
         onClose={() => {
-          if (!isAddingMember) setIsAddMemberOpen(false);
+          if (!isAddingMember) resetAddMember();
         }}
         title={`Add member to ${selectedOrg?.name ?? 'organization'}`}
       >
@@ -1064,7 +1187,22 @@ export default function Organizations() {
             label="Person"
             namePrefix="add-member-person"
             value={addPersonId}
-            onChange={setAddPersonId}
+            onChange={(userId, person) => {
+              setAddPersonId(userId);
+              setAddPerson(person);
+              // A new pick invalidates whatever the last one was refused for — both the
+              // message and the confirmation it may have raised.
+              setAddMemberError(null);
+              // The roster row's own org is the up-front signal, and only a row that
+              // NAMES a different org counts: a missing row (`null`) or a blank `orgId`
+              // means "not known", not "not in this org", and guessing "not a member"
+              // from silence would put a grant-org-access question in front of an admin
+              // who was only adding an existing member to a team. Those cases fall
+              // through to the server's own 404, which is authoritative.
+              setAddNeedsOrgJoin(
+                !!person && !!person.orgId && !!selectedOrgId && person.orgId !== selectedOrgId
+              );
+            }}
             helperText="GitHub ID shown first when linked."
           />
 
@@ -1112,12 +1250,33 @@ export default function Organizations() {
             </div>
           </fieldset>
 
+          {addNeedsOrgJoin && (
+            /* The confirmation step (#4943). Naming the person, the org and the team is
+               the whole point: this submit does something the button's old label did not
+               say, and an admin has to be able to see that before it happens. */
+            <Alert variant="warning" title="This person is not a member of this organization yet">
+              <p data-testid="add-member-org-join-confirm">
+                <strong>{describeAddPerson(addPerson, addPersonId)}</strong> is not a member of{' '}
+                <strong>{selectedOrg?.name ?? 'this organization'}</strong> yet. Add them to the
+                organization and to team{' '}
+                <strong>{orgTeams.find((t) => t.id === addTeamId)?.name ?? 'the selected team'}</strong>?
+              </p>
+            </Alert>
+          )}
+
+          {addMemberError && (
+            /* Inside the modal, not the page banner behind it — root cause 1 of #4943:
+               the server's three 404s were rendered where the open dialog covered them,
+               so a correct refusal read as a button that had stopped working. */
+            <Alert variant="error" title="The member was not added">
+              {/* `Alert` is itself the `role="alert"` live region, so the message is
+                  announced without a second, nested one. */}
+              <p data-testid="add-member-error">{addMemberError}</p>
+            </Alert>
+          )}
+
           <ModalFooter>
-            <Button
-              variant="secondary"
-              onClick={() => setIsAddMemberOpen(false)}
-              disabled={isAddingMember}
-            >
+            <Button variant="secondary" onClick={resetAddMember} disabled={isAddingMember}>
               Cancel
             </Button>
             <Button
@@ -1125,7 +1284,7 @@ export default function Organizations() {
               isLoading={isAddingMember}
               disabled={!addPersonId || !addTeamId}
             >
-              Add member
+              {addNeedsOrgJoin ? 'Add to organization and team' : 'Add member'}
             </Button>
           </ModalFooter>
         </div>

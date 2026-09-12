@@ -364,15 +364,17 @@ class TestPartialIndexSql:
         assert any("DROP INDEX IF EXISTS" in s and MIG_042.PARTIAL_UNIQUE_INDEX in s for s in _emitted_sql(MIG_042.downgrade))
 
 
-class TestNoAppLayerPrimaryWriteYet:
-    """No code path under `src/` may write `is_primary` on user_identities — yet.
+class TestAppLayerPrimaryWriters:
+    """Only guarded code paths may write `is_primary` on user_identities.
 
     The invariant "at most one primary per (user_id, provider)" is enforced ONLY by
     this migration's partial unique index, which is Postgres-only — the SQLite the
     test suite runs on never creates it, so **CI is structurally blind to a
-    second-primary write**. Today that is safe because nothing in `src/` assigns
-    the flag at all: the backfill above is the sole writer, and the resolvers only
-    read it in an `ORDER BY`.
+    second-primary write**. Org placement (#4943) is now a guarded writer: it
+    copies a source primary only when the destination has none. Its behavioral
+    tests in test_org_member_add.py preserve the source anchor on new placement
+    and exercise the partial unique index when the destination already has a
+    primary. All other modules remain subject to this tripwire.
 
     This pin is the tripwire for the first promote/demote endpoint. A future
     `UPDATE ... SET is_primary = true` with no guard passes every SQLite test with
@@ -389,6 +391,7 @@ class TestNoAppLayerPrimaryWriteYet:
     """
 
     SRC = Path(__file__).resolve().parents[2] / "src"
+    GUARDED_WRITERS = {"admin/org_members.py"}
 
     @staticmethod
     def _is_primary_writes(path: Path, source: str | None = None) -> list[str]:
@@ -424,9 +427,11 @@ class TestNoAppLayerPrimaryWriteYet:
                     offenders.append(f"{path}:{node.lineno}")
         return offenders
 
-    def test_no_src_code_path_writes_is_primary_on_user_identities(self):
+    def test_only_guarded_src_code_paths_write_is_primary_on_user_identities(self):
         offenders: list[str] = []
         for path in sorted(self.SRC.rglob("*.py")):
+            if path.relative_to(self.SRC).as_posix() in self.GUARDED_WRITERS:
+                continue
             offenders.extend(self._is_primary_writes(path))
 
         assert offenders == [], (

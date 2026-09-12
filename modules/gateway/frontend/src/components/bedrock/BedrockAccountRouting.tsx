@@ -226,7 +226,18 @@ export function PersonPicker({
   label: string;
   namePrefix: string;
   value: string;
-  onChange: (userId: string) => void;
+  /**
+   * The chosen `users.id`, plus the roster ROW it came from when the picker has it.
+   *
+   * The second argument exists because the row carries `orgId`, and a caller
+   * assigning somebody to an org-scoped resource has to know whether the person is
+   * in that org before it fires a write the server can only refuse (#4943: the
+   * members panel's add-member modal). Optional and second so every existing caller
+   * — which only needs the id — keeps working unchanged. `null` when the selection
+   * is cleared, or when the person was chosen and then searched out of the loaded
+   * page; a caller must treat that as "not known", never as "not in this org".
+   */
+  onChange: (userId: string, person: PlatformUser | null) => void;
   helperText?: string;
 }) {
   const [search, setSearch] = useState('');
@@ -295,8 +306,9 @@ export function PersonPicker({
         name={namePrefix}
         value={value}
         onChange={(e) => {
-          onChange(e.target.value);
-          setChosen(people.find((p) => p.id === e.target.value) ?? null);
+          const person = people.find((p) => p.id === e.target.value) ?? null;
+          onChange(e.target.value, person);
+          setChosen(person);
         }}
         placeholder={loading ? 'Loading people…' : options.length ? 'Select a person' : 'No matching person'}
         disabled={!options.length}

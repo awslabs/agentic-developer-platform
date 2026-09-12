@@ -186,6 +186,19 @@ class TeamMemberAddRequest(BaseModel):
     external_id: str | None = Field(None, max_length=255, description="Directory-system identity for synced memberships")
 
 
+class OrgMemberAddRequest(BaseModel):
+    """Place an existing platform person into this organization (Issue #4943).
+
+    Distinct from ``UserCreateRequest``, which *creates* a brand-new person (and a
+    Cognito user with them). The person here already exists platform-wide; what is
+    being decided is a mapping — which org they belong to — so the body carries an
+    id, not an email and a name.
+    """
+
+    user_id: str = Field(..., min_length=1, max_length=255, description="Platform user to add to the organization (users.id from GET /admin/users)")
+    role: str = Field(default="member", description="Org role to grant: member, dept_admin, or org_admin")
+
+
 class TeamMembershipSetRequest(BaseModel):
     """Replace a user's entire membership set (the admin UI's save action)."""
 

@@ -406,11 +406,51 @@ export async function replaceUserTeams(
 }
 
 /**
+ * Place an existing platform person into an organization. Idempotent. Platform-admin only.
+ *
+ * Issue #4943. `addTeamMember` below is org-scoped by design: the server resolves the
+ * person by `(users.id, org_id)` and 404s anybody outside the path org. The person
+ * picker, though, lists the PLATFORM-wide roster — so choosing somebody who has not
+ * joined this org yet could only ever be refused. This is the missing step that makes
+ * that choice possible: it maps the person into the org, and only then is a team
+ * assignment meaningful.
+ *
+ * **Use the returned `id` for everything that follows.** For somebody who came from
+ * another org it is NOT `userId`: `users` is one row per (person, org), so the org has
+ * its own row and its own id, and that is the one the team-add route resolves.
+ *
+ * An org admin gets a 403 here (the roster this picks from is platform-admin-only);
+ * the caller must surface the server's message, which names the access-request path.
+ */
+export async function addOrgMember(
+  orgId: string,
+  data: { userId: string; role?: string }
+): Promise<{ id: string; orgId: string; email: string; name: string | null }> {
+  const response = await apiClient.post<{
+    id: string;
+    org_id: string;
+    email: string;
+    name: string | null;
+  }>(`/admin/organizations/${orgId}/members`, {
+    user_id: data.userId,
+    role: data.role ?? 'member',
+  });
+  return {
+    id: response.id,
+    orgId: response.org_id,
+    email: response.email,
+    name: response.name ?? null,
+  };
+}
+
+/**
  * Add one membership. Idempotent on `(user_id, team_id)`.
  *
  * `isPrimary` is refused with a 409 when the user already has a different primary
  * team — use `replaceUserTeams` to move a primary. Callers must surface the server's
  * message rather than pre-empting it with a client-side guess.
+ *
+ * The person must already be a member of `orgId`, or this 404s — see `addOrgMember`.
  */
 export async function addTeamMember(
   orgId: string,

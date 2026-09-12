@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.admin import team_memberships
+from src.admin import org_members, team_memberships
 from src.admin.access_control import AccessControl
 from src.admin.agent_onboarding_schemas import (
     AgentOnboardRequest,
@@ -47,6 +47,7 @@ from src.admin.config import (
 )
 from src.admin.exceptions import AccessDeniedError
 from src.admin.log_service import LogService
+from src.admin.memberships import project_member_org_ids
 from src.admin.policy_scoping_schemas import (
     AgentTypesListResponse,
     PolicyPreviewRequest,
@@ -89,6 +90,7 @@ from src.shared.schemas.admin import (
     DepartmentListResponse,
     DepartmentResponse,
     DepartmentUpdateRequest,
+    OrgMemberAddRequest,
     PlatformUserListResponse,
     ServiceAccountCreateRequest,
     ServiceAccountListResponse,
@@ -915,6 +917,69 @@ async def replace_user_teams(
         items=[TeamMembershipResponse.model_validate(row) for row in refreshed],
         total=len(refreshed),
     )
+
+
+@router.post("/organizations/{org_id}/members", response_model=UserResponse, status_code=201)
+async def add_org_member(
+    org_id: str,
+    request: OrgMemberAddRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> UserResponse:
+    """Place an existing platform person into this organization. Idempotent.
+
+    Issue #4943. The members panel picks people from the PLATFORM-wide roster
+    (``GET /admin/users``, #4827) while every membership write below is org-scoped,
+    so an admin could pick a real person and the only possible outcome was a 404 —
+    there was no route for "bring this person into this org" at all. This is that
+    route, and the operator's standing ruling is what it implements: adding is a
+    MAPPING decision, an admin placing a person into an org and a team.
+
+    **Platform-admin only, not ``ORG_UPDATE``.** The body names a person the caller
+    must be able to *see* to have chosen, and the roster they are chosen from is
+    ``require_platform_admin`` for tenant-isolation reasons (#4827). Gating this on
+    ORG_UPDATE would let an org admin pull any user id they guessed into their own
+    tenant — a cross-tenant write dressed as a member add. An org admin wanting a
+    person in their org uses the access-request flow, which is a *request* a
+    platform admin decides, and the refusal below says so rather than returning a
+    bare "access denied" that reads as a bug.
+
+    Returns the person's ``users`` row **in this org**, whose id is what any
+    following org-scoped write (notably the team add) must use — for somebody who
+    came from another org it is not the id that was submitted.
+    """
+    # First statement in the body, by the convention the sibling routes state: an
+    # authority check placed after any other work is one refactor away from being
+    # skipped. The rule itself stays in require_platform_admin — only the message is
+    # specialized, so the gate cannot drift from its siblings.
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError as exc:
+        raise AccessDeniedError(
+            message=(
+                "Only a platform administrator can add a person to an organization. "
+                "An organization admin can assign people who are already members to teams, and requests new ones through the access-request flow."
+            ),
+        ) from exc
+
+    # The role field is free-form and becomes org authority, so it is ceiling-checked
+    # exactly as the sibling user-create route checks it. Kept even though the gate
+    # above already limits callers to platform admins: this is the guard that stays
+    # correct if the gate is ever widened.
+    await access.require_assignable_role(current_user, request.role, target_org_id=org_id)
+
+    user = await org_members.add_user_to_org(db, user_id=request.user_id, org_id=org_id, role=request.role)
+    await db.commit()
+    await db.refresh(user)
+
+    # Post-commit, per project_member_org_ids' own contract: the projection is a
+    # read-optimized copy of COMMITTED state, and it is what the platform-mode
+    # sign-in gate reads — without this the person is a member in Postgres and still
+    # ineligible to sign in.
+    await project_member_org_ids(db, user_id=user.id)
+
+    return UserResponse.model_validate(user)
 
 
 @router.post("/organizations/{org_id}/teams/{team_id}/members", response_model=TeamMembershipResponse, status_code=201)

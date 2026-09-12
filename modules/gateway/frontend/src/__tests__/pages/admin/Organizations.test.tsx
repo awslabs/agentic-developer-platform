@@ -49,6 +49,10 @@ vi.mock('@/services/admin', () => ({
   getAvailableRoles: vi.fn(),
   removeOrgUser: vi.fn(),
   listPlatformUsers: vi.fn(),
+  // Issue #4943: the org half of the mapping action. The picker's roster is
+  // PLATFORM-wide while the team-add route is org-scoped, so a person from another
+  // org has to be brought into this one first or the team add can only ever 404.
+  addOrgMember: vi.fn(),
 }));
 
 const mockPermissions = vi.fn();
@@ -78,6 +82,7 @@ import {
   getAvailableRoles,
   removeOrgUser,
   listPlatformUsers,
+  addOrgMember,
 } from '@/services/admin';
 
 const mockGetOrgs = getOrganizations as ReturnType<typeof vi.fn>;
@@ -101,6 +106,7 @@ const mockAssignUserRole = assignUserRole as ReturnType<typeof vi.fn>;
 const mockGetAvailableRoles = getAvailableRoles as ReturnType<typeof vi.fn>;
 const mockRemoveOrgUser = removeOrgUser as ReturnType<typeof vi.fn>;
 const mockListPlatformUsers = listPlatformUsers as ReturnType<typeof vi.fn>;
+const mockAddOrgMember = addOrgMember as ReturnType<typeof vi.fn>;
 
 /** Platform admin by default — the role that can do everything on this panel. */
 function permissions(overrides: Record<string, unknown> = {}) {
@@ -310,8 +316,19 @@ describe('Organizations admin panel', () => {
     mockAssignUserRole.mockResolvedValue({});
     mockGetAvailableRoles.mockResolvedValue(['member', 'dept_admin', 'org_admin']);
     mockRemoveOrgUser.mockResolvedValue(undefined);
+    // The PLATFORM-wide roster the picker reads (#4827): one person already in Sophos
+    // and one who belongs to another org entirely. The pair is the whole of #4943 —
+    // the first can be added to a team in one step, the second cannot, and before this
+    // issue the modal offered the same single button for both.
     mockListPlatformUsers.mockResolvedValue({
       items: [
+        {
+          id: 'user-jane',
+          orgId: 'sophos',
+          email: 'jane@sophos.test',
+          name: 'Jane Doe',
+          githubUsername: 'jdoe-gh',
+        },
         {
           id: 'user-new',
           orgId: 'design-studio',
@@ -320,10 +337,18 @@ describe('Organizations admin panel', () => {
           githubUsername: 'newbie',
         },
       ],
-      total: 1,
+      total: 2,
       page: 1,
       pageSize: 50,
       hasMore: false,
+    });
+    // The into-org step returns the row minted IN THE TARGET ORG — a different id from
+    // the platform-roster one, which is what the follow-up team add must use.
+    mockAddOrgMember.mockResolvedValue({
+      id: 'user-new-in-sophos',
+      orgId: 'sophos',
+      email: 'new@studio.test',
+      name: 'New Person',
     });
   });
 
@@ -1036,12 +1061,15 @@ describe('Organizations admin panel', () => {
       await openMembers(user);
 
       await user.click(screen.getByRole('button', { name: '+ Add member' }));
-      // The reused Bedrock-routing picker: platform roster, GitHub-username-first.
+      // The reused Bedrock-routing picker: platform roster, GitHub-username-first, and
+      // PLATFORM-wide — it lists people from other orgs too, which is the product gap
+      // #4943 closes. Here the pick is somebody already in Sophos, so this stays the
+      // one-step path; the cross-org pick has its own suite below.
       await waitFor(() => expect(mockListPlatformUsers).toHaveBeenCalled());
       await waitFor(() => expect(screen.getByLabelText('Person')).not.toBeDisabled());
       expect(screen.getByText('newbie — new@studio.test (design-studio)')).toBeInTheDocument();
 
-      await user.selectOptions(screen.getByLabelText('Person'), 'user-new');
+      await user.selectOptions(screen.getByLabelText('Person'), 'user-jane');
       await user.selectOptions(screen.getByLabelText('Team'), 'sophos-team-web');
       await user.click(screen.getByRole('button', { name: 'Add member' }));
 
@@ -1049,10 +1077,11 @@ describe('Organizations admin panel', () => {
       // default "Member" role no role write fires at all.
       await waitFor(() =>
         expect(mockAddTeamMember).toHaveBeenCalledWith('sophos', 'sophos-team-web', {
-          userId: 'user-new',
+          userId: 'user-jane',
         })
       );
       expect(mockAssignUserRole).not.toHaveBeenCalled();
+      expect(mockAddOrgMember).not.toHaveBeenCalled();
     });
 
     it('also assigns the org-admin role when that radio is chosen', async () => {
@@ -1062,19 +1091,22 @@ describe('Organizations admin panel', () => {
 
       await user.click(screen.getByRole('button', { name: '+ Add member' }));
       await waitFor(() => expect(screen.getByLabelText('Person')).not.toBeDisabled());
-      await user.selectOptions(screen.getByLabelText('Person'), 'user-new');
+      await user.selectOptions(screen.getByLabelText('Person'), 'user-jane');
       await user.selectOptions(screen.getByLabelText('Team'), 'sophos-team-web');
       await user.click(screen.getByRole('radio', { name: 'Org admin' }));
       await user.click(screen.getByRole('button', { name: 'Add member' }));
 
       await waitFor(() =>
         expect(mockAddTeamMember).toHaveBeenCalledWith('sophos', 'sophos-team-web', {
-          userId: 'user-new',
+          userId: 'user-jane',
         })
       );
+      // An EXISTING member already has an org membership carrying a role, so the role
+      // has to be written separately — unlike the into-org path, where the create
+      // carries it. (#4943 keeps both, one per case.)
       await waitFor(() =>
         expect(mockAssignUserRole).toHaveBeenCalledWith({
-          user_id: 'user-new',
+          user_id: 'user-jane',
           role: 'org_admin',
           org_id: 'sophos',
         })
@@ -1160,6 +1192,270 @@ describe('Organizations admin panel', () => {
       expect(screen.getByTestId('add-member-teams-truncated')).toHaveTextContent(
         /Not every team is listed/
       );
+    });
+  });
+
+  /**
+   * Issue #4943 — the add-member modal that spun forever.
+   *
+   * A platform admin picked a person from the platform-wide roster and a team, hit
+   * "Add member", and watched the dialog spin: the server had refused three times with
+   * 404 (the person was not an org member, and the team-add route is org-scoped by
+   * design) but the modal rendered none of it. Two defects, two groups of tests: the
+   * missing error path, and the missing into-org step that makes the picker's own
+   * roster actionable.
+   */
+  describe('Members tab — adding a person who is not in the org yet (#4943)', () => {
+    /** The server's org-scoped refusal, verbatim from the live repro. */
+    const NOT_IN_ORG = {
+      error: 'resource_not_found',
+      message: "User 'user-new' not found",
+      details: { resource_type: 'User', resource_id: 'user-new' },
+    };
+
+    /** Open the modal, wait for the roster, pick a person and a team. */
+    async function openAddMember(
+      user: ReturnType<typeof userEvent.setup>,
+      personId: string,
+      teamId = 'sophos-team-web'
+    ) {
+      await user.click(screen.getByRole('button', { name: '+ Add member' }));
+      await waitFor(() => expect(screen.getByLabelText('Person')).not.toBeDisabled());
+      await user.selectOptions(screen.getByLabelText('Person'), personId);
+      await user.selectOptions(screen.getByLabelText('Team'), teamId);
+    }
+
+    it('renders the server refusal inside the modal and re-enables the button', async () => {
+      // Root cause 1. The page-level banner the message used to land in is rendered
+      // BEHIND the open dialog, so a correct 404 was invisible and the spinner never
+      // stopped. Note the pick is Jane — already an org member — so nothing on the
+      // page has pre-flagged this as an into-org case: the message has to come from
+      // the failed call itself.
+      mockAddTeamMember.mockRejectedValue({
+        error: 'team_membership_conflict',
+        message: 'Team sophos-team-web is in another organization.',
+      });
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await openAddMember(user, 'user-jane');
+      await user.click(screen.getByRole('button', { name: 'Add member' }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('add-member-error')).toHaveTextContent(
+          'Team sophos-team-web is in another organization.'
+        )
+      );
+      // Announced, not just drawn — the admin's focus is on the button, not the alert.
+      expect(screen.getByTestId('add-member-error').closest('[role="alert"]')).not.toBeNull();
+      // The modal stays open (the message is in it) and the submit is usable again:
+      // `isSubmitting` reset is the difference between "refused" and "hung".
+      const submit = screen.getByRole('button', { name: 'Add member' });
+      await waitFor(() => expect(submit).not.toBeDisabled());
+      expect(screen.getByLabelText('Person')).toBeInTheDocument();
+    });
+
+    it('asks for confirmation, naming person, org and team, when the pick is from another org', async () => {
+      // Root cause 2, caught up front from the roster row's own org — no failed
+      // request needed. The submit is about to do something the old label did not
+      // say, so it says it first.
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await openAddMember(user, 'user-new');
+
+      const confirm = screen.getByTestId('add-member-org-join-confirm');
+      expect(confirm).toHaveTextContent('newbie');
+      expect(confirm).toHaveTextContent('Sophos');
+      expect(confirm).toHaveTextContent('web-team');
+      expect(
+        screen.getByRole('button', { name: 'Add to organization and team' })
+      ).toBeInTheDocument();
+      // Nothing has been written yet — this is a question, not a progress report.
+      expect(mockAddOrgMember).not.toHaveBeenCalled();
+      expect(mockAddTeamMember).not.toHaveBeenCalled();
+    });
+
+    it('adds into the org and then into the team, using the id the org step returned', async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await openAddMember(user, 'user-new');
+      await user.click(screen.getByRole('button', { name: 'Add to organization and team' }));
+
+      await waitFor(() =>
+        expect(mockAddOrgMember).toHaveBeenCalledWith('sophos', {
+          userId: 'user-new',
+          role: 'member',
+        })
+      );
+      // `user-new-in-sophos`, NOT `user-new`: `users` is one row per (person, org), and
+      // the team-add route resolves by `(id, org_id)`. Passing the platform-roster id
+      // here would 404 exactly as before, which is what makes this the load-bearing
+      // assertion of the whole fix.
+      await waitFor(() =>
+        expect(mockAddTeamMember).toHaveBeenCalledWith('sophos', 'sophos-team-web', {
+          userId: 'user-new-in-sophos',
+        })
+      );
+      // The org step already carried the role, so no separate role write piles on top.
+      expect(mockAssignUserRole).not.toHaveBeenCalled();
+      // Succeeded → the modal closes and the roster is refetched, so the new member
+      // and their team chip actually appear.
+      await waitFor(() => expect(screen.getByText('Member added.')).toBeInTheDocument());
+      expect(screen.queryByTestId('add-member-org-join-confirm')).not.toBeInTheDocument();
+    });
+
+    it('carries the org-admin role into the org step rather than a second role write', async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await openAddMember(user, 'user-new');
+      await user.click(screen.getByRole('radio', { name: 'Org admin' }));
+      await user.click(screen.getByRole('button', { name: 'Add to organization and team' }));
+
+      await waitFor(() =>
+        expect(mockAddOrgMember).toHaveBeenCalledWith('sophos', {
+          userId: 'user-new',
+          role: 'org_admin',
+        })
+      );
+      // The membership the org step creates already holds the role — a follow-up
+      // `assignUserRole` would be a second write of the same fact.
+      await waitFor(() => expect(mockAddTeamMember).toHaveBeenCalled());
+      expect(mockAssignUserRole).not.toHaveBeenCalled();
+    });
+
+    it('raises the confirmation from the server 404 when the roster gave no hint', async () => {
+      // The roster row is the fast path, not the only one: a row whose org the picker
+      // could not report still has to end in a question rather than a dead end. So the
+      // first submit is refused, the message is shown, and the retry is the confirmed
+      // two-step.
+      mockListPlatformUsers.mockResolvedValue({
+        items: [
+          {
+            id: 'user-new',
+            orgId: '',
+            email: 'new@studio.test',
+            name: 'New Person',
+            githubUsername: 'newbie',
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        hasMore: false,
+      });
+      mockAddTeamMember.mockRejectedValueOnce(NOT_IN_ORG);
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await openAddMember(user, 'user-new');
+
+      // No hint up front: this is the one-step submit.
+      expect(screen.queryByTestId('add-member-org-join-confirm')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Add member' }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('add-member-error')).toHaveTextContent("User 'user-new' not found")
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('add-member-org-join-confirm')).toHaveTextContent('newbie')
+      );
+      expect(mockAddOrgMember).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole('button', { name: 'Add to organization and team' }));
+      await waitFor(() => expect(mockAddOrgMember).toHaveBeenCalledWith('sophos', {
+        userId: 'user-new',
+        role: 'member',
+      }));
+      await waitFor(() =>
+        expect(mockAddTeamMember).toHaveBeenLastCalledWith('sophos', 'sophos-team-web', {
+          userId: 'user-new-in-sophos',
+        })
+      );
+    });
+
+    it('does not turn an unrelated failure into an into-org question', async () => {
+      // The trigger is the stable `resource_not_found` code, not "the last call
+      // failed". A 500 must be reported as itself: offering to grant somebody org
+      // membership because the database was briefly down would be a real misstep.
+      mockAddTeamMember.mockRejectedValue({
+        error: 'internal_error',
+        message: 'Something went wrong.',
+      });
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await openAddMember(user, 'user-jane');
+      await user.click(screen.getByRole('button', { name: 'Add member' }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('add-member-error')).toHaveTextContent('Something went wrong.')
+      );
+      expect(screen.queryByTestId('add-member-org-join-confirm')).not.toBeInTheDocument();
+      expect(mockAddOrgMember).not.toHaveBeenCalled();
+    });
+
+    it('clears a stale refusal when the admin picks somebody else', async () => {
+      mockAddTeamMember.mockRejectedValueOnce(NOT_IN_ORG);
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await openAddMember(user, 'user-jane');
+      await user.click(screen.getByRole('button', { name: 'Add member' }));
+      await waitFor(() => expect(screen.getByTestId('add-member-error')).toBeInTheDocument());
+
+      // A new pick invalidates the old answer — leaving the previous person's 404 on
+      // screen next to a different name is its own kind of lie.
+      await user.selectOptions(screen.getByLabelText('Person'), 'user-new');
+      expect(screen.queryByTestId('add-member-error')).not.toBeInTheDocument();
+    });
+
+    it('keeps the one-step add for a person who is already an org member', async () => {
+      // The regression guard: the confirmation must not appear for the common case,
+      // and the add must stay a single call.
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await openAddMember(user, 'user-jane');
+
+      expect(screen.queryByTestId('add-member-org-join-confirm')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Add member' }));
+
+      await waitFor(() =>
+        expect(mockAddTeamMember).toHaveBeenCalledWith('sophos', 'sophos-team-web', {
+          userId: 'user-jane',
+        })
+      );
+      expect(mockAddOrgMember).not.toHaveBeenCalled();
+    });
+
+    it('tells an org admin what they cannot do and what to do instead', async () => {
+      // The affordance was already hidden (the roster read is platform-admin-only);
+      // #4943 adds the sentence, because a missing button with no explanation is the
+      // same dead end as the modal that never spoke.
+      mockPermissions.mockReturnValue(permissions({ isPlatformAdmin: () => false }));
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+
+      const refusal = screen.getByTestId('add-member-org-admin-refusal');
+      expect(refusal).toHaveTextContent(/Only a platform administrator/);
+      expect(refusal).toHaveTextContent(/access request/);
+      expect(screen.queryByRole('button', { name: '+ Add member' })).not.toBeInTheDocument();
+    });
+
+    it('says nothing about adding members to somebody who cannot manage the org', async () => {
+      // A read-only viewer is not being refused anything they were offered.
+      mockPermissions.mockReturnValue(
+        permissions({ isPlatformAdmin: () => false, canUpdateOrganizations: () => false })
+      );
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+
+      expect(screen.queryByTestId('add-member-org-admin-refusal')).not.toBeInTheDocument();
     });
   });
 });

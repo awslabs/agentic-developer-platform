@@ -120,6 +120,28 @@ class CognitoNotConfiguredError(BedrockGatewayError):
         )
 
 
+class UnknownPlatformUserError(BedrockGatewayError):
+    """Raised when an org-membership write names a ``users.id`` nobody holds.
+
+    Issue #4943. 422, not 404, and the distinction carries information the operator
+    needs. On this route the org in the path exists and the caller may write to it —
+    what is wrong is a value in the *body*, so the request is unprocessable rather
+    than the resource being absent. A 404 here would also be actively misleading in
+    the one place it matters: the sibling team-add route returns 404 precisely to
+    mean "that person is not in this org", which is the condition this route exists
+    to fix. Two different diagnoses must not share one status code on the flow that
+    chains them.
+    """
+
+    def __init__(self, user_id: str):
+        super().__init__(
+            error="unknown_platform_user",
+            message=f"No platform user with id '{user_id}' exists. Pick a person from the roster rather than typing an id.",
+            status_code=422,
+            details={"user_id": user_id},
+        )
+
+
 class SecondPrimaryTeamError(BedrockGatewayError):
     """Raised when a write would give a user a second primary team in one org.
 
