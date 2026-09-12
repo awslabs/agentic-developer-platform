@@ -32,8 +32,12 @@ async def linked_user_ids(db: AsyncSession, user: User, *, username: str = "") -
         )
     # Only the SIGNED Cognito username is accepted here. Do not substitute a
     # provider_user_id supplied to the identity-link API or a mutable email.
-    if username.startswith("GitHub_") and username.removeprefix("GitHub_").isdigit():
-        predicates.append((UserIdentity.provider == "github") & (UserIdentity.provider_user_id == username.removeprefix("GitHub_")))
+    # Case-insensitive Cognito pools normalize the broker's GitHub_<id> name
+    # to github_<id> in tokens. Normalize only the provider prefix; the numeric
+    # account id remains the immutable identity proof.
+    provider, _, provider_user_id = username.partition("_")
+    if provider.lower() == "github" and provider_user_id.isascii() and provider_user_id.isdigit():
+        predicates.append((UserIdentity.provider == "github") & (UserIdentity.provider_user_id == provider_user_id))
     if not predicates:
         return {user.id}
     rows = await db.scalars(

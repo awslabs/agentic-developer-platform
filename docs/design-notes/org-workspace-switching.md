@@ -31,7 +31,9 @@ does not promote that organization's membership to platform administrator.
   can establish the same link. This supports native Cognito accounts without
   requiring GitHub.
 - Existing GitHub placements are discoverable using the immutable numeric ID in
-  the **validated token's** `GitHub_<id>` username. Arbitrary self-linked external
+  the **validated token's** `GitHub_<id>` username. Case-insensitive Cognito pools
+  return `github_<id>`; the provider prefix is matched without case sensitivity
+  while the account ID must remain ASCII digits. Arbitrary self-linked external
   identities and mutable email addresses are not login proof. Conflicting account
   ownership and ambiguous matches fail closed.
 - Role resolution reads the membership for the signed `org_id`. Another

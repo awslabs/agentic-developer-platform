@@ -87,7 +87,19 @@ async def test_native_placement_lists_and_switches_without_github(db_session, se
 
 
 @pytest.mark.asyncio
-async def test_legacy_github_secondary_row_resolved_by_signed_username(db_session, seeded, claims):
+@pytest.mark.parametrize(
+    ("username", "can_select"),
+    [
+        ("GitHub_123", True),
+        ("github_123", True),
+        ("GITHUB_123", True),
+        ("github_123_extra", False),
+        ("github_", False),
+        ("github_１２３", False),
+        ("gitlab_123", False),
+    ],
+)
+async def test_legacy_github_secondary_row_requires_signed_numeric_username(db_session, seeded, claims, username, can_select):
     target = User(id="github-work", org_id="work", team_id="", email="different@example.com")
     db_session.add(target)
     await db_session.flush()
@@ -99,7 +111,15 @@ async def test_legacy_github_secondary_row_resolved_by_signed_username(db_sessio
     )
     await db_session.commit()
     assert [item.org_id for item in (await list_workspaces(context(), db_session)).items] == ["home"]
-    signed = context(cognito_username="GitHub_123")
+    signed = context(cognito_username=username)
+    expected_orgs = {"home", "work"} if can_select else {"home"}
+    assert {item.org_id for item in (await list_workspaces(signed, db_session)).items} == expected_orgs
+    if not can_select:
+        with pytest.raises(HTTPException) as exc:
+            await select_workspace(db_session, signed, "work", claims)
+        assert exc.value.status_code == 403
+        claims.set.assert_not_awaited()
+        return
     selected = await select_workspace(db_session, signed, "work", claims)
     assert selected.user_id == target.id
     # The proven switch creates an explicit login link for downstream resolution.
@@ -371,7 +391,8 @@ async def test_refreshed_context_scopes_costs_routes_and_credentials(db_session,
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_login_matches_fail_closed(db_session, seeded, claims):
+@pytest.mark.parametrize("username", ["GitHub_123", "github_123"])
+async def test_ambiguous_login_matches_fail_closed(db_session, seeded, claims, username):
     await place(db_session, seeded)
     another = User(id="another-work", org_id="work", team_id="", email="other@example.com")
     db_session.add(another)
@@ -384,7 +405,7 @@ async def test_ambiguous_login_matches_fail_closed(db_session, seeded, claims):
     )
     await db_session.commit()
     with pytest.raises(HTTPException) as exc:
-        await select_workspace(db_session, context(cognito_username="GitHub_123"), "work", claims)
+        await select_workspace(db_session, context(cognito_username=username), "work", claims)
     assert exc.value.status_code == 409
     claims.set.assert_not_awaited()
 
