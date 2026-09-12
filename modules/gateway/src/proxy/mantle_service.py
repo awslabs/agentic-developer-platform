@@ -35,11 +35,14 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from uuid import uuid4
 
 import httpx
 
 from src.budget.enforcement_service import reconcile_budget_reservation
 from src.budget.pricing import pricing_service
+from src.chat_logging.service import ChatLoggingService
 from src.proxy.bedrock_routing import resolve_shadow_target
 from src.proxy.mantle_auth import MantleAuth
 from src.proxy.service import _current_client_tool
@@ -187,6 +190,7 @@ class MantlePassthroughService:
         self._on_demand_patterns = [p.strip() for p in on_demand_models.split(",") if p.strip()]
         self._timeout = timeout
         self._http_client = http_client
+        self._chat_logger: ChatLoggingService | None = None
 
     @property
     def upstream_url(self) -> str:
@@ -492,6 +496,33 @@ class MantlePassthroughService:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
+
+        # Budget & Spend reads budget_usage, not usage_logs. Only the S3 event
+        # consumed by budget-usage-tracker settles that ledger; writing the row
+        # below alone leaves Codex spend invisible once its reservation expires.
+        # Emit once from this common streaming/non-streaming completion hook.
+        # Usage-only payload: no prompt, response text, or credentials are needed
+        # for settlement. Missing usage is not a measured zero.
+        if usage:
+            try:
+                if self._chat_logger is None:
+                    self._chat_logger = ChatLoggingService()
+                self._chat_logger.log_chat_async(
+                    request_id=request_id or str(uuid4()),
+                    timestamp=datetime.now(UTC),
+                    org_id=context.attributed_org_id,
+                    user_id=context.user_id,
+                    team_id=context.team_id,
+                    root_human_id=context.attributed_user_id,
+                    account_type="service" if context.account_type == "service" else "human",
+                    model=model,
+                    api_format="openai",
+                    latency_ms=latency_ms,
+                    request_body={},
+                    response_body={"model": model, "usage": usage},
+                )
+            except Exception as exc:  # noqa: BLE001 - settlement must not break the proxy or usage logging
+                logger.warning("Failed to schedule mantle budget settlement", extra={"error": str(exc), "model": model})
 
         try:
             # Issue #2792: compute real cost via the shared pricing table instead

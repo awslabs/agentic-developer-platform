@@ -8,6 +8,11 @@ on:
       - 'modules/gateway/k8s/**'
       - 'modules/gateway/frontend/**'
       - 'modules/gateway/alembic/versions/**'
+      - 'modules/gateway/lambda/budget-usage-tracker/**'
+      - 'modules/gateway/lambda/pricing-refresh/**'
+      - 'modules/gateway/lambda/shared/pricing_fallback.py'
+      - 'modules/gateway/lambda/shared/db.py'
+      - 'modules/gateway/lambda/shared/root_principal.py'
       - '.github/workflows/gateway-deploy.yml'
     branches:
       - main
@@ -50,6 +55,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
       migrations: ${{ steps.filter.outputs.migrations }}
+      budget_lambdas: ${{ steps.filter.outputs.budget_lambdas }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -60,6 +66,7 @@ jobs:
             echo "backend=true" >> "$GITHUB_OUTPUT"
             echo "frontend=true" >> "$GITHUB_OUTPUT"
             echo "migrations=false" >> "$GITHUB_OUTPUT"
+            echo "budget_lambdas=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # On push: diff the merge against its parent.
@@ -70,6 +77,7 @@ jobs:
           BACKEND=false
           FRONTEND=false
           MIGRATIONS=false
+          BUDGET_LAMBDAS=false
           if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/Dockerfile|modules/gateway/k8s/)'; then
             BACKEND=true
           fi
@@ -87,9 +95,14 @@ jobs:
             # even after the fix had merged. Force a backend rebuild.
             BACKEND=true
           fi
+          if echo "$CHANGED" | grep -qE '^modules/gateway/lambda/(budget-usage-tracker/|pricing-refresh/|shared/(pricing_fallback|db|root_principal)\.py$)'; then
+            BUDGET_LAMBDAS=true
+            BACKEND=true
+          fi
           echo "backend=$BACKEND" >> "$GITHUB_OUTPUT"
           echo "frontend=$FRONTEND" >> "$GITHUB_OUTPUT"
           echo "migrations=$MIGRATIONS" >> "$GITHUB_OUTPUT"
+          echo "budget_lambdas=$BUDGET_LAMBDAS" >> "$GITHUB_OUTPUT"
 
   deploy-backend:
     name: Build and Deploy Backend
@@ -112,6 +125,42 @@ jobs:
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Deploy budget tracker and pricing code
+        if: needs.changes.outputs.budget_lambdas == 'true'
+        # These functions are provisioned by Terraform, but their source changes
+        # must ship with the gateway. Update code only, before enabling new event
+        # producers in the backend. Keep both archives in sync with budget-lambda/main.tf.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          source = Path('modules/gateway/lambda')
+          for name in ('budget-usage-tracker', 'pricing-refresh'):
+              files = [source / name / 'handler.py', source / 'shared/db.py', source / 'shared/pricing_fallback.py']
+              if name == 'budget-usage-tracker':
+                  files.append(source / 'shared/root_principal.py')
+              with ZipFile(f'/tmp/{name}.zip', 'w') as archive:
+                  for path in files:
+                      archive.write(path, path.name)
+          PY
+          for name in budget-usage-tracker pricing-refresh; do
+            function="arn:aws:lambda:${AWS_REGION}:${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}:function:bedrockgw-${ENVIRONMENT}-${name}"
+            if ! aws lambda get-function-configuration --function-name "$function" \
+                --query FunctionName --output text >/dev/null 2>/tmp/budget-function-error; then
+              if grep -q 'ResourceNotFoundException' /tmp/budget-function-error; then
+                echo "::notice::${name} is not provisioned in this environment; skipping code update."
+                continue
+              fi
+              cat /tmp/budget-function-error >&2
+              exit 1
+            fi
+            aws lambda update-function-code --function-name "$function" \
+              --zip-file "fileb:///tmp/${name}.zip" --query '{FunctionName:FunctionName,CodeSha256:CodeSha256}'
+            aws lambda wait function-updated --function-name "$function"
+          done
 
       - name: Compute build vars
         id: vars

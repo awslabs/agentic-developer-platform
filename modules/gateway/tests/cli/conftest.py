@@ -283,11 +283,13 @@ if [[ "$1" == "configure" && "$2" == "export-credentials" ]]; then
     exit 0
 fi
 
-# Issue #4145: Handle cognito-idp initiate-auth (REFRESH_TOKEN_AUTH).
+# Handle both public import and admin token refresh (REFRESH_TOKEN_AUTH).
+# Refresh prefers admin-initiate-auth when a pool id is configured; letting
+# that command fall through invokes real AWS with the fixture credentials.
 # Behaviour is driven by env vars so tests can force each failure mode:
 #   MOCK_COGNITO_RESULT=ok|notauthorized|other|no_tokens  (default: ok)
 #   MOCK_AWS_LOG=<path>  appends the full argv for assertions
-if [[ "$1" == "cognito-idp" && "$2" == "initiate-auth" ]]; then
+if [[ "$1" == "cognito-idp" && ( "$2" == "initiate-auth" || "$2" == "admin-initiate-auth" ) ]]; then
     if [[ -n "${MOCK_AWS_LOG:-}" ]]; then
         echo "$*" >> "${MOCK_AWS_LOG}"
     fi

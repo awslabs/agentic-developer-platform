@@ -250,6 +250,29 @@ MODEL_PRICING: dict[str, dict[str, Decimal]] = {
         "input": Decimal("0.0125"),
         "output": Decimal("0.0125"),
     },
+    # OpenAI Responses models: match the gateway's existing per-1K-token rates
+    # in src/budget/pricing.py. Codex settlement now reaches this Lambda too;
+    # falling back to Claude's default would overwrite its recorded cost.
+    "openai.gpt-5.5": {
+        "input": Decimal("0.0055"),
+        "output": Decimal("0.033"),
+    },
+    "openai.gpt-5.6-sol": {
+        "input": Decimal("0.0055"),
+        "output": Decimal("0.033"),
+    },
+    "openai.gpt-5.6-terra": {
+        "input": Decimal("0.00275"),
+        "output": Decimal("0.0165"),
+    },
+    "openai.gpt-5.6-luna": {
+        "input": Decimal("0.0011"),
+        "output": Decimal("0.0066"),
+    },
+    "openai.gpt-oss-120b": {
+        "input": Decimal("0.0001545"),
+        "output": Decimal("0.000618"),
+    },
     # Default fallback pricing (conservative estimate)
     "default": {
         "input": Decimal("0.003"),

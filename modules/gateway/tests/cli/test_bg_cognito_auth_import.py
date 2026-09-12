@@ -389,9 +389,8 @@ class TestExistingCommandsUnchanged:
     def test_refresh_after_import_reuses_seeded_config(self, run_bg_cognito_auth, cognito_home: Path, gateway_with_discovery) -> None:
         """`refresh` reads the seeded config and refreshes the token store.
 
-        `refresh` then continues into the Identity Pool exchange, which `import`
-        deliberately does not configure — so the command as a whole fails. What
-        this asserts is that the seeded config is usable by the refresh path.
+        Import does not configure an Identity Pool. Refresh therefore succeeds
+        after updating the tokens, without attempting an AWS credential exchange.
         """
         seed = run_bg_cognito_auth(
             ["import", "--gateway-url", gateway_with_discovery.url],
@@ -403,4 +402,5 @@ class TestExistingCommandsUnchanged:
         assert "Refreshing tokens" in result.stdout
         assert "Tokens refreshed successfully" in result.stdout
         assert _tokens(cognito_home)["access_token"] == "mock.access.token"
-        assert result.returncode != 0  # Identity Pool exchange (unchanged path) not configured
+        assert result.returncode == 0, result.stderr
+        assert not (cognito_home / ".aws" / "credentials").exists()
