@@ -1,6 +1,15 @@
 # Design Note: One Period Contract for the Budget & Spend Read Path (Issue #4970)
 
-> **Status**: Design — awaiting issue-owner approval before implementation
+> **Status**: **Approved** — recorded on the review of design PR #4971 (merged as
+> `acb9886`), approved on the issue owner's behalf under their explicit delegation.
+> Decisions settled as recommended in §6: **D1** no backend alias (client-only fix),
+> **D2** response-period validation in both service functions — extended by the review
+> to fail clearly for *missing* period metadata as well as a mismatch, rejecting through
+> existing error handling and never inventing zero spend — and **D3** run pagination
+> stays out of scope with the existing cursor/page-size helper behaviour preserved.
+> Implemented for defect #4970 by child issue #4973. Approval of this design is not
+> completion of #4970: the implementation still requires code review, CI and deployed
+> browser verification of all three tabs and the runs drill-down.
 > **Author**: @agent-architect
 > **Date**: 2026-09-12
 > **Issue**: #4970 — Daily and Weekly tabs display Monthly spend and runs

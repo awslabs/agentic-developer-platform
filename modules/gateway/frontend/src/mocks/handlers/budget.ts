@@ -1,5 +1,33 @@
 import { http, HttpResponse } from 'msw';
-import { mockBudgetEnvelope, mockBudgetRuns, mockPersonCap, mockPersonCapEnforcing, mockPersonDefaultFor } from '../data/budgetSpend';
+import {
+  mockBudgetEnvelopeFor,
+  mockBudgetRunsFor,
+  mockPersonCapEnforcing,
+  mockPersonCapFor,
+  mockPersonDefaultFor,
+} from '../data/budgetSpend';
+import { BUDGET_PERIOD_TYPES } from '@/types/budget';
+import type { BudgetPeriodType } from '@/types/budget';
+
+/**
+ * Resolve the calendar period a `/me/budget*` request asked for, exactly as the routes
+ * do — Issue #4970.
+ *
+ * The wire key is `period_type` and nothing else: `me_routes.py` declares it that way
+ * on both routes and `grep 'alias='` over `src/budget/` finds none, so a request
+ * carrying only `period` has NOT specified a period. Such a request resolves to the
+ * route's `"monthly"` default here, which is precisely the wrong-but-successful answer
+ * the defect produced — reproducing it is what lets a test detect it.
+ *
+ * An out-of-range value also falls back to the default rather than throwing, because
+ * the route's `Literal` would have rejected it with a 422 long before any handler ran;
+ * the frontend's selector can only offer the three, so this path is unreachable from
+ * the UI and needs no more faithful a model than a safe default.
+ */
+function requestedPeriod(request: Request): BudgetPeriodType {
+  const value = new URL(request.url).searchParams.get('period_type');
+  return BUDGET_PERIOD_TYPES.includes(value as BudgetPeriodType) ? (value as BudgetPeriodType) : 'monthly';
+}
 
 const mockBudgets = [
   {
@@ -186,10 +214,23 @@ export const budgetHandlers = [
   //
   // Fixtures come from `mocks/data/budgetSpend.ts`, which is transcribed from
   // `src/budget/schemas.py`. See that file's header for why provenance matters here.
+  //
+  // **These handlers READ THE QUERY, because the routes do** — Issue #4970. They
+  // previously answered with a fixed monthly body whatever was asked for, which is why
+  // a client sending the period under the wrong wire key passed every test that goes
+  // through MSW while showing monthly figures on the Daily and Weekly tabs in
+  // production. A mock that ignores the parameter under test can only confirm that a
+  // request was made, never that it was the right one.
+  //
+  // They model the routes' behaviour exactly, including the parts that made the defect
+  // silent: the key is `period_type`, absence resolves to the `"monthly"` default, and
+  // an unknown parameter (`period`, say) is IGNORED rather than rejected — so a
+  // regression reproduces the real 200-with-the-wrong-body here instead of erroring.
+  // Do not "fix" a failing test by relaxing this back to a canned body.
   // ---------------------------------------------------------------------------
-  http.get('/api/me/budget', () => HttpResponse.json(mockBudgetEnvelope)),
+  http.get('/api/me/budget', ({ request }) => HttpResponse.json(mockBudgetEnvelopeFor(requestedPeriod(request)))),
 
-  http.get('/api/me/budget/runs', () => HttpResponse.json(mockBudgetRuns)),
+  http.get('/api/me/budget/runs', ({ request }) => HttpResponse.json(mockBudgetRunsFor(requestedPeriod(request)))),
 
   // ---------------------------------------------------------------------------
   // Person limits — Issue #4629 (#4620 · C3), narrowed to admin-governed by #4690.
@@ -209,7 +250,12 @@ export const budgetHandlers = [
   // No `person_anchor` in the `/me/*` path: the self surface derives the person from
   // the token, so there is no target for a client to send.
   // ---------------------------------------------------------------------------
-  http.get('/api/me/budget/person-cap', () => HttpResponse.json(mockPersonCap)),
+  // Period-aware for the same reason as the two reads above (#4970): this cap is the
+  // DENOMINATOR beside the headline figure, it is a per-period row, and this client
+  // already sent `period_type` correctly. A canned monthly cap would agree with every
+  // tab, hiding whether numerator and denominator describe the same period — which is
+  // the disagreement the defect put on screen (a daily limit under monthly spend).
+  http.get('/api/me/budget/person-cap', ({ request }) => HttpResponse.json(mockPersonCapFor(requestedPeriod(request)))),
 
   // The platform-admin targeted write — Issue #4687.
   //

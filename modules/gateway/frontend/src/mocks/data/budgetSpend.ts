@@ -25,6 +25,7 @@
  */
 
 import type {
+  BudgetBand,
   BudgetEnvelopeResponse,
   BudgetLine,
   BudgetPeriodType,
@@ -380,3 +381,204 @@ export const mockPersonDefaultPlatform: PersonDefaultResponse = mockPersonDefaul
 
 /** A scope with NO rule of its own. `cap_usd` is `null`, never `'0.00'`. */
 export const mockPersonDefaultUncapped: PersonDefaultResponse = mockPersonDefaultFor('org:org-acme', 'monthly');
+
+// ---------------------------------------------------------------------------
+// PER-PERIOD fixtures — Issue #4970 (implementation child #4973)
+// ---------------------------------------------------------------------------
+//
+// Why these exist: every fixture above describes ONE period (monthly), and the MSW
+// handlers answered with them whatever the query. So a client that asked for `daily`
+// under the wrong wire key got a monthly body and every test still passed — which is
+// precisely how #4970 shipped and stayed invisible. Period-aware fixtures plus
+// period-aware handlers are what make a wrong key observable in CI.
+//
+// Both DATES and MONEY differ per period, deliberately. Distinct windows alone would
+// catch a client that requested the wrong period, but not one that requested the right
+// window and rendered another period's body — so the amounts are distinct too, and a
+// rendering assertion on either one fails on the pre-fix mapping.
+//
+// PROVENANCE is unchanged and still the point (see this file's header): these are the
+// same `MyBudgetResponse` / `MyBudgetRunsResponse` shapes transcribed from
+// `src/budget/schemas.py`, with only the period window and figures varied. Money stays
+// a STRING — caps at 2dp, spend/headroom at 6dp — and `utilization_pct`/`band` are
+// derived exactly as `_band_for` (`me_routes.py:304`) derives them, off the 80/95
+// thresholds, so no fixture describes a response the backend could not produce.
+//
+// Follows the `mockPersonDefaultFor(scope, period)` precedent above: one function
+// per response shape, keyed by period, rather than nine hand-maintained constants.
+
+/** The three calendar windows, as the routes' `_resolve_period_bounds` would resolve them. */
+const PERIOD_WINDOWS: Record<BudgetPeriodType, { period_start: string; period_end: string; resets_in_days: number }> = {
+  // A single day: start and end are the same date and the counter resets tomorrow.
+  daily: { period_start: '2026-08-30', period_end: '2026-08-30', resets_in_days: 0 },
+  // Monday-anchored ISO week containing that day.
+  weekly: { period_start: '2026-08-24', period_end: '2026-08-30', resets_in_days: 0 },
+  // The calendar month — the same window `mockPeriod` above describes.
+  monthly: { period_start: '2026-08-01', period_end: '2026-08-31', resets_in_days: 1 },
+};
+
+/**
+ * Spend per period for the caller's cloud line, against a constant `200.00` cap.
+ *
+ * Strictly increasing with the window's length, because a longer window contains the
+ * shorter one's runs: a daily figure LARGER than the monthly one would be an
+ * impossible response and a test asserting on it would pin nonsense. The chosen
+ * figures also land in three different bands, so a tab swap changes the badge as well
+ * as the number.
+ */
+const CLOUD_SPEND_BY_PERIOD: Record<BudgetPeriodType, { spend: string; remaining: string; pct: number; band: BudgetBand }> = {
+  // 14.20 / 200 = 7.1% — `none`.
+  daily: { spend: '14.200000', remaining: '185.800000', pct: 7.1, band: 'none' },
+  // 96.55 / 200 = 48.3% (48.275 rounded to 1dp) — still `none`.
+  weekly: { spend: '96.550000', remaining: '103.450000', pct: 48.3, band: 'none' },
+  // 171.40 / 200 = 85.7% — `warning`, the monthly figures the fixtures above carry.
+  monthly: { spend: '171.400000', remaining: '28.600000', pct: 85.7, band: 'warning' },
+};
+
+/** Direct-use spend per period, against a constant `600.00` cap. Same monotonicity rule. */
+const DIRECT_SPEND_BY_PERIOD: Record<BudgetPeriodType, { spend: string; remaining: string; pct: number }> = {
+  // 22.90 / 600 = 3.8% (3.816… → 3.8).
+  daily: { spend: '22.900000', remaining: '577.100000', pct: 3.8 },
+  // 148.35 / 600 = 24.7% (24.725 → 24.7).
+  weekly: { spend: '148.350000', remaining: '451.650000', pct: 24.7 },
+  // 412.80 / 600 = 68.8%.
+  monthly: { spend: '412.800000', remaining: '187.200000', pct: 68.8 },
+};
+
+/** Cloud spend in the caller's SECOND (non-active) partition, per period. */
+const OTHER_ORG_CLOUD_BY_PERIOD: Record<BudgetPeriodType, string> = {
+  daily: '31.500000',
+  weekly: '132.900000',
+  monthly: '243.650000',
+};
+
+/** `BudgetPeriod` for one period — the object both routes echo as `period`. */
+export function mockPeriodFor(period: BudgetPeriodType) {
+  return { period_type: period, ...PERIOD_WINDOWS[period] };
+}
+
+/**
+ * The full `/me/budget` envelope for one period.
+ *
+ * Every internal agreement the monthly fixtures maintain is maintained here at each
+ * period, because a fixture whose parts disagree describes a response the routes
+ * cannot compose: the headline mirrors the BINDING (cloud) line rather than the sum of
+ * `lines`; the active partition's `cloud_spend_usd`/`direct_spend_usd` equal the cloud
+ * and direct lines beside them; `person_envelope.spend_usd` is the exact 6dp sum of
+ * both components of both partitions; and the `note` interpolates this period, as
+ * `_person_envelope` does.
+ */
+export function mockBudgetEnvelopeFor(period: BudgetPeriodType): BudgetEnvelopeResponse {
+  const cloud = CLOUD_SPEND_BY_PERIOD[period];
+  const direct = DIRECT_SPEND_BY_PERIOD[period];
+  const otherOrgCloud = OTHER_ORG_CLOUD_BY_PERIOD[period];
+
+  const cloudLine: BudgetLine = { ...mockCloudLine, spend_usd: cloud.spend, remaining_usd: cloud.remaining, utilization_pct: cloud.pct, band: cloud.band };
+  const directLine: BudgetLine = {
+    ...mockDirectLine,
+    spend_usd: direct.spend,
+    remaining_usd: direct.remaining,
+    utilization_pct: direct.pct,
+    // Direct use is under 80% at every period, so it is never banded above `none`.
+    band: 'none',
+  };
+
+  const perOrg: PerOrgLine[] = [
+    { ...mockPerOrgLines[0], cloud_spend_usd: cloud.spend, direct_spend_usd: direct.spend },
+    { ...mockPerOrgLines[1], cloud_spend_usd: otherOrgCloud, direct_spend_usd: '0.000000' },
+  ];
+
+  const personTotal = (Number(cloud.spend) + Number(direct.spend) + Number(otherOrgCloud)).toFixed(6);
+  const cloudTotal = (Number(cloud.spend) + Number(otherOrgCloud)).toFixed(6);
+
+  return {
+    ...mockBudgetEnvelope,
+    period: mockPeriodFor(period),
+    // The headline mirrors the binding (cloud) line — never the sum of `lines`.
+    spend_usd: cloud.spend,
+    remaining_usd: cloud.remaining,
+    utilization_pct: cloud.pct,
+    band: cloud.band,
+    binding: cloudLine,
+    lines: [directLine, cloudLine],
+    combined_informational: {
+      // The sum of the two separately-capped lines, which no cap governs.
+      spend_usd: (Number(cloud.spend) + Number(direct.spend)).toFixed(6),
+      // Built explicitly rather than spread: the field is OPTIONAL on the response type
+      // (an older backend omits it), so spreading it widens `is_budget` to
+      // `false | undefined` — and the type pins it to the literal `false` on purpose,
+      // because "this object carries no denominator" is not a settable flag.
+      is_budget: false,
+      note: mockBudgetEnvelope.combined_informational!.note,
+    },
+    per_org: perOrg,
+    person_envelope: {
+      ...mockPersonEnvelope,
+      spend_usd: personTotal,
+      cloud_spend_usd: cloudTotal,
+      direct_spend_usd: direct.spend,
+      // `_person_envelope` interpolates the period into the note; a fixture repeating
+      // "monthly" on the daily tab would model an impossible response.
+      note: mockPersonEnvelope.note.replace('monthly period', `${period} period`),
+    },
+  };
+}
+
+/**
+ * The `/me/budget/runs` page for one period.
+ *
+ * Run COUNT varies with the window as well as the money: the daily page carries the
+ * one run that started inside its day, the weekly page adds an earlier run from the
+ * same week, and the monthly page is the three-run fixture above. So an assertion on
+ * the number of rendered rows distinguishes the three periods on its own, and each
+ * page's `subtotal`/`total_run_count` still describe THAT PAGE, per the type's rule.
+ */
+export function mockBudgetRunsFor(period: BudgetPeriodType): BudgetRunsResponse {
+  const all = mockBudgetRuns.items;
+  // Newest first, as the route returns them: slice from the front so each period is a
+  // prefix of the longer window's page.
+  const itemsByPeriod: Record<BudgetPeriodType, typeof all> = {
+    daily: all.slice(0, 1),
+    weekly: all.slice(0, 2),
+    monthly: all,
+  };
+  const items = itemsByPeriod[period];
+
+  // Sum the KNOWN costs only, and mark the subtotal partial when any run on the page is
+  // `unknown` — an `unknown` contributes no amount, because a $0 stand-in is how
+  // absence becomes a figure.
+  const known = items.filter((item) => item.cost.status === 'known' || item.cost.status === 'none_incurred');
+  const partial = items.some((item) => item.cost.status === 'unknown');
+  const amount = known.reduce((total, item) => total + Number(item.cost.amount_usd ?? 0), 0).toFixed(6);
+
+  return {
+    ...mockBudgetRuns,
+    items,
+    subtotal: { ...mockBudgetRuns.subtotal, amount_usd: amount, partial },
+    total_run_count: items.length,
+    period: mockPeriodFor(period),
+  };
+}
+
+/**
+ * The caller's personal limit for one period — the headline figure's DENOMINATOR.
+ *
+ * Period-aware for the same reason the envelope is: the limit is a per-period row
+ * (`person_budget_configs` is keyed by period), the client already sent the right wire
+ * key before #4970, and a canned monthly cap would make the denominator agree with
+ * every tab — hiding whether the numerator and denominator describe the SAME period,
+ * which is the mismatch the defect made visible on screen.
+ *
+ * A shorter window gets a smaller limit, the ordering a person would actually author.
+ * `enforcement_mode` is `hard` at every period (what #4630 writes on save), so the bar
+ * is drawable and its percentage is checkable per tab.
+ */
+export function mockPersonCapFor(period: BudgetPeriodType): PersonCapResponse {
+  const capByPeriod: Record<BudgetPeriodType, string> = {
+    daily: '25.00',
+    weekly: '120.00',
+    monthly: '250.00',
+  };
+
+  return { ...mockPersonCapEnforcing, period_type: period, cap_usd: capByPeriod[period] };
+}
