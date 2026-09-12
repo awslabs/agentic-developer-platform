@@ -2,10 +2,34 @@
  * Entity Selector Component
  *
  * Issue #220: Fix Admin UI Budget/RateLimit CRUD + Organization Page for Org Admins
- * Issue #226: Updated to use Cognito-backed endpoints as single source of truth.
+ * Issue #226: Cognito-backed endpoints as single source of truth (SUPERSEDED — see #4948).
  *
  * A shared component for selecting entity type and entity ID when creating/editing
- * budgets and rate limits. Now fetches entities from Cognito via the backend API.
+ * budgets and rate limits.
+ *
+ * Issue #4948: the org / department / team rungs read the PLATFORM's own tenancy
+ * tables, not Cognito groups. Before this they were sourced from unique
+ * `custom:org_id` / `custom:department_id` / `custom:team_id` values scraped off
+ * Cognito users, which made every platform-natively created org (#4841) and its
+ * default department and team invisible to every governance form: an org with no
+ * signed-in Cognito members contributes no attribute values to scrape, so it could
+ * not be given a budget or a rate limit at all.
+ *
+ * THE ID NAMESPACES. Enforcement compares the stored config against the caller's
+ * token claims with raw string equality and no translation
+ * (`_get_entity_hierarchy` / `_check_entity_budget`), so the picker must emit ids
+ * in exactly the namespace those claims carry:
+ *
+ *   organization -> `organizations.id`  (the `custom:org_id` claim)
+ *   department   -> `departments.id`    (claim-synced from `team.department_id`)
+ *   team         -> `teams.id`          (the `custom:team_id` claim, which is a
+ *                                       projection of `users.team_id`, itself the
+ *                                       server-maintained pointer at the primary
+ *                                       `team_memberships` row)
+ *
+ * The tenancy routes below return exactly these ids. An id in any other namespace —
+ * a Cognito group name, a display name — yields a config that stores cleanly, reads
+ * back "capped", and is never matched: the #4511 inert-config class one rung over.
  */
 
 import { useState, useEffect } from 'react';
@@ -13,8 +37,9 @@ import { Select } from '@/components/ui/Select';
 import { Input } from '@/components/ui/Input';
 import {
   getOrgUsers,
-  getCognitoTeams,
-  getCognitoDepartments,
+  getOrganizations,
+  getDepartments,
+  getOrgTeams,
 } from '@/services/admin';
 import { EntityType } from '@/types';
 import {
@@ -22,6 +47,7 @@ import {
   entityTypeHelpText,
   PERSON_LIMIT_LABEL,
   PERSON_LIMIT_OPTION_VALUE,
+  WORKSPACE_NOUN,
 } from '@/utils/entityLabels';
 
 interface EntityOption {
@@ -38,8 +64,29 @@ interface EntitySelectorProps {
   onEntityTypeChange: (entityType: string) => void;
   onEntityIdChange: (entityId: string) => void;
   disabled?: boolean;
-  /** List of department IDs for fetching teams (needed since teams require dept ID) */
-  departmentIds?: string[];
+  /**
+   * The org whose partition the config must be WRITTEN to — Issue #4948.
+   *
+   * This is the anti-trap half of the fix, and it is not optional decoration.
+   * Enforcement matches a config on TWO columns, not one:
+   *
+   *   BudgetConfig.org_id    == context.attributed_org_id   <- the partition
+   *   BudgetConfig.entity_id == <the rung's claim>          <- the entity
+   *
+   * Before this the org option could only ever be the caller's own org, so the
+   * partition and the entity id agreed by construction. Offering the full org list
+   * breaks that coincidence: a platform admin picking another org while the form
+   * still posts to the caller's own `/organizations/{orgId}/budgets` writes
+   * `org_id=<caller's org>, entity_id=<picked org>`, and enforcement for a member of
+   * the picked org looks in the picked org's partition — so the row matches nothing.
+   *
+   * A consumer that offers this picker MUST therefore route its write to the org
+   * reported here. Callers that do not pass it get no org picker at all (the
+   * caller's own org, exactly as before), so a surface that forgets this cannot
+   * silently author inert configs — it just loses the cross-org affordance. That is
+   * the correct direction for the mistake to fall.
+   */
+  onScopeOrgChange?: (orgId: string) => void;
   /**
    * Offer "User — cloud agents" (`root_user`) alongside "User — direct use".
    *
@@ -98,12 +145,26 @@ async function getAllOrgUsers(orgId: string) {
   return { items, truncated: true };
 }
 
+/**
+ * Every tenancy rung this component sources from the platform's own tables — Issue #4948.
+ *
+ * The person-scoped kinds are deliberately NOT here: they key off the caller's own org
+ * and their partition is already correct, so the org picker is not offered for them and
+ * widening their scope is out of this issue's scope (#4511/#4536/#4687 own those keys).
+ */
+const tenancyEntityTypes: string[] = [
+  EntityType.ORGANIZATION,
+  EntityType.DEPARTMENT,
+  EntityType.TEAM,
+];
+
 export function EntitySelector({
   orgId,
   entityType,
   entityId,
   onEntityTypeChange,
   onEntityIdChange,
+  onScopeOrgChange,
   disabled = false,
   allowCloudAgentScope = false,
   allowPersonLimitScope = false,
@@ -133,6 +194,28 @@ export function EntitySelector({
   // label becomes a person label, because "Entity ID" for a row keyed by a person is
   // the ledger vocabulary #4536 exists to keep off the screen.
   const isPersonLimit = entityType === PERSON_LIMIT_OPTION_VALUE;
+  /**
+   * Whether this kind is scoped by an organization — Issue #4948.
+   *
+   * Governs both the org picker's presence and which id the entity list is fetched
+   * for. Only offered when the consumer supplied `onScopeOrgChange`: without a
+   * consumer that redirects the WRITE to the picked org, a cross-org selection would
+   * author a config in the wrong partition (see the prop's docstring).
+   */
+  const isTenancyScoped = tenancyEntityTypes.includes(entityType);
+  const offerOrgPicker = isTenancyScoped && !!onScopeOrgChange;
+  /**
+   * The org the entity list is drawn from AND the org the config is written to.
+   *
+   * Defaults to the caller's own org, so a consumer that offers no org picker — and
+   * every single-org admin — behaves exactly as before this issue.
+   */
+  const [scopeOrgId, setScopeOrgId] = useState(orgId);
+  const [orgOptions, setOrgOptions] = useState<EntityOption[]>([]);
+  // Disclosed rather than silent (the #4936 M4 rule): a picker showing page 1 of a
+  // longer list reads as the complete set, so the org someone is looking for being
+  // absent reads as "it does not exist" — which is the very bug this issue fixes.
+  const [orgsTruncated, setOrgsTruncated] = useState(false);
   const [entityOptions, setEntityOptions] = useState<EntityOption[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -142,10 +225,54 @@ export function EntitySelector({
   // so the old copy's "try again in a moment" pointed at nothing.
   const [fetchNonce, setFetchNonce] = useState(0);
 
-  // Fetch entities when entity type or org changes
-  // Issue #226: Updated to use Cognito-backed endpoints
+  // The caller's own org is the default write partition, so a change to it must
+  // re-point the scope rather than leave a stale org selected (#4948).
   useEffect(() => {
-    if (!orgId) return;
+    setScopeOrgId(orgId);
+  }, [orgId]);
+
+  /**
+   * The organization list — Issue #4948.
+   *
+   * `GET /admin/organizations` is already scoped server-side by the caller's
+   * authority (`get_accessible_organizations`): a platform admin sees every org, an
+   * org admin sees only their own. So this is not a privilege widening — it shows the
+   * caller the orgs they already administer, which for an org admin is the same
+   * single org the hardcoded option used to name.
+   */
+  useEffect(() => {
+    if (!offerOrgPicker) return;
+
+    let cancelled = false;
+
+    getOrganizations({ pageSize: 100 })
+      .then((response) => {
+        if (cancelled) return;
+        setOrgOptions(
+          response.items.map((org) => ({
+            // `organizations.id` — the namespace the `custom:org_id` claim carries and
+            // therefore the only value enforcement can match. Never the name.
+            value: org.id,
+            label: org.name ? `${org.name} (${org.id})` : org.id,
+          }))
+        );
+        setOrgsTruncated(response.hasMore);
+      })
+      .catch(() => {
+        // The entity pickers below still work against the caller's own org, so a
+        // failed org list is a lost affordance rather than a broken form.
+        if (!cancelled) setOrgOptions([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [offerOrgPicker]);
+
+  // Fetch entities when entity type or scope org changes
+  // Issue #4948: sourced from the platform's tenancy tables, not Cognito groups
+  useEffect(() => {
+    if (!scopeOrgId) return;
 
     let cancelled = false;
 
@@ -159,28 +286,46 @@ export function EntitySelector({
         let options: EntityOption[] = [];
 
         switch (entityType) {
+          // Issue #4948: the org being governed is the org SELECTED above, which is
+          // also the partition the consumer writes to — so the entity id and the
+          // partition agree, which is the whole correctness property here. When no
+          // org picker is offered this is the caller's own org, exactly as before.
           case EntityType.ORGANIZATION:
-            options = [{ value: orgId, label: `Current Organization (${orgId})` }];
+            options = [
+              {
+                value: scopeOrgId,
+                label:
+                  orgOptions.find((org) => org.value === scopeOrgId)?.label ??
+                  `Current Organization (${scopeOrgId})`,
+              },
+            ];
             break;
 
           case EntityType.DEPARTMENT: {
-            const deptResponse = await getCognitoDepartments(orgId);
+            // `departments.id` — the namespace `custom:department_id` is synced from.
+            const deptResponse = await getDepartments(scopeOrgId, { pageSize: 100 });
             if (cancelled) return;
             options = deptResponse.items.map((dept) => ({
-              value: dept.departmentId,
-              label: dept.departmentId,
+              value: dept.id,
+              label: dept.name ? `${dept.name} (${dept.id})` : dept.id,
             }));
             break;
           }
 
           case EntityType.TEAM: {
-            const teamsResponse = await getCognitoTeams(orgId, { pageSize: 100 });
+            // T1's ORG-WIDE team route (#4840 / PR #4917), not the department-scoped
+            // `getTeams`: a budget may be set on any team in the org, and a
+            // department-scoped list would silently hide every team outside whichever
+            // department the admin happened to be looking at.
+            //
+            // `teams.id` is the namespace `custom:team_id` carries — that claim is a
+            // projection of `users.team_id`, which the server keeps pointed at the
+            // person's primary `team_memberships` row.
+            const teamsResponse = await getOrgTeams(scopeOrgId, { pageSize: 100 });
             if (cancelled) return;
             options = teamsResponse.items.map((team) => ({
-              value: team.groupName,
-              label: team.description
-                ? `${team.groupName} (${team.description})`
-                : team.groupName,
+              value: team.id,
+              label: team.name ? `${team.name} (${team.id})` : team.id,
             }));
             break;
           }
@@ -272,8 +417,10 @@ export function EntitySelector({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entityType, orgId, fetchNonce]);
+    // `scopeOrgId` drives the tenancy rungs (#4948); `orgId` still drives the
+    // person-scoped ones, which stay on the caller's own org. `orgOptions` is here so
+    // the organization option picks up its friendly name once the list resolves.
+  }, [entityType, orgId, scopeOrgId, orgOptions, fetchNonce]);
 
   return (
     <div className="space-y-4">
@@ -282,7 +429,14 @@ export function EntitySelector({
         options={entityTypeOptions}
         value={entityType}
         onChange={(e) => {
-          onEntityTypeChange(e.target.value);
+          const nextType = e.target.value;
+          // Person options come from orgId. Reset the write partition along
+          // with the picker when leaving a department/team in another org.
+          if (!tenancyEntityTypes.includes(nextType)) {
+            setScopeOrgId(orgId);
+            onScopeOrgChange?.(orgId);
+          }
+          onEntityTypeChange(nextType);
           onEntityIdChange(''); // Clear entity ID when type changes
         }}
         disabled={disabled}
@@ -297,6 +451,47 @@ export function EntitySelector({
             : undefined
         }
       />
+
+      {/* Issue #4948: the organization the config is authored FOR and written INTO.
+          Rendered above the entity picker because it narrows it — and only for the
+          tenancy-scoped kinds, whose ids live inside one org. */}
+      {offerOrgPicker && (
+        <div>
+          <Select
+            label={WORKSPACE_NOUN}
+            options={orgOptions.map((org) => ({ value: org.value, label: org.label }))}
+            value={scopeOrgId}
+            onChange={(e) => {
+              const nextOrgId = e.target.value;
+              setScopeOrgId(nextOrgId);
+              // Any previously picked department or team belongs to the PREVIOUS org, and
+              // an id from another org is exactly the cross-tenant config this cascade
+              // exists to prevent.
+              onEntityIdChange('');
+              // Redirect the write, not just the list. See `onScopeOrgChange`.
+              onScopeOrgChange?.(nextOrgId);
+            }}
+            disabled={disabled || orgOptions.length === 0}
+            required
+            helperText={
+              entityType === EntityType.ORGANIZATION
+                ? undefined
+                : `Departments and teams are listed for this ${WORKSPACE_NOUN.toLowerCase()}.`
+            }
+          />
+          {orgsTruncated && (
+            // Disclosed, not silent (#4936 M4): an absent org must not read as
+            // "does not exist" — that misreading IS this issue.
+            <p
+              className="mt-1 text-xs text-amber-600 dark:text-amber-400"
+              data-testid="orgs-truncated-warning"
+            >
+              Not every {WORKSPACE_NOUN.toLowerCase()} is listed — there are more than one
+              page shows.
+            </p>
+          )}
+        </div>
+      )}
 
       {isLoading ? (
         <div className="w-full">

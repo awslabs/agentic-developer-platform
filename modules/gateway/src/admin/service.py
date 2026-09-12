@@ -2033,6 +2033,8 @@ class AdminService:
         root_user_display_names = await self._resolve_root_user_display_names(
             org_id, [c.entity_id for c in budget_configs if c.entity_type == "root_user"]
         )
+        # Issue #4948: name the tenancy entities, and learn which ones no longer exist.
+        tenancy_names = await self._resolve_tenancy_entities(org_id, [(c.entity_type, c.entity_id) for c in budget_configs])
         if user_entity_ids and cognito_service:
             try:
                 cognito_users, _ = cognito_service.list_users_by_org(org_id)
@@ -2082,16 +2084,23 @@ class AdminService:
             # keyed in different namespaces, so each reads its own map — a shared
             # lookup would silently show one person's name against another's row.
             display_name = None
+            # Issue #4948: `False` for every kind this check does not apply to, so a
+            # person-scoped row is never flagged by a lookup that was never run for it.
+            unresolved = False
             if config.entity_type == "user":
                 display_name = user_display_names.get(config.entity_id)
             elif config.entity_type == "root_user":
                 display_name = root_user_display_names.get(config.entity_id)
+            elif config.entity_type in ("org", "department", "team"):
+                display_name = tenancy_names.get((config.entity_type, config.entity_id))
+                unresolved = display_name is None
 
             items.append(
                 BudgetListItem(
                     entity_type=config.entity_type,
                     entity_id=config.entity_id,
                     entity_display_name=display_name,
+                    entity_unresolved=unresolved,
                     period_type=config.period_type,
                     budget_amount_usd=config.budget_amount_usd,
                     enforcement_mode=config.enforcement_mode,
@@ -2108,6 +2117,57 @@ class AdminService:
             page_size=page_size,
             has_more=(page * page_size) < total,
         )
+
+    async def _resolve_tenancy_entities(self, org_id: str, keys: list[tuple[str, str]]) -> dict[tuple[str, str], str]:
+        """Resolve org/department/team config keys to their tenancy row's name.
+
+        Issue #4948. Returns a map keyed by ``(entity_type, entity_id)`` holding the
+        display name of the row each key points at. A key that is ABSENT from the
+        result has no such row in this org — which is the only signal available for
+        "this config governs nobody", and the reason the list surfaces it (see
+        ``entity_unresolved``) instead of silently rendering a bare id that looks
+        exactly like a working one.
+
+        Why the caller must not treat absence as "delete it": the entity may have been
+        renamed away, deleted, or — the case that made this issue — authored from the
+        old Cognito-sourced picker, which stored a Cognito *group name* where the
+        column holds a ``teams.id``. Those rows are real spend controls someone
+        believed they had set, so they are flagged for an operator to fix, never
+        hidden. Hiding them reproduces #4511 with the evidence removed.
+
+        Scoped to ``org_id`` in every query: a department or team id from another
+        tenant must read as unresolved here, not borrow that tenant's name.
+        """
+        wanted: dict[str, set[str]] = {"org": set(), "department": set(), "team": set()}
+        for entity_type, entity_id in keys:
+            if entity_type in wanted:
+                wanted[entity_type].add(entity_id)
+
+        resolved: dict[tuple[str, str], str] = {}
+
+        if wanted["org"]:
+            # An org-level config resolves only when its entity id IS the partition it
+            # is stored in. Enforcement fills both columns from the same
+            # `attributed_org_id`, so an `org` row naming a DIFFERENT org than its own
+            # partition can never be matched however real that other org is — the
+            # partition trap this issue's org picker had to be built around. Looking it
+            # up in `organizations` by id alone would resolve it to a name and make an
+            # unmatchable row read as healthy.
+            rows = await self.db.execute(select(Organization).where(Organization.id.in_(wanted["org"] & {org_id})))
+            for org in rows.scalars().all():
+                resolved[("org", org.id)] = org.name or org.id
+
+        if wanted["department"]:
+            rows = await self.db.execute(select(Department).where(Department.org_id == org_id, Department.id.in_(wanted["department"])))
+            for dept in rows.scalars().all():
+                resolved[("department", dept.id)] = dept.name or dept.id
+
+        if wanted["team"]:
+            rows = await self.db.execute(select(Team).where(Team.org_id == org_id, Team.id.in_(wanted["team"])))
+            for team in rows.scalars().all():
+                resolved[("team", team.id)] = team.name or team.id
+
+        return resolved
 
     async def _resolve_root_user_display_names(self, org_id: str, entity_ids: list[str]) -> dict[str, str]:
         """Map canonical ``users.id`` budget keys to a human-readable name.
@@ -2351,10 +2411,19 @@ class AdminService:
         result = await self.db.execute(query)
         configs = result.scalars().all()
 
+        # Issue #4948: name the tenancy entities, and flag the ones that resolve to
+        # nothing in this org — a limit on a stale or wrong-namespace id is silently
+        # not in force, and the list is where an operator can see that.
+        tenancy_names = await self._resolve_tenancy_entities(org_id, [(c.entity_type, c.entity_id) for c in configs])
+
         items = [
             RateLimitListItem(
                 entity_type=config.entity_type,
                 entity_id=config.entity_id,
+                entity_display_name=tenancy_names.get((config.entity_type, config.entity_id)),
+                entity_unresolved=(
+                    config.entity_type in ("org", "department", "team") and (config.entity_type, config.entity_id) not in tenancy_names
+                ),
                 rpm=config.rpm,
                 tpm=config.tpm,
                 concurrent_requests=config.concurrent_requests,

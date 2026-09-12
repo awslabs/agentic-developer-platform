@@ -47,19 +47,22 @@ vi.mock('@/services/personCap', async (importOriginal) => {
   };
 });
 
+// Issue #4948: the team picker was mixing sources — orgs from the platform's tenancy
+// tables, teams from Cognito groups. The scope this panel writes is matched against
+// `users.team_id`, so a Cognito group NAME stored a rule that governs nobody.
 vi.mock('@/services/admin', () => ({
   getOrganizations: vi.fn(),
-  getCognitoTeams: vi.fn(),
+  getOrgTeams: vi.fn(),
 }));
 
 import { getPersonDefault, setPersonDefault, deletePersonDefault } from '@/services/personCap';
-import { getOrganizations, getCognitoTeams } from '@/services/admin';
+import { getOrganizations, getOrgTeams } from '@/services/admin';
 
 const mockGetDefault = getPersonDefault as ReturnType<typeof vi.fn>;
 const mockSetDefault = setPersonDefault as ReturnType<typeof vi.fn>;
 const mockDeleteDefault = deletePersonDefault as ReturnType<typeof vi.fn>;
 const mockGetOrgs = getOrganizations as ReturnType<typeof vi.fn>;
-const mockGetTeams = getCognitoTeams as ReturnType<typeof vi.fn>;
+const mockGetTeams = getOrgTeams as ReturnType<typeof vi.fn>;
 
 function renderPanel() {
   return render(
@@ -82,7 +85,13 @@ beforeEach(() => {
   mockSetDefault.mockResolvedValue(mockPersonDefaultFor('platform', 'monthly'));
   mockDeleteDefault.mockResolvedValue(undefined);
   mockGetOrgs.mockResolvedValue({ items: [{ id: 'org-acme', name: 'Acme' }], total: 1, page: 1, pageSize: 50, hasMore: false });
-  mockGetTeams.mockResolvedValue({ items: [{ groupName: 'platform-eng', description: null, createdAt: null, updatedAt: null }], total: 1, page: 1, pageSize: 50, hasMore: false });
+  mockGetTeams.mockResolvedValue({
+    items: [{ id: 'team-7f3a', name: 'platform-eng', departmentId: 'dept-1', orgId: 'org-acme' }],
+    total: 1,
+    page: 1,
+    pageSize: 50,
+    hasMore: false,
+  });
 });
 
 describe('DefaultPersonLimits — the platform rung', () => {
@@ -136,11 +145,13 @@ describe('DefaultPersonLimits — scope forms reach the wire intact (#4511)', ()
     await user.selectOptions(screen.getByLabelText('Scope'), 'team');
     await user.selectOptions(screen.getByLabelText('GitHub org'), 'org-acme');
     await waitFor(() => expect(mockGetTeams).toHaveBeenCalledWith('org-acme', expect.anything()));
-    await user.selectOptions(screen.getByLabelText('Team'), 'platform-eng');
+    await user.selectOptions(screen.getByLabelText('Team'), 'team-7f3a');
     await user.click(screen.getByTestId('person-default-inspect'));
 
     await waitFor(() =>
-      expect(mockGetDefault).toHaveBeenCalledWith({ scope_type: 'team', org: 'org-acme', team: 'platform-eng' }, expect.any(String)),
+      // `teams.id`, not the team's name (#4948): this scope is matched against
+      // `users.team_id`, so a name here is a rule nobody is ever inside.
+      expect(mockGetDefault).toHaveBeenCalledWith({ scope_type: 'team', org: 'org-acme', team: 'team-7f3a' }, expect.any(String)),
     );
   });
 
@@ -171,7 +182,7 @@ describe('DefaultPersonLimits — scope forms reach the wire intact (#4511)', ()
     await user.selectOptions(screen.getByLabelText('Scope'), 'team');
     await user.selectOptions(screen.getByLabelText('GitHub org'), 'org-acme');
     await waitFor(() => expect(mockGetTeams).toHaveBeenCalledWith('org-acme', expect.anything()));
-    await user.selectOptions(screen.getByLabelText('Team'), 'platform-eng');
+    await user.selectOptions(screen.getByLabelText('Team'), 'team-7f3a');
 
     await user.selectOptions(screen.getByLabelText('GitHub org'), 'org-other');
 

@@ -294,6 +294,16 @@ class BudgetListItem(BaseModel):
     entity_type: str
     entity_id: str
     entity_display_name: str | None = Field(None, description="Human-readable name for the entity (e.g. email, github username)")
+    # Issue #4948: "this budget's entity does not resolve to a tenancy row in this org,
+    # so nothing will ever match it". Set only for org/department/team rows, where the
+    # id namespace is checkable; person-scoped kinds keep their own resolution (#4536)
+    # and never set this. Flagged, never filtered out — the row is a spend control
+    # somebody believes is in force, and removing it from the list removes the only
+    # evidence they have.
+    entity_unresolved: bool = Field(
+        default=False,
+        description="True when the entity id matches no organization/department/team in this org; the config cannot be enforced.",
+    )
     # Issue #4328: PeriodType, not a bare str (see BudgetConfigResponse).
     period_type: PeriodType
     budget_amount_usd: Decimal
@@ -356,6 +366,12 @@ class RateLimitListItem(BaseModel):
 
     entity_type: str
     entity_id: str
+    entity_display_name: str | None = Field(None, description="Human-readable name for org/department/team entities")
+    # Issue #4948 — see BudgetListItem.entity_unresolved.
+    entity_unresolved: bool = Field(
+        default=False,
+        description="True when the entity id matches no organization/department/team in this org; the config cannot be enforced.",
+    )
     rpm: int | None
     tpm: int | None
     concurrent_requests: int | None

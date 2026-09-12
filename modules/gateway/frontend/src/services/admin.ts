@@ -1036,6 +1036,16 @@ export async function getMemberBudgets(
  *
  * Issue #226: Cognito groups represent teams.
  * This function fetches groups directly from Cognito via the backend API.
+ *
+ * @deprecated for anything that stores an id — Issue #4948. This returns Cognito group
+ * **names**, which are not the `teams.id` values that `users.team_id`, the
+ * `custom:team_id` claim, and therefore every governance lookup carry. A config or rule
+ * authored from this list stores cleanly, reads back as configured, and is never matched
+ * (the #4511 inert-config class). Use `getOrgTeams(orgId)` — the platform-native
+ * `GET /admin/organizations/{org_id}/teams` — which emits `teams.id`.
+ *
+ * Retained for the one consumer that genuinely wants Cognito *groups* rather than
+ * platform teams: `BedrockAccountRouting.tsx`, whose migration is Issue #4947.
  */
 export async function getCognitoTeams(
   orgId: string,
@@ -1093,6 +1103,13 @@ export async function getCognitoTeams(
  *
  * Issue #226: Departments are derived from custom:department_id attribute
  * on users in Cognito.
+ *
+ * @deprecated Issue #4948 — no remaining callers. This scrapes the distinct
+ * `custom:department_id` values off an org's *signed-in Cognito users*, so a department
+ * created platform-natively is invisible until somebody in it has logged in, and a
+ * department nobody is in can never be governed at all. Use `getDepartments(orgId)`,
+ * which lists `departments` rows. Kept only so an external/`@/services` consumer is not
+ * broken by this change; delete once #4947 lands and nothing imports the Cognito pair.
  */
 export async function getCognitoDepartments(orgId: string): Promise<{
   items: Array<{ departmentId: string }>;

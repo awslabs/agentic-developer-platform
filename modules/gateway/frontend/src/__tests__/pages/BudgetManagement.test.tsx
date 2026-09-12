@@ -290,3 +290,87 @@ describe('BudgetManagement — Bedrock account routing panel (#4745)', () => {
     expect(screen.queryByTestId('bedrock-account-routing')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * Issue #4948 — legacy configs whose entity id resolves to nothing are FLAGGED, not
+ * hidden.
+ *
+ * The pickers that could only offer Cognito group names have been storing team and
+ * department budgets under ids enforcement can never match. Those rows still exist. The
+ * tempting cleanup is to drop them from the list, and it is the wrong one: the row is a
+ * control an operator believes is in force. Hiding it leaves them believing it while
+ * removing the only screen where they could have found out otherwise — #4511 with the
+ * evidence deleted. The server decides resolvability (`entity_unresolved`); this page's
+ * job is to render the row and say so.
+ */
+describe('BudgetManagement — unresolved entity flagging (#4948)', () => {
+  const legacyRow = {
+    entityType: 'team',
+    entityId: 'Backend',
+    entityDisplayName: null,
+    entityUnresolved: true,
+    periodType: 'monthly',
+    budgetAmountUsd: 500,
+    currentUsageUsd: 0,
+    utilizationPct: 0,
+    enforcementMode: 'hard',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsPlatformAdmin.mockReturnValue(false);
+  });
+
+  it('keeps an unresolvable config in the table', async () => {
+    mockGetBudgets.mockResolvedValue({ items: [legacyRow], total: 1, page: 1, pageSize: 20, hasMore: false });
+
+    renderPage();
+
+    expect(await screen.findByText('Backend')).toBeInTheDocument();
+  });
+
+  it('marks it as not enforced', async () => {
+    mockGetBudgets.mockResolvedValue({ items: [legacyRow], total: 1, page: 1, pageSize: 20, hasMore: false });
+
+    renderPage();
+
+    const badge = await screen.findByTestId('entity-unresolved-badge');
+    // Names the consequence, not the mechanism: "no matching team" is what the operator
+    // has to act on. A bare "invalid" would not tell them the cap is doing nothing.
+    expect(badge).toHaveTextContent(/not enforced/i);
+    expect(badge).toHaveTextContent(/team/i);
+  });
+
+  it('leaves a resolvable config unmarked', async () => {
+    mockGetBudgets.mockResolvedValue({
+      items: [{ ...legacyRow, entityId: 'team-001', entityDisplayName: 'Backend', entityUnresolved: false }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      hasMore: false,
+    });
+
+    renderPage();
+
+    await screen.findByText('team-001');
+    expect(screen.queryByTestId('entity-unresolved-badge')).not.toBeInTheDocument();
+  });
+
+  it('never marks a person-scoped config, whose keys this issue does not touch', async () => {
+    // `user` and `root_user` are keyed by the Cognito sub and the person anchor
+    // (#4511/#4536/#4687) — namespaces the tenancy tables know nothing about. Resolving
+    // them against `teams`/`departments` would flag every healthy person budget.
+    mockGetBudgets.mockResolvedValue({
+      items: [{ ...legacyRow, entityType: 'user', entityId: 'sub-abc-123', entityUnresolved: false }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      hasMore: false,
+    });
+
+    renderPage();
+
+    await screen.findByText('sub-abc-123');
+    expect(screen.queryByTestId('entity-unresolved-badge')).not.toBeInTheDocument();
+  });
+});

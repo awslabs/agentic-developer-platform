@@ -57,7 +57,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Card, Input, Modal, Select } from '@/components/ui';
 import { useToast } from '@/contexts/ToastContext';
-import { getOrganizations, getCognitoTeams } from '@/services/admin';
+import { getOrganizations, getOrgTeams } from '@/services/admin';
 import { getPersonDefault, setPersonDefault, deletePersonDefault } from '@/services/personCap';
 import { WORKSPACE_TERM } from '@/utils/budgetVocabulary';
 import { formatCurrency } from '@/utils/format';
@@ -405,20 +405,30 @@ function DefaultRow({
 /**
  * The scope picker: Platform / GitHub org / Team.
  *
- * Orgs come from `getOrganizations` and teams from `getCognitoTeams` — the same
- * server-sourced lists `EntitySelector` uses, never a free-text id. That is the
- * #4511 guard applied to the scope instead of the anchor: a mistyped org id stores a
- * rule that reads back "capped" and governs nobody. The server now rejects a
- * non-existent scope with a `422` (the existence check added in #4696), which is the
- * real guarantee; picking from a list is about not making the mistake in the first
- * place.
+ * Orgs come from `getOrganizations` and teams from `getOrgTeams` — the same
+ * server-sourced, tenancy-native lists `EntitySelector` uses, never a free-text id.
+ * That is the #4511 guard applied to the scope instead of the anchor: a mistyped org
+ * id stores a rule that reads back "capped" and governs nobody. The server now
+ * rejects a non-existent scope with a `422` (the existence check added in #4696),
+ * which is the real guarantee; picking from a list is about not making the mistake in
+ * the first place.
+ *
+ * Issue #4948 moved the team list off Cognito groups. It listed group *names*, while
+ * the scope is matched against `users.team_id` — a projection of `teams.id`. The two
+ * only agreed for orgs whose teams were named after their ids, so a platform-native
+ * team was either absent from the list or offered under a name that stores a rule
+ * governing nobody. `getOrgTeams` emits `teams.id`, which is the value the column
+ * actually carries.
  */
 function ScopePicker({ onInspect }: { onInspect: (scope: PersonDefaultScope) => void }) {
   const [scopeType, setScopeType] = useState<PersonDefaultScopeType>('org');
   const [orgId, setOrgId] = useState('');
   const [teamId, setTeamId] = useState('');
   const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
-  const [teams, setTeams] = useState<string[]>([]);
+  // `{ id, name }`, not a bare name (#4948): the rule is stored under the id, so the
+  // name is a label only — showing one and storing the other is how the Cognito
+  // version authored rules that governed nobody.
+  const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -443,9 +453,9 @@ function ScopePicker({ onInspect }: { onInspect: (scope: PersonDefaultScope) => 
     setTeams([]);
     if (scopeType !== 'team' || !orgId) return;
     let cancelled = false;
-    getCognitoTeams(orgId, { pageSize: 100 })
+    getOrgTeams(orgId, { pageSize: 100 })
       .then((res) => {
-        if (!cancelled) setTeams(res.items.map((t) => t.groupName));
+        if (!cancelled) setTeams(res.items.map((t) => ({ id: t.id, name: t.name })));
       })
       .catch(() => undefined);
     return () => {
@@ -493,7 +503,7 @@ function ScopePicker({ onInspect }: { onInspect: (scope: PersonDefaultScope) => 
             onChange={(e) => setTeamId(e.target.value)}
             placeholder={orgId ? 'Select a team' : `Select a ${WORKSPACE_TERM} first`}
             disabled={!orgId}
-            options={teams.map((t) => ({ value: t, label: t }))}
+            options={teams.map((t) => ({ value: t.id, label: t.name ? `${t.name} (${t.id})` : t.id }))}
           />
         </div>
       )}

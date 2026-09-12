@@ -17,6 +17,15 @@ export interface BudgetListItem {
   entityType: EntityType;
   entityId: string;
   entityDisplayName: string | null;
+  /**
+   * The entity id matches no org/department/team in this org — Issue #4948.
+   *
+   * Such a budget is stored, reads back as configured, and can never be matched by
+   * enforcement (it usually names a Cognito group left behind by the old picker, or a
+   * renamed/deleted entity). Surfaced so the table can flag the row; the row is never
+   * hidden, because it is a control somebody believes is in force.
+   */
+  entityUnresolved: boolean;
   periodType: PeriodType;
   budgetAmountUsd: number;
   enforcementMode: EnforcementMode;
@@ -87,6 +96,7 @@ export async function getBudgetsWithUtilization(
       entity_type: string;
       entity_id: string;
       entity_display_name: string | null;
+      entity_unresolved?: boolean;
       period_type: string;
       budget_amount_usd: number;
       enforcement_mode: string;
@@ -106,6 +116,10 @@ export async function getBudgetsWithUtilization(
       entityType: item.entity_type as EntityType,
       entityId: item.entity_id,
       entityDisplayName: item.entity_display_name,
+      // Defaults to false, never true: a server that does not send the field has not
+      // told us the row is broken, and guessing "unresolved" would flag every healthy
+      // budget during a rollout where the API is a version behind.
+      entityUnresolved: item.entity_unresolved ?? false,
       periodType: item.period_type as PeriodType,
       budgetAmountUsd: item.budget_amount_usd,
       enforcementMode: item.enforcement_mode as EnforcementMode,

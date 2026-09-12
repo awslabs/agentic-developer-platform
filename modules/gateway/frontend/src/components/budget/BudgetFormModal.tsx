@@ -149,6 +149,18 @@ export function BudgetFormModal({
    * Distinct from an error — nothing failed, and nothing was created.
    */
   const [unlinkedPerson, setUnlinkedPerson] = useState(false);
+  /**
+   * The org partition this budget is WRITTEN to — Issue #4948.
+   *
+   * Not always `orgId`: the entity picker now lists every org the caller administers,
+   * and a budget for another org's team must land in THAT org's partition. Enforcement
+   * matches on `(org_id, entity_type, entity_id)`, so posting a `sophos-it` team to the
+   * caller's own partition would store a row that reads back "capped" and is never
+   * matched — the #4511 inert-config class one dimension over.
+   *
+   * Seeded from and reset to `orgId`, so a single-org admin's behaviour is unchanged.
+   */
+  const [scopeOrgId, setScopeOrgId] = useState(orgId);
 
   const isEditMode = !!editData;
   // A person limit is not an entity type; this option routes to a different API. It can
@@ -160,6 +172,10 @@ export function BudgetFormModal({
   // Reset form when modal opens/closes or editData changes
   useEffect(() => {
     setUnlinkedPerson(false);
+    // Reopening the form must not inherit the org picked during the last create
+    // (#4948) — that would silently author the next budget in a partition the
+    // operator is no longer looking at.
+    setScopeOrgId(orgId);
     if (editData) {
       setFormData(editData);
     } else {
@@ -171,7 +187,7 @@ export function BudgetFormModal({
         enforcementMode: EnforcementMode.HARD,
       });
     }
-  }, [editData, isOpen, preset]);
+  }, [editData, isOpen, preset, orgId]);
 
   // The unlinked-person notice describes ONE person at the moment of one submit.
   // Cleared the moment the operator picks a different person or a different kind
@@ -235,7 +251,9 @@ export function BudgetFormModal({
         );
         toast.success('Budget updated successfully');
       } else {
-        const created = await createBudget(orgId, {
+        // `scopeOrgId`, NOT `orgId` (#4948): the partition must be the org the entity
+        // belongs to, or the row matches nothing at request time.
+        const created = await createBudget(scopeOrgId, {
           entity_type: formData.entityType as EntityType,
           entity_id: formData.entityId,
           period_type: formData.periodType as PeriodType,
@@ -306,6 +324,11 @@ export function BudgetFormModal({
             entityId={formData.entityId}
             onEntityTypeChange={(entityType) => setFormData((prev) => ({ ...prev, entityType, entityId: '' }))}
             onEntityIdChange={(entityId) => setFormData((prev) => ({ ...prev, entityId }))}
+            // Issue #4948: redirect the WRITE to the org the operator picked. Passing
+            // this is what makes the org picker appear at all — the component withholds
+            // it from consumers that cannot honour it, so the affordance and the
+            // correct partition ship together or not at all.
+            onScopeOrgChange={setScopeOrgId}
             disabled={false}
             // Issue #4536: budgets are the one surface where a per-person cloud-agent
             // cap is real — the create/update path resolves and persists the type, and

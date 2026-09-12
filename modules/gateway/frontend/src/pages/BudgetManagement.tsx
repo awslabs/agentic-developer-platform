@@ -161,6 +161,17 @@ export function BudgetManagement() {
             <span className="text-sm text-gray-900 dark:text-white">{item.entityDisplayName}</span>
           )}
           <span className="font-mono text-xs text-gray-500 block">{item.entityId}</span>
+          {/* Issue #4948: the row stays in the table. A budget whose entity resolves to
+              nothing is not enforced, but it IS a control an admin believes is in force
+              — hiding it would leave them believing it while removing the only place
+              they could find out otherwise. */}
+          {item.entityUnresolved && (
+            <span data-testid="entity-unresolved-badge">
+              <Badge variant="warning" size="sm">
+                Not enforced — no matching {formatEntityType(item.entityType).toLowerCase()}
+              </Badge>
+            </span>
+          )}
         </div>
       ),
     },

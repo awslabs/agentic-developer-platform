@@ -21,15 +21,25 @@ vi.mock('@/services/budget', () => ({
 // Mock the admin service for entity fetching - return empty results to force manual input.
 // The names here are the ones EntitySelector actually imports; `getDepartments`/`getTeams`
 // were not, so the fetch used to throw and reach manual input via the error path.
+// Issue #4948: the entity pickers read the platform's tenancy tables, not Cognito
+// groups. Empty pages here on purpose — this suite is about the person-scoped paths
+// (#4687), and an entity list it never asserts on should not be able to fail it.
 vi.mock('@/services/admin', () => ({
-  getCognitoDepartments: vi.fn().mockResolvedValue({
+  getOrganizations: vi.fn().mockResolvedValue({
     items: [],
     total: 0,
     page: 1,
     pageSize: 100,
     hasMore: false,
   }),
-  getCognitoTeams: vi.fn().mockResolvedValue({
+  getDepartments: vi.fn().mockResolvedValue({
+    items: [],
+    total: 0,
+    page: 1,
+    pageSize: 100,
+    hasMore: false,
+  }),
+  getOrgTeams: vi.fn().mockResolvedValue({
     items: [],
     total: 0,
     page: 1,
@@ -49,7 +59,7 @@ vi.mock('@/services/personCap', () => ({
 }));
 
 import { createBudget, updateBudget } from '@/services/budget';
-import { getOrgUsers, getMemberGithubUserId } from '@/services/admin';
+import { getOrgUsers, getMemberGithubUserId, getOrganizations, getOrgTeams } from '@/services/admin';
 import { setPersonCapFor } from '@/services/personCap';
 import { PERSON_LIMIT_LABEL } from '@/utils/entityLabels';
 
@@ -58,6 +68,8 @@ const mockUpdateBudget = updateBudget as ReturnType<typeof vi.fn>;
 const mockGetOrgUsers = getOrgUsers as ReturnType<typeof vi.fn>;
 const mockGetMemberGithubUserId = getMemberGithubUserId as ReturnType<typeof vi.fn>;
 const mockSetPersonCapFor = setPersonCapFor as ReturnType<typeof vi.fn>;
+const mockGetOrganizations = getOrganizations as ReturnType<typeof vi.fn>;
+const mockGetOrgTeams = getOrgTeams as ReturnType<typeof vi.fn>;
 
 const renderComponent = (props: Partial<Parameters<typeof BudgetFormModal>[0]> = {}) => {
   const defaultProps = {
@@ -488,6 +500,122 @@ describe('BudgetFormModal', () => {
       await user.click(screen.getByRole('button', { name: /create budget/i }));
 
       await waitFor(() => expect(onSuccess).toHaveBeenCalledWith({ advisory: null, entityId: expect.any(String) }));
+    });
+  });
+
+  /**
+   * Issue #4948. The entity picker lists every org the caller administers, so the write
+   * partition is now a choice rather than a coincidence.
+   *
+   * `_check_entity_budget` matches BOTH `BudgetConfig.org_id` (filled from the request's
+   * `attributed_org_id`) and `BudgetConfig.entity_id`. Before this issue the picker could
+   * only offer the caller's own org, so the two always agreed by accident. Offering the
+   * real list breaks that: a `sophos-it` team posted to the caller's own partition stores
+   * a row that reads back as a configured cap and is never matched at request time. The
+   * operator sees a budget; the spend never stops. Asserted at the wire, not just at the
+   * callback, because the callback firing proves nothing about where the POST went.
+   */
+  describe('Write partition follows the picked org (#4948)', () => {
+    beforeEach(() => {
+      mockGetOrganizations.mockResolvedValue({
+        items: [
+          { id: 'org-001', name: 'Acme Corp' },
+          { id: 'sophos-it', name: 'Sophos IT' },
+        ],
+        total: 2,
+        page: 1,
+        pageSize: 100,
+        hasMore: false,
+      });
+      mockGetOrgTeams.mockResolvedValue({
+        items: [{ id: 'team-sophos-1', name: 'Helpdesk', departmentId: 'dept-1' }],
+        total: 1,
+        page: 1,
+        pageSize: 100,
+        hasMore: false,
+      });
+      mockCreateBudget.mockResolvedValue({
+        entityType: EntityType.TEAM,
+        entityId: 'team-sophos-1',
+        periodType: PeriodType.MONTHLY,
+        budgetAmountUsd: 500,
+        enforcementMode: EnforcementMode.HARD,
+        advisory: null,
+      });
+    });
+
+    it('posts to the picked org, not the caller\'s own', async () => {
+      const user = userEvent.setup();
+      renderComponent();
+
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+      await user.selectOptions(screen.getAllByRole('combobox')[0], EntityType.TEAM);
+
+      await waitFor(() => expect(screen.getByRole('option', { name: /Sophos IT/ })).toBeInTheDocument());
+      await user.selectOptions(screen.getAllByRole('combobox')[1], 'sophos-it');
+
+      await waitFor(() => expect(screen.getByRole('option', { name: /Helpdesk/ })).toBeInTheDocument());
+      await user.selectOptions(screen.getAllByRole('combobox')[2], 'team-sophos-1');
+
+      await user.type(screen.getByPlaceholderText('e.g., 500.00'), '500');
+      await user.click(screen.getByRole('button', { name: /create budget/i }));
+
+      await waitFor(() => {
+        expect(mockCreateBudget).toHaveBeenCalledWith(
+          'sophos-it',
+          expect.objectContaining({ entity_type: EntityType.TEAM, entity_id: 'team-sophos-1' }),
+        );
+      });
+      expect(mockCreateBudget).not.toHaveBeenCalledWith('org-001', expect.anything());
+    });
+
+    it.each([EntityType.USER, EntityType.ROOT_USER])(
+      'returns to the person roster org when switching from a foreign team to %s',
+      async (entityType) => {
+        const user = userEvent.setup();
+        renderComponent();
+        await user.selectOptions(screen.getAllByRole('combobox')[0], EntityType.TEAM);
+        await screen.findByRole('option', { name: /Sophos IT/ });
+        await user.selectOptions(screen.getAllByRole('combobox')[1], 'sophos-it');
+        await screen.findByRole('option', { name: /Helpdesk/ });
+        await user.selectOptions(screen.getAllByRole('combobox')[2], 'team-sophos-1');
+
+        await user.selectOptions(screen.getAllByRole('combobox')[0], entityType);
+        const person = await screen.findByRole('option', { name: /Operator/ });
+        await user.selectOptions(screen.getAllByRole('combobox')[1], person);
+        await user.type(screen.getByPlaceholderText('e.g., 500.00'), '500');
+        await user.click(screen.getByRole('button', { name: /create budget/i }));
+
+        await waitFor(() => expect(mockCreateBudget).toHaveBeenCalledWith(
+          'org-001',
+          expect.objectContaining({
+            entity_type: entityType,
+            entity_id: entityType === EntityType.USER
+              ? '8a41f2c0-1b7d-4e5a-9c33-000000000001' : 'user-operator',
+          }),
+        ));
+      },
+    );
+
+    it('leaves a single-org admin posting to their own org', async () => {
+      // Nobody who never touches the org picker should see any change in where their
+      // budget lands.
+      const user = userEvent.setup();
+      renderComponent();
+
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+      await user.selectOptions(screen.getAllByRole('combobox')[0], EntityType.TEAM);
+      await waitFor(() => expect(screen.getByRole('option', { name: /Helpdesk/ })).toBeInTheDocument());
+      await user.selectOptions(screen.getAllByRole('combobox')[2], 'team-sophos-1');
+
+      await user.type(screen.getByPlaceholderText('e.g., 500.00'), '500');
+      await user.click(screen.getByRole('button', { name: /create budget/i }));
+
+      await waitFor(() => {
+        expect(mockCreateBudget).toHaveBeenCalledWith('org-001', expect.anything());
+      });
     });
   });
 
