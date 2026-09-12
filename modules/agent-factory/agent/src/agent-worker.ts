@@ -1979,6 +1979,7 @@ async function main(): Promise<void> {
       bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
       port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),
       token: process.env.ADP_CONTROL_TOKEN || '',
+      tokenExpiresAt: process.env.ADP_CONTROL_TOKEN_EXPIRES_AT || '',
       generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
       store: controlStore,
       logger: (level, message, context) => log(level.toUpperCase(), message, context),

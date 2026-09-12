@@ -224,6 +224,10 @@ class TestSetupAgentControl:
         assert agent_env["ADP_CONTROL_PORT"] == "8770"
         assert agent_env["ADP_CONTROL_GENERATION"] == "1"
         assert len(agent_env["ADP_CONTROL_TOKEN"]) >= 32
+        # The listener must enforce the identical expiry written to DynamoDB,
+        # not mint a fresh lifetime when the Node process eventually starts.
+        written = ddb.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert agent_env["ADP_CONTROL_TOKEN_EXPIRES_AT"] == written[":e"]["S"]
 
     def test_the_listener_is_told_the_generation_the_row_assigned(self, ddb):
         """The child env must carry the row's number, not a locally chosen one.

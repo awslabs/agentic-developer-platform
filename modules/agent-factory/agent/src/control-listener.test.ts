@@ -114,8 +114,13 @@ function makeStore(overrides: Partial<{ supported: ReadonlySet<ControlAction>; n
   });
 }
 
-async function startListener(store: ControlStateStore, env: NodeJS.ProcessEnv = ENABLED_ENV) {
+async function startListener(
+  store: ControlStateStore,
+  env: NodeJS.ProcessEnv = ENABLED_ENV,
+  tokenExpiresAt = new Date(Date.now() + 60_000).toISOString(),
+) {
   const listener = new ControlListener({
+    tokenExpiresAt,
     bindAddress: '127.0.0.1',
     port: await freePort(),
     token: TOKEN,
@@ -152,6 +157,7 @@ describe('control flag', () => {
 describe('listener startup', () => {
   it('does not start when the flag is off, leaving no bound port', async () => {
     const listener = new ControlListener({
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       bindAddress: '127.0.0.1',
       port: UNUSED_PORT,
       token: TOKEN,
@@ -172,6 +178,7 @@ describe('listener startup', () => {
     // The dangerous failure this prevents: a missing downwardAPI pod IP silently
     // widening the bind to 0.0.0.0, undoing the explicit-bind hardening.
     const listener = new ControlListener({
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       bindAddress: '',
       port: UNUSED_PORT,
       token: TOKEN,
@@ -191,6 +198,7 @@ describe('listener startup', () => {
 
   it('refuses to start without a token rather than serving commands unauthenticated', async () => {
     const listener = new ControlListener({
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       bindAddress: '127.0.0.1',
       port: UNUSED_PORT,
       token: '',
@@ -210,6 +218,7 @@ describe('listener startup', () => {
     // not cover, so the pod would come up listening and be unreachable — a
     // failure that looks like a network bug rather than a config one.
     const listener = new ControlListener({
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       bindAddress: '127.0.0.1',
       port,
       token: TOKEN,
@@ -234,6 +243,7 @@ describe('listener startup', () => {
 
     try {
       const listener = new ControlListener({
+        tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
         bindAddress: '127.0.0.1',
         port: occupied,
         token: TOKEN,
@@ -256,6 +266,7 @@ describe('listener startup', () => {
     // burden, because the surrounding write path swallows exceptions.
     const logged: Array<{ level: string; message: string }> = [];
     const listener = new ControlListener({
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       bindAddress: '',
       port: UNUSED_PORT,
       token: TOKEN,
@@ -367,6 +378,48 @@ describe('authentication', () => {
 // ===========================================================================
 // Ping, state and reserved paths
 // ===========================================================================
+
+describe('token expiry', () => {
+  it.each(['', 'invalid', '2040-01-01', '2040-01-01T00:00:00', '2000-01-01T00:00:00Z', undefined])(
+    'refuses to bind with an absent, malformed or expired lifetime: %p',
+    async (tokenExpiresAt) => {
+      const listener = new ControlListener({
+        bindAddress: '127.0.0.1', port: UNUSED_PORT, token: TOKEN,
+        tokenExpiresAt: tokenExpiresAt as string,
+        generation: GENERATION, store: makeStore(), logger: () => {},
+      });
+      expect(await listener.start(ENABLED_ENV)).toEqual({
+        started: false, reason: 'misconfigured', detail: 'invalid or expired control token expiry',
+      });
+      expect(listener.boundPort()).toBeNull();
+    },
+  );
+
+  it.each([
+    ['GET', '/agent/ping', undefined],
+    ['GET', '/agent/state', undefined],
+    ['POST', '/agent/abort', JSON.stringify({command_id: UUID_A})],
+    ['POST', '/agent/steer', '{not json'],
+    ['POST', '/agent/steer', 'x'.repeat(MAX_BODY_BYTES + 1)],
+    ['POST', '/agent/unknown', '{not json'],
+  ])('rejects an expired credential before routing or parsing %s %s', async (method, path, body) => {
+    const expires = Date.now() + 60_000;
+    const store = makeStore();
+    const {listener, port} = await startListener(store, ENABLED_ENV, new Date(expires).toISOString());
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(expires - 1);
+    try {
+      expect((await request(port, 'GET', '/agent/ping')).status).toBe(200);
+      clock.mockReturnValue(expires);
+      const reply = await request(port, method!, path!, {body});
+      expect(reply.status).toBe(401);
+      expect(reply.body).toEqual({error: 'unauthorized'});
+      expect(store.snapshot().commands).toEqual([]);
+    } finally {
+      clock.mockRestore();
+      await listener.stop();
+    }
+  });
+});
 
 describe('read routes', () => {
   let listener: ControlListener;
@@ -841,6 +894,7 @@ describe('the default logger', () => {
 
     try {
       const listener = new ControlListener({
+        tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
         bindAddress: '127.0.0.1',
         port: await freePort(),
         token: TOKEN,
@@ -992,6 +1046,7 @@ describe('socket-level failure', () => {
 
     try {
       const listener = new ControlListener({
+        tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
         bindAddress: '127.0.0.1',
         port,
         token: TOKEN,
@@ -1015,6 +1070,7 @@ describe('socket-level failure', () => {
     // The cleanup path after a failed bind, which the worker's shutdown hook
     // reaches unconditionally.
     const listener = new ControlListener({
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       bindAddress: '127.0.0.1',
       port: UNUSED_PORT,
       token: TOKEN,

@@ -230,6 +230,12 @@ Required keys per artifact:
 | `journal_tests` | W1-09 | `replay_same_id`, `content_conflict`, `bounds_enforced`, `expiry_is_unknown`, `assistant_turns` |
 | `negative_tests` | W1-10 | `wrong_account`, `missing_isolation`, `wrong_key`, `absent_required_check`, `unknown_check_id`, `failed_cleanup` |
 
+For `token_lifecycle`, use the expiry produced by the real registration writer
+and propagated to the listener as `ADP_CONTROL_TOKEN_EXPIRES_AT`. Record an
+authenticated request before that timestamp and repeat it with the same token
+afterwards while the fixture is still running: the second request must be 401.
+Restarting the listener with a different token proves rotation, not expiry.
+
 Two the harness is strict about, because the evaluation names them:
 
 * **`peer_probe.probe_connect_result`** must be an *actual* connection result

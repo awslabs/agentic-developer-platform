@@ -2193,6 +2193,7 @@ def _setup_agent_control(
         # Child env only. os.environ is untouched so the token does not leak into
         # any other subprocess this entrypoint spawns (gh, git, the sigv4 proxy).
         agent_env["ADP_CONTROL_TOKEN"] = token
+        agent_env["ADP_CONTROL_TOKEN_EXPIRES_AT"] = expires_at
         agent_env["ADP_CONTROL_PORT"] = str(port)
         agent_env["ADP_CONTROL_BIND_ADDRESS"] = pod_ip
         agent_env["ADP_CONTROL_GENERATION"] = str(generation)
