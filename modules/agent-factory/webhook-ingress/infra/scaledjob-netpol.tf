@@ -238,3 +238,88 @@ resource "kubernetes_network_policy" "agent_control_listener_ingress" {
     }
   }
 }
+
+# =============================================================================
+# NetworkPolicy — ADOT collector egress (Issue #4999)
+# =============================================================================
+# `default-deny-egress` above selects EVERY pod in this namespace
+# (`pod_selector {}`), and until #4999 the ADOT collector matched no allow
+# policy at all. That was invisible only because the cluster had no
+# network-policy enforcement agent: the deny was never applied, so the missing
+# allow never mattered.
+#
+# #4999 turns enforcement on. The moment it does, this policy is the only thing
+# keeping agent telemetry alive — without it the collector's exporters simply
+# stop reaching AWS, and they fail the way blocked egress always fails: no pod
+# restart, no CrashLoop, no error surfaced to any user, just traces and metrics
+# that quietly never arrive. That is why this resource ships and applies BEFORE
+# the controller is enabled, never in the same apply and never after.
+#
+# The collector (`adot-collector-config`, otel-collector.tf) exports via
+# `awsxray`, `awsemf` and `awscloudwatchlogs`. Every one of those is an HTTPS
+# call to a regional AWS endpoint, and each needs a hostname resolved first and
+# IRSA credentials refreshed from STS — hence exactly two allowances:
+#   - 53 TCP+UDP for name resolution (both protocols: kube-dns answers over UDP
+#     and falls back to TCP for responses that exceed the UDP limit; allowing
+#     only UDP produces intermittent resolution failures under load, which is
+#     far harder to attribute than a total outage);
+#   - 443 TCP for STS, X-Ray and CloudWatch.
+#
+# Nothing more. No 4317 egress — the collector RECEIVES OTLP on 4317, and
+# ingress is not restricted for it (no policy selects it for Ingress, and
+# `default-deny-egress` is `policy_types = ["Egress"]` only). No in-cluster
+# gateway path: this is a telemetry sink and has no business talking to the
+# gateway (see the removal rationale in agent-scaledjob-egress above, #3954).
+#
+# Unconditional, like agent-control-listener-ingress and for the same reason.
+# The collector itself is gated on `var.enable_agent_otel`, so when telemetry is
+# off this policy selects zero pods and grants zero traffic — costless. Gating
+# it on the same flag would instead create an ordering hazard: a flag flipped on
+# in an environment where enforcement was already live would deploy a collector
+# whose egress is denied, which is precisely the silent failure above.
+resource "kubernetes_network_policy" "adot_collector_egress" {
+  metadata {
+    name      = "adot-collector-egress"
+    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+
+    labels = {
+      "app.kubernetes.io/name"       = "adot-collector"
+      "app.kubernetes.io/component"  = "observability"
+      "app.kubernetes.io/managed-by" = "terraform"
+    }
+  }
+
+  spec {
+    # Matches the collector Deployment's pod template labels (otel-collector.tf).
+    # Non-empty, so it adds an allow for the collector only and changes nothing
+    # for any other pod in the namespace.
+    pod_selector {
+      match_labels = {
+        "app.kubernetes.io/name" = "adot-collector"
+      }
+    }
+
+    policy_types = ["Egress"]
+
+    # DNS resolution (kube-dns).
+    egress {
+      ports {
+        port     = 53
+        protocol = "UDP"
+      }
+      ports {
+        port     = 53
+        protocol = "TCP"
+      }
+    }
+
+    # HTTPS to regional AWS endpoints: STS (IRSA credential refresh), X-Ray,
+    # CloudWatch Logs, CloudWatch EMF.
+    egress {
+      ports {
+        port     = 443
+        protocol = "TCP"
+      }
+    }
+  }
+}

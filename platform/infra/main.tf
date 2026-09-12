@@ -211,6 +211,12 @@ module "eks" {
   node_group_max_size       = var.eks_node_max_size
 
   enable_container_insights = var.enable_container_insights
+
+  # Issue #4999: NetworkPolicy enforcement. Applying this with the variable true
+  # is the point at which every existing NetworkPolicy starts taking effect, so
+  # the ADOT collector egress policy (webhook-ingress module) must already be
+  # applied — see docs/runbooks/network-policy-enforcement.md.
+  enable_network_policy_controller = var.enable_network_policy_controller
 }
 
 # -----------------------------------------------------------------------------

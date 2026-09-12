@@ -121,6 +121,16 @@ variable "enable_container_insights" {
   default     = false
 }
 
+# Issue #4999: without this, NetworkPolicy objects in the cluster are accepted
+# but never enforced. Default false — enabling it activates every existing
+# policy at once, so it is a per-environment decision. See the module variable
+# in modules/eks/variables.tf for the pre-enablement audit requirement.
+variable "enable_network_policy_controller" {
+  description = "Enable the EKS Auto Mode network-policy controller (what actually enforces NetworkPolicy objects). Audit existing policies for deny-without-allow gaps before enabling."
+  type        = bool
+  default     = false
+}
+
 variable "state_bucket" {
   description = "S3 bucket for Terraform state and CodeBuild source zips. Defaults to adp-terraform-state-<account_id>."
   type        = string
