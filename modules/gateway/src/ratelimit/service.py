@@ -101,7 +101,11 @@ class RateLimitService(IRateLimitService):
 
             new_limits: dict[str, dict[str, Any]] = {}
             for row in rows:
-                key = f"{row.entity_type}:{row.entity_id}:{row.org_id}"
+                try:
+                    key = self._get_entity_key(EntityType(row.entity_type), row.entity_id, row.org_id)
+                except ValueError:
+                    logger.error("Ignoring rate limit config with unknown entity type: %s", row.entity_type)
+                    continue
                 limits: dict[str, Any] = {}
                 if row.rpm is not None:
                     limits["rpm"] = row.rpm
@@ -109,7 +113,17 @@ class RateLimitService(IRateLimitService):
                     limits["tpm"] = row.tpm
                 if row.concurrent_requests is not None:
                     limits["concurrent_requests"] = row.concurrent_requests
-                new_limits[key] = limits
+                if key in new_limits:
+                    # Older writers could store both org spellings. Keep the
+                    # strictest positive value for each control until migration
+                    # 044's duplicate check has been resolved by the operator.
+                    logger.warning("Duplicate rate limit scope %s; enforcing the strictest configured limits", key)
+                    for name, value in limits.items():
+                        previous = new_limits[key].get(name)
+                        if previous is None or previous <= 0 or (value > 0 and value < previous):
+                            new_limits[key][name] = value
+                else:
+                    new_limits[key] = limits
 
             self._rate_limits = new_limits
             self._last_db_load = now

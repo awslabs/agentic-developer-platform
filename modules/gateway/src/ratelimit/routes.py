@@ -95,7 +95,7 @@ async def list_rate_limits(
 
 @router.get("/{entity_type}/{entity_id}", response_model=RateLimitConfigResponse)
 async def get_rate_limits(
-    entity_type: Annotated[str, Path(description="Entity type (organization, department, team, user, service_account)")],
+    entity_type: Annotated[str, Path(description="Entity type (org, department, team, user, service_account; organization is a legacy alias)")],
     entity_id: Annotated[str, Path(description="Entity ID")],
     service: RateLimitService = Depends(get_rate_limit_service),
     context: TokenContext = Depends(get_current_user),  # Issue #133: Real Cognito JWT auth
@@ -132,7 +132,7 @@ async def get_rate_limits(
 
 @router.put("/{entity_type}/{entity_id}", response_model=RateLimitConfigResponse)
 async def configure_rate_limits(
-    entity_type: Annotated[str, Path(description="Entity type (organization, department, team, user, service_account)")],
+    entity_type: Annotated[str, Path(description="Entity type (org, department, team, user, service_account; organization is a legacy alias)")],
     entity_id: Annotated[str, Path(description="Entity ID")],
     config: RateLimitConfigRequest,
     service: RateLimitService = Depends(get_rate_limit_service),
