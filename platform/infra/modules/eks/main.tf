@@ -104,6 +104,15 @@ resource "aws_eks_access_entry" "admins" {
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = each.key
   type          = "STANDARD"
+
+  # Match agent-factory/infra's runner entry and provider default tags (#5006).
+  # Only that shared principal gets these overrides; other operator entries
+  # retain platform tags and visible drift. All access grants remain managed.
+  tags = each.key == "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-agent-runner-role" ? {
+    Module = "agent-factory"
+    Name   = "adp-${var.environment}-agent-runner-access"
+    Owner  = "agent-team"
+  } : {}
 }
 
 resource "aws_eks_access_policy_association" "admins" {

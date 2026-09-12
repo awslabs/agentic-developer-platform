@@ -34,6 +34,32 @@ on:
         description: 'Set to "yes" to authorize an apply that destroys resources. Required when terraform plan includes any destroys.'
         required: false
         default: 'no'
+      # Named, tightly-audited apply scopes (#5006). Runtime validation and
+      # fixed branches prevent arbitrary targets; the choice UI alone cannot.
+      # The scope selects a fixed branch below and is NEVER
+      # interpolated into a terraform command. Do not add a free-text target
+      # input — that would turn this workflow into a general-purpose "apply
+      # anything unaudited" primitive, which is worse than the problem the
+      # scoped path solves.
+      #
+      # Every non-full scope is gated by .github/scripts/verify_scoped_plan.py,
+      # which refuses unless the saved plan's only non-no-op change is that
+      # scope's single hardcoded address. Adding an option here without adding
+      # it to that script's SCOPES table fails closed.
+      scope:
+        description: 'Apply scope. "full" = normal complete apply (default). "network-policy-controller" = ONLY the Auto Mode network-policy ConfigMap.'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - network-policy-controller
+          - network-policy-controller-rollback
+      plan_only:
+        description: 'Scoped paths only: validate the saved plan without applying it.'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: tf-apply-platform-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -60,6 +86,21 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      # Fail fast on an unrecognised scope (#5006). A choice option added to
+      # the dispatch input without a matching SCOPES entry in the guard must
+      # refuse here rather than fall through to the full-apply path.
+      - name: Validate apply scope
+        if: inputs.scope != '' && inputs.scope != 'full' || inputs.plan_only
+        env:
+          APPLY_SCOPE: ${{ inputs.scope || 'full' }}
+        run: |
+          python3 .github/scripts/verify_scoped_plan.py \
+            --mode validate-scope --scope "$APPLY_SCOPE"
+          if [ "$APPLY_SCOPE" = full ]; then
+            echo '::error::plan_only is supported only for scoped plans.'
+            exit 1
+          fi
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -100,11 +141,13 @@ jobs:
       # agent-worker misreports it as "no changes needed" (812447483903
       # smoke-test incident, 2026-07-04). Idempotent — skips enabled models.
       - name: Enable Bedrock model access
+        if: inputs.scope == '' || inputs.scope == 'full'
         run: bash platform/scripts/enable-bedrock-models.sh
 
       # Auto-detect operator's public IP for EKS API endpoint restriction.
       # Matches the pattern used by deploy-all.sh (3-URL fallback + empty guard).
       - name: Set EKS public access CIDRs
+        if: inputs.scope == '' || inputs.scope == 'full'
         run: |
           if [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
             MY_IP=""
@@ -119,6 +162,37 @@ jobs:
             echo "TF_VAR_eks_public_access_cidrs=[\"${MY_IP}/32\"]" >> "$GITHUB_ENV"
             echo "Auto-detected runner IP: ${MY_IP}/32"
           fi
+
+      # Preserve the live endpoint allowlist: detecting a new runner IP can
+      # introduce a cluster update through the target's dependency graph.
+      - name: Verify scoped target and preserve EKS public access CIDRs
+        if: inputs.scope != '' && inputs.scope != 'full'
+        env:
+          REQUESTED_ACCOUNT: ${{ inputs.account_id }}
+        run: |
+          set -euo pipefail
+          IDENTITY_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$ACCOUNT_ID" != 879318057152 ] || [ "$IDENTITY_ACCOUNT" != "$ACCOUNT_ID" ]; then
+            echo '::error::Scoped target account mismatch.'
+            exit 1
+          fi
+          if [ -n "$REQUESTED_ACCOUNT" ] && [ "$REQUESTED_ACCOUNT" != "$ACCOUNT_ID" ]; then
+            echo '::error::Requested account does not match scoped target.'
+            exit 1
+          fi
+          if [ "$ENVIRONMENT" != dev ] || [ "$AWS_REGION" != us-east-1 ] || [ -n "${CUSTOMER_ACCOUNT_ID:-}" ]; then
+            echo '::error::Controller scopes currently support the dev platform cluster only.'
+            exit 1
+          fi
+          CLUSTER_ARN=$(aws eks describe-cluster --name adp-dev-eks-cluster --query cluster.arn --output text)
+          if [ "$CLUSTER_ARN" != arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks-cluster ]; then
+            echo '::error::Unexpected scoped cluster.'
+            exit 1
+          fi
+          CIDRS=$(aws eks describe-cluster --name adp-dev-eks-cluster \
+            --query cluster.resourcesVpcConfig.publicAccessCidrs --output json)
+          CIDRS=$(printf '%s' "$CIDRS" | python3 -c 'import ipaddress,json,sys; v=json.load(sys.stdin); assert isinstance(v,list) and v; [ipaddress.ip_network(c) for c in v]; print(json.dumps(v))')
+          echo "TF_VAR_eks_public_access_cidrs=$CIDRS" >> "$GITHUB_ENV"
 
       # Durable operator ARN(s) that must keep EKS cluster-admin. The shipped
       # environments/dev/platform.tfvars deliberately leaves
@@ -173,6 +247,7 @@ jobs:
       # Plan first to check for destroys (destroy-safety gate)
       - name: Terraform Plan (destroy-safety check)
         id: plan
+        if: inputs.scope == '' || inputs.scope == 'full'
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           set -e
@@ -186,8 +261,96 @@ jobs:
             exit 1
           fi
 
+      # Scoped plan (#5006). Same saved-plan mechanics as the full path above —
+      # same -out=tfplan, same /tmp/plan-output.txt for the destroy gate, and
+      # it runs AFTER the same credential / admin-ARN / public-CIDR / init
+      # steps. Reusing those is not cosmetic: omitting the admin-ARN step for
+      # this path would plan with a different variable set than the apply,
+      # which is exactly the #5004 plan/apply asymmetry.
+      #
+      # The -target address is a hardcoded literal, not an interpolated input.
+      - name: Terraform Plan (scoped)
+        id: plan_scoped
+        if: inputs.scope != '' && inputs.scope != 'full'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          APPLY_SCOPE: ${{ inputs.scope }}
+          SCOPED_VAR_FILE: ${{ env.VAR_FILE }}
+        run: |
+          set -e
+          set -o pipefail
+          SCOPE_ARGS=()
+          case "$APPLY_SCOPE" in
+            network-policy-controller)
+              TARGET='module.eks.kubernetes_config_map.amazon_vpc_cni[0]'
+              ;;
+            network-policy-controller-rollback)
+              TARGET='module.eks.kubernetes_config_map.amazon_vpc_cni[0]'
+              SCOPE_ARGS=(-var=enable_network_policy_controller=false)
+              ;;
+            *)
+              echo '::error::Unrecognised scope — refusing rather than planning.'
+              exit 1
+              ;;
+          esac
+          echo "Scoped plan target: ${TARGET}"
+          EXIT_CODE=0
+          terraform plan -var-file="../../${SCOPED_VAR_FILE}" "${SCOPE_ARGS[@]}" \
+            -target="${TARGET}" \
+            -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
+          echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 2 ]; then
+            echo "::error::Terraform plan failed."
+            exit 1
+          fi
+
+      # Fail-closed audit of the SAVED plan (#5006). Runs between plan and
+      # apply, and is ADDITIONAL to the destroy-safety gate below — not a
+      # replacement for it. It reads the plan file that will actually be
+      # applied, so the reviewed plan is provably the applied plan.
+      #
+      # The raw JSON goes to /tmp (outside the workspace) and is never uploaded
+      # as an artifact or echoed: plan JSON can carry resource attribute values
+      # including secrets. The guard prints only addresses and action verbs.
+      - name: Verify scoped plan
+        id: verify_scoped
+        if: inputs.scope != '' && inputs.scope != 'full'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          APPLY_SCOPE: ${{ inputs.scope }}
+          REQUESTED_ACCOUNT: ${{ inputs.account_id }}
+          CONFIRM_DESTRUCTIVE_APPLY: ${{ inputs.confirm_destructive_apply }}
+        run: |
+          set -e
+          set -o pipefail
+          umask 077
+          trap 'rm -f /tmp/scoped-plan.json /tmp/scoped-plan.err' EXIT
+          SHOW_EXIT=0
+          terraform show -json tfplan > /tmp/scoped-plan.json 2>/tmp/scoped-plan.err || SHOW_EXIT=$?
+          if [ "$SHOW_EXIT" -ne 0 ]; then
+            echo "::error::terraform show -json failed (exit ${SHOW_EXIT})."
+          fi
+          IDENTITY_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          GUARD_EXIT=0
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/verify_scoped_plan.py" \
+            --scope "$APPLY_SCOPE" \
+            --plan-json /tmp/scoped-plan.json \
+            --show-exit-code "$SHOW_EXIT" \
+            --resolved-account "${ACCOUNT_ID}" \
+            --identity-account "${IDENTITY_ACCOUNT}" \
+            --requested-account "$REQUESTED_ACCOUNT" \
+            --confirm-destructive-apply "$CONFIRM_DESTRUCTIVE_APPLY" \
+            | tee /tmp/scoped-guard.txt || GUARD_EXIT=$?
+          {
+            printf '### Scoped apply guard — `%s`\n' "$APPLY_SCOPE"
+            echo '```'
+            cat /tmp/scoped-guard.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$GUARD_EXIT"
+
       - name: Destroy-safety gate
-        if: steps.plan.outputs.detailed_exitcode == '2'
+        if: steps.plan.outputs.detailed_exitcode == '2' || steps.plan_scoped.outputs.detailed_exitcode == '2'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -235,11 +398,23 @@ jobs:
 
       - name: Terraform Apply
         id: apply
+        if: ${{ !inputs.plan_only }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform apply tfplan
 
+      - name: Scoped plan-only summary
+        if: always() && inputs.plan_only
+        env:
+          GUARD_OUTCOME: ${{ steps.verify_scoped.outcome }}
+        run: |
+          {
+            echo '## Scoped plan-only run'
+            printf -- '- Guard: %s\n' "$GUARD_OUTCOME"
+            echo '- Terraform Apply was skipped.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Summary
-        if: always()
+        if: always() && !inputs.plan_only
         run: |
           echo "## Terraform Apply -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"

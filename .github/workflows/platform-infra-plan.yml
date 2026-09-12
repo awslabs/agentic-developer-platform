@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'platform/infra/**'
+      - '.github/workflows/platform-infra-plan.yml'
       - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'environments/dev/platform.tfvars'
       - 'environments/dev/backend.tfvars'
@@ -96,6 +97,11 @@ jobs:
             -backend-config="../../${{ env.BACKEND_CONFIG }}" \
             -backend-config="bucket=${ADP_STATE_BUCKET}" \
             -input=false -reconfigure
+
+      - name: Test runner access tag alignment
+        run: |
+          terraform -chdir=platform/infra/modules/eks init -backend=false -input=false -plugin-dir=../../.terraform/providers
+          terraform -chdir=platform/infra/modules/eks test -filter=tests/runner_access_tags.tftest.hcl -no-color
 
       - name: Terraform Plan
         id: plan

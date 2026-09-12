@@ -35,6 +35,7 @@ on:
       - '.github/scripts/ops_dispatch.py'
       - '.github/scripts/ops_stuck_tracker.py'
       - '.github/scripts/finalize_security_report.py'
+      - '.github/scripts/verify_scoped_plan.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -59,6 +60,19 @@ on:
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
+      # The workflow the scoped-plan guard suite asserts against (#5006). The
+      # suite asserts by content that the scope input is a `type: choice`, that
+      # the -target address is a hardcoded literal, that the apply consumes the
+      # saved plan, and that the destroy gate survives on both paths. Listed so
+      # an edit re-runs the gate that guards it — otherwise those assertions
+      # only hold for the commit that introduced them.
+      - '.github/workflows/platform-infra-apply.yml'
+      - 'platform/infra/modules/eks/main.tf'
+      # The cross-module tag agreement for the shared CI runner access entry is
+      # asserted against BOTH declarations, so an edit to either side must
+      # re-run the gate. No workflow here runs `terraform test`, so the tftest
+      # beside the module is not merge-blocking and this is the real gate.
+      - 'modules/agent-factory/infra/main.tf'
       # This workflow
       - '.github/workflows/script-tests.yml'
   pull_request:
@@ -85,6 +99,7 @@ on:
       - '.github/scripts/ops_dispatch.py'
       - '.github/scripts/ops_stuck_tracker.py'
       - '.github/scripts/finalize_security_report.py'
+      - '.github/scripts/verify_scoped_plan.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -109,6 +124,19 @@ on:
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
+      # The workflow the scoped-plan guard suite asserts against (#5006). The
+      # suite asserts by content that the scope input is a `type: choice`, that
+      # the -target address is a hardcoded literal, that the apply consumes the
+      # saved plan, and that the destroy gate survives on both paths. Listed so
+      # an edit re-runs the gate that guards it — otherwise those assertions
+      # only hold for the commit that introduced them.
+      - '.github/workflows/platform-infra-apply.yml'
+      - 'platform/infra/modules/eks/main.tf'
+      # The cross-module tag agreement for the shared CI runner access entry is
+      # asserted against BOTH declarations, so an edit to either side must
+      # re-run the gate. No workflow here runs `terraform test`, so the tftest
+      # beside the module is not merge-blocking and this is the real gate.
+      - 'modules/agent-factory/infra/main.tf'
       # This workflow
       - '.github/workflows/script-tests.yml'
     branches:
@@ -163,4 +191,5 @@ jobs:
             tests/test_ops_dispatch_bounds.py \
             tests/test_nightly_triage_wiring.py \
             tests/test_report_finalization.py \
+            tests/test_verify_scoped_plan.py \
             -v --tb=short --timeout=60

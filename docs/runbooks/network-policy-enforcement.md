@@ -122,42 +122,73 @@ PR never auto-applies platform infra. This is what makes the ordering safe by
 construction rather than by convention: the policy apply fires on merge, while
 enforcement requires a separate deliberate dispatch. The two cannot race.
 
-Actions → **Platform Infra Apply** → Run workflow.
+Actions → **Platform Infra Apply** → Run workflow, with:
 
-> **Read the plan before confirming.** As of this writing the platform plan also
-> carries unrelated ECR encryption drift (#5003) — the code declares KMS, the
-> live repositories are AES256 — so the plan wants to **replace** three image
-> repositories. The only resource this change needs is
-> `module.eks.kubernetes_config_map.amazon_vpc_cni[0]`. If the plan shows ECR
-> destroys or replacements, resolve #5003 separately. **Do not** pass
-> `confirm_destructive_apply=yes` just to get this ConfigMap applied.
+| Input | Value |
+|---|---|
+| `environment` | `dev` |
+| `account_id` | `879318057152` |
+| `scope` | **`network-policy-controller`** |
+| `confirm_destructive_apply` | leave as `no` |
 
-Two things to get right if you meet that plan:
+The `scope` input (#5006) is what makes this safe to run. `scope=full` applies
+the whole `platform/infra` root module; `scope=network-policy-controller` plans
+with a hardcoded `-target` for `module.eks.kubernetes_config_map.amazon_vpc_cni[0]`
+only, audits that saved plan, and then applies **that same saved plan file** —
+so the plan you review is the plan that runs. Runtime scope validation and
+fixed command branches prevent arbitrary target addresses; the choice UI alone
+is not an input-validation boundary.
 
-- **The likely outcome is a failed partial apply, not image deletion.**
-  `force_delete` is unset on those repositories, so ECR refuses to delete a
-  non-empty one and the apply stops with an error. That failure is the safety
-  net working. **Adding `force_delete` or emptying the repositories is not the
-  workaround** — that is exactly what converts a safe failure into ~712 deleted
-  images, including digests that running workloads are pulling.
+> **Do not run a pod-local `terraform apply -target=…` instead.** Per #1139 that
+> path has no destroy-safety gate and no audit trail, and it is not an
+> authorized route. An earlier revision of this runbook instructed exactly that;
+> the scoped workflow above replaces it.
+
+### Why the scoped route exists
+
+The full-module plan also carries unrelated pending changes, including ECR
+encryption drift (#5003) — the code declares KMS, the live repositories are
+AES256 — so a full plan wants to **replace** three image repositories. Two
+things to know about that, because they are why the scoped route was built
+rather than "just read the plan carefully":
+
+- **The likely outcome of applying it is a failed partial apply, not image
+  deletion.** `force_delete` is unset on those repositories, so ECR refuses to
+  delete a non-empty one and the apply stops with an error. That failure is the
+  safety net working. **Adding `force_delete` or emptying the repositories is
+  not the workaround** — that is exactly what converts a safe failure into ~712
+  deleted images, including digests that running workloads are pulling.
 - **The destroy gate will not stop it for you.** Per #5002 the destroy-safety
   gate counts destroys but not replacements, so a replace-only plan can apply
-  without the approval you would expect to be required. Read the plan yourself
-  rather than relying on the gate to refuse.
+  without the approval you would expect to be required.
 
-To apply only what this change needs, without the collateral:
+The scoped guard (`.github/scripts/verify_scoped_plan.py`) is what closes that
+hole for this one operation: it refuses unless the saved plan's *only* non-no-op
+change is the expected ConfigMap, as a `create` or `update`. Any collateral, any
+`delete` (including a replacement in either action order), any wrong
+name/namespace/value, unknown asserted fields, and account mismatches refuse.
+Provider-computed metadata such as UID and resource version remains allowed.
+It does not weaken the destroy-safety gate, which still runs on both paths.
 
-```bash
-terraform apply -target=module.eks.kubernetes_config_map.amazon_vpc_cni
+The KMS declaration is deliberate hardening (PR #2394, commit `f204b001`,
+and PR #3883, commit `4aca34b`), not fresh-account-only intent. The cause of
+the live AES256 drift remains separate; do not weaken the declaration to
+make the scoped operation pass.
+
+### Reading the guard's output
+
+The guard publishes an allowlisted summary to the run's step summary: one line
+per non-no-op change, with its Terraform address and actions, plus PASS/FAIL.
+Raw plan JSON is deliberately never printed or uploaded — plan JSON can carry
+resource attribute values, including secrets. Confirm the summary lists exactly:
+
+```
+module.eks.kubernetes_config_map.amazon_vpc_cni[0]  actions=["create"]
 ```
 
-That leaves the ECR drift untouched for #5003 to resolve on its own terms. Note
-that a `-target` apply is deliberately narrow: it skips the rest of the module,
-so run a normal plan afterwards to confirm nothing else was pending.
-
-Provenance of the drift is **unknown** — do not attribute it to a specific
-commit. A shallow clone makes its graft root appear to introduce every file in
-the repository, which is misleading rather than informative here.
+If it lists anything else the run has already refused. **Do not** widen the
+guard or switch to `scope=full` to get past it — fix the collateral first, or
+raise it on #4999.
 
 ### Step 4 — Verify the controller actually reconciled
 
@@ -202,14 +233,48 @@ will still be there and will look like success.
 
 ---
 
+Before activation, the same enablement inputs with `plan_only=true` run the
+saved-plan guard under the actual CI identity and skip apply. Read its summary:
+it must show exactly one ConfigMap create/update, no access-entry or cluster
+change. Scoped paths skip Bedrock agreement setup and preserve live EKS CIDRs;
+the default full path keeps its existing commands. Controller scopes currently
+support only dev in account `879318057152`, region `us-east-1`.
+
 ## Section 4 — Rollback
 
-```bash
-# Set in the environment's tfvars, then dispatch Platform Infra Apply:
-enable_network_policy_controller = false
-```
+Roll back **only** if live probes, ordinary worker connectivity, or telemetry
+regress. Enforcement being newly on is not by itself a reason to revert.
 
-Enforcement stops and the previous behaviour returns. Two things to know:
+**Audited rollback:** dispatch **Platform Infra Apply** on the reviewed ref with:
+
+| Input | Value |
+|---|---|
+| `environment` | `dev` |
+| `account_id` | `879318057152` |
+| `scope` | `network-policy-controller-rollback` |
+| `confirm_destructive_apply` | `yes` — explicit approval to remove this ConfigMap |
+| `plan_only` | `false` (`true` validates without applying) |
+
+This separate scope sets `enable_network_policy_controller=false` for its saved,
+hardcoded target plan. Its guard requires exactly one `delete`, verifies the
+**before** object's name, namespace and exact enabled data, and requires the
+after object to be absent. Replacement, collateral and an unconfirmed rollback
+refuse. The existing destroy-safety gate still runs, and apply consumes the same
+saved plan. The workflow checks the account and exact dev cluster and preserves
+its live endpoint CIDRs. No pod-local deletion or full platform apply is part of
+rollback.
+
+Then merge `enable_network_policy_controller = false` in
+`environments/dev/platform.tfvars` to make the rollback durable; until that lands,
+a later enablement or full apply could recreate the ConfigMap. No additional full
+apply is needed: the rollback already reconciles this object's Terraform state.
+
+Verify the ConfigMap is absent and repeat connectivity and fresh telemetry
+checks. Do not assume reconciliation is immediate. An already-absent object
+produces a no-op and the guard refuses; inspect the live state rather than
+widening the guard.
+
+Two things to know:
 
 - The ADOT egress policy is **safe to leave in place** — it is additive and
   harmless whether enforcement is on or off. Do not revert it.
