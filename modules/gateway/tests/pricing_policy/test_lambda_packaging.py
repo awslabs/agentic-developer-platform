@@ -311,7 +311,7 @@ def test_package_cold_imports_from_an_unpacked_archive(tmp_path):
 
     payload = json.loads(result.stdout)
     assert str(unpacked) in payload["file"], f"imported the repo copy, not the archive: {payload['file']}"
-    bundled = json.loads((POLICY_DIR / "snapshots/2026-09-12.1.json").read_text())
+    bundled = json.loads((POLICY_DIR / "snapshots" / f"{payload['version']}.json").read_text())
     assert payload["rows"] == len(bundled["rates"])
     assert payload["uncached"] == 128
 

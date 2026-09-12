@@ -29,7 +29,7 @@ GATEWAY_ROOT = Path(__file__).resolve().parents[2]
 if str(GATEWAY_ROOT / "lambda" / "shared") not in sys.path:
     sys.path.insert(0, str(GATEWAY_ROOT / "lambda" / "shared"))
 
-from pricing_policy import CURRENT_SNAPSHOT_VERSION, EstimateReason  # noqa: E402
+from pricing_policy import EstimateReason  # noqa: E402
 from pricing_policy.storage import (  # noqa: E402
     MissingV2SchemaError,
     V2DisabledError,
@@ -414,7 +414,9 @@ def test_reader_rows_match_the_snapshot_version_the_seed_recorded(pg_url, connec
     state = reader.get_rate_state(conn)
     assert state.from_database
     versions = {row.snapshot_version for row in state.rows if row.snapshot_version}
-    assert versions == {CURRENT_SNAPSHOT_VERSION}, versions
+    assert versions == {"2026-09-12.1", "2026-09-12.2"}, versions
+    assert {row.snapshot_version for row in state.rows if row.model_id.startswith("openai.")} == {"2026-09-12.1"}
+    assert {row.snapshot_version for row in state.rows if row.model_id.startswith("anthropic.")} == {"2026-09-12.2"}
 
 
 def test_warm_reader_honors_disable_even_when_rate_table_is_unavailable(pg_url, connect, reader):

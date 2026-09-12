@@ -223,7 +223,7 @@ def test_openai_flat_row_is_the_in_region_standard_variant(snapshot):
     passed, so where several in-region standard rows exist the dearest is the safe
     projection.
     """
-    for model_id in snapshot.models:
+    for model_id in (model for model in snapshot.models if is_openai_model(model)):
         flat, known = legacy_flat_rates(model_id)
         candidates = [r for r in snapshot.rows_for_model(model_id) if r.geography == Geography.IN_REGION and r.service_tier == ServiceTier.STANDARD]
         if not candidates:
@@ -242,7 +242,7 @@ def test_openai_flat_row_never_fabricates_a_cache_write_rate(snapshot):
     Absence makes the caller apply its own documented derivation instead.
     """
     checked = 0
-    for model_id in snapshot.models:
+    for model_id in (model for model in snapshot.models if is_openai_model(model)):
         rows = [r for r in snapshot.rows_for_model(model_id) if r.geography == Geography.IN_REGION and r.service_tier == ServiceTier.STANDARD]
         if not rows:
             continue
@@ -282,7 +282,7 @@ def test_flat_table_covers_curated_and_openai_models(snapshot, flat_table):
     assert "default" in flat_table
     for model_id in snapshot.curated_non_openai["rates"]:
         assert model_id in flat_table, model_id
-    for model_id in snapshot.models:
+    for model_id in (model for model in snapshot.models if is_openai_model(model)):
         _, known = legacy_flat_rates(model_id)
         if known:
             assert model_id in flat_table, model_id
@@ -316,7 +316,7 @@ def test_openai_and_curated_namespaces_do_not_collide(flat_table):
     are merged, which is exactly how the original literals drifted.
     """
     curated = set(load_snapshot().curated_non_openai["rates"])
-    openai_served = {m for m in load_snapshot().models if legacy_flat_rates(m)[1]}
+    openai_served = {m for m in load_snapshot().models if is_openai_model(m) and legacy_flat_rates(m)[1]}
     assert not (curated & openai_served)
     for model_id in openai_served:
         assert is_openai_model(model_id), model_id

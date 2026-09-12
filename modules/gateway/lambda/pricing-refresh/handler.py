@@ -7,10 +7,13 @@ never overwrites prior rates with fallbacks or renews retained verification ages
 
 from __future__ import annotations
 
+import gzip
+import io
 import logging
 import os
 import sys
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from urllib.error import URLError
@@ -25,6 +28,7 @@ from db import get_db_connection
 from publication import PointerConflictError, RefreshDeferredError, publish, read_active
 
 from pricing_policy.aws_sources import CARD_BASE, CARD_SLUGS, CATALOG_BASE, SourceValidationError, parse_catalog, parse_model_card
+from pricing_policy.claude_sources import PRICING_PAGE_URL, TOKEN_MAP_URL, parse_claude_pricing
 from pricing_policy.policy import load_snapshot
 
 logger = logging.getLogger(__name__)
@@ -45,7 +49,7 @@ def emit_metrics(values, *, rows=()):
     source_ages = {}
     for row in rows:
         age = max(0, (now - datetime.fromisoformat(row.verified_at.replace("Z", "+00:00"))).total_seconds() / 3600)
-        source = "bulk_catalog" if ".gpt-oss-" in row.model_id else "model_card"
+        source = "pricing_page" if row.model_id.startswith("anthropic.") else ("bulk_catalog" if ".gpt-oss-" in row.model_id else "model_card")
         key = (row.model_id, source)
         source_ages[key] = max(age, source_ages.get(key, 0))
     for (model, source), age in source_ages.items():
@@ -82,7 +86,10 @@ def fetch_source(url, limit, deadline):
         if remaining <= 0:
             raise TimeoutError("pricing source deadline exhausted")
         try:
-            request = Request(url, headers={"User-Agent": "ADP-Bedrock-Pricing/2", "Accept": "text/markdown, application/json"})
+            request = Request(
+                url,
+                headers={"User-Agent": "ADP-Bedrock-Pricing/2", "Accept": "text/markdown, application/json, text/html", "Accept-Encoding": "gzip"},
+            )
             with urlopen(request, timeout=min(10, remaining)) as response:  # noqa: S310 -- fixed AWS URLs
                 if not response.url.startswith("https://"):
                     raise SourceValidationError("AWS source redirected to non-HTTPS")
@@ -92,7 +99,20 @@ def fetch_source(url, limit, deadline):
                         raise TimeoutError("pricing source deadline exhausted")
                     chunk = response.read(min(65536, limit + 1 - length))
                     if not chunk:
-                        return b"".join(parts)
+                        content = b"".join(parts)
+                        # AWS's pricing-widget map is gzip encoded. Bound both
+                        # wire bytes and expanded bytes, including gzip bombs.
+                        if content.startswith(b"\x1f\x8b"):
+                            try:
+                                with gzip.GzipFile(fileobj=io.BytesIO(content)) as compressed:
+                                    content = compressed.read(limit + 1)
+                            except (OSError, EOFError, zlib.error) as exc:
+                                raise SourceValidationError("invalid gzip AWS pricing source") from exc
+                            if len(content) > limit:
+                                raise SourceValidationError(f"expanded source exceeds {limit} byte limit: {url}")
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("pricing source deadline exhausted")
+                        return content
                     parts.append(chunk)
                     length += len(chunk)
                     if length > limit:
@@ -102,10 +122,13 @@ def fetch_source(url, limit, deadline):
     raise RuntimeError(f"AWS source transport failure: {url}") from error
 
 
-def fetch_rates(templates, deadline):
+def fetch_rates(templates, deadline, models=None):
     jobs = [("card", model, CARD_BASE + slug + ".md", 1024 * 1024) for model, slug in CARD_SLUGS.items()]
     regions = sorted({row.region for row in templates if ".gpt-oss-" in row.model_id})
     jobs.extend(("catalog", region, CATALOG_BASE + "/" + region + "/index.json", 10 * 1024 * 1024) for region in regions)
+    if any(row.model_id.startswith("anthropic.") for row in templates):
+        jobs.extend((("claude_page", "claude", PRICING_PAGE_URL, 10 * 1024 * 1024), ("claude_map", "claude", TOKEN_MAP_URL, 10 * 1024 * 1024)))
+    claude_documents = {}
     fresh, failures = [], []
     pool = ThreadPoolExecutor(max_workers=4)
     futures = {pool.submit(fetch_source, url, limit, deadline): (kind, identity, url) for kind, identity, url, limit in jobs}
@@ -121,6 +144,9 @@ def fetch_rates(templates, deadline):
                 failures.append(url)
                 continue
             verified_at = datetime.now(UTC).isoformat()
+            if kind in ("claude_page", "claude_map"):
+                claude_documents[kind] = content
+                continue
             try:
                 rows = (
                     parse_model_card(content, identity, templates, source_url=url, verified_at=verified_at)
@@ -137,6 +163,16 @@ def fetch_rates(templates, deadline):
         failures.extend(url for future, (_, _, url) in futures.items() if not future.done())
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+    if set(claude_documents) == {"claude_page", "claude_map"}:
+        fresh.extend(
+            parse_claude_pricing(
+                claude_documents["claude_page"],
+                claude_documents["claude_map"],
+                templates,
+                models if models is not None else load_snapshot().models,
+                verified_at=datetime.now(UTC).isoformat(),
+            )
+        )
     return tuple(fresh), tuple(sorted(set(failures)))
 
 
@@ -156,7 +192,7 @@ def handler(event, context):
         deadline = time.monotonic() + FETCH_SECONDS
         if context is not None and hasattr(context, "get_remaining_time_in_millis"):
             deadline = min(deadline, time.monotonic() + context.get_remaining_time_in_millis() / 1000 - 50)
-        fresh, failures = fetch_rates(tuple(templates.values()), deadline)
+        fresh, failures = fetch_rates(tuple(templates.values()), deadline, snapshot.models)
         for attempt in range(3):
             try:
                 with get_db_connection() as conn:

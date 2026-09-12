@@ -363,7 +363,7 @@ def test_no_additional_fee_stores_the_input_rate_not_zero(snapshot):
 def test_full_rate_write_is_125_percent_of_input(snapshot):
     """Every full_rate frontier row publishes write at exactly 1.25× input."""
     checked = 0
-    for row in snapshot.rates:
+    for row in (rate for rate in snapshot.rates if is_openai_model(rate.model_id)):
         if row.cache_write_policy != CacheWritePolicy.FULL_RATE:
             continue
         assert row.cache_write_price_per_1k_tokens == row.input_price_per_1k_tokens * Decimal("1.25")
@@ -865,8 +865,9 @@ def test_curated_table_has_no_openai_entries(snapshot):
 
 
 def test_snapshot_covers_all_twelve_models_and_required_variants(snapshot):
-    assert len(snapshot.models) == 12
-    assert len(snapshot.rates) == len(snapshot.required_variants) == 330
+    assert len([model for model in snapshot.models if is_openai_model(model)]) == 12
+    assert len([model for model in snapshot.models if model.startswith("anthropic.")]) == 18
+    assert len(snapshot.rates) == len(snapshot.required_variants) == 1336
     present = {r.variant_key for r in snapshot.rates}
     assert present == set(snapshot.required_variants)
 

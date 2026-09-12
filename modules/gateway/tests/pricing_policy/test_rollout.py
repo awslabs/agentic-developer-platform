@@ -306,3 +306,46 @@ def test_freshness_alarm_cannot_pass_with_unconfirmed_destination(args, monkeypa
     monkeypatch.setattr(rollout, "aws", response)
     with pytest.raises(AssertionError, match="confirmed subscription"):
         rollout.verify_alarm_routes(args)
+
+
+def test_readiness_wait_recovers_after_node_replacement(cli, args, monkeypatch):
+    args.readiness_timeout = 30
+    cli.replicas = 2
+    cli.pods = [pod("serving"), pod("replacement", ready=False)]
+    ticks = [0.0]
+    monkeypatch.setattr(rollout.time, "monotonic", lambda: ticks[0])
+
+    def advance(seconds):
+        ticks[0] += seconds
+        cli.pods[1] = pod("replacement")
+
+    monkeypatch.setattr(rollout.time, "sleep", advance)
+    rollout.verify_seed(args, migrate=True)
+    assert ticks[0] == 10
+    executions = [cmd for cmd, _ in cli.calls if cmd[:2] == ["kubectl", "exec"]]
+    assert "alembic" in executions[0]
+    assert {cmd[cmd.index("adp-gateway") + 1] for cmd in executions} == {"serving", "replacement"}
+
+
+def test_readiness_wait_times_out_without_migration(cli, args, monkeypatch):
+    args.readiness_timeout = 12
+    cli.pods = [pod("unready", ready=False)]
+    ticks = [0.0]
+    monkeypatch.setattr(rollout.time, "monotonic", lambda: ticks[0])
+    monkeypatch.setattr(rollout.time, "sleep", lambda seconds: ticks.__setitem__(0, ticks[0] + seconds))
+    with pytest.raises(RuntimeError, match="required gateway replicas"):
+        rollout.verify_seed(args, migrate=True)
+    assert ticks[0] == 12
+    assert not any(cmd[:2] == ["kubectl", "exec"] for cmd, _ in cli.calls)
+
+
+def test_readiness_wait_cannot_hide_wrong_release(cli, args, monkeypatch):
+    args.readiness_timeout = 180
+    cli.image = "wrong:release"
+
+    def unexpected_sleep(_):
+        pytest.fail("Wrong-image failure must be immediate")
+
+    monkeypatch.setattr(rollout.time, "sleep", unexpected_sleep)
+    with pytest.raises(RuntimeError, match="expected release image"):
+        rollout.ready_pods(args)

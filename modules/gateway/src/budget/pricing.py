@@ -1,11 +1,10 @@
 """Pre-request budget estimates using the active V2 pricing cache.
 
-OpenAI quotes select one conservative published variant for the measured/estimated
+OpenAI and Claude quotes select one conservative published variant for the measured/estimated
 context and available routing evidence. Startup and background async reads keep
 this process cache current; a synchronous inference estimate does no database I/O.
-The derived flat tables remain public compatibility views, and non-OpenAI curated
-pricing behavior is preserved. Completed Mantle requests use durable decisions,
-not this estimator.
+The derived flat tables remain public compatibility views for other providers.
+Completed requests use durable decisions, not this estimator.
 """
 
 from dataclasses import replace
@@ -14,11 +13,12 @@ from typing import Any
 
 from pricing_policy import (
     RoutingEvidence,
-    is_openai_model,
+    canonical_billing_model_id,
+    is_anthropic_model,
+    is_v2_priced_model,
     legacy_flat_rates,
     legacy_flat_table,
     load_snapshot,
-    normalize_billing_model_id,
     normalize_usage,
     price_from_rate_row,
     quantize_ledger,
@@ -124,10 +124,37 @@ class PricingService:
             Dict with 'input' and 'output' prices per 1000 tokens
             (may also include 'cache_read_input' and 'cache_creation_input')
         """
-        if self._use_shared_resolver and is_openai_model(model_id):
+        if self._use_shared_resolver and is_v2_priced_model(canonical_billing_model_id(model_id)):
             from src.budget.pricing_v2_reader import cached_rate_state
 
-            snapshot = replace(load_snapshot(), rates=cached_rate_state().rows)
+            snapshot = load_snapshot()
+            billing_id = canonical_billing_model_id(model_id, snapshot=snapshot)
+            rows = tuple(row for row in cached_rate_state().rows if row.model_id == billing_id)
+            snapshot = replace(snapshot, rates=rows or tuple(row for row in snapshot.rates if row.model_id == billing_id))
+            if is_anthropic_model(billing_id):
+                if not snapshot.rates:
+                    # A retired/excluded Claude model still has its historical
+                    # model-specific bundled quote until AWS publishes a row.
+                    return legacy_flat_rates(model_id, snapshot=snapshot)[0]
+                row, _ = select_rate_row(
+                    rows=snapshot.rates,
+                    usage=normalize_usage({"input_tokens": 1000, "output_tokens": 1000}, api_format="anthropic"),
+                    evidence=RoutingEvidence(
+                        original_model_id=model_id, billing_model_id=billing_id, geography=geography_from_model_prefix(model_id)
+                    ),
+                    short_threshold=snapshot.short_context_max_input_tokens,
+                )
+                return {
+                    "input": row.input_price_per_1k_tokens,
+                    "output": row.output_price_per_1k_tokens,
+                    **({"cache_read_input": row.cache_read_price_per_1k_tokens} if row.cache_read_price_per_1k_tokens is not None else {}),
+                    **({"cache_creation_input": row.cache_write_price_per_1k_tokens} if row.cache_write_price_per_1k_tokens is not None else {}),
+                    **(
+                        {"cache_creation_1h_input": row.cache_write_1h_price_per_1k_tokens}
+                        if row.cache_write_1h_price_per_1k_tokens is not None
+                        else {}
+                    ),
+                }
             return legacy_flat_rates(model_id, snapshot=snapshot)[0]
         resolved_id = self.resolve_model_id(model_id)
 
@@ -151,15 +178,20 @@ class PricingService:
         return self._pricing["default"]
 
     def quote_cost(self, model_id: str, input_tokens: int, output_tokens: int, *, state=None) -> tuple[Decimal, Decimal, Decimal]:
-        """Quote OpenAI from one cached V2 generation, without request-path I/O."""
-        if self._use_shared_resolver and is_openai_model(model_id):
+        """Quote supported models from one cached generation, without request-path I/O."""
+        if self._use_shared_resolver and is_v2_priced_model(canonical_billing_model_id(model_id)):
             from src.budget.pricing_v2_reader import cached_rate_state
 
             state = state or cached_rate_state()
-            billing_id = normalize_billing_model_id(model_id)
+            billing_id = canonical_billing_model_id(model_id)
             rows = tuple(row for row in state.rows if row.model_id == billing_id)
+            if not rows:
+                rows = tuple(row for row in load_snapshot().rates if row.model_id == billing_id)
             if rows:
-                usage = normalize_usage({"input_tokens": input_tokens, "output_tokens": output_tokens}, api_format="openai")
+                usage = normalize_usage(
+                    {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                    api_format="anthropic" if is_anthropic_model(billing_id) else "openai",
+                )
                 row, _ = select_rate_row(
                     rows=rows,
                     usage=usage,
@@ -172,7 +204,10 @@ class PricingService:
                 return quantize_ledger(exact), row.input_price_per_1k_tokens, row.output_price_per_1k_tokens
             # Missing models use the explicit generic estimate, never an old
             # OpenAI flat literal or a fabricated variant from another model.
-            pricing = load_snapshot().curated_non_openai["rates"]["default"]
+            if is_anthropic_model(billing_id):
+                pricing = legacy_flat_rates(model_id)[0]
+            else:
+                pricing = load_snapshot().curated_non_openai["rates"]["default"]
             input_rate, output_rate = Decimal(pricing["input"]), Decimal(pricing["output"])
         else:
             pricing = self.get_model_pricing(model_id)
@@ -197,7 +232,7 @@ class PricingService:
         Returns:
             Total cost in USD (Decimal)
         """
-        if self._use_shared_resolver and is_openai_model(model_id):
+        if self._use_shared_resolver and is_v2_priced_model(canonical_billing_model_id(model_id)):
             return self.quote_cost(model_id, input_tokens, output_tokens)[0]
         pricing = self.get_model_pricing(model_id)
 

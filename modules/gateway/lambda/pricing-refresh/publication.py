@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from psycopg2.extras import RealDictCursor, execute_values
 
-from pricing_policy.policy import POLICY_VERSION, RateRow
+from pricing_policy.policy import POLICY_VERSION, SUPPORTED_POLICY_VERSIONS, RateRow
 from pricing_policy.refresh import assemble_candidate, canonical_content_hash
 
 
@@ -58,7 +58,7 @@ def read_active(conn, *, lock=False) -> ActiveState:
             raise RuntimeError("active validated generation contains no rates")
         if generation["schema_version"] != 2:
             raise RuntimeError("active generation has incompatible schema version")
-        if generation["policy_version"] != POLICY_VERSION:
+        if generation["policy_version"] not in SUPPORTED_POLICY_VERSIONS:
             raise RuntimeError("active generation has incompatible policy version")
         required = {tuple(key) for key in generation["required_variants"]}
         if required != {row.variant_key for row in rows}:
@@ -97,6 +97,7 @@ def publish(conn, expected_revision: int, fresh: tuple[RateRow, ...], bundled_re
             "output_price_per_1k_tokens",
             "cache_read_price_per_1k_tokens",
             "cache_write_price_per_1k_tokens",
+            "cache_write_1h_price_per_1k_tokens",
             "cache_write_policy",
             "source",
             "source_url",

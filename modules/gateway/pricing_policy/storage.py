@@ -37,7 +37,7 @@ from typing import Any
 
 from .policy import (
     CURRENT_SNAPSHOT_VERSION,
-    POLICY_VERSION,
+    SUPPORTED_POLICY_VERSIONS,
     EstimateReason,
     RateRow,
     Snapshot,
@@ -98,6 +98,7 @@ RATE_COLUMNS: tuple[str, ...] = (
     "verified_at",
     "snapshot_version",
     "generation_id",
+    "cache_write_1h_price_per_1k_tokens",
 )
 
 #: The active pointer, joined to its generation so one round trip decides whether
@@ -122,7 +123,8 @@ WHERE a.singleton IS TRUE
 """
 
 SQL_ACTIVE_RATES = f"""
-SELECT {", ".join(RATE_COLUMNS)}
+SELECT {", ".join(column for column in RATE_COLUMNS if column != "cache_write_1h_price_per_1k_tokens")},
+       (to_jsonb(model_pricing_rates_v2)->>'cache_write_1h_price_per_1k_tokens')::numeric AS cache_write_1h_price_per_1k_tokens
 FROM model_pricing_rates_v2
 WHERE generation_id = %(generation_id)s
 """
@@ -522,7 +524,7 @@ def build_active_generation(
         raise V2QueryFailedError("enabled pointer requires positive generation and revision")
     if pointer.get("generation_status") != "validated":
         raise V2QueryFailedError("active generation is not validated")
-    if pointer.get("schema_version") != 2 or pointer.get("policy_version") != POLICY_VERSION:
+    if pointer.get("schema_version") != 2 or pointer.get("policy_version") not in SUPPORTED_POLICY_VERSIONS:
         raise V2QueryFailedError("active generation has an unsupported schema or policy version")
     if not rate_rows:
         raise V2QueryFailedError(f"validated generation {pointer['current_generation_id']} has no rate rows")

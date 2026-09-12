@@ -9,11 +9,13 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator
+from decimal import Decimal
 from typing import Any
 
 from botocore.exceptions import ClientError
 
 from src.budget.enforcement_service import reconcile_budget_reservation
+from src.budget.pricing_decisions import price_completed_usage
 from src.proxy.bedrock_enforcement import RoutingDecision, resolve_routing_decision
 from src.proxy.bedrock_routing import BedrockTarget, resolve_shadow_target
 from src.proxy.bedrock_routing_errors import (
@@ -25,6 +27,7 @@ from src.proxy.exceptions import (
 )
 from src.proxy.format_translator import FormatTranslator
 from src.proxy.model_resolver import ModelResolver
+from src.proxy.pricing_capture import PricingCapture
 from src.proxy.schemas import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
@@ -43,6 +46,11 @@ from src.shared.schemas.auth import TokenContext
 from src.usage.service import UsageService
 
 logger = get_logger(__name__)
+
+# Pricing has its own bounded read/fallback. Only subsequent best-effort DB and
+# reservation work shares this budget, so a blocked write cannot withhold the
+# already-computed durable settlement event after a client disconnect.
+CLAUDE_PERSISTENCE_TIMEOUT_SECONDS = 10.0
 
 # Issue #1074: Context variable for request_id so internal methods can
 # propagate it to usage_logs without threading through every signature.
@@ -349,6 +357,7 @@ class ProxyService(IProxyService):
         context: TokenContext,
         anthropic_version: str | None = None,
         anthropic_beta: list[str] | None = None,
+        pricing_capture: PricingCapture | None = None,
     ) -> OpenAIChatCompletionResponse | AsyncIterator[bytes]:
         """Handle OpenAI-compatible chat completions (US-4.1).
 
@@ -361,6 +370,8 @@ class ProxyService(IProxyService):
         Returns:
             OpenAI format response or SSE stream
         """
+        pricing_capture = pricing_capture or PricingCapture(str(uuid.uuid4()), request.model)
+
         # Resolve model
         bedrock_model_id = self._model_resolver.resolve_model(request.model)
         self._model_resolver.check_model_access(bedrock_model_id, context)
@@ -369,9 +380,9 @@ class ProxyService(IProxyService):
         bedrock_request = self._translator.openai_to_bedrock(request, bedrock_model_id)
 
         if request.stream:
-            return self._stream_openai_response(bedrock_request, bedrock_model_id, request.model, context)
+            return self._stream_openai_response(bedrock_request, bedrock_model_id, request.model, context, pricing_capture=pricing_capture)
         else:
-            return await self._invoke_openai_response(bedrock_request, bedrock_model_id, request.model, context)
+            return await self._invoke_openai_response(bedrock_request, bedrock_model_id, request.model, context, pricing_capture=pricing_capture)
 
     async def messages(
         self,
@@ -380,6 +391,7 @@ class ProxyService(IProxyService):
         anthropic_version: str | None = None,
         anthropic_beta: list[str] | None = None,
         request_id: str | None = None,
+        pricing_capture: PricingCapture | None = None,
     ) -> AnthropicMessagesResponse | AsyncIterator[bytes]:
         """Handle Anthropic Messages format (US-4.2).
 
@@ -397,6 +409,8 @@ class ProxyService(IProxyService):
         if request_id:
             _current_request_id.set(request_id)
 
+        pricing_capture = pricing_capture or PricingCapture(request_id or str(uuid.uuid4()), request.model)
+
         # Resolve model
         bedrock_model_id = self._model_resolver.resolve_model(request.model)
         self._model_resolver.check_model_access(bedrock_model_id, context)
@@ -405,9 +419,9 @@ class ProxyService(IProxyService):
         bedrock_request = self._translator.anthropic_to_bedrock(request, anthropic_version, anthropic_beta)
 
         if request.stream:
-            return self._stream_anthropic_response(bedrock_request, bedrock_model_id, request.model, context)
+            return self._stream_anthropic_response(bedrock_request, bedrock_model_id, request.model, context, pricing_capture=pricing_capture)
         else:
-            return await self._invoke_anthropic_response(bedrock_request, bedrock_model_id, request.model, context)
+            return await self._invoke_anthropic_response(bedrock_request, bedrock_model_id, request.model, context, pricing_capture=pricing_capture)
 
     async def invoke_model(
         self,
@@ -417,6 +431,7 @@ class ProxyService(IProxyService):
         stream: bool = False,
         request_id: str | None = None,
         agent_run_id: str | None = None,
+        pricing_capture: PricingCapture | None = None,
     ) -> dict[str, Any] | AsyncIterator[bytes]:
         """Handle Bedrock InvokeModel pass-through (US-4.3).
 
@@ -442,6 +457,8 @@ class ProxyService(IProxyService):
         if agent_run_id:
             _current_agent_run_id.set(agent_run_id)
 
+        pricing_capture = pricing_capture or PricingCapture(request_id or str(uuid.uuid4()), model_id)
+
         # Resolve model (in case it's an alias)
         bedrock_model_id = self._model_resolver.resolve_model(model_id)
         self._model_resolver.check_model_access(bedrock_model_id, context)
@@ -450,27 +467,40 @@ class ProxyService(IProxyService):
         bedrock_request = BedrockInvokeRequest(**body)
 
         if stream:
-            return self._stream_bedrock_response(bedrock_request, bedrock_model_id, context)
+            return self._stream_bedrock_response(bedrock_request, bedrock_model_id, context, pricing_capture=pricing_capture)
         else:
-            return await self._invoke_bedrock_response(bedrock_request, bedrock_model_id, context)
+            return await self._invoke_bedrock_response(bedrock_request, bedrock_model_id, context, pricing_capture=pricing_capture)
 
     # =========================================================================
     # Usage Logging (Issue #992)
     # =========================================================================
 
-    async def _log_usage(
+    async def _log_usage(self, **kwargs) -> None:
+        capture = kwargs.get("pricing_capture")
+        if capture is None or not capture.is_claude:
+            await self._log_usage_impl(**kwargs)
+            return
+        # A disconnect may arrive after measured usage while pricing or usage
+        # persistence is awaiting I/O. Keep this one request's completion alive;
+        # the logging wrapper awaits it before emitting the durable S3 event.
+        task = asyncio.create_task(self._log_usage_impl(**kwargs), name=f"pricing_finalize_{capture.request_id}")
+        capture.finalization_task = task
+        await asyncio.shield(task)
+
+    async def _log_usage_impl(
         self,
         context: TokenContext,
         model: str,
         input_tokens: int,
         output_tokens: int,
-        cost_usd: float,
+        cost_usd: float | Decimal,
         latency_ms: int,
         status_code: int,
         request_id: str | None = None,
         cache_read_input_tokens: int | None = None,
         cache_creation_input_tokens: int | None = None,
         routing_decision: RoutingDecision | None = None,
+        pricing_capture: PricingCapture | None = None,
     ) -> None:
         """Write a row to usage_logs for admin dashboard visibility.
 
@@ -518,60 +548,119 @@ class ProxyService(IProxyService):
         # None means "not captured" and is written as NULL — never a placeholder.
         client_tool = _current_client_tool.get()
 
-        # Issue #4743/#4744: which Bedrock account this call belongs to.
-        #
-        # Two sources, and the distinction is the whole audit value of the column:
-        #
-        #  - ENFORCED (routing_decision.is_enforced): the caller already resolved the
-        #    target AND signed with it, so this is the account that ACTUALLY served the
-        #    call. Reuse it — re-resolving here would walk the ladder a second time per
-        #    request and, worse, could disagree with what was signed if a mapping
-        #    changed mid-request, putting a wrong account in the audit trail.
-        #  - SHADOW (no decision, or enforcement not active for this org): resolve the
-        #    would-be target for observation only. The request was signed with ambient
-        #    IRSA before this ran, exactly as on main.
-        #
-        # In both cases None persists as NULL, meaning "not captured" — never a
-        # fabricated account id.
-        if routing_decision is not None and routing_decision.is_enforced:
-            bedrock_account_id = routing_decision.target.account_id if routing_decision.target else None
-        else:
-            shadow_target = await resolve_shadow_target(context)
-            bedrock_account_id = shadow_target.account_id if shadow_target else None
+        actual_cost = None
+        pricing_failed = False
+        if pricing_capture is not None and pricing_capture.is_claude:
+            request_id = pricing_capture.request_id
+            try:
+                priced = await price_completed_usage(
+                    request_id=request_id,
+                    org_id=context.attributed_org_id,
+                    raw_usage=pricing_capture.raw_usage,
+                    evidence=pricing_capture.routing,
+                    api_format="anthropic",
+                )
+                pricing_capture.decision = priced.to_dict()
+                actual_cost = cost_usd = priced.ledger_cost
+                input_tokens = priced.usage["uncached_input_tokens"]
+                output_tokens = priced.usage["output_tokens"]
+                cache_read_input_tokens = (
+                    priced.usage["cache_read_input_tokens"] if priced.usage["raw"]["cache_read_input_tokens"] is not None else None
+                )
+                cache_creation_input_tokens = (
+                    priced.usage["cache_creation_input_tokens"] if priced.usage["raw"]["cache_creation_input_tokens"] is not None else None
+                )
+            except Exception as exc:
+                logger.warning("Claude usage could not be priced", extra={"request_id": request_id, "error": str(exc)})
+                # Do not invent zero-token success or emit a legacy-priced event
+                # when the provider omitted usage or source verification failed.
+                pricing_failed = True
+                cost_usd = Decimal("0")
 
-        await reconcile_budget_reservation(
-            context=context,
-            request_id=request_id,
-            model_id=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
-
-        try:
-            session_factory = get_session_factory()
-            async with session_factory() as session:
-                usage_service = UsageService(session)
-                await usage_service.log_request(
+        async def persist_usage():
+            if pricing_failed:
+                await reconcile_budget_reservation(
                     context=context,
-                    model=model,
+                    request_id=request_id,
+                    model_id=model,
+                    input_tokens=0,
+                    output_tokens=0,
+                    actual_cost_usd=Decimal("0"),
+                )
+                if status_code < 400:
+                    return
+                # Keep the existing diagnostic record for a failed invocation.
+                # Its error status and zero charge are not a measured success;
+                # no pricing decision exists, so no settlement event is emitted.
+
+            # Issue #4743/#4744: which Bedrock account this call belongs to.
+            #
+            # Two sources, and the distinction is the whole audit value of the column:
+            #
+            #  - ENFORCED (routing_decision.is_enforced): the caller already resolved the
+            #    target AND signed with it, so this is the account that ACTUALLY served the
+            #    call. Reuse it — re-resolving here would walk the ladder a second time per
+            #    request and, worse, could disagree with what was signed if a mapping
+            #    changed mid-request, putting a wrong account in the audit trail.
+            #  - SHADOW (no decision, or enforcement not active for this org): resolve the
+            #    would-be target for observation only. The request was signed with ambient
+            #    IRSA before this ran, exactly as on main.
+            #
+            # In both cases None persists as NULL, meaning "not captured" — never a
+            # fabricated account id.
+            if routing_decision is not None and routing_decision.is_enforced:
+                bedrock_account_id = routing_decision.target.account_id if routing_decision.target else None
+            else:
+                shadow_target = await resolve_shadow_target(context)
+                bedrock_account_id = shadow_target.account_id if shadow_target else None
+
+            if not pricing_failed:
+                await reconcile_budget_reservation(
+                    context=context,
+                    request_id=request_id,
+                    model_id=model,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
-                    cost_usd=cost_usd,
-                    latency_ms=latency_ms,
-                    status_code=status_code,
-                    request_id=request_id,
-                    agent_run_id=agent_run_id,
-                    cache_read_input_tokens=cache_read_input_tokens,
-                    cache_creation_input_tokens=cache_creation_input_tokens,
-                    client_tool=client_tool,
-                    # Issue #4743 (shadow) / #4744 (enforced): see the resolution above.
-                    bedrock_account_id=bedrock_account_id,
+                    **({"actual_cost_usd": actual_cost} if actual_cost is not None else {}),
                 )
-        except Exception as exc:
-            logger.warning(
-                "Failed to write usage_logs row",
-                extra={"error": str(exc), "model": model},
-            )
+
+            try:
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    usage_service = UsageService(session)
+                    await usage_service.log_request(
+                        context=context,
+                        model=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost_usd=cost_usd,
+                        latency_ms=latency_ms,
+                        status_code=status_code,
+                        request_id=request_id,
+                        agent_run_id=agent_run_id,
+                        cache_read_input_tokens=cache_read_input_tokens,
+                        cache_creation_input_tokens=cache_creation_input_tokens,
+                        client_tool=client_tool,
+                        # Issue #4743 (shadow) / #4744 (enforced): see the resolution above.
+                        bedrock_account_id=bedrock_account_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to write usage_logs row",
+                    extra={"error": str(exc), "model": model},
+                )
+
+        if pricing_capture is not None and pricing_capture.is_claude:
+            try:
+                async with asyncio.timeout(CLAUDE_PERSISTENCE_TIMEOUT_SECONDS):
+                    await persist_usage()
+            except TimeoutError:
+                logger.warning(
+                    "Claude usage persistence timed out; keeping measured pricing decision for settlement",
+                    extra={"request_id": request_id, "pricing_decision_available": pricing_capture.decision is not None},
+                )
+        else:
+            await persist_usage()
 
     @staticmethod
     def _cache_tokens_from_usage(usage: dict[str, Any]) -> tuple[int | None, int | None]:
@@ -649,6 +738,7 @@ class ProxyService(IProxyService):
         model_id: str,
         request: BedrockInvokeRequest,
         target: BedrockTarget | None = None,
+        pricing_capture: PricingCapture | None = None,
     ) -> BedrockInvokeResponse:
         """Invoke Bedrock model.
 
@@ -668,6 +758,9 @@ class ProxyService(IProxyService):
         Returns:
             Bedrock response
         """
+        if pricing_capture is not None:
+            pricing_capture.forwarded(client, model_id, stream=False)
+
         try:
             from src.shared.tracing import get_tracer
 
@@ -683,6 +776,8 @@ class ProxyService(IProxyService):
                     accept="application/json",
                 )
                 response_body = json.loads(response["body"].read())
+                if pricing_capture is not None:
+                    pricing_capture.response(response_body, response)
                 return BedrockInvokeResponse(**response_body)
 
         except Exception as e:
@@ -700,6 +795,7 @@ class ProxyService(IProxyService):
         model_id: str,
         request: BedrockInvokeRequest,
         target: BedrockTarget | None = None,
+        pricing_capture: PricingCapture | None = None,
     ) -> AsyncIterator[bytes]:
         """Invoke Bedrock model with streaming.
 
@@ -727,6 +823,9 @@ class ProxyService(IProxyService):
         )
         span = span_ctx.__enter__()
 
+        if pricing_capture is not None:
+            pricing_capture.forwarded(client, model_id, stream=True)
+
         try:
             response = await client.invoke_model_with_response_stream(
                 modelId=model_id,
@@ -735,6 +834,8 @@ class ProxyService(IProxyService):
                 accept="application/json",
             )
 
+            if pricing_capture is not None:
+                pricing_capture.response({}, response)
             event_stream = response.get("body")
             if event_stream:
                 queue: asyncio.Queue[bytes | None] = asyncio.Queue()
@@ -758,6 +859,8 @@ class ProxyService(IProxyService):
                     if chunk is None:
                         break
                     chunk_count += 1
+                    if pricing_capture is not None:
+                        pricing_capture.chunk(chunk)
                     yield chunk
 
                 await read_task
@@ -776,6 +879,7 @@ class ProxyService(IProxyService):
         bedrock_model_id: str,
         model: str,
         context: TokenContext,
+        pricing_capture: PricingCapture | None = None,
     ) -> OpenAIChatCompletionResponse:
         """Invoke Bedrock and return OpenAI format response.
 
@@ -800,7 +904,7 @@ class ProxyService(IProxyService):
         try:
             decision = await resolve_routing_decision(context)
             client = await self._pool_service.get_client(decision.credentials)
-            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target)
+            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
@@ -823,6 +927,7 @@ class ProxyService(IProxyService):
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_creation,
                 routing_decision=decision,
+                pricing_capture=pricing_capture,
             )
 
     async def _stream_openai_response(
@@ -831,6 +936,7 @@ class ProxyService(IProxyService):
         bedrock_model_id: str,
         model: str,
         context: TokenContext,
+        pricing_capture: PricingCapture | None = None,
     ) -> AsyncIterator[bytes]:
         """Stream OpenAI format response.
 
@@ -854,7 +960,7 @@ class ProxyService(IProxyService):
             client = await self._pool_service.get_client(decision.credentials)
             response_id = str(uuid.uuid4())
 
-            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target)
+            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
 
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "openai", model, response_id):
                 # Extract usage from streaming chunks for logging
@@ -878,6 +984,7 @@ class ProxyService(IProxyService):
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
                 routing_decision=decision,
+                pricing_capture=pricing_capture,
             )
 
     async def _invoke_anthropic_response(
@@ -886,6 +993,7 @@ class ProxyService(IProxyService):
         bedrock_model_id: str,
         model: str,
         context: TokenContext,
+        pricing_capture: PricingCapture | None = None,
     ) -> AnthropicMessagesResponse:
         """Invoke Bedrock and return Anthropic format response.
 
@@ -910,7 +1018,7 @@ class ProxyService(IProxyService):
         try:
             decision = await resolve_routing_decision(context)
             client = await self._pool_service.get_client(decision.credentials)
-            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target)
+            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
@@ -933,6 +1041,7 @@ class ProxyService(IProxyService):
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_creation,
                 routing_decision=decision,
+                pricing_capture=pricing_capture,
             )
 
     async def _stream_anthropic_response(
@@ -941,6 +1050,7 @@ class ProxyService(IProxyService):
         bedrock_model_id: str,
         model: str,
         context: TokenContext,
+        pricing_capture: PricingCapture | None = None,
     ) -> AsyncIterator[bytes]:
         """Stream Anthropic format response.
 
@@ -964,7 +1074,7 @@ class ProxyService(IProxyService):
             client = await self._pool_service.get_client(decision.credentials)
             response_id = str(uuid.uuid4())
 
-            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target)
+            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
 
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "anthropic", model, response_id):
                 self._extract_usage_from_sse_chunk(chunk, usage)
@@ -987,6 +1097,7 @@ class ProxyService(IProxyService):
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
                 routing_decision=decision,
+                pricing_capture=pricing_capture,
             )
 
     async def _invoke_bedrock_response(
@@ -994,6 +1105,7 @@ class ProxyService(IProxyService):
         bedrock_request: BedrockInvokeRequest,
         bedrock_model_id: str,
         context: TokenContext,
+        pricing_capture: PricingCapture | None = None,
     ) -> dict[str, Any]:
         """Invoke Bedrock and return raw response.
 
@@ -1017,7 +1129,7 @@ class ProxyService(IProxyService):
         try:
             decision = await resolve_routing_decision(context)
             client = await self._pool_service.get_client(decision.credentials)
-            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target)
+            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
@@ -1040,6 +1152,7 @@ class ProxyService(IProxyService):
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_creation,
                 routing_decision=decision,
+                pricing_capture=pricing_capture,
             )
 
     async def _stream_bedrock_response(
@@ -1047,6 +1160,7 @@ class ProxyService(IProxyService):
         bedrock_request: BedrockInvokeRequest,
         bedrock_model_id: str,
         context: TokenContext,
+        pricing_capture: PricingCapture | None = None,
     ) -> AsyncIterator[bytes]:
         """Stream Bedrock format response.
 
@@ -1069,7 +1183,7 @@ class ProxyService(IProxyService):
             client = await self._pool_service.get_client(decision.credentials)
             response_id = str(uuid.uuid4())
 
-            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target)
+            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
 
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "bedrock", bedrock_model_id, response_id):
                 self._extract_usage_from_sse_chunk(chunk, usage)
@@ -1092,6 +1206,7 @@ class ProxyService(IProxyService):
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
                 routing_decision=decision,
+                pricing_capture=pricing_capture,
             )
 
     # =========================================================================

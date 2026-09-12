@@ -43,7 +43,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 #: The snapshot new code bootstraps from and the migration seed is frozen against.
-CURRENT_SNAPSHOT_VERSION = "2026-09-12.1"
+CURRENT_SNAPSHOT_VERSION = "2026-09-12.2"
 
 #: The snapshot used to price a legacy OpenAI settlement event that carries no
 #: durable pricing decision. Pinned SEPARATELY from CURRENT_SNAPSHOT_VERSION and
@@ -53,8 +53,10 @@ CURRENT_SNAPSHOT_VERSION = "2026-09-12.1"
 #: are retained (design §4.3).
 COMPATIBILITY_SNAPSHOT_VERSION = "2026-09-12.1"
 
-POLICY_VERSION = 1
+POLICY_VERSION = 2
+SUPPORTED_POLICY_VERSIONS = (1, 2)
 DECISION_VERSION = 1
+CLAUDE_DECISION_VERSION = 2
 
 _SNAPSHOT_DIR = Path(__file__).resolve().parent / "snapshots"
 
@@ -98,7 +100,8 @@ class RateSource:
     BULK_CATALOG = "bulk_catalog"
     MODEL_CARD = "model_card"
     BUNDLED_SNAPSHOT = "bundled_snapshot"
-    ALL = (BULK_CATALOG, MODEL_CARD, BUNDLED_SNAPSHOT)
+    PRICING_PAGE = "pricing_page"
+    ALL = (BULK_CATALOG, MODEL_CARD, BUNDLED_SNAPSHOT, PRICING_PAGE)
 
 
 class Confidence:
@@ -124,6 +127,8 @@ class EstimateReason:
     BOOTSTRAP_FALLBACK = "bootstrap_fallback"
     LEGACY_EVENT = "legacy_event"
     ABSENT_CACHE_COUNTERS = "absent_cache_counters"
+    UNCONFIRMED_CACHE_WRITE_DURATION = "unconfirmed_cache_write_duration"
+    UNPUBLISHED_CACHE_WRITE_1H_RATE = "unpublished_cache_write_1h_rate"
 
 
 class UnsupportedVariantError(ValueError):
@@ -152,6 +157,8 @@ _GEO_PREFIX_TO_GEOGRAPHY = {
     "in.": Geography.GEO_CRIS,
     "global.": Geography.GLOBAL_CRIS,
     "us-gov.": Geography.GOVCLOUD,
+    "au.": Geography.GEO_CRIS,
+    "jp.": Geography.GEO_CRIS,
 }
 
 _RUNTIME_VARIANT_SUFFIX = re.compile(r"-\d+:\d+$")
@@ -192,6 +199,24 @@ def geography_from_model_prefix(model_id: str) -> str | None:
 def is_openai_model(model_id: str) -> bool:
     """Whether OpenAI variant-dimensioned V2 pricing applies to this id."""
     return normalize_billing_model_id(model_id).startswith("openai.")
+
+
+def is_anthropic_model(model_id: str) -> bool:
+    return normalize_billing_model_id(model_id).startswith("anthropic.claude")
+
+
+def is_v2_priced_model(model_id: str) -> bool:
+    """Families eligible for versioned pricing; not proof of a published variant."""
+    return is_openai_model(model_id) or is_anthropic_model(model_id)
+
+
+def canonical_billing_model_id(model_id: str, snapshot=None) -> str:
+    """Resolve reviewed aliases without losing the caller's separate route evidence."""
+    active = snapshot or load_snapshot()
+    normalized = normalize_billing_model_id(model_id)
+    aliases = active.curated_non_openai.get("aliases", {})
+    resolved = active.alias_map.get(model_id) or active.alias_map.get(normalized) or aliases.get(model_id) or aliases.get(normalized) or normalized
+    return active.alias_map.get(resolved) or normalize_billing_model_id(resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +306,10 @@ def _raw_counter_evidence(value: Any) -> Any:
     """Retain invalid evidence while keeping the durable decision valid JSON."""
     if isinstance(value, Decimal) or (isinstance(value, float) and not math.isfinite(value)):
         return str(value)
+    if isinstance(value, dict):
+        return {key: _raw_counter_evidence(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_raw_counter_evidence(item) for item in value]
     return value
 
 
@@ -307,9 +336,14 @@ class NormalizedUsage:
     raw_cache_creation_input_tokens: Any
     valid: bool
     estimate_reasons: tuple[str, ...] = ()
+    cache_creation_5m_input_tokens: int = 0
+    cache_creation_1h_input_tokens: int = 0
+    cache_creation_unconfirmed_input_tokens: int = 0
+    raw_cache_creation: Any = None
+    confirmed_cache_write_ttl: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, include_write_durations: bool = False) -> dict[str, Any]:
+        payload = {
             "api_format": self.api_format,
             "input_semantics": self.input_semantics,
             "total_input_tokens": self.total_input_tokens,
@@ -325,6 +359,12 @@ class NormalizedUsage:
             },
             "valid": self.valid,
         }
+        if include_write_durations:
+            for field in ("cache_creation_5m_input_tokens", "cache_creation_1h_input_tokens", "cache_creation_unconfirmed_input_tokens"):
+                payload[field] = getattr(self, field)
+            payload["raw"]["cache_creation"] = self.raw_cache_creation
+            payload["raw"]["confirmed_cache_write_ttl"] = self.confirmed_cache_write_ttl
+        return payload
 
 
 class MissingUsageError(ValueError):
@@ -336,7 +376,7 @@ class MissingUsageError(ValueError):
     """
 
 
-def normalize_usage(usage: dict[str, Any] | None, *, api_format: str) -> NormalizedUsage:
+def normalize_usage(usage: dict[str, Any] | None, *, api_format: str, cache_write_ttl: str | None = None) -> NormalizedUsage:
     """Normalize an upstream usage block into a bounded billable decomposition.
 
     Args:
@@ -366,6 +406,20 @@ def normalize_usage(usage: dict[str, Any] | None, *, api_format: str) -> Normali
     write_evidence = usage.get("cache_creation_input_tokens", usage.get("cacheWriteInputTokens", details.get("cache_write_tokens")))
     raw_read = _measured_int(read_evidence)
     raw_write = _measured_int(write_evidence)
+    creation = usage.get("cache_creation")
+    creation = creation if isinstance(creation, dict) else None
+    duration_fields = ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+    duration_values = [_measured_int(creation.get(key)) if creation and key in creation else None for key in duration_fields]
+    if (
+        not write_present
+        and creation
+        and all(key in creation and value is not None for key, value in zip(duration_fields, duration_values, strict=True))
+    ):
+        raw_write = sum(duration_values)
+        write_evidence = raw_write
+        write_present = True
+    if cache_write_ttl not in (None, "5m", "1h"):
+        raise ValueError("confirmed cache write TTL must be 5m or 1h")
 
     if raw_input is None or raw_output is None:
         raise MissingUsageError(
@@ -407,6 +461,22 @@ def normalize_usage(usage: dict[str, Any] | None, *, api_format: str) -> Normali
         reasons.add(EstimateReason.INVALID_USAGE_COUNTERS)
 
     valid = not invalid and bounded_write == write and bounded_read == read
+    five, hour = duration_values
+    bad_duration = bool(creation) and any(key in creation and value is None for key, value in zip(duration_fields, duration_values, strict=True))
+    five, hour = five or 0, hour or 0
+    if five + hour > bounded_write:
+        bad_duration = True
+    # Honor measured one-hour writes first if inconsistent counters exceed the
+    # aggregate, preserving a bounded total and the invalid-evidence marker.
+    hour = min(hour, bounded_write)
+    five = min(five, bounded_write - hour)
+    unconfirmed = bounded_write - five - hour
+    if not creation and cache_write_ttl is not None:
+        five, hour = (bounded_write, 0) if cache_write_ttl == "5m" else (0, bounded_write)
+        unconfirmed = 0
+    if bad_duration:
+        reasons.add(EstimateReason.INVALID_USAGE_COUNTERS)
+        valid = False
 
     return NormalizedUsage(
         api_format=api_format,
@@ -422,6 +492,11 @@ def normalize_usage(usage: dict[str, Any] | None, *, api_format: str) -> Normali
         raw_cache_creation_input_tokens=_raw_counter_evidence(write_evidence),
         valid=valid,
         estimate_reasons=tuple(sorted(reasons)),
+        cache_creation_5m_input_tokens=five,
+        cache_creation_1h_input_tokens=hour,
+        cache_creation_unconfirmed_input_tokens=unconfirmed,
+        raw_cache_creation=_raw_counter_evidence(creation),
+        confirmed_cache_write_ttl=cache_write_ttl,
     )
 
 
@@ -461,6 +536,7 @@ class RateRow:
     source_effective_at: str | None = None
     snapshot_version: str | None = None
     generation_id: int | None = None
+    cache_write_1h_price_per_1k_tokens: Decimal | None = None
 
     @property
     def variant_key(self) -> VariantKey:
@@ -490,6 +566,8 @@ class RateRow:
         raw_write = row.get("cache_write_price_per_1k_tokens")
         read_rate = None if raw_read is None else parse_rate(raw_read, field_name="cache_read_price_per_1k_tokens")
         write_rate = None if raw_write is None else parse_rate(raw_write, field_name="cache_write_price_per_1k_tokens")
+        raw_hour = row.get("cache_write_1h_price_per_1k_tokens")
+        hour_rate = None if raw_hour is None else parse_rate(raw_hour, field_name="cache_write_1h_price_per_1k_tokens")
 
         # Policy/rate agreement. These mirror the 044 CHECK constraints, so a row
         # that would be rejected by the database is also rejected in memory —
@@ -525,6 +603,7 @@ class RateRow:
             source_effective_at=_as_iso(row.get("source_effective_at")),
             snapshot_version=row.get("snapshot_version"),
             generation_id=row.get("generation_id"),
+            cache_write_1h_price_per_1k_tokens=hour_rate,
         )
 
 
@@ -642,7 +721,15 @@ def resolve_curated_non_openai(
     curated: dict[str, dict[str, str]] = snapshot.curated_non_openai.get("rates", {})
     aliases: dict[str, str] = snapshot.curated_non_openai.get("aliases", {})
 
-    resolved_id = aliases.get(model_id) or normalize_billing_model_id(model_id)
+    # This resolver settles old no-decision events. Freeze the pre-extension
+    # prefix list; newly reviewed AU/JP aliases apply only to versioned pricing.
+    legacy_normalized = model_id
+    for prefix in ("us.", "eu.", "apac.", "in.", "global.", "us-gov."):
+        if legacy_normalized.startswith(prefix):
+            legacy_normalized = legacy_normalized[len(prefix) :]
+            break
+    legacy_normalized = _RUNTIME_VARIANT_SUFFIX.sub("", legacy_normalized)
+    resolved_id = aliases.get(model_id) or legacy_normalized
 
     entry = curated.get(resolved_id)
     if entry is None:
@@ -756,7 +843,12 @@ def select_context_tier(total_input_tokens: int, rows: tuple[RateRow, ...], *, s
         limits = [r.max_input_tokens for r in rows if r.context_tier == only and r.max_input_tokens]
         return only, bool(limits) and total_input_tokens > max(limits)
 
-    tier = ContextTier.SHORT if total_input_tokens <= short_threshold else ContextTier.LONG
+    # The selected route supplies its own context boundary (Claude can differ
+    # from OpenAI). With incomplete route evidence, the lowest published short
+    # boundary avoids silently treating a potentially long request as short.
+    short_limits = [r.max_input_tokens for r in rows if r.context_tier == ContextTier.SHORT and r.max_input_tokens]
+    threshold = min(short_limits) if short_limits else short_threshold
+    tier = ContextTier.SHORT if total_input_tokens <= threshold else ContextTier.LONG
     if tier == ContextTier.SHORT:
         return tier, False
 
@@ -862,6 +954,11 @@ def select_rate_row(
         reasons.add(EstimateReason.UNPUBLISHED_CACHE_READ_RATE)
     if chosen.cache_write_policy == CacheWritePolicy.UNPUBLISHED and usage.cache_creation_input_tokens > 0:
         reasons.add(EstimateReason.UNPUBLISHED_CACHE_WRITE_RATE)
+    if is_anthropic_model(chosen.model_id):
+        if usage.cache_creation_unconfirmed_input_tokens:
+            reasons.add(EstimateReason.UNCONFIRMED_CACHE_WRITE_DURATION)
+        if usage.cache_creation_1h_input_tokens and chosen.cache_write_1h_price_per_1k_tokens is None:
+            reasons.add(EstimateReason.UNPUBLISHED_CACHE_WRITE_1H_RATE)
 
     reasons.update(usage.estimate_reasons)
     return chosen, tuple(sorted(reasons))
@@ -889,11 +986,20 @@ def price_from_rate_row(row: RateRow, usage: NormalizedUsage) -> tuple[Decimal, 
     # For no_additional_fee the stored write price already equals the input rate,
     # so one expression covers all three policies.
     effective_write = input_rate if write_rate is None else write_rate
+    hour_rate = row.cache_write_1h_price_per_1k_tokens
+    effective_hour = max(input_rate, effective_write) if hour_rate is None else hour_rate
+    effective_unknown = max(input_rate, effective_write, effective_hour)
+    write_cost = Decimal(usage.cache_creation_input_tokens) * effective_write
+    if is_anthropic_model(row.model_id):
+        components = (usage.cache_creation_5m_input_tokens, usage.cache_creation_1h_input_tokens, usage.cache_creation_unconfirmed_input_tokens)
+        if any(type(value) is not int or value < 0 for value in components) or sum(components) != usage.cache_creation_input_tokens:
+            raise ValueError("cache creation duration counters do not decompose")
+        write_cost = sum(Decimal(count) * rate for count, rate in zip(components, (effective_write, effective_hour, effective_unknown), strict=True))
 
     exact = (
         Decimal(usage.uncached_input_tokens) * input_rate
         + Decimal(usage.cache_read_input_tokens) * effective_read
-        + Decimal(usage.cache_creation_input_tokens) * effective_write
+        + write_cost
         + Decimal(usage.output_tokens) * output_rate
     ) / _THOUSAND
 
@@ -906,6 +1012,12 @@ def price_from_rate_row(row: RateRow, usage: NormalizedUsage) -> tuple[Decimal, 
         "effective_cache_read_price_per_1k_tokens": rate_to_string(effective_read),
         "effective_cache_write_price_per_1k_tokens": rate_to_string(effective_write),
     }
+    if is_anthropic_model(row.model_id):
+        applied.update(
+            cache_write_1h_price_per_1k_tokens=None if hour_rate is None else rate_to_string(hour_rate),
+            effective_cache_write_1h_price_per_1k_tokens=rate_to_string(effective_hour),
+            effective_cache_write_unconfirmed_price_per_1k_tokens=rate_to_string(effective_unknown),
+        )
     return exact, applied
 
 
@@ -1016,6 +1128,9 @@ def build_pricing_decision(
         short_threshold=snapshot.short_context_max_input_tokens,
     )
     all_reasons = set(reasons) | set(extra_reasons)
+    context_max = snapshot.models.get(evidence.billing_model_id, {}).get("context_max_input_tokens")
+    if is_anthropic_model(evidence.billing_model_id) and isinstance(context_max, int) and usage.total_input_tokens > context_max:
+        all_reasons.add(EstimateReason.UNSUPPORTED_CONTEXT)
     if source_kind is None:
         source_kind = "database" if generation_id is not None or pointer_revision is not None else "bundled_snapshot"
     if source_kind == "database":
@@ -1031,13 +1146,15 @@ def build_pricing_decision(
         raise ValueError(f"unknown decision source_kind: {source_kind!r}")
 
     exact, applied = price_from_rate_row(row, usage)
+    if is_anthropic_model(row.model_id):
+        applied["context_max_input_tokens"] = context_max
     ledger = quantize_ledger(exact)
 
     confidence = Confidence.ESTIMATED if all_reasons else Confidence.VERIFIED
 
     decision = PricingDecision(
-        decision_version=DECISION_VERSION,
-        policy_version=POLICY_VERSION,
+        decision_version=CLAUDE_DECISION_VERSION if is_anthropic_model(row.model_id) else DECISION_VERSION,
+        policy_version=POLICY_VERSION if is_anthropic_model(row.model_id) else 1,
         request_id=request_id,
         org_id=org_id,
         generation_id=generation_id,
@@ -1050,7 +1167,7 @@ def build_pricing_decision(
         source=row.source,
         source_url=row.source_url,
         source_content_sha256=row.source_content_sha256,
-        usage=usage.to_dict(),
+        usage=usage.to_dict(include_write_durations=is_anthropic_model(row.model_id)),
         routing=evidence.to_dict(),
         confidence=confidence,
         estimate_reasons=tuple(sorted(all_reasons)),
@@ -1093,7 +1210,8 @@ def _verify_decision_binding(payload: dict[str, Any], *, input_rate: Decimal, re
     key = payload["variant_key"]
     if not isinstance(key, list) or len(key) != 5 or not all(isinstance(value, str) and value for value in key):
         raise InvalidPricingDecisionError("decision variant_key is malformed")
-    if not is_openai_model(key[0]) or key[1] not in Geography.ALL or key[2] not in ServiceTier.ALL or key[3] not in ContextTier.ALL:
+    supported_model = is_openai_model(key[0]) if payload["decision_version"] == 1 else is_v2_priced_model(key[0])
+    if not supported_model or key[1] not in Geography.ALL or key[2] not in ServiceTier.ALL or key[3] not in ContextTier.ALL:
         raise InvalidPricingDecisionError("decision variant_key contains unsupported dimensions")
 
     reasons = payload["estimate_reasons"]
@@ -1202,6 +1320,17 @@ def _verify_decision_binding(payload: dict[str, Any], *, input_rate: Decimal, re
         expected_write = input_rate if row.cache_write_price_per_1k_tokens is None else row.cache_write_price_per_1k_tokens
         if read_rate != expected_read or write_rate != expected_write:
             raise ValueError("effective cache rates disagree with published rates/policy")
+        if payload["decision_version"] == 2:
+            if "cache_write_1h_price_per_1k_tokens" not in rates:
+                raise ValueError("published one-hour rate must be present, including null")
+            expected_hour = row.cache_write_1h_price_per_1k_tokens
+            if expected_hour is None:
+                expected_hour = max(input_rate, expected_write)
+            expected_unknown = max(input_rate, expected_write, expected_hour)
+            if parse_rate(rates["effective_cache_write_1h_price_per_1k_tokens"], field_name="effective hour") != expected_hour:
+                raise ValueError("effective one-hour rate disagrees with published rate")
+            if parse_rate(rates["effective_cache_write_unconfirmed_price_per_1k_tokens"], field_name="effective unconfirmed") != expected_unknown:
+                raise ValueError("unconfirmed write rate is not conservative")
     except (KeyError, TypeError, ValueError) as exc:
         raise InvalidPricingDecisionError(f"decision cache policy is malformed: {exc}") from exc
     if (
@@ -1216,6 +1345,22 @@ def _verify_decision_binding(payload: dict[str, Any], *, input_rate: Decimal, re
         and EstimateReason.UNPUBLISHED_CACHE_WRITE_RATE not in reasons
     ):
         raise InvalidPricingDecisionError("unpublished cache write requires an estimate reason")
+    if payload["decision_version"] == 2:
+        if "context_max_input_tokens" not in rates:
+            raise InvalidPricingDecisionError("Claude decision requires frozen context limit evidence")
+        context_max = rates["context_max_input_tokens"]
+        if context_max is not None and (type(context_max) is not int or context_max <= 0):
+            raise InvalidPricingDecisionError("decision context limit is malformed")
+        if context_max is not None and usage["total_input_tokens"] > context_max and EstimateReason.UNSUPPORTED_CONTEXT not in reasons:
+            raise InvalidPricingDecisionError("context overflow requires an estimate reason")
+        if usage["cache_creation_unconfirmed_input_tokens"] and EstimateReason.UNCONFIRMED_CACHE_WRITE_DURATION not in reasons:
+            raise InvalidPricingDecisionError("unconfirmed cache write duration requires an estimate reason")
+        if (
+            usage["cache_creation_1h_input_tokens"]
+            and row.cache_write_1h_price_per_1k_tokens is None
+            and EstimateReason.UNPUBLISHED_CACHE_WRITE_1H_RATE not in reasons
+        ):
+            raise InvalidPricingDecisionError("unpublished one-hour rate requires an estimate reason")
 
 
 def verify_pricing_decision(
@@ -1235,9 +1380,9 @@ def verify_pricing_decision(
         raise InvalidPricingDecisionError("pricing_decision is not an object")
 
     version = payload.get("decision_version")
-    if type(version) is not int or version != DECISION_VERSION:
+    if type(version) is not int or version not in (1, 2):
         raise InvalidPricingDecisionError(f"unsupported decision_version: {version!r}")
-    if type(payload.get("policy_version")) is not int or payload.get("policy_version") != POLICY_VERSION:
+    if type(payload.get("policy_version")) is not int or payload.get("policy_version") != version:
         raise InvalidPricingDecisionError(f"unsupported policy_version: {payload.get('policy_version')!r}")
 
     if payload.get("request_id") != request_id:
@@ -1261,6 +1406,13 @@ def verify_pricing_decision(
         raise InvalidPricingDecisionError("decision usage contains negative counters")
     if uncached + read + write != total:
         raise InvalidPricingDecisionError(f"decision usage does not decompose: {uncached}+{read}+{write} != {total}")
+    if version == 2:
+        components = tuple(
+            usage_payload.get(key)
+            for key in ("cache_creation_5m_input_tokens", "cache_creation_1h_input_tokens", "cache_creation_unconfirmed_input_tokens")
+        )
+        if any(type(value) is not int or value < 0 for value in components) or sum(components) != write:
+            raise InvalidPricingDecisionError("decision cache duration counters do not decompose")
 
     rates = payload.get("rates") or {}
     try:
@@ -1274,6 +1426,18 @@ def verify_pricing_decision(
     recomputed = (
         Decimal(uncached) * input_rate + Decimal(read) * read_rate + Decimal(write) * write_rate + Decimal(output) * output_rate
     ) / _THOUSAND
+    if version == 2:
+        try:
+            hour_rate = parse_rate(rates["effective_cache_write_1h_price_per_1k_tokens"], field_name="effective hour")
+            unknown_rate = parse_rate(rates["effective_cache_write_unconfirmed_price_per_1k_tokens"], field_name="effective unconfirmed")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise InvalidPricingDecisionError(f"decision duration rates are malformed: {exc}") from exc
+        recomputed = (
+            Decimal(uncached) * input_rate
+            + Decimal(read) * read_rate
+            + Decimal(output) * output_rate
+            + sum(Decimal(count) * rate for count, rate in zip(components, (write_rate, hour_rate, unknown_rate), strict=True))
+        ) / _THOUSAND
 
     try:
         claimed_exact = Decimal(str(payload["exact_cost_usd"]))
@@ -1385,6 +1549,8 @@ def legacy_flat_table(*, snapshot: Snapshot | None = None) -> dict[str, dict[str
     active = snapshot or load_snapshot()
     table = {model_id: _flat_from_curated(entry) for model_id, entry in active.curated_non_openai["rates"].items()}
     for model_id in active.models:
+        if not is_openai_model(model_id):
+            continue
         flat = _openai_flat_row(active, model_id)
         if flat is not None:
             table[model_id] = flat
@@ -1417,6 +1583,8 @@ __all__ = [
     "COMPATIBILITY_SNAPSHOT_VERSION",
     "CURRENT_SNAPSHOT_VERSION",
     "DECISION_VERSION",
+    "CLAUDE_DECISION_VERSION",
+    "SUPPORTED_POLICY_VERSIONS",
     "POLICY_VERSION",
     "CacheWritePolicy",
     "Confidence",
@@ -1436,8 +1604,11 @@ __all__ = [
     "UnsupportedVariantError",
     "VariantKey",
     "build_pricing_decision",
+    "canonical_billing_model_id",
     "geography_from_model_prefix",
     "is_openai_model",
+    "is_anthropic_model",
+    "is_v2_priced_model",
     "legacy_flat_rates",
     "legacy_flat_table",
     "load_snapshot",

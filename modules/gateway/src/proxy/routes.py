@@ -19,6 +19,7 @@ Issue #143: Async Chat Logging with PII Scrubbing
 Issue #144: Added timing instrumentation for auth and model_resolve segments
 """
 
+import asyncio
 import fnmatch
 import json
 import logging
@@ -36,6 +37,7 @@ from src.proxy.client_tool import normalize_client_tool
 from src.proxy.eventstream_codec import EVENTSTREAM_CONTENT_TYPE, EVENTSTREAM_KEEPALIVE, sse_to_eventstream
 from src.proxy.mantle_service import MantlePassthroughService, MantleUpstreamError
 from src.proxy.model_resolver import ModelResolver
+from src.proxy.pricing_capture import PricingCapture
 from src.proxy.schemas import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
@@ -53,6 +55,7 @@ from src.shared.schemas.auth import TokenContext
 from src.shared.timing import get_timings
 
 logger = logging.getLogger(__name__)
+_failure_finalizers: set[asyncio.Task] = set()
 
 router = APIRouter(tags=["proxy"])
 
@@ -328,8 +331,61 @@ def handle_proxy_error(error: Exception) -> HTTPException:
 # ============================================================================
 
 
+def _pricing_log_args(request: Request, context: TokenContext, capture: PricingCapture, body: dict) -> dict:
+    """Add settlement to compatibility routes only for newly priced Claude calls."""
+    return {
+        "request_id": capture.request_id,
+        "timestamp": datetime.now(UTC),
+        "org_id": context.attributed_org_id,
+        "user_id": context.user_id,
+        "team_id": context.team_id,
+        "root_human_id": context.attributed_user_id,
+        "account_type": "service" if context.account_type == "service" else "human",
+        "model": capture.original_model,
+        "api_format": "bedrock",
+        "request_body": body,
+        "headers": dict(request.headers),
+        "pricing_capture": capture,
+        "only_priced": True,
+    }
+
+
+async def _invoke_with_failure_logging(invoke, request: Request, context: TokenContext, capture: PricingCapture, body: dict):
+    """Preserve measured Claude spend if translation fails after invocation."""
+    started = time.monotonic()
+    try:
+        return await invoke
+    except (Exception, asyncio.CancelledError):
+        if not capture.is_claude:
+            raise
+
+        async def finalize():
+            # Normal returns retain their existing chat log. On an error or
+            # cancellation, await the service's measured pricing decision first.
+            if capture.finalization_task is not None:
+                try:
+                    await asyncio.shield(capture.finalization_task)
+                except Exception:
+                    logger.exception("Failed to finish Claude usage after invocation error")
+            try:
+                get_chat_logging_service().log_chat_async(
+                    **_pricing_log_args(request, context, capture, body),
+                    response_body=capture.response_body,
+                    latency_ms=(time.monotonic() - started) * 1000,
+                )
+            except Exception:
+                logger.exception("Failed to schedule Claude settlement after invocation error")
+
+        finalizer = asyncio.create_task(finalize(), name=f"chat_failure_finalize_{capture.request_id}")
+        _failure_finalizers.add(finalizer)
+        finalizer.add_done_callback(_failure_finalizers.discard)
+        await asyncio.shield(finalizer)
+        raise
+
+
 @router.post("/v1/chat/completions", response_model=OpenAIChatCompletionResponse)
 async def create_chat_completion(
+    raw_request: Request,
     request: OpenAIChatCompletionRequest,
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
@@ -345,13 +401,33 @@ async def create_chat_completion(
     Implements US-4.1: OpenAI-Compatible Chat Completions
     """
     try:
+        capture = PricingCapture(getattr(raw_request.state, "request_id", None) or str(id(raw_request)), request.model)
+        log_args = _pricing_log_args(raw_request, context, capture, request.model_dump(mode="json"))
+        started = time.monotonic()
         if request.stream:
             # Return streaming response
-            stream = await proxy_service.chat_completions(request, context)
-            return sse_streaming_response(stream)
+            stream = await proxy_service.chat_completions(request, context, pricing_capture=capture)
+            wrapped = create_streaming_logging_wrapper(
+                stream=stream,
+                chat_logger=get_chat_logging_service(),
+                start_time=started,
+                **log_args,
+            )
+            return sse_streaming_response(wrapped)
         else:
             # Return regular response
-            response = await proxy_service.chat_completions(request, context)
+            response = await _invoke_with_failure_logging(
+                proxy_service.chat_completions(request, context, pricing_capture=capture),
+                raw_request,
+                context,
+                capture,
+                request.model_dump(mode="json"),
+            )
+            get_chat_logging_service().log_chat_async(
+                **log_args,
+                response_body=capture.response_body or response.model_dump(mode="json"),
+                latency_ms=(time.monotonic() - started) * 1000,
+            )
             return Response(
                 content=response.model_dump_json(),
                 media_type="application/json",
@@ -419,12 +495,15 @@ async def create_message(
         # Get request metadata for logging
         request_id = getattr(raw_request.state, "request_id", None) or str(id(raw_request))
         timestamp = datetime.now(UTC)
+        pricing_capture = PricingCapture(request_id, request.model)
         request_body_dict = request.model_dump(mode="json")
         t0 = time.monotonic()
 
         if request.stream:
             # Return streaming response with logging wrapper
-            stream = await proxy_service.messages(request, context, anthropic_version, beta_features, request_id=request_id)
+            stream = await proxy_service.messages(
+                request, context, anthropic_version, beta_features, request_id=request_id, pricing_capture=pricing_capture
+            )
             chat_logger = get_chat_logging_service()
 
             wrapped_stream = create_streaming_logging_wrapper(
@@ -447,12 +526,19 @@ async def create_message(
                 request_body=request_body_dict,
                 headers=dict(raw_request.headers) if raw_request.headers else None,
                 start_time=t0,
+                pricing_capture=pricing_capture,
             )
 
             return sse_streaming_response(wrapped_stream)
         else:
             # Return regular response with logging
-            response = await proxy_service.messages(request, context, anthropic_version, beta_features, request_id=request_id)
+            response = await _invoke_with_failure_logging(
+                proxy_service.messages(request, context, anthropic_version, beta_features, request_id=request_id, pricing_capture=pricing_capture),
+                raw_request,
+                context,
+                pricing_capture,
+                request_body_dict,
+            )
             latency_ms = (time.monotonic() - t0) * 1000
 
             # Fire-and-forget logging
@@ -476,6 +562,7 @@ async def create_message(
                 request_body=request_body_dict,
                 response_body=response.model_dump(mode="json"),
                 headers=dict(raw_request.headers) if raw_request.headers else None,
+                pricing_capture=pricing_capture,
             )
 
             return Response(
@@ -564,9 +651,20 @@ async def invoke_model(
         if not model_id:
             raise HTTPException(status_code=400, detail="model or modelId is required")
 
-        # Invoke model
-        response = await proxy_service.invoke_model(model_id, body, context, stream=False)
+        capture = PricingCapture(getattr(request.state, "request_id", None) or str(id(request)), model_id)
+        log_args = _pricing_log_args(request, context, capture, body.copy())
+        started = time.monotonic()
 
+        # Invoke model
+        response = await _invoke_with_failure_logging(
+            proxy_service.invoke_model(model_id, body, context, stream=False, pricing_capture=capture), request, context, capture, body.copy()
+        )
+
+        get_chat_logging_service().log_chat_async(
+            **log_args,
+            response_body=capture.response_body or response,
+            latency_ms=(time.monotonic() - started) * 1000,
+        )
         return Response(
             content=response if isinstance(response, bytes) else str(response).encode(),
             media_type="application/json",
@@ -607,10 +705,20 @@ async def invoke_model_with_response_stream(
         if not model_id:
             raise HTTPException(status_code=400, detail="model or modelId is required")
 
-        # Invoke model with streaming
-        stream = await proxy_service.invoke_model(model_id, body, context, stream=True)
+        capture = PricingCapture(getattr(request.state, "request_id", None) or str(id(request)), model_id)
+        log_args = _pricing_log_args(request, context, capture, body.copy())
+        started = time.monotonic()
 
-        return sse_streaming_response(stream)
+        # Invoke model with streaming
+        stream = await proxy_service.invoke_model(model_id, body, context, stream=True, pricing_capture=capture)
+
+        wrapped = create_streaming_logging_wrapper(
+            stream=stream,
+            chat_logger=get_chat_logging_service(),
+            start_time=started,
+            **log_args,
+        )
+        return sse_streaming_response(wrapped)
 
     except BedrockGatewayError as e:
         raise handle_proxy_error(e)
@@ -672,6 +780,7 @@ async def invoke_model_by_path(
         # Get request metadata for logging
         request_id = getattr(request.state, "request_id", None) or str(id(request))
         timestamp = datetime.now(UTC)
+        pricing_capture = PricingCapture(request_id, model_id)
 
         # Issue #144: Time bedrock invocation
         with timings.time_segment("bedrock"):
@@ -679,13 +788,20 @@ async def invoke_model_by_path(
             # route-dependency contextvar does NOT survive to _log_usage across the
             # service-call boundary, so agent_run_id was NULL on 100% of rows even
             # though the header arrives and the dependency (#1781) sets it.
-            response = await proxy_service.invoke_model(
-                model_id,
-                body,
+            response = await _invoke_with_failure_logging(
+                proxy_service.invoke_model(
+                    model_id,
+                    body,
+                    context,
+                    stream=False,
+                    request_id=request_id,
+                    agent_run_id=_agent_run_id,
+                    pricing_capture=pricing_capture,
+                ),
+                request,
                 context,
-                stream=False,
-                request_id=request_id,
-                agent_run_id=_agent_run_id,
+                pricing_capture,
+                request_body_copy,
             )
         bedrock_ms = timings.get("bedrock")
 
@@ -723,6 +839,7 @@ async def invoke_model_by_path(
             request_body=request_body_copy,
             response_body=response if isinstance(response, dict) else {"raw": str(response)},
             headers=dict(request.headers) if request.headers else None,
+            pricing_capture=pricing_capture,
         )
 
         return Response(
@@ -768,6 +885,7 @@ async def invoke_model_stream_by_path(
         # Get request metadata for logging
         request_id = getattr(request.state, "request_id", None) or str(id(request))
         timestamp = datetime.now(UTC)
+        pricing_capture = PricingCapture(request_id, model_id)
         t0 = time.monotonic()
 
         # Issue #144: Time to get the stream object (includes model resolution)
@@ -780,6 +898,7 @@ async def invoke_model_stream_by_path(
                 stream=True,
                 request_id=request_id,
                 agent_run_id=_agent_run_id,
+                pricing_capture=pricing_capture,
             )
         chat_logger = get_chat_logging_service()
 
@@ -804,6 +923,7 @@ async def invoke_model_stream_by_path(
             request_body=request_body_copy,
             headers=dict(request.headers) if request.headers else None,
             start_time=t0,
+            pricing_capture=pricing_capture,
         )
 
         # This is the Bedrock-native URL pattern, so the default wire format is

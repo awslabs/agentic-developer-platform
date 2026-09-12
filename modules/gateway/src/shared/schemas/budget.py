@@ -104,7 +104,7 @@ class CostRecordRequest(BaseModel):
     model_name: str
     tokens_in: int = Field(ge=0)
     tokens_out: int = Field(ge=0)
-    request_cost_usd: Decimal | None = Field(None, decimal_places=4)
+    request_cost_usd: Decimal | None = Field(None, decimal_places=6)
 
 
 class BudgetUsageResponse(BaseModel):

@@ -581,7 +581,7 @@ def test_continuously_stale_replica_is_a_refresh_failure():
     [
         {"generation_status": "building"},
         {"schema_version": 1},
-        {"policy_version": 2},
+        {"policy_version": 3},
         {"pointer_revision": 0},
     ],
 )

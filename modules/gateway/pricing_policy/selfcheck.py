@@ -91,7 +91,7 @@ def main() -> int:
     from pricing_policy import CURRENT_SNAPSHOT_VERSION, load_snapshot
 
     snapshot = load_snapshot()
-    print(f"pricing_policy selfcheck OK — snapshot {CURRENT_SNAPSHOT_VERSION}, {len(snapshot.rates)} rate rows, {len(snapshot.models)} OpenAI models")
+    print(f"pricing_policy selfcheck OK — snapshot {CURRENT_SNAPSHOT_VERSION}, {len(snapshot.rates)} rate rows, {len(snapshot.models)} models")
     return 0
 
 

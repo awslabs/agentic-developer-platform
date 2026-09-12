@@ -31,7 +31,7 @@ def refresh(monkeypatch):
     monkeypatch.setattr(module, "get_db_connection", connection)
     monkeypatch.setattr(module, "emit_metrics", Mock())
     monkeypatch.setattr(module, "read_active", Mock(return_value=SimpleNamespace(revision=1, rows=(old,))))
-    monkeypatch.setattr(module, "load_snapshot", lambda: SimpleNamespace(rates=(old,), required_variants=frozenset((old.variant_key,))))
+    monkeypatch.setattr(module, "load_snapshot", lambda: SimpleNamespace(models={}, rates=(old,), required_variants=frozenset((old.variant_key,))))
     monkeypatch.setattr(module, "fetch_rates", Mock(return_value=((fresh,), ())))
     monkeypatch.setattr(module, "publish", Mock(return_value=(2, 2, candidate)))
     return module, commits
@@ -118,3 +118,70 @@ def test_source_age_metric_uses_oldest_retained_row(refresh, monkeypatch):
     assert source["Value"] == oldest["Value"]
     assert {item["Name"] for item in source["Dimensions"]} == {"FunctionName", "ModelId", "Source"}
     assert source["Value"] >= 11 * 24
+
+
+def test_gzip_source_is_decoded_and_bounded(refresh, monkeypatch):
+    import gzip
+    import io
+
+    module, _ = refresh
+    monkeypatch.undo()
+
+    class Response(io.BytesIO):
+        url = "https://b0.p.awsstatic.com/source"
+
+    payload = b'{"manifest":"real gzip transport"}'
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: Response(gzip.compress(payload)))
+    assert module.fetch_source(Response.url, 1024, module.time.monotonic() + 2) == payload
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: Response(gzip.compress(b"x" * 10000)))
+    with pytest.raises(module.SourceValidationError, match="expanded source"):
+        module.fetch_source(Response.url, 1024, module.time.monotonic() + 2)
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: Response(gzip.compress(payload)[:-4]))
+    with pytest.raises(module.SourceValidationError, match="invalid gzip"):
+        module.fetch_source(Response.url, 1024, module.time.monotonic() + 2)
+
+
+def test_coordinated_claude_sources_refresh_all_rates_and_partial_retains(refresh, monkeypatch):
+    from pathlib import Path
+
+    from pricing_policy.aws_sources import CARD_BASE, CARD_SLUGS, CATALOG_BASE
+    from pricing_policy.claude_sources import PRICING_PAGE_URL, TOKEN_MAP_URL
+    from pricing_policy.policy import load_snapshot
+
+    module, _ = refresh
+    monkeypatch.undo()
+    fixtures = Path(__file__).parents[1] / "pricing_policy" / "fixtures" / "aws"
+    snapshot = load_snapshot("2026-09-12.2")
+    sources = {CARD_BASE + slug + ".md": (fixtures / (slug + ".md")).read_bytes() for slug in CARD_SLUGS.values()}
+    sources[CATALOG_BASE + "/us-east-1/index.json"] = (fixtures / "oss-us-east-1.json").read_bytes()
+    sources[PRICING_PAGE_URL] = (fixtures / "claude" / "pricing-widgets.html").read_bytes()
+    sources[TOKEN_MAP_URL] = (fixtures / "claude" / "token-map.json").read_bytes()
+    monkeypatch.setattr(module, "fetch_source", lambda url, *args: sources[url])
+    rows, failures = module.fetch_rates(snapshot.rates, module.time.monotonic() + 20, snapshot.models)
+    assert len(rows) == 1336 and not failures
+    assert {r.variant_key for r in rows} == snapshot.required_variants
+
+    def missing_map(url, *args):
+        if url == TOKEN_MAP_URL:
+            raise OSError("unavailable map")
+        return sources[url]
+
+    monkeypatch.setattr(module, "fetch_source", missing_map)
+    rows, failures = module.fetch_rates(snapshot.rates, module.time.monotonic() + 20, snapshot.models)
+    assert len(rows) == 330 and failures == (TOKEN_MAP_URL,)
+    candidate = assemble_candidate(snapshot.rates, rows, snapshot.required_variants)
+    assert len(candidate.retained_keys) == 1006
+    assert all(r.model_id.startswith("openai.") for r in rows)
+
+
+def test_claude_source_metric_classification(refresh, monkeypatch):
+    from pricing_policy.policy import load_snapshot
+
+    module, _ = refresh
+    monkeypatch.undo()
+    client = Mock()
+    monkeypatch.setattr(module.boto3, "client", lambda *args, **kwargs: client)
+    row = next(r for r in load_snapshot("2026-09-12.2").rates if r.model_id.startswith("anthropic."))
+    module.emit_metrics({"PricingRefreshSuccess": 1}, rows=(row,))
+    metric = next(v for v in client.put_metric_data.call_args.kwargs["MetricData"] if v["MetricName"] == "PricingSourceVerifiedAgeHours")
+    assert {"Name": "Source", "Value": "pricing_page"} in metric["Dimensions"]

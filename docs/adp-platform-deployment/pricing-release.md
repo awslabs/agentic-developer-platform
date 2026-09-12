@@ -1,12 +1,24 @@
 # Pricing release and deployment verification
 
-Pricing uses the AWS Bedrock source inventory, an immutable migration seed, and
+OpenAI and supported Claude pricing use the AWS Bedrock source inventory, immutable migration seeds, and
 versioned database generations. A fresh `alembic upgrade head` installs usable
 pricing automatically; it does not need a manually edited pricing table. The
 same shared policy and snapshot ship in the gateway and both budget Lambdas.
 Daily refresh subsequently publishes freshly validated AWS rates at 06:00 UTC.
 Retained rows keep their original verification dates, and failed refreshes keep
-the last validated generation.
+the last validated generation. Claude rates are joined from the AWS pricing
+page's tokenized tables and USD region map, with availability from model cards.
+The OpenAI bulk-catalog/model-card sources continue to refresh in the same
+publication. Claude's five-minute and one-hour cache writes have distinct rates;
+source gaps or unconfirmed usage/serving context remain explicitly estimated.
+
+A new immutable snapshot and an additive migration extend existing deployments
+with Claude keys while preserving their current validated OpenAI prices. Old
+snapshots, old OpenAI decisions and no-decision historical Claude events keep
+their compatibility behavior. Reserved capacity and ambiguous/unpublished
+variants are not represented as verified per-token prices. See
+[Claude pricing design](../design-notes/4990-claude-bedrock-pricing.md) for coverage
+and source limitations.
 
 ## Deployment ordering
 
@@ -14,7 +26,10 @@ the last validated generation.
 changes, waits the old Lambda's configured timeout plus five seconds, and builds
 a gateway image tagged with the full source commit SHA. After all requested
 replicas are Ready on that image, it runs migrations on a matching pod and
-verifies the enabled generation and required key coverage on each replica.
+verifies the enabled generation, content hash, provider/key coverage and required
+one-hour cache rates on each replica. The release check waits up to 180 seconds
+for normal replacement pods to become Ready; a wrong release image fails
+immediately.
 Finally it verifies both Lambda archives against the checked-out release,
 checks retry/failure destinations and notification subscriptions, invokes a real
 refresh, matches the returned generation to the database, and enables the daily
@@ -91,8 +106,11 @@ for the exact metric contract, failure queues and default inbox outputs.
 
 For release acceptance, additionally record an isolated CloudWatch-alarm delivery
 through SNS to the inbox, separate EventBridge delivery and Lambda execution
-failure evidence, actual refresh/source freshness, and a new controlled Codex
-request whose durable decision matches the settled Budget & Spend charge.
+failure evidence, actual refresh/source freshness, and controlled Codex/Claude
+requests whose durable decisions match the settled Budget & Spend charges.
+Confirm raw cache counts (including Claude write duration) against the selected
+published rates. Existing notification-route delivery evidence may be reused
+when the infrastructure and its permissions have not changed.
 Verify healthy consumers adopt the active generation within 15 minutes. Do not
 rewrite historical cost records or replay old usage to validate a new release.
 

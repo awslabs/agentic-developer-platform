@@ -347,8 +347,7 @@ class TestStreamingResponseBuffer:
 
         assert response["content"] == []
         assert response["stop_reason"] is None
-        assert response["usage"]["input_tokens"] == 0
-        assert response["usage"]["output_tokens"] == 0
+        assert response["usage"] == {}
 
     def test_chunk_count(self):
         """Test chunk counting."""

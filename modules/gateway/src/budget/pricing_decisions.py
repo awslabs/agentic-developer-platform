@@ -3,15 +3,18 @@
 import asyncio
 import hashlib
 from dataclasses import replace
-from pathlib import Path
+from decimal import Decimal
+from importlib.resources import files
 
 from pricing_policy import (
     Confidence,
     EstimateReason,
     RateRow,
     build_pricing_decision,
+    is_anthropic_model,
     load_snapshot,
     normalize_usage,
+    resolve_curated_non_openai,
 )
 from pricing_policy.policy import staleness_reasons
 from pricing_policy.storage import utc_now_iso
@@ -38,10 +41,21 @@ def emit_pricing_metrics(reasons, *, cache_age_seconds=0.0):
     _emit_emf(metrics=metrics, dimensions=[[]], namespace="ADP/Gateway")
 
 
-def _unknown_row(model_id, evidence, snapshot):
-    """An explicitly estimated generic policy price, with bundled provenance."""
+def _bundled_estimate_row(model_id, evidence, snapshot):
+    """A bundled estimate with explicit provenance when no published row exists.
+
+    Older Claude models retain their model-specific curated policy, including
+    explicit cache rates. Only an unrecognized model receives the generic rate.
+    """
     rates = snapshot.curated_non_openai["rates"]["default"]
-    path = Path(__file__).resolve().parents[2] / "pricing_policy" / "snapshots" / f"{snapshot.snapshot_version}.json"
+    cache_read = cache_write = None
+    if is_anthropic_model(model_id):
+        rates, _ = resolve_curated_non_openai(model_id, snapshot=snapshot)
+        # These are the established Claude compatibility rules, not claims of
+        # newly verified AWS cache prices. Published duration rows take priority.
+        cache_read = rates.get("cache_read_input", rates["input"] * Decimal("0.1"))
+        cache_write = rates.get("cache_creation_input", rates["input"] * Decimal("1.25"))
+    path = files("pricing_policy").joinpath("snapshots", f"{snapshot.snapshot_version}.json")
     return RateRow.from_mapping(
         {
             "model_id": model_id,
@@ -51,9 +65,9 @@ def _unknown_row(model_id, evidence, snapshot):
             "region": evidence.endpoint_region or "unknown",
             "input_price_per_1k_tokens": rates["input"],
             "output_price_per_1k_tokens": rates["output"],
-            "cache_read_price_per_1k_tokens": None,
-            "cache_write_price_per_1k_tokens": None,
-            "cache_write_policy": "unpublished",
+            "cache_read_price_per_1k_tokens": cache_read,
+            "cache_write_price_per_1k_tokens": cache_write,
+            "cache_write_policy": "full_rate" if cache_write is not None else "unpublished",
             "source": "bundled_snapshot",
             "source_url": f"bundled://pricing_policy/snapshots/{snapshot.snapshot_version}.json",
             "source_content_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -69,9 +83,19 @@ def decision_from_state(*, request_id, org_id, usage, evidence, state):
     reasons = set(state.reasons)
     database = state.from_database
     if not rows:
-        rows = (_unknown_row(evidence.billing_model_id, evidence, snapshot),)
+        # A rollout can expose an OpenAI-only generation before Claude's seed.
+        # Retain the model's published bundled rates and their provenance.
+        rows = tuple(row for row in snapshot.rates if row.model_id == evidence.billing_model_id)
         database = False
-        reasons.add(EstimateReason.UNKNOWN_MODEL)
+        reasons.add(EstimateReason.BOOTSTRAP_FALLBACK)
+        if not rows:
+            known = False
+            if is_anthropic_model(evidence.billing_model_id):
+                _, known = resolve_curated_non_openai(evidence.billing_model_id, snapshot=snapshot)
+                reasons.add(EstimateReason.UNSUPPORTED_VARIANT)
+            rows = (_bundled_estimate_row(evidence.billing_model_id, evidence, snapshot),)
+            if not known:
+                reasons.add(EstimateReason.UNKNOWN_MODEL)
     decision = build_pricing_decision(
         request_id=request_id,
         org_id=org_id,
@@ -93,8 +117,8 @@ def decision_from_state(*, request_id, org_id, usage, evidence, state):
     return decision
 
 
-async def price_completed_usage(*, request_id, org_id, raw_usage, evidence, session_factory=None):
-    usage = normalize_usage(raw_usage, api_format="openai")
+async def price_completed_usage(*, request_id, org_id, raw_usage, evidence, session_factory=None, api_format="openai"):
+    usage = normalize_usage(raw_usage, api_format=api_format)
     # The read is after completion, before either persistence output. A failed
     # session acquisition keeps the reader's last good generation or bootstrap.
     try:

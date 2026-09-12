@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
-from pricing_policy import is_openai_model, legacy_flat_rates, legacy_flat_table
+from pricing_policy import canonical_billing_model_id, is_v2_priced_model, legacy_flat_rates, legacy_flat_table
 from src.shared.schemas.budget import EntityType, PeriodType
 
 from .config import budget_config
@@ -29,8 +29,8 @@ def calculate_model_cost(model_name: str, tokens_in: int, tokens_out: int) -> tu
     """
     Calculate the cost for a model based on input and output tokens.
 
-    OpenAI quotes use the live shared V2 cache. Non-OpenAI prices and public
-    short-name aliases retain their curated compatibility rates.
+    OpenAI and Claude quotes use the live shared V2 cache. Other providers
+    retain their curated compatibility rates.
 
     This is an estimator and a reporting helper — ``/budget/cost`` and the
     pre-request middleware estimate. Settlement uses the durable pricing decision
@@ -39,7 +39,7 @@ def calculate_model_cost(model_name: str, tokens_in: int, tokens_out: int) -> tu
     Returns:
         Tuple of (total_cost, input_cost_per_1k, output_cost_per_1k)
     """
-    if is_openai_model(model_name):
+    if is_v2_priced_model(canonical_billing_model_id(model_name)):
         from .pricing import pricing_service
 
         return pricing_service.quote_cost(model_name, tokens_in, tokens_out)

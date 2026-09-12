@@ -27,7 +27,13 @@ def canonical_content_hash(rows: tuple[RateRow, ...]) -> str:
     for row in sorted(rows, key=lambda item: item.variant_key):
         value = dict(row.__dict__)
         value.pop("generation_id", None)
-        for field in RATE_FIELDS:
+        # A null additive field did not exist in policy-one's canonical payload.
+        # Omit it so old validated generations retain their exact stored hash.
+        if value.get("cache_write_1h_price_per_1k_tokens") is None:
+            value.pop("cache_write_1h_price_per_1k_tokens", None)
+        for field in set(RATE_FIELDS) | {"cache_write_1h_price_per_1k_tokens"}:
+            if field not in value:
+                continue
             number = value[field]
             value[field] = None if number is None else format(number.normalize(), "f")
         for field in ("verified_at", "source_effective_at"):
@@ -47,7 +53,7 @@ def assemble_candidate(active: tuple[RateRow, ...], fresh: tuple[RateRow, ...], 
     validated: dict = {}
     for row in fresh:
         row = RateRow.from_mapping(row.__dict__)
-        if row.source not in ("model_card", "bulk_catalog"):
+        if row.source not in ("model_card", "bulk_catalog", "pricing_page"):
             raise SourceValidationError("refresh cannot publish bundled fallback values")
         existing = validated.get(row.variant_key)
         if existing and existing != row:
@@ -60,7 +66,7 @@ def assemble_candidate(active: tuple[RateRow, ...], fresh: tuple[RateRow, ...], 
             fresh_time = datetime.fromisoformat(row.verified_at.replace("Z", "+00:00"))
             if prior_time > fresh_time:
                 continue
-            for field in RATE_FIELDS:
+            for field in set(RATE_FIELDS) | {"cache_write_1h_price_per_1k_tokens"}:
                 old, new = getattr(baseline, field), getattr(row, field)
                 if old is not None and new is not None and old > 0 and not old * Decimal("0.5") <= new <= old * 2:
                     raise SourceValidationError(

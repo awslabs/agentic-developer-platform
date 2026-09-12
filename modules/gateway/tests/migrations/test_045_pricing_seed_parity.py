@@ -348,8 +348,8 @@ def test_bundle_revision_ordering_is_explicit_not_lexicographic(migration):
 
 @pytest.fixture
 def seeded(pg_url):
-    """A database upgraded to head (through 045), with a live connection."""
-    upgrade(pg_url, "head")
+    """A database upgraded to the frozen 045 revision, with a live connection."""
+    upgrade(pg_url, SEED_REVISION)
     import psycopg2
 
     connection = psycopg2.connect(pg_url)
@@ -483,18 +483,18 @@ def test_the_legacy_table_is_untouched_by_the_seed(seeded):
 # --------------------------------------------------------------------------- #
 
 
-def test_repeated_upgrade_head_publishes_no_new_generation(seeded, pg_url):
+def test_repeated_upgrade_frozen_seed_publishes_no_new_generation(seeded, pg_url):
     """Repeated deploys must converge, not accumulate generations."""
     with seeded.cursor() as cursor:
         cursor.execute("SELECT count(*), max(generation_id) FROM model_pricing_generations")
         before = cursor.fetchone()
 
-    upgrade(pg_url, "head")  # no-op: already at head
+    upgrade(pg_url, SEED_REVISION)  # no-op: already at the frozen seed revision
 
     # Force 045 to actually re-execute, which is what a retried deploy does.
     result = run_alembic(pg_url, "stamp", SCHEMA_REVISION)
     assert result.returncode == 0, result.stderr
-    upgrade(pg_url, "head")
+    upgrade(pg_url, SEED_REVISION)
 
     with seeded.cursor() as cursor:
         cursor.execute("SELECT count(*), max(generation_id) FROM model_pricing_generations")
@@ -506,7 +506,7 @@ def test_repeated_upgrade_head_publishes_no_new_generation(seeded, pg_url):
 def test_running_the_seed_three_times_stays_at_one_generation(seeded, pg_url):
     for _ in range(3):
         assert run_alembic(pg_url, "stamp", SCHEMA_REVISION).returncode == 0
-        upgrade(pg_url, "head")
+        upgrade(pg_url, SEED_REVISION)
 
     with seeded.cursor() as cursor:
         cursor.execute("SELECT count(*) FROM model_pricing_generations")
@@ -572,7 +572,7 @@ def test_a_freshly_fetched_rate_is_never_downgraded_to_the_bundled_value(seeded,
 
     # Now a deploy re-runs the seed.
     assert run_alembic(pg_url, "stamp", SCHEMA_REVISION).returncode == 0
-    upgrade(pg_url, "head")
+    upgrade(pg_url, SEED_REVISION)
 
     with seeded.cursor() as cursor:
         cursor.execute("SELECT current_generation_id FROM model_pricing_active")
@@ -638,7 +638,7 @@ def test_an_unrecognized_bundled_version_is_retained_not_overwritten(seeded, pg_
         cursor.execute("UPDATE model_pricing_active SET current_generation_id=%s, pointer_revision=pointer_revision+1 WHERE singleton", (other,))
 
     assert run_alembic(pg_url, "stamp", SCHEMA_REVISION).returncode == 0
-    result = run_alembic(pg_url, "upgrade", "head")
+    result = run_alembic(pg_url, "upgrade", SEED_REVISION)
     assert result.returncode == 0, result.stderr
 
     combined = result.stdout + result.stderr
@@ -712,7 +712,7 @@ def test_missing_variant_keys_are_filled_on_convergence(seeded, pg_url, migratio
         assert cursor.fetchone()[0] == len(migration.SEED_ROWS) - 3
 
     assert run_alembic(pg_url, "stamp", SCHEMA_REVISION).returncode == 0
-    upgrade(pg_url, "head")
+    upgrade(pg_url, SEED_REVISION)
 
     with seeded.cursor() as cursor:
         cursor.execute("SELECT current_generation_id FROM model_pricing_active")
@@ -736,7 +736,7 @@ def test_consumers_are_re_enabled_if_a_prior_run_left_them_off(seeded, pg_url):
         cursor.execute("UPDATE model_pricing_active SET consumers_enabled=FALSE WHERE singleton")
 
     assert run_alembic(pg_url, "stamp", SCHEMA_REVISION).returncode == 0
-    upgrade(pg_url, "head")
+    upgrade(pg_url, SEED_REVISION)
 
     with seeded.cursor() as cursor:
         cursor.execute("SELECT consumers_enabled FROM model_pricing_active")

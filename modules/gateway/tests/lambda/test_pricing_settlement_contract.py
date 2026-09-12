@@ -1,5 +1,6 @@
 """Independent accounting oracles for legacy formats and durable settlement."""
 
+import copy
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -137,3 +138,26 @@ def test_database_bindings_preserve_exact_decimal(writer):
         bound = cursor.execute.call_args.args[1][0]
     assert isinstance(bound, Decimal)
     assert bound == Decimal("0.007040")
+
+
+@pytest.mark.parametrize("legacy_rates, expected", [(None, "0.012060"), ({"input": "0.004", "output": "0.020"}, "0.015560")])
+def test_legacy_claude_ignores_new_snapshot_rates_and_aliases(legacy_rates, expected):
+    handler = load_handler("budget-usage-tracker")
+    model = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    current = load_snapshot()
+    changed_curated = copy.deepcopy(current.curated_non_openai)
+    changed_curated["aliases"][model] = "default"
+    changed_curated["rates"]["default"] = {"input": "9", "output": "9"}
+    changed = replace(current, snapshot_version="future-snapshot", curated_non_openai=changed_curated)
+    log = event(model, "anthropic", input_tokens=1000, output_tokens=500, cache_read_input_tokens=200, cache_creation_input_tokens=400)
+    result = handler.settle_chat_log(
+        handler.parse_chat_log(log),
+        chat_log=log,
+        rows=current.rates,
+        snapshot=changed,
+        generation_id=7,
+        pointer_revision=9,
+        legacy_rates={model: legacy_rates} if legacy_rates else None,
+    )
+    assert result.cost == Decimal(expected)
+    assert result.decision is None and "legacy_event" in result.reasons

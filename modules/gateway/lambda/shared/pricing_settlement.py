@@ -19,9 +19,8 @@ Two paths, in strict priority order:
    the settled amount depend on when the S3 event happened to be delivered.
 
 2. **No decision present.** Legacy events, and anything written by a gateway
-   older than this change. OpenAI is priced from the pinned compatibility
-   snapshot, marked
-   estimated with a reason — the routing evidence is gone, so the tier and
+   older than this change. OpenAI and curated Claude policy use the pinned
+   compatibility snapshot, marked estimated with a reason — the routing evidence is gone, so the tier and
    geography are inferred conservatively rather than measured.
 
 A decision that is present but invalid is an error, never silently downgraded to
@@ -206,7 +205,14 @@ def settle_chat_log(
             decision_payload.get("variant_key"),
             cost,
         )
-        if normalize_billing_model_id(parsed["model"]) != decision_payload["routing"]["billing_model_id"]:
+        routing = decision_payload["routing"]
+        if decision_payload["decision_version"] == 1:
+            model_matches = normalize_billing_model_id(parsed["model"]) == routing["billing_model_id"]
+        else:
+            # Saved route evidence must survive a later public-alias reassignment.
+            # The event and decision were emitted together by the trusted gateway.
+            model_matches = parsed["model"] in (routing["original_model_id"], routing["forwarded_model_id"], routing["billing_model_id"])
+        if not model_matches:
             raise InvalidPricingDecisionError("decision model differs from chat log")
         measured = decision_payload["usage"]
         return SettlementResult(
@@ -231,23 +237,24 @@ def settle_chat_log(
     evidence = _legacy_evidence(parsed)
     reasons = (*source_reasons, EstimateReason.LEGACY_EVENT)
 
+    # Legacy events have no durable source binding. Freeze curated Claude
+    # rates/aliases as well as OpenAI policy independently of the caller snapshot.
+    # Existing per-model legacy DB overrides below retain their established behavior.
+    snapshot = compatibility_snapshot()
+
     # Legacy OpenAI has no durable source binding. Neither the current database
     # generation nor a newer bundled selector may change its amount on retry.
     # Pin rates AND policy/provenance; passing only this snapshot's policy while
     # leaving rows bound to the current generation would still reprice the event.
     if is_openai_model(evidence.billing_model_id):
-        snapshot = compatibility_snapshot()
         rows = snapshot.rates
         generation_id = None
         pointer_revision = None
         reasons = (EstimateReason.LEGACY_EVENT, EstimateReason.BOOTSTRAP_FALLBACK)
 
-    # Non-OpenAI models keep their curated flat rates (#1486/#4592). They have no
-    # rows in the V2 generation at all — V2 carries the 12 OpenAI models — so
-    # routing them through the variant selector would price them off whichever
-    # OpenAI row that selector happened to consider closest. That is not a
-    # hypothetical: it billed Claude 3.5 Sonnet at 0.055 instead of 0.0105, a 5.2x
-    # overcharge, until this branch existed.
+    # Old non-OpenAI events retain curated flat pricing (#1486/#4592). Only
+    # a new durable version-two decision opts Claude into dimensioned pricing;
+    # replay must never send historical events through the newly extended table.
     if not is_openai_model(evidence.billing_model_id) or not any(row.model_id == evidence.billing_model_id for row in rows):
         return _settle_curated(
             normalized,

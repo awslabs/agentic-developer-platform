@@ -397,9 +397,9 @@ class BudgetService(IBudgetService):
 
     async def calculate_cost(self, request: CostCalculationRequest) -> CostCalculationResponse:
         """Calculate the cost for a given model and token usage."""
-        from pricing_policy import is_openai_model
+        from pricing_policy import canonical_billing_model_id, is_v2_priced_model
 
-        if is_openai_model(request.model_name):
+        if is_v2_priced_model(canonical_billing_model_id(request.model_name)):
             from src.budget.pricing import pricing_service
             from src.budget.pricing_v2_reader import cached_rate_state, get_rate_state, record_connection_failure
 

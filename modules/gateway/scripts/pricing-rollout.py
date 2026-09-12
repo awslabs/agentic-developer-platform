@@ -41,7 +41,7 @@ def aws(args, *parts, missing_ok=False):
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
-def ready_pods(args):
+def _ready_pods_once(args):
     deployment = json.loads(command(["kubectl", "get", "deployment/bedrockgateway", "-n", args.namespace, "-o", "json"]))
     image = next(c["image"] for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "bedrockgateway")
     if deployment["spec"].get("replicas", 1) < 1:
@@ -60,14 +60,36 @@ def ready_pods(args):
         if any(c["name"] == "bedrockgateway" and c["image"] == image for c in containers):
             selected.append(pod["metadata"]["name"])
     if not selected or len(selected) < deployment["spec"].get("replicas", 1):
-        raise RuntimeError("Not all required gateway replicas are Ready on the release image")
+        return [], image
     return sorted(selected), image
+
+
+def ready_pods(args):
+    """Wait boundedly for serving replicas during normal node replacement.
+
+    A wrong release image or zero desired replicas remains an immediate error.
+    The CLI sets the wait bound; programmatic callers may request a zero wait.
+    """
+    timeout = getattr(args, "readiness_timeout", 0)
+    if not 0 <= timeout <= 600:
+        raise RuntimeError("Readiness timeout must be between 0 and 600 seconds")
+    deadline = time.monotonic() + timeout
+    while True:
+        pods, image = _ready_pods_once(args)
+        if pods:
+            return pods, image
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Not all required gateway replicas are Ready on the release image")
+        print(f"Waiting for gateway replicas on the release image ({remaining:.0f}s remaining)", flush=True)
+        time.sleep(min(10, remaining))
 
 
 SEED_PROBE = r"""
 import asyncio, json
 from sqlalchemy import text
-from pricing_policy import load_snapshot
+from pricing_policy import RateRow, load_snapshot
+from pricing_policy.refresh import canonical_content_hash
 from src.shared.database import get_engine
 from src.chat_logging.config import get_chat_logging_settings
 
@@ -85,17 +107,28 @@ async def main():
             text("SELECT * FROM model_pricing_rates_v2 WHERE generation_id=:gid"),
             {"gid": pointer["current_generation_id"]},
         )).mappings().all()
+        validated_rows = tuple(RateRow.from_mapping(dict(row)) for row in rows)
+        assert canonical_content_hash(validated_rows) == generation["content_sha256"], "Active generation content hash mismatch"
         keys = {(r["model_id"], r["geography"], r["service_tier"], r["context_tier"], r["region"]) for r in rows}
         required = {tuple(key) for key in generation["required_variants"]}
         assert required and required <= keys, "Incomplete active generation"
         snapshot = load_snapshot()
         bundled = {(r.model_id, r.geography, r.service_tier, r.context_tier, r.region) for r in snapshot.rates}
         assert bundled <= keys, "Active pricing omits bundled variants"
-        assert len({r["model_id"] for r in rows}) >= 12, "OpenAI model coverage incomplete"
+        active_by_key = {row.variant_key: row for row in validated_rows}
+        for template in snapshot.rates:
+            if getattr(template, "cache_write_1h_price_per_1k_tokens", None) is not None:
+                hourly = getattr(active_by_key[template.variant_key], "cache_write_1h_price_per_1k_tokens", None)
+                assert hourly is not None, "Active pricing omits published one-hour cache write rate"
+        expected_models = {r.model_id for r in snapshot.rates}
+        actual_models = {r["model_id"] for r in rows}
+        assert expected_models <= actual_models, "Bundled provider/model coverage incomplete"
+        providers = {provider: sum(r["model_id"].startswith(provider + ".") for r in rows)
+                     for provider in ("openai", "anthropic")}
         revision = (await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
         print(json.dumps({
             "generation_id": pointer["current_generation_id"], "pointer_revision": pointer["pointer_revision"],
-            "variants": len(keys), "snapshot_version": snapshot.snapshot_version,
+            "variants": len(keys), "snapshot_version": snapshot.snapshot_version, "provider_variants": providers,
             "alembic_revision": revision, "refresh_paused": pointer["refresh_paused"],
             "chat_logging_enabled": get_chat_logging_settings().chat_logging_enabled,
         }))
@@ -276,6 +309,7 @@ if __name__ == "__main__":
     parser.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
     parser.add_argument("--namespace", default="adp-gateway")
     parser.add_argument("--expected-image")
+    parser.add_argument("--readiness-timeout", type=int, default=180, help="Seconds to wait for required release replicas (0-600)")
     args = parser.parse_args()
     try:
         assert aws(args, "sts", "get-caller-identity")["Account"] == args.account_id, "AWS account mismatch"
