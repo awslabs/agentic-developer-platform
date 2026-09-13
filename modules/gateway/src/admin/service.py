@@ -43,6 +43,7 @@ from src.admin.schemas import (
     RateLimitListItem,
     RateLimitListResponse,
 )
+from src.shared.exceptions import ConflictError
 from src.shared.identity import resolve_root_user_entity_id, resolve_user_entity_id
 from src.shared.interfaces.budget import IBudgetService
 from src.shared.interfaces.ratelimit import IRateLimitService
@@ -414,8 +415,22 @@ class AdminService:
         github_ids = list(org.github_installation_ids or [])
         cognito_ids = list(org.cognito_client_ids or [])
 
-        await self.db.delete(org)
-        await self.db.commit()
+        try:
+            # ORM delete(org) nulls the non-null TenantMembership backref FK,
+            # even when its collection is unloaded. Use the existing database
+            # cascades; this deliberately does not delete users or their data.
+            await self.db.execute(delete(Organization).where(Organization.id == org_id))
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            # Only a real PostgreSQL FK refusal is a dependency conflict. Do
+            # not disguise an unrelated integrity defect as an operator error.
+            if getattr(exc.orig, "sqlstate", None) != "23503":
+                raise
+            raise ConflictError(
+                "This organization has related records that prevent permanent deletion. "
+                "Use the organization archive operation to retain them. No changes were saved."
+            ) from exc
 
         # Best-effort cleanup of identity-index entries
         if self.identity_index:
