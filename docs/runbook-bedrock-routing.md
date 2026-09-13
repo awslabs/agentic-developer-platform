@@ -1,5 +1,28 @@
 # Runbook: Bedrock Routing via Gateway (Phase 3)
 
+## Saved account mappings are always active
+
+Verified routing rules apply automatically to gateway Bedrock requests. There is
+no separate platform or organization activation step. The old
+`BG_BEDROCK_ROUTING_ENFORCE` environment variable, SSM
+`/adp/<env>/gateway/bedrock-routing-enforce` parameter, and organization setting
+`bedrock_routing_enforce` are retired and ignored, including old `false` values.
+Existing mappings become active when the updated gateway is deployed; no database
+backfill is required.
+
+Configure shared destinations as a platform admin under **Budgets → Bedrock
+account routing**, register and verify the destination, then add an organization,
+team, or person rule. Personal selections remain under **Settings → Credentials →
+Bedrock model calls**. Rules take effect within the existing routing-cache window
+(about one minute). Person rules take priority, followed by the authenticated
+primary team, organization, and platform account.
+
+An unmapped principal uses the platform account. Once a usable destination is
+selected, an invocation failure is returned to the caller rather than retried
+against the platform account. To change the payer, change or remove the routing
+rule in the UI; an old rollout flag cannot override it. Budget attribution and
+rate limits continue to apply through ADP.
+
 ## Overview
 
 As of Phase 3 (#748), the developer/ops/pm agent worker routes Bedrock API calls

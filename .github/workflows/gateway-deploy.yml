@@ -338,15 +338,6 @@ jobs:
           # param to "false" + `kubectl rollout restart` to stop observing.
           BEDROCK_ROUTING_SHADOW_MODE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/bedrock-routing-shadow-mode" "true")
 
-          # Issue #4744, wired for #4761 (R7): the environment master switch for
-          # routing ENFORCEMENT. Enforcement is an AND of this and the per-org
-          # opt-in, so while this is "false" no request anywhere is signed with a
-          # destination account's credentials, whatever any org row says. Default
-          # "false" — flipping it is a deliberate ops action per environment, taken
-          # after that env's shadow-mode evidence looks right. Also the fast
-          # rollback lever: set the SSM param + `kubectl rollout restart`, no rebuild.
-          BEDROCK_ROUTING_ENFORCE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/bedrock-routing-enforce" "false")
-
           # Issue #3960: CIDRs the gateway may dial an in-pod control listener in.
           # This is the SSRF allowlist for the one outbound path that deliberately
           # targets PRIVATE addresses, so it cannot be defaulted to something
@@ -390,7 +381,6 @@ jobs:
               -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
               -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
               -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
-              -e "s|__BEDROCK_ROUTING_ENFORCE__|${BEDROCK_ROUTING_ENFORCE}|g" \
               -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
               -e "s|__AGENT_CONTROL_CLUSTER_POD_CIDRS__|${AGENT_CONTROL_CLUSTER_POD_CIDRS}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -

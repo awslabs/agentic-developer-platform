@@ -1052,7 +1052,7 @@ export function BedrockAccountRouting() {
             <div>
               <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Bedrock account routing</h2>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                Choose which AWS account serves Bedrock calls, per organization, team, or person. The narrowest rule that applies wins: person, then
+                Choose which AWS account serves Bedrock calls, per organization, team, or person. Verified rules apply automatically. The narrowest rule that applies wins: person, then
                 team, then organization, then the platform account.
               </p>
             </div>

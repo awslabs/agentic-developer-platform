@@ -17,14 +17,10 @@ name: Eval — Bedrock account routing (capability + regression)
 #   2. Reporting RED for something routing did not cause. Fixture drift and an
 #      unwired environment are not routing regressions.
 # So fixture drift is a LOUD FAIL in phase 0, while a correctly-reported
-# not-yet-wired environment is a SKIP that carries its reason. Two things are
-# gated in dev today and are expected to appear as skips, not passes:
-#   - ENFORCEMENT: `BG_BEDROCK_ROUTING_ENFORCE` is absent from the live configmap,
-#     and because `is_enforced_for_org` reads that env gate FIRST, no per-org flip
-#     can enable enforcement. Phases 5/6 skip until it is wired.
-#   - R5 (#4746) self-service is not merged; those cases are written against spec
-#     and skip loudly, including the settled rule that a self write over a
-#     platform-admin-authored row must be refused 409 with the row untouched.
+# not-yet-wired environment is a SKIP that carries its reason. Routing rules are
+# always enforced; phases 5/6 still skip because their fixture-owned inference
+# and controlled-denial runners are not implemented. R5/R6 are merged and their
+# self-service and retired-worker-switch cases execute.
 #
 # WHY THERE IS NO CRON
 # This eval AUTHORS Bedrock routing rules through the real admin API in a shared

@@ -288,21 +288,7 @@ data:
   BG_BEDROCK_ROUTING_SHADOW_MODE: "__BEDROCK_ROUTING_SHADOW_MODE__"
   BG_PLATFORM_BEDROCK_ACCOUNT_ID: "__PLATFORM_BEDROCK_ACCOUNT_ID__"
 
-  # Issue #4744 (#4692 · R3): the environment master switch for routing
-  # ENFORCEMENT, wired for #4761 (R7). Enforcement is an AND of this flag and the
-  # per-org opt-in (organizations.settings["bedrock_routing_enforce"]): this one
-  # answers "is the cross-account signing path live in this environment at all"
-  # and is set by whoever deploys, while the per-org flag answers "has this tenant
-  # been signed off after reviewing its shadow-mode evidence". Until this key
-  # existed, no org flag could enable enforcement — not even a designated test
-  # org — so R7's enforcement evals had no way to run.
-  #
-  # Defaults "false": shadow mode (R2) stays the global default and flipping any
-  # org to enforce is a deliberate ops action taken AFTER its shadow evidence
-  # looks right. Read per-request, so this is also the fast rollback lever — under
-  # fail-closed an expired/bad destination is an outage, and the remedy must not
-  # require a rebuild. Set the SSM param to "true" + `kubectl rollout restart`.
-  BG_BEDROCK_ROUTING_ENFORCE: "__BEDROCK_ROUTING_ENFORCE__"
+  # Saved Bedrock account mappings are always enforced. There is no rollout toggle.
 
   # =============================================================================
   # Budget enforcement fail mode (Issue #4075)

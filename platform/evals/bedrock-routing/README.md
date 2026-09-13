@@ -58,34 +58,18 @@ test 9 asserts a fatal setup error cannot print a green banner.
 
 ---
 
-## What is gated in dev today
+## Routing is active by default; inference acceptance still needs a runner
 
-One thing is **expected to appear as a skip**, not a pass. It is written in full
-and activates with **no rewrite** once unblocked.
+Saved, verified rules are always enforced. The former environment and
+organization rollout flags are retired, including existing false values. There
+is no SSM or organization opt-in step. See the current
+[routing runbook](../../../docs/runbook-bedrock-routing.md).
 
-### The per-environment enforce flag must be ON
-
-`is_enforced_for_org` is an AND of the env flag `BG_BEDROCK_ROUTING_ENFORCE` and
-the per-org `organizations.settings["bedrock_routing_enforce"]`. Because the env
-gate is read **first** and returns `False` before the org row is consulted,
-**flipping a test org's flag cannot enable enforcement while the env flag is
-off.** Phases 5 and 6 skip until it is on.
-
-This story wired the flag (it was previously absent from the configmap entirely,
-which made the enforcement cases unrunnable for an infrastructural reason rather
-than a routing one): `modules/gateway/k8s/configmap.yaml` carries
-`BG_BEDROCK_ROUTING_ENFORCE`, fed by `gateway-deploy.yml` from SSM
-`/adp/<env>/gateway/bedrock-routing-enforce`, **defaulting to `false`**. Turning
-it on is a deliberate per-environment ops action:
-
-```bash
-aws ssm put-parameter --name /adp/dev/gateway/bedrock-routing-enforce \
-  --value true --type String --overwrite
-kubectl rollout restart deployment/bedrockgateway -n adp-gateway
-```
-
-It is read per-request and not cached, so it is also the rollback lever — no
-rebuild required.
+Phases 5 and 6 still report **SKIP** because they do not yet execute a
+fixture-owned inference runner, a controlled destination denial, or AWS account
+landing evidence. Enabling an old flag cannot turn an unimplemented case into
+validation. Complete those runners before treating this suite as proof of
+cross-account invocation or fail-closed behavior.
 
 ### R5 and R6 are merged, and their cases run for real
 
@@ -137,12 +121,9 @@ Each is **re-derived at runtime by phase 0**, never trusted from this document.
 They are recorded here because each one invalidates an assertion someone would
 otherwise write in good faith.
 
-1. **Enforcement is gated on a per-environment env flag** — see above. The env
-   gate short-circuits, so the per-org flag is not a workaround. This story wired
-   the flag (`BG_BEDROCK_ROUTING_ENFORCE`, SSM-driven, default `false`); before
-   that it was absent from the configmap entirely, which meant the enforcement
-   cases could not run for an infrastructural reason rather than a routing one.
-   A run where it is still `false` **skips** those cases with that reason.
+1. **The original rollout gate is retired.** Saved routing rules are now active
+   without an environment or organization opt-in. Phases 5/6 still need the
+   inference and denial runners described above.
 2. **The sandbox account is not reachable.** #4761 names `938500344975` as the
    routed destination with a "proven" role. Probed live: three candidate roles
    all return `AccessDenied` from the gateway account. Until a human re-creates
@@ -198,13 +179,13 @@ otherwise write in good faith.
 
 | # | Phase | Asserts |
 |---|---|---|
-| 0 | Precheck | Caller account, gateway health, live configmap (shadow / platform account / enforce), the destination fixture triple-check (assume **with** ExternalId, **denied without**, real `InvokeModel` with EOL detection), sandbox trust, R5/R6 presence. **Fixture drift FAILs here.** |
+| 0 | Precheck | Caller account, gateway health, live configmap (shadow / platform account), the destination fixture triple-check (assume **with** ExternalId, **denied without**, real `InvokeModel` with EOL detection), sandbox trust, R5/R6 presence. **Fixture drift FAILs here.** |
 | 1 | Resolve the world | The designated test org, a member principal, a destination owned by that org, and a **foreign-org** destination as the tenant-isolation fixture |
 | 2 | Shadow baseline | An unmapped call is attributed to the **platform** account; no NULL `bedrock_account_id` after the R2 cutover |
 | 3 | Destination registry | The gateway itself proves the destination is `verified` and `routing_capable` |
 | 4 | Mapping ladder | Authoring at the org rung makes effective resolution **name that rung**; removing it falls back to platform (**rollback works**) |
-| 5 | Enforcement success | *Gated:* a mapped member's call succeeds and CloudTrail shows the invoke |
-| 6 | Cross-account landing | *Gated:* the call lands in the **second** account — "the bill really moved" |
+| 5 | Enforcement success | *Not yet implemented:* fixture-owned invocation and destination-account evidence |
+| 6 | Cross-account landing | *Not yet implemented:* controlled denial and proof that the invocation lands in the second account |
 | 7 | Self-service (R5) + R6 | The self surface is **member-callable**, states `own_selection_active` and `pinned_by_platform_admin`, the effective read discloses `overrides_self_selection`, a pinned member's PUT **and** DELETE are refused **422 `pinned_by_platform_admin`** (the authority-escalation case), an injected `user_id` is not honoured, and `ADP_BEDROCK_VIA=user` fails loudly while `=gateway` survives |
 | 8 | Authz + tenant isolation | The strongest runnable cases — see below |
 
@@ -241,8 +222,8 @@ lessons directly.
 
 ### Why phase 8 is the strongest evidence today
 
-With enforcement gated, the authz matrix is what this suite actually proves — and
-it is built to avoid a specific trap.
+With the inference phases still unimplemented, the authz matrix is this suite's
+strongest live evidence. It is built to avoid a specific trap.
 
 **A plain member is denied by *any* authz check, so a member-only 403 proves
 nothing.** The load-bearing assertion uses a **real `org_admin`** (minted from the
@@ -291,7 +272,7 @@ trap and a leaked rule would keep rerouting spend long after the run ended.
 
 ## Non-goals (hard)
 
-`bedrock_routing_enforce` stays **OFF** for every real org; enforcement cases use
+Saved rules affect routing automatically; inference cases must use
 the designated test org only. **An eval must never widen a production flag to
 make itself pass.** No load testing, no prod runs, no UI/visual assertions — this
 suite asserts at the API level.

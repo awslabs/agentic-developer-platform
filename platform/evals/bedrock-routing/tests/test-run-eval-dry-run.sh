@@ -209,18 +209,20 @@ done
 # -----------------------------------------------------------------------------
 name "the gates SKIP with a reason rather than passing"
 # -----------------------------------------------------------------------------
-# The heart of the honesty contract. Enforcement is not wired in the environment
-# under test, so those cases must report as UNRUN with their blocking reason. A
+# The heart of the honesty contract. Inference and denial runners are not wired
+# into phases 5/6, so those cases must report as UNRUN with their blocking reason. A
 # gate that degraded into a pass would retire the question while proving nothing.
 run_eval gates; OUT="$RUN_OUT"
 SKIPS="$(grep -E '^\[SKIP\]' "$RUN_DIR/out.log" || true)"
 if [ -z "$SKIPS" ]; then
-  bad "no SKIPs at all — the unwired-environment gates are not reporting"
+  bad "no SKIPs at all — the unimplemented inference cases are not reporting"
 else
   ok "the run emits $(printf '%s\n' "$SKIPS" | wc -l | tr -d ' ') explicit skip(s)"
 fi
-assert_contains "$SKIPS" "BG_BEDROCK_ROUTING_ENFORCE" \
-  "the enforcement skip names the missing env flag as its blocking reason"
+assert_contains "$SKIPS" "fixture-owned inference runner" \
+  "the enforcement skip names the missing inference runner as its blocking reason"
+assert_not_contains "$SKIPS" "BG_BEDROCK_ROUTING_ENFORCE" \
+  "a retired rollout switch cannot be reported as an enforcement prerequisite"
 # Every skip must carry a reason, not just a label: a bare skip is unactionable.
 SHORT_SKIPS=0
 while IFS= read -r line; do

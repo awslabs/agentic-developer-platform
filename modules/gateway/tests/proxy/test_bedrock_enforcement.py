@@ -23,8 +23,8 @@ the wrong customer once the flag is on:
      routed client (§2.4, the 60s-default latency bug)
   5. ``TestErrorClassDiscrimination``      — ``AccessDeniedException`` on a routed call
      is ``model_not_enabled``, transport failures keep main's behaviour (§5.1, §5.2)
-  6. ``TestEnforcementIsTwoGated``         — env master switch AND per-org opt-in, and
-     with either shut the request is signed ambiently (§8.2, §8.3)
+  6. ``TestRoutingAlwaysEnforced``        — saved mappings apply without opt-in;
+     missing or obsolete false flags never redirect spend to the platform
   7. ``TestRedaction``                     — the account id is present, the role ARN and
      ExternalId are structurally absent (§2.6)
 
@@ -47,9 +47,6 @@ from sqlalchemy.pool import StaticPool
 
 from src.internal.sts_assume_service import AssumeRoleResult, STSAssumeError
 from src.proxy.bedrock_enforcement import (
-    ORG_SETTING_ENFORCE,
-    BedrockEnforcementGate,
-    RoutingDecision,
     resolve_routing_decision,
 )
 from src.proxy.bedrock_routing import BedrockTarget
@@ -101,15 +98,14 @@ MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0"
 
 
 @pytest.fixture
-def enforcement_on(monkeypatch):
-    """Both gates open at the environment level.
+def routing_environment(monkeypatch):
+    """Configure the platform account used by the test deployment.
 
     Set through the environment rather than by patching ``get_settings`` so the real
     ``BG_`` prefixed parsing runs — a flag the deployment sets via configmap that the
     code reads under a different name is the #4511 inert-config class, and this feature
     is one whose inert state looks exactly like success.
     """
-    monkeypatch.setenv("BG_BEDROCK_ROUTING_ENFORCE", "true")
     monkeypatch.setenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", PLATFORM_ACCOUNT)
 
 
@@ -133,20 +129,18 @@ async def session_factory():
 
 @pytest.fixture(autouse=True)
 def _reset_process_caches():
-    """Clear the process-wide resolver/gate/signer caches around every test.
+    """Clear the process-wide resolver and signer caches around every test.
 
-    All three are module-level singletons by design (the caches are what make the hot
+    Both are module-level singletons by design (the caches are what make the hot
     path cheap), which means state leaks between tests unless it is cleared. Doing it
     in an autouse fixture rather than per test is deliberate: a test that forgot would
     not fail, it would pass for the wrong reason.
     """
-    from src.proxy.bedrock_enforcement import bedrock_enforcement_gate
     from src.proxy.bedrock_routing import bedrock_routing_resolver
     from src.proxy.bedrock_signing import bedrock_destination_signer
 
     def _clear():
         bedrock_routing_resolver._mappings_exist_cache = None
-        bedrock_enforcement_gate.clear()
         bedrock_destination_signer.cache.clear()
 
     _clear()
@@ -223,11 +217,10 @@ async def _seed_enforced_org_mapping(
     session_factory,
     *,
     scope: str = "org",
-    enforced: bool = True,
     destination: BedrockDestinationRegistry | None = None,
     org_id: str = ORG_ID,
 ):
-    """The full happy-path fixture: opted-in org, usable destination, matching mapping."""
+    """The full happy-path fixture: ordinary org, usable destination, matching mapping."""
     destination = destination if destination is not None else _destination(owner_org_id=org_id)
     scopes = {
         "org": {"scope_type": "org", "scope_id_org": org_id},
@@ -236,7 +229,7 @@ async def _seed_enforced_org_mapping(
     }
     await _seed(
         session_factory,
-        Organization(id=org_id, name=f"name-{org_id}", settings={ORG_SETTING_ENFORCE: enforced}),
+        Organization(id=org_id, name=f"name-{org_id}", settings={}),
         User(id=CANONICAL_USER_ID, org_id=org_id, team_id=TEAM_ID, email="a@example.com", cognito_sub=COGNITO_SUB),
         _credential(destination.credential_id or "cred-unused", org_id=org_id),
         destination,
@@ -318,7 +311,7 @@ class TestSigningReachesTheDestination:
     """
 
     @pytest.mark.asyncio
-    async def test_a_mapped_principal_is_signed_with_destination_credentials(self, session_factory, enforcement_on):
+    async def test_a_mapped_principal_is_signed_with_destination_credentials(self, session_factory, routing_environment):
         await _seed_enforced_org_mapping(session_factory)
         assume, _ = _patch_assume()
 
@@ -366,13 +359,13 @@ class TestSigningReachesTheDestination:
         assert first is second
 
     @pytest.mark.asyncio
-    async def test_the_platform_rung_never_reaches_the_signer(self, session_factory, enforcement_on):
+    async def test_the_platform_rung_never_reaches_the_signer(self, session_factory, routing_environment):
         """A resolved platform target returns a decision with no credentials at all.
 
         And it must do so without an assume: the platform rung is the *absence* of a
         mapping, so signing anything for it would be inventing a routing decision.
         """
-        await _seed(session_factory, Organization(id=ORG_ID, name="acme", settings={ORG_SETTING_ENFORCE: True}))
+        await _seed(session_factory, Organization(id=ORG_ID, name="acme", settings={}))
         assume, assume_mock = _patch_assume()
 
         with _patch_routing_session(session_factory), assume:
@@ -395,7 +388,7 @@ class TestSigningReachesTheDestination:
                 await _signer().get_credentials(session, BedrockTarget(account_id=PLATFORM_ACCOUNT, rung="platform"), user_id=CANONICAL_USER_ID)
 
     @pytest.mark.asyncio
-    async def test_the_canonical_user_id_is_the_session_tag_not_the_cognito_sub(self, session_factory, enforcement_on):
+    async def test_the_canonical_user_id_is_the_session_tag_not_the_cognito_sub(self, session_factory, routing_environment):
         """#4647: the destination's CloudTrail gets `users.id`, never a Cognito sub.
 
         Two id namespaces in one audit field means the destination account's operator
@@ -411,7 +404,7 @@ class TestSigningReachesTheDestination:
         assert assume_mock.call_args.kwargs["user_id"] == CANONICAL_USER_ID
 
     @pytest.mark.asyncio
-    async def test_the_external_id_from_the_connection_is_sent(self, session_factory, enforcement_on):
+    async def test_the_external_id_from_the_connection_is_sent(self, session_factory, routing_environment):
         """Confused-deputy protection survives the routing path.
 
         The ExternalId lives in the Secrets Manager payload, not on the registry row.
@@ -554,7 +547,7 @@ class TestCredentialCacheIsolation:
         assert cache.get(repointed.cache_key(), margin_seconds=0) is None
 
     @pytest.mark.asyncio
-    async def test_a_destination_edit_changes_what_is_signed_end_to_end(self, session_factory, enforcement_on):
+    async def test_a_destination_edit_changes_what_is_signed_end_to_end(self, session_factory, routing_environment):
         """The self-eviction property, asserted through the real signer and database.
 
         The key-level tests above prove the key discriminates; this proves the signer
@@ -581,7 +574,7 @@ class TestCredentialCacheIsolation:
         assert second.access_key_id == "ASIA-SECOND", "an edited destination must not serve stale credentials"
 
     @pytest.mark.asyncio
-    async def test_a_cache_hit_does_not_re_assume(self, session_factory, enforcement_on):
+    async def test_a_cache_hit_does_not_re_assume(self, session_factory, routing_environment):
         """The cache is the reason the hot path is not one STS call per model call."""
         destination = await _seed_enforced_org_mapping(session_factory)
         signer = _signer()
@@ -934,117 +927,74 @@ class TestErrorClassDiscrimination:
 
 
 # ============================================================================
-# 6. Enforcement is two-gated — §8.2, §8.3
+# 6. Saved mappings are always enforced
 # ============================================================================
 
 
-class TestEnforcementIsTwoGated:
-    """Both the environment switch and the per-org opt-in must be open.
+class TestRoutingAlwaysEnforced:
+    """Saved mappings apply without rollout flags, including old opt-out values."""
 
-    They answer different questions on different timescales, operated by different
-    people: "is this code path live in this environment" versus "has this tenant been
-    signed off". Collapsing them would mean the only way to stop a bad rollout is
-    editing tenant rows one at a time — and under fail-closed a bad rollout is an
-    outage, so §8.3 requires a fast lever that needs no deploy.
-    """
+    @pytest.mark.parametrize("legacy_value", ["true", "false"])
+    def test_retired_dotenv_flag_does_not_break_startup(self, tmp_path, monkeypatch, legacy_value):
+        from src.shared.config import Settings
 
-    @pytest.mark.asyncio
-    async def test_the_environment_flag_off_means_no_database_work_at_all(self, session_factory, monkeypatch):
-        """Off is a real off switch, not merely a different destination.
+        monkeypatch.delenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", raising=False)
+        dotenv = tmp_path / ".env"
+        dotenv.write_text(f"BG_BEDROCK_ROUTING_ENFORCE={legacy_value}\nBG_PLATFORM_BEDROCK_ACCOUNT_ID={PLATFORM_ACCOUNT}\n")
+        settings = Settings(_env_file=dotenv)
+        assert settings.platform_bedrock_account_id == PLATFORM_ACCOUNT
 
-        A session factory that raises if touched, because "costs nothing" is the claim:
-        an install with enforcement off must be byte-identical to main including its
-        query count.
-        """
-        monkeypatch.setenv("BG_BEDROCK_ROUTING_ENFORCE", "false")
+    def test_unknown_dotenv_settings_are_still_rejected(self, tmp_path):
+        from pydantic import ValidationError
 
-        def _explode():
-            raise AssertionError("enforcement must not open a session when the environment flag is off")
+        from src.shared.config import Settings
 
-        with patch("src.shared.database.get_session_factory", _explode):
-            decision = await resolve_routing_decision(_context())
-
-        assert decision == RoutingDecision()
-        assert not decision.is_enforced
-        assert decision.credentials is None
+        dotenv = tmp_path / ".env"
+        dotenv.write_text("BG_UNKNOWN_ROUTING_SETTING=true\n")
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            Settings(_env_file=dotenv)
 
     @pytest.mark.asyncio
-    async def test_an_org_that_has_not_opted_in_is_not_routed(self, session_factory, enforcement_on):
-        """Resolved to a real destination, but not signed for it — shadow, per org.
+    async def test_routing_database_failure_cannot_fall_back_to_platform(self):
+        from src.proxy.service import ProxyService
 
-        `target=None` is the specific shape asserted, not just "no credentials": it is
-        what hands the audit column back to R2's observation path so the recorded value
-        keeps meaning "would have gone here" rather than "went here".
-        """
-        await _seed_enforced_org_mapping(session_factory, enforced=False)
+        pool = MagicMock(get_client=AsyncMock())
+        service = ProxyService(pool)
+        service._log_usage = AsyncMock()
+        with patch("src.shared.database.get_session_factory", side_effect=RuntimeError("routing database unavailable")):
+            with pytest.raises(RuntimeError, match="routing database unavailable"):
+                await service.invoke_model(MODEL_ID, {"messages": [], "max_tokens": 8}, _context())
+        pool.get_client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", ["org", "team", "user"])
+    @pytest.mark.parametrize("legacy_value", [None, False, "false"])
+    @pytest.mark.parametrize("legacy_env", [None, "false"])
+    async def test_saved_mapping_is_active_without_opt_in(self, session_factory, monkeypatch, scope, legacy_value, legacy_env):
+        from sqlalchemy import update
+
+        if legacy_env is None:
+            monkeypatch.delenv("BG_BEDROCK_ROUTING_ENFORCE", raising=False)
+        else:
+            monkeypatch.setenv("BG_BEDROCK_ROUTING_ENFORCE", legacy_env)
+        await _seed_enforced_org_mapping(session_factory, scope=scope)
+        settings = {} if legacy_value is None else {"bedrock_routing_enforce": legacy_value}
+        async with session_factory() as session:
+            await session.execute(update(Organization).where(Organization.id == ORG_ID).values(settings=settings))
+            await session.commit()
         assume, assume_mock = _patch_assume()
 
-        with _patch_routing_session(session_factory), assume:
+        with _patch_routing_session(session_factory), assume, patch.object(bedrock_destination_signer, "_secrets_manager", _secrets_manager()):
             decision = await resolve_routing_decision(_context())
 
-        assert decision.credentials is None
-        assert decision.target is None
-        assert not decision.is_enforced
-        assume_mock.assert_not_called()
+        assert decision.is_enforced
+        assert decision.target.account_id == MAPPED_ACCOUNT
+        assert decision.target.rung == scope
+        assert decision.credentials is not None
+        assume_mock.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_a_string_flag_value_does_not_enable_enforcement(self, session_factory, enforcement_on):
-        """Strict `is True`, because this flag's ON state moves real money.
-
-        A truthiness check would read a hand-written `"false"` in a JSON column as
-        enabled — the wrong-account bug arriving via a typo.
-        """
-        gate = BedrockEnforcementGate()
-        await _seed(session_factory, Organization(id=ORG_ID, name="acme", settings={ORG_SETTING_ENFORCE: "true"}))
-
-        async with session_factory() as session:
-            assert await gate.is_enforced_for_org(session, ORG_ID) is False
-
-    @pytest.mark.asyncio
-    async def test_a_caller_with_no_org_is_not_enforced(self, session_factory, enforcement_on):
-        """No org row means no operator ever opted this principal in.
-
-        Safe in the only direction that matters: not enforcing means not routing, so it
-        cannot bill the wrong account — it serves the call exactly as main does.
-        """
-        gate = BedrockEnforcementGate()
-        async with session_factory() as session:
-            assert await gate.is_enforced_for_org(session, None) is False
-            assert await gate.is_enforced_for_org(session, "") is False
-
-    @pytest.mark.asyncio
-    async def test_the_per_org_verdict_is_cached(self, session_factory, enforcement_on):
-        """One read per org per TTL, not one per model call — the #4689 lesson."""
-        gate = BedrockEnforcementGate()
-        await _seed(session_factory, Organization(id=ORG_ID, name="acme", settings={ORG_SETTING_ENFORCE: True}))
-        reader = AsyncMock(return_value=True)
-
-        with patch.object(BedrockEnforcementGate, "_read_org_flag", reader):
-            async with session_factory() as session:
-                assert await gate.is_enforced_for_org(session, ORG_ID) is True
-                assert await gate.is_enforced_for_org(session, ORG_ID) is True
-
-        assert reader.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_the_per_org_read_happens_only_after_a_real_target_resolves(self, session_factory, enforcement_on):
-        """§2.2 ordering: an org with no mapping never pays for the opt-in read.
-
-        The reverse ordering (check opt-in, then resolve) would query the org row on
-        every request from an enforced org even when that request has no mapping and
-        enforcement is therefore irrelevant to it.
-        """
-        await _seed(session_factory, Organization(id=ORG_ID, name="acme", settings={ORG_SETTING_ENFORCE: True}))
-        gate_reader = AsyncMock(return_value=True)
-
-        with _patch_routing_session(session_factory), patch.object(BedrockEnforcementGate, "_read_org_flag", gate_reader):
-            decision = await resolve_routing_decision(_context())
-
-        assert decision.target is not None and decision.target.is_platform
-        gate_reader.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_a_fail_closed_error_propagates_out_of_the_decision(self, session_factory, enforcement_on):
+    async def test_a_fail_closed_error_propagates_out_of_the_decision(self, session_factory, routing_environment):
         """The decision does not catch it. That is what makes fail-closed reach the client.
 
         Swallowing it here would be the silent fallback under another name: the caller

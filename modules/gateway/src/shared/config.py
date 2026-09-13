@@ -1,3 +1,6 @@
+from typing import Any
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -246,26 +249,6 @@ class Settings(BaseSettings):
     # exactly the audit this column exists to support.
     platform_bedrock_account_id: str = ""
 
-    # Issue #4744 (#4692 · R3): the master switch for routing ENFORCEMENT. False
-    # means no request anywhere is ever signed with a destination account's
-    # credentials, whatever any org's own opt-in says — the per-org flag
-    # (organizations.settings["bedrock_routing_enforce"]) can only enable
-    # enforcement for an org once this is on.
-    #
-    # Two switches rather than one because they answer different questions and are
-    # operated by different people: this one is "is this code path live in this
-    # environment at all", set by whoever deploys; the per-org one is "has this
-    # tenant been signed off after reviewing its shadow-mode evidence", set by an
-    # operator per §8.2 phase 2. Collapsing them would mean the only way to stop a
-    # bad rollout is editing tenant rows one at a time.
-    #
-    # Default False: shadow mode (R2) stays the global default, and flipping any
-    # org to enforce is a deliberate ops action taken AFTER its shadow-mode
-    # evidence looks right. Read per-request, so this is also the fast rollback
-    # lever — under fail-closed (§2.5) it is the outage remedy, and §8.3 requires
-    # it to be operable without a deploy. A pod recycle is enough; no rebuild.
-    bedrock_routing_enforce: bool = False
-
     # Issue #4744: how long an assumed destination session is requested for, and
     # how early to refresh it. Same values and same reasoning as the pool's
     # PoolSettings (src/pool/config.py:42-46), which the design note (§2.3) says to
@@ -283,6 +266,19 @@ class Settings(BaseSettings):
     # was fine for a static 2-account pool and is a memory-growth problem the
     # moment the key space is principal-dependent.
     bedrock_routing_credential_cache_size: int = 256
+
+    @model_validator(mode="before")
+    @classmethod
+    def ignore_retired_routing_switch(cls, values: Any) -> Any:
+        """Accept legacy .env files without restoring a routing bypass.
+
+        Dotenv includes unknown keys even after their setting is removed. Ignore
+        this retired key only; keep validation of other unknown settings strict.
+        """
+        if isinstance(values, dict):
+            retired = {"bedrock_routing_enforce", "bg_bedrock_routing_enforce"}
+            return {key: value for key, value in values.items() if key not in retired}
+        return values
 
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 

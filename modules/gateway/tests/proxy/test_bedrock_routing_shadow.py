@@ -1,34 +1,10 @@
-"""Tests for Bedrock routing SHADOW MODE — observe without changing anything.
+"""Tests for audit-only routing observation and its isolation from signing.
 
-Issue #4743 (#4692 · R2), design note
-``docs/design-notes/4692-per-principal-bedrock-account-routing.md`` §3.5, §7, §8.2.
-
-Shadow mode is the phase that makes the wrong-account bug **detectable before it
-can cost anyone money**: the resolver runs, its answer is written to
-``usage_logs.bedrock_account_id``, and the request continues to be signed with the
-platform account's ambient IRSA credentials exactly as before. Enforcement is
-#4744.
-
-That gives this file two jobs, and the second one matters more than the first:
-
-  1. ``TestResolvedTargetReachesTheWriter`` — the resolver's answer actually lands
-     in the column. The column is **not back-fillable**: if capture writes NULL on
-     every row, no later fix recovers the history, and because NULL legitimately
-     means "not captured" *nothing anywhere looks wrong*. There is no dashboard to
-     notice and no user to complain. Same reasoning as ``client_tool`` (#4398).
-  2. ``TestSigningIsUnchanged`` — nothing about how a request is signed or where it
-     lands differs from main. This is the constraint the whole release rests on. A
-     "shadow" mode that quietly changed the credentials would be strictly worse
-     than no feature at all: it would move real spend with none of the review a
-     routing change is supposed to get.
-
-  3. ``TestObservationCannotBreakTheProxy`` — a failing observation must never fail
-     a model call, and must not take the usage row down with it.
-  4. ``TestFlagIsARealOffSwitch``          — off means "stop observing", and costs
-     no database work at all.
-  5. ``TestBothBedrockPathsCapture``       — the mantle path is the SECOND write
-     site (§7.2, capture-only). Wiring only one leaves 100% of the other route's
-     rows NULL, indistinguishable from "not captured".
+The gateway's invoke path now always enforces saved mappings. These tests cover
+legacy audit-only callers (including Mantle), capture failure isolation, and the
+rule that an audit observation cannot override a request's credential decision.
+Proxy unit fixtures explicitly supply an unmapped decision; real mapped signing
+is covered by test_bedrock_enforcement.py.
 """
 
 import inspect
@@ -251,20 +227,11 @@ class TestResolvedTargetReachesTheWriter:
 # ============================================================================
 
 
-class TestSigningIsUnchanged:
-    """Nothing about credentials, clients, or destinations differs from main.
-
-    The most important class in this file. Shadow mode's entire value proposition
-    is that it is observably inert; a shadow mode that changed where a call landed
-    would move real money with none of the review a routing change deserves.
-
-    These are structural assertions, not behavioural approximations: the point is
-    that the shadow path *cannot* influence signing, not that it currently happens
-    not to.
-    """
+class TestAuditDoesNotChooseCredentials:
+    """Audit-only resolution cannot change an already-resolved platform call."""
 
     @pytest.mark.asyncio
-    async def test_the_same_client_object_serves_every_call(self, proxy_service, token_context):
+    async def test_unmapped_calls_use_the_same_ambient_client(self, proxy_service, token_context):
         """Identity, not equality: the pool hands back the one ambient client.
 
         If routing had leaked into the invoke path, per-principal credentials would
@@ -300,14 +267,8 @@ class TestSigningIsUnchanged:
             assert parameters["credentials"].default is None, f"{cls.__name__}.get_client must default to the ambient platform client"
 
     @pytest.mark.asyncio
-    async def test_shadow_mode_passes_no_credentials_even_for_a_mapped_principal(self, proxy_service, token_context):
-        """With enforcement off, the widened seam is never used. The R2 contract.
-
-        The behavioural half of the test above: `credentials` being optional is
-        only worth anything if the shadow path actually leaves it unset. Asserted
-        against what the pool was *handed*, with the resolver returning a mapped
-        non-platform destination — the exact case enforcement would route.
-        """
+    async def test_audit_observation_cannot_override_platform_credentials(self, proxy_service, token_context):
+        """A hypothetical audit destination cannot replace the actual decision."""
         pool = proxy_service._pool_service
         pool.get_client_credentials.clear()
 
@@ -348,14 +309,8 @@ class TestSigningIsUnchanged:
             assert forbidden not in source, f"the resolver must not reference {forbidden} in shadow mode"
 
     @pytest.mark.asyncio
-    async def test_a_mapped_principal_still_invokes_through_the_ambient_client(self, proxy_service, token_context):
-        """End-to-end: a resolved non-platform destination changes nothing observable.
-
-        The strongest form of the claim — with the resolver returning a *different*
-        account, the call still goes through the same pool client and the same
-        `invoke_model`. If shadow mode were leaking into the request, this is where
-        it would show.
-        """
+    async def test_audit_target_does_not_reinvoke_with_other_credentials(self, proxy_service, token_context):
+        """The audit target cannot re-route an already-resolved platform call."""
         client = await proxy_service._pool_service.get_client()
         calls_before = len(client.invoke_calls)
 
@@ -372,13 +327,11 @@ class TestSigningIsUnchanged:
         assert set(recorded) <= {"modelId", "body", "contentType", "accept", "streaming"}
 
     @pytest.mark.asyncio
-    async def test_resolution_happens_after_the_request_not_before(self):
-        """Structural: `_log_usage` is the settlement point, and it runs in a `finally`.
+    async def test_audit_resolution_happens_during_usage_settlement(self):
+        """Audit-only callers may resolve during settlement after invocation.
 
-        This is *why* "signing is unchanged" is a property rather than a promise —
-        by the time the resolver runs, the response has already come back. Verified
-        by asserting the invoke completed before the resolver was awaited, so a
-        future refactor that hoisted resolution into the invoke path fails here.
+        Actual Bedrock signing resolves its target before invoking the provider;
+        that separate path is covered by test_bedrock_enforcement.py.
         """
         from src.proxy.service import ProxyService
 

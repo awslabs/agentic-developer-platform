@@ -34,15 +34,9 @@
 # VERIFIED LIVE STATE AT AUTHORING (dev, 2026-09-07) — five findings that
 # shaped this file. Each is re-derived at runtime by phase 0, never trusted:
 #
-#   1. ENFORCEMENT IS NOT WIRED. `is_enforced_for_org` (proxy/bedrock_enforcement.py)
-#      is an AND of the env flag `BG_BEDROCK_ROUTING_ENFORCE` and the per-org
-#      `organizations.settings["bedrock_routing_enforce"]`. The env flag is
-#      absent from k8s/configmap.yaml, from SSM, and from terraform — the live
-#      configmap has only BG_BEDROCK_ROUTING_SHADOW_MODE and
-#      BG_PLATFORM_BEDROCK_ACCOUNT_ID. Because the env gate is read FIRST and
-#      returns False before the org row is consulted, flipping a test org's
-#      flag CANNOT enable enforcement. Every enforcement-dependent case is
-#      therefore gated (phases 5, 6) rather than written green.
+#   1. ROUTING NOW ALWAYS APPLIES. The former rollout switches are retired.
+#      Phases 5/6 still require a fixture-owned inference/denial runner and
+#      destination-account evidence; they must not report those unrun cases green.
 #
 #   2. THE SANDBOX ACCOUNT IS NOT REACHABLE. #4761 names 938500344975 as the
 #      routed destination with a "proven" v2 role. Probed live: three roles
@@ -87,7 +81,7 @@
 #   PUT replaces in place), and DELETE is 204 whether or not a row existed.
 #
 # NON-GOALS (hard)
-#   bedrock_routing_enforce stays OFF for every real org. Enforcement cases use
+#   Saved mappings are active immediately (subject to routing cache refresh). Cases use
 #   the designated test org only. An eval must NEVER widen a production flag to
 #   make itself pass. No load testing, no prod runs, no UI assertions.
 #
@@ -217,7 +211,6 @@ FINDINGS_FILE="$WORKDIR/findings.txt"
 # Resolved by phase 0.
 BASE_URL=""
 DESTINATION_ROLE_ARN=""
-ENFORCE_WIRED=false
 SANDBOX_TRUSTED=false
 SHADOW_MODE_ON=false
 R5_PRESENT=false
@@ -522,12 +515,10 @@ if [ "$DRY_RUN" = true ]; then
   mint_actor_token() { ( umask 077; printf 'stub.actor.token' > "$2" ); chmod 600 "$2"; printf '%s' "$STUB_ORG"; }
   laptop_pod_delete() { :; }
   # The live configmap is read via h_kubectl with a jsonpath that returns
-  # shadow|platform_account|enforce. Mirror that exact shape, and mirror the
-  # VERIFIED dev reality: enforce is ABSENT (empty third field), which is what
-  # drives the enforcement gate the tests assert on.
+  # shadow|platform_account. Routing no longer depends on a configmap switch.
   h_kubectl() {
     case " $* " in
-      *BG_BEDROCK_ROUTING_SHADOW_MODE*) printf 'true|%s|' "${STUB_WRONG_ACCOUNT:-$PLATFORM_ACCOUNT_EXPECTED}" ;;
+      *BG_BEDROCK_ROUTING_SHADOW_MODE*) printf 'true|%s' "${STUB_WRONG_ACCOUNT:-$PLATFORM_ACCOUNT_EXPECTED}" ;;
       *) printf '' ;;
     esac
   }
@@ -776,12 +767,11 @@ phase_0() {
   # --- shadow mode + platform account, read from the LIVE configmap ---------
   local cm
   cm="$(h_kubectl get configmap bedrockgateway-config -n "$POD_NAMESPACE" \
-    -o jsonpath='{.data.BG_BEDROCK_ROUTING_SHADOW_MODE}{"|"}{.data.BG_PLATFORM_BEDROCK_ACCOUNT_ID}{"|"}{.data.BG_BEDROCK_ROUTING_ENFORCE}' 2>/dev/null || true)"
-  local shadow platform_acct enforce
+    -o jsonpath='{.data.BG_BEDROCK_ROUTING_SHADOW_MODE}{"|"}{.data.BG_PLATFORM_BEDROCK_ACCOUNT_ID}' 2>/dev/null || true)"
+  local shadow platform_acct
   shadow="$(printf '%s' "$cm" | cut -d'|' -f1)"
   platform_acct="$(printf '%s' "$cm" | cut -d'|' -f2)"
-  enforce="$(printf '%s' "$cm" | cut -d'|' -f3)"
-  log "configmap: shadow='${shadow}' platform_account='${platform_acct}' enforce='${enforce}'"
+  log "configmap: shadow='${shadow}' platform_account='${platform_acct}'"
 
   if [ "$shadow" = "true" ]; then
     SHADOW_MODE_ON=true
@@ -796,16 +786,7 @@ phase_0() {
     fail "BG_PLATFORM_BEDROCK_ACCOUNT_ID='${platform_acct}', expected ${PLATFORM_ACCOUNT_EXPECTED}"
   fi
 
-  # Finding 1. Absence is the CURRENT, CORRECT state, so it is a FINDING plus a
-  # gate — not a failure. Enforcement being off is the documented non-goal.
-  if [ "$enforce" = "true" ]; then
-    ENFORCE_WIRED=true
-    log "BG_BEDROCK_ROUTING_ENFORCE=true — enforcement cases are live"
-  else
-    ENFORCE_WIRED=false
-    finding "enforcement is not reachable in ${ENVIRONMENT}: BG_BEDROCK_ROUTING_ENFORCE is '${enforce:-absent}' in the live configmap. is_enforced_for_org ANDs that env flag with organizations.settings[\"bedrock_routing_enforce\"] and reads the env flag FIRST, so no per-org flip can enable enforcement. Phases 5 and 6 SKIP until it is wired (blocker for #4744's R3 surface)."
-    log "enforcement is NOT wired — phases 5/6 will SKIP with that reason"
-  fi
+  log "saved routing rules apply automatically; no environment or organization opt-in is required"
 
   # --- destination fixture health (finding 3) — drift here is a LOUD FAIL ---
   DESTINATION_ROLE_ARN="$(eval_ssm "$ROLE_ARN_PARAM")"
@@ -934,7 +915,7 @@ phase_0() {
     log "R6 not merged: no RETIRED_BEDROCK_VIA guard in the agent-worker entrypoint — '=user fails loudly' is not yet the behaviour"
   fi
 
-  pass "precheck complete: enforce_wired=${ENFORCE_WIRED} sandbox_trusted=${SANDBOX_TRUSTED} shadow=${SHADOW_MODE_ON} r5=${R5_PRESENT} r6_retired=${R6_PRESENT}"
+  pass "precheck complete: sandbox_trusted=${SANDBOX_TRUSTED} shadow=${SHADOW_MODE_ON} r5=${R5_PRESENT} r6_retired=${R6_PRESENT}"
 }
 
 # =============================================================================
@@ -1155,36 +1136,28 @@ phase_4() {
 
 # =============================================================================
 # Phase 5 — enforcement: a mapped call really signs with the destination.
-# GATED on finding 1.
+# Requires a fixture-owned inference runner and destination-account evidence.
 # =============================================================================
 phase_5() {
   phase 5 "enforcement — a mapped principal's call is signed with the destination"
   maybe_fail_phase 5
-
-  if [ "$ENFORCE_WIRED" != true ]; then
-    skip "enforcement success case: BG_BEDROCK_ROUTING_ENFORCE is not wired into the ${ENVIRONMENT} configmap, so is_enforced_for_org returns False before it reads any org flag — no per-org flip can turn this on (see the phase-0 finding)"
-    return 0
-  fi
-  skip "enforcement success case: enforcement is wired but this suite will not flip a real org; wire the designated test org's organizations.settings flag and re-run with the test-org fixture"
+  skip "enforcement success case: this phase needs a fixture-owned inference runner and destination-account evidence; it does not execute those checks yet"
 }
 
 # =============================================================================
 # Phase 6 — fail-closed, and the cross-account landing proof.
-# GATED on findings 1 and 2.
+# Requires a disposable destination role and a controlled denial runner.
 # =============================================================================
 phase_6() {
   phase 6 "fail-closed — a broken mapping errors actionably and never falls back"
   maybe_fail_phase 6
 
-  if [ "$ENFORCE_WIRED" != true ]; then
-    skip "fail-closed case: enforcement is not wired in ${ENVIRONMENT}; with routing inert a broken mapping cannot produce the 502 this case asserts"
-    skip "cross-account landing proof: requires enforcement AND a second account; both are unavailable (see the phase-0 findings)"
-    return 0
-  fi
   if [ "$SANDBOX_TRUSTED" != true ]; then
     skip "cross-account landing proof: sandbox ${SANDBOX_ACCOUNT} is not assumable from ${PLATFORM_ACCOUNT_EXPECTED}, so there is no second account for the bill to move to (a human must re-quick-create its role with GatewayAccountId=${PLATFORM_ACCOUNT_EXPECTED})"
+  else
+    skip "cross-account landing proof: this phase still needs an inference runner and destination-account evidence"
   fi
-  skip "fail-closed case: enforcement is wired but flipping an org is out of scope for this suite"
+  skip "fail-closed case: this phase needs a disposable destination role and a controlled denial runner; it does not execute that check yet"
 
   # NOTE for whoever activates this phase:
   #   * Assert on APP-SIDE structured fields, never CloudTrail requestParameters.

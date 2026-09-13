@@ -1,5 +1,10 @@
 # Design Note: Per-Team / Per-User Bedrock Account Routing (Issue #4692)
 
+> Current behavior: saved, verified mappings are always enforced. The environment
+> and per-organization rollout switches described in this historical design are
+> retired, including old false values. See [the current runbook](../runbook-bedrock-routing.md).
+
+
 > **Status**: **Rev-2 — access model SETTLED.** All rulings previously open (§9) are decided; §9 is now a record of what was decided and why, not a request.
 > **Author**: @agent-architect
 > **Date**: 2026-09-07 (rev-1), revised 2026-09-07 (rev-2)

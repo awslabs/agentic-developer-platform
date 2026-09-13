@@ -4,13 +4,15 @@ import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
+from src.proxy.bedrock_enforcement import RoutingDecision
+from src.proxy.bedrock_routing import BedrockTarget
 from src.proxy.format_translator import FormatTranslator
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.routes import router, set_model_resolver, set_proxy_service
@@ -271,7 +273,18 @@ def stream_handler() -> StreamHandler:
 
 
 @pytest.fixture
-def proxy_service(mock_pool_service: MockPoolService) -> ProxyService:
+def unmapped_routing(monkeypatch):
+    """Ordinary proxy unit tests have no routing database or saved mappings.
+
+    Routing integration tests supply their own real database and signer fixtures.
+    Keep this opt-in so they exercise the production decision without this stub.
+    """
+    decision = RoutingDecision(target=BedrockTarget(account_id=None, rung="platform"))
+    monkeypatch.setattr("src.proxy.service.resolve_routing_decision", AsyncMock(return_value=decision))
+
+
+@pytest.fixture
+def proxy_service(mock_pool_service: MockPoolService, unmapped_routing) -> ProxyService:
     """Create a proxy service with mocked dependencies."""
     return ProxyService(pool_service=mock_pool_service)
 
