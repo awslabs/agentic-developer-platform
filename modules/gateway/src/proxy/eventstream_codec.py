@@ -34,6 +34,7 @@ import json
 import struct
 import zlib
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 
 # Header value type 7 = string (the only type Bedrock chunk headers use).
 _HEADER_TYPE_STRING = 7
@@ -100,17 +101,17 @@ async def sse_to_eventstream(sse_stream: AsyncIterator[bytes]) -> AsyncIterator[
     payload on this path and are dropped — the event type is inside the JSON.
     """
     buffer = b""
-    async for chunk in sse_stream:
-        buffer += chunk
-        while b"\n\n" in buffer:
-            block, buffer = buffer.split(b"\n\n", 1)
-            for frame in _frames_from_sse_block(block):
+    async with aclosing(sse_stream):
+        async for chunk in sse_stream:
+            buffer += chunk
+            while b"\n\n" in buffer:
+                block, buffer = buffer.split(b"\n\n", 1)
+                for frame in _frames_from_sse_block(block):
+                    yield frame
+        # A final block without its trailing blank line still gets forwarded.
+        if buffer.strip():
+            for frame in _frames_from_sse_block(buffer):
                 yield frame
-    # A final block without its trailing blank line (upstream ended abruptly)
-    # still gets forwarded rather than silently dropped.
-    if buffer.strip():
-        for frame in _frames_from_sse_block(buffer):
-            yield frame
 
 
 def _frames_from_sse_block(block: bytes) -> list[bytes]:

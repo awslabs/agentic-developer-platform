@@ -9,6 +9,7 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import aclosing, suppress
 from decimal import Decimal
 from typing import Any
 
@@ -826,6 +827,7 @@ class ProxyService(IProxyService):
         if pricing_capture is not None:
             pricing_capture.forwarded(client, model_id, stream=True)
 
+        event_stream = None
         try:
             response = await client.invoke_model_with_response_stream(
                 modelId=model_id,
@@ -837,33 +839,24 @@ class ProxyService(IProxyService):
             if pricing_capture is not None:
                 pricing_capture.response({}, response)
             event_stream = response.get("body")
-            if event_stream:
-                queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+            if event_stream is not None:
                 chunk_count = 0
-
-                def _read_stream():
-                    try:
-                        for event in event_stream:
-                            chunk = event.get("chunk")
-                            if chunk:
-                                data = chunk.get("bytes", b"")
-                                if data:
-                                    queue.put_nowait(data)
-                    finally:
-                        queue.put_nowait(None)
-
-                read_task = asyncio.get_event_loop().run_in_executor(None, _read_stream)
-
+                iterator = iter(event_stream)
                 while True:
-                    chunk = await queue.get()
-                    if chunk is None:
+                    # Pull one event at a time off the event loop. This preserves
+                    # backpressure and propagates SDK reader exceptions directly,
+                    # without a background reader writing to an asyncio.Queue.
+                    event = await asyncio.to_thread(next, iterator, None)
+                    if event is None:
                         break
+                    chunk = event.get("chunk", {}).get("bytes")
+                    if not chunk:
+                        continue
                     chunk_count += 1
                     if pricing_capture is not None:
                         pricing_capture.chunk(chunk)
                     yield chunk
 
-                await read_task
                 span.set_attribute("bedrock.stream_chunks", chunk_count)
 
         except Exception as e:
@@ -871,6 +864,11 @@ class ProxyService(IProxyService):
             # Issue #4744 (§5.1): same discrimination as the non-streaming path.
             raise _classify_bedrock_failure(e, model_id=model_id, target=target) from e
         finally:
+            # Closing the SDK body also releases a blocking read on disconnect.
+            close = getattr(event_stream, "close", None)
+            if close is not None:
+                with suppress(Exception):
+                    close()
             span_ctx.__exit__(None, None, None)
 
     async def _invoke_openai_response(
@@ -1185,11 +1183,19 @@ class ProxyService(IProxyService):
 
             bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
 
-            async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "bedrock", bedrock_model_id, response_id):
-                self._extract_usage_from_sse_chunk(chunk, usage)
-                yield chunk
-        except Exception:
-            status_code = 500
+            has_chunks = False
+            async with aclosing(self._stream_handler.create_sse_response(bedrock_stream, "bedrock", bedrock_model_id, response_id)) as stream:
+                async for chunk in stream:
+                    has_chunks = True
+                    self._extract_usage_from_sse_chunk(chunk, usage)
+                    yield chunk
+            if not has_chunks:
+                raise BedrockInvocationError("Bedrock returned an empty stream")
+        except (asyncio.CancelledError, GeneratorExit):
+            status_code = 499
+            raise
+        except Exception as error:
+            status_code = getattr(error, "status_code", 500)
             raise
         finally:
             latency_ms = (time.time() - start_time) * 1000

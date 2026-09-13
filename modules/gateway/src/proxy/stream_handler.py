@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from src.proxy.format_translator import FormatTranslator
+from src.shared.exceptions import BedrockGatewayError
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +167,16 @@ class StreamHandler:
         except asyncio.CancelledError:
             logger.info("Stream cancelled by client")
             raise
+        except BedrockGatewayError:
+            # Preserve mapped-account status, scope and remediation at the route.
+            raise
         except Exception as e:
             logger.error(f"Error during streaming: {e}")
             raise StreamingError(str(e), chunk_index)
+        finally:
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     async def stream_bedrock_response(
         self,

@@ -33,6 +33,7 @@ from fastapi.responses import StreamingResponse
 
 from src.auth.middleware import validate_cognito_jwt
 from src.chat_logging.service import ChatLoggingService, create_streaming_logging_wrapper
+from src.proxy.bedrock_streaming_response import BedrockStreamingResponse
 from src.proxy.client_tool import normalize_client_tool
 from src.proxy.eventstream_codec import EVENTSTREAM_CONTENT_TYPE, EVENTSTREAM_KEEPALIVE, sse_to_eventstream
 from src.proxy.mantle_service import MantlePassthroughService, MantleUpstreamError
@@ -935,17 +936,23 @@ async def invoke_model_stream_by_path(
         # for SSE via Accept keep the old behaviour (curl debugging, tests).
         accept = (request.headers.get("accept") or "").lower()
         if "text/event-stream" in accept:
-            return sse_streaming_response(wrapped_stream)
+            return BedrockStreamingResponse(
+                merge_with_keepalive(wrapped_stream),
+                error_handler=handle_proxy_error,
+                media_type="text/event-stream",
+                headers=dict(_SSE_HEADERS),
+            )
 
         # Binary AWS-eventstream path (the default for Bedrock-native clients such
         # as the Claude Code SDK). Inject the keep-alive AFTER conversion, at the
         # wire level, as a Bedrock ``ping`` chunk frame — sse_to_eventstream drops
         # SSE comments, so the SSE-comment keep-alive would never survive here.
-        return StreamingResponse(
+        return BedrockStreamingResponse(
             merge_with_keepalive(
                 sse_to_eventstream(wrapped_stream),
                 keepalive=EVENTSTREAM_KEEPALIVE,
             ),
+            error_handler=handle_proxy_error,
             media_type=EVENTSTREAM_CONTENT_TYPE,
             headers=dict(_SSE_HEADERS),
         )

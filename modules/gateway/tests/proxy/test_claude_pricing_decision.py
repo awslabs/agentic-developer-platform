@@ -427,7 +427,10 @@ async def test_disconnect_at_yield_settles_only_final_measured_usage(metering, a
     else:
         assert capture.decision is None
         metering.writer.write_log.assert_not_awaited()
-        metering.usage.log_request.assert_not_awaited()
+        # #5025: keep a diagnostic cancellation record without inventing usage.
+        metering.usage.log_request.assert_awaited_once()
+        assert metering.usage.log_request.await_args.kwargs["cost_usd"] == Decimal("0")
+    assert metering.usage.log_request.await_args.kwargs["status_code"] == 499
 
 
 @pytest.mark.asyncio
@@ -665,7 +668,7 @@ async def test_upstream_failure_keeps_error_log_without_a_settlement_charge(mete
     await flush_logs()
     metering.usage.log_request.assert_awaited_once()
     logged = metering.usage.log_request.await_args.kwargs
-    assert logged["status_code"] == 500
+    assert logged["status_code"] == (502 if stream else 500)
     assert logged["input_tokens"] == logged["output_tokens"] == 0
     assert logged["cost_usd"] == Decimal("0")
     metering.reconcile.assert_awaited_once()
