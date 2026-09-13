@@ -16,6 +16,39 @@
 
 ---
 
+## Amendment: organization Bedrock grants over existing connections (2026-09-14)
+
+The operator requirement extends ruling 6 (§4.3): a platform admin may need to
+configure team routing without AWS administrator access to the team's account.
+They can explicitly link an existing AWS connection to a target organization after
+ADP verifies shared role assumption and Bedrock invocation. This is a narrow
+exception to the original prohibition on personal credentials serving shared rules.
+
+`bedrock_connection_grants` records the destination, original credential, target
+organization, author, and timestamp. The unique connection/organization pair makes
+retries idempotent. Each grant has its own org-owned destination; mapping validation
+still requires the rule's organization to match the destination. Shared rules using
+personal credentials require the exact destination/credential/organization grant.
+Self-selection excludes these granted destinations and keeps its own registry row.
+
+The source credential retains its owner, organization, and secret. No general vault
+sharing, IAM mutation, or secret copying occurs. The existing shared capability probe
+must pass before a new grant is saved; the AWS account owner remains responsible for
+fixing a user-pinned or read-only role. Platform-admin authorization covers metadata
+listing, linking, and unlinking; authoring and probe-refusal events are audited.
+
+Credential-row locks and a unique constraint serialize link retries. Destination-row
+locks serialize mapping saves and re-verification with unlinking. Unlink refuses any
+destination referenced by a rule and preserves the original connection. The grant's
+foreign key cascades only when its destination is deleted. Its credential reference
+stays visible if the source is deleted, allowing administrators to remove the dangling
+link; the signer fails closed when the credential is missing. Migration 049 adds the
+grant table without changing existing runtime routing-row schemas.
+
+The routing ladder, budget attribution, and AWS credential cache isolation stay as
+designed. The UI workflow is documented in the
+[Bedrock routing runbook](../runbook-bedrock-routing.md#use-an-aws-connection-owned-by-someone-else).
+
 ## Rev-2 changelog — what the rulings changed
 
 The operator ruled on 2026-09-07 (recorded in full on #4692 under "Settled rulings"). Six rulings; the two that were *not* among rev-1's three open questions are the ones that moved the design most.

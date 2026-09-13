@@ -324,7 +324,7 @@ describe('BedrockAccountSelector — disclosure and selectability', () => {
     // The prose comes from the shared reason vocabulary, which is kept real here — the
     // point of the code is that it names a remediation, and "verification failed" would
     // send somebody to debug the wrong thing.
-    expect(screen.getByTestId('bedrock-selection-reason-cred-v1').textContent).toMatch(/re-run the routing cloudformation template/i);
+    expect(screen.getByTestId('bedrock-selection-reason-cred-v1').textContent).toMatch(/AWS account administrator.*routing CloudFormation template/i);
     expect(screen.getByTestId('bedrock-selection-use-cred-v1')).toBeDisabled();
   });
 

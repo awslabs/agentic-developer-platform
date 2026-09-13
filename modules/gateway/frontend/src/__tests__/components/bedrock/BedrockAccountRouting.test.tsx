@@ -52,6 +52,9 @@ vi.mock('@/services/bedrockRouting', async (importOriginal) => {
     listDestinations: vi.fn(),
     registerDestination: vi.fn(),
     verifyDestination: vi.fn(),
+    listExistingAwsConnections: vi.fn(),
+    linkAwsConnection: vi.fn(),
+    unlinkAwsConnection: vi.fn(),
   };
 });
 
@@ -69,6 +72,9 @@ import {
   listDestinations,
   registerDestination,
   verifyDestination,
+  listExistingAwsConnections,
+  linkAwsConnection,
+  unlinkAwsConnection,
 } from '@/services/bedrockRouting';
 import { getOrganizations, getOrgTeams, listPlatformUsers } from '@/services/admin';
 
@@ -1176,5 +1182,53 @@ describe('registering a new destination', () => {
     // role-name parameter. A field here would configure nothing while appearing to —
     // the #4511 shape this whole issue exists to prevent.
     expect(screen.queryByLabelText('Role Name')).not.toBeInTheDocument();
+  });
+});
+
+
+describe('existing connection links in the routing panel', () => {
+  it('refreshes destinations after linking an existing connection', async () => {
+    vi.mocked(listExistingAwsConnections).mockResolvedValue([{
+      credential_id: 'existing', label: 'Team AWS', account_id: '123456789012', org_id: 'globex', org_name: 'Globex',
+      owner_scope: 'user', owner_name: 'Account owner', status: 'verified', selectable: true, reason: null,
+    }]);
+    vi.mocked(linkAwsConnection).mockResolvedValue({ destination: { ...ACME_PROD, connection_id: 'existing' } });
+    const user = userEvent.setup();
+    renderPanel();
+    await screen.findByTestId('routing-destination-dest-acme');
+    mockListDestinations.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Use existing AWS connection' }));
+    await screen.findByRole('option', { name: /Team AWS/ });
+    await user.selectOptions(screen.getByLabelText('AWS connection'), 'existing');
+    await user.selectOptions(screen.getByLabelText('Link to organization'), 'acme');
+    await user.click(screen.getByRole('button', { name: 'Verify & link' }));
+    await waitFor(() => expect(mockListDestinations).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(mockRegisterDestination).not.toHaveBeenCalled();
+  });
+
+  it('disables unlink for links used by a rule', async () => {
+    mockListDestinations.mockResolvedValue([{ ...ACME_PROD, connection_id: 'existing', used_by: 1 }]);
+    renderPanel();
+    expect(await screen.findByRole('button', { name: 'Unlink' })).toBeDisabled();
+  });
+
+  it('preserves the modal on unlink conflict and refreshes after successful retry', async () => {
+    mockListDestinations.mockResolvedValue([{ ...ACME_PROD, connection_id: 'existing', used_by: 0 }]);
+    vi.mocked(unlinkAwsConnection)
+      .mockRejectedValueOnce({ detail: 'Remove the routing rules before unlinking.' })
+      .mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(await screen.findByRole('button', { name: 'Unlink' }));
+    expect(screen.getByText(/original AWS connection and AWS role will remain unchanged/)).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Unlink connection' }));
+    expect(await screen.findByText('Remove the routing rules before unlinking.')).toBeVisible();
+    expect(screen.getByRole('dialog')).toBeVisible();
+    mockListDestinations.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Unlink connection' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(unlinkAwsConnection).toHaveBeenCalledWith(ACME_PROD.id);
+    expect(mockListDestinations).toHaveBeenCalled();
   });
 });

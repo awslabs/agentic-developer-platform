@@ -43,6 +43,7 @@ class DestinationSummary(BaseModel):
     """
 
     id: str
+    connection_id: str | None = None
     account_id: str
     label: str
     region: str
@@ -305,6 +306,29 @@ class RegisterNewDestination(BaseModel):
         if not v.isdigit():
             raise ValueError("AWS account IDs must be exactly 12 digits")
         return v
+
+
+class RegisterSharedConnectionDestination(BaseModel):
+    """Explicitly authorize an existing connection for one organization's Bedrock use."""
+
+    source: Literal["shared_connection"]
+    credential_id: str = Field(min_length=1)
+    link_to_org_id: str = Field(min_length=1)
+
+
+class ExistingAwsConnection(BaseModel):
+    """Metadata only. Listing never reads a secret or assumes an AWS role."""
+
+    credential_id: str
+    label: str
+    account_id: str | None
+    org_id: str
+    org_name: str
+    owner_scope: str
+    owner_name: str | None
+    status: str
+    selectable: bool
+    reason: str | None
 
 
 class RegisterDestinationResponse(BaseModel):

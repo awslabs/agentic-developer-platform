@@ -59,6 +59,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Input, Modal, Select } from '@/components/ui';
+import { LinkAwsConnectionModal } from './LinkAwsConnectionModal';
 import { ConnectAwsForm } from '@/components/aws/ConnectAwsForm';
 import { useToast } from '@/contexts/ToastContext';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -72,6 +73,7 @@ import {
   registerDestination,
   setMapping,
   verifyDestination,
+  unlinkAwsConnection,
 } from '@/services/bedrockRouting';
 import { describeRoutingReason } from '@/types/bedrockRouting';
 import type {
@@ -921,6 +923,10 @@ export function BedrockAccountRouting() {
   const [scopeFilter, setScopeFilter] = useState('all');
   const [showAddRule, setShowAddRule] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
+  const [showLink, setShowLink] = useState(false);
+  const [unlinking, setUnlinking] = useState<DestinationSummary | null>(null);
+  const [unlinkBusy, setUnlinkBusy] = useState(false);
+  const [unlinkError, setUnlinkError] = useState<string | null>(null);
   const [removing, setRemoving] = useState<MappingSummary | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
@@ -1020,6 +1026,21 @@ export function BedrockAccountRouting() {
     setConfirmation(message);
     setReloadToken((n) => n + 1);
   }, []);
+
+  const handleUnlink = async () => {
+    if (!unlinking || unlinkBusy) return;
+    setUnlinkBusy(true);
+    setUnlinkError(null);
+    try {
+      await unlinkAwsConnection(unlinking.id);
+      setUnlinking(null);
+      handleChanged('Bedrock link removed. The original AWS connection is still available to its owner.');
+    } catch (err: unknown) {
+      setUnlinkError(rejectionMessage(err, 'Could not unlink the connection.'));
+    } finally {
+      setUnlinkBusy(false);
+    }
+  };
 
   const handleVerify = async (destination: DestinationSummary) => {
     setVerifyingId(destination.id);
@@ -1203,9 +1224,12 @@ export function BedrockAccountRouting() {
           <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
             <div className="flex justify-between items-center pb-2 mb-2">
               <h3 className="text-sm font-medium text-gray-900 dark:text-white">Connected destinations ({destinations?.length ?? 0})</h3>
-              <Button variant="secondary" size="sm" onClick={() => setShowRegister(true)} data-testid="routing-register-open">
-                + Register new account
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="secondary" size="sm" onClick={() => setShowLink(true)}>Use existing AWS connection</Button>
+                <Button variant="secondary" size="sm" onClick={() => setShowRegister(true)} data-testid="routing-register-open">
+                  + Register new account
+                </Button>
+              </div>
             </div>
 
             {destinationsError && (
@@ -1238,7 +1262,10 @@ export function BedrockAccountRouting() {
                         {destination.label} ({shortAccount(destination.account_id)})
                       </td>
                       <td className="py-3 pr-4">
-                        {destination.source === 'org-linked' ? `org-linked (${destination.owner_org_id})` : 'admin-registered'}
+                        {destination.source === 'org-linked'
+                          ? `org-linked (${orgs.find((org) => org.id === destination.owner_org_id)?.name || destination.owner_org_id})`
+                          : 'admin-registered'}
+                        {destination.connection_id && <span className="block text-xs text-gray-500">Existing AWS connection</span>}
                       </td>
                       <td className="py-3 pr-4">
                         <VerificationState destination={destination} />
@@ -1256,6 +1283,12 @@ export function BedrockAccountRouting() {
                         >
                           {verifyingId === destination.id ? 'Verifying…' : 'Re-verify'}
                         </Button>
+                        {destination.connection_id && <Button
+                          variant="secondary" size="sm" className="ml-2"
+                          disabled={destination.used_by > 0}
+                          title={destination.used_by > 0 ? 'Remove routing rules before unlinking' : 'Remove this Bedrock link'}
+                          onClick={() => { setUnlinking(destination); setUnlinkError(null); }}
+                        >Unlink</Button>}
                       </td>
                     </tr>
                   ))}
@@ -1287,6 +1320,17 @@ export function BedrockAccountRouting() {
         onRemoved={handleChanged}
       />
 
+      {showLink && <LinkAwsConnectionModal onClose={() => setShowLink(false)} onLinked={handleChanged} />}
+      <Modal isOpen={!!unlinking} onClose={() => { if (!unlinkBusy) setUnlinking(null); }} title="Unlink AWS connection?">
+        <div className="space-y-4">
+          <p>Remove the Bedrock link for {unlinking?.label}? The original AWS connection and AWS role will remain unchanged.</p>
+          {unlinkError && <Alert variant="error" title="Could not unlink connection">{unlinkError}</Alert>}
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" disabled={unlinkBusy} onClick={() => setUnlinking(null)}>Cancel</Button>
+            <Button disabled={unlinkBusy} onClick={handleUnlink}>{unlinkBusy ? 'Unlinking…' : 'Unlink connection'}</Button>
+          </div>
+        </div>
+      </Modal>
       <RegisterDestinationModal isOpen={showRegister} onClose={() => setShowRegister(false)} onRegistered={handleChanged} orgs={orgs} />
     </section>
   );

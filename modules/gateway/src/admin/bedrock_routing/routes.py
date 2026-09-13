@@ -69,7 +69,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -79,7 +79,7 @@ from src.auth.vault_routes import get_secrets_manager
 from src.shared.database import get_db
 from src.shared.identity import resolve_canonical_user_id
 from src.shared.models.base import new_uuid, utcnow
-from src.shared.models.bedrock_routing import BedrockAccountMapping, BedrockDestinationRegistry
+from src.shared.models.bedrock_routing import BedrockAccountMapping, BedrockConnectionGrant, BedrockDestinationRegistry
 from src.shared.models.organization import Organization, User
 from src.shared.models.vault import UserCredential
 from src.shared.schemas.auth import TokenContext
@@ -89,11 +89,13 @@ from . import service
 from .schemas import (
     DestinationSummary,
     EffectiveMappingResponse,
+    ExistingAwsConnection,
     MappingSummary,
     MappingUpsertRequest,
     RegisterConnectionDestination,
     RegisterDestinationResponse,
     RegisterNewDestination,
+    RegisterSharedConnectionDestination,
     VerifyDestinationResponse,
 )
 
@@ -118,10 +120,13 @@ def _rejected(exc: service.MappingRejectedError) -> HTTPException:
     return HTTPException(status_code=422, detail={"reason": exc.reason, "message": exc.message})
 
 
-def _compose_destination(destination: BedrockDestinationRegistry, used_by: int, reason: str | None = None) -> DestinationSummary:
+def _compose_destination(
+    destination: BedrockDestinationRegistry, used_by: int, reason: str | None = None, *, connection_id: str | None = None
+) -> DestinationSummary:
     """Render a registry row for the destinations table. No ``role_arn`` — §2.6."""
     return DestinationSummary(
         id=destination.id,
+        connection_id=connection_id,
         account_id=destination.account_id,
         label=destination.label,
         region=destination.region,
@@ -460,7 +465,162 @@ async def list_destinations(
         query = query.where((BedrockDestinationRegistry.owner_org_id == org_id) | (BedrockDestinationRegistry.is_platform_registered.is_(True)))
     destinations = list((await db.execute(query)).scalars().all())
     counts = await service.destination_usage_counts(db, [destination.id for destination in destinations])
-    return [_compose_destination(destination, counts.get(destination.id, 0)) for destination in sorted(destinations, key=lambda d: d.label)]
+    links = dict((await db.execute(select(BedrockConnectionGrant.destination_id, BedrockConnectionGrant.credential_id))).all())
+    return [
+        _compose_destination(destination, counts.get(destination.id, 0), connection_id=links.get(destination.id))
+        for destination in sorted(destinations, key=lambda d: d.label)
+    ]
+
+
+@router.get("/connections", response_model=list[ExistingAwsConnection])
+async def list_existing_connections(
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[ExistingAwsConnection]:
+    """Platform-wide AWS connection metadata; no secret values or AWS calls."""
+    AccessControl(db).require_platform_admin(current_user)
+    rows = await db.execute(
+        select(UserCredential, Organization.name, User.name, User.email)
+        .outerjoin(Organization, Organization.id == UserCredential.org_id)
+        .outerjoin(User, User.id == UserCredential.user_id)
+        .where(UserCredential.service == "aws", UserCredential.credential_type == "aws_role")
+        .order_by(UserCredential.label, UserCredential.id)
+    )
+    result = []
+    for credential, org_name, user_name, email in rows:
+        scopes = credential.scopes or {}
+        reason = None
+        try:
+            service.require_routable_connection(credential)
+        except service.MappingRejectedError as exc:
+            reason = exc.reason
+        result.append(
+            ExistingAwsConnection(
+                credential_id=credential.id,
+                label=credential.label,
+                account_id=scopes.get("account_id"),
+                org_id=credential.org_id,
+                org_name=org_name or credential.org_id,
+                owner_scope=credential.owner_scope,
+                owner_name=user_name or email,
+                status=scopes.get("status") or "pending",
+                selectable=reason is None,
+                reason=reason,
+            )
+        )
+    return result
+
+
+@router.post("/connection-links", response_model=RegisterDestinationResponse, status_code=201)
+async def link_existing_connection(
+    request: RegisterSharedConnectionDestination,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    secrets: Annotated[SecretsManagerHelper, Depends(get_secrets_manager)],
+) -> RegisterDestinationResponse:
+    """Grant one org Bedrock use of an existing connection after a fresh AWS probe.
+
+    No IAM mutation, new role, secret copy, or vault ownership change. The account
+    owner can update their existing role when the capability probe refuses it.
+    """
+    AccessControl(db).require_platform_admin(current_user)
+    if await db.get(Organization, request.link_to_org_id) is None:
+        raise _rejected(service.MappingRejectedError("scope_not_found", "The organization no longer exists."))
+    # Serialize retries for a connection, including different target orgs. The
+    # grant's unique constraint is the durable one-link-per-connection/org guard.
+    credential = await db.scalar(
+        select(UserCredential)
+        .where(UserCredential.id == request.credential_id, UserCredential.service == "aws", UserCredential.credential_type == "aws_role")
+        .with_for_update()
+    )
+    if credential is None:
+        raise _rejected(service.MappingRejectedError("connection_not_found", "That AWS connection no longer exists."))
+    try:
+        account_id, role_arn = service.require_routable_connection(credential)
+    except service.MappingRejectedError as exc:
+        raise _rejected(exc) from exc
+    actor_id = await resolve_canonical_user_id(db, current_user.user_id)
+    grant = await db.scalar(
+        select(BedrockConnectionGrant).where(
+            BedrockConnectionGrant.credential_id == credential.id, BedrockConnectionGrant.org_id == request.link_to_org_id
+        )
+    )
+    if grant is not None:
+        destination = await service.load_destination(db, grant.destination_id)
+        if (destination.account_id, destination.role_arn) != (account_id, role_arn):
+            raise HTTPException(
+                status_code=409, detail="The connection's AWS role has changed. Remove its routing rules and unlink it before linking again."
+            )
+    else:
+        destination = service.build_destination_from_credential(credential, account_id=account_id, role_arn=role_arn, actor_id=actor_id)
+        destination.owner_org_id = request.link_to_org_id
+    capable, reason = await service.test_assume_destination(db, destination, secrets=secrets, probe_user_id=actor_id)
+    if not capable:
+        await service.write_refusal_audit(
+            db,
+            event_type="bedrock_connection_link_refused",
+            org_id=request.link_to_org_id,
+            actor_id=actor_id,
+            details={"credential_id": credential.id, "reason": reason or "routing_probe_inconclusive"},
+        )
+        raise _rejected(
+            service.MappingRejectedError(
+                reason or "routing_probe_inconclusive",
+                "The existing connection could not be verified for shared Bedrock use. Ask its AWS account administrator to check "
+                "the role's trust policy and Bedrock permissions, then retry. No link was saved and the original connection was not changed.",
+            )
+        )
+    destination.routing_capable = True
+    destination.verified_at = utcnow()
+    if grant is None:
+        db.add(destination)
+        await db.flush()
+        db.add(
+            BedrockConnectionGrant(
+                destination_id=destination.id, credential_id=credential.id, org_id=request.link_to_org_id, created_by_user_id=actor_id
+            )
+        )
+    await service.write_audit(
+        db,
+        event_type="bedrock_connection_linked",
+        org_id=request.link_to_org_id,
+        actor_id=actor_id,
+        details={"destination_id": destination.id, "credential_id": credential.id, "connection_org_id": credential.org_id, "account_id": account_id},
+    )
+    await db.commit()
+    await db.refresh(destination)
+    service.invalidate_signer_cache(destination.role_arn)
+    counts = await service.destination_usage_counts(db, [destination.id])
+    return RegisterDestinationResponse(destination=_compose_destination(destination, counts.get(destination.id, 0), connection_id=credential.id))
+
+
+@router.delete("/connection-links/{destination_id}", status_code=204)
+async def unlink_existing_connection(
+    destination_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """Remove an unused Bedrock grant, preserving the source connection and AWS role."""
+    AccessControl(db).require_platform_admin(current_user)
+    destination = await db.scalar(select(BedrockDestinationRegistry).where(BedrockDestinationRegistry.id == destination_id).with_for_update())
+    grant = await db.get(BedrockConnectionGrant, destination_id)
+    if destination is None or grant is None:
+        raise HTTPException(status_code=404, detail="That existing-connection link no longer exists.")
+    if (await service.destination_usage_counts(db, [destination_id])).get(destination_id):
+        raise HTTPException(status_code=409, detail="Remove the routing rules that use this destination before unlinking it.")
+    actor_id = await resolve_canonical_user_id(db, current_user.user_id)
+    await service.write_audit(
+        db,
+        event_type="bedrock_connection_unlinked",
+        org_id=grant.org_id,
+        actor_id=actor_id,
+        details={"destination_id": destination_id, "credential_id": grant.credential_id},
+    )
+    await db.execute(delete(BedrockConnectionGrant).where(BedrockConnectionGrant.destination_id == destination_id))
+    await db.delete(destination)
+    await db.commit()
+    service.invalidate_resolver_existence_cache()
+    service.invalidate_signer_cache(destination.role_arn)
 
 
 @router.post("/destinations", response_model=RegisterDestinationResponse, status_code=201)
@@ -640,7 +800,7 @@ async def verify_destination(
     """
     AccessControl(db).require_platform_admin(current_user)
 
-    destination = await db.scalar(select(BedrockDestinationRegistry).where(BedrockDestinationRegistry.id == destination_id))
+    destination = await db.scalar(select(BedrockDestinationRegistry).where(BedrockDestinationRegistry.id == destination_id).with_for_update())
     if destination is None:
         raise HTTPException(status_code=404, detail="No such destination.")
 
@@ -672,8 +832,9 @@ async def verify_destination(
     service.invalidate_signer_cache(destination.role_arn)
 
     counts = await service.destination_usage_counts(db, [destination.id])
+    connection_id = await db.scalar(select(BedrockConnectionGrant.credential_id).where(BedrockConnectionGrant.destination_id == destination.id))
     return VerifyDestinationResponse(
-        destination=_compose_destination(destination, counts.get(destination.id, 0), reason),
+        destination=_compose_destination(destination, counts.get(destination.id, 0), reason, connection_id=connection_id),
         verified=capable,
         reason=reason,
     )

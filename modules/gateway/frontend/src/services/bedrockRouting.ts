@@ -22,6 +22,7 @@
 import { apiClient, buildQueryString } from './api';
 import type {
   DestinationSummary,
+  ExistingAwsConnection,
   EffectiveMappingResponse,
   MappingScope,
   MappingSummary,
@@ -204,4 +205,21 @@ export async function verifyDestination(destinationId: string): Promise<VerifyDe
   return apiClient.post<VerifyDestinationResponse>(
     `/admin/bedrock-routing/destinations/${encodeURIComponent(destinationId)}/verify`
   );
+}
+
+/** Metadata only. Original AWS credentials remain with their current owners. */
+export async function listExistingAwsConnections(): Promise<ExistingAwsConnection[]> {
+  return apiClient.get<ExistingAwsConnection[]>('/admin/bedrock-routing/connections');
+}
+
+/** Verify the existing role, then grant an organization Bedrock use of it. */
+export async function linkAwsConnection(credentialId: string, orgId: string): Promise<RegisterDestinationResponse> {
+  return apiClient.post<RegisterDestinationResponse>('/admin/bedrock-routing/connection-links', {
+    source: 'shared_connection', credential_id: credentialId, link_to_org_id: orgId,
+  });
+}
+
+/** Refuses in-use links; never deletes the source connection or AWS role. */
+export async function unlinkAwsConnection(destinationId: string): Promise<void> {
+  return apiClient.delete<void>(`/admin/bedrock-routing/connection-links/${encodeURIComponent(destinationId)}`);
 }

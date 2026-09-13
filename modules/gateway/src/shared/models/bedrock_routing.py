@@ -24,7 +24,7 @@ database does not have.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, String, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, new_uuid, utcnow
@@ -123,6 +123,26 @@ class BedrockDestinationRegistry(Base):
         fall through to the team rung, not fail the request.
         """
         return self.routing_capable and self.verified_at is not None
+
+
+class BedrockConnectionGrant(Base):
+    """An explicit platform-admin grant to reuse a connection for org Bedrock calls.
+
+    The original vault credential keeps its owner and secret. This grant authorizes
+    only a routing destination; it does not share the credential with agent tools.
+    Kept separately so adding the feature does not change existing routing rows.
+    """
+
+    __tablename__ = "bedrock_connection_grants"
+    __table_args__ = (UniqueConstraint("credential_id", "org_id", name="uq_bedrock_connection_grant_scope"),)
+
+    destination_id: Mapped[str] = mapped_column(String(255), ForeignKey("bedrock_destination_registry.id", ondelete="CASCADE"), primary_key=True)
+    # Keep the grant visible/removable if its source is deleted, just like the
+    # registry's credential reference. The signer rejects a missing credential.
+    credential_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    org_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class BedrockAccountMapping(Base):

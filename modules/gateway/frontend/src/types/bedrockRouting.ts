@@ -52,7 +52,22 @@ export interface MappingScope {
 }
 
 /** A registry row, as the destinations table renders it. */
+export interface ExistingAwsConnection {
+  credential_id: string;
+  label: string;
+  account_id: string | null;
+  org_id: string;
+  org_name: string;
+  owner_scope: string;
+  owner_name: string | null;
+  status: string;
+  selectable: boolean;
+  reason: string | null;
+}
+
 export interface DestinationSummary {
+  /** Present for explicit Bedrock links; the original connection retains its owner. */
+  connection_id?: string | null;
   id: string;
   account_id: string;
   label: string;
@@ -288,15 +303,15 @@ export interface MySelectionRequest {
  */
 export const ROUTING_REASON_COPY: Record<string, string> = {
   role_user_pinned_needs_v2_template:
-    'The IAM role is pinned to the person who created it, so it cannot serve other people. Re-run the routing CloudFormation template in that account.',
+    'The IAM role is pinned to the person who created it, so it cannot serve other people. Ask the AWS account administrator to update it using the routing CloudFormation template.',
   routing_probe_inconclusive:
     'The check could not reach a verdict — this is not a permissions failure. Try Re-verify again.',
   role_missing_bedrock_permission:
-    'The role can be assumed but is not allowed to invoke Bedrock. Add bedrock:InvokeModel (including inference profiles) to its policy.',
+    'The role can be assumed but is not allowed to invoke Bedrock. Ask the AWS account administrator to add bedrock:InvokeModel and streaming invocation permissions (including inference profiles) to its policy.',
   assume_role_failed: 'The role could not be assumed. Check its trust policy and the external ID.',
   account_unlinked: 'That destination is not linked to this scope’s organization.',
   personal_credential_for_shared_scope:
-    'That connection belongs to one person, so it cannot serve a whole team or organization. Register the account as a platform destination instead.',
+    'That personal connection needs an explicit organization link for shared Bedrock use. A platform admin can select Use existing AWS connection to verify and link it.',
   connection_not_verified: 'That connection has not been verified yet.',
   connection_not_found: 'That connection no longer exists.',
   // #4746 (§1.4 "admin wins"). Addressed to the person, because on the self-service

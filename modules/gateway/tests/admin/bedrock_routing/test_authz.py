@@ -45,6 +45,9 @@ from .conftest import (
 #: Every route on the surface, as (method, path, body). Parameterised as one list so a
 #: route added later without a gate fails A1/A2 rather than quietly going untested.
 ALL_ROUTES = [
+    ("GET", "/admin/bedrock-routing/connections", None),
+    ("POST", "/admin/bedrock-routing/connection-links", {"source": "shared_connection", "credential_id": "cred-personal", "link_to_org_id": ORG_ID}),
+    ("DELETE", "/admin/bedrock-routing/connection-links/missing", None),
     ("GET", "/admin/bedrock-routing/mappings", None),
     ("PUT", f"/admin/bedrock-routing/mappings/org:{ORG_ID}", {"destination_id": ACME_DEST}),
     ("DELETE", f"/admin/bedrock-routing/mappings/org:{ORG_ID}", None),

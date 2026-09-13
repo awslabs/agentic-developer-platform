@@ -32,7 +32,7 @@ from src.proxy.bedrock_routing import bedrock_routing_resolver
 from src.proxy.bedrock_routing_errors import REASON_ACCOUNT_UNLINKED
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import new_uuid
-from src.shared.models.bedrock_routing import BedrockAccountMapping, BedrockDestinationRegistry
+from src.shared.models.bedrock_routing import BedrockAccountMapping, BedrockConnectionGrant, BedrockDestinationRegistry
 from src.shared.models.organization import Organization, User
 from src.shared.models.vault import UserCredential
 from src.shared.services.routing_probe import probe_routing_destination
@@ -250,7 +250,11 @@ def _require_destination_in_scope(destination: BedrockDestinationRegistry, scope
 
 
 async def _reject_personal_credential(db: AsyncSession, destination: BedrockDestinationRegistry, scope_type: str) -> None:
-    """Ruling 6 / §4.3: a team or org rule must not point at one person's credential.
+    """Ruling 6 / §4.3, amended for explicit organization Bedrock grants.
+
+    A platform admin may explicitly link an existing personal connection to an
+    organization after the shared capability probe passes. That scoped grant is
+    the only exception to the original personal-credential prohibition below.
 
     *"One person's personal role silently serving a whole team's traffic is an
     authority/audit problem."* Expressed as a constraint on the *reference*, which is
@@ -278,11 +282,21 @@ async def _reject_personal_credential(db: AsyncSession, destination: BedrockDest
 
     owner_user_id = await db.scalar(select(UserCredential.user_id).where(UserCredential.id == destination.credential_id))
     if owner_user_id is not None:
+        # An explicit admin link authorizes Bedrock use for this org without
+        # transferring the original personal credential to the shared vault.
+        grant = await db.scalar(
+            select(BedrockConnectionGrant.destination_id).where(
+                BedrockConnectionGrant.destination_id == destination.id,
+                BedrockConnectionGrant.credential_id == destination.credential_id,
+                BedrockConnectionGrant.org_id == destination.owner_org_id,
+            )
+        )
+        if grant is not None:
+            return
         raise MappingRejectedError(
             "personal_credential_for_shared_scope",
             f"That destination is one person's personal AWS connection, so it cannot serve a {scope_type}-wide rule. "
-            "One individual's role carrying a whole team's traffic is an authority and audit problem, and AWS would "
-            "reject the calls anyway. Register the account as a shared destination instead.",
+            "Use 'Use existing AWS connection' to explicitly link it to this organization after verifying shared Bedrock access.",
         )
 
 
@@ -380,7 +394,13 @@ async def find_or_create_destination_for_credential(
     """
     account_id, role_arn = require_routable_connection(credential)
 
-    existing = await db.scalar(select(BedrockDestinationRegistry).where(BedrockDestinationRegistry.credential_id == credential.id))
+    existing = await db.scalar(
+        select(BedrockDestinationRegistry).where(
+            BedrockDestinationRegistry.credential_id == credential.id,
+            BedrockDestinationRegistry.owner_org_id == credential.org_id,
+            ~select(BedrockConnectionGrant.destination_id).where(BedrockConnectionGrant.destination_id == BedrockDestinationRegistry.id).exists(),
+        )
+    )
     if existing is not None:
         return existing
 
@@ -405,7 +425,7 @@ async def load_destination(db: AsyncSession, destination_id: str) -> BedrockDest
     gone" is the same class of event as "the destination does not work", and both leave
     the mapping unwritten. Using R3's code keeps the vocabulary one vocabulary.
     """
-    destination = await db.scalar(select(BedrockDestinationRegistry).where(BedrockDestinationRegistry.id == destination_id))
+    destination = await db.scalar(select(BedrockDestinationRegistry).where(BedrockDestinationRegistry.id == destination_id).with_for_update())
     if destination is None:
         raise MappingRejectedError(
             REASON_ACCOUNT_UNLINKED,

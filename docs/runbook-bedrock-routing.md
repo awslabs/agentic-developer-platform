@@ -23,6 +23,49 @@ against the platform account. To change the payer, change or remove the routing
 rule in the UI; an old rollout flag cannot override it. Budget attribution and
 rate limits continue to apply through ADP.
 
+## Use an AWS connection owned by someone else
+
+The platform admin does not need administrator access to the team's AWS account.
+An AWS account owner supplies the connection; the platform admin decides which
+organization and team can use it for Bedrock.
+
+1. **AWS account owner:** Connect and verify the account in **Settings →
+   Credentials → Connect AWS Account**. If the connection already exists, reuse it.
+   The role must trust ADP and permit shared Bedrock invocation. Older connections
+   can be read-only or pinned to one user; the AWS account administrator must update
+   those roles before they can serve a team. The
+   [routing role template](../modules/gateway/src/auth/cfn_templates/aws_role_v2.yaml)
+   documents the required trust and invocation permissions.
+2. **Platform admin:** Open **Budgets → Bedrock account routing → Use existing AWS
+   connection**. Select the connection (shown with its account, owner, and source
+   organization), select the target organization, and choose **Verify & link**.
+   The target may differ from the connection owner's organization. ADP uses its
+   existing credentials to test the role; it does not require the platform admin's
+   AWS credentials. A rejected test leaves the attempted link unsaved and explains
+   what the AWS account administrator needs to fix.
+3. **Platform admin:** Choose **Add routing rule**, select **Team**, choose the
+   organization and team, and select the linked destination. Saving checks the role
+   again. An organization rule can provide the default for all of its teams.
+4. Check **Effective mapping** for a member. Person rules take priority over the
+   authenticated primary team's rule; the organization rule comes next.
+
+Linking grants **Bedrock use only**. It does not transfer the original connection,
+copy its secret, or expose it to the organization's general agent tools. Each
+connection/organization pair has one link; repeated verification reuses that link.
+Verification tests shared role assumption and Bedrock invocation authorization
+without generating model tokens. Model availability still depends on the target
+AWS account and selected region.
+
+To remove a link, remove its routing rules first, then select **Unlink**. The
+original connection and AWS role remain. If the owner deletes the source connection
+or revokes AWS permissions, routed requests fail; ADP does not retry a selected
+account's failed invocation against the platform account. The admin can remove the
+rules and link or reconfigure the destination.
+
+Deployment requires migration `049_bedrock_connection_grants` before the updated
+backend. Downgrade refuses while links remain so an older backend cannot silently
+lose these explicit grants.
+
 ## Overview
 
 As of Phase 3 (#748), the developer/ops/pm agent worker routes Bedrock API calls
