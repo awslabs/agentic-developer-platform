@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
+from alembic.script import ScriptDirectory
 from pricing_policy import RateRow, load_snapshot
 from pricing_policy.refresh import canonical_content_hash
 from tests.migrations.conftest_postgres import downgrade, upgrade
@@ -266,6 +267,9 @@ def test_upgrade_preserves_fetched_openai_prices_age_and_provenance(pg_url, conn
 def test_downgrade_and_reupgrade_preserve_schema_history_and_operator_state(pg_url, connect, operator_state):
     from psycopg2.extras import register_default_jsonb
 
+    # Keep exercising the entire current chain when later migrations are added;
+    # upgrading to head no longer implies that 047 is the version-table value.
+    expected_head = ScriptDirectory(str(ROOT / "alembic")).get_current_head()
     upgrade(pg_url, "head")
     conn = connect()
     # PostgreSQL JSON numerics must stay Decimal when verifying historical hashes.
@@ -309,4 +313,4 @@ def test_downgrade_and_reupgrade_preserve_schema_history_and_operator_state(pg_u
         assert history() == before
         with conn.cursor() as cursor:
             cursor.execute("SELECT version_num FROM alembic_version")
-            assert cursor.fetchone()[0] == REVISION
+            assert cursor.fetchone()[0] == expected_head
