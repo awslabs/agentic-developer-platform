@@ -87,6 +87,7 @@ __all__ = [
 DISPATCHED_STATES: frozenset[NodeState] = frozenset(
     {
         NodeState.RUNNING,
+        NodeState.AWAITING_MERGE,
         NodeState.AWAITING_GATE,
         NodeState.PASSED,
         NodeState.REJECTED_AT_GATE,

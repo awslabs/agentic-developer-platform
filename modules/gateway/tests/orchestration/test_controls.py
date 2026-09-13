@@ -736,6 +736,16 @@ class TestRO3fDeclaredSeam:
         adapter does, so a bodyless POST is now a legitimate 400 — which would
         mask the 404 this test exists to assert.
         """
+        # Model an absent row explicitly; this unit test must not read the
+        # developer's real DynamoDB table or depend on an active AWS session.
+        from unittest.mock import MagicMock
+
+        from src.activity.control_service import ControlService
+        from src.orchestration.controls import get_run_control_service
+
+        table = MagicMock()
+        table.query.return_value = {"Items": []}
+        app_with_router.dependency_overrides[get_run_control_service] = lambda: ControlService(table=table)
         response = client_for(app_with_router).post(f"/orchestration/runs/run-abc/{action}", json=self._body(action))
 
         assert response.status_code == 404

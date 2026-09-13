@@ -63,7 +63,7 @@ from src.orchestration.models import (
 )
 from src.orchestration.state import ActorKind, NodeState
 from src.shared.models.base import Base
-from src.shared.models.organization import Organization
+from src.shared.models.organization import Organization, User
 
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
@@ -111,6 +111,23 @@ def session_factory(engine):
 async def session(session_factory):
     async with session_factory() as s:
         yield s
+
+
+class FakeRunStore:
+    def __init__(self):
+        self.rows = {}
+
+    def register(self, envelope):
+        self.rows[envelope["message_id"]] = envelope
+
+
+@pytest.fixture(autouse=True)
+def run_store(monkeypatch):
+    from src.orchestration.run_store import EngineRunStore
+
+    store = FakeRunStore()
+    monkeypatch.setattr(EngineRunStore, "from_env", lambda: store)
+    return store
 
 
 class FakeSQS:
@@ -205,6 +222,14 @@ async def _make_approval(
     actor_kind: str = ActorKind.HUMAN.value,
     actor_id: str = APPROVER,
 ) -> OrchestrationDecision:
+    existing_user = await session.get(User, actor_id)
+    if existing_user is not None and existing_user.org_id != (org_id or flow.org_id):
+        actor_id = f"{actor_id}:{org_id or flow.org_id}"
+    if actor_kind == ActorKind.HUMAN.value and await session.get(User, actor_id) is None:
+        session.add(
+            User(id=actor_id, org_id=org_id or flow.org_id, team_id="team-test", email=f"{actor_id}@example.com", cognito_sub=f"sub:{actor_id}")
+        )
+        await session.flush()
     decision = OrchestrationDecision(
         org_id=org_id or flow.org_id,
         flow_id=flow.id,
@@ -780,7 +805,7 @@ class TestDispatchScope:
     complete `source_ref` and the graph carries no repo or installation.
     """
 
-    @pytest.mark.parametrize("kind", [NodeKind.GATE.value, NodeKind.EVAL.value])
+    @pytest.mark.parametrize("kind", [NodeKind.GATE.value])
     async def test_non_story_nodes_are_not_dispatched(self, session, kind):
         await _make_org(session)
         flow = await _make_flow(session)
@@ -1142,3 +1167,19 @@ class TestModuleStructure:
             node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module in {".tick", "src.orchestration.tick"}
         ]
         assert not offenders, "dispatch_pass.py must not import tick.py — the tick performs no dispatch"
+
+
+async def test_unconfigured_evaluations_do_not_consume_the_dispatch_cap(session):
+    await _make_org(session)
+    flow = await _make_flow(session)
+    await _make_approval(session, flow)
+    for i in range(10):
+        node = await _make_node(session, flow, node_ref=f"eval-{i}", kind=NodeKind.EVAL.value, issue_ref=None)
+        node.id = f"aaa-{i}"
+    story = await _make_node(session, flow, node_ref="configured-story")
+    story.id = "zzz-story"
+    await session.flush()
+    report = await run_dispatch_pass(session, _config(max_dispatches_per_tick=1))
+    assert report.undispatchable == 10
+    assert report.dispatched == 1
+    assert report.pending[0].node_id == story.id

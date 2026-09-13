@@ -44,7 +44,9 @@ readable" is the guarantee amendment rests on, and a guarantee with no read path
 untestable end-to-end. It is a read, gated on the same permission.
 """
 
+import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import asdict
 from decimal import Decimal
@@ -857,6 +859,10 @@ class GraphNodeResponse(BaseModel):
     title: str
     issue_ref: str | None
     attempts: int
+    run_id: str | None = None
+    issue_url: str | None = None
+    result_summary: str | None = None
+    configuration_problem: str | None = None
     # True when the most recent stall/halt decision for this node was a stall.
     #
     # Load-bearing for AC-3, and not inferable from `state`: stall detection moves
@@ -951,6 +957,22 @@ async def get_flow_graph(
     aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
     stalled_node_ids = await _stalled_node_ids(repo, org_id=current_user.org_id, flow_id=flow.id)
 
+    # Only committed dispatch records can produce run links. Older attempts
+    # remain in the decision log but must not masquerade as the current result.
+    dispatches: dict[str, dict] = {}
+    result_summaries: dict[str, dict] = {}
+    for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.kind not in (DecisionKind.NODE_DISPATCHED.value, DecisionKind.RESULT_OBSERVED.value):
+            continue
+        try:
+            detail = json.loads(decision.reason or "{}")
+            if not isinstance(detail, dict):
+                continue
+            target = dispatches if decision.kind == DecisionKind.NODE_DISPATCHED.value else result_summaries
+            target[decision.node_id] = detail
+        except (ValueError, TypeError):
+            continue
+
     # Keyed by address because that is what `get_flow_cost` returns them under.
     # Built once rather than searched per node: a linear scan inside the node loop
     # would make this quadratic in node count for no benefit.
@@ -960,6 +982,19 @@ async def get_flow_graph(
     for node in nodes:
         address = f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}"
         node_cost = cost_by_address.get(address)
+        dispatch = dispatches.get(node.id, {})
+        if dispatch.get("attempt") != node.attempts:
+            dispatch = {}
+        result = result_summaries.get(node.id, {})
+        if result.get("attempt") != node.attempts:
+            result = {}
+        source_repo = dispatch.get("repo", "")
+        source_issue = dispatch.get("issue")
+        issue_url = (
+            f"https://github.com/{source_repo}/issues/{source_issue}"
+            if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source_repo) and isinstance(source_issue, int) and source_issue > 0
+            else None
+        )
         graph_nodes.append(
             GraphNodeResponse(
                 id=node.id,
@@ -971,6 +1006,12 @@ async def get_flow_graph(
                 title=node.title,
                 issue_ref=node.issue_ref,
                 attempts=node.attempts,
+                run_id=dispatch.get("run_id"),
+                issue_url=issue_url,
+                result_summary=result.get("evidence"),
+                configuration_problem=(
+                    "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
+                ),
                 stalled=node.id in stalled_node_ids,
                 # `get_flow_cost` returns one entry per node passed in, so the
                 # fallback is unreachable today. It is UNKNOWN rather than a zero

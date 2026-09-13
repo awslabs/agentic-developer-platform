@@ -492,6 +492,34 @@ jobs:
 
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
 
+      - name: Update the scheduled orchestration engine
+        # The engine runs in Lambda using this same image. An EKS rollout alone
+        # leaves ticks on the previous digest indefinitely (#4575).
+        env:
+          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ENGINE_FUNCTION="arn:aws:lambda:${AWS_REGION}:${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}:function:adp-${ENVIRONMENT}-orchestration-tick"
+          if ! aws lambda get-function --function-name "$ENGINE_FUNCTION" \
+              --query Configuration.FunctionName --output text >/dev/null 2>/tmp/engine-function-error; then
+            if grep -q 'ResourceNotFoundException' /tmp/engine-function-error; then
+              echo "::notice::The orchestration engine is not provisioned in this environment."
+              exit 0
+            fi
+            cat /tmp/engine-function-error >&2
+            exit 1
+          fi
+          ENGINE_DIGEST=$(aws ecr describe-images --repository-name adp-gateway \
+            --image-ids imageTag="${{ github.sha }}" --query 'imageDetails[0].imageDigest' --output text)
+          ENGINE_PINNED_IMAGE="${ENGINE_IMAGE%:*}@${ENGINE_DIGEST}"
+          aws lambda update-function-code --function-name "$ENGINE_FUNCTION" \
+            --image-uri "$ENGINE_PINNED_IMAGE" --query '{FunctionName:FunctionName,LastUpdateStatus:LastUpdateStatus}'
+          aws lambda wait function-updated-v2 --function-name "$ENGINE_FUNCTION"
+          ENGINE_LIVE_IMAGE=$(aws lambda get-function --function-name "$ENGINE_FUNCTION" \
+            --query Code.ResolvedImageUri --output text)
+          test "$ENGINE_LIVE_IMAGE" = "$ENGINE_PINNED_IMAGE"
+          echo "Scheduled engine now uses ${ENGINE_LIVE_IMAGE}"
+
       - name: Wire ALB to CloudFront (Section 6 — first deploy)
         id: wire_alb
         # On first deploy, the Ingress manifest creates an internal ALB.

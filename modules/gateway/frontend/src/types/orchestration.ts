@@ -35,6 +35,7 @@ export type NodeEngineState =
   | 'pending'
   | 'ready'
   | 'running'
+  | 'awaiting_merge'
   | 'awaiting_gate'
   | 'passed'
   | 'rejected_at_gate'
@@ -76,6 +77,10 @@ export interface GraphNode {
   stalled: boolean;
   issue_ref: string | null;
   attempts: number;
+  run_id?: string | null;
+  issue_url?: string | null;
+  result_summary?: string | null;
+  configuration_problem?: string | null;
   cost: CostFigure;
 }
 

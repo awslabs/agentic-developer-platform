@@ -35,6 +35,7 @@ const mockFeatures: FeatureFlags = {
 
 vi.mock('@/hooks/useFeatures', () => ({
   useFeatures: () => mockFeatures,
+  useFeaturesQuery: () => ({ data: mockFeatures, isPending: false }),
 }));
 
 function renderWithRouter(initialPath: string) {

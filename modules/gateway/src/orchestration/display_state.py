@@ -73,6 +73,7 @@ ENGINE_TO_DISPLAY: dict[NodeState, DisplayState | None] = {
     NodeState.PENDING: DisplayState.QUEUED,
     NodeState.READY: DisplayState.QUEUED,
     NodeState.RUNNING: DisplayState.IN_PROGRESS,
+    NodeState.AWAITING_MERGE: DisplayState.IN_PROGRESS,
     NodeState.AWAITING_GATE: DisplayState.GATE,
     NodeState.PASSED: DisplayState.COMPLETE,
     NodeState.REJECTED_AT_GATE: DisplayState.STALLED,

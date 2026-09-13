@@ -114,6 +114,8 @@ router = APIRouter(prefix="/orchestration", tags=["orchestration"])
 _RESUMABLE_STATES: dict[str, DecisionKind] = {
     NodeState.FAILED.value: DecisionKind.NODE_STALLED,
     NodeState.HALTED.value: DecisionKind.HALT_OVERRIDDEN,
+    NodeState.REJECTED_AT_GATE.value: DecisionKind.NODE_RESUMED,
+    NodeState.AWAITING_MERGE.value: DecisionKind.NODE_RESUMED,
 }
 
 
@@ -370,7 +372,7 @@ async def resume_node(
     # `pending -> ready`, which the engine takes when predecessors are satisfied)
     # would be reachable through a button labelled "resume".
     if observed_state not in _RESUMABLE_STATES:
-        rejection_reason = f"node is in '{observed_state}'; only a node in '{NodeState.FAILED.value}' or '{NodeState.HALTED.value}' can be resumed"
+        rejection_reason = f"node is in '{observed_state}'; only a failed, halted, rejected, or awaiting-merge node can be resumed"
         await repo.append_decision(
             org_id=org_id,
             flow_id=node.flow_id,

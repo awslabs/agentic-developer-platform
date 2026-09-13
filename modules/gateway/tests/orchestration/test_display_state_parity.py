@@ -118,7 +118,7 @@ class TestTheParserItself:
     """
 
     def test_the_parser_finds_nine_states(self, ts_projection):
-        assert len(ts_projection) == 9, f"parsed {len(ts_projection)} states from nodeState.ts, expected 9: {ts_projection}"
+        assert len(ts_projection) == 10, f"parsed {len(ts_projection)} states from nodeState.ts, expected 9: {ts_projection}"
 
     def test_the_parser_finds_five_ordered_display_states(self):
         assert len(_parse_ts_order(_ts_source())) == 5

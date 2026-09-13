@@ -107,6 +107,11 @@ class DecisionKind(StrEnum):
     PLAN_ACCEPTED = "plan_accepted"  # A loop proposal was accepted at a gate
     PLAN_AMENDED = "plan_amended"  # A new accepted-plan version superseded one
     GATE_APPROVED = "gate_approved"  # A gate node was approved
+    GATE_PRESENTED = "gate_presented"  # Dependencies satisfied; human answer required
+    NODE_RESUMED = "node_resumed"
+    NODE_DISPATCHED = "node_dispatched"  # Stable attempt/run binding
+    RESULT_CHECKED = "result_checked"
+    RESULT_OBSERVED = "result_observed"  # Evidence observed for the current attempt
     GATE_REJECTED = "gate_rejected"  # A gate node was refused
     TRANSITION_REJECTED = "transition_rejected"  # An illegal transition attempt
     HALT_OVERRIDDEN = "halt_overridden"  # A human cleared a halt (R-Q9c)

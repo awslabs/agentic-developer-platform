@@ -146,6 +146,28 @@ describe('the fail-closed engine flag', () => {
 });
 
 describe('which control a state earns', () => {
+  it('offers evidence acceptance on a finished evaluation', async () => {
+    const user = userEvent.setup();
+    renderControls(makeNode('awaiting_gate', 'eval'));
+    await user.click(screen.getByRole('button', { name: 'Accept evaluation' }));
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined);
+  });
+
+  it('reopens a gate after requested changes', async () => {
+    const user = userEvent.setup();
+    renderControls(makeNode('rejected_at_gate'));
+    await user.click(screen.getByTestId('node-resume'));
+    expect(mockResume).toHaveBeenCalledWith('node-1', undefined);
+  });
+
+  it('allows an explicit retry, but no approval, while merge checks are pending', async () => {
+    const user = userEvent.setup();
+    renderControls(makeNode('awaiting_merge', 'story'));
+    expect(screen.queryByTestId('gate-approve')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry story' }));
+    expect(mockResume).toHaveBeenCalledWith('node-1', undefined);
+  });
+
   it('offers approve/reject on a gate awaiting a decision', () => {
     renderControls(makeNode('awaiting_gate'));
 

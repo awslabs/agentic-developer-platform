@@ -10,9 +10,9 @@ Postgres, which is what makes the tick safe to kill, retry and overlap.
 decision logic is testable against SQLite with no AWS involved. The Lambda
 entrypoint that supplies the session lives in `tick_handler.py`.
 
-Scope: the tick performs **no dispatch**. Moving a node to `ready` is where it
-stops; actually running the work is the dispatch story's job. Keeping the two
-apart is what lets this land with real tests.
+Scope: the tick performs **no dispatch**. Execution nodes stop at `ready`.
+Gates advance through the existing legal edges to `awaiting_gate` atomically,
+without starting a worker. Only the human approval boundary answers them.
 
 Three invariants are load-bearing rather than stylistic:
 
@@ -51,12 +51,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.base import utcnow
 
-from .models import DecisionKind, OrchestrationDecision, OrchestrationEdge, OrchestrationNode
+from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationEdge, OrchestrationNode
 from .state import ActorKind, NodeState, transition
 
 logger = logging.getLogger("bedrockgateway.orchestration.tick")
@@ -152,6 +152,7 @@ class _Candidate:
     org_id: str
     flow_id: str
     observed_state: str
+    kind: str = NodeKind.STORY.value
 
 
 async def _fetch_candidate_page(session: AsyncSession, *, after_id: str | None, limit: int) -> list[_Candidate]:
@@ -171,15 +172,22 @@ async def _fetch_candidate_page(session: AsyncSession, *, after_id: str | None, 
         OrchestrationNode.org_id,
         OrchestrationNode.flow_id,
         OrchestrationNode.state,
-    ).where(OrchestrationNode.state == NodeState.PENDING.value)
+        OrchestrationNode.kind,
+    ).where(
+        or_(
+            OrchestrationNode.state == NodeState.PENDING.value,
+            and_(OrchestrationNode.kind == NodeKind.GATE.value, OrchestrationNode.state == NodeState.READY.value),
+        )
+    )
 
     if after_id is not None:
         stmt = stmt.where(OrchestrationNode.id > after_id)
 
-    stmt = stmt.order_by(OrchestrationNode.id).limit(limit)
+    # Keep dependency reads coherent with an amendment's topology replacement.
+    stmt = stmt.order_by(OrchestrationNode.id).limit(limit).with_for_update(skip_locked=True)
 
     rows = (await session.execute(stmt)).all()
-    return [_Candidate(node_id=row[0], org_id=row[1], flow_id=row[2], observed_state=row[3]) for row in rows]
+    return [_Candidate(node_id=row[0], org_id=row[1], flow_id=row[2], observed_state=row[3], kind=row[4]) for row in rows]
 
 
 async def _predecessor_states(session: AsyncSession, *, org_id: str, node_id: str) -> list[tuple[str, str]]:
@@ -292,6 +300,21 @@ async def apply_guarded_transition(
         .values(state=result.new_state.value, updated_at=utcnow())
     )
     rows = (await session.execute(stmt)).rowcount or 0
+    if rows and to_state == NodeState.AWAITING_GATE:
+        session.add(
+            OrchestrationDecision(
+                org_id=org_id,
+                flow_id=flow_id,
+                node_id=node_id,
+                kind=DecisionKind.GATE_PRESENTED.value,
+                actor_id=_TICK_ACTOR_ID,
+                actor_role=_TICK_ACTOR_ROLE,
+                actor_kind=_TICK_ACTOR.value,
+                reason=reason,
+                from_state=observed_state,
+                to_state=to_state.value,
+            )
+        )
     await session.flush()
     return rows, True
 
@@ -307,15 +330,30 @@ async def _advance_node(session: AsyncSession, candidate: _Candidate, report: Ti
         report.blocked[candidate.node_id] = blocking
         return
 
-    rows, allowed = await apply_guarded_transition(
-        session,
-        node_id=candidate.node_id,
-        org_id=candidate.org_id,
-        flow_id=candidate.flow_id,
-        observed_state=candidate.observed_state,
-        to_state=NodeState.READY,
-        reason=f"all {len(predecessors)} predecessor(s) satisfied",
-    )
+    targets = [NodeState.READY] if candidate.observed_state == NodeState.PENDING.value else []
+    if candidate.kind == NodeKind.GATE.value:
+        # Present a decision using existing legal edges, without a worker or an
+        # attempt charge. The savepoint makes the intermediate RUNNING invisible.
+        # Neither this path nor any service actor can answer the gate.
+        targets.extend([NodeState.RUNNING, NodeState.AWAITING_GATE])
+    observed = candidate.observed_state
+    async with session.begin_nested():
+        for target in targets:
+            rows, allowed = await apply_guarded_transition(
+                session,
+                node_id=candidate.node_id,
+                org_id=candidate.org_id,
+                flow_id=candidate.flow_id,
+                observed_state=observed,
+                to_state=target,
+                reason=f"all {len(predecessors)} predecessor(s) satisfied; "
+                + ("human decision required" if candidate.kind == NodeKind.GATE.value else "ready for execution"),
+            )
+            if not allowed or rows != 1:
+                if observed != candidate.observed_state:
+                    raise RuntimeError("gate presentation did not complete; rolling back its intermediate states")
+                break
+            observed = target.value
 
     if not allowed:
         # The authority guard refused the edge. Already recorded as a decision

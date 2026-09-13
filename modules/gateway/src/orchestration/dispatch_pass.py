@@ -123,26 +123,15 @@ re-presents these fields to obtain anything. The authoritative record is the
 envelope fields are attribution for the run's audit trail, not a credential.**
 
 --------------------------------------------------------------------------------
-Scope: story nodes only, and the gate is stricter than "has an issue"
+Scope: stories and evaluations require complete issue routing
 --------------------------------------------------------------------------------
 
-The ruling asks this issue to decide explicitly whether dispatch is
-story-nodes-only or whether materialising an issue is part of dispatch. It is
-**story-nodes-only**, and the reason is a hard constraint rather than a
-preference: the agent worker's `parse_envelope`
-(`agent-worker-image/entrypoint.py`) requires `source_ref.installation_id`,
-`source_ref.repo` and `source_ref.issue`. `OrchestrationNode` stores only
-`issue_ref` — an issue *number* — and carries no repo and no installation. A node
-cannot yield a complete `source_ref` from graph state alone.
+Stories and evaluations dispatch to existing GitHub issues. A dispatch requires
+an issue number, exactly one tenant installation and a configured repository.
+Evaluations use the operations persona; gates are presented by the tick and
+never consume a worker. Missing configuration leaves a node ready and reports
+it as undispatchable. Dispatch does not create issues or invent test results.
 
-So a node is dispatchable only when it is a story node, has an `issue_ref` that
-parses as an issue number, sits in an org with exactly one GitHub installation,
-and the target repository is configured. Anything else is counted as
-`undispatchable` and left in `ready` — **never** published as a malformed envelope,
-because the worker would reject that *after* the node had already committed to
-`running`, which is the invisible-dispatch failure again by a different route.
-Materialising issues for gate/eval nodes is out of scope; those advance by other
-means.
 """
 
 from __future__ import annotations
@@ -152,6 +141,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -161,8 +151,8 @@ from src.shared.models.organization import Organization
 
 from .dispatch import DispatchStatus, dispatch_node
 from .genesis import APPROVAL_DECISION_KINDS, EngineGenesis, GenesisRefusedError, resolve_engine_genesis
-from .models import NodeKind, OrchestrationDecision, OrchestrationNode
-from .state import NodeState
+from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
+from .state import ActorKind, NodeState
 
 logger = logging.getLogger("bedrockgateway.orchestration.dispatch_pass")
 
@@ -202,6 +192,13 @@ DEFAULT_MAX_DISPATCHES_PER_TICK = 10
 # work. Configurable, but NOT per-node: persona is not authority (R-O5d), so
 # nothing downstream may read it as such.
 DEFAULT_PERSONA = "developer"
+EVALUATION_PERSONA = "operations"
+
+
+def attempt_run_id(node_id: str, attempt: int) -> str:
+    """Stable identity for one engine attempt; retries get distinct ids."""
+    return "orch:" + str(uuid5(NAMESPACE_URL, f"adp:orchestration:{node_id}:{attempt}"))
+
 
 # SQS caps both FIFO key fields at 128 characters.
 _MAX_SQS_KEY_LEN = 128
@@ -418,9 +415,9 @@ class DispatchPassReport:
 
 
 async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[OrchestrationNode]:
-    """The `ready` story nodes this pass may dispatch, ordered by id.
+    """The `ready` execution nodes this pass may dispatch, ordered by id.
 
-    Story nodes only, filtered in SQL rather than skipped in Python — see the
+    Story and evaluation nodes, filtered in SQL rather than skipped in Python — see the
     scope section of the module docstring. `org_id` is read off each row and used
     as the tenant for everything downstream, so it comes from this query's own
     context and never from a message (the issue's tenant-isolation requirement).
@@ -433,10 +430,12 @@ async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[Orche
         select(OrchestrationNode)
         .where(
             OrchestrationNode.state == NodeState.READY.value,
-            OrchestrationNode.kind == NodeKind.STORY.value,
+            OrchestrationNode.kind.in_([NodeKind.STORY.value, NodeKind.EVAL.value]),
         )
         .order_by(OrchestrationNode.id)
         .limit(limit)
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
     )
     return list((await session.execute(stmt)).scalars().all())
 
@@ -508,6 +507,8 @@ def _build_envelope(
     installation_id: int,
     issue: int,
     config: DispatchPassConfig,
+    user_id: str,
+    cognito_sub: str,
 ) -> dict[str, Any]:
     """Build the agent envelope explicitly. No `spawn_persona` (hazard 4).
 
@@ -524,14 +525,19 @@ def _build_envelope(
     rather than a settable field, so there is nothing here that could claim
     human-rootedness without a resolved approval row behind it.
     """
+    run_id = attempt_run_id(node.id, node.attempts)
+    persona = EVALUATION_PERSONA if node.kind == NodeKind.EVAL.value else config.persona
     return {
         "version": _ENVELOPE_VERSION,
+        "message_id": run_id,
+        "actor": {"user_id": user_id, "org_id": genesis.org_id},
+        "cognito_sub": cognito_sub,
         # The engine is its own channel. Not "github": nothing here came from a
         # GitHub event, and labelling it so would make an engine dispatch
         # indistinguishable from a webhook trigger in every downstream log.
         "channel": "orchestration",
         "tenant_id": genesis.org_id,
-        "persona": config.persona,
+        "persona": persona,
         "source_ref": {
             "installation_id": installation_id,
             "repo": config.repo,
@@ -540,10 +546,11 @@ def _build_envelope(
         "intent": {
             "trigger": "engine_dispatch",
             "label": None,
-            "persona": config.persona,
+            "persona": persona,
         },
         "correlation": {
-            "root_human_id": genesis.root_human_id,
+            "correlation_id": run_id,
+            "root_human_id": user_id,
             "is_human_rooted": genesis.is_human_rooted,
             "chain_depth": 0,
         },
@@ -555,6 +562,7 @@ def _build_envelope(
             "flow_id": genesis.flow_id,
             "graph_address": graph_address,
             "root_decision_id": genesis.decision_id,
+            "attempt": node.attempts,
         },
         "payload": {},
         "arrived_at": utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -576,6 +584,12 @@ async def _dispatch_one(
     reject the message after the node had already committed to running, which is
     the invisible-dispatch failure by another route.
     """
+    # READY may predate an amendment that added a prerequisite. Recheck under
+    # the candidate row lock before dispatching against the current topology.
+    from .tick import _predecessor_states, _unsatisfied
+
+    if _unsatisfied(await _predecessor_states(session, org_id=node.org_id, node_id=node.id)):
+        return
     org_id = node.org_id
     observed_attempts = node.attempts
 
@@ -594,12 +608,14 @@ async def _dispatch_one(
         # Story nodes are expected to carry an issue. One that does not has
         # nothing for an agent to act on, and materialising an issue is out of
         # scope (see the module docstring).
-        logger.warning("orchestration dispatch: story node %s has no issue_ref — not dispatching", node.id)
+        logger.warning("orchestration dispatch: execution node %s has no issue_ref — not dispatching", node.id)
         report.record(org_id, "undispatchable")
         return
 
     try:
         issue = int(str(node.issue_ref).lstrip("#"))
+        if issue <= 0:
+            raise ValueError("issue must be positive")
     except ValueError:
         logger.error("orchestration dispatch: node %s has issue_ref=%r which is not an issue number — not dispatching", node.id, node.issue_ref)
         report.record(org_id, "undispatchable")
@@ -641,6 +657,13 @@ async def _dispatch_one(
         report.record(org_id, "genesis_refused")
         return
 
+    # Resolve both namespaces from the attributed approver, within this tenant.
+    # The worker/vault and root ledger use users.id; personal context uses sub.
+    from src.shared.identity.resolver import resolve_root_user_entity_id, resolve_user_entity_id
+
+    user_id = await resolve_root_user_entity_id(session, org_id, genesis.root_human_id)
+    cognito_sub = await resolve_user_entity_id(session, org_id, user_id)
+
     outcome = await dispatch_node(session, node, genesis)
 
     if outcome.status is DispatchStatus.REJECTED:
@@ -669,7 +692,34 @@ async def _dispatch_one(
         installation_id=installation_id,
         issue=issue,
         config=config,
+        user_id=user_id,
+        cognito_sub=cognito_sub,
     )
+
+    session.add(
+        OrchestrationDecision(
+            org_id=org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            kind=DecisionKind.NODE_DISPATCHED.value,
+            actor_id="system:orchestration-dispatch",
+            actor_role="engine",
+            actor_kind=ActorKind.SERVICE.value,
+            from_state=NodeState.READY.value,
+            to_state=NodeState.RUNNING.value,
+            reason=json.dumps(
+                {
+                    "run_id": envelope["message_id"],
+                    "attempt": node.attempts,
+                    "arrived_at": envelope["arrived_at"],
+                    "repo": config.repo,
+                    "issue": issue,
+                    "root_decision_id": genesis.decision_id,
+                }
+            ),
+        )
+    )
+    await session.flush()
 
     # Queued, not sent. The send happens in `publish_pending` after the caller
     # commits — see the module docstring on commit-then-publish.
@@ -706,7 +756,7 @@ async def run_dispatch_pass(
 ) -> DispatchPassReport:
     """The database half of dispatch. **Commits nothing.**
 
-    Selects `ready` story nodes up to the per-tick cap, resolves each one's human
+    Selects `ready` execution nodes up to the per-tick cap, resolves each one's human
     root from a real approval row, and moves it to `running`. The envelopes it
     intends to publish are returned on the report; the caller must commit and then
     call :func:`publish_pending`.
@@ -736,31 +786,28 @@ async def run_dispatch_pass(
         )
 
     try:
-        # One extra row is fetched so "there was more work" is distinguishable
-        # from "that was all of it" — the cap has to be reported, not inferred.
-        candidates = await _fetch_ready_nodes(session, limit=cfg.max_dispatches_per_tick + 1)
+        # Look beyond the dispatch cap so a few misconfigured nodes do not
+        # consume all execution slots. Both the scan and actual sends are bounded.
+        candidates = await _fetch_ready_nodes(session, limit=max(100, cfg.max_dispatches_per_tick + 1))
     except Exception:
         logger.exception("orchestration dispatch: failed to fetch ready nodes")
         report.errors += 1
         return report
 
-    if len(candidates) > cfg.max_dispatches_per_tick:
-        report.capped = True
-        candidates = candidates[: cfg.max_dispatches_per_tick]
-        logger.warning(
-            "orchestration dispatch: per-tick cap of %d reached; remaining ready nodes wait for the next tick",
-            cfg.max_dispatches_per_tick,
-        )
-
     for node in candidates:
-        report.record(node.org_id, "nodes_examined")
+        if report.dispatched >= cfg.max_dispatches_per_tick:
+            report.capped = True
+            break
+        node_id, org_id = node.id, node.org_id
+        report.record(org_id, "nodes_examined")
         try:
-            await _dispatch_one(session, node, config=cfg, report=report)
+            async with session.begin_nested():
+                await _dispatch_one(session, node, config=cfg, report=report)
         except Exception:
             # Per-node containment, matching `run_tick`: log, count, force
             # non-success, keep going.
-            logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node.id, node.org_id)
-            report.record(node.org_id, "errors")
+            logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node_id, org_id)
+            report.record(org_id, "errors")
 
     return report
 
@@ -770,6 +817,7 @@ def publish_pending(
     config: DispatchPassConfig | None = None,
     *,
     client: SQSClient | None = None,
+    run_store: Any | None = None,
 ) -> DispatchPassReport:
     """Send the committed dispatches. Call this **after** the caller commits.
 
@@ -809,6 +857,10 @@ def publish_pending(
             continue
 
         try:
+            from .run_store import EngineRunStore
+
+            store = run_store if run_store is not None else EngineRunStore.from_env()
+            store.register(pending.envelope)
             response = sqs.send_message(
                 QueueUrl=cfg.queue_url,
                 MessageBody=body,

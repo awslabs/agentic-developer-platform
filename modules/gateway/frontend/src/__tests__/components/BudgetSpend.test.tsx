@@ -68,6 +68,7 @@ vi.mock('@/hooks/usePermissions', () => ({
 const mockUseFeatures = vi.fn();
 vi.mock('@/hooks/useFeatures', () => ({
   useFeatures: () => mockUseFeatures(),
+  useFeaturesQuery: () => ({ data: mockUseFeatures(), isPending: false }),
 }));
 
 vi.mock('@/services/auth', () => ({
