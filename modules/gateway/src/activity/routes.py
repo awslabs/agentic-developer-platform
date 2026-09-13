@@ -107,7 +107,7 @@ async def get_my_stats(
     Status filter: excludes no_op and webhook_received (same as Issue #1658).
     Cost enrichment: graceful degradation — if Postgres fails, spend is null.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     result = stats_service.get_stats_by_user(user_id=canonical_user_id, days=days)
 
     # Enrich with cost data from Postgres (cross-store pattern)
@@ -381,7 +381,7 @@ async def get_my_invocations(
     chain (root + descendants inline), paginated over chains by root arrived_at.
     Default view=runs preserves the flat list behavior.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     # Issue #4390: widen bare YYYY-MM-DD bounds to full-day instants
     since = _expand_date_bound(since, end=False)
     until = _expand_date_bound(until, end=True)
@@ -511,7 +511,7 @@ async def get_my_invocation_chain(
     webhook_received items are excluded from the chain — same convention as
     the flat list endpoints (Issue #1658).
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     chain = service.get_chain(
         correlation_id=correlation_id,
         user_id=canonical_user_id,
@@ -542,7 +542,7 @@ async def get_my_invocation_detail(
 
     Returns 404 (not 403) if the run doesn't belong to the caller (existence-hiding).
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     item = service.get_invocation(invocation_id, user_id=canonical_user_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Invocation not found")
@@ -709,7 +709,7 @@ async def get_my_invocation_transcript(
     Issue #3069: Resolves the transcript_key from the invocation row (never from
     the client), then proxies the S3 object. Returns text/markdown.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     item = service.get_invocation(invocation_id, user_id=canonical_user_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Invocation not found")
@@ -791,7 +791,7 @@ async def _control_identity(current_user: TokenContext, db: AsyncSession) -> tup
     billing attribution, so authorizing on it would let a caller nominate the
     tenant whose runs they may control.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     return canonical_user_id, current_user.org_id
 
 

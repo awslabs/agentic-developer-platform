@@ -160,6 +160,9 @@ class TestGetMyInvocations:
 
         unresolved_db = MagicMock()
         unresolved_db.scalar = AsyncMock(return_value=None)  # no matching users row
+        no_user = MagicMock()
+        no_user.scalar_one_or_none.return_value = None
+        unresolved_db.execute = AsyncMock(return_value=no_user)
 
         async def override_db():
             return unresolved_db
