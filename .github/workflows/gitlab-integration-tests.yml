@@ -122,6 +122,13 @@ jobs:
             echo "TEST_ENV=${ENV}"
           } >> "$GITHUB_ENV"
 
+      - name: Verify GitLab publish and ignore contracts
+        working-directory: modules/agent-factory
+        env:
+          GITLAB_WEBHOOK_SECRET: test-gitlab-secret
+          GITLAB_WEBHOOK_SECRET_ARN: ''
+        run: python3 -m pytest webhook-ingress/lambda/gitlab/tests -q --tb=short
+
       - name: Run GitLab E2E tests
         working-directory: modules/agent-factory
         run: |

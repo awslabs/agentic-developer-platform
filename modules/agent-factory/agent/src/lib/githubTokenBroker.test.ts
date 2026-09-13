@@ -15,6 +15,9 @@
  *    in CI, as provenanceClient.test.ts established)
  */
 
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fetchBrokeredToken, isBrokerEnabled } from './githubTokenBroker';
 
 const mockFetch = jest.fn();
@@ -39,6 +42,9 @@ const REQ = {
 describe('githubTokenBroker', () => {
   const ENV_KEYS = [
     'ADP_GH_TOKEN_BROKER_ENABLED',
+    'ADP_AGENT_AUTHORITY_ENABLED',
+    'ADP_RUN_CREDENTIAL_FILE',
+    'ADP_WORKLOAD_TOKEN_FILE',
     'ADP_GATEWAY_ENDPOINT',
     'ADP_MESSAGE_ID',
     'VAULT_GATEWAY_URL',
@@ -83,6 +89,39 @@ describe('githubTokenBroker', () => {
       else process.env[k] = saved[k];
     }
     jest.restoreAllMocks();
+  });
+
+  it('signs both current worker proofs on initial mint and refresh, without redirects', async () => {
+    withFakeCredentials();
+    const dir = mkdtempSync(join(tmpdir(), 'adp-broker-identity-'));
+    process.env.ADP_AGENT_AUTHORITY_ENABLED = 'true';
+    process.env.ADP_GATEWAY_ENDPOINT = 'https://api.example.test/dev';
+    process.env.ADP_RUN_CREDENTIAL_FILE = join(dir, 'credential');
+    process.env.ADP_WORKLOAD_TOKEN_FILE = join(dir, 'pod');
+    writeFileSync(process.env.ADP_WORKLOAD_TOKEN_FILE, 'pod-proof');
+    mockFetch.mockImplementation(async () => okResponse({ token: 'token', expires_at: EXPIRES_AT }));
+    try {
+      for (const epoch of [1, 2]) {
+        writeFileSync(process.env.ADP_RUN_CREDENTIAL_FILE, `run-credential-${epoch}`);
+        await fetchBrokeredToken(REQ);
+        const init = mockFetch.mock.calls.at(-1)![1];
+        expect(init.headers['X-Adp-Run-Credential']).toBe(`run-credential-${epoch}`);
+        expect(init.headers['X-Adp-Workload-Token']).toBe('pod-proof');
+        expect(init.headers.authorization).toContain('x-adp-run-credential;x-adp-workload-token');
+        expect(init.redirect).toBe('error');
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('refuses authority broker requests with missing identity or legacy transport', async () => {
+    process.env.ADP_AGENT_AUTHORITY_ENABLED = 'true';
+    process.env.ADP_GATEWAY_ENDPOINT = 'https://api.example.test/dev';
+    await expect(fetchBrokeredToken(REQ)).rejects.toThrow('identity unavailable');
+    delete process.env.ADP_GATEWAY_ENDPOINT;
+    process.env.VAULT_GATEWAY_URL = 'https://legacy.example.test';
+    process.env.VAULT_INTERNAL_API_KEY = 'legacy';
+    await expect(fetchBrokeredToken(REQ)).rejects.toThrow('HTTPS and SigV4');
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   describe('isBrokerEnabled', () => {

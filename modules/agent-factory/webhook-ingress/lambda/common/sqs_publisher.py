@@ -46,12 +46,11 @@ def publish_envelope(envelope: dict) -> str | None:
         return None
 
     tenant_id = envelope.get("tenant_id", "unknown")
+    try:
+        envelope = prepare_envelope(envelope)
+    except ValueError:
+        return None
     message_body = json.dumps(envelope, default=str)
-
-    # Guard: truncate payload if message exceeds SQS limit
-    if len(message_body.encode("utf-8")) > MAX_SQS_MESSAGE_BYTES:
-        envelope = _truncate_payload(envelope)
-        message_body = json.dumps(envelope, default=str)
 
     send_kwargs = {
         "QueueUrl": queue_url,
@@ -71,7 +70,11 @@ def publish_envelope(envelope: dict) -> str | None:
 
         # Dedup by arrived_at + source to prevent double-processing
         dedup_key = f"{envelope.get('arrived_at', '')}_{repo}_{issue}"
-        send_kwargs["MessageDeduplicationId"] = dedup_key[:128]
+        send_kwargs["MessageDeduplicationId"] = (
+            envelope["message_id"]
+            if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+            else dedup_key[:128]
+        )
 
     try:
         sqs = _get_sqs()
@@ -87,6 +90,15 @@ def publish_envelope(envelope: dict) -> str | None:
     except Exception as e:
         logger.error("Failed to publish envelope for tenant=%s: %s", tenant_id, e)
         return None
+
+
+def prepare_envelope(envelope: dict) -> dict:
+    """Finalize the exact queue body before its protected digest is written."""
+    if len(json.dumps(envelope, default=str).encode("utf-8")) > MAX_SQS_MESSAGE_BYTES:
+        envelope = _truncate_payload(envelope)
+    if len(json.dumps(envelope, default=str).encode("utf-8")) > MAX_SQS_MESSAGE_BYTES:
+        raise ValueError("envelope exceeds the queue size limit")
+    return envelope
 
 
 def _truncate_payload(envelope: dict) -> dict:

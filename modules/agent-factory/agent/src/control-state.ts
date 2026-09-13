@@ -33,6 +33,9 @@
  */
 
 /** The four verbs the channel routes. Verb-agnostic by construction (ADR-9). */
+import { performance } from 'node:perf_hooks';
+import { MAX_REVALIDATION_MS, type QueuedAuthorization } from './control-authorization';
+
 export type ControlAction = 'pause' | 'resume' | 'steer' | 'abort';
 
 /** The transient control phase of this run. Not an invocation terminal status. */
@@ -113,6 +116,8 @@ interface JournalEntry {
   fingerprint: string;
   /** Epoch ms when the entry reached a terminal status; null while pending/delivered. */
   settledAt: number | null;
+  authorization?: Readonly<QueuedAuthorization>;
+  checking?: boolean;
 }
 
 export interface ControlStateOptions {
@@ -125,6 +130,7 @@ export interface ControlStateOptions {
   terminalRetentionMs?: number;
   /** Injected clock. Expiry must be testable without sleeping or touching a real run. */
   now?: () => number;
+  revalidate?: (proof: Readonly<QueuedAuthorization>, generation: number) => Promise<boolean>;
 }
 
 /**
@@ -141,6 +147,7 @@ export class ControlStateStore {
   private readonly maxTerminal: number;
   private readonly terminalRetentionMs: number;
   private readonly now: () => number;
+  private readonly revalidate?: ControlStateOptions['revalidate'];
 
   /** Insertion-ordered, which is what makes FIFO delivery and eviction order free. */
   private readonly journal = new Map<string, JournalEntry>();
@@ -155,6 +162,7 @@ export class ControlStateStore {
     this.maxTerminal = options.maxTerminal ?? DEFAULT_MAX_TERMINAL;
     this.terminalRetentionMs = options.terminalRetentionMs ?? DEFAULT_TERMINAL_RETENTION_MS;
     this.now = options.now ?? (() => Date.now());
+    this.revalidate = options.revalidate;
     this.updatedAt = this.now();
   }
 
@@ -190,7 +198,7 @@ export class ControlStateStore {
    *    of that same command*;
    * 3. queue cap — 429.
    */
-  submit(action: ControlAction, commandId: string, fingerprint: string): SubmitOutcome {
+  submit(action: ControlAction, commandId: string, fingerprint: string, authorization?: QueuedAuthorization): SubmitOutcome {
     if (!this.isSupported(action)) {
       return { kind: 'unsupported' };
     }
@@ -222,7 +230,8 @@ export class ControlStateStore {
       delivered_at: null,
       reason: null,
     };
-    this.journal.set(commandId, { record, fingerprint, settledAt: null });
+    this.journal.set(commandId, { record, fingerprint, settledAt: null,
+      authorization: authorization ? Object.freeze({ ...authorization }) : undefined });
     this.touch();
     return { kind: 'accepted', record: { ...record } };
   }
@@ -259,10 +268,38 @@ export class ControlStateStore {
    */
   markDelivered(commandId: string): boolean {
     const entry = this.journal.get(commandId);
-    if (!entry) return false;
+    if (!entry || entry.authorization || entry.record.status !== 'pending') return false;
     entry.record.status = 'delivered';
     entry.record.delivered_at = this.isoNow();
     this.touch();
+    return true;
+  }
+
+  /** The only delivery path for proof-bearing commands. Approval is never cached. */
+  async deliverAuthorized(commandId: string, handoff: () => void): Promise<boolean> {
+    const entry = this.journal.get(commandId);
+    if (!entry || !entry.authorization || entry.checking || entry.record.status !== 'pending') return false;
+    entry.checking = true;
+    const started = performance.now();
+    let allowed = false;
+    try { allowed = await this.revalidate?.(entry.authorization, this.generation) === true; } catch { /* fail closed */ }
+    entry.checking = false;
+    if (entry.record.status !== 'pending') return false;
+    if (!allowed || performance.now() - started >= MAX_REVALIDATION_MS) {
+      this.settle(commandId, 'rejected', 'authorization unavailable or revoked before delivery');
+      return false;
+    }
+    // No await between the bounded check and SDK handoff. Journal first, so a
+    // second caller cannot hand it off again even if the callback throws.
+    entry.record.status = 'delivered';
+    entry.record.delivered_at = this.isoNow();
+    this.touch();
+    try { handoff(); } catch {
+      entry.record.status = 'unknown';
+      entry.record.reason = 'SDK handoff outcome unknown';
+      this.touch();
+      return false;
+    }
     return true;
   }
 
@@ -275,7 +312,7 @@ export class ControlStateStore {
   settle(commandId: string, status: CommandStatus, reason?: string): boolean {
     if (!TERMINAL_STATUSES.has(status)) return false;
     const entry = this.journal.get(commandId);
-    if (!entry) return false;
+    if (!entry || (entry.authorization && status === 'applied' && entry.record.status !== 'delivered')) return false;
     entry.record.status = status;
     entry.record.reason = reason ?? entry.record.reason;
     entry.settledAt = this.now();

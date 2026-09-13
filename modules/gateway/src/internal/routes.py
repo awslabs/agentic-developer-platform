@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -549,6 +549,7 @@ async def resolve_installation(
 )
 async def github_installation_token(
     body: GithubInstallationTokenRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> GithubInstallationTokenResponse:
@@ -558,12 +559,14 @@ async def github_installation_token(
     # Fail-closed, and deliberately NOT gated on ENFORCE_CREDENTIAL_BINDING:
     # that flag is false on at least one live environment, so a control behind it
     # shadows instead of enforcing.
-    binding = await asyncio.to_thread(
-        resolve_installation_binding,
-        invocation_id=body.invocation_id,
-        requested_installation_id=body.installation_id,
-        settings=settings,
-    )
+    binding = getattr(request.state, "agent_installation_binding", None)
+    if binding is None:
+        binding = await asyncio.to_thread(
+            resolve_installation_binding,
+            invocation_id=body.invocation_id,
+            requested_installation_id=body.installation_id,
+            settings=settings,
+        )
 
     # Layer 2 — the authoritative ownership check. Layer 1 proves "this run's
     # webhook said installation X for tenant T"; this proves T really owns X.

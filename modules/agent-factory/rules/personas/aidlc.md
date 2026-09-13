@@ -233,8 +233,8 @@ When the loop-proposal gate receives an "approve" answer:
    orchestrator issues, link all as sub-issues of the EPIC
    - **Idempotency**: skip creation if an issue titled for that wave already
      exists under the EPIC (prevents duplicates on re-run)
-4. Kick off execution: post ONE comment on the **wave-1 ORCHESTRATOR issue**
-   containing a single `@agent-operations` mention. This is your ONLY
+4. Kick off execution using `adp-trigger --persona operations --issue
+   <WAVE_1_ORCH_NUMBER> --reason "kick off delivery loop"`. This is your ONLY
    dispatch action — story dispatch belongs to the orchestrator-driving
    agent, per wave, in dependency order
 5. Post the completion summary (skill Step 9) on the AIDLC issue

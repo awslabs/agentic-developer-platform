@@ -73,7 +73,9 @@ If step 1 returns "Unable to locate credentials": stop, ask the user to connect 
 adp-trigger --persona <persona> --issue <N> [--repo <owner/repo>] [--reason <text>]
 ```
 
-`adp-trigger` calls the `POST /agent/trigger` route, which reads lineage (`ADP_CORRELATION_ID`, `ADP_MESSAGE_ID`, `ADP_CHAIN_DEPTH`) from the pod environment and SigV4-signs with the pod's IAM role — so **correlation/lineage always flows** and the spawned run stays connected to the originating chain. A bot-authored `@agent-<persona>` comment does NOT reliably dispatch (it is loop-guarded and, once enforcement is on, blocked) and it breaks lineage — never use it for agent→agent dispatch.
+`adp-trigger` preserves this syntax in both runtime modes. In delegated-authority mode it calls the gateway with the worker's renewable run credential and pod proof as well as IAM transport authentication. The gateway resolves the caller, flow, allowed personas and targets from protected records; changing parent/root environment variables cannot grant permission. The legacy mode uses `POST /agent/trigger` and carries correlation context from the pod environment. A bot-authored mention does not reliably dispatch and must not be used as a fallback after an authorization refusal.
+
+Use `adp-trigger status --run <invocation-id>` to monitor a permitted run. The `control` subcommand accepts an explicit action and stable command ID, but pause/resume/steer/abort currently return 501; do not report these actions as delivered. Refused dispatch means the target, persona or workflow state is outside the current grant. Report that result; do not try a different parent ID, direct worker HTTP request or database write.
 
 The `@agent-<persona>` comment mention remains the trigger path for **human operators only**. As an agent, you trigger via `adp-trigger`.
 

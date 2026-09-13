@@ -1,0 +1,2301 @@
+{
+  "issue": 5028,
+  "pr": 5029,
+  "evaluation_date": "2026-09-13",
+  "gateway_source": "8f11df9a48bc0147213ab9e19d59433ceffbabc5",
+  "worker_source": "2285f81d47ad4ff4584e94be157ab1f4b0f7b184",
+  "evidence": {
+    "approval-main": {
+      "status": 201,
+      "response": {
+        "flow_id": "e981f9c7-2a6b-4c31-8ee7-c681cad73070",
+        "plan_version": 1,
+        "decision_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "plan_hash": "4f4d37dca9bf75767f10128e5d12520a7c65effa9a1b5cdcb3e36b9bcb68018a",
+        "nodes_created": 5,
+        "edges_created": 4,
+        "already_compiled": false,
+        "dispatchable": true,
+        "dispatch_blocked_reason": null
+      },
+      "proposal": {
+        "flow_slug": "adp-e5028-20260913-212933-main",
+        "title": "Isolated 5028 delegated authority acceptance main",
+        "org_id": "aws-e",
+        "spec_revision": "5028-live-acceptance-v1",
+        "intent_ref": "3959",
+        "nodes": [
+          {
+            "address": "adp-e5028-20260913-212933-main/epic-3959/wave-1/story",
+            "kind": "story",
+            "title": "Fixture story; no agent execution",
+            "issue_ref": "5028"
+          },
+          {
+            "address": "adp-e5028-20260913-212933-main/epic-3959/wave-1/eval",
+            "kind": "eval",
+            "title": "Fixture evaluation"
+          },
+          {
+            "address": "adp-e5028-20260913-212933-main/epic-3959/wave-1/gate",
+            "kind": "gate",
+            "title": "Human gate before successor"
+          },
+          {
+            "address": "adp-e5028-20260913-212933-main/epic-3959/wave-2/later-story",
+            "kind": "story",
+            "title": "Successor fixture story",
+            "issue_ref": "3960"
+          },
+          {
+            "address": "adp-e5028-20260913-212933-main/epic-3959/wave-2/later-eval",
+            "kind": "eval",
+            "title": "Successor evaluation"
+          }
+        ],
+        "edges": [
+          {
+            "from_address": "adp-e5028-20260913-212933-main/epic-3959/wave-1/story",
+            "to_address": "adp-e5028-20260913-212933-main/epic-3959/wave-1/eval"
+          },
+          {
+            "from_address": "adp-e5028-20260913-212933-main/epic-3959/wave-1/eval",
+            "to_address": "adp-e5028-20260913-212933-main/epic-3959/wave-1/gate"
+          },
+          {
+            "from_address": "adp-e5028-20260913-212933-main/epic-3959/wave-1/gate",
+            "to_address": "adp-e5028-20260913-212933-main/epic-3959/wave-2/later-story"
+          },
+          {
+            "from_address": "adp-e5028-20260913-212933-main/epic-3959/wave-2/later-story",
+            "to_address": "adp-e5028-20260913-212933-main/epic-3959/wave-2/later-eval"
+          }
+        ]
+      }
+    },
+    "approval-outsider": {
+      "status": 201,
+      "response": {
+        "flow_id": "9c205d0b-2f2f-4c8c-847f-2f51da42670a",
+        "plan_version": 1,
+        "decision_id": "1cd2494a-aa45-44c6-8267-0d62d915d7d8",
+        "plan_hash": "cb5e252eec8a0ffd45cf2308175dbe765eddd5fe80645b5586bbf0477bf11bb8",
+        "nodes_created": 5,
+        "edges_created": 4,
+        "already_compiled": false,
+        "dispatchable": true,
+        "dispatch_blocked_reason": null
+      },
+      "proposal": {
+        "flow_slug": "adp-e5028-20260913-212933-outsider",
+        "title": "Isolated 5028 delegated authority acceptance outsider",
+        "org_id": "aws-e",
+        "spec_revision": "5028-live-acceptance-v1",
+        "intent_ref": "3959",
+        "nodes": [
+          {
+            "address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-1/story",
+            "kind": "story",
+            "title": "Fixture story; no agent execution",
+            "issue_ref": "5028"
+          },
+          {
+            "address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-1/eval",
+            "kind": "eval",
+            "title": "Fixture evaluation"
+          },
+          {
+            "address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-1/gate",
+            "kind": "gate",
+            "title": "Human gate before successor"
+          },
+          {
+            "address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-2/later-story",
+            "kind": "story",
+            "title": "Successor fixture story",
+            "issue_ref": "3960"
+          },
+          {
+            "address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-2/later-eval",
+            "kind": "eval",
+            "title": "Successor evaluation"
+          }
+        ],
+        "edges": [
+          {
+            "from_address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-1/story",
+            "to_address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-1/eval"
+          },
+          {
+            "from_address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-1/eval",
+            "to_address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-1/gate"
+          },
+          {
+            "from_address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-1/gate",
+            "to_address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-2/later-story"
+          },
+          {
+            "from_address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-2/later-story",
+            "to_address": "adp-e5028-20260913-212933-outsider/epic-3959/wave-2/later-eval"
+          }
+        ]
+      }
+    },
+    "agent-http-checks": [
+      {
+        "case": "monitor own",
+        "status": 200,
+        "expected": [
+          200
+        ],
+        "passed": true,
+        "view": {
+          "run_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+          "generation": 1,
+          "state": "in_progress",
+          "available": true,
+          "reason": null,
+          "capabilities": {},
+          "updated_at": "2026-09-13T21:38:54Z",
+          "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc"
+        }
+      },
+      {
+        "case": "monitor descendant",
+        "status": 200,
+        "expected": [
+          200
+        ],
+        "passed": true,
+        "view": {
+          "run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+          "generation": 1,
+          "state": "in_progress",
+          "available": true,
+          "reason": null,
+          "capabilities": {},
+          "updated_at": "2026-09-13T21:42:06Z",
+          "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc"
+        }
+      },
+      {
+        "case": "cross-flow same human",
+        "status": 404,
+        "expected": [
+          404
+        ],
+        "passed": true
+      },
+      {
+        "case": "cross-tenant absent scope",
+        "status": 404,
+        "expected": [
+          404
+        ],
+        "passed": true
+      },
+      {
+        "case": "monitor reviewer descendant",
+        "status": 200,
+        "expected": [
+          200
+        ],
+        "passed": true,
+        "view": {
+          "run_id": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+          "generation": 1,
+          "state": "in_progress",
+          "available": true,
+          "reason": null,
+          "capabilities": {},
+          "updated_at": "2026-09-13T21:42:19Z",
+          "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc"
+        }
+      },
+      {
+        "case": "ancestor refused",
+        "status": 404,
+        "expected": [
+          404
+        ],
+        "passed": true
+      },
+      {
+        "case": "protected status fields",
+        "status": 422,
+        "expected": [
+          422
+        ],
+        "passed": true
+      },
+      {
+        "case": "privilege expansion",
+        "status": 422,
+        "expected": [
+          422
+        ],
+        "passed": true
+      },
+      {
+        "case": "forged parent root flow",
+        "status": 422,
+        "expected": [
+          422
+        ],
+        "passed": true
+      },
+      {
+        "case": "ungranted control",
+        "status": 404,
+        "expected": [
+          404
+        ],
+        "passed": true
+      },
+      {
+        "case": "human gate surface",
+        "status": 403,
+        "expected": [
+          403
+        ],
+        "passed": true
+      },
+      {
+        "case": "broker own assigned GitHub",
+        "status": 200,
+        "expected": [
+          200
+        ],
+        "passed": true,
+        "token_received": true,
+        "expires_at": "2026-09-13T22:45:36Z"
+      },
+      {
+        "case": "broker other invocation",
+        "status": 404,
+        "expected": [
+          404
+        ],
+        "passed": true
+      },
+      {
+        "case": "stolen credential wrong pod",
+        "status": 404,
+        "expected": [
+          404
+        ],
+        "passed": true
+      },
+      {
+        "case": "credential without pod proof",
+        "status": 404,
+        "expected": [
+          404
+        ],
+        "passed": true
+      },
+      {
+        "case": "other envelope bootstrap",
+        "status": 404,
+        "expected": [
+          404
+        ],
+        "passed": true
+      }
+    ],
+    "authorized-unsupported": {
+      "code": 3,
+      "stdout": "",
+      "stderr": "error: agent plane returned 501: pause is not implemented in this deployment\n"
+    },
+    "boundary-simulation": {
+      "kind": "AWS IAM simulation, rendered mocked Terraform boundary plus AdministratorAccess; no role changed",
+      "results": [
+        {
+          "case": "events_write",
+          "action": "dynamodb:UpdateItem",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "authority_read",
+          "action": "dynamodb:GetItem",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "authority_write",
+          "action": "dynamodb:PutItem",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "correlation_update",
+          "action": "dynamodb:UpdateItem",
+          "administrator_alone": "allowed",
+          "with_boundary": "allowed",
+          "expected_allowed": true
+        },
+        {
+          "case": "correlation_replace",
+          "action": "dynamodb:PutItem",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "signing_key_read",
+          "action": "secretsmanager:GetSecretValue",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "app_private_key",
+          "action": "secretsmanager:GetSecretValue",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "shared_gateway_key",
+          "action": "secretsmanager:GetSecretValue",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "human_admin_password",
+          "action": "secretsmanager:GetSecretValue",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "marker_read",
+          "action": "secretsmanager:GetSecretValue",
+          "administrator_alone": "allowed",
+          "with_boundary": "allowed",
+          "expected_allowed": true
+        },
+        {
+          "case": "role_escape",
+          "action": "sts:AssumeRole",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "boundary_removal",
+          "action": "iam:DeleteRolePermissionsBoundary",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "cluster_admin",
+          "action": "eks:CreateAccessEntry",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "webhook_invoke",
+          "action": "lambda:InvokeFunction",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "raw_queue_publish",
+          "action": "sqs:SendMessage",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "queue_consume",
+          "action": "sqs:ReceiveMessage",
+          "administrator_alone": "allowed",
+          "with_boundary": "allowed",
+          "expected_allowed": true
+        },
+        {
+          "case": "register_self",
+          "action": "execute-api:Invoke",
+          "administrator_alone": "allowed",
+          "with_boundary": "allowed",
+          "expected_allowed": true
+        },
+        {
+          "case": "dispatch",
+          "action": "execute-api:Invoke",
+          "administrator_alone": "allowed",
+          "with_boundary": "allowed",
+          "expected_allowed": true
+        },
+        {
+          "case": "github_broker",
+          "action": "execute-api:Invoke",
+          "administrator_alone": "allowed",
+          "with_boundary": "allowed",
+          "expected_allowed": true
+        },
+        {
+          "case": "customer_broker",
+          "action": "execute-api:Invoke",
+          "administrator_alone": "allowed",
+          "with_boundary": "allowed",
+          "expected_allowed": true
+        },
+        {
+          "case": "admin_endpoint",
+          "action": "execute-api:Invoke",
+          "administrator_alone": "allowed",
+          "with_boundary": "explicitDeny",
+          "expected_allowed": false
+        },
+        {
+          "case": "terraform_state",
+          "action": "s3:GetObject",
+          "administrator_alone": "allowed",
+          "with_boundary": "implicitDeny",
+          "expected_allowed": false
+        }
+      ]
+    },
+    "two-worker-iam": {
+      "root": {
+        "role": "adp-e5028-20260913-212933-worker",
+        "pod_ip": "10.0.10.130",
+        "results": [
+          {
+            "case": "own_correlation_update",
+            "outcome": "allowed"
+          },
+          {
+            "case": "read_authority",
+            "outcome": "AccessDeniedException"
+          },
+          {
+            "case": "tamper_other_registration",
+            "outcome": "AccessDeniedException"
+          },
+          {
+            "case": "read_admin_credential",
+            "outcome": "AccessDeniedException"
+          },
+          {
+            "case": "queue_injection",
+            "outcome": "AccessDenied"
+          },
+          {
+            "case": "assume_legacy_role_with_new_sa",
+            "outcome": "AccessDenied"
+          },
+          {
+            "case": "gateway_secret",
+            "http_status": 403
+          },
+          {
+            "case": "legacy_sa_token",
+            "http_status": 403
+          },
+          {
+            "case": "remove_own_boundary",
+            "outcome": "AccessDenied"
+          }
+        ]
+      },
+      "outsider": {
+        "role": "adp-e5028-20260913-212933-worker",
+        "pod_ip": "10.0.10.136",
+        "results": [
+          {
+            "case": "own_correlation_update",
+            "outcome": "allowed"
+          },
+          {
+            "case": "read_authority",
+            "outcome": "AccessDeniedException"
+          },
+          {
+            "case": "tamper_other_registration",
+            "outcome": "AccessDeniedException"
+          },
+          {
+            "case": "read_admin_credential",
+            "outcome": "AccessDeniedException"
+          },
+          {
+            "case": "queue_injection",
+            "outcome": "AccessDenied"
+          },
+          {
+            "case": "assume_legacy_role_with_new_sa",
+            "outcome": "AccessDenied"
+          },
+          {
+            "case": "gateway_secret",
+            "http_status": 403
+          },
+          {
+            "case": "legacy_sa_token",
+            "http_status": 403
+          },
+          {
+            "case": "remove_own_boundary",
+            "outcome": "AccessDenied"
+          }
+        ]
+      }
+    },
+    "network-denial": [
+      {
+        "result": "timeout",
+        "elapsed": 3.0,
+        "source": "outsider",
+        "target": "developer"
+      },
+      {
+        "result": "timeout",
+        "elapsed": 3.0,
+        "source": "root",
+        "target": "outsider"
+      },
+      {
+        "result": "timeout",
+        "elapsed": 3.0,
+        "source": "developer",
+        "target": "root"
+      }
+    ],
+    "listener-http-checks": [
+      {
+        "case": "gateway positive network control",
+        "status": 200,
+        "expected": 200,
+        "passed": true,
+        "response": {
+          "ok": true,
+          "generation": 1,
+          "verification_key_ids": [
+            "740d917defa5f7c3"
+          ]
+        }
+      },
+      {
+        "case": "product unsupported remains 501",
+        "status": 501,
+        "expected": 501,
+        "passed": true
+      },
+      {
+        "case": "missing assertion",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "forged payload",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "wrong issuer",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "wrong audience",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "wrong target",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "wrong generation",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "expired",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "changed action",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "changed command id",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "changed body",
+        "status": 403,
+        "expected": 403,
+        "passed": true
+      },
+      {
+        "case": "harness admission; no SDK action",
+        "status": 202,
+        "expected": 202,
+        "passed": true,
+        "response": {
+          "command": {
+            "command_id": "22222222-2222-4222-8222-222222222222",
+            "action": "pause",
+            "status": "pending",
+            "accepted_at": "2026-09-13T21:47:27.103Z",
+            "delivered_at": null,
+            "reason": null
+          },
+          "state": "running"
+        }
+      },
+      {
+        "case": "identical replay",
+        "status": 200,
+        "expected": 200,
+        "passed": true,
+        "response": {
+          "command": {
+            "command_id": "22222222-2222-4222-8222-222222222222",
+            "action": "pause",
+            "status": "pending",
+            "accepted_at": "2026-09-13T21:47:27.103Z",
+            "delivered_at": null,
+            "reason": null
+          },
+          "state": "running"
+        }
+      },
+      {
+        "case": "conflicting replay",
+        "status": 409,
+        "expected": 409,
+        "passed": true
+      },
+      {
+        "case": "wrong bearer generation",
+        "status": 401,
+        "expected": 401,
+        "passed": true
+      }
+    ],
+    "renewal-observations": [
+      {
+        "root": {
+          "observed_at": 1789336070.0783973,
+          "credential_mtime": 1789335981.4887688,
+          "renewals": [
+            {
+              "invocation_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            },
+            {
+              "invocation_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            }
+          ],
+          "control_generation": 1,
+          "control_epoch": 1,
+          "journal": {
+            "pid": 70,
+            "effects": 0,
+            "snapshot": {
+              "generation": 1,
+              "state": "running",
+              "capabilities": {
+                "pause": false,
+                "resume": false,
+                "steer": false,
+                "abort": false
+              },
+              "active_tool_count": null,
+              "updated_at": "2026-09-13T21:42:56.180Z",
+              "commands": []
+            }
+          },
+          "listener": {
+            "started": true,
+            "port": 8770,
+            "address": "10.0.10.130",
+            "pid": 70,
+            "harness": false
+          }
+        },
+        "developer": {
+          "observed_at": 1789336073.290332,
+          "credential_mtime": 1789336035.4296298,
+          "renewals": [
+            {
+              "invocation_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            },
+            {
+              "invocation_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            }
+          ],
+          "control_generation": 1,
+          "control_epoch": 1,
+          "journal": {
+            "pid": 37,
+            "effects": 0,
+            "snapshot": {
+              "generation": 1,
+              "state": "running",
+              "capabilities": {
+                "pause": true,
+                "resume": false,
+                "steer": false,
+                "abort": false
+              },
+              "active_tool_count": null,
+              "updated_at": "2026-09-13T21:47:27.103Z",
+              "commands": [
+                {
+                  "command_id": "22222222-2222-4222-8222-222222222222",
+                  "action": "pause",
+                  "status": "pending",
+                  "accepted_at": "2026-09-13T21:47:27.103Z",
+                  "delivered_at": null,
+                  "reason": null
+                }
+              ]
+            }
+          },
+          "listener": {
+            "started": true,
+            "port": 8770,
+            "address": "10.0.10.133",
+            "pid": 37,
+            "harness": true
+          }
+        },
+        "outsider": {
+          "observed_at": 1789336076.4473717,
+          "credential_mtime": 1789335985.4688325,
+          "renewals": [
+            {
+              "invocation_id": "07f01ebf-044c-5a6a-adfa-b664a5afeae6",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            },
+            {
+              "invocation_id": "07f01ebf-044c-5a6a-adfa-b664a5afeae6",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            }
+          ],
+          "control_generation": 1,
+          "control_epoch": 1,
+          "journal": {
+            "pid": 29,
+            "effects": 0,
+            "snapshot": {
+              "generation": 1,
+              "state": "running",
+              "capabilities": {
+                "pause": false,
+                "resume": false,
+                "steer": false,
+                "abort": false
+              },
+              "active_tool_count": null,
+              "updated_at": "2026-09-13T21:43:16.604Z",
+              "commands": []
+            }
+          },
+          "listener": {
+            "started": true,
+            "port": 8770,
+            "address": "10.0.10.136",
+            "pid": 29,
+            "harness": false
+          }
+        }
+      },
+      {
+        "root": {
+          "observed_at": 1789336152.0510461,
+          "credential_mtime": 1789335981.4887688,
+          "renewals": [
+            {
+              "invocation_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            },
+            {
+              "invocation_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            }
+          ],
+          "control_generation": 1,
+          "control_epoch": 2,
+          "journal": {
+            "pid": 70,
+            "effects": 0,
+            "snapshot": {
+              "generation": 1,
+              "state": "running",
+              "capabilities": {
+                "pause": false,
+                "resume": false,
+                "steer": false,
+                "abort": false
+              },
+              "active_tool_count": null,
+              "updated_at": "2026-09-13T21:42:56.180Z",
+              "commands": []
+            }
+          },
+          "listener": {
+            "started": true,
+            "port": 8770,
+            "address": "10.0.10.130",
+            "pid": 70,
+            "harness": false
+          }
+        },
+        "developer": {
+          "observed_at": 1789336155.093158,
+          "credential_mtime": 1789336035.4296298,
+          "renewals": [
+            {
+              "invocation_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            },
+            {
+              "invocation_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            }
+          ],
+          "control_generation": 1,
+          "control_epoch": 2,
+          "journal": {
+            "pid": 37,
+            "effects": 0,
+            "snapshot": {
+              "generation": 1,
+              "state": "running",
+              "capabilities": {
+                "pause": true,
+                "resume": false,
+                "steer": false,
+                "abort": false
+              },
+              "active_tool_count": null,
+              "updated_at": "2026-09-13T21:47:27.103Z",
+              "commands": [
+                {
+                  "command_id": "22222222-2222-4222-8222-222222222222",
+                  "action": "pause",
+                  "status": "pending",
+                  "accepted_at": "2026-09-13T21:47:27.103Z",
+                  "delivered_at": null,
+                  "reason": null
+                }
+              ]
+            }
+          },
+          "listener": {
+            "started": true,
+            "port": 8770,
+            "address": "10.0.10.133",
+            "pid": 37,
+            "harness": true
+          }
+        },
+        "outsider": {
+          "observed_at": 1789336158.2002745,
+          "credential_mtime": 1789335985.4688325,
+          "renewals": [
+            {
+              "invocation_id": "07f01ebf-044c-5a6a-adfa-b664a5afeae6",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            },
+            {
+              "invocation_id": "07f01ebf-044c-5a6a-adfa-b664a5afeae6",
+              "attempt": 1,
+              "credential_epoch": 1,
+              "expires_in": 900
+            }
+          ],
+          "control_generation": 1,
+          "control_epoch": 2,
+          "journal": {
+            "pid": 29,
+            "effects": 0,
+            "snapshot": {
+              "generation": 1,
+              "state": "running",
+              "capabilities": {
+                "pause": false,
+                "resume": false,
+                "steer": false,
+                "abort": false
+              },
+              "active_tool_count": null,
+              "updated_at": "2026-09-13T21:43:16.604Z",
+              "commands": []
+            }
+          },
+          "listener": {
+            "started": true,
+            "port": 8770,
+            "address": "10.0.10.136",
+            "pid": 29,
+            "harness": false
+          }
+        }
+      }
+    ],
+    "revocation-live": {
+      "before_revocation": {
+        "status": 501
+      },
+      "queued_after_revocation": {
+        "status": 404,
+        "delivered": false,
+        "effects": 0,
+        "elapsed_ms": 455.7030219999997,
+        "record": {
+          "command_id": "44444444-4444-4444-8444-444444444444",
+          "action": "pause",
+          "status": "rejected",
+          "accepted_at": "2026-09-13T21:58:37.014Z",
+          "delivered_at": null,
+          "reason": "authorization unavailable or revoked before delivery"
+        },
+        "replay": "replayed",
+        "module_sha256": "25a45be52e3c8cb3351e0e477df598de4e7d05d3f8f0bbeb172686f10329a9e4"
+      },
+      "refresh_root": "refused",
+      "refresh_coordinator": "refused",
+      "refresh_evaluation": "refused",
+      "dispatch_after_revocation": {
+        "code": 1,
+        "stdout": "",
+        "stderr": "error: agent plane returned 404: not found\n"
+      }
+    },
+    "cancellation-and-human-gate": {
+      "before_cancel": "renewed",
+      "sql": {
+        "outsider_flow_state": "halted",
+        "gate_self_approval_allowed": false,
+        "gate_state": "awaiting_gate"
+      },
+      "after_cancel": "refused",
+      "dispatch_after_cancel": {
+        "code": 1,
+        "stdout": "",
+        "stderr": "error: agent plane returned 404: not found\n"
+      }
+    },
+    "gateway-audit": [
+      {
+        "timestamp": "2026-09-13T22:01:59.254120+00:00",
+        "level": "INFO",
+        "action": "approve",
+        "actor_kind": "human",
+        "authority_reference_id": "service-approval:0e9d6575-3982-4d0e-b1ba-f8a0b2b743af",
+        "caller": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "status": 404,
+        "tenant": "aws-e"
+      },
+      {
+        "timestamp": "2026-09-13T22:01:59.348742+00:00",
+        "level": "INFO",
+        "action": "approve",
+        "actor_kind": "human",
+        "authority_reference_id": "service-approval:0e9d6575-3982-4d0e-b1ba-f8a0b2b743af",
+        "caller": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "status": 200,
+        "tenant": "aws-e"
+      },
+      {
+        "timestamp": "2026-09-13T22:01:59.433207+00:00",
+        "level": "INFO",
+        "action": "revoke",
+        "actor_kind": "human",
+        "authority_reference_id": "service-approval:0e9d6575-3982-4d0e-b1ba-f8a0b2b743af",
+        "caller": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "status": 200,
+        "tenant": "aws-e"
+      },
+      {
+        "timestamp": "2026-09-13T21:57:19.156883+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "action": "dispatch",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:1cdd9847-efd7-5b55-8763-29dcefc9d26e:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "timestamp": "2026-09-13T21:57:19.319121+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "action": "dispatch",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:1cdd9847-efd7-5b55-8763-29dcefc9d26e:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target_run_id": "5063b059-1b20-5713-9774-edd9a0430a2b",
+        "action": "dispatch",
+        "outcome": "published",
+        "timestamp": "2026-09-13T21:57:19.451684+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#3967",
+        "action": "dispatch",
+        "outcome": "allowed",
+        "response_status": 202,
+        "timestamp": "2026-09-13T21:57:19.452815+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:58:33.766877+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "pause",
+        "target_run_id": "5063b059-1b20-5713-9774-edd9a0430a2b",
+        "tenant_id": "aws-e",
+        "reason": "descendant",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "5063b059-1b20-5713-9774-edd9a0430a2b#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "5063b059-1b20-5713-9774-edd9a0430a2b",
+        "action": "revalidate_pause",
+        "outcome": "refused",
+        "response_status": 501,
+        "timestamp": "2026-09-13T21:58:33.767155+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "unverified",
+        "authority_reference_id": null,
+        "target": null,
+        "action": "revalidate_pause",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:58:45.183650+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "unverified",
+        "authority_reference_id": null,
+        "target": "aws-e/adp#3971",
+        "action": "dispatch",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:58:59.932936+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "07f01ebf-044c-5a6a-adfa-b664a5afeae6#1",
+        "authority_reference_id": "1cd2494a-aa45-44c6-8267-0d62d915d7d8",
+        "target": "aws-e/adp#5028",
+        "action": "dispatch",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T22:00:05.349412+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:41:47.566975+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "dispatch",
+        "target_run_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "timestamp": "2026-09-13T21:41:48.898537+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "dispatch",
+        "target_run_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp/epic-3959/wave-1",
+        "action": "bind_wave",
+        "outcome": "allowed",
+        "response_status": 200,
+        "timestamp": "2026-09-13T21:41:48.913283+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:41:52.438414+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "dispatch",
+        "target_run_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "timestamp": "2026-09-13T21:41:52.531092+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "dispatch",
+        "target_run_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "action": "dispatch",
+        "outcome": "published",
+        "timestamp": "2026-09-13T21:41:52.615750+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#3971",
+        "action": "dispatch",
+        "outcome": "allowed",
+        "response_status": 202,
+        "timestamp": "2026-09-13T21:41:52.616545+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:41:56.150649+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "dispatch",
+        "target_run_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "timestamp": "2026-09-13T21:41:56.207918+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "dispatch",
+        "target_run_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#3971",
+        "action": "dispatch",
+        "outcome": "allowed",
+        "response_status": 202,
+        "timestamp": "2026-09-13T21:41:56.224972+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:42:06.706544+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "action": "dispatch",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:1cdd9847-efd7-5b55-8763-29dcefc9d26e:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "timestamp": "2026-09-13T21:42:06.800928+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "action": "dispatch",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:1cdd9847-efd7-5b55-8763-29dcefc9d26e:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target_run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "action": "dispatch",
+        "outcome": "published",
+        "timestamp": "2026-09-13T21:42:06.867262+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#5028",
+        "action": "dispatch",
+        "outcome": "allowed",
+        "response_status": 202,
+        "timestamp": "2026-09-13T21:42:06.868054+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:42:10.429836+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "action": "dispatch",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:1cdd9847-efd7-5b55-8763-29dcefc9d26e:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "timestamp": "2026-09-13T21:42:10.483681+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "action": "dispatch",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:1cdd9847-efd7-5b55-8763-29dcefc9d26e:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#5028",
+        "action": "dispatch",
+        "outcome": "allowed",
+        "response_status": 202,
+        "timestamp": "2026-09-13T21:42:10.512595+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:42:19.196370+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "dispatch",
+        "target_run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "timestamp": "2026-09-13T21:42:19.302528+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "dispatch",
+        "target_run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target_run_id": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+        "action": "dispatch",
+        "outcome": "published",
+        "timestamp": "2026-09-13T21:42:19.409660+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#5028",
+        "action": "dispatch",
+        "outcome": "allowed",
+        "response_status": 202,
+        "timestamp": "2026-09-13T21:42:19.410185+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:42:22.884210+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "dispatch",
+        "target_run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "timestamp": "2026-09-13T21:42:22.950338+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "dispatch",
+        "target_run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#5028",
+        "action": "dispatch",
+        "outcome": "allowed",
+        "response_status": 202,
+        "timestamp": "2026-09-13T21:42:22.992257+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:43:27.064626+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "monitor",
+        "target_run_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "tenant_id": "aws-e",
+        "reason": "self_monitor",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "action": "monitor",
+        "outcome": "allowed",
+        "response_status": 200,
+        "timestamp": "2026-09-13T21:43:27.110887+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:43:27.333812+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "monitor",
+        "target_run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "tenant_id": "aws-e",
+        "reason": "descendant",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "action": "monitor",
+        "outcome": "allowed",
+        "response_status": 200,
+        "timestamp": "2026-09-13T21:43:27.342378+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:43:27.768767+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "monitor",
+        "target_run_id": "07f01ebf-044c-5a6a-adfa-b664a5afeae6",
+        "tenant_id": "aws-e",
+        "reason": "target_not_permitted",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "07f01ebf-044c-5a6a-adfa-b664a5afeae6",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:43:27.769148+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:43:28.028246+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "monitor",
+        "target_run_id": "isolated-other-tenant-run",
+        "tenant_id": "aws-e",
+        "reason": "target_not_found",
+        "grant_id": null,
+        "authority_kind": null,
+        "authority_reference_id": null,
+        "human_authority_id": null,
+        "revocation_epoch": null
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "isolated-other-tenant-run",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:43:28.028454+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:43:31.577876+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "monitor",
+        "target_run_id": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+        "tenant_id": "aws-e",
+        "reason": "descendant",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+        "action": "monitor",
+        "outcome": "allowed",
+        "response_status": 200,
+        "timestamp": "2026-09-13T21:43:31.587434+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:43:31.842751+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "monitor",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "target_not_permitted",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:43:31.843079+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:43:32.599632+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "abort",
+        "target_run_id": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+        "tenant_id": "aws-e",
+        "reason": "action_not_granted",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+        "action": "abort",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:43:32.599824+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "/internal/v1/github-installation-token",
+        "timestamp": "2026-09-13T21:43:33.218350+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:45:29.668371+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "monitor",
+        "target_run_id": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "tenant_id": "aws-e",
+        "reason": "self_monitor",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "action": "monitor",
+        "outcome": "allowed",
+        "response_status": 200,
+        "timestamp": "2026-09-13T21:45:29.708418+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:45:29.967006+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "monitor",
+        "target_run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "tenant_id": "aws-e",
+        "reason": "descendant",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "action": "monitor",
+        "outcome": "allowed",
+        "response_status": 200,
+        "timestamp": "2026-09-13T21:45:29.974245+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:45:30.223938+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "monitor",
+        "target_run_id": "07f01ebf-044c-5a6a-adfa-b664a5afeae6",
+        "tenant_id": "aws-e",
+        "reason": "target_not_permitted",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "07f01ebf-044c-5a6a-adfa-b664a5afeae6",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:45:30.224179+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:45:30.485314+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "monitor",
+        "target_run_id": "isolated-other-tenant-run",
+        "tenant_id": "aws-e",
+        "reason": "target_not_found",
+        "grant_id": null,
+        "authority_kind": null,
+        "authority_reference_id": null,
+        "human_authority_id": null,
+        "revocation_epoch": null
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "isolated-other-tenant-run",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:45:30.485556+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:45:34.183750+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "monitor",
+        "target_run_id": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+        "tenant_id": "aws-e",
+        "reason": "descendant",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+        "action": "monitor",
+        "outcome": "allowed",
+        "response_status": 200,
+        "timestamp": "2026-09-13T21:45:34.194543+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:45:34.464386+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "monitor",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "target_not_permitted",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:45:34.464646+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:45:35.481129+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "abort",
+        "target_run_id": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+        "tenant_id": "aws-e",
+        "reason": "action_not_granted",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "d5fa0a9a-3078-5981-af84-065d96bcb78b",
+        "action": "abort",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:45:35.481416+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "/internal/v1/github-installation-token",
+        "timestamp": "2026-09-13T21:45:36.505993+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "unverified",
+        "authority_reference_id": null,
+        "target": "941889b4-4cb7-5294-86e9-311bc60128b5",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:45:43.336262+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "unverified",
+        "authority_reference_id": null,
+        "target": "07f01ebf-044c-5a6a-adfa-b664a5afeae6",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:45:43.525222+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:46:02.259301+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "action": "dispatch",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:1cdd9847-efd7-5b55-8763-29dcefc9d26e:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "timestamp": "2026-09-13T21:46:02.362023+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "action": "dispatch",
+        "target_run_id": "1cdd9847-efd7-5b55-8763-29dcefc9d26e",
+        "tenant_id": "aws-e",
+        "reason": "self",
+        "grant_id": "grant:1cdd9847-efd7-5b55-8763-29dcefc9d26e:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target_run_id": "b07ff636-bf53-503b-acdc-fa0d99374e92",
+        "action": "dispatch",
+        "outcome": "published",
+        "timestamp": "2026-09-13T21:46:02.461283+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#5028",
+        "action": "dispatch",
+        "outcome": "allowed",
+        "response_status": 202,
+        "timestamp": "2026-09-13T21:46:02.461984+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:46:13.116530+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "action": "monitor",
+        "target_run_id": "b07ff636-bf53-503b-acdc-fa0d99374e92",
+        "tenant_id": "aws-e",
+        "reason": "target_not_permitted",
+        "grant_id": "grant:21afe557-c78c-5c74-b3fa-b01b2cf90478:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "21afe557-c78c-5c74-b3fa-b01b2cf90478#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "b07ff636-bf53-503b-acdc-fa0d99374e92",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:46:13.116745+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:46:16.905805+00:00",
+        "level": "INFO",
+        "allowed": false,
+        "principal": "b07ff636-bf53-503b-acdc-fa0d99374e92#1",
+        "action": "monitor",
+        "target_run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "tenant_id": "aws-e",
+        "reason": "target_not_permitted",
+        "grant_id": "grant:b07ff636-bf53-503b-acdc-fa0d99374e92:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "b07ff636-bf53-503b-acdc-fa0d99374e92#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "action": "monitor",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:46:16.905966+00:00",
+        "level": "INFO"
+      },
+      {
+        "timestamp": "2026-09-13T21:48:21.805495+00:00",
+        "level": "INFO",
+        "allowed": true,
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "action": "pause",
+        "target_run_id": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "tenant_id": "aws-e",
+        "reason": "descendant",
+        "grant_id": "grant:941889b4-4cb7-5294-86e9-311bc60128b5:1",
+        "authority_kind": "gate_decision",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "human_authority_id": "f408c4d8-7031-7000-4a36-c615bd375031",
+        "revocation_epoch": 1
+      },
+      {
+        "principal": "941889b4-4cb7-5294-86e9-311bc60128b5#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "21afe557-c78c-5c74-b3fa-b01b2cf90478",
+        "action": "pause",
+        "outcome": "refused",
+        "response_status": 501,
+        "timestamp": "2026-09-13T21:48:21.805741+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#3967",
+        "action": "dispatch",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:52:24.781032+00:00",
+        "level": "INFO"
+      },
+      {
+        "principal": "1cdd9847-efd7-5b55-8763-29dcefc9d26e#1",
+        "authority_reference_id": "c3277d05-bea5-45ee-8914-29af817a04bc",
+        "target": "aws-e/adp#3960",
+        "action": "dispatch",
+        "outcome": "refused",
+        "response_status": 404,
+        "timestamp": "2026-09-13T21:52:28.506953+00:00",
+        "level": "INFO"
+      }
+    ],
+    "source-equivalence": {
+      "components": [
+        {
+          "component": "gateway",
+          "path": "/app/src/agentauth/service_authority.py",
+          "sha256": "67c8e4ef5217260eb0cf99b334e5829de8119cde1f94d4a87e31d5af342290d8",
+          "matches_final_source_build": true
+        },
+        {
+          "component": "worker",
+          "path": "/app/dist/control-revalidation.js",
+          "sha256": "25a45be52e3c8cb3351e0e477df598de4e7d05d3f8f0bbeb172686f10329a9e4",
+          "matches_final_source_build": true
+        }
+      ],
+      "gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:ad6c7a37fce5bf6d13bcfa1b7a3c7a81d8f02e4b9211d5fc5d7e4af9027079ca",
+      "worker_images": {
+        "product": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:69d204555c696f0e563ec1a5c905f57e278bd884fb76802f89219bd9977b5a43",
+        "fixture": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:486cfbe1216da854705fe912dcbe02839eb9b2d3058d6bc7b26aa0a3fff9ab26"
+      }
+    },
+    "service-child-scope-live": {
+      "transport": "direct product approval method with real isolated DynamoDB transactions; not a browser login test",
+      "cases": [
+        {
+          "case": "missing",
+          "status": 404,
+          "expected": 404,
+          "passed": true
+        },
+        {
+          "case": "too-wide",
+          "status": 404,
+          "expected": 404,
+          "passed": true
+        },
+        {
+          "case": "allowed",
+          "status": 200,
+          "expected": 200,
+          "passed": true
+        },
+        {
+          "case": "narrowed-at-commit",
+          "status": 409,
+          "expected": 409,
+          "passed": true
+        },
+        {
+          "case": "absence-changed-at-commit",
+          "status": 409,
+          "expected": 409,
+          "passed": true
+        }
+      ]
+    },
+    "human-service-approval-http": {
+      "outside_registered_child_scope": 404,
+      "within_registered_child_scope": 200,
+      "reference": "service-approval:0e9d6575-3982-4d0e-b1ba-f8a0b2b743af",
+      "human_revocation": 200
+    },
+    "ineligible-dispatch": {
+      "evaluation-before-story": {
+        "code": 1,
+        "stdout": "",
+        "stderr": "error: agent plane returned 404: not found\n"
+      },
+      "successor-before-gate": {
+        "code": 1,
+        "stdout": "",
+        "stderr": "error: agent plane returned 404: not found\n"
+      }
+    },
+    "evaluation-dispatch": {
+      "code": 0,
+      "stdout": "{\n  \"status\": \"accepted\",\n  \"message_id\": \"5063b059-1b20-5713-9774-edd9a0430a2b\",\n  \"invocation_id\": \"5063b059-1b20-5713-9774-edd9a0430a2b\",\n  \"correlation_id\": \"e981f9c7-2a6b-4c31-8ee7-c681cad73070\"\n}\n",
+      "stderr": ""
+    },
+    "evaluation-ready": {
+      "evaluation_state": "ready",
+      "gate_state": "pending",
+      "fixture_completion": true
+    },
+    "sibling-checks": {
+      "dispatch": {
+        "code": 1,
+        "stdout": "",
+        "stderr": "error: agent plane returned 404: not found\n"
+      },
+      "sibling_refused": {
+        "code": 1,
+        "stdout": "",
+        "stderr": "error: agent plane returned 404: not found\n"
+      },
+      "forged_environment_refused": {
+        "code": 1,
+        "stdout": "",
+        "stderr": "error: agent plane returned 404: not found\n"
+      }
+    },
+    "cleanup": {
+      "started_at": "2026-09-13T22:03:47.673153+00:00",
+      "resources": [
+        {
+          "kind": "rest-api",
+          "name": "jxui981i91",
+          "absent": true
+        },
+        {
+          "kind": "alb-rule",
+          "name": "arn:aws:elasticloadbalancing:us-east-1:879318057152:listener-rule/app/k8s-adpgatew-bedrockg-d2e32d8c72/30c651bf3c5e4135/c7a75d65f3f9936b/2e8e9df33a1f0775",
+          "absent": true
+        },
+        {
+          "kind": "target-group",
+          "name": "arn:aws:elasticloadbalancing:us-east-1:879318057152:targetgroup/a5028-20260913-212933/a631b176642f156e",
+          "absent": true
+        },
+        {
+          "kind": "fixture-workers-and-postgres",
+          "name": "adp-e5028-20260913-212933",
+          "absent": true
+        },
+        {
+          "kind": "gateway-deployment",
+          "name": "adp-e5028-20260913-212933-gateway",
+          "absent": true
+        },
+        {
+          "kind": "namespace",
+          "name": "adp-e5028-20260913-212933",
+          "absent": true
+        },
+        {
+          "kind": "clusterrole",
+          "name": "adp-e5028-20260913-212933-tokenreview",
+          "absent": true
+        },
+        {
+          "kind": "clusterrolebinding",
+          "name": "adp-e5028-20260913-212933-tokenreview",
+          "absent": true
+        },
+        {
+          "kind": "networkpolicy",
+          "name": "adp-e5028-20260913-212933-gateway",
+          "absent": true
+        },
+        {
+          "kind": "secret",
+          "name": "adp-e5028-20260913-212933-signing",
+          "absent": true
+        },
+        {
+          "kind": "configmap",
+          "name": "adp-e5028-20260913-212933-entry",
+          "absent": true
+        },
+        {
+          "kind": "gateway-inline-policy",
+          "name": "adp-e5028-20260913-212933-fixture-store",
+          "absent": true
+        },
+        {
+          "kind": "iam-role",
+          "name": "adp-e5028-20260913-212933-worker",
+          "absent": true
+        },
+        {
+          "kind": "iam-boundary",
+          "name": "arn:aws:iam::879318057152:policy/adp-e5028-20260913-212933-boundary",
+          "absent": true
+        },
+        {
+          "kind": "cognito-user",
+          "name": "adp-e5028-20260913-212933-approver",
+          "absent": true
+        },
+        {
+          "kind": "s3-source",
+          "name": "codebuild/src/bc53afc8b718563f2c22484ba6683c91f40b22e0-5028-e0d8502e-8da0-4449-941f-3a475d44845a.zip",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-gateway:eval5028-bc53afc8b718",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-agent-runtime:eval5028-bc53afc8b718",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-agent-runtime:eval5028-bc53afc8b718-fixture",
+          "absent": true
+        },
+        {
+          "kind": "s3-source",
+          "name": "codebuild/src/e8abc376feab31ab788f27bdfdcbbd0c330d1d1f-5028-9d9b5c31-10de-4d70-9985-624e16058eaf.zip",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-gateway:eval5028-e8abc376feab",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-agent-runtime:eval5028-e8abc376feab",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-agent-runtime:eval5028-e8abc376feab-fixture",
+          "absent": true
+        },
+        {
+          "kind": "s3-source",
+          "name": "codebuild/src/2285f81d47ad4ff4584e94be157ab1f4b0f7b184-5028-63bb14f6-3618-45ff-bfe1-c91c058bcd3e.zip",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-gateway:eval5028-2285f81d47ad",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-agent-runtime:eval5028-2285f81d47ad",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-agent-runtime:eval5028-2285f81d47ad-fixture",
+          "absent": true
+        },
+        {
+          "kind": "s3-source",
+          "name": "codebuild/src/8f11df9a48bc0147213ab9e19d59433ceffbabc5-5028-4bf55208-ea78-498c-9679-ebe146589309.zip",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-gateway:eval5028-8f11df9a48bc",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-agent-runtime:eval5028-8f11df9a48bc",
+          "absent": true
+        },
+        {
+          "kind": "ecr-tag",
+          "name": "adp-agent-runtime:eval5028-8f11df9a48bc-fixture",
+          "absent": true
+        },
+        {
+          "kind": "dynamodb",
+          "name": "adp-e5028-20260913-212933-agent-authority",
+          "absent": true
+        },
+        {
+          "kind": "dynamodb",
+          "name": "adp-e5028-20260913-212933-webhook-events",
+          "absent": true
+        },
+        {
+          "kind": "dynamodb",
+          "name": "adp-e5028-20260913-212933-agent-registry",
+          "absent": true
+        },
+        {
+          "kind": "dynamodb",
+          "name": "adp-e5028-20260913-212933-correlation-pointers",
+          "absent": true
+        },
+        {
+          "kind": "dynamodb",
+          "name": "adp-e5028-20260913-212933-service-identities",
+          "absent": true
+        },
+        {
+          "kind": "sqs",
+          "name": "adp-e5028-20260913-212933-agent-submit.fifo",
+          "absent": true
+        }
+      ],
+      "completed_at": "2026-09-13T22:06:03.419935+00:00",
+      "sessions": {
+        "ssm_terminated": true,
+        "port_forward_stopped": true,
+        "ports_18564_18566_listening": false
+      }
+    }
+  }
+}

@@ -75,7 +75,7 @@ resource "aws_iam_role_policy" "keda_operator_sqs" {
         Sid      = "AssumeWorkloadRole"
         Effect   = "Allow"
         Action   = "sts:AssumeRole"
-        Resource = aws_iam_role.agent_scaledjob.arn
+        Resource = local.agent_worker_role_arn
       }
     ]
   })

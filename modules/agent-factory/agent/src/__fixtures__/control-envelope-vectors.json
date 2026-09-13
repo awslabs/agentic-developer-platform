@@ -1,0 +1,219 @@
+{
+  "note": "Shared vectors for the #5028 control authorization envelope. Verified by modules/gateway/tests/agentauth/test_envelope_vectors.py and modules/agent-factory/agent/src/control-envelope.test.ts. Regenerate with modules/gateway/tests/agentauth/generate_envelope_vectors.py. Contains a public verification key only; the signing key is generated per run and never written.",
+  "version": "adpe1",
+  "now": "2026-09-13T12:00:00Z",
+  "public_keys": {
+    "envelope-key-1": "dJpSnu2Fiic3Q6QIgOERDCy4UwVmy1NokWaUhi+ETso="
+  },
+  "expected": {
+    "run_id": "run-developer-7",
+    "generation": 3,
+    "action": "pause",
+    "command_id": "cmd-0001",
+    "body": "{\"command_id\":\"cmd-0001\",\"reason\":\"budget review\"}"
+  },
+  "vectors": [
+    {
+      "name": "valid",
+      "accept": true,
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9._BTuD2sMqXV6urMzxC8u7fwnmaJr8xUL7DzBM8bzcthQWrIPfVsOlKEqiP1BmV72t_T2LI1_s5e2HIv-jCF4BA",
+      "note": "produced by sign_envelope; both verifiers must accept it"
+    },
+    {
+      "name": "signature_tampered",
+      "accept": false,
+      "reason": "bad_signature",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "note": "AC5 forged: signature replaced with zero bytes"
+    },
+    {
+      "name": "signed_by_a_key_the_listener_does_not_trust",
+      "accept": false,
+      "reason": "bad_signature",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9._GUwH1uz5jhMKQQ6CS6Xb5cnHpwWlxDm5FE91Y6vXKL3w0wudJT4_yDXQXaQUTY75S31APrjhaPlcrjcoXHsBg",
+      "note": "AC5 forged: correct kid, wrong signer \u2014 a worker minting its own envelope"
+    },
+    {
+      "name": "unknown_key_id",
+      "accept": false,
+      "reason": "unknown_key",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LWRvZXMtbm90LWV4aXN0IiwibmJmIjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJwcmluY2lwYWwiOiJpbnYtY29vcmRpbmF0b3IjMSIsInJldm9jYXRpb25fZXBvY2giOjEsInRhcmdldF9nZW5lcmF0aW9uIjozLCJ0YXJnZXRfcnVuX2lkIjoicnVuLWRldmVsb3Blci03IiwidGVuYW50X2lkIjoib3JnLXRlbmFudC0wMDEiLCJ2IjoiYWRwZTEifQ.TKoURi_AVmkmjtsJoo-S6wF7P7xleiu7Mf22vJyfy6vK5fw896u75hR7VwN6xSpuKRuXCXNhlJgKIaKx1Os2CQ",
+      "note": "kid selects the key; an unknown kid must not fall back to trying every key"
+    },
+    {
+      "name": "wrong_target_run",
+      "accept": false,
+      "reason": "target_mismatch",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tc29tZW9uZS1lbHNlIiwidGVuYW50X2lkIjoib3JnLXRlbmFudC0wMDEiLCJ2IjoiYWRwZTEifQ.NhAlIKOPwJczSkP0N95Vn194M77UFPt6tO9gv8DTA306v4RNEnf-9CpeZSmy3mW1ZukF2UWtAO1Ra1rTB3ocDg",
+      "note": "AC5 wrong-target: a genuine envelope replayed at a different run"
+    },
+    {
+      "name": "stale_generation",
+      "accept": false,
+      "reason": "generation_mismatch",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjIsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.e8O20NnTi8nP0dcVEkjqxZJVFTEgc1ZWFBFdNag495Twqi0vUfjYW4NFIUEUzIT4TiNVhFJ0DMMwhAcIV-MFAg",
+      "note": "AC5 wrong-target: replay at a restarted pod"
+    },
+    {
+      "name": "swapped_action",
+      "accept": false,
+      "reason": "action_mismatch",
+      "token": "adpe1.eyJhY3Rpb24iOiJhYm9ydCIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.Sk3_3XRC5_lRxxQ7BJjupatHswrTgPtetioxICqNJcHLplbHICdZ1NM8JwOmGgAsUY1EwP-9KKnFPAn3lrmsCQ",
+      "note": "an authorized pause must not be usable as an abort"
+    },
+    {
+      "name": "different_command_id",
+      "accept": false,
+      "reason": "command_mismatch",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTk5OTkiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.wQtAGDyS-TgGUG9B_V-m9EBN95v1o1AUy4mW3F52HusW5fdYA9qY45CutHynT3iH3F-hM_c5BUwDFyrxZejnCA",
+      "note": "AC5 replay: authorization detached from the journal entry that dedupes it"
+    },
+    {
+      "name": "changed_body",
+      "accept": false,
+      "reason": "body_mismatch",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6ImY5MWUzMDJkZjBjMWRmNDY5ZTNlYjVhYjkyMTdhNTIwOTFiMzNiMmFlZWZkNTcyYmU3YTNhMzJjM2M2MDA3MTkiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.kx2FZzDQqZEB9dBvutGo25Jkb2k8z5Wfno5lx30b2e0IbuiMGPcYUN_vOjEmpYDXH3VPmbHRGqKULcgWaP9rCg",
+      "note": "AC5 changed-body: instruction edited after authorization"
+    },
+    {
+      "name": "expired",
+      "accept": false,
+      "reason": "expired",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDExOjU4OjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMTo1ODowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDExOjU4OjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.VKjdfCBXPdZ6RMW2oAddZTdK1C6vvbauekayyBrylGsPyM4BeEbMak69Dlsrty4IdbBdFz9e26LyUxx3RYxeCg",
+      "note": "AC5 expired"
+    },
+    {
+      "name": "not_yet_valid",
+      "accept": false,
+      "reason": "not_yet_valid",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAxOjIwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMTowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAxOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.4RxwUqWEKIz5-9tT9mzwGzsCgwNRXKjEThBN0U5er2OA-f-YqzYm3uStb85AtuqCwICsrHWgS9vK4GoDFS9qDQ",
+      "note": "no skew allowance on an authorization envelope, unlike the run credential's nbf"
+    },
+    {
+      "name": "validity_longer_than_policy",
+      "accept": false,
+      "reason": "validity_too_long",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDE4OjAwOjAwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.prVhZUYj84Sr4Tjf0yKoZGnmNU4CXUCQdOoUrcmsP8UtH9nW1YrPS8ySAfs3ueeXF0xkh_gmORoTtY-xUYDqBA",
+      "note": "a signer claiming a longer life is refused, not truncated \u2014 the TTL bounds revocation delay"
+    },
+    {
+      "name": "untrusted_issuer",
+      "accept": false,
+      "reason": "untrusted_issuer",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJzb21lLW90aGVyLXNlcnZpY2UiLCJraWQiOiJlbnZlbG9wZS1rZXktMSIsIm5iZiI6IjIwMjYtMDktMTNUMTI6MDA6MDBaIiwicHJpbmNpcGFsIjoiaW52LWNvb3JkaW5hdG9yIzEiLCJyZXZvY2F0aW9uX2Vwb2NoIjoxLCJ0YXJnZXRfZ2VuZXJhdGlvbiI6MywidGFyZ2V0X3J1bl9pZCI6InJ1bi1kZXZlbG9wZXItNyIsInRlbmFudF9pZCI6Im9yZy10ZW5hbnQtMDAxIiwidiI6ImFkcGUxIn0.rAx-Qhp1cQtLjUKP2bF0mYiJjYu4miHEDnL0_NSxNml1WXR1FeiNXIeTpuuG38oEHIpa29TTWBP96S9xXCsGBA",
+      "note": "an envelope minted for a different service replayed here"
+    },
+    {
+      "name": "wrong_audience",
+      "accept": false,
+      "reason": "audience_mismatch",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtZ2F0ZXdheS1pbnRlcm5hbCIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.Eq7JmVGuomCSzJ9nXYt7GSkAH-hySqYX5iOGN9cIsjgFruGzVRmEOJqSaJu-8zDZYgzxY-W4rsn7L0fF55TjDw",
+      "note": "an envelope for a different surface replayed at the listener"
+    },
+    {
+      "name": "alg_none",
+      "accept": false,
+      "reason": "unsupported_algorithm",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6Im5vbmUiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.cFqIZFFADgSQ1YECpg2QbTrDTyKI57dl4SYs4uBJ9A_yIizRyTne4I2cVSsL-zHc7sqEiYNW8IYgSOUpQnjyCA",
+      "note": "the classic alg-confusion attempt; alg is an allowlist check, never a dispatch"
+    },
+    {
+      "name": "alg_hmac",
+      "accept": false,
+      "reason": "unsupported_algorithm",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImhzMjU2IiwiYXVkIjoiYWRwLWFnZW50LWNvbnRyb2wtbGlzdGVuZXIiLCJhdXRob3JpdHlfcmVmZXJlbmNlX2lkIjoiZGVjaXNpb24tYWJjIiwiYm9keV9kaWdlc3QiOiIyMmVhMTA1MDkzMjc5MmE3N2IwYmJhMjQ4NTNjZDVhMTY5ZjM1NTUwYzcxNGUyYzEzZDJlNDIzZTkyNzNlNjY0IiwiY29tbWFuZF9pZCI6ImNtZC0wMDAxIiwiZXhwIjoiMjAyNi0wOS0xM1QxMjowMDozMFoiLCJmbG93X2lkIjoiZmxvdy00MiIsImdyYW50X2lkIjoiZ3JhbnQtY29vcmRpbmF0b3ItMSIsImlhdCI6IjIwMjYtMDktMTNUMTI6MDA6MDBaIiwiaXNzIjoiYWRwLWdhdGV3YXktY29udHJvbCIsImtpZCI6ImVudmVsb3BlLWtleS0xIiwibmJmIjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJwcmluY2lwYWwiOiJpbnYtY29vcmRpbmF0b3IjMSIsInJldm9jYXRpb25fZXBvY2giOjEsInRhcmdldF9nZW5lcmF0aW9uIjozLCJ0YXJnZXRfcnVuX2lkIjoicnVuLWRldmVsb3Blci03IiwidGVuYW50X2lkIjoib3JnLXRlbmFudC0wMDEiLCJ2IjoiYWRwZTEifQ.dnweGpfSXE-8OTNIYdYWAbUVS2-J-ggcQ7lbHSxXUB2pq67dlYBWTxHkalTrBmv-OCJaOSR-3lFrk9crSWVeBw",
+      "note": "downgrade to a symmetric algorithm whose key a worker might hold"
+    },
+    {
+      "name": "missing_required_claim",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiIiLCJpYXQiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsImlzcyI6ImFkcC1nYXRld2F5LWNvbnRyb2wiLCJraWQiOiJlbnZlbG9wZS1rZXktMSIsIm5iZiI6IjIwMjYtMDktMTNUMTI6MDA6MDBaIiwicHJpbmNpcGFsIjoiaW52LWNvb3JkaW5hdG9yIzEiLCJyZXZvY2F0aW9uX2Vwb2NoIjoxLCJ0YXJnZXRfZ2VuZXJhdGlvbiI6MywidGFyZ2V0X3J1bl9pZCI6InJ1bi1kZXZlbG9wZXItNyIsInRlbmFudF9pZCI6Im9yZy10ZW5hbnQtMDAxIiwidiI6ImFkcGUxIn0.5hw8bUC3jTSHuJMWxpHJ3-BSdsCt9JSv5sJU7W7zKoV5zu95uIrNXel0VG_zaznltHyEGIQtgVym_jKCxLRWAQ",
+      "note": "an empty grant_id must not verify as grantless"
+    },
+    {
+      "name": "revocation_epoch_zero",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MCwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.z7MjsB-RbOPe13rdonWfFuBfX2xiWaBOhPYjk_JYqRHxSJGKAoXWEBsB4qIWbD8NYH2YGyYR-Qr9991ic2diCw",
+      "note": "epoch 0 would compare as older than every live grant"
+    },
+    {
+      "name": "generation_as_string",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOiIzIiwidGFyZ2V0X3J1bl9pZCI6InJ1bi1kZXZlbG9wZXItNyIsInRlbmFudF9pZCI6Im9yZy10ZW5hbnQtMDAxIiwidiI6ImFkcGUxIn0.vZdzUl7orV1RVUUNG49U4C7NJRQMZkh-I0VR4Tly946NOdYutg-DLKmM53369dqTIugn3GYMX-EZuvr-tKyfAQ",
+      "note": "a string generation must not coerce into a match"
+    },
+    {
+      "name": "alg_not_a_string",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6W10sImF1ZCI6ImFkcC1hZ2VudC1jb250cm9sLWxpc3RlbmVyIiwiYXV0aG9yaXR5X3JlZmVyZW5jZV9pZCI6ImRlY2lzaW9uLWFiYyIsImJvZHlfZGlnZXN0IjoiMjJlYTEwNTA5MzI3OTJhNzdiMGJiYTI0ODUzY2Q1YTE2OWYzNTU1MGM3MTRlMmMxM2QyZTQyM2U5MjczZTY2NCIsImNvbW1hbmRfaWQiOiJjbWQtMDAwMSIsImV4cCI6IjIwMjYtMDktMTNUMTI6MDA6MzBaIiwiZmxvd19pZCI6ImZsb3ctNDIiLCJncmFudF9pZCI6ImdyYW50LWNvb3JkaW5hdG9yLTEiLCJpYXQiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsImlzcyI6ImFkcC1nYXRld2F5LWNvbnRyb2wiLCJraWQiOiJlbnZlbG9wZS1rZXktMSIsIm5iZiI6IjIwMjYtMDktMTNUMTI6MDA6MDBaIiwicHJpbmNpcGFsIjoiaW52LWNvb3JkaW5hdG9yIzEiLCJyZXZvY2F0aW9uX2Vwb2NoIjoxLCJ0YXJnZXRfZ2VuZXJhdGlvbiI6MywidGFyZ2V0X3J1bl9pZCI6InJ1bi1kZXZlbG9wZXItNyIsInRlbmFudF9pZCI6Im9yZy10ZW5hbnQtMDAxIiwidiI6ImFkcGUxIn0.bygC8S1bDFbosXT3Yzlw__--2JCBxByqXDFvCAG8oG3ZrATHPsSGXCAP4BC76YlpihORL-Nk3wgm1xZ0z10nBg",
+      "note": "alg as a list reached a set-membership test and raised instead of refusing"
+    },
+    {
+      "name": "kid_not_a_string",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjp7InRvU3RyaW5nIjowfSwibmJmIjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJwcmluY2lwYWwiOiJpbnYtY29vcmRpbmF0b3IjMSIsInJldm9jYXRpb25fZXBvY2giOjEsInRhcmdldF9nZW5lcmF0aW9uIjozLCJ0YXJnZXRfcnVuX2lkIjoicnVuLWRldmVsb3Blci03IiwidGVuYW50X2lkIjoib3JnLXRlbmFudC0wMDEiLCJ2IjoiYWRwZTEifQ.Q1UAT6iNNgk9W2jfhiP--K4kCPgodQZj8BznmyK5VUfaD3JuV712dClUwS6rKty4KzpCbTWKK9CLRPoXFuHeBw",
+      "note": "kid as an object with a non-callable toString threw on coercion in TypeScript"
+    },
+    {
+      "name": "kid_as_array",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjpbImVudmVsb3BlLWtleS0xIl0sIm5iZiI6IjIwMjYtMDktMTNUMTI6MDA6MDBaIiwicHJpbmNpcGFsIjoiaW52LWNvb3JkaW5hdG9yIzEiLCJyZXZvY2F0aW9uX2Vwb2NoIjoxLCJ0YXJnZXRfZ2VuZXJhdGlvbiI6MywidGFyZ2V0X3J1bl9pZCI6InJ1bi1kZXZlbG9wZXItNyIsInRlbmFudF9pZCI6Im9yZy10ZW5hbnQtMDAxIiwidiI6ImFkcGUxIn0.U4Lo0OVzDVeaHZuQocQsYBCXXT_pOJHy5He6VjTgq9sawI1xWlWGtBZhYPn1b-xj7Aa2Lhhook9aUuO_bCI9Bw",
+      "note": "coercing this would yield the real key id in JS but not in Python"
+    },
+    {
+      "name": "target_run_id_as_array",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOlsicnVuLWRldmVsb3Blci03Il0sInRlbmFudF9pZCI6Im9yZy10ZW5hbnQtMDAxIiwidiI6ImFkcGUxIn0.4g-thLv7sdlsD9cbE5-dIKXRNY5ZDPWxLfYNkwk4SknATKZyF_XT5J5PpJCrkGmGUz7iGFyH8arFe2AKCkhqBg",
+      "note": "same cross-language coercion hazard on the binding the target check depends on"
+    },
+    {
+      "name": "revocation_epoch_as_bool",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6dHJ1ZSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.vQc4__XWCGq-goywxkJH6HxSPz3LyuYL_s9nLd8WdbcvW6JP8iWWY65IK2O6mQq-uZoAgeQCPYQugmPeuYySDA",
+      "note": "bool is an int subclass in Python; True must not pass as epoch 1"
+    },
+    {
+      "name": "generation_as_bool",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOnRydWUsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9.dyzk06hK6brji0DuYq-t__QF87b0n0gWqSPUjmZOCZLmPTt6sz8-FqhNvDySwVMkCEkxnUQV18gvYu_hr04CBw",
+      "note": "and must not pass as generation 1 either"
+    },
+    {
+      "name": "body_digest_as_number",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6MCwiY29tbWFuZF9pZCI6ImNtZC0wMDAxIiwiZXhwIjoiMjAyNi0wOS0xM1QxMjowMDozMFoiLCJmbG93X2lkIjoiZmxvdy00MiIsImdyYW50X2lkIjoiZ3JhbnQtY29vcmRpbmF0b3ItMSIsImlhdCI6IjIwMjYtMDktMTNUMTI6MDA6MDBaIiwiaXNzIjoiYWRwLWdhdGV3YXktY29udHJvbCIsImtpZCI6ImVudmVsb3BlLWtleS0xIiwibmJmIjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJwcmluY2lwYWwiOiJpbnYtY29vcmRpbmF0b3IjMSIsInJldm9jYXRpb25fZXBvY2giOjEsInRhcmdldF9nZW5lcmF0aW9uIjozLCJ0YXJnZXRfcnVuX2lkIjoicnVuLWRldmVsb3Blci03IiwidGVuYW50X2lkIjoib3JnLXRlbmFudC0wMDEiLCJ2IjoiYWRwZTEifQ.NorYv5yFbSqNVDcBc8Ki5VwVvNAR5ti_oZY7N-BCW8PETMnPu45okwYoZL6QBNyP1e1_1IVIxhUrelR9tKseDw",
+      "note": "a non-string digest must be refused before the comparison, not coerced into one"
+    },
+    {
+      "name": "wrong_version_prefix",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe0.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9._BTuD2sMqXV6urMzxC8u7fwnmaJr8xUL7DzBM8bzcthQWrIPfVsOlKEqiP1BmV72t_T2LI1_s5e2HIv-jCF4BA",
+      "note": "version is checked before anything is parsed"
+    },
+    {
+      "name": "not_three_parts",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.eyJhY3Rpb24iOiJwYXVzZSIsImFsZyI6ImVkMjU1MTkiLCJhdWQiOiJhZHAtYWdlbnQtY29udHJvbC1saXN0ZW5lciIsImF1dGhvcml0eV9yZWZlcmVuY2VfaWQiOiJkZWNpc2lvbi1hYmMiLCJib2R5X2RpZ2VzdCI6IjIyZWExMDUwOTMyNzkyYTc3YjBiYmEyNDg1M2NkNWExNjlmMzU1NTBjNzE0ZTJjMTNkMmU0MjNlOTI3M2U2NjQiLCJjb21tYW5kX2lkIjoiY21kLTAwMDEiLCJleHAiOiIyMDI2LTA5LTEzVDEyOjAwOjMwWiIsImZsb3dfaWQiOiJmbG93LTQyIiwiZ3JhbnRfaWQiOiJncmFudC1jb29yZGluYXRvci0xIiwiaWF0IjoiMjAyNi0wOS0xM1QxMjowMDowMFoiLCJpc3MiOiJhZHAtZ2F0ZXdheS1jb250cm9sIiwia2lkIjoiZW52ZWxvcGUta2V5LTEiLCJuYmYiOiIyMDI2LTA5LTEzVDEyOjAwOjAwWiIsInByaW5jaXBhbCI6Imludi1jb29yZGluYXRvciMxIiwicmV2b2NhdGlvbl9lcG9jaCI6MSwidGFyZ2V0X2dlbmVyYXRpb24iOjMsInRhcmdldF9ydW5faWQiOiJydW4tZGV2ZWxvcGVyLTciLCJ0ZW5hbnRfaWQiOiJvcmctdGVuYW50LTAwMSIsInYiOiJhZHBlMSJ9",
+      "note": "structural check before base64 decoding"
+    },
+    {
+      "name": "payload_not_an_object",
+      "accept": false,
+      "reason": "malformed",
+      "token": "adpe1.WzEsMiwzXQ.eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA",
+      "note": "a JSON array must not be indexed as claims"
+    }
+  ]
+}

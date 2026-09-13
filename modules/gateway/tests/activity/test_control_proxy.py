@@ -740,6 +740,22 @@ class TestDestinationValidation:
 
 
 class TestTransportBehaviour:
+    @pytest.mark.parametrize(
+        ("reported", "expected"),
+        [
+            (["bbbbbbbbbbbbbbbb", "aaaaaaaaaaaaaaaa"], ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]),
+            ([], []),
+            (["secret-looking-unstructured-content"], None),
+            ("aaaaaaaaaaaaaaaa", None),
+            (["aaaaaaaaaaaaaaaa"] * 9, None),
+        ],
+    )
+    def test_ping_exposes_only_bounded_public_key_ids(self, reported, expected):
+        service = make_service(items=[row()], pod_body={"ok": True, "generation": 1, "verification_key_ids": reported})
+        result = _run(service.ping(RUN_ID, user_id=CANONICAL_USER_ID, tenant_id=TENANT_ID))
+        assert result.available
+        assert result.verification_key_ids == expected
+
     def test_does_not_follow_redirects(self):
         """A redirect is a destination the validator never saw."""
         service = make_service(items=[row()])

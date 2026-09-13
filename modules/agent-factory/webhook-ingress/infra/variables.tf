@@ -454,6 +454,38 @@ variable "agent_control_enabled" {
   default     = false
 }
 
+variable "agent_authority_enabled" {
+  description = "Enable protected dispatch and mandatory pre-repository pod bootstrap. Keep off until the delegated-authority acceptance and writer migration are complete."
+  type        = bool
+  default     = false
+}
+
+variable "agent_authority_worker_image_digests" {
+  description = "Approved immutable worker image digests for TokenReview bootstrap; never image tags."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for digest in var.agent_authority_worker_image_digests : can(regex("^sha256:[0-9a-f]{64}$", digest))])
+    error_message = "Worker images must be identified by sha256:<64 lowercase hex digits>."
+  }
+}
+
+variable "agent_control_signing_key_slot" {
+  description = "Active gateway Ed25519 key slot. Switch only after every active listener reports the incoming verification key. See the delegated-authority key rotation runbook."
+  type        = string
+  default     = "primary"
+  validation {
+    condition     = contains(["primary", "secondary"], var.agent_control_signing_key_slot)
+    error_message = "Signing key slot must be primary or secondary."
+  }
+}
+
+variable "agent_control_publish_both_keys" {
+  description = "Publish both key slots during a staged rotation. Set false only after the old signer is gone and its 30-second forwarding window has elapsed."
+  type        = bool
+  default     = true
+}
+
 variable "agent_control_port" {
   description = "TCP port the in-pod control listener binds, and the ONE port the ingress NetworkPolicy admits. Must match the gateway's AGENT_CONTROL_PORT: the gateway pins the port it will dial rather than reading it from the invocation row, so that a rewritten row cannot redirect control traffic at, say, the kubelet. Changing it here without changing it there breaks control with a 409 rather than falling back."
   type        = number

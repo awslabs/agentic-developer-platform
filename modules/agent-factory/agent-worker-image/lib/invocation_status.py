@@ -1,10 +1,31 @@
-"""DynamoDB invocation status updater for worker pods.
+"""Invocation status updater for worker pods.
 
 Worker-only: updates the webhook-events row (written by the Lambda at trigger
 time) with status transitions as the agent run progresses.
 
 Phase 1 of Agent Activity (issue #1455). Mirrors the fail-soft pattern from
 correlation_store.py — never blocks or fails the run.
+
+## Two write paths (#5028 AC4)
+
+When ``ADP_AGENT_AUTHORITY_ENABLED`` is true, every write in this module goes
+through the gateway (:mod:`lib.status_gateway_client`) instead of DynamoDB.
+
+The direct path below writes with the pod's IAM credentials, which belong to the
+**shared platform worker role** — every agent worker assumes the same one — under a
+grant that permits ``dynamodb:UpdateItem`` on the whole webhook-events table with no
+key or attribute condition. Since the row key ``(event_id, arrived_at)`` is a
+caller-supplied argument, any worker can write any other worker's row, including its
+``control_address`` and ``control_token``. That redirects the other run's control
+channel. IAM cannot express the missing restriction, because the row key is data and
+the run identity that would have to be compared against it does not exist at the IAM
+layer. The gateway has both, so the write moves there and the grant can be removed.
+
+**There is no fallback from the gateway path to the direct path.** A fallback would
+require keeping the unconditioned grant to serve it — the exact vulnerability being
+removed — and would engage precisely when something is already wrong. When authority
+is disabled (the default) the direct path below is used unchanged, so a rollback is
+a flag flip.
 """
 
 from __future__ import annotations
@@ -15,6 +36,14 @@ import time
 
 import boto3
 
+from lib.status_gateway_client import (
+    StatusGatewayError,
+    authority_enabled,
+    clear_control,
+    record_status,
+    register_control,
+)
+
 logger = logging.getLogger(__name__)
 
 _table_name = os.environ.get("WEBHOOK_EVENTS_TABLE", "")
@@ -24,6 +53,12 @@ _ddb: "boto3.client" | None = None
 # otherwise push the item toward the 400KB DDB limit and fail the whole update,
 # losing the status transition too — the exact failure mode we're fixing.
 _MAX_ERROR_MESSAGE_CHARS = 1024
+
+# The generation this process was assigned when it registered its listener, so
+# teardown can name it (#5028 AC4). Process-local because it describes this pod's
+# own attempt: a value carried across attempts is precisely what must not be used
+# to clear a registration. None until a successful gateway registration.
+_registered_generation: int | None = None
 
 
 def _get_client():
@@ -80,6 +115,33 @@ def update_status(
             configured cap is the control working, not a fault, and rendering it
             as an error sends operators debugging a run that behaved correctly.
     """
+    if authority_enabled():
+        # The gateway derives the row key from the protected execution record, so
+        # event_id/arrived_at are deliberately not forwarded: this call cannot
+        # address another run's row. Fail-soft is preserved — a lost status
+        # transition degrades a dashboard and must never abort the run.
+        try:
+            record_status(
+                status,
+                {
+                    "run_id": run_id or "",
+                    "summary": summary or "",
+                    "transcript_key": transcript_key or "",
+                    "session_id": session_id or "",
+                    "token_mode": token_mode or "",
+                    "error_message": (error_message or "")[:_MAX_ERROR_MESSAGE_CHARS],
+                    "skip_reason": (skip_reason or "")[:_MAX_ERROR_MESSAGE_CHARS],
+                    "stop_reason": (stop_reason or "")[:_MAX_ERROR_MESSAGE_CHARS],
+                },
+            )
+            logger.info("Updated invocation status via gateway: status=%s", status)
+        except StatusGatewayError as exc:
+            # No DynamoDB fallback: see the module docstring.
+            logger.warning("Failed to update invocation status via gateway (non-fatal): %s", exc)
+        except Exception:
+            logger.warning("Failed to update invocation status via gateway (non-fatal)")
+        return
+
     table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
     if not table:
         logger.debug("WEBHOOK_EVENTS_TABLE not set; skipping status update")
@@ -256,6 +318,34 @@ def register_control_endpoint(
         guess that disagreed with the stored value would make the listener reject
         every command the gateway sent, which is indistinguishable from an attack.
     """
+    if authority_enabled():
+        global _registered_generation
+
+        # ``address`` and ``port`` are accepted for signature compatibility but not
+        # forwarded: the gateway uses the IP of the pod it verified through
+        # TokenReview. A caller-supplied address is the control-channel redirect
+        # this path exists to remove, so passing one through would defeat it.
+        if not token:
+            logger.warning("Cannot register control endpoint: no control token")
+            return None
+        try:
+            generation = register_control(token=token, token_expires_at=token_expires_at)
+            _registered_generation = generation
+            # Address and generation, never the token.
+            logger.info("Registered control endpoint via gateway: generation=%d", generation)
+            return generation
+        except StatusGatewayError as exc:
+            # None, not an exception: the caller declines to start the listener,
+            # which is the correct fail-closed outcome. An unregistered listener is
+            # an open port nothing can reach through the policy.
+            logger.warning(
+                "Failed to register control endpoint via gateway (control unavailable): %s", exc
+            )
+            return None
+        except Exception:
+            logger.warning("Failed to register control endpoint via gateway (control unavailable)")
+            return None
+
     table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
     if not table:
         logger.warning("Cannot register control endpoint: WEBHOOK_EVENTS_TABLE not set")
@@ -361,6 +451,29 @@ def clear_control_endpoint(event_id: str, arrived_at: str) -> bool:
     Returns:
         True if the fields were removed, False otherwise.
     """
+    if authority_enabled():
+        # The gateway needs the generation to refuse a late teardown from a
+        # superseded attempt — clearing a *newer* attempt's registration would
+        # silently remove control from a run that is still going. The caller's
+        # signature carries only the row key, so the generation comes from the
+        # registration this same process performed. If this process never
+        # registered, there is nothing of its own to clear and it must not guess:
+        # a guessed generation is either a no-op or someone else's teardown.
+        generation = _registered_generation
+        if generation is None:
+            logger.debug("Skipping control endpoint clear (this process registered no listener)")
+            return False
+        try:
+            clear_control(generation)
+            logger.info("Cleared control endpoint via gateway: generation=%d", generation)
+            return True
+        except StatusGatewayError as exc:
+            logger.warning("Failed to clear control endpoint via gateway (non-fatal): %s", exc)
+            return False
+        except Exception:
+            logger.warning("Failed to clear control endpoint via gateway (non-fatal)")
+            return False
+
     table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
     if not table or not event_id or not arrived_at:
         logger.debug("Skipping control endpoint clear (table or key missing)")

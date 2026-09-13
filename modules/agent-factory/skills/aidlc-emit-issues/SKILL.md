@@ -594,7 +594,15 @@ fi
 1. Create evaluation issues FIRST (orchestrators reference eval issue numbers)
 2. Create orchestrator issues SECOND
 3. Link ALL as native sub-issues of the EPIC
-4. Kick off execution LAST: dispatch the **wave-1 ORCHESTRATOR issue** via
+4. When `ADP_AGENT_AUTHORITY_ENABLED=true`, bind EACH wave's materialized
+   issues to the approved engine graph before kickoff:
+   `adp-trigger bind-wave --repo <OWNER/REPO> --epic epic-<EPIC_NUMBER> --wave wave-<K> --orchestrator <ORCH_NUMBER> --evaluation <EVAL_NUMBER>`.
+   Use the exact epic/wave addresses from the accepted proposal. The gateway
+   verifies the existing human approval and native parent links. A refusal means
+   execution must wait for the missing approved assignment; issue creation or
+   a GitHub comment cannot substitute for engine approval. Identical binding
+   retries are safe. This command does not launch a run.
+5. Kick off execution LAST: dispatch the **wave-1 ORCHESTRATOR issue** via
    `adp-trigger --persona operations --issue <WAVE_1_ORCH_NUMBER> --reason "kick off delivery loop"`.
    Do NOT post an `@agent-operations` comment — a bot-authored mention does not
    reliably dispatch and breaks correlation lineage. `adp-trigger` stamps lineage

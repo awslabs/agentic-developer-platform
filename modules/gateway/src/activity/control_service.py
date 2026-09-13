@@ -51,6 +51,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -604,7 +605,19 @@ class ControlService:
                 reason="control listener rejected the request",
                 generation=target.generation,
             )
-        return ControlPingResponse(run_id=run_id, available=True, reason=None, generation=target.generation)
+        key_ids = None
+        try:
+            body = response.json()
+            reported = body.get("verification_key_ids") if isinstance(body, dict) else None
+            if (
+                isinstance(reported, list)
+                and len(reported) <= 8
+                and all(isinstance(kid, str) and re.fullmatch(r"[0-9a-f]{16}", kid) for kid in reported)
+            ):
+                key_ids = sorted(set(reported))
+        except ValueError:
+            pass
+        return ControlPingResponse(run_id=run_id, available=True, reason=None, generation=target.generation, verification_key_ids=key_ids)
 
     async def get_state(self, run_id: str, *, user_id: str, tenant_id: str) -> ControlStateResponse:
         """Serve the polled control state.

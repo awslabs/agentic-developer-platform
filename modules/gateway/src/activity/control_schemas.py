@@ -213,3 +213,4 @@ class ControlPingResponse(BaseModel):
     available: bool
     reason: str | None = None
     generation: int | None = None
+    verification_key_ids: list[str] | None = None

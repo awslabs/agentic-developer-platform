@@ -34,6 +34,12 @@ UNIT_MODULES = [
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
+    "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
+    # #5028 (AC4): the worker's own status/registration writes, moved off the
+    # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
+    # derives the row key from the protected execution record.
+    "src.agentauth.registration_routes",
+    "src.agentauth.service_authority",  # Human-only standing service delegation; never on the internal plane.
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",

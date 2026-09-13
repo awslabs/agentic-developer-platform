@@ -511,6 +511,10 @@ variable "orchestration_dispatch_repo" {
     dispatch happens.
   EOT
   default     = ""
+  validation {
+    condition     = var.orchestration_dispatch_repo == "" || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.orchestration_dispatch_repo))
+    error_message = "orchestration_dispatch_repo must be empty or an owner/repository name."
+  }
 }
 
 variable "orchestration_dispatch_max_per_tick" {
@@ -558,6 +562,12 @@ variable "orchestration_webhook_events_table" {
     an unwired bridge is visible rather than reading as "nobody has commented".
   EOT
   default     = ""
+}
+
+variable "orchestration_agent_authority_enabled" {
+  description = "Enable protected engine dispatch together with worker/gateway authority migration. Requires the webhook events table and KMS key inputs."
+  type        = bool
+  default     = false
 }
 
 variable "orchestration_webhook_events_kms_key_arn" {

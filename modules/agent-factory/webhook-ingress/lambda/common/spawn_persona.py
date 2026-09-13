@@ -55,6 +55,8 @@ class SpawnResult:
     success: bool
     message_id: str | None = None
     block_reason: str | None = None
+    correlation_id: str | None = None
+    is_human_rooted: bool = False
 
 
 def spawn_persona(
@@ -78,6 +80,8 @@ def spawn_persona(
     model_resolved: str | None = None,
     aws_label: str | None = None,
     token_source: str | None = None,
+    trusted_human_event=None,
+    trusted_service_event=None,
 ) -> SpawnResult:
     """Validate guards, write lineage, build envelope, publish to SQS.
 
@@ -190,19 +194,6 @@ def spawn_persona(
     # being spawned, not the run that asked, so it gets its own depth.
     spawned_ctx = _advance_chain_depth(correlation_ctx)
 
-    # --- Step 6: Write pointer + provenance (fail-soft) ---
-    _write_pointer_and_provenance(
-        persona=persona,
-        correlation_ctx=spawned_ctx,
-        channel_key=channel_key,
-        resolved_identity=resolved_identity,
-        actor_user_id=actor_user_id,
-        event_type=event_type,
-        action=action,
-        repo=repo,
-        payload=payload,
-    )
-
     # --- Step 7: Build envelope ---
     cognito_sub = actor_user_id if resolved_identity.user_kind == "human" else ""
     envelope = _build_envelope(
@@ -222,6 +213,53 @@ def spawn_persona(
         model_resolved=model_resolved,
         aws_label=aws_label,
         token_source=token_source,
+    )
+
+    # Under delegated authority, no adapter may bypass the protected publisher.
+    # Agent-originated requests need the gateway dispatch path; caller-controlled
+    # parent/root fields and bot-comment marker HMACs cannot mint human authority.
+    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+        from common.agent_authority import (
+            AuthorityProvisionError,
+            VerifiedHumanEvent,
+            provision_human_dispatch,
+        )
+        from common.service_authority import (
+            VerifiedServiceEvent,
+            provision_service_dispatch,
+        )
+        from common.sqs_publisher import prepare_envelope
+
+        if not isinstance(trusted_human_event, VerifiedHumanEvent) and not isinstance(
+            trusted_service_event, VerifiedServiceEvent
+        ):
+            return SpawnResult(
+                success=False, block_reason="delegated_dispatch_required"
+            )
+        try:
+            if isinstance(trusted_human_event, VerifiedHumanEvent):
+                envelope = provision_human_dispatch(
+                    envelope=prepare_envelope(envelope), event=trusted_human_event
+                )
+            else:
+                envelope = provision_service_dispatch(
+                    envelope=prepare_envelope(envelope), event=trusted_service_event
+                )
+            spawned_ctx = {**spawned_ctx, **envelope["correlation"]}
+        except (AuthorityProvisionError, ValueError):
+            return SpawnResult(success=False, block_reason="authority_provision_failed")
+
+    # Persist the final authorized lineage, after provisioning has succeeded.
+    _write_pointer_and_provenance(
+        persona=persona,
+        correlation_ctx=spawned_ctx,
+        channel_key=channel_key,
+        resolved_identity=resolved_identity,
+        actor_user_id=actor_user_id,
+        event_type=event_type,
+        action=action,
+        repo=repo,
+        payload=payload,
     )
 
     # --- Step 8: Capture invocation event to DDB BEFORE SQS ---
@@ -255,7 +293,12 @@ def spawn_persona(
         persona,
         message_id,
     )
-    return SpawnResult(success=True, message_id=message_id)
+    return SpawnResult(
+        success=True,
+        message_id=message_id,
+        correlation_id=spawned_ctx.get("correlation_id"),
+        is_human_rooted=bool(spawned_ctx.get("is_human_rooted", False)),
+    )
 
 
 def _advance_chain_depth(correlation_ctx: dict) -> dict:
@@ -676,6 +719,10 @@ def _capture_invocation_event(
             cognito_sub=cognito_sub,
             max_credential_chain_depth=max_credential_chain_depth,
         )
+        if event_type == "eventbridge":
+            # Standing dispatch approval delegates agent actions, not the
+            # approving human's personal credential vault.
+            authorized_user_id = ""
 
         # Derive topic from issue/PR title
         issue_title = payload.get("issue", {}).get("title", "")
@@ -714,6 +761,10 @@ def _capture_invocation_event(
             root_human_id=root_human,
             is_human_rooted=is_human_rooted,
             authorized_user_id=authorized_user_id,
+            actor_kind="service" if event_type == "eventbridge" else None,
+            actor_user_id=actor_user_id if event_type == "eventbridge" else None,
+            create_only=os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower()
+            == "true",
         )
     except Exception as e:
         logger.warning("spawn_persona: capture_invocation_event failed: %s", e)

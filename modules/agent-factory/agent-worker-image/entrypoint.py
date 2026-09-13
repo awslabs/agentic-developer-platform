@@ -967,6 +967,12 @@ def main() -> int:
             logger.error("Failed to delete poison message: %s", exc)
         return 1
 
+    # Bind this pod to its protected invocation before any repository code,
+    # hooks, SDK tools or repository-selected dependencies can execute (#5028).
+    from lib.run_identity import bootstrap_run_identity
+
+    bootstrap_run_identity(envelope)
+
     # Read correlation context from SQS envelope.
     # ENVELOPE CONTRACT: handler.py publishes correlation fields NESTED under
     # envelope["correlation"] (see handler.py:711-718). Do NOT read them top-level.
@@ -2198,9 +2204,49 @@ def _setup_agent_control(
         agent_env["ADP_CONTROL_BIND_ADDRESS"] = pod_ip
         agent_env["ADP_CONTROL_GENERATION"] = str(generation)
 
+        # Issue #5028: the listener's own identity and the keys it verifies the
+        # gateway's command authorization with.
+        #
+        # `ADP_MESSAGE_ID` is this run's id. It is trusted *here* in a way it is
+        # deliberately not trusted at the gateway: the gateway must not believe a
+        # worker's claim about which run it is, but a worker comparing an envelope's
+        # target against its own id only ever narrows what it will accept. A
+        # rewritten value makes this pod refuse commands meant for it, which is a
+        # self-inflicted denial of service and not an escalation.
+        #
+        # The keys are public verification keys, passed through verbatim. There is
+        # no signing key in this environment and no code in the agent that would
+        # use one — see control-envelope.ts.
+        agent_env["ADP_CONTROL_RUN_ID"] = message_id
+        envelope_keys = os.environ.get("ADP_CONTROL_ENVELOPE_KEYS", "").strip()
+        envelope_keys_file = os.environ.get("ADP_CONTROL_ENVELOPE_KEYS_FILE", "").strip()
+        if envelope_keys_file:
+            agent_env["ADP_CONTROL_ENVELOPE_KEYS_FILE"] = envelope_keys_file
+        if envelope_keys:
+            agent_env["ADP_CONTROL_ENVELOPE_KEYS"] = envelope_keys
+        else:
+            # Not fatal: no verb is implemented yet, so a pod with no key is the
+            # normal state today and refusing to start control here would remove
+            # the read paths for no benefit. The listener fails closed on its own
+            # when a command needs authorization it cannot check.
+            logger.info(
+                "No ADP_CONTROL_ENVELOPE_KEYS provided — live-control commands will be refused "
+                "(read paths unaffected)"
+            )
+
         # Armed only after the write succeeded, so there is no path where a
         # teardown is scheduled for a registration that never happened.
         _install_control_teardown_guard(message_id, arrived_at)
+
+        if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+            from lib.control_renewal import ControlRenewal
+
+            global _control_renewal_session
+            _control_renewal_session = ControlRenewal(
+                run_id=message_id, generation=generation, token=token, expires_at=expires_at,
+            )
+            _control_renewal_session.start()
+            agent_env["ADP_CONTROL_CREDENTIAL_FILE"] = str(_control_renewal_session.path)
 
         logger.info(
             "Agent control registered: port=%d generation=%d expires_at=%s",
@@ -2239,6 +2285,7 @@ def _control_token_ttl_seconds() -> int:
 # backstops that consume it — an atexit hook and a SIGTERM handler — cannot be
 # passed arguments (Issue #3960).
 _pending_control_teardown: tuple[str, str] | None = None
+_control_renewal_session = None
 
 
 def _install_control_teardown_guard(message_id: str, arrived_at: str) -> None:
@@ -2288,7 +2335,10 @@ def _revoke_pending_control() -> None:
     Idempotent by clearing the pending key first, so the normal-path call, the
     atexit hook and a SIGTERM arriving mid-teardown cannot produce a second write.
     """
-    global _pending_control_teardown
+    global _pending_control_teardown, _control_renewal_session
+    renewal, _control_renewal_session = _control_renewal_session, None
+    if renewal is not None:
+        renewal.close()
     pending, _pending_control_teardown = _pending_control_teardown, None
     if pending is None:
         return

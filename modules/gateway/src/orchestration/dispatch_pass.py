@@ -344,6 +344,9 @@ class PendingPublish:
     envelope: dict[str, Any]
     group_id: str
     deduplication_id: str
+    genesis: EngineGenesis | None = None
+    node_attempt: int = 0
+    node_kind: str = NodeKind.STORY.value
 
 
 @dataclass
@@ -727,6 +730,9 @@ async def _dispatch_one(
         PendingPublish(
             node_id=run.node_id,
             org_id=org_id,
+            genesis=genesis,
+            node_attempt=observed_attempts + 1,
+            node_kind=node.kind,
             envelope=envelope,
             group_id=message_group_id(org_id=org_id, node_id=run.node_id),
             deduplication_id=message_deduplication_id(
@@ -846,7 +852,18 @@ def publish_pending(
     sqs = client if client is not None else _get_sqs_client(cfg.aws_region)
 
     for pending in report.pending:
-        body = json.dumps(pending.envelope, default=str)
+        envelope = pending.envelope
+        protected = os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+        if protected:
+            try:
+                from src.agentauth.engine import get_engine_authority_writer
+
+                envelope = get_engine_authority_writer().provision(pending)
+            except Exception:
+                logger.error("orchestration dispatch: protected authority unavailable for node %s; no message sent", pending.node_id)
+                report.record(pending.org_id, "publish_failed")
+                continue
+        body = json.dumps(envelope, default=str)
         if len(body.encode("utf-8")) > MAX_SQS_MESSAGE_BYTES:
             # The engine's envelope carries no raw webhook payload, so this is not
             # reachable with today's shape. Refusing rather than truncating is
@@ -857,10 +874,13 @@ def publish_pending(
             continue
 
         try:
-            from .run_store import EngineRunStore
+            if not protected:
+                from .run_store import EngineRunStore
 
-            store = run_store if run_store is not None else EngineRunStore.from_env()
-            store.register(pending.envelope)
+                store = run_store if run_store is not None else EngineRunStore.from_env()
+                store.register(envelope)
+            # Protected dispatch already wrote this same reporting row together
+            # with the execution/grant in one conditional DynamoDB transaction.
             response = sqs.send_message(
                 QueueUrl=cfg.queue_url,
                 MessageBody=body,

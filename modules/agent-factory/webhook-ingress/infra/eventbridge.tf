@@ -64,6 +64,8 @@ resource "aws_cloudwatch_event_target" "alarm_to_lambda" {
 
   input_transformer {
     input_paths = {
+      event_id    = "$.id"
+      account     = "$.account"
       alarm_name  = "$.detail.alarmName"
       reason      = "$.detail.state.reason"
       source      = "$.source"
@@ -72,6 +74,9 @@ resource "aws_cloudwatch_event_target" "alarm_to_lambda" {
 
     input_template = <<-EOF
       {
+        "id": <event_id>,
+        "account": <account>,
+        "adp_rule_arn": "${aws_cloudwatch_event_rule.alarm_state_change[0].arn}",
         "source": <source>,
         "detail-type": <detail_type>,
         "detail": {
@@ -150,6 +155,8 @@ resource "aws_cloudwatch_event_target" "security_agent_to_lambda" {
 
   input_transformer {
     input_paths = {
+      event_id     = "$.id"
+      account      = "$.account"
       source       = "$.source"
       detail_type  = "$.detail-type"
       reason       = "$.detail.reason"
@@ -186,6 +193,9 @@ resource "aws_cloudwatch_event_target" "security_agent_to_lambda" {
     #      follows it rather than the other way round.
     input_template = <<-EOF
       {
+        "id": <event_id>,
+        "account": <account>,
+        "adp_rule_arn": "${aws_cloudwatch_event_rule.security_agent_dispatch[0].arn}",
         "source": <source>,
         "detail-type": <detail_type>,
         "detail": {
@@ -243,6 +253,10 @@ resource "aws_dynamodb_table_item" "security_agent_service_identity" {
     identity_value   = { S = "eventbridge:adp-${var.environment}-security-agent-dispatch" }
     tenant_id        = { S = var.eventbridge_security_agent_org }
     org_id           = { S = var.eventbridge_security_agent_org }
+    repo             = { S = var.eventbridge_security_agent_repo }
+    rule_arn         = { S = aws_cloudwatch_event_rule.security_agent_dispatch[0].arn }
     allowed_personas = { L = [{ S = "operations" }] }
+    # Child delegation is a separate ceiling; it must not widen root launches.
+    allowed_child_personas = { SS = ["operations", "developer", "reviewer"] }
   })
 }

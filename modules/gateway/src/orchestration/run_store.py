@@ -33,11 +33,12 @@ class EngineRunStore:
             ).Table(name)
         )
 
-    def register(self, envelope: dict) -> None:
+    @staticmethod
+    def build_item(envelope: dict) -> dict:
         source = envelope["source_ref"]
         graph = envelope["orchestration"]
         correlation = envelope["correlation"]
-        item = {
+        return {
             "event_id": envelope["message_id"],
             "arrived_at": envelope["arrived_at"],
             "GSI1PK": envelope["tenant_id"],
@@ -63,6 +64,9 @@ class EngineRunStore:
             "engine_attempt": graph["attempt"],
             "source_url": f"https://github.com/{source['repo']}/issues/{source['issue']}",
         }
+
+    def register(self, envelope: dict) -> None:
+        item = self.build_item(envelope)
         try:
             self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(event_id)")
         except ClientError as exc:

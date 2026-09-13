@@ -11,13 +11,19 @@
 
 import * as http from 'http';
 import { AddressInfo } from 'net';
+import { generateKeyPairSync, sign as cryptoSign, createHash, type KeyObject } from 'crypto';
+import { mkdtempSync, writeFileSync, renameSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 import {
   ControlListener,
+  ENVELOPE_HEADER,
   MAX_BODY_BYTES,
   MAX_INSTRUCTION_CHARS,
   isAgentControlEnabled,
 } from './control-listener';
+import { ENVELOPE_AUDIENCE, ENVELOPE_ISSUER, ENVELOPE_VERSION } from './control-envelope';
 import {
   ControlAction,
   ControlStateStore,
@@ -29,6 +35,80 @@ const TOKEN = 'test-control-token-0123456789abcdef';
 const GENERATION = 7;
 const UUID_A = '11111111-2222-4333-8444-555555555555';
 const UUID_B = '66666666-7777-4888-8999-aaaaaaaaaaaa';
+const RUN_ID = 'run-under-test-001';
+const KEY_ID = 'listener-test-key';
+
+/**
+ * A stand-in for the gateway's signing key — Issue #5028.
+ *
+ * Generated per test process and never leaves it. This is the *only* place in the
+ * worker package that signs an envelope, and it exists solely so these tests can
+ * produce authorized requests. Production has no counterpart: `control-envelope.ts`
+ * verifies and cannot sign, which `control-envelope.test.ts` asserts directly.
+ */
+const GATEWAY_KEYS = generateKeyPairSync('ed25519');
+
+/** The public half, in the shape the listener config takes. */
+const ENVELOPE_KEYS: Map<string, KeyObject> = new Map([[KEY_ID, GATEWAY_KEYS.publicKey]]);
+
+function isoSecond(ms: number): string {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Sign an envelope the way the gateway would.
+ *
+ * Every field is overridable so a test can produce a *validly signed* envelope
+ * with wrong claims — a stale generation, another run's id, a digest of a
+ * different body. Without that, a test named "refuses a stale generation" would
+ * pass because the signature failed, proving nothing about the generation check.
+ */
+function signEnvelope(
+  overrides: Record<string, unknown> = {},
+  signingKey: KeyObject = GATEWAY_KEYS.privateKey,
+): string {
+  const now = Date.now();
+  const payload: Record<string, unknown> = {
+    v: ENVELOPE_VERSION,
+    iss: ENVELOPE_ISSUER,
+    aud: ENVELOPE_AUDIENCE,
+    alg: 'ed25519',
+    kid: KEY_ID,
+    tenant_id: 'org-tenant-001',
+    principal: 'inv-coordinator#1',
+    target_run_id: RUN_ID,
+    target_generation: GENERATION,
+    action: 'pause',
+    command_id: UUID_A,
+    body_digest: createHash('sha256').update(Buffer.from('{}', 'utf8')).digest('hex'),
+    grant_id: 'grant-coordinator-1',
+    revocation_epoch: 1,
+    iat: isoSecond(now),
+    nbf: isoSecond(now),
+    exp: isoSecond(now + 30_000),
+    flow_id: 'flow-42',
+    authority_reference_id: 'decision-abc',
+    ...overrides,
+  };
+  const body = Buffer.from(JSON.stringify(payload), 'utf8');
+  const signature = cryptoSign(null, Buffer.concat([Buffer.from(`${ENVELOPE_VERSION}.`), body]), signingKey);
+  return `${ENVELOPE_VERSION}.${body.toString('base64url')}.${signature.toString('base64url')}`;
+}
+
+/**
+ * The envelope a legitimate gateway would send for this exact request.
+ *
+ * Takes the body it will accompany, so the digest is over the same bytes the
+ * request writes — which is the whole binding.
+ */
+function envelopeFor(action: ControlAction, commandId: string, body: string, overrides: Record<string, unknown> = {}): string {
+  return signEnvelope({
+    action,
+    command_id: commandId,
+    body_digest: createHash('sha256').update(Buffer.from(body, 'utf8')).digest('hex'),
+    ...overrides,
+  });
+}
 
 const ENABLED_ENV = { FEATURE_AGENT_CONTROL_ENABLED: 'true' } as NodeJS.ProcessEnv;
 
@@ -52,7 +132,7 @@ function request(
   port: number,
   method: string,
   path: string,
-  options: { token?: string | null; generation?: number | null; body?: string } = {},
+  options: { token?: string | null; generation?: number | null; body?: string; envelope?: string } = {},
 ): Promise<Reply> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {};
@@ -61,6 +141,9 @@ function request(
     }
     if (options.generation !== null && options.generation !== undefined) {
       headers['x-adp-control-generation'] = String(options.generation);
+    }
+    if (options.envelope !== undefined) {
+      headers[ENVELOPE_HEADER] = options.envelope;
     }
     if (options.body !== undefined) {
       headers['content-type'] = 'application/json';
@@ -118,6 +201,13 @@ async function startListener(
   store: ControlStateStore,
   env: NodeJS.ProcessEnv = ENABLED_ENV,
   tokenExpiresAt = new Date(Date.now() + 60_000).toISOString(),
+  // Issue #5028: defaults to a correctly-configured listener, so envelope
+  // *misconfiguration* has to be asked for explicitly rather than being the
+  // accidental state of every test.
+  envelopeConfig: { runId?: string; envelopeKeys?: Map<string, KeyObject>; credentialFile?: string; envelopeKeysFile?: string } = {
+    runId: RUN_ID,
+    envelopeKeys: ENVELOPE_KEYS,
+  },
 ) {
   const listener = new ControlListener({
     tokenExpiresAt,
@@ -127,11 +217,112 @@ async function startListener(
     generation: GENERATION,
     store,
     logger: () => {},
+    ...envelopeConfig,
   });
   const outcome = await listener.start(env);
   if (!outcome.started) throw new Error(`listener did not start: ${outcome.reason}`);
   return { listener, port: outcome.port };
 }
+
+test('HTTP admission retains the exact proof for online delivery and blocks revoked work', async () => {
+  let allowed = false;
+  const revalidate = jest.fn(async () => allowed);
+  const store = new ControlStateStore({ generation: GENERATION, supportedActions: new Set(['pause']), revalidate });
+  const { listener, port } = await startListener(store);
+  try {
+    const body = JSON.stringify({ command_id: UUID_A });
+    const envelope = envelopeFor('pause', UUID_A, body);
+    const reply = await request(port, 'POST', '/agent/pause', { body, envelope });
+    expect(reply.status).toBe(202);
+    const effect = jest.fn();
+    expect(store.markDelivered(UUID_A)).toBe(false);
+    expect(await store.deliverAuthorized(UUID_A, effect)).toBe(false);
+    expect(revalidate).toHaveBeenCalledWith({ envelope, action: 'pause', command_id: UUID_A,
+      body_base64: Buffer.from(body).toString('base64') }, GENERATION);
+    expect(effect).not.toHaveBeenCalled();
+    expect(store.lookup(UUID_A).status).toBe('rejected');
+    allowed = true;
+    expect(await store.deliverAuthorized(UUID_A, effect)).toBe(false);
+  } finally { await listener.stop(); }
+});
+
+describe('live credential rotation', () => {
+  it('reloads staged and retired public keys while preserving recorded command outcomes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'adp-control-keys-'));
+    const path = join(directory, 'keys.json');
+    const next = generateKeyPairSync('ed25519');
+    const oldPem = GATEWAY_KEYS.publicKey.export({ format: 'pem', type: 'spki' });
+    const nextPem = next.publicKey.export({ format: 'pem', type: 'spki' });
+    const write = (keys: Record<string, unknown>) => {
+      writeFileSync(path + '.next', JSON.stringify(keys));
+      renameSync(path + '.next', path);
+    };
+    write({ [KEY_ID]: oldPem });
+    const store = makeStore({ supported: new Set<ControlAction>(['pause']) });
+    const { listener, port } = await startListener(store, ENABLED_ENV, isoSecond(Date.now() + 3600_000), {
+      runId: RUN_ID, envelopeKeys: ENVELOPE_KEYS, envelopeKeysFile: path,
+    });
+    const body = JSON.stringify({ command_id: UUID_A });
+    const oldProof = envelopeFor('pause', UUID_A, body);
+    const nextProof = signEnvelope({ kid: 'next', body_digest: createHash('sha256').update(body).digest('hex') }, next.privateKey);
+    try {
+      expect((await request(port, 'POST', '/agent/pause', { body, envelope: oldProof })).status).toBe(202);
+      expect((await request(port, 'POST', '/agent/pause', { body, envelope: nextProof })).status).toBe(403);
+      write({ [KEY_ID]: oldPem, next: nextPem });
+      const ping = await request(port, 'GET', '/agent/ping');
+      expect(ping.body.verification_key_ids).toEqual([KEY_ID, 'next'].sort());
+      expect((await request(port, 'POST', '/agent/pause', { body, envelope: nextProof })).status).toBe(200);
+      write({ next: nextPem });
+      expect((await request(port, 'POST', '/agent/pause', { body, envelope: oldProof })).status).toBe(403);
+      expect((await request(port, 'POST', '/agent/pause', { body, envelope: nextProof })).status).toBe(200);
+      rmSync(path);
+      expect((await request(port, 'POST', '/agent/pause', { body, envelope: oldProof })).status).toBe(403);
+      expect((await request(port, 'GET', '/agent/ping')).body.verification_key_ids).toEqual([]);
+    } finally {
+      await listener.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reloads tokens on the same socket and preserves the journal with bounded overlap', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'adp-control-rotation-'));
+    const path = join(directory, 'lease.json');
+    const initial = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(initial);
+    const oldToken = { token: TOKEN, epoch: 1, expires_at: isoSecond(initial + 60_000) };
+    const nextToken = { token: 'next-control-token-0123456789abcdef', epoch: 2, expires_at: isoSecond(initial + 3600_000) };
+    const write = (extra: Record<string, unknown>) => {
+      writeFileSync(path + '.next', JSON.stringify({ version: 1, run_id: RUN_ID, generation: GENERATION, ...extra }), { mode: 0o600 });
+      renameSync(path + '.next', path);
+    };
+    write({ current: oldToken });
+    const store = makeStore({ supported: new Set<ControlAction>(['pause']) });
+    store.submit('pause', UUID_A, 'existing-command');
+    const { listener, port } = await startListener(store, ENABLED_ENV, isoSecond(initial + 60_000), {
+      runId: RUN_ID, envelopeKeys: ENVELOPE_KEYS, credentialFile: path,
+    });
+    try {
+      expect((await request(port, 'GET', '/agent/state')).status).toBe(200);
+      write({ current: nextToken, previous: { ...oldToken, valid_until: isoSecond(initial + 30_000) }, staged_at: isoSecond(initial) });
+      expect((await request(port, 'GET', '/agent/state', { token: nextToken.token })).status).toBe(200);
+      expect((await request(port, 'GET', '/agent/state')).status).toBe(200);
+      clock.mockReturnValue(initial + 31_000);
+      expect((await request(port, 'GET', '/agent/state')).status).toBe(401);
+      clock.mockReturnValue(initial + 61_000);
+      expect((await request(port, 'GET', '/agent/state', { token: nextToken.token })).status).toBe(200);
+      expect(store.submit('pause', UUID_A, 'existing-command').kind).toBe('replayed');
+      expect(listener.boundPort()).toBe(port);
+      write({ current: oldToken });
+      expect((await request(port, 'GET', '/agent/state')).status).toBe(401);
+      rmSync(path);
+      expect((await request(port, 'GET', '/agent/state', { token: nextToken.token })).status).toBe(401);
+    } finally {
+      await listener.stop();
+      clock.mockRestore();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 // ===========================================================================
 // Flags and startup (FR-1.1, FR-1.2, FR-8.3)
@@ -613,7 +804,14 @@ describe('payload validation', () => {
   });
 
   it('accepts a valid pause and returns 202 with a pending command', async () => {
-    const reply = await request(port, 'POST', '/agent/pause', { body: JSON.stringify({ command_id: UUID_A }) });
+    const body = JSON.stringify({ command_id: UUID_A });
+    const reply = await request(port, 'POST', '/agent/pause', {
+      body,
+      // This store supports pause, so #5028 requires an envelope. Supplying a
+      // legitimate one keeps this test about payload validation rather than
+      // silently converting it into an authorization test.
+      envelope: envelopeFor('pause', UUID_A, body),
+    });
 
     expect(reply.status).toBe(202);
     expect(reply.body.command).toMatchObject({ command_id: UUID_A, action: 'pause', status: 'pending' });
@@ -639,9 +837,12 @@ describe('command journal over HTTP', () => {
 
   it('replays the recorded outcome for the same id and payload, without a second acceptance', async () => {
     const body = JSON.stringify({ command_id: UUID_A });
-
-    const first = await request(port, 'POST', '/agent/abort', { body });
-    const second = await request(port, 'POST', '/agent/abort', { body });
+    // Both attempts carry their own freshly-signed envelope, which is what a
+    // retrying gateway does — the envelope is per-request and short-lived, so a
+    // retry re-authorizes rather than reusing the first authorization. The
+    // *journal* is what makes the retry idempotent, and that is what this asserts.
+    const first = await request(port, 'POST', '/agent/abort', { body, envelope: envelopeFor('abort', UUID_A, body) });
+    const second = await request(port, 'POST', '/agent/abort', { body, envelope: envelopeFor('abort', UUID_A, body) });
 
     expect(first.status).toBe(202);
     // 200, not 202 — a retried abort stays one abort.
@@ -650,12 +851,20 @@ describe('command journal over HTTP', () => {
   });
 
   it('conflicts on the same id with different content', async () => {
+    const firstBody = JSON.stringify({ command_id: UUID_A, instruction: 'first intent' });
     await request(port, 'POST', '/agent/steer', {
-      body: JSON.stringify({ command_id: UUID_A, instruction: 'first intent' }),
+      body: firstBody,
+      envelope: envelopeFor('steer', UUID_A, firstBody),
     });
 
+    // A genuinely authorized second command — same id, different instruction. The
+    // 409 must come from the journal, not from the envelope: an authorized caller
+    // reusing an id is a conflict, and reporting it as an authorization failure
+    // would send them to debug the wrong thing.
+    const conflictingBody = JSON.stringify({ command_id: UUID_A, instruction: 'different intent' });
     const conflicting = await request(port, 'POST', '/agent/steer', {
-      body: JSON.stringify({ command_id: UUID_A, instruction: 'different intent' }),
+      body: conflictingBody,
+      envelope: envelopeFor('steer', UUID_A, conflictingBody),
     });
 
     expect(conflicting.status).toBe(409);
@@ -664,26 +873,28 @@ describe('command journal over HTTP', () => {
   it('returns 429 once the pending cap is reached', async () => {
     for (let i = 0; i < DEFAULT_MAX_PENDING; i += 1) {
       const id = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+      const body = JSON.stringify({ command_id: id, instruction: `steer ${i}` });
       const reply = await request(port, 'POST', '/agent/steer', {
-        body: JSON.stringify({ command_id: id, instruction: `steer ${i}` }),
+        body,
+        envelope: envelopeFor('steer', id, body),
       });
       expect(reply.status).toBe(202);
     }
 
+    const overflowBody = JSON.stringify({ command_id: UUID_B, instruction: 'one too many' });
     const overflow = await request(port, 'POST', '/agent/steer', {
-      body: JSON.stringify({ command_id: UUID_B, instruction: 'one too many' }),
+      body: overflowBody,
+      envelope: envelopeFor('steer', UUID_B, overflowBody),
     });
 
     expect(overflow.status).toBe(429);
   });
 
   it('lists accepted commands in submission order in state', async () => {
-    await request(port, 'POST', '/agent/steer', {
-      body: JSON.stringify({ command_id: UUID_A, instruction: 'first' }),
-    });
-    await request(port, 'POST', '/agent/steer', {
-      body: JSON.stringify({ command_id: UUID_B, instruction: 'second' }),
-    });
+    const firstBody = JSON.stringify({ command_id: UUID_A, instruction: 'first' });
+    const secondBody = JSON.stringify({ command_id: UUID_B, instruction: 'second' });
+    await request(port, 'POST', '/agent/steer', { body: firstBody, envelope: envelopeFor('steer', UUID_A, firstBody) });
+    await request(port, 'POST', '/agent/steer', { body: secondBody, envelope: envelopeFor('steer', UUID_B, secondBody) });
 
     const state = await request(port, 'GET', '/agent/state');
 
@@ -692,12 +903,20 @@ describe('command journal over HTTP', () => {
 
   it('never echoes instruction text back through the state journal', async () => {
     const secret = 'sensitive-steering-text-marker';
-    await request(port, 'POST', '/agent/steer', {
-      body: JSON.stringify({ command_id: UUID_A, instruction: secret }),
+    const body = JSON.stringify({ command_id: UUID_A, instruction: secret });
+    // The envelope is essential to this test rather than incidental. Without one
+    // the command is refused, nothing is journaled, and the assertion below passes
+    // because there is no journal entry at all — a green test proving nothing
+    // about redaction. Asserting the 202 first pins that the entry really exists.
+    const accepted = await request(port, 'POST', '/agent/steer', {
+      body,
+      envelope: envelopeFor('steer', UUID_A, body),
     });
+    expect(accepted.status).toBe(202);
 
     const state = await request(port, 'GET', '/agent/state');
 
+    expect(state.body.commands).toHaveLength(1);
     expect(state.raw).not.toContain(secret);
   });
 
@@ -1030,6 +1249,314 @@ describe('abort reason validation', () => {
       body: JSON.stringify({ command_id: UUID_A }),
     });
     expect(reply.status).toBe(501);
+  });
+});
+
+// ===========================================================================
+// Gateway-signed command authorization over a real socket — Issue #5028 (AC5)
+// ===========================================================================
+
+/**
+ * `control-envelope.test.ts` proves the verifier. This proves the *listener*
+ * enforces it: over a bound socket, with a real bearer token, at the point where a
+ * command would enter the journal.
+ *
+ * The distinction matters because every test here holds a valid pod token. That is
+ * the threat model of AC2 carried through to the listener — a worker that read
+ * another run's DynamoDB row has the token and satisfies `authenticate()`
+ * completely. The envelope is the only thing between it and another run's journal.
+ */
+describe('command authorization envelope', () => {
+  /** A store that supports the verbs, so the envelope gate is actually reached. */
+  const supported = () => makeStore({ supported: new Set<ControlAction>(['pause', 'steer', 'abort']) });
+
+  let listener: ControlListener;
+  let port: number;
+  let store: ControlStateStore;
+
+  beforeEach(async () => {
+    store = supported();
+    ({ listener, port } = await startListener(store));
+  });
+  afterEach(async () => {
+    await listener.stop();
+  });
+
+  const PAUSE_BODY = JSON.stringify({ command_id: UUID_A });
+
+  async function pause(options: { envelope?: string; body?: string } = {}) {
+    const body = options.body ?? PAUSE_BODY;
+    return request(port, 'POST', '/agent/pause', { body, envelope: options.envelope });
+  }
+
+  it('accepts a correctly authorized command', async () => {
+    // The positive case first: the refusals below would be worthless if the
+    // authorized path did not work, and a suite of only refusals is satisfied by
+    // a listener that refuses everything.
+    const reply = await pause({ envelope: envelopeFor('pause', UUID_A, PAUSE_BODY) });
+
+    expect(reply.status).toBe(202);
+    expect(store.snapshot().commands).toHaveLength(1);
+  });
+
+  it('refuses a command with no envelope at all', async () => {
+    const reply = await pause();
+
+    expect(reply.status).toBe(403);
+    // Nothing journaled. A refused command that still left a record would let an
+    // unauthorized caller fill the journal and reach the pending cap, denying
+    // control to the legitimate operator.
+    expect(store.snapshot().commands).toEqual([]);
+  });
+
+  it('refuses a forged envelope signed with a key the pod does not trust', async () => {
+    // The compromised-worker case: it generates its own key pair and signs a
+    // perfectly-shaped envelope for a command it wants to run.
+    const attacker = generateKeyPairSync('ed25519');
+    const forged = envelopeFor('pause', UUID_A, PAUSE_BODY);
+    const reforged = signEnvelope(
+      { body_digest: createHash('sha256').update(Buffer.from(PAUSE_BODY, 'utf8')).digest('hex') },
+      attacker.privateKey,
+    );
+
+    expect((await pause({ envelope: reforged })).status).toBe(403);
+    // Sanity: the same claims signed by the real key are accepted, so the refusal
+    // above is attributable to the signature and not to the claims.
+    expect((await pause({ envelope: forged })).status).toBe(202);
+  });
+
+  it('refuses an envelope naming a different run', async () => {
+    const envelope = envelopeFor('pause', UUID_A, PAUSE_BODY, { target_run_id: 'run-somebody-elses' });
+
+    expect((await pause({ envelope })).status).toBe(403);
+    expect(store.snapshot().commands).toEqual([]);
+  });
+
+  it('refuses an envelope bound to a previous generation of this run', async () => {
+    // Pod-IP reuse and restart: an envelope authorized against the previous
+    // generation must not land on the process that replaced it.
+    const envelope = envelopeFor('pause', UUID_A, PAUSE_BODY, { target_generation: GENERATION - 1 });
+
+    expect((await pause({ envelope })).status).toBe(403);
+  });
+
+  it('refuses an envelope for a different action presented at this path', async () => {
+    // An authorized pause replayed at /agent/abort. Same run, same generation,
+    // same command id, valid signature — only the verb differs.
+    const envelope = envelopeFor('pause', UUID_A, PAUSE_BODY);
+    const reply = await request(port, 'POST', '/agent/abort', { body: PAUSE_BODY, envelope });
+
+    expect(reply.status).toBe(403);
+  });
+
+  it('refuses an envelope whose command id does not match the body', async () => {
+    const envelope = envelopeFor('pause', UUID_B, PAUSE_BODY);
+
+    expect((await pause({ envelope })).status).toBe(403);
+  });
+
+  it('refuses a body changed after authorization', async () => {
+    // AC5's changed-body case. The envelope authorizes one instruction; the
+    // request carries another. The digest is over raw bytes, so this cannot pass.
+    const authorized = JSON.stringify({ command_id: UUID_A, instruction: 'summarize the findings' });
+    const substituted = JSON.stringify({ command_id: UUID_A, instruction: 'push directly to main' });
+    const envelope = envelopeFor('steer', UUID_A, authorized);
+
+    const reply = await request(port, 'POST', '/agent/steer', { body: substituted, envelope });
+
+    expect(reply.status).toBe(403);
+    expect(store.snapshot().commands).toEqual([]);
+  });
+
+  it('refuses an expired envelope even though the pod token is still valid', async () => {
+    // The two lifetimes are independent: a run-long token must not extend a
+    // 30-second authorization.
+    const past = Date.now() - 120_000;
+    const envelope = envelopeFor('pause', UUID_A, PAUSE_BODY, {
+      iat: isoSecond(past),
+      nbf: isoSecond(past),
+      exp: isoSecond(past + 30_000),
+    });
+
+    expect((await pause({ envelope })).status).toBe(403);
+  });
+
+  it('refuses an envelope claiming a longer life than policy allows', async () => {
+    const now = Date.now();
+    const envelope = envelopeFor('pause', UUID_A, PAUSE_BODY, {
+      iat: isoSecond(now),
+      nbf: isoSecond(now),
+      exp: isoSecond(now + 6 * 60 * 60 * 1000),
+    });
+
+    expect((await pause({ envelope })).status).toBe(403);
+  });
+
+  it('does not double-accept an envelope replayed for a command already journaled', async () => {
+    // AC5's replay case. The first request is authorized and accepted; the second
+    // presents the identical envelope again. It is refused rather than replayed,
+    // because the envelope's own validity window is the only thing that could
+    // have permitted it and it was already spent on the first command.
+    const envelope = envelopeFor('pause', UUID_A, PAUSE_BODY);
+    const first = await pause({ envelope });
+    expect(first.status).toBe(202);
+
+    const replayed = await pause({ envelope });
+
+    // 200 from the journal's idempotency path is the *correct* answer here: the
+    // envelope is still within its window and re-authorizes the same command, and
+    // the journal recognises it as the one already recorded. What must not happen
+    // is a second acceptance.
+    expect(replayed.status).toBe(200);
+    expect(store.snapshot().commands).toHaveLength(1);
+  });
+
+  it('refuses an envelope that carries no signature at all', async () => {
+    const [version, body] = envelopeFor('pause', UUID_A, PAUSE_BODY).split('.');
+
+    expect((await pause({ envelope: `${version}.${body}.` })).status).toBe(403);
+  });
+
+  it('never reveals why an envelope was refused', async () => {
+    // A caller able to distinguish "wrong run" from "bad signature" learns whether
+    // the run it just named exists. All refusals must be one opaque answer.
+    const wrongRun = await pause({ envelope: envelopeFor('pause', UUID_A, PAUSE_BODY, { target_run_id: 'run-probe' }) });
+    const badSignature = await pause({
+      envelope: signEnvelope(
+        { body_digest: createHash('sha256').update(Buffer.from(PAUSE_BODY, 'utf8')).digest('hex') },
+        generateKeyPairSync('ed25519').privateKey,
+      ),
+    });
+
+    expect(wrongRun.status).toBe(badSignature.status);
+    expect(wrongRun.body).toEqual(badSignature.body);
+  });
+
+  it('records the authorizing grant without the envelope or the token', async () => {
+    // AC7: the decision must be auditable and must contain no secret.
+    const logged: Array<{ level: string; message: string; context?: Record<string, unknown> }> = [];
+    const local = new ControlListener({
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      bindAddress: '127.0.0.1',
+      port: await freePort(),
+      token: TOKEN,
+      generation: GENERATION,
+      store: supported(),
+      runId: RUN_ID,
+      envelopeKeys: ENVELOPE_KEYS,
+      logger: (level, message, context) => logged.push({ level, message, context }),
+    });
+    const outcome = await local.start(ENABLED_ENV);
+    if (!outcome.started) throw new Error('listener did not start');
+
+    try {
+      const envelope = envelopeFor('pause', UUID_A, PAUSE_BODY);
+      await request(outcome.port, 'POST', '/agent/pause', { body: PAUSE_BODY, envelope });
+
+      const authorized = logged.find((entry) => entry.message === 'control command authorized');
+      expect(authorized?.context).toMatchObject({
+        principal: 'inv-coordinator#1',
+        grant_id: 'grant-coordinator-1',
+        authority_reference_id: 'decision-abc',
+      });
+
+      const serialized = JSON.stringify(logged);
+      expect(serialized).not.toContain(TOKEN);
+      expect(serialized).not.toContain(envelope);
+    } finally {
+      await local.stop();
+    }
+  });
+});
+
+describe('envelope enforcement boundaries', () => {
+  const supportedSet = new Set<ControlAction>(['pause']);
+
+  it('answers an unsupported verb with 501 rather than demanding an envelope', async () => {
+    // The ordering choice in `requiresEnvelope`. A build where the verb does not
+    // exist must say so; answering 403 would send an operator to debug key
+    // distribution for a feature that was never implemented.
+    const { listener, port } = await startListener(makeStore());
+    try {
+      const reply = await request(port, 'POST', '/agent/abort', { body: JSON.stringify({ command_id: UUID_A }) });
+      expect(reply.status).toBe(501);
+    } finally {
+      await listener.stop();
+    }
+  });
+
+  it('still rejects a malformed body before considering authorization', async () => {
+    // Validation precedes the envelope check, so a caller with no envelope and a
+    // broken body gets the actionable 400 rather than a 403 that hides the typo.
+    const { listener, port } = await startListener(makeStore({ supported: supportedSet }));
+    try {
+      const reply = await request(port, 'POST', '/agent/pause', { body: JSON.stringify({ command_id: 'not-a-uuid' }) });
+      expect(reply.status).toBe(400);
+    } finally {
+      await listener.stop();
+    }
+  });
+
+  it('refuses supported-verb commands when the pod received no verification key', async () => {
+    // Fail closed. A pod whose key distribution failed cannot check authorization,
+    // and "cannot check" must mean "refuse" — the direction #4128 got wrong.
+    const store = makeStore({ supported: supportedSet });
+    const { listener, port } = await startListener(store, ENABLED_ENV, undefined, { runId: RUN_ID, envelopeKeys: new Map() });
+    try {
+      const body = JSON.stringify({ command_id: UUID_A });
+      const reply = await request(port, 'POST', '/agent/pause', { body, envelope: envelopeFor('pause', UUID_A, body) });
+
+      expect(reply.status).toBe(403);
+      expect(store.snapshot().commands).toEqual([]);
+    } finally {
+      await listener.stop();
+    }
+  });
+
+  it('refuses supported-verb commands when the pod does not know its own run id', async () => {
+    // Without its own run id the listener cannot check the target binding, so the
+    // envelope would degrade to "signed by the gateway for some run" — which is
+    // exactly the cross-run authorization this closes.
+    const store = makeStore({ supported: supportedSet });
+    const { listener, port } = await startListener(store, ENABLED_ENV, undefined, { envelopeKeys: ENVELOPE_KEYS });
+    try {
+      const body = JSON.stringify({ command_id: UUID_A });
+      const reply = await request(port, 'POST', '/agent/pause', { body, envelope: envelopeFor('pause', UUID_A, body) });
+
+      expect(reply.status).toBe(403);
+    } finally {
+      await listener.stop();
+    }
+  });
+
+  it('leaves the read paths reachable without an envelope', async () => {
+    // Monitoring is authorized at the gateway, not here. Requiring an envelope for
+    // a state read would break the read path for every legitimate observer while
+    // protecting nothing — a read mutates no run.
+    const { listener, port } = await startListener(makeStore({ supported: supportedSet }));
+    try {
+      expect((await request(port, 'GET', '/agent/ping')).status).toBe(200);
+      expect((await request(port, 'GET', '/agent/state')).status).toBe(200);
+    } finally {
+      await listener.stop();
+    }
+  });
+
+  it('still refuses an unauthenticated request before reaching the envelope check', async () => {
+    // Ordering: the token check runs first, so an anonymous caller gets 401 and
+    // never reaches the parser or the verifier — the FR-1.5 property is unchanged.
+    const { listener, port } = await startListener(makeStore({ supported: supportedSet }));
+    try {
+      const body = JSON.stringify({ command_id: UUID_A });
+      const reply = await request(port, 'POST', '/agent/pause', {
+        token: null,
+        body,
+        envelope: envelopeFor('pause', UUID_A, body),
+      });
+      expect(reply.status).toBe(401);
+    } finally {
+      await listener.stop();
+    }
   });
 });
 

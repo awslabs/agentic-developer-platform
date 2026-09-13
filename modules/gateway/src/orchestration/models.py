@@ -148,6 +148,9 @@ class DecisionKind(StrEnum):
     # a graph a human can *see* without landing an approval nobody made. `kind` is
     # String(32), so this needs no DDL.
     PLAN_DRAFTED = "plan_drafted"
+    AGENT_DISPATCHED = "agent_dispatched"  # Committed delegated dispatch receipt, never human approval
+    WAVE_MATERIALIZED = "wave_materialized"  # Bound delivery issue references; never an approval
+    WAVE_COORDINATOR_DISPATCHED = "wave_coordinator_dispatched"
 
 
 class AppendOnlyViolationError(RuntimeError):

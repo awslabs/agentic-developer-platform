@@ -33,7 +33,7 @@
  */
 
 import * as http from 'http';
-import { timingSafeEqual } from 'crypto';
+import { timingSafeEqual, type KeyObject } from 'crypto';
 import { AddressInfo } from 'net';
 
 import {
@@ -41,6 +41,9 @@ import {
   ControlStateStore,
   fingerprintPayload,
 } from './control-state';
+import { type ControlEnvelope, type EnvelopeFailure, verifyEnvelope } from './control-envelope';
+import { ControlCredentials } from './control-credentials';
+import { readControlKeyring } from './control-keyring';
 
 /** Verbs this build can perform. Empty in S1 — the foundation ships before the verbs. */
 const SUPPORTED_ACTIONS: ReadonlySet<ControlAction> = new Set<ControlAction>();
@@ -58,6 +61,18 @@ const RESERVED_EVENTS_PATH = '/agent/events';
 
 /** Maximum request body. Matches the gateway's cap so neither side is the weak link. */
 export const MAX_BODY_BYTES = 16 * 1024;
+
+/**
+ * Header carrying the gateway's authorization envelope — Issue #5028.
+ *
+ * A separate header from `Authorization` because the two answer different
+ * questions and have different lifetimes: the bearer token says "you know this
+ * run's secret" and lives for the run, the envelope says "the control service
+ * authorized this exact command" and lives for 30 seconds. Folding the second
+ * into the first would tie the short-lived per-command authorization to the
+ * long-lived credential's plumbing.
+ */
+export const ENVELOPE_HEADER = 'x-adp-control-authorization';
 
 /** Bound instruction and reason length, mirroring the gateway's schema. */
 export const MAX_INSTRUCTION_CHARS = 4000;
@@ -89,11 +104,38 @@ export interface ControlListenerConfig {
   token: string;
   /** UTC expiry persisted with this token's registration by the entrypoint. */
   tokenExpiresAt: string;
+  /** Atomically replaced supervisor lease. When set, absence refuses all requests. */
+  credentialFile?: string;
   /** Run generation. A request declaring a different generation is stale. */
   generation: number;
   store: ControlStateStore;
   /** Structured log sink. Injected so tests observe diagnostics without stdout capture. */
   logger?: (level: string, message: string, context?: Record<string, unknown>) => void;
+
+  /**
+   * This run's own id — Issue #5028.
+   *
+   * The listener's independently-known target identity, used to check the
+   * envelope's `target_run_id`. It comes from this pod's own environment, not
+   * from the request, which is the entire reason the binding means anything: a
+   * value read out of the request would match itself.
+   */
+  runId?: string;
+
+  /**
+   * Ed25519 verification keys by key id — Issue #5028.
+   *
+   * Public keys only. A worker that could sign would be able to authorize its own
+   * commands, so there is no signing key in this process and no code path here
+   * that would use one.
+   *
+   * An empty map means no envelope can verify. That is deliberate and is the
+   * fail-closed direction: a pod that never received a key refuses live-control
+   * commands rather than accepting them unverified.
+   */
+  envelopeKeys?: Map<string, KeyObject>;
+  /** Public keys projected by Kubernetes; reloaded without a worker restart. */
+  envelopeKeysFile?: string;
 }
 
 /**
@@ -109,13 +151,13 @@ export type StartOutcome =
 export class ControlListener {
   private server: http.Server | null = null;
   private readonly config: ControlListenerConfig;
-  private readonly tokenBuffer: Buffer;
   private readonly tokenExpiresAt: number;
+  private readonly credentials?: ControlCredentials;
   private readonly log: (level: string, message: string, context?: Record<string, unknown>) => void;
 
   constructor(config: ControlListenerConfig) {
     this.config = config;
-    this.tokenBuffer = Buffer.from(config.token ?? '', 'utf8');
+    if (config.credentialFile) this.credentials = new ControlCredentials(config.credentialFile, config.runId ?? '', config.generation);
     // Accept the UTC format the registration writer emits, never an implicit
     // local date or an unbounded credential when configuration is absent.
     this.tokenExpiresAt = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(config.tokenExpiresAt ?? '')
@@ -243,7 +285,10 @@ export class ControlListener {
     const path = (req.url ?? '/').split('?')[0];
 
     if (method === 'GET' && path === '/agent/ping') {
-      this.writeJson(res, 200, { ok: true, generation: this.config.generation });
+      this.writeJson(res, 200, {
+        ok: true, generation: this.config.generation,
+        ...(this.config.envelopeKeysFile ? { verification_key_ids: [...this.verificationKeys().keys()].sort() } : {}),
+      });
       return;
     }
     if (method === 'GET' && path === '/agent/state') {
@@ -284,18 +329,18 @@ export class ControlListener {
   private authenticate(req: http.IncomingMessage): boolean {
     // The gateway also checks the registered expiry, but a caller with the pod
     // token must not bypass that limit by reaching this socket directly.
-    if (Date.now() >= this.tokenExpiresAt) {
-      return false;
-    }
     const header = req.headers.authorization;
     if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
       return false;
     }
     const presented = Buffer.from(header.slice('Bearer '.length), 'utf8');
-    if (presented.length !== this.tokenBuffer.length) {
-      return false;
-    }
-    if (!timingSafeEqual(presented, this.tokenBuffer)) {
+    const tokens = this.credentials
+      ? this.credentials.read()
+      : [{ token: this.config.token, expiresAt: this.tokenExpiresAt }];
+    if (!tokens.some(({ token, expiresAt }) => {
+      const expected = Buffer.from(token, 'utf8');
+      return Date.now() < expiresAt && presented.length === expected.length && timingSafeEqual(presented, expected);
+    })) {
       return false;
     }
 
@@ -324,6 +369,10 @@ export class ControlListener {
    * even for a verb this build cannot perform. That order is what makes the
    * "malformed payload returns 400 and the run continues unharmed" guarantee
    * testable now rather than only once a verb ships (AC-S5).
+   *
+   * Issue #5028 inserts envelope verification between validation and submission,
+   * and only for verbs this build can actually perform. See
+   * {@link requiresEnvelope} for why that condition rather than "always".
    */
   private async handleCommand(
     action: ControlAction,
@@ -363,7 +412,44 @@ export class ControlListener {
       return;
     }
 
-    const outcome = this.config.store.submit(action, validation.commandId, fingerprintPayload(payload));
+    // Issue #5028. Verified against `raw` — the exact bytes off the socket —
+    // rather than a re-serialization of `payload`, so a body edited between
+    // authorization and arrival cannot digest to the same value.
+    let queuedAuthorization;
+    if (this.requiresEnvelope(action)) {
+      const authorization = this.verifyControlEnvelope(action, validation.commandId, raw, req);
+      if (!authorization.ok) {
+        // 403, not 401: the caller's *identity* was accepted (it passed
+        // `authenticate`) and its *authorization* was not. A 401 here would tell
+        // a caller with a valid token to go re-authenticate, which would not help
+        // and would obscure the real cause.
+        //
+        // The reason is logged, never returned. A caller learning that its
+        // envelope failed on `target_mismatch` rather than `bad_signature` learns
+        // which run it just probed exists.
+        this.log('warn', 'control command refused: envelope not verified', {
+          action,
+          reason: authorization.reason,
+          generation: this.config.generation,
+        });
+        this.writeJson(res, 403, { error: 'not_authorized' });
+        return;
+      }
+      this.log('info', 'control command authorized', {
+        action,
+        command_id: validation.commandId,
+        // The audit trail the gateway's decision record joins against. No token,
+        // no signature, no instruction text — just the identifiers.
+        principal: authorization.envelope.principal,
+        grant_id: authorization.envelope.grantId,
+        revocation_epoch: authorization.envelope.revocationEpoch,
+        authority_reference_id: authorization.envelope.authorityReferenceId,
+      });
+      queuedAuthorization = { envelope: req.headers[ENVELOPE_HEADER] as string, action,
+        command_id: validation.commandId, body_base64: raw.toString('base64') };
+    }
+
+    const outcome = this.config.store.submit(action, validation.commandId, fingerprintPayload(payload), queuedAuthorization);
     switch (outcome.kind) {
       case 'unsupported':
         this.writeJson(res, 501, { error: 'not_implemented', action, capabilities: this.config.store.capabilities() });
@@ -385,6 +471,73 @@ export class ControlListener {
         this.writeJson(res, 202, { command: outcome.record, state: this.config.store.snapshot().state });
         return;
     }
+  }
+
+  /**
+   * Whether this verb must present a gateway envelope — Issue #5028.
+   *
+   * Only verbs this build can actually perform. The alternative — demand an
+   * envelope for every verb — reads as stricter and is worse, for two reasons.
+   *
+   * First, it changes the answer for unsupported verbs from 501 to 403. The
+   * platform's contract is that `pause`/`resume`/`steer`/`abort` are unimplemented
+   * and say so; a 403 would tell an operator their authorization was rejected when
+   * in fact the verb does not exist, sending them to debug key distribution over a
+   * feature that was never built.
+   *
+   * Second, an envelope check on a verb that cannot act protects nothing. What
+   * needs the envelope is the transition from "recorded in the journal" to
+   * "applied to a running agent", and no verb reaches that yet.
+   *
+   * The consequence is that this returns false for every verb today, so the
+   * envelope path ships tested but dormant — which is the same shape as the rest
+   * of this story: authorization first, behaviour later. When a verb joins
+   * `SUPPORTED_ACTIONS`, it becomes envelope-gated by that fact alone, with no
+   * second edit to remember here. That coupling is the point; a separate opt-in
+   * list is a list someone forgets to add to.
+   */
+  private requiresEnvelope(action: ControlAction): boolean {
+    return this.config.store.capabilities()[action] === true;
+  }
+
+  /**
+   * Verify the envelope against this pod's own independently-known facts.
+   *
+   * Every `expected` value below comes from this process or from this request's
+   * own path and parsed body — never from the envelope. Passing an envelope-derived
+   * value would make the corresponding binding check compare a claim to itself.
+   */
+  private verifyControlEnvelope(
+    action: ControlAction,
+    commandId: string,
+    raw: Buffer,
+    req: http.IncomingMessage,
+  ): { ok: true; envelope: ControlEnvelope } | { ok: false; reason: EnvelopeFailure | 'not_configured' } {
+    const runId = this.config.runId;
+    const keys = this.verificationKeys();
+    if (!runId || !keys || keys.size === 0) {
+      // Fail closed. A pod that was never given its run id or its verification
+      // keys cannot check authorization, and "cannot check" must mean "refuse",
+      // not "allow". This is the direction the marker-signing fail-open (#4128)
+      // got wrong, on a path with a smaller blast radius than this one.
+      return { ok: false, reason: 'not_configured' };
+    }
+
+    const header = req.headers[ENVELOPE_HEADER];
+    const token = Array.isArray(header) ? header[0] : header;
+
+    const result = verifyEnvelope(token, keys, {
+      runId,
+      generation: this.config.generation,
+      action,
+      commandId,
+      body: raw,
+    });
+    return result.ok ? { ok: true, envelope: result.envelope } : { ok: false, reason: result.reason };
+  }
+
+  private verificationKeys(): Map<string, KeyObject> {
+    return this.config.envelopeKeysFile ? readControlKeyring(this.config.envelopeKeysFile) : (this.config.envelopeKeys ?? new Map());
   }
 
   /**

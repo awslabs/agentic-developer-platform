@@ -51,9 +51,54 @@ on:
       - '.github/workflows/gateway-deploy.yml'
       # In-pod control listener (TypeScript)
       - 'modules/agent-factory/agent/src/control-listener.ts'
+      - 'modules/agent-factory/agent/src/control-credentials.ts'
+      - 'modules/agent-factory/agent/src/control-keyring.ts'
       - 'modules/agent-factory/agent/src/control-state.ts'
+      - 'modules/agent-factory/agent/src/control-authorization.ts'
+      - 'modules/agent-factory/agent/src/lib/runIdentity*'
+      - 'modules/agent-factory/agent/src/lib/githubTokenBroker*'
+      - 'modules/agent-factory/agent-worker-image/adp_trigger/transport_identity.py'
+      - 'modules/agent-factory/agent-worker-image/lib/gateway_credential_client.py'
+      - 'modules/agent-factory/agent/src/control-revalidation.ts'
+      - 'modules/agent-factory/agent/src/control-revalidation.test.ts'
       - 'modules/agent-factory/agent/src/control-listener.test.ts'
       - 'modules/agent-factory/agent/src/agent-worker.ts'
+      # Worker-side verification of the gateway's authorization envelope (#5028).
+      # Listed separately from the listener because a change confined to the
+      # verifier or its fixture matches none of the paths above, so the parity
+      # gate would not run on exactly the PRs most likely to break it.
+      - 'modules/agent-factory/agent/src/control-envelope.ts'
+      - 'modules/agent-factory/agent/src/control-envelope.test.ts'
+      # The shared vectors both verifiers must agree on. The fixture is generated
+      # by the Python script below and consumed by the TypeScript suite: an edit
+      # to either side alone is the drift these vectors exist to catch.
+      - 'modules/agent-factory/agent/src/__fixtures__/control-envelope-vectors.json'
+      - 'modules/gateway/src/agentauth/envelope.py'
+      - 'modules/gateway/tests/agentauth/test_envelope_vectors.py'
+      - 'modules/gateway/tests/agentauth/generate_envelope_vectors.py'
+      # Delegated authority and the CLI need the same fast gate as the listener.
+      - 'modules/gateway/src/agentauth/**'
+      - 'modules/gateway/tests/agentauth/**'
+      # The gateway contract tests exercise these real ingress writers/handlers.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/agent_authority.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/service_authority.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/service_identity.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/spawn_persona.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/sqs_publisher.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/webhook_events.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/eventbridge/handler.py'
+      - 'modules/agent-factory/webhook-ingress/infra/eventbridge.tf'
+      - 'modules/gateway/src/orchestration/dispatch_pass.py'
+      - 'modules/gateway/tests/orchestration/test_dispatch_pass.py'
+      - 'modules/agent-factory/agent-worker-image/adp_trigger/**'
+      - 'modules/agent-factory/agent-worker-image/tests/test_adp_trigger.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_adp_trigger_control.py'
+      - 'modules/agent-factory/agent-worker-image/lib/run_identity.py'
+      - 'modules/agent-factory/agent-worker-image/lib/control_renewal.py'
+      - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_status_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_control_renewal.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_run_identity.py'
       # Per-run token minting and the control record on the invocation row
       - 'modules/agent-factory/agent-worker-image/entrypoint.py'
       - 'modules/agent-factory/agent-worker-image/lib/invocation_status.py'
@@ -129,6 +174,21 @@ jobs:
             tests/orchestration/test_controls.py \
             tests/features/test_routes.py \
             -v --tb=short --timeout=120
+
+      - name: Run delegated authorization tests
+        working-directory: modules/gateway
+        # Require the existing security suites by name, then collect the whole
+        # directory so new bootstrap/route integration tests join this gate.
+        # Deleting a required suite must fail rather than reduce coverage silently.
+        run: |
+          for suite in \
+            test_adapter.py test_envelope.py test_envelope_vectors.py \
+            test_execution.py test_grants.py test_policy.py \
+            test_run_credential.py test_store.py test_store_lifecycle.py \
+            test_store_reservations.py test_wave_dispatch.py test_revalidation.py; do
+            test -f "tests/agentauth/$suite" || exit 1
+          done
+          pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py -v --tb=short --timeout=120
 
       # Coverage is enforced per-file with `--cov-fail-under`, not as a repo-wide
       # average. The story requires >=85% line AND branch on the NEW control
@@ -235,13 +295,24 @@ jobs:
 
       - name: Run control-listener tests
         working-directory: modules/agent-factory/agent
-        # Pinned by path, and --coverage scoped to the two new modules so the
+        # Pinned by path, and --coverage scoped to the new modules so the
         # threshold below cannot be satisfied by unrelated well-covered files.
+        #
+        # control-envelope.test.ts is selected explicitly alongside the listener
+        # suite. It is the cross-language half of the parity gate: it verifies the
+        # committed vectors the gateway's test_envelope_vectors.py verifies from
+        # the other side, so leaving it out meant a divergence between the two
+        # verifiers could merge green.
         run: |
-          npx jest src/control-listener.test.ts \
+          npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
+            --collectCoverageFrom='src/control-envelope.ts' \
+            --collectCoverageFrom='src/control-credentials.ts' \
+            --collectCoverageFrom='src/control-keyring.ts' \
+            --collectCoverageFrom='src/control-revalidation.ts' \
+            --collectCoverageFrom='src/lib/runIdentity.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
             --ci --verbose
 
@@ -287,12 +358,19 @@ jobs:
         # the teardown backstops. Measuring only the DDB writer left all four
         # ungated.
         run: |
-          pytest tests/test_control_token.py \
+          pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py \
             --cov=lib.invocation_status \
             --cov=entrypoint \
             --cov-branch \
             --cov-report=term-missing \
             --cov-report=json:coverage-control.json \
+            -v --tb=short --timeout=60
+
+      - name: Run agent trigger compatibility and control CLI tests
+        working-directory: modules/agent-factory/agent-worker-image
+        run: |
+          pytest tests/test_adp_trigger.py tests/test_adp_trigger_control.py tests/test_run_identity.py tests/test_gateway_credential_client.py \
+            tests/test_control_renewal.py \
             -v --tb=short --timeout=60
 
       - name: Enforce coverage on the new control functions (>=85% line and branch)

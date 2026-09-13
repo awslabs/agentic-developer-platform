@@ -1806,6 +1806,18 @@ def handler(event: dict, context) -> dict:
         "chain_depth": 0,
     }
 
+    trusted_human_event = None
+    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and resolved.user_kind == "human":
+        from common.agent_authority import AuthorityProvisionError, VerifiedHumanEvent
+
+        try:
+            trusted_human_event = VerifiedHumanEvent.from_verified_webhook(
+                body=body_bytes, event_type=event_type, resolved=resolved, sender=sender,
+                tenant_id=tenant_id, repo=repo,
+            )
+        except AuthorityProvisionError:
+            return _response(403, {"error": "human_authority_refused"})
+
     spawn_result = _spawn_persona(
         persona=intent.persona,
         correlation_ctx=effective_correlation_ctx,
@@ -1826,6 +1838,7 @@ def handler(event: dict, context) -> dict:
         model_resolved=model_resolved,
         aws_label=aws_label,
         token_source=token_source,
+        **({"trusted_human_event": trusted_human_event} if trusted_human_event is not None else {}),
     )
 
     print(

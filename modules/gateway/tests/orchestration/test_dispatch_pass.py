@@ -1169,6 +1169,197 @@ class TestModuleStructure:
         assert not offenders, "dispatch_pass.py must not import tick.py — the tick performs no dispatch"
 
 
+@pytest.fixture
+def protected_engine(monkeypatch):
+    import boto3
+    from moto import mock_aws
+
+    from src.agentauth.bootstrap import BootstrapStore
+    from src.agentauth.engine import EngineAuthorityWriter
+
+    with mock_aws():
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        for table, pk, sk in [("authority", "pk", "sk"), ("events", "event_id", "arrived_at")]:
+            ddb.create_table(
+                TableName=table,
+                BillingMode="PAY_PER_REQUEST",
+                KeySchema=[{"AttributeName": pk, "KeyType": "HASH"}, {"AttributeName": sk, "KeyType": "RANGE"}],
+                AttributeDefinitions=[{"AttributeName": pk, "AttributeType": "S"}, {"AttributeName": sk, "AttributeType": "S"}],
+            )
+        store = BootstrapStore(table_name="authority", dynamodb_client=ddb)
+        writer = EngineAuthorityWriter(store=store, events_table="events")
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+        monkeypatch.setattr("src.agentauth.engine.get_engine_authority_writer", lambda: writer)
+        yield store, writer
+
+
+@pytest.mark.parametrize("kind", [NodeKind.STORY.value, NodeKind.EVAL.value])
+async def test_protected_engine_publishes_committed_identity_and_live_flow(session, protected_engine, kind):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import boto3
+
+    from src.agentauth.bootstrap import envelope_digest
+    from src.agentauth.engine import validate_engine_authority
+    from src.agentauth.grants import AgentAction
+    from src.agentauth.workload import VerifiedPod
+    from src.orchestration.results import observe_results
+    from src.orchestration.run_store import EngineRunStore
+
+    store, _ = protected_engine
+    await _make_org(session)
+    flow = await _make_flow(session)
+    await _make_approval(session, flow)
+    node = await _make_node(session, flow, kind=kind)
+    report = await run_dispatch_pass(session, _config())
+    await session.commit()
+    pending = list(report.pending)
+    committed = json.loads(
+        (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one().reason
+    )
+    runs = EngineRunStore(boto3.resource("dynamodb", region_name="us-east-1").Table("events"))
+    sqs = FakeSQS()
+    publish_pending(report, _config(), client=sqs, run_store=runs)
+    assert len(sqs.calls) == 1
+    envelope = sqs.envelope()
+    assert envelope["message_id"] == committed["run_id"]
+    assert envelope["arrived_at"] == committed["arrived_at"]
+    row = runs.get(committed["run_id"], committed["arrived_at"])
+    assert row["engine_node_id"] == node.id
+    assert row["engine_attempt"] == node.attempts
+    assert row["actor_kind"] == "service"
+    assert row["user_id"] == envelope["actor"]["user_id"]
+    record = store.bind(
+        invocation_id=envelope["message_id"],
+        digest=envelope_digest(envelope),
+        pod=VerifiedPod("engine-pod", "engine-worker", "adp-agents", "agent-scaledjob-sa", "10.0.1.2"),
+        now=datetime.now(UTC),
+    )
+    grant = store.live_grant(invocation_id=record.invocation_id, tenant_id=ORG_A, attempt=1, now=datetime.now(UTC))
+    execution = store._read(f"TENANT#{ORG_A}", f"EXEC#{record.invocation_id}")
+    await validate_engine_authority(session=session, execution=execution, grant=grant)
+    assert execution["orchestration_node_id"]["S"] == node.id
+    assert grant.authority.human_id == APPROVER
+    assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 1
+    assert "credential" not in envelope
+    if kind == NodeKind.EVAL.value:
+        assert envelope["persona"] == "operations"
+        assert grant.allowed_actions == frozenset({AgentAction.MONITOR})
+    runs.table.update_item(
+        Key={"event_id": envelope["message_id"], "arrived_at": envelope["arrived_at"]},
+        UpdateExpression="SET #status = :complete, transcript_key = :transcript",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":complete": "complete", ":transcript": "test/transcript.json"},
+    )
+    report.pending = pending
+    publish_pending(report, _config(), client=sqs, run_store=runs)
+    assert report.publish_failed == 0
+    assert sqs.envelope(1) == envelope
+    assert runs.get(committed["run_id"], committed["arrived_at"])["status"] == "complete"
+    assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 1
+    await observe_results(session, run_store=runs, evidence=SimpleNamespace(merged_story=AsyncMock(return_value=None)))
+    await session.refresh(node)
+    assert node.state == (NodeState.AWAITING_GATE.value if kind == NodeKind.EVAL.value else NodeState.AWAITING_MERGE.value)
+
+
+@pytest.mark.parametrize("tamper", ["run_id", "node_id", "attempt", "flow_id", "decision_id", "persona"])
+async def test_protected_engine_refuses_changed_committed_identity(session, protected_engine, tamper):
+    from copy import deepcopy
+    from dataclasses import replace
+
+    store, _ = protected_engine
+    await _make_org(session)
+    flow = await _make_flow(session)
+    await _make_approval(session, flow)
+    await _make_node(session, flow)
+    report = await run_dispatch_pass(session, _config())
+    await session.commit()
+    envelope = deepcopy(report.pending[0].envelope)
+    if tamper == "run_id":
+        envelope["message_id"] = "another-run"
+    elif tamper == "persona":
+        envelope["persona"] = "operations"
+    else:
+        key = "root_decision_id" if tamper == "decision_id" else tamper
+        envelope["orchestration"][key] = 99 if tamper == "attempt" else "another-record"
+    report.pending[0] = replace(report.pending[0], envelope=envelope)
+    sqs = FakeSQS()
+    publish_pending(report, _config(), client=sqs)
+    assert not sqs.calls
+    assert report.publish_failed == 1
+    assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 0
+
+
+async def test_engine_halt_blocks_bootstrap_refresh_http(session, session_factory, protected_engine, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from fastapi import FastAPI
+
+    from src.agentauth.bootstrap import envelope_digest
+    from src.agentauth.routes import AgentRuntime, get_agent_runtime, router
+    from src.agentauth.run_credential import CREDENTIAL_KEY_ENV
+    from src.agentauth.workload import VerifiedPod
+
+    store, _ = protected_engine
+    await _make_org(session)
+    flow = await _make_flow(session)
+    await _make_approval(session, flow)
+    node = await _make_node(session, flow)
+    report = await run_dispatch_pass(session, _config())
+    await session.commit()
+    sqs = FakeSQS()
+    publish_pending(report, _config(), client=sqs)
+    envelope = sqs.envelope()
+    pod = VerifiedPod("engine-pod", "engine-worker", "adp-agents", "agent-scaledjob-sa", "10.0.1.2")
+    runtime = AgentRuntime(store=store, workloads=SimpleNamespace(verify=lambda token: pod), env={CREDENTIAL_KEY_ENV: "gateway-key-test"})
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", AsyncMock())
+    monkeypatch.setattr("src.shared.database.get_session_factory", lambda: session_factory)
+    headers = {"X-Caller-Identity": "shared-worker-role", "X-Adp-Workload-Token": "verified-pod-proof"}
+    body = {"invocation_id": envelope["message_id"], "envelope_digest": envelope_digest(envelope)}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway.test") as client:
+        first = await client.post("/internal/v1/agent/bootstrap", json=body, headers=headers)
+        assert first.status_code == 200
+        again = await client.post("/internal/v1/agent/bootstrap", json=body, headers=headers)
+        assert again.status_code == 200
+        assert again.json()["attempt"] == first.json()["attempt"] == 1
+        node.state = NodeState.HALTED.value
+        await session.commit()
+        halted = await client.post("/internal/v1/agent/bootstrap", json=body, headers=headers)
+        assert halted.status_code == 404
+        assert "credential" not in halted.text
+        auth_headers = {**headers, "X-Adp-Run-Credential": first.json()["credential"]}
+        refused = await client.post(
+            "/internal/v1/agent/dispatch",
+            headers=auth_headers,
+            json={"persona": "reviewer", "target": {"repo": REPO, "issue": 4196}, "request_id": "after-halt"},
+        )
+        assert refused.status_code == 404
+        assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 1
+
+
+async def test_engine_refuses_missing_trusted_genesis_without_sqs(session, protected_engine):
+    from dataclasses import replace
+
+    await _make_org(session)
+    flow = await _make_flow(session)
+    await _make_approval(session, flow)
+    await _make_node(session, flow)
+    report = await run_dispatch_pass(session, _config())
+    await session.commit()
+    report.pending[0] = replace(report.pending[0], genesis=None)
+    sqs = FakeSQS()
+    publish_pending(report, _config(), client=sqs)
+    assert not sqs.calls
+    assert report.publish_failed == 1
+
+
 async def test_unconfigured_evaluations_do_not_consume_the_dispatch_cap(session):
     await _make_org(session)
     flow = await _make_flow(session)

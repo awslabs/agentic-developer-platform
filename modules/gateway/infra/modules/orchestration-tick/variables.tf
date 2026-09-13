@@ -330,6 +330,12 @@ variable "webhook_events_table_name" {
   default     = ""
 }
 
+variable "agent_authority_enabled" {
+  description = "Enable protected authority creation before engine queue publication."
+  type        = bool
+  default     = false
+}
+
 variable "webhook_events_kms_key_arn" {
   description = <<-EOT
     ARN of the KMS key encrypting the webhook-events table. Required for the tick

@@ -63,6 +63,8 @@ import { CodexEventWatcher } from './components/codexEventWatcher';
 // Issue #3960: live-control foundations. Both modules are transport/SDK-isolated
 // so the control surface is unit-testable without starting a run.
 import { ControlListener, SUPPORTED_ACTIONS } from './control-listener';
+import { revalidateQueuedCommand } from './control-revalidation';
+import { parseVerificationKeys } from './control-envelope';
 import { ControlStateStore } from './control-state';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
@@ -1974,14 +1976,23 @@ async function main(): Promise<void> {
       generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
       // No verbs in S1: every capability reports false and every verb answers 501.
       supportedActions: SUPPORTED_ACTIONS,
+      revalidate: revalidateQueuedCommand,
     });
     const listener = new ControlListener({
       bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
       port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),
       token: process.env.ADP_CONTROL_TOKEN || '',
       tokenExpiresAt: process.env.ADP_CONTROL_TOKEN_EXPIRES_AT || '',
+      credentialFile: process.env.ADP_CONTROL_CREDENTIAL_FILE,
       generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
       store: controlStore,
+      // Issue #5028: this run's own identity and the gateway's public verification
+      // keys. Both are placed here by the entrypoint. An absent key map means
+      // live-control commands are refused — the read paths still work, and no verb
+      // is implemented yet, so that is the expected state today.
+      runId: process.env.ADP_CONTROL_RUN_ID || '',
+      envelopeKeys: parseVerificationKeys(process.env.ADP_CONTROL_ENVELOPE_KEYS),
+      envelopeKeysFile: process.env.ADP_CONTROL_ENVELOPE_KEYS_FILE,
       logger: (level, message, context) => log(level.toUpperCase(), message, context),
     });
     const outcome = await listener.start();

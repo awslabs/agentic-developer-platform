@@ -1135,6 +1135,7 @@ module "orchestration_tick" {
   # All four default to empty/false, which leaves the bridge inert: the pass reads
   # nothing and reports `commands_enabled=false`.
   engine_enabled                = var.orchestration_engine_enabled
+  agent_authority_enabled       = var.orchestration_agent_authority_enabled
   webhook_events_table_name     = var.orchestration_webhook_events_table
   webhook_events_kms_key_arn    = var.orchestration_webhook_events_kms_key_arn
   github_app_secret_arn_pattern = var.orchestration_github_app_secret_arn_pattern

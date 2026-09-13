@@ -23,6 +23,7 @@ Two properties dominate this file:
 from __future__ import annotations
 
 import calendar
+import json
 import logging
 import os
 import re
@@ -182,6 +183,25 @@ class TestTokenTtl:
 
 
 class TestSetupAgentControl:
+    def test_authority_mode_starts_rotation_and_closes_it_before_clearing(self, tmp_path):
+        agent_env = {}
+        with (
+            patch.dict(os.environ, {"FEATURE_AGENT_CONTROL_ENABLED": "true", "ADP_AGENT_AUTHORITY_ENABLED": "true", "POD_IP": "10.0.1.5", "ADP_CONTROL_ENVELOPE_KEYS_FILE": "/var/run/adp-control-keys/keys.json"}),
+            patch.object(entrypoint, "register_control_endpoint", return_value=7),
+            patch.object(entrypoint, "clear_control_endpoint") as clear,
+            patch("lib.control_renewal.ControlRenewal") as renewal,
+        ):
+            renewal.return_value.path = tmp_path / "lease.json"
+            assert entrypoint._setup_agent_control(agent_env, *RUN_KEY)
+            assert agent_env["ADP_CONTROL_CREDENTIAL_FILE"] == str(tmp_path / "lease.json")
+            assert agent_env["ADP_CONTROL_ENVELOPE_KEYS_FILE"] == "/var/run/adp-control-keys/keys.json"
+            renewal.return_value.start.assert_called_once()
+            def cleared(*args):
+                renewal.return_value.close.assert_called_once()
+            clear.side_effect = cleared
+            entrypoint._teardown_agent_control(*RUN_KEY, True)
+            clear.assert_called_once()
+
     def test_flag_off_writes_nothing_and_sets_no_env(self, ddb):
         """A flag-off run must be indistinguishable from one predating the feature."""
         agent_env = {}
@@ -228,6 +248,35 @@ class TestSetupAgentControl:
         # not mint a fresh lifetime when the Node process eventually starts.
         written = ddb.update_item.call_args.kwargs["ExpressionAttributeValues"]
         assert agent_env["ADP_CONTROL_TOKEN_EXPIRES_AT"] == written[":e"]["S"]
+        assert agent_env["ADP_CONTROL_RUN_ID"] == RUN_KEY[0]
+        assert "ADP_CONTROL_ENVELOPE_KEYS" not in agent_env
+
+    def test_delivers_verification_keys_and_registered_run_identity(self, ddb):
+        """The listener needs both public keys and its own registered run binding."""
+        fixture_path = (
+            Path(__file__).resolve().parents[2]
+            / "agent/src/__fixtures__/control-envelope-vectors.json"
+        )
+        public_keys = json.loads(fixture_path.read_text())["public_keys"]
+        verification_keys = ",".join(f"{kid}:{key}" for kid, key in public_keys.items())
+        agent_env = {"ADP_CONTROL_RUN_ID": "stale-run"}
+        with patch.dict(
+            os.environ,
+            {
+                "FEATURE_AGENT_CONTROL_ENABLED": "true",
+                "POD_IP": "10.0.1.5",
+                "WEBHOOK_EVENTS_TABLE": "webhook-events",
+                "ADP_MESSAGE_ID": "unrelated-environment-run",
+                "ADP_CONTROL_ENVELOPE_KEYS": f"  {verification_keys}  ",
+            },
+            clear=True,
+        ):
+            assert entrypoint._setup_agent_control(agent_env, *RUN_KEY) is True
+
+        registered_key = ddb.update_item.call_args.kwargs["Key"]
+        assert agent_env["ADP_CONTROL_RUN_ID"] == registered_key["event_id"]["S"] == RUN_KEY[0]
+        assert agent_env["ADP_CONTROL_ENVELOPE_KEYS"] == verification_keys
+        assert agent_env["ADP_CONTROL_GENERATION"] == "1"
 
     def test_the_listener_is_told_the_generation_the_row_assigned(self, ddb):
         """The child env must carry the row's number, not a locally chosen one.

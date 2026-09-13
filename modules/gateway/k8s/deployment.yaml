@@ -75,6 +75,18 @@ spec:
             - configMapRef:
                 name: bedrockgateway-config
           env:
+            - name: AGENT_RUN_CREDENTIAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-authority-signing
+                  key: run-credential-key
+                  optional: true
+            - name: AGENT_CONTROL_ENVELOPE_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-authority-signing
+                  key: envelope-signing-key
+                  optional: true
             - name: BG_LOG_FORMAT
               value: "json"
             - name: BG_LOG_LEVEL

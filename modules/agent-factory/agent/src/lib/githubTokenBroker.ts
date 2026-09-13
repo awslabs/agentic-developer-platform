@@ -23,6 +23,8 @@
  */
 
 /** The gateway's GithubInstallationTokenResponse. */
+import { workerIdentityHeaders, workerAwsCredentialProvider } from './runIdentity';
+
 interface GithubInstallationTokenResponse {
   token?: string;
   expires_at?: string;
@@ -55,14 +57,14 @@ async function sigv4Headers(
   endpoint: string,
   body: string,
   region: string,
+  identityHeaders: Record<string, string> = {},
 ): Promise<Record<string, string>> {
   const { SignatureV4 } = await import('@smithy/signature-v4');
   const { Hash } = await import('@smithy/hash-node');
-  const { defaultProvider } = await import('@aws-sdk/credential-provider-node');
 
   const url = new URL(endpoint);
   const signer = new SignatureV4({
-    credentials: defaultProvider(),
+    credentials: await workerAwsCredentialProvider(),
     region,
     service: 'execute-api',
     sha256: Hash.bind(null, 'sha256'),
@@ -77,6 +79,7 @@ async function sigv4Headers(
     headers: {
       'Content-Type': 'application/json',
       host: url.hostname,
+      ...identityHeaders,
     },
     body,
   });
@@ -132,6 +135,13 @@ export async function fetchBrokeredToken(req: BrokerRequest): Promise<BrokeredTo
   }
 
   const endpoint = `${baseUrl}/internal/v1/github-installation-token`;
+  const authority = process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true';
+  if (authority) {
+    const url = new URL(endpoint);
+    if (!useSigv4 || url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+      throw new Error('Worker credential broker requires HTTPS and SigV4');
+    }
+  }
   const payload: Record<string, unknown> = {
     installation_id: Number(req.installationId),
     repo_owner: req.repoOwner,
@@ -145,13 +155,14 @@ export async function fetchBrokeredToken(req: BrokerRequest): Promise<BrokeredTo
   const body = JSON.stringify(payload);
 
   const headers: Record<string, string> = useSigv4
-    ? await sigv4Headers(endpoint, body, region)
+    ? await sigv4Headers(endpoint, body, region, authority ? workerIdentityHeaders() : {})
     : { 'X-Internal-Api-Key': apiKey, 'Content-Type': 'application/json' };
 
   const resp = await fetch(endpoint, {
     method: 'POST',
     headers,
     body,
+    redirect: 'error',
     signal: AbortSignal.timeout(15000),
   });
 
