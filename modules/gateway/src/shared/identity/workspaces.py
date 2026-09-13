@@ -12,10 +12,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.base import utcnow
 from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import User
+from src.shared.models.organization import Team, TeamMembership, User
 from src.shared.models.vault import UserIdentity
 
 PLACEMENT_VERIFICATION = "org_placement"
+
+
+async def primary_team_for_workspace(db: AsyncSession, user: User, org_id: str) -> Team | None:
+    """Resolve the same authoritative primary for selection and claim refresh.
+
+    Membership rows win over the legacy pointer. Only a user with no memberships
+    may fall back to that pointer, and only within the requested organization.
+    """
+    memberships = (
+        await db.scalars(
+            select(TeamMembership).where(TeamMembership.user_id == user.id, TeamMembership.org_id == org_id).execution_options(populate_existing=True)
+        )
+    ).all()
+    primaries = [row for row in memberships if row.is_primary]
+    if len(primaries) > 1:
+        raise ValueError("Multiple primary teams are assigned in this organization")
+    primary = next(iter(primaries), None)
+    team_id = primary.team_id if primary else (user.team_id if not memberships else "")
+    team = await db.scalar(select(Team).where(Team.id == team_id, Team.org_id == org_id)) if team_id else None
+    if primary and team is None:
+        raise ValueError("Primary membership does not reference a team in this organization")
+    return team
 
 
 async def login_user(db: AsyncSession, subject: str) -> User | None:

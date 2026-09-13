@@ -234,7 +234,7 @@ async def test_cognito_failure_rolls_back_active_membership(db_session, seeded, 
 
 
 @pytest.mark.asyncio
-async def test_commit_failure_restores_previous_cognito_claims(db_session, seeded, claims):
+async def test_commit_failure_reconciles_current_committed_workspace_claims(db_session, seeded, claims):
     await place(db_session, seeded)
     with patch.object(db_session, "commit", AsyncMock(side_effect=RuntimeError("database disconnected"))):
         with pytest.raises(HTTPException) as exc:
@@ -243,7 +243,7 @@ async def test_commit_failure_restores_previous_cognito_claims(db_session, seede
     assert claims.set.await_count == 2
     assert claims.set.await_args_list[-1].args == (
         "login-sub",
-        {"custom:org_id": "home", "custom:team_id": "old-team", "custom:department_id": "old-dept", "custom:role": "org_admin"},
+        {"custom:org_id": "home", "custom:team_id": "", "custom:department_id": "", "custom:role": "org_admin"},
     )
 
 
@@ -295,6 +295,7 @@ def test_strict_writer_uses_verified_sub_and_persists_refresh_claims(monkeypatch
         "Users": [{"Username": "real-login-name", "Attributes": [{"Name": "sub", "Value": "login-sub"}, {"Name": "custom:org_id", "Value": "home"}]}]
     }
     monkeypatch.setattr("src.auth.workspaces.cognito_user_pool_id", lambda: "pool")
+    client.admin_get_user.return_value = {"UserAttributes": client.list_users.return_value["Users"][0]["Attributes"]}
     values = {"custom:org_id": "work", "custom:team_id": "", "custom:department_id": "", "custom:role": "member"}
     with patch("boto3.client", return_value=client):
         previous, applied = CognitoWorkspaceClaims()._set("login-sub", values)
@@ -488,6 +489,7 @@ def test_switch_writer_preserves_only_current_platform_authority(monkeypatch):
     client = MagicMock()
     attributes = [{"Name": "sub", "Value": "login-sub"}, {"Name": "custom:role", "Value": "platform_admin"}]
     client.list_users.return_value = {"Users": [{"Username": "native-login", "Attributes": attributes}]}
+    client.admin_get_user.return_value = {"UserAttributes": attributes}
     monkeypatch.setattr("src.auth.workspaces.cognito_user_pool_id", lambda: "pool")
     with patch("boto3.client", return_value=client):
         _, applied = CognitoWorkspaceClaims()._set("login-sub", {"custom:org_id": "work", "custom:role": "member"})

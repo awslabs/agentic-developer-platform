@@ -83,6 +83,7 @@ from src.admin.schemas import (
     UsageTimeseriesResponse,
 )
 from src.admin.service import AdminService
+from src.admin.team_membership_claims import commit_team_memberships
 from src.auth.dependencies import get_current_user  # Issue #133: Real Cognito JWT auth
 from src.shared.database import get_db
 from src.shared.schemas.admin import (
@@ -910,7 +911,7 @@ async def replace_user_teams(
         org_id=org_id,
         desired=[m.model_dump() for m in request.memberships],
     )
-    await db.commit()
+    await commit_team_memberships(db, user_id=user_id, org_id=org_id)
 
     refreshed = await team_memberships.list_memberships(db, user_id=user_id, org_id=org_id)
     return TeamMembershipListResponse(
@@ -1009,7 +1010,7 @@ async def add_team_member(
         source=request.source or "admin",
         external_id=request.external_id,
     )
-    await db.commit()
+    await commit_team_memberships(db, user_id=request.user_id, org_id=org_id)
     await db.refresh(membership)
     return TeamMembershipResponse.model_validate(membership)
 
@@ -1031,7 +1032,7 @@ async def remove_team_member(
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
 
     await team_memberships.remove_membership(db, user_id=user_id, team_id=team_id, org_id=org_id)
-    await db.commit()
+    await commit_team_memberships(db, user_id=user_id, org_id=org_id)
 
 
 # User Management Endpoints

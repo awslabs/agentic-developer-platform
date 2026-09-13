@@ -12,9 +12,9 @@ from src.admin.cognito_claims import cognito_user_pool_id
 from src.admin.config import membership_role_to_admin_role
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
-from src.shared.identity.workspaces import link_login_to_workspace, linked_user_ids, login_user, memberships_for_login
+from src.shared.identity.workspaces import link_login_to_workspace, linked_user_ids, login_user, memberships_for_login, primary_team_for_workspace
 from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import Organization, Team, TeamMembership, User
+from src.shared.models.organization import Organization, User
 from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class SwitchWorkspaceRequest(BaseModel):
 class CognitoWorkspaceClaims:
     """Strict write: a switch must never claim success after a failed sync."""
 
-    def _set(self, subject: str, values: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    def _login(self, subject: str):
         import boto3
 
         from src.shared.config import get_settings
@@ -54,9 +54,15 @@ class CognitoWorkspaceClaims:
         users = client.list_users(UserPoolId=pool_id, Filter=f'sub = "{subject}"', Limit=1).get("Users", [])
         if not users:
             raise RuntimeError("Login account was not found")
-        attributes = {a["Name"]: a["Value"] for a in users[0].get("Attributes", [])}
+        username = users[0]["Username"]
+        response = client.admin_get_user(UserPoolId=pool_id, Username=username)
+        attributes = {a["Name"]: a["Value"] for a in response.get("UserAttributes", [])}
         if attributes.get("sub") != subject:
             raise RuntimeError("Login account does not match the authenticated subject")
+        return client, pool_id, username, attributes
+
+    def _set(self, subject: str, values: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+        client, pool_id, username, attributes = self._login(subject)
         previous = {key: attributes.get(key, "") for key in values}
         applied = dict(values)
         platform_roles = {"platform_admin", "admin"}
@@ -68,13 +74,35 @@ class CognitoWorkspaceClaims:
             raise RuntimeError("Platform role changed during workspace selection")
         client.admin_update_user_attributes(
             UserPoolId=pool_id,
-            Username=users[0]["Username"],
+            Username=username,
             UserAttributes=[{"Name": key, "Value": value} for key, value in applied.items()],
         )
         return previous, applied
 
     async def set(self, subject: str, values: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
         return await asyncio.to_thread(self._set, subject, values)
+
+    def _set_team(self, subject: str, org_id: str, team_id: str, department_id: str) -> None:
+        """Reconcile team scope only, under the canonical login's DB row lock.
+
+        ListUsers resolves the immutable subject to a username; AdminGetUser supplies
+        the current attributes (ListUsers itself is eventually consistent). Membership
+        in another org must never switch the selected login or replace its other claims.
+        """
+        client, pool_id, username, attributes = self._login(subject)
+        if attributes.get("custom:org_id") != org_id:
+            return
+        values = {"custom:team_id": team_id, "custom:department_id": department_id}
+        if all(attributes.get(key, "") == value for key, value in values.items()):
+            return
+        client.admin_update_user_attributes(
+            UserPoolId=pool_id,
+            Username=username,
+            UserAttributes=[{"Name": key, "Value": value} for key, value in values.items()],
+        )
+
+    async def set_team(self, subject: str, org_id: str, team_id: str, department_id: str) -> None:
+        await asyncio.to_thread(self._set_team, subject, org_id, team_id, department_id)
 
 
 def get_workspace_claims() -> CognitoWorkspaceClaims:
@@ -95,15 +123,10 @@ async def _memberships(db: AsyncSession, context: TokenContext):
 
 
 async def _workspace(db: AsyncSession, context: TokenContext, org: Organization, user: User, membership: TenantMembership | None) -> Workspace:
-    # TeamMembership is authoritative. The old pointer is used only if there are
-    # no team memberships in this org, and only if that team belongs to this org.
-    memberships = (await db.scalars(select(TeamMembership).where(TeamMembership.user_id == user.id, TeamMembership.org_id == org.id))).all()
-    primaries = [row for row in memberships if row.is_primary]
-    if len(primaries) > 1:
-        raise HTTPException(409, "Multiple primary teams are assigned in this organization")
-    primary = next(iter(primaries), None)
-    team_id = primary.team_id if primary else (user.team_id if not memberships else "")
-    team = await db.scalar(select(Team).where(Team.id == team_id, Team.org_id == org.id)) if team_id else None
+    try:
+        team = await primary_team_for_workspace(db, user, org.id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return Workspace(
         org_id=org.id,
         name=org.name,
@@ -120,6 +143,54 @@ async def list_workspaces(current_user: TokenContext = Depends(get_current_user)
     _, memberships = await _memberships(db, current_user)
     orgs = (await db.scalars(select(Organization).where(Organization.id.in_(memberships)).order_by(Organization.name, Organization.id))).all()
     return WorkspaceList(items=[await _workspace(db, current_user, org, *memberships[org.id]) for org in orgs])
+
+
+async def _reconcile_after_failed_switch(
+    db: AsyncSession, context: TokenContext, subject: str, previous_org: str, claims: CognitoWorkspaceClaims
+) -> None:
+    """Restore committed scope, never a snapshot that may predate another write.
+
+    Rollback releases the login lock. A later switch (including A -> B -> A) or
+    primary-team edit can win before we reacquire it. Re-read active membership and
+    team under the same canonical lock before writing. Legacy placements could mark
+    several local rows active; only in that case use the previously selected org,
+    with its CURRENT team and authority. A successful switch leaves one active org.
+    """
+    login = await db.scalar(select(User).where(User.cognito_sub == subject).with_for_update().execution_options(populate_existing=True))
+    if login is None:
+        raise RuntimeError("Canonical login no longer exists")
+    # Avoid SQLAlchemy identity-map snapshots surviving rollback/test sessions.
+    db.expire_all()
+    _, memberships = await _memberships(db, context)
+    active = [org_id for org_id, (_, membership) in memberships.items() if membership and membership.is_active]
+    org_id = active[0] if len(active) == 1 else previous_org
+    pair = memberships.get(org_id)
+    if not pair or (active and org_id not in active):
+        raise RuntimeError("Previous workspace no longer has an active membership")
+    user, membership = pair
+    user = await db.scalar(select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True))
+    if user is None:
+        raise RuntimeError("Workspace account no longer exists")
+    if membership:
+        membership = await db.scalar(
+            select(TenantMembership).where(TenantMembership.id == membership.id).with_for_update().execution_options(populate_existing=True)
+        )
+        if membership is None or not membership.is_active:
+            raise RuntimeError("Workspace membership no longer exists or is inactive")
+    org = await db.get(Organization, org_id)
+    if org is None:
+        raise RuntimeError("Workspace organization no longer exists")
+    selected = await _workspace(db, context, org, user, membership)
+    await claims.set(
+        subject,
+        {
+            "custom:org_id": selected.org_id,
+            "custom:team_id": selected.team_id,
+            "custom:department_id": selected.department_id,
+            "custom:role": selected.role,
+        },
+    )
+    await db.commit()
 
 
 async def select_workspace(db: AsyncSession, context: TokenContext, org_id: str, claims: CognitoWorkspaceClaims) -> Workspace:
@@ -173,8 +244,9 @@ async def select_workspace(db: AsyncSession, context: TokenContext, org_id: str,
         await db.rollback()
         if previous_claims is not None:
             try:
-                await claims.set(subject, previous_claims)
+                await _reconcile_after_failed_switch(db, context, subject, previous_claims.get("custom:org_id", ""), claims)
             except Exception:
+                await db.rollback()
                 logger.exception("Failed to restore workspace claims after database failure")
         logger.exception("Workspace selection failed for subject=%s org=%s", subject, org_id)
         raise HTTPException(503, "Could not save your workspace selection. Please try again.") from exc

@@ -18,10 +18,10 @@ Three invariants live here, and callers should not re-implement any of them:
    ``src/admin/memberships.py`` (see its docstring, ``:13-21``).
 
 2. **``users.team_id`` is a cache, not the authority.** It stays the denormalized
-   primary-team pointer that the Cognito pre-token Lambda and every
-   ``custom:team_id`` consumer read, so whenever the primary membership changes it
-   is updated in the same transaction. Mirrors the existing ``users.org_id``
-   convention. Readers keep working untouched; that is what makes #4840 additive.
+   primary-team pointer, updated in the same transaction as membership. The
+   Cognito pre-token Lambda reads Cognito attributes, NOT this pointer: HTTP
+   writers must finish with ``team_membership_claims.commit_team_memberships``
+   to synchronize the selected login after commit.
 
 3. **A membership row must never confer authority.** ``team_memberships.role``
    describes a user's function *within a team* (member/lead) and is deliberately
@@ -414,9 +414,8 @@ def _point_user_at_primary(user: User, team_id: str) -> None:
     """Keep the denormalized ``users.team_id`` pointer in step with the primary.
 
     The pointer is a cache of this table, not an independent fact (docstring 2).
-    Writing it here — in the same transaction as the membership change — is what
-    lets the Cognito pre-token Lambda and every ``custom:team_id`` reader stay
-    correct without knowing this table exists.
+    This alone does not update Cognito. HTTP writers commit and synchronize the
+    selected login through ``team_membership_claims.commit_team_memberships``.
     """
     if user.team_id != team_id:
         logger.info("users.team_id pointer updated: user=%s %r -> %r", user.id, user.team_id, team_id)
