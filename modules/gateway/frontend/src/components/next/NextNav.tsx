@@ -37,6 +37,7 @@
  */
 
 import { Link } from 'react-router-dom';
+import { handleGitlabSsoClick } from '@/services/gitlabSso';
 import type { Journey, JourneyEntry } from './journeys';
 
 interface NextNavProps {
@@ -56,18 +57,14 @@ function EntryLink({
   isActive: boolean;
   onNavigate?: () => void;
 }) {
-  return (
-    <Link
-      to={entry.to}
-      onClick={onNavigate}
-      data-testid={`next-nav-entry-${entry.id}`}
-      aria-current={isActive ? 'page' : undefined}
-      className={`block rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 ${
-        isActive
-          ? 'bg-primary-50 text-primary-800 dark:bg-primary-900 dark:text-primary-100'
-          : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
-      }`}
-    >
+  const className = `block rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+    isActive
+      ? 'bg-primary-50 text-primary-800 dark:bg-primary-900 dark:text-primary-100'
+      : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+  }`;
+
+  const body = (
+    <>
       <span className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">{entry.label}</span>
         {entry.scope === 'platform' && (
@@ -82,6 +79,39 @@ function EntryLink({
           Opens in the current UI
         </span>
       )}
+    </>
+  );
+
+  // A server-owned path must leave the SPA. A router `Link` would push client-side,
+  // match nothing and land on the /next catch-all 404 instead of the real page
+  // (#5123). GitLab additionally needs its authenticated SSO handoff, which is the
+  // same handler the current sidebar uses.
+  if (entry.external) {
+    return (
+      <a
+        href={entry.to}
+        onClick={(event) => {
+          if (entry.id === 'gitlab') handleGitlabSsoClick(event);
+          onNavigate?.();
+        }}
+        data-testid={`next-nav-entry-${entry.id}`}
+        aria-current={isActive ? 'page' : undefined}
+        className={className}
+      >
+        {body}
+      </a>
+    );
+  }
+
+  return (
+    <Link
+      to={entry.to}
+      onClick={onNavigate}
+      data-testid={`next-nav-entry-${entry.id}`}
+      aria-current={isActive ? 'page' : undefined}
+      className={className}
+    >
+      {body}
     </Link>
   );
 }

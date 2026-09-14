@@ -99,7 +99,19 @@ export function NextLayout() {
 
   // Move focus to the page heading on journey change so the next Tab starts in the
   // new journey rather than back at the document top.
+  //
+  // Skipped on the FIRST run (#5123). On a fresh load nobody has changed journey, so
+  // taking focus into the content only steals it: the skip link and the "Back to
+  // current UI" control sit before the heading, so the first Tab landed past them and
+  // reaching the navigation meant tabbing backwards. A ref rather than state because
+  // this is bookkeeping the render output does not depend on — state here would add a
+  // render on every journey change.
+  const hasMountedRef = useRef(false);
   useEffect(() => {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
     headingRef.current?.focus();
   }, [activeJourney]);
 

@@ -102,6 +102,16 @@ export interface JourneyEntry {
    * screen is never mistaken for an organization-filtered one.
    */
   scope?: 'platform';
+  /**
+   * True when `to` is a path the *server* owns rather than one the React router
+   * owns. These must be rendered as a real `<a href>`: a react-router `Link` does
+   * a client-side push, so the router never reaches the server, matches nothing
+   * and falls through to the `/next` catch-all 404 (#5123).
+   *
+   * This is a property of the destination, not of the styling, which is why it
+   * lives in the model beside the path it describes rather than in each renderer.
+   */
+  external?: boolean;
 }
 
 export interface JourneySection {
@@ -195,11 +205,25 @@ function buildUseAdp(features: FeatureFlags): Journey {
   // Chats are one capability across two current-UI pages; the design groups both
   // under Agent activity.
   if (features.chat) {
+    // Two entries, because chats really are two current-UI pages: /chat holds a
+    // conversation, /my-chats lists past ones. Both mirror `Navigation.tsx`'s gate
+    // exactly — `features.chat` and NO role or permission predicate (#5123). Gating
+    // either more tightly than the current sidebar would silently take chat away
+    // from someone who has it today.
+    work.push({
+      id: 'chats-new',
+      to: '/chat',
+      label: 'Agent chat',
+      description: 'Start a conversation with an agent.',
+      currentUi: true,
+    });
     work.push({
       id: 'chats',
       to: '/my-chats',
+      // Not "and starting a new chat": this page lists past conversations and
+      // contains no navigation to /chat. Starting one is the entry above.
       label: 'My chats',
-      description: 'Conversation history, and starting a new chat.',
+      description: 'Your past conversations.',
       currentUi: true,
     });
   }
@@ -261,6 +285,8 @@ function buildUseAdp(features: FeatureFlags): Journey {
       label: 'GitLab',
       description: 'Open the connected GitLab instance.',
       currentUi: true,
+      // Server-owned path, not a react-router route — see `external` (#5123).
+      external: true,
     });
   }
 

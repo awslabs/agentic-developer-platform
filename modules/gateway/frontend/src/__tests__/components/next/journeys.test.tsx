@@ -15,6 +15,8 @@
  * rules rather than against a prettier restatement of them.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   buildJourneys,
@@ -30,6 +32,23 @@ import { ALL_FEATURES_ENABLED, type FeatureFlags } from '@/services/features';
 
 function features(overrides: Partial<FeatureFlags> = {}): FeatureFlags {
   return { ...ALL_FEATURES_ENABLED, ...overrides };
+}
+
+/**
+ * Genuinely every flag on.
+ *
+ * `ALL_FEATURES_ENABLED` does not mean what its name says: `gitlab`,
+ * `orchestration_engine`, `budget_spend`, `agent_control` and `new_ui` are
+ * deliberately `false` there because that object is also the fail-closed default
+ * while `/features` is in flight or erroring. Tests that need the widest possible
+ * set of destinations must turn them on explicitly, so derive the set from the
+ * object's own keys rather than restating a list that would go stale.
+ */
+function allFeaturesOn(): FeatureFlags {
+  const on = Object.fromEntries(
+    Object.keys(ALL_FEATURES_ENABLED).map((key) => [key, true]),
+  );
+  return on as unknown as FeatureFlags;
 }
 
 /** A plain member: no roles, no permissions. */
@@ -89,6 +108,7 @@ describe('journey model — Issue #5080', () => {
 
     it.each([
       ['chat', 'chats'],
+      ['chat', 'chats-new'],
       ['orchestration_engine', 'flows'],
       ['knowledge', 'knowledge'],
       ['budget_spend', 'my-spend'],
@@ -98,6 +118,32 @@ describe('journey model — Issue #5080', () => {
     ] as const)('drops %s entries when the feature is off', (flag, entryId) => {
       expect(useIds({ [flag]: true })).toContain(entryId);
       expect(useIds({ [flag]: false })).not.toContain(entryId);
+    });
+
+    it('offers both chat pages: one to start a conversation, one to read past ones', () => {
+      // #5123: only /my-chats was carried across, so the preview had no way to
+      // START a chat — and /my-chats contains no link to one, so the label that
+      // claimed otherwise led to a dead end.
+      const journey = buildJourneys(features({ chat: true }), MEMBER).use;
+      const entries = journeyEntries(journey);
+
+      const startChat = entries.find((e) => e.to === '/chat');
+      expect(startChat).toBeDefined();
+      expect(startChat?.currentUi).toBe(true);
+
+      const history = entries.find((e) => e.to === '/my-chats');
+      expect(history).toBeDefined();
+      // The description must not promise starting a chat here.
+      expect(history?.description.toLowerCase()).not.toContain('starting a new chat');
+    });
+
+    it('gates chat on the feature alone, exactly as the sidebar does', () => {
+      // Navigation.tsx pushes /chat under `features.chat` with NO role or
+      // permission predicate. Gating it more tightly here would silently take
+      // chat away from a plain member who has it today.
+      expect(useIds({ chat: true }, MEMBER)).toContain('chats-new');
+      // And it is not something only admins reach.
+      expect(useIds({ chat: true }, MEMBER)).toEqual(useIds({ chat: true }, PLATFORM_ADMIN));
     });
 
     it('shows Delivery flows and My spend to a member with no permissions', () => {
@@ -117,6 +163,17 @@ describe('journey model — Issue #5080', () => {
       // page where the personal Bedrock selector actually lives.
       expect(modelAccess?.currentUi).toBe(true);
       expect(modelAccess?.to).toBe('/settings/credentials');
+    });
+
+    it('marks the server-owned GitLab path as external, and nothing else', () => {
+      // #5123: /gitlab/ is served by the backend and has no react-router route, so
+      // it must be flagged for the renderers to emit a real anchor. Asserting the
+      // negative too, so a future entry cannot be flagged external by accident and
+      // start hard-reloading the SPA.
+      const journeys = buildJourneys(allFeaturesOn(), PLATFORM_ADMIN);
+      const all = [...journeyEntries(journeys.use), ...journeyEntries(journeys.admin)];
+      const external = all.filter((e) => e.external).map((e) => e.to);
+      expect(external).toEqual(['/gitlab/']);
     });
 
     it('never marks a Use ADP entry as platform-scoped', () => {
@@ -314,6 +371,41 @@ describe('journey model — Issue #5080', () => {
         expect(entry.description).not.toBe('');
         expect(entry.label).not.toBe('');
       }
+    });
+
+    it('carries across every destination the current sidebar offers', () => {
+      // The class-level guard (#5123). The matrix above asserts gating
+      // CONDITIONS; nothing asserted COVERAGE, which is why a 2053-test suite did
+      // not notice that /chat had been dropped entirely. Reading the sidebar's
+      // source keeps this honest as that file changes: add an entry there and this
+      // fails until the journey model accounts for it.
+      const navSource = readFileSync(
+        resolve(__dirname, '../../../components/Navigation.tsx'),
+        'utf8',
+      );
+      const navPaths = [...navSource.matchAll(/to: '([^']+)'/g)].map((m) => m[1]);
+      // Sanity-check the scrape itself: a regex that silently matched nothing
+      // would make this test vacuously green.
+      expect(navPaths.length).toBeGreaterThan(15);
+
+      // The widest possible set of destinations. Note this needs BOTH admin roles,
+      // not just the platform one: `hasRole` is exact equality, so a platform admin
+      // does not satisfy `isOrgAdmin`, and /agents is an org-admin entry in the
+      // sidebar and in the model alike. A platform-admin-only fixture here would
+      // report /agents as missing when it is present and correctly gated.
+      const everyone = { ...PLATFORM_ADMIN, ...ORG_ADMIN, isPlatformAdmin: true };
+      const journeys = buildJourneys(allFeaturesOn(), everyone);
+      const modelPaths = new Set(
+        [...journeyEntries(journeys.use), ...journeyEntries(journeys.admin)].map((e) => e.to),
+      );
+
+      // A fragment is a location within a page, not a separate destination: the
+      // sidebar's /admin/system#pool and the model's /admin/system are the same
+      // page. Compare on the path.
+      const missing = navPaths
+        .map((p) => p.split('#')[0])
+        .filter((p) => !modelPaths.has(p));
+      expect(missing).toEqual([]);
     });
 
     it('gives every entry a unique id within its journey', () => {

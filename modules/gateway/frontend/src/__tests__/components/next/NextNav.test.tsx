@@ -8,11 +8,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { NextNav } from '@/components/next/NextNav';
 import { buildJourneys, type Journey } from '@/components/next/journeys';
 import { ALL_FEATURES_ENABLED } from '@/services/features';
+
+vi.mock('@/services/auth', () => ({ getAccessToken: vi.fn(() => null) }));
 
 const journeys = buildJourneys(ALL_FEATURES_ENABLED, {
   isPlatformAdmin: true,
@@ -148,6 +150,56 @@ describe('NextNav — Issue #5080', () => {
       for (const link of links) {
         expect(link).not.toHaveAttribute('tabindex');
       }
+    });
+  });
+
+  describe('a server-owned path must leave the SPA — #5123', () => {
+    // GitLab is served by the backend and has no react-router route. Rendered as a
+    // router `Link` the click is a client-side push that matches nothing and lands
+    // on the /next catch-all 404, which is what users saw.
+    const withGitlab = buildJourneys(
+      { ...ALL_FEATURES_ENABLED, gitlab: true },
+      { isPlatformAdmin: true, orgId: 'org-1' },
+    );
+
+    /** Renders the nav plus a location probe, so we can see whether a click
+     *  navigated the router or was left to the browser. */
+    function renderWithLocation(journey: Journey) {
+      function Probe() {
+        return <span data-testid="location">{useLocation().pathname}</span>;
+      }
+      return render(
+        <MemoryRouter initialEntries={['/next']}>
+          <NextNav journey={journey} />
+          <Routes>
+            <Route path="*" element={<Probe />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+    }
+
+    it('renders the GitLab entry as a real anchor to the server path', () => {
+      renderWithLocation(withGitlab.use);
+      const entry = screen.getByTestId('next-nav-entry-gitlab');
+      expect(entry.tagName).toBe('A');
+      expect(entry).toHaveAttribute('href', '/gitlab/');
+    });
+
+    it('does not route a GitLab click through the SPA router', () => {
+      // The behavioural assertion. Both a Link and an anchor carry an href, so the
+      // tag name alone would not prove the defect is fixed; what proves it is that
+      // the click does not become a client-side navigation.
+      renderWithLocation(withGitlab.use);
+      fireEvent.click(screen.getByTestId('next-nav-entry-gitlab'));
+      expect(screen.getByTestId('location')).toHaveTextContent('/next');
+    });
+
+    it('still routes an ordinary entry through the SPA router', () => {
+      // Scope check: the fix must not have turned every entry into a full page load,
+      // which would discard identity, the active organization and the query cache.
+      renderWithLocation(withGitlab.use);
+      fireEvent.click(screen.getByTestId('next-nav-entry-runs'));
+      expect(screen.getByTestId('location')).toHaveTextContent('/runs');
     });
   });
 

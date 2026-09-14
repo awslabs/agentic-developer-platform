@@ -7,9 +7,11 @@
  * client-side so following one keeps the shared session and organization context.
  */
 
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
+
+vi.mock('@/services/auth', () => ({ getAccessToken: vi.fn(() => null) }));
 import { JourneyEntryCards } from '@/components/next/JourneyEntryCards';
 import type { JourneySection } from '@/components/next/journeys';
 
@@ -155,6 +157,64 @@ describe('JourneyEntryCards — Issue #5080', () => {
       const idsB = Array.from(document.querySelectorAll('h3')).map((h) => h.id);
       expect(idsA.length).toBeGreaterThan(0);
       for (const id of idsA) expect(idsB).not.toContain(id);
+    });
+  });
+
+  describe('a server-owned path must leave the SPA — #5123', () => {
+    const EXTERNAL: JourneySection[] = [
+      {
+        title: 'Setup & connections',
+        entries: [
+          {
+            id: 'gitlab',
+            to: '/gitlab/',
+            label: 'GitLab',
+            description: 'Open the connected GitLab instance.',
+            currentUi: true,
+            external: true,
+          },
+          {
+            id: 'cli-setup',
+            to: '/setup',
+            label: 'CLI setup',
+            description: 'Set up Codex or Claude Code.',
+            currentUi: true,
+          },
+        ],
+      },
+    ];
+
+    function renderWithLocation(sections: JourneySection[]) {
+      function Probe() {
+        return <span data-testid="location">{useLocation().pathname}</span>;
+      }
+      return render(
+        <MemoryRouter initialEntries={['/next']}>
+          <JourneyEntryCards sections={sections} idPrefix="home" />
+          <Routes>
+            <Route path="*" element={<Probe />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+    }
+
+    it('renders an external entry as a real anchor, not a router link', () => {
+      renderWithLocation(EXTERNAL);
+      const card = screen.getByTestId('next-entry-card-gitlab');
+      expect(card.tagName).toBe('A');
+      expect(card).toHaveAttribute('href', '/gitlab/');
+      // A router Link would push client-side, match nothing and land on the
+      // /next catch-all 404 instead of the real page.
+      fireEvent.click(card);
+      expect(screen.getByTestId('location')).toHaveTextContent('/next');
+    });
+
+    it('still renders an ordinary entry as a client-side link', () => {
+      // Scope check: staying in the SPA is what keeps identity, the active
+      // organization and the query cache shared between the two UIs.
+      renderWithLocation(EXTERNAL);
+      fireEvent.click(screen.getByTestId('next-entry-card-cli-setup'));
+      expect(screen.getByTestId('location')).toHaveTextContent('/setup');
     });
   });
 });
