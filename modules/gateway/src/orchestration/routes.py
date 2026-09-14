@@ -72,7 +72,9 @@ from src.orchestration.cost import (
 )
 from src.orchestration.dispatch_pass import resolve_installation_id
 from src.orchestration.display_state import FlowStatus
+from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.models import DecisionKind
+from src.orchestration.policy_admission import load_in_force_policy
 from src.orchestration.proposal import LoopProposal, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
 from src.shared.database import get_db
@@ -937,6 +939,14 @@ class FlowGraphResponse(BaseModel):
     nodes: list[GraphNodeResponse]
     edges: list[GraphEdgeResponse]
     cost: FlowCostResponse
+    # What the owner authorized for this delivery, or `None` when no policy is in
+    # force (#5128). `None` is a real and permanent state, not a transitional one:
+    # every flow accepted before policies existed has no policy and never will, and
+    # those flows run with legacy semantics. So the client must render nothing rather
+    # than an empty or zeroed policy — a summary reading "0 autonomous actions,
+    # $0.00" describes a policy that authorizes nothing, which is the opposite of
+    # what an unpolicied flow does.
+    execution_policy: PolicySummary | None = None
 
 
 @router.get("/flows/{flow_id}", response_model=FlowGraphResponse)
@@ -975,6 +985,11 @@ async def get_flow_graph(
 
     nodes = await repo.list_nodes(org_id=current_user.org_id, flow_id=flow.id)
     edges = await repo.list_edges(org_id=current_user.org_id, flow_id=flow.id)
+    # The same loader admission uses, so the view describes the policy that is
+    # actually deciding rather than a second reading of the plan document. It resolves
+    # the version currently in force, which is what makes an amendment show up here
+    # without a superseded version ever being shown as current.
+    policy_inputs = await load_in_force_policy(db, org_id=current_user.org_id, flow_id=flow.id)
     aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
     stalled_node_ids = await _stalled_node_ids(repo, org_id=current_user.org_id, flow_id=flow.id)
 
@@ -1076,4 +1091,5 @@ async def get_flow_graph(
         nodes=graph_nodes,
         edges=[GraphEdgeResponse(from_node_id=edge.from_node_id, to_node_id=edge.to_node_id) for edge in edges],
         cost=_flow_cost_response(flow.id, aggregate),
+        execution_policy=summarize_policy(policy_inputs.policy) if policy_inputs.policy is not None else None,
     )

@@ -83,6 +83,7 @@ export function GraphView() {
           waves={new Set(activeNodes.map((node) => `${node.epic_ref}/${node.wave_ref}`)).size}
           gates={activeNodes.filter((node) => node.kind === 'gate').length}
           evaluations={activeNodes.filter((node) => node.kind === 'eval').length}
+          policy={data.execution_policy}
         />
         <RollupBar counts={counts} total={segmented} />
       </header>

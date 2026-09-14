@@ -152,6 +152,7 @@ from src.shared.models.organization import Organization
 from .dispatch import DispatchStatus, dispatch_node
 from .genesis import APPROVAL_DECISION_KINDS, EngineGenesis, GenesisRefusedError, resolve_engine_genesis
 from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
+from .policy_admission import authorize_node_dispatch
 from .state import ActorKind, NodeState
 
 logger = logging.getLogger("bedrockgateway.orchestration.dispatch_pass")
@@ -374,6 +375,16 @@ class DispatchPassReport:
     transitions_rejected: int = 0
     # A concurrent pass dispatched the node first. Normal overlap, not a failure.
     lost_races: int = 0
+    # Refused by the flow's accepted execution policy (#5128). Deliberately NOT
+    # folded into `undispatchable`: that counter means "this node could not produce a
+    # valid envelope", a defect to fix, while this means "the envelope was fine and
+    # the owner's policy did not authorize it" — working as intended. Merging them
+    # would make a correctly-enforced boundary look like a malformed graph.
+    #
+    # It is also not an `error`: a policy refusal must not make the pass unsuccessful,
+    # or every tick would report failure for as long as a policy legitimately
+    # withheld an action.
+    policy_blocked: int = 0
     errors: int = 0
     # True when the per-tick cap stopped the pass early. Work is delayed, not
     # dropped — but "we ran out of budget" must never read as "there was nothing
@@ -384,6 +395,11 @@ class DispatchPassReport:
     enabled: bool = True
     pending: list[PendingPublish] = field(default_factory=list)
     per_org: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Typed `DenyReason` value -> count, for the pass's own observability. A dict
+    # rather than a counter field per reason because #5128's reason vocabulary is
+    # owned by `execution_policy` and read by #5122; mirroring it as dataclass fields
+    # here would guarantee the two drift.
+    policy_block_reasons: dict[str, int] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:
@@ -407,6 +423,7 @@ class DispatchPassReport:
                 "publish_failed": 0,
                 "transitions_rejected": 0,
                 "lost_races": 0,
+                "policy_blocked": 0,
                 "errors": 0,
             },
         )
@@ -666,6 +683,39 @@ async def _dispatch_one(
 
     user_id = await resolve_root_user_entity_id(session, org_id, genesis.root_human_id)
     cognito_sub = await resolve_user_entity_id(session, org_id, user_id)
+
+    # --- Policy admission (#5128): the last check before the node commits to
+    # running. Placed here deliberately, after genesis and before `dispatch_node`:
+    # a refusal must leave the node in `ready` with nothing published, exactly like
+    # a genesis refusal. Checking after `dispatch_node` would mean the node had
+    # already moved to `running` and incremented `attempts` for work that was never
+    # admitted, burning an attempt against the policy's own limit.
+    #
+    # A flow with no accepted policy permits here, preserving legacy semantics.
+    admission = await authorize_node_dispatch(
+        session,
+        node=node,
+        # The canonical `users.id` of the attributed approver, resolved server-side
+        # above. The membership lookups are keyed on this namespace.
+        principal_user_id=user_id,
+        target_repository=config.repo,
+        installation_resolved=True,
+    )
+    if not admission.permitted:
+        # `reason` is a typed `DenyReason` (#5122 renders these), so it is logged as
+        # its own field rather than folded into prose a consumer would have to parse.
+        logger.warning(
+            "orchestration dispatch: node %s refused by execution policy reason=%s detail=%s — not dispatching",
+            node.id,
+            admission.reason.value if admission.reason else "",
+            admission.detail,
+        )
+        report.record(org_id, "policy_blocked")
+        if admission.reason is not None:
+            # Which reason, kept out of the counter set: `record` writes named
+            # fields, and the typed reasons are an open vocabulary that #5122 owns.
+            report.policy_block_reasons[admission.reason.value] = report.policy_block_reasons.get(admission.reason.value, 0) + 1
+        return
 
     outcome = await dispatch_node(session, node, genesis)
 

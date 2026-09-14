@@ -44,14 +44,18 @@ still present at `shared/schemas/budget.py:51`; this story does not migrate thos
 but it does not copy them either.
 """
 
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# Imported, never redefined — see module docstring (R-N2a).
+# Imported, never redefined — see module docstring (R-N2a). The address grammar
+# moved to `address.py` (#5128) so `execution_policy.py` can constrain its
+# evaluation-address keys to the same pattern without the two modules importing
+# each other; it is re-exported below so existing importers are unaffected.
+from .address import ADDRESS_PATTERN, split_address
+from .execution_policy import ExecutionPolicy
 from .models import NodeKind
 from .state import NodeState
 
@@ -61,16 +65,9 @@ __all__ = [
     "ProposedEdge",
     "ProposedNode",
     "Violation",
+    "split_address",
     "validate_proposal",
 ]
-
-
-# A graph address is `flow/epic/wave/node` — exactly four non-empty segments
-# (D-R13). Segments allow word characters, dots and hyphens: enough for slugs and
-# issue refs, and deliberately not `/`, which would let one segment forge two and
-# make a three-segment address parse as four.
-_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
-ADDRESS_PATTERN = re.compile(rf"^{_SEGMENT}/{_SEGMENT}/{_SEGMENT}/{_SEGMENT}$")
 
 # The executable node kinds, derived from the store's enum rather than listed.
 # Hand-listing them here is exactly how the vocabulary would drift.
@@ -282,20 +279,27 @@ class LoopProposal(BaseModel):
     description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LEN)
     design_history: DesignHistory | None = None
 
-
-def split_address(address: str) -> tuple[str, str, str, str]:
-    """Split a validated graph address into its four segments.
-
-    Raises:
-        ValueError: If `address` is not of the form `flow/epic/wave/node`. Callers
-            that have already run `validate_proposal` cannot hit this; the raise
-            exists so a caller that skipped validation fails loudly here rather
-            than writing a malformed address to the store.
-    """
-    if not ADDRESS_PATTERN.match(address):
-        raise ValueError(f"not a graph address of the form 'flow/epic/wave/node': {address!r}")
-    flow, epic, wave, node = address.split("/")
-    return flow, epic, wave, node
+    # --- The authority the owner delegates (#5128), optional --------------
+    # What autonomous actions this plan's agents may take, where, and within what
+    # bounds. **Unlike the two fields above, this IS part of the plan's executable
+    # content** and so is deliberately covered by `compile.plan_hash`: two
+    # documents differing only in what they authorize are not the same plan, and
+    # hashing them alike would let an amendment that widened authority be mistaken
+    # for a retry of the narrower one.
+    #
+    # Optional, and **an omission preserves legacy semantics exactly**: a plan with
+    # no policy dispatches as it did before this field existed. That is what keeps
+    # the change opt-in, and it is why the default is `None` rather than a
+    # permissive policy — a default that authorized anything would silently widen
+    # every existing flow on deploy, and a default that authorized nothing would
+    # silently halt them all.
+    #
+    # `policy_id`, `policy_hash` and `principal_id` inside this block are
+    # server-stamped: a submitted document setting any of them is rejected by
+    # `execution_policy.stamp_policy`, not overwritten. An author cannot name their
+    # own policy identity or principal, for the same reason `org_id` above is
+    # compared rather than trusted.
+    execution_policy: ExecutionPolicy | None = None
 
 
 def _check_addresses(proposal: LoopProposal) -> list[Violation]:

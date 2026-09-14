@@ -39,6 +39,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.admin.config import Permission
 from src.orchestration.cost import COST_SCOPE_LABEL
+from src.orchestration.execution_policy import AcceptanceMode, Action, ExecutionPolicy, PolicyLimits, stamp_policy
 from src.orchestration.models import DecisionKind, NodeKind, OrchestrationFlow, OrchestrationNode
 from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.state import ActorKind, NodeState
@@ -50,6 +51,12 @@ ORG_A = "org-alpha"
 ORG_B = "org-beta"
 FLOW_SLUG = "delivery-loop"
 USER_ID = "cognito-sub-operator"
+# The principal an execution policy is stamped to (#5128). Distinct from USER_ID so a
+# test can assert it does not appear in a `USAGE_READ` body.
+APPROVER = "cognito-sub-the-policy-owner"
+# An internal graph address, which §7.2 makes non-renderable. Used as an
+# `evaluation_acceptance` key so its absence from the response can be asserted.
+MACHINE_EVAL_ADDRESS = f"{FLOW_SLUG}/epic-1/wave-1/eval-machine"
 
 
 def route(flow_id: str) -> str:
@@ -236,6 +243,46 @@ async def seed_usage(
         )
     )
     await session.flush()
+
+
+async def accept_policy(
+    session: AsyncSession,
+    flow: OrchestrationFlow,
+    *,
+    repository_ids: list[str] | None = None,
+) -> None:
+    """Accept a plan carrying an execution policy, via the real acceptance path (#5128).
+
+    `stamp_policy` rather than hand-written stamped fields, and
+    `record_accepted_plan` rather than a raw insert, so the row under test is the one
+    acceptance actually produces — including the supersede of the previous version,
+    which is what the amendment case depends on.
+
+    `DEPLOY` is deliberately in both `allowed_actions` and `human_gates`: the overlap
+    is the case the summary's autonomous/gated split exists to get right.
+    """
+    policy = ExecutionPolicy(
+        org_id=flow.org_id,
+        repository_ids=repository_ids or ["repo-alpha"],
+        environment_connection_ids=["conn-env-alpha"],
+        allowed_actions=[Action.DEVELOP, Action.REVIEW, Action.DEPLOY, Action.EVALUATE],
+        human_gates=[Action.DEPLOY],
+        evaluation_acceptance={MACHINE_EVAL_ADDRESS: AcceptanceMode.MACHINE},
+        expires_at=datetime.now(UTC) + timedelta(days=7),
+        limits=PolicyLimits(
+            max_wall_clock_seconds=3600,
+            max_spend_usd=Decimal("50.00"),
+            max_attempts_per_node=3,
+            max_concurrent_actions=4,
+        ),
+    )
+    stamped = stamp_policy(policy, principal_id=APPROVER, org_id=flow.org_id)
+    await OrchestrationRepository(session).record_accepted_plan(
+        org_id=flow.org_id,
+        flow_id=flow.id,
+        plan_document={"flow_slug": flow.slug, "execution_policy": stamped.model_dump(mode="json")},
+        plan_hash=stamped.policy_hash or "hash",
+    )
 
 
 def address_of(node: OrchestrationNode, *, slug: str = FLOW_SLUG) -> str:
@@ -771,6 +818,146 @@ class TestNoApprovalRecordLeak:
 
         assert "secret_plan_key" not in response.text
         assert "plan_document" not in response.text
+
+
+class TestExecutionPolicySummary:
+    """The graph payload carries the policy in force, projected (#5128).
+
+    Reusing `load_in_force_policy` — the same loader admission uses — rather than
+    adding a second read is the load-bearing choice here. It means the view
+    describes the policy that is actually deciding, so an amendment shows up
+    without a superseded version ever being presented as current.
+
+    The projection is `summarize_policy`, tested directly in
+    `test_execution_policy.py`. What is asserted at this layer is the wiring and
+    the two things only visible in a serialised body: that absence is `null`
+    rather than a zeroed policy, and that no identity field or graph address rides
+    along on a `USAGE_READ` response.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_flow_with_no_accepted_plan_reports_no_policy(self, session, app_with_router):
+        """Not an empty policy. Every flow accepted before policies existed has none
+        permanently and runs with legacy semantics, so a zeroed summary would
+        describe the opposite of how it behaves."""
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+
+        body = client_for(app_with_router).get(route(flow.id)).json()
+
+        assert body["execution_policy"] is None
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_plan_without_a_policy_reports_no_policy(self, session, app_with_router):
+        """A plan can be accepted with no policy at all — that is the legacy shape."""
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await OrchestrationRepository(session).record_accepted_plan(
+            org_id=ORG_A, flow_id=flow.id, plan_document={"flow_slug": FLOW_SLUG}, plan_hash="h1"
+        )
+
+        assert client_for(app_with_router).get(route(flow.id)).json()["execution_policy"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_policy_in_force_is_summarized(self, session, app_with_router):
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await accept_policy(session, flow)
+
+        summary = client_for(app_with_router).get(route(flow.id)).json()["execution_policy"]
+
+        assert summary["repository_ids"] == ["repo-alpha"]
+        assert summary["environment_connection_ids"] == ["conn-env-alpha"]
+        assert summary["limits"]["max_spend_usd"] == "50.00"
+        assert summary["machine_accepted_evaluations"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_gated_action_is_not_reported_as_autonomous(self, session, app_with_router):
+        """The reading this projection exists to prevent, asserted on the wire.
+
+        `deploy` is in both `allowed_actions` and `human_gates` in the seeded policy —
+        the owner saying "agents may prepare this, a person releases it".
+        """
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await accept_policy(session, flow)
+
+        summary = client_for(app_with_router).get(route(flow.id)).json()["execution_policy"]
+
+        assert "deploy" in summary["human_decisions"]
+        assert "deploy" not in summary["autonomous_actions"]
+
+    @pytest.mark.asyncio
+    async def test_an_amendment_supersedes_what_is_shown(self, session, app_with_router):
+        """Version 2's authority is shown; version 1's is not, in any form.
+
+        A view reading the newest row would be right by accident here; one reading
+        `superseded_at IS NULL` is right by construction. Asserting the old repository
+        is absent from the whole body catches a summary that merged the two versions.
+        """
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await accept_policy(session, flow, repository_ids=["repo-original"])
+        await accept_policy(session, flow, repository_ids=["repo-amended"])
+
+        response = client_for(app_with_router).get(route(flow.id))
+
+        assert response.json()["execution_policy"]["repository_ids"] == ["repo-amended"]
+        assert "repo-original" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_no_identity_or_provenance_field_rides_along(self, session, app_with_router):
+        """This is a `USAGE_READ` response. A policy hash on it invites treating a hash
+        match as the authorization check, which it is not — authority also depends on
+        live membership, expiry and limits that no document carries."""
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await accept_policy(session, flow)
+
+        response = client_for(app_with_router).get(route(flow.id))
+
+        for leaked in ("policy_hash", "policy_id", "principal_id", APPROVER, "schema_version"):
+            assert leaked not in response.text, f"{leaked!r} leaked into a USAGE_READ response"
+
+    @pytest.mark.asyncio
+    async def test_no_evaluation_graph_address_reaches_the_body(self, session, app_with_router):
+        """§7.2: the joined address is the internal cost join key and is never rendered.
+
+        The policy's `evaluation_acceptance` map is keyed by exactly that address, so
+        the summary carries a count instead — leaving no address on the payload to
+        leak by accident.
+        """
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await accept_policy(session, flow)
+
+        response = client_for(app_with_router).get(route(flow.id))
+
+        assert MACHINE_EVAL_ADDRESS not in response.text
+        assert "evaluation_acceptance" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_policy_document_reports_no_policy_not_a_500(self, session, app_with_router):
+        """One flow's undecodable document must not take the read endpoint down.
+
+        The loader treats an unparseable policy as no policy and logs it; the flow
+        then reads as unpolicied, which is bounded and visible, rather than 500ing a
+        view whose remaining content is perfectly readable.
+        """
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await OrchestrationRepository(session).record_accepted_plan(
+            org_id=ORG_A,
+            flow_id=flow.id,
+            plan_document={"execution_policy": {"schema_version": 999, "org_id": ORG_A}},
+            plan_hash="h1",
+        )
+
+        response = client_for(app_with_router).get(route(flow.id))
+
+        assert response.status_code == 200
+        assert response.json()["execution_policy"] is None
+        assert len(response.json()["nodes"]) == 1
 
 
 class TestContainersAreNotReturned:

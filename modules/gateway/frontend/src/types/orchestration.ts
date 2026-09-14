@@ -95,6 +95,61 @@ export interface GraphEdge {
   to_node_id: string;
 }
 
+/**
+ * The autonomous actions an execution policy can authorize (#5128).
+ *
+ * Mirrors `Action` in `src/orchestration/execution_policy.py`, which is a closed
+ * set validated at acceptance — so an unknown string never reaches this type.
+ * `merge` and `deploy` are separate from `develop` because their effects outlive
+ * the run: authorizing delivery work is not authorizing either.
+ */
+export type PolicyAction = 'develop' | 'review' | 'repair' | 'merge' | 'deploy' | 'evaluate';
+
+/**
+ * The bounds an accepted policy places on autonomous work.
+ *
+ * Every field is required and positive server-side, and there is **no sentinel for
+ * "no limit"** — the schema cannot express an unbounded policy. So a renderer never
+ * needs an "unlimited" branch, and adding one would be inventing a state the server
+ * refuses to accept.
+ *
+ * `max_spend_usd` arrives as a string, not a number: it is a `Decimal` server-side,
+ * and parsing it into a JS float would reintroduce the rounding the backend went to
+ * some trouble to avoid. Render it as given.
+ */
+export interface PolicyLimits {
+  max_wall_clock_seconds: number;
+  max_spend_usd: string;
+  max_attempts_per_node: number;
+  max_concurrent_actions: number;
+}
+
+/**
+ * What an owner authorized, as the plan summary reads it. Mirrors `PolicySummary`.
+ *
+ * **`autonomous_actions` and `human_decisions` can overlap in the source document
+ * and do not overlap here.** Server-side, an action listed in both `allowed_actions`
+ * and `human_gates` means "agents may prepare this, a person releases it";
+ * `summarize_policy` resolves that, so these two arrays are already disjoint and a
+ * renderer must not re-derive them. Showing `merge` as autonomous on exactly the
+ * policy that gated it is the reading this split exists to prevent.
+ *
+ * No `policy_hash` / `policy_id` / `principal_id`, and no `evaluation_acceptance`
+ * map — identity belongs to an audit view, and the map's keys are internal graph
+ * addresses that §7.2 makes non-renderable. The machine-acceptance *count* is the
+ * fact a reader needs.
+ */
+export interface PolicySummary {
+  repository_ids: string[];
+  environment_connection_ids: string[];
+  team_ids: string[];
+  autonomous_actions: PolicyAction[];
+  human_decisions: PolicyAction[];
+  machine_accepted_evaluations: number;
+  expires_at: string;
+  limits: PolicyLimits;
+}
+
 export interface FlowGraph {
   flow_id: string;
   slug: string;
@@ -104,6 +159,19 @@ export interface FlowGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
   cost: AggregateCostFigure;
+  /**
+   * The policy in force, or `null`/absent when the flow has none.
+   *
+   * **Absence is permanent, not transitional.** Every flow accepted before policies
+   * existed has none and never will; those flows run with legacy semantics. So a
+   * consumer renders *nothing* rather than an empty policy — a summary reading "no
+   * autonomous actions, $0.00" describes a policy authorizing nothing, which is the
+   * opposite of how an unpolicied flow behaves.
+   *
+   * Optional as well as nullable so a client built against an older API release,
+   * whose payload omits the key entirely, type-checks unchanged.
+   */
+  execution_policy?: PolicySummary | null;
 }
 
 // ---------------------------------------------------------------------------

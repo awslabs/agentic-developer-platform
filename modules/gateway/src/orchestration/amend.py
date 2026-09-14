@@ -63,6 +63,7 @@ from .compile import (
     ApprovalContext,
     ProposalRejectedError,
     TenantMismatchError,
+    accept_execution_policy,
     address_of,
     plan_hash,
     upsert_edges,
@@ -225,6 +226,21 @@ async def amend_plan(
         raise ProposalRejectedError(
             f"amendment declares flow_slug {proposal.flow_slug!r} but flow {flow_id!r} is {flow.slug!r}; an amendment must target the flow it amends"
         )
+
+    # --- Stamp the amended execution policy (#5128) ------------------------
+    # An amendment producing a new accepted version IS how a policy is amended, so
+    # a re-submitted policy is re-stamped here and the new version carries it.
+    #
+    # The same `accept_execution_policy` the original path uses, imported rather
+    # than reimplemented, for the same reason this module already shares
+    # `validate_proposal` and `upsert_nodes` (AC-29 parity): a second acceptance
+    # rule here would be free to accept a policy `compile_proposal` refuses, and
+    # the amendment path is the *easier* one to reach. In particular this is what
+    # stops an amendment from being the way a SERVICE actor gets a policy accepted.
+    #
+    # Before the hash, so the stamp is inside what idempotency compares — see
+    # `compile.plan_hash` on why the policy is hashed at all.
+    proposal = accept_execution_policy(proposal, decision=actor.to_approval(), decision_kind=DecisionKind.PLAN_AMENDED)
 
     document = proposal.model_dump(mode="json")
     document_hash = plan_hash(proposal)
