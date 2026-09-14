@@ -4,16 +4,46 @@
  * The layout carries two acceptance criteria: the return link is persistent (on
  * every preview page, not just the home page), and both interfaces share identity
  * and the active org/workspace rather than keeping parallel copies.
+ *
+ * These remain #5079's assertions and are deliberately unchanged by #5080 — they
+ * are the regression signal that adding the two journeys did not disturb the
+ * shell's return link, shared identity or preview labelling. #5080 added the
+ * feature and permission hooks the layout now reads, so the harness stubs those
+ * below; the journey behaviour itself is asserted in NextLayoutJourneys.test.tsx.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { NextLayout } from '@/layouts/NextLayout';
+import { ALL_FEATURES_ENABLED } from '@/services/features';
 
 const mockUseAuth = vi.fn();
 vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => mockUseAuth(),
+}));
+
+// #5080: the layout builds its navigation from these. Stubbed rather than wrapped
+// in providers because this file's assertions are about the shell chrome, not the
+// journey model — a real QueryClient here would only add a fetch to mock.
+vi.mock('@/hooks/useFeatures', () => ({
+  useFeatures: () => ALL_FEATURES_ENABLED,
+}));
+
+// A plain member: no roles and no permissions, so the Administration journey is
+// absent and these tests exercise the simplest shell.
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    isPlatformAdmin: () => false,
+    isOrgAdmin: () => false,
+    isDeptAdmin: () => false,
+    canViewOrganizations: () => false,
+    canViewBudgets: () => false,
+    canViewRateLimits: () => false,
+    canViewLogs: () => false,
+    canViewPool: () => false,
+    canViewMetrics: () => false,
+  }),
 }));
 
 // The real WorkspaceSelector fetches on mount; the assertion that matters here is

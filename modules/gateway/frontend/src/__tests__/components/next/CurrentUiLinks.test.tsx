@@ -163,9 +163,27 @@ describe('CurrentUiLinks — Issue #5079', () => {
       expect(hrefs).not.toContain('/ratelimits');
     });
 
-    it('drops the Administration heading entirely when an admin holds neither permission', () => {
-      // An empty group heading would advertise a journey with nothing behind it.
+    it('drops the budget and rate-limit links when an admin holds neither permission', () => {
+      // #5079 asserted the whole Administration heading disappeared here, because
+      // its link table contained only these two entries. #5080 rebased this
+      // component on the shared journey model, which mirrors the FULL sidebar — and
+      // an org admin there also legitimately reaches Access requests
+      // (`isPlatformAdmin || isOrgAdmin`) and Agent definitions (`isOrgAdmin`),
+      // neither of which depends on a budget permission. So the heading correctly
+      // survives on those entries, and what this case must still prove is that the
+      // two permission-gated links are gone.
       renderLinks({}, { isOrgAdmin: true, canViewBudgets: false, canViewRateLimits: false });
+      const hrefs = renderedHrefs();
+      expect(hrefs).not.toContain('/budgets');
+      expect(hrefs).not.toContain('/ratelimits');
+      // Still a non-empty group, so the heading is not advertising nothing.
+      expect(hrefs).toContain('/agents');
+    });
+
+    it('drops the Administration heading when NO administration entry survives', () => {
+      // The empty-heading rule itself, now exercised through the case that actually
+      // produces an empty group: a plain member with no roles at all.
+      renderLinks({}, {});
       expect(screen.queryByText('Administration')).not.toBeInTheDocument();
     });
 
