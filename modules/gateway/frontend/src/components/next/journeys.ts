@@ -11,15 +11,20 @@
  * ## Why one model instead of per-component gating
  *
  * The current UI's `Navigation.tsx` builds a flat list with an inline predicate per
- * entry. #5079 mirrored a handful of those predicates in `CurrentUiLinks.tsx`, and
- * that duplication was already the file's biggest risk: two tables that must agree
- * about who sees Budgets, kept in agreement by hand. Adding a third and fourth
- * copy for the nav and the drawer would guarantee drift, and drift here has a
- * specific bad shape — a nav entry the server will refuse with 403, or a
- * capability that silently disappears for the people who hold its permission.
+ * entry. #5079 mirrored a handful of those predicates in its own `CurrentUiLinks`
+ * component, and that duplication was already the biggest risk in that file: two
+ * tables that must agree about who sees Budgets, kept in agreement by hand. Adding
+ * a third and fourth copy for the nav and the drawer would guarantee drift, and
+ * drift here has a specific bad shape — a nav entry the server will refuse with
+ * 403, or a capability that silently disappears for the people who hold its
+ * permission.
  *
- * So the predicates live here once. `CurrentUiLinks` now derives from this model
- * too, keeping its existing exported signature.
+ * So the predicates live here once. `CurrentUiLinks` was replaced outright rather
+ * than left deriving from this model: once both home pages render the journey's own
+ * entries via `JourneyEntryCards`, nothing rendered it, and a second unused list
+ * component mirroring the same rules is exactly the drift risk this module exists
+ * to remove. Its gating assertions live on in `journeys.test.tsx`, against the model
+ * itself rather than through a component.
  *
  * ## What this story does and does not change
  *
