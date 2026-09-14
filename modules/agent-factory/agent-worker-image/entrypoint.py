@@ -1151,7 +1151,15 @@ def main() -> int:
     # expired before delete). Delete the message and exit cleanly.
     # This is the primary defense against issue #1864 (6h redelivery spawns
     # redundant runs on already-merged stories).
-    if _is_already_completed(repo, issue, token):
+    #
+    # Exempt PERSONAS_EXTENDING_BRANCH (aidlc): that workflow merges a PR at
+    # every gate, not just at final completion (issue #39's PR #41 merged mid-
+    # flow after the reverse-engineering gate; requirements-analysis and
+    # delivery-planning were still pending). For those personas a merged PR on
+    # the branch means "one gate landed," not "this issue is done" — so a new
+    # comment answering the next gate's open questions must not be treated as
+    # a stale redelivery of already-completed work.
+    if persona not in PERSONAS_EXTENDING_BRANCH and _is_already_completed(repo, issue, token):
         logger.info(
             "Idempotency guard: issue #%s already has merged PR on agent branch — "
             "skipping redelivered message (message_id=%s)",

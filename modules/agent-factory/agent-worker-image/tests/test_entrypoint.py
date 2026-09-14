@@ -3102,6 +3102,67 @@ class TestIdempotencyGuard:
         # Message deleted after run completion
         mock_delete_msg.assert_called_once()
 
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_idempotency_guard_exempts_persona_extending_branch(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """A persona in PERSONAS_EXTENDING_BRANCH (aidlc) must proceed even when a
+        prior merged PR exists on the branch — that workflow merges a PR at every
+        gate, so a merged PR mid-flow is not "this issue is done" (#39 hit this:
+        PR #41 merged after the reverse-engineering gate, then a follow-up
+        gate-answer comment was skipped as a stale redelivery)."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        aidlc_envelope = {**SAMPLE_ENVELOPE, "persona": "aidlc"}
+        mock_receive_msg.return_value = (json.dumps(aidlc_envelope), "receipt-gate-answer")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+        # Idempotency guard would say "already completed" — must be bypassed
+        # for this persona rather than causing a skip.
+        mock_is_completed.return_value = True
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        result = main()
+        assert result == 0
+
+        # Run proceeded despite the merged PR — no idempotency skip.
+        mock_subprocess_run.assert_called()
+
 
 # --- Test: VisibilityHeartbeat ---
 
