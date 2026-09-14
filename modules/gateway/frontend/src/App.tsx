@@ -60,6 +60,11 @@ const NextLayoutLazy = lazy(() =>
   import('./layouts/NextLayout').then((m) => ({ default: m.NextLayout })),
 );
 const NextHome = lazy(() => import('./pages/next/NextHome'));
+// Issue #5080: the Administration journey's landing page. Whether an actor may be
+// here is decided in NextLayout from the gated journey model, which redirects to
+// the Use ADP home when no administration entry survives — so this chunk is only
+// ever rendered for an actor with something in that journey.
+const NextAdminHome = lazy(() => import('./pages/next/NextAdminHome'));
 const NextNotFound = lazy(() => import('./pages/next/NextNotFound'));
 
 function App() {
@@ -181,6 +186,10 @@ function App() {
               }
             >
               <Route index element={<NextHome />} />
+              {/* Issue #5080: the Administration journey. A real URL rather than
+                  in-page state, so a deep link or a bookmark lands in the right
+                  journey and browser Back moves between them. */}
+              <Route path="admin" element={<NextAdminHome />} />
               {/* Scoped catch-all: an unknown /next path stays inside this
                   layout, so the persistent "Back to current UI" control is still
                   on screen. Without it the app-level 404 below would render with
