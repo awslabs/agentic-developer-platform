@@ -30,6 +30,7 @@ import { useFlowGraph } from '@/hooks/useFlowGraph';
 import { countByDisplayState } from '@/utils/nodeState';
 import { groupIntoEpics, blockingPredecessors } from '@/utils/flowLayout';
 import { RollupBar } from '@/components/orchestration/RollupBar';
+import { PlanSummary } from '@/components/orchestration/PlanSummary';
 import { NodeChip } from '@/components/orchestration/NodeChip';
 import { GateControls } from '@/components/orchestration/GateControls';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
@@ -67,7 +68,10 @@ export function GraphView() {
 
   const counts = countByDisplayState(data.nodes);
   const segmented = Object.values(counts).reduce((sum, n) => sum + n, 0);
-  const epics = groupIntoEpics(data);
+  const activeNodes = data.nodes.filter((node) => node.state !== 'superseded');
+  const historicalNodes = data.nodes.filter((node) => node.state === 'superseded');
+  const epics = groupIntoEpics({ ...data, nodes: activeNodes });
+  const changesRequested = activeNodes.filter((node) => node.state === 'rejected_at_gate');
 
   return (
     <div className="space-y-6 p-6">
@@ -92,10 +96,23 @@ export function GraphView() {
           </div>
         </div>
 
+        <PlanSummary
+          stories={activeNodes.filter((node) => node.kind === 'story').length}
+          waves={new Set(activeNodes.map((node) => `${node.epic_ref}/${node.wave_ref}`)).size}
+          gates={activeNodes.filter((node) => node.kind === 'gate').length}
+          evaluations={activeNodes.filter((node) => node.kind === 'eval').length}
+        />
         <RollupBar counts={counts} total={segmented} />
       </header>
 
-      {data.nodes.length === 0 && (
+      {changesRequested.length > 0 && (
+        <Alert variant="warning" title="Changes requested">
+          Work behind the affected gates is paused. Requesting changes records feedback; it does not start an agent to revise the plan.
+          {' '}Review the notes below, update the plan as needed, then use “Reopen review” for another approval decision.
+        </Alert>
+      )}
+
+      {activeNodes.length === 0 && (
         <p className="text-sm text-gray-600 dark:text-gray-400" data-testid="graph-empty">
           This flow has no planned work yet.
         </p>
@@ -116,6 +133,9 @@ export function GraphView() {
           >
             {epic.epicRef}
           </h2>
+          <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+            Scroll horizontally to view all waves. Each card is labelled Story, Approval gate, or Evaluation.
+          </p>
 
           <div className="flex gap-4 overflow-x-auto pb-2">
             {epic.waves.map((wave) => (
@@ -124,9 +144,12 @@ export function GraphView() {
                 data-testid={`wave-${epic.epicRef}-${wave.waveRef}`}
                 data-container="wave"
                 data-branch-count={wave.branches.length}
-                className="min-w-[16rem] flex-1"
+                className="shrink-0"
+                style={{ width: `${Math.max(1, wave.branches.length) * 18 + Math.max(0, wave.branches.length - 1) * 0.75}rem` }}
               >
-                <h3 className="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">{wave.waveRef}</h3>
+                <h3 className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {wave.waveRef} · Stories: {wave.branches.flat().filter((node) => node.kind === 'story' && node.state !== 'superseded').length}
+                </h3>
 
                 {/* One column per independent branch (AC-2). A wave whose nodes
                     are chained by an edge collapses to a single column, because
@@ -158,6 +181,16 @@ export function GraphView() {
           </div>
         </section>
       ))}
+      {historicalNodes.length > 0 && (
+        <details className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+          <summary className="cursor-pointer text-sm text-gray-600 dark:text-gray-400">
+            Superseded steps ({historicalNodes.length}) — history, excluded from the current plan
+          </summary>
+          <ul className="mt-3 space-y-2">
+            {historicalNodes.map((node) => <NodeChip key={node.id} node={node} />)}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

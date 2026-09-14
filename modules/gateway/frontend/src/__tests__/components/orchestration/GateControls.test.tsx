@@ -156,7 +156,8 @@ describe('which control a state earns', () => {
   it('reopens a gate after requested changes', async () => {
     const user = userEvent.setup();
     renderControls(makeNode('rejected_at_gate'));
-    await user.click(screen.getByTestId('node-resume'));
+    expect(screen.getByText(/Reopening does not approve or start the work/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Reopen review' }));
     expect(mockResume).toHaveBeenCalledWith('node-1', undefined);
   });
 
@@ -236,9 +237,12 @@ describe('recording a decision', () => {
     const user = userEvent.setup();
     renderControls(makeNode('awaiting_gate'));
 
+    expect(screen.getByTestId('gate-reject')).toBeDisabled();
+    await user.type(screen.getByTestId('gate-controls-reason'), 'Clarify the migration plan');
     await user.click(screen.getByTestId('gate-reject'));
 
-    await waitFor(() => expect(mockReject).toHaveBeenCalledWith('node-1', undefined));
+    await waitFor(() => expect(mockReject).toHaveBeenCalledWith('node-1', 'Clarify the migration plan'));
+    expect(screen.getByRole('status')).toHaveTextContent('No revision agent has been started');
     expect(mockApprove).not.toHaveBeenCalled();
   });
 

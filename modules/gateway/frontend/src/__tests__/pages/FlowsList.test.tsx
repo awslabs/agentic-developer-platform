@@ -944,3 +944,16 @@ describe('the status chips and the summary line', () => {
     expect(screen.queryByTestId('flows-next')).not.toBeInTheDocument();
   });
 });
+
+
+it('shows the story count and requested-change hold on the summary card', async () => {
+  mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({
+    status: 'attention_needed', changes_requested_count: 1,
+    story_count: 27, gate_count: 14, eval_count: 4, wave_count: 4, total_nodes: 45,
+  })] }));
+  renderFlowsList();
+  expect(await screen.findByText('27 stories across 4 waves')).toBeInTheDocument();
+  expect(screen.getByText('14 approval gates · 4 evaluations')).toBeInTheDocument();
+  expect(screen.getByText('Changes requested')).toBeInTheDocument();
+  expect(screen.getByTestId('changes-requested-summary')).toHaveTextContent('Work behind these gates is paused');
+});

@@ -37,6 +37,7 @@
 
 import { Link } from 'react-router-dom';
 import { RollupBar } from '@/components/orchestration/RollupBar';
+import { PlanSummary } from '@/components/orchestration/PlanSummary';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
 import { LastUpdated } from '@/components/LastUpdated';
 import { Alert, Badge, Input, Select } from '@/components/ui';
@@ -328,7 +329,9 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
           </div>
 
           <div className="flex flex-col items-end gap-1">
-            <Badge variant={STATUS_VARIANTS[flow.status]}>{STATUS_LABELS[flow.status]}</Badge>
+            <Badge variant={STATUS_VARIANTS[flow.status]}>
+              {flow.changes_requested_count ? 'Changes requested' : STATUS_LABELS[flow.status]}
+            </Badge>
             <CostFigureDisplay figure={flow.delivery_cost} label="Spend" />
           </div>
         </div>
@@ -375,6 +378,15 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
         )}
 
         <div className="mt-3 space-y-3">
+          {flow.story_count !== undefined && flow.gate_count !== undefined && flow.eval_count !== undefined && (
+            <PlanSummary stories={flow.story_count} waves={flow.wave_count} gates={flow.gate_count} evaluations={flow.eval_count} />
+          )}
+          {(flow.changes_requested_count ?? 0) > 0 && (
+            <p className="text-sm text-orange-800 dark:text-orange-200" data-testid="changes-requested-summary">
+              {flow.changes_requested_count} {flow.changes_requested_count === 1 ? 'gate needs' : 'gates need'} changes.
+              {' '}Work behind these gates is paused. Open the flow to review the feedback and next steps.
+            </p>
+          )}
           {/* The same five-value rollup the graph page draws, from the same
               component — a second bar is how a legend ends up describing a fill
               the graph no longer uses. */}

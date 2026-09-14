@@ -81,6 +81,11 @@ export interface GraphNode {
   issue_url?: string | null;
   result_summary?: string | null;
   configuration_problem?: string | null;
+  last_gate_decision?: {
+    action: 'approved' | 'changes_requested';
+    reason: string | null;
+    created_at: string;
+  } | null;
   cost: CostFigure;
 }
 
@@ -194,6 +199,9 @@ export interface WaveSummary {
   wave_ref: string;
   total: number;
   done: number;
+  story_count?: number;
+  gate_count?: number;
+  eval_count?: number;
   display_counts: FlowDisplayCounts;
 }
 
@@ -282,6 +290,11 @@ export interface FlowSummary {
   stalled_count: number;
   display_counts: FlowDisplayCounts;
   total_nodes: number;
+  /** Optional while older API releases are still serving requests. */
+  story_count?: number;
+  gate_count?: number;
+  eval_count?: number;
+  changes_requested_count?: number;
   epic_count: number;
   wave_count: number;
   /** The first wave with unfinished work; null when everything is done. */

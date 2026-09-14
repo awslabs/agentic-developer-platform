@@ -1389,6 +1389,9 @@ class TestEndpoint:
                 "wave_ref": "wave-1",
                 "total": 3,
                 "done": 0,
+                "story_count": 3,
+                "gate_count": 0,
+                "eval_count": 0,
                 "display_counts": {"queued": 2, "in_progress": 0, "gate": 1, "stalled": 0, "complete": 0},
             }
         ]
@@ -1534,3 +1537,60 @@ class TestEndpoint:
 
         assert response.status_code == 403
         assert statements == [], f"queries ran before the permission check: {statements}"
+
+
+class TestRequestedChangesSummary:
+    async def test_superplane_counts_feedback_and_attention_filters_agree(self, session, app_with_router):
+        flow = await seed_flow(session, slug="superplane", intent_ref="4910")
+        gate = await seed_node(session, flow, node_ref="accept", kind="gate", state="rejected_at_gate")
+        for wave, stories, gates in [(1, 4, 3), (2, 6, 3), (3, 12, 2), (4, 5, 5)]:
+            for i in range(stories):
+                await seed_node(session, flow, node_ref=f"story-{wave}-{i}", wave=f"wave-{wave}", created_offset=wave)
+            for i in range(gates):
+                await seed_node(session, flow, node_ref=f"gate-{wave}-{i}", kind="gate", wave=f"wave-{wave}", created_offset=wave)
+            await seed_node(session, flow, node_ref=f"eval-{wave}", kind="eval", wave=f"wave-{wave}", created_offset=wave)
+        await seed_node(session, flow, node_ref="old-story", state="superseded")
+        await seed_node(session, flow, node_ref="old-gate", kind="gate", state="superseded")
+        await seed_node(session, flow, node_ref="foreign", org_id=ORG_B)
+        await OrchestrationRepository(session).append_decision(
+            org_id=ORG_A,
+            flow_id=flow.id,
+            node_id=gate.id,
+            kind="gate_rejected",
+            actor_id=USER_ID,
+            actor_role="admin",
+            actor_kind="human",
+            reason="Clarify the migration acceptance criteria.",
+            from_state="awaiting_gate",
+            to_state="rejected_at_gate",
+        )
+        client = client_for(app_with_router)
+        body = client.get(ROUTE).json()
+        summary = body["flows"][0]
+        assert summary["status"] == "attention_needed"
+        assert summary["changes_requested_count"] == 1
+        assert summary["stalled_count"] == 0
+        assert (summary["story_count"], summary["gate_count"], summary["eval_count"], summary["total_nodes"]) == (27, 14, 4, 45)
+        assert [w["story_count"] for w in summary["waves"]] == [4, 6, 12, 5]
+        assert body["status_counts"]["attention_needed"] == 1
+        assert body["status_counts"]["queued"] == 0
+        assert client.get(ROUTE, params={"needs_me": True}).json()["total"] == 1
+        assert client.get(ROUTE, params={"status": "attention_needed"}).json()["total"] == 1
+        assert client.get(ROUTE, params={"status": "queued"}).json()["total"] == 0
+        graph = client.get(f"{ROUTE}/{flow.id}").json()
+        feedback = next(n for n in graph["nodes"] if n["id"] == gate.id)["last_gate_decision"]
+        assert feedback["action"] == "changes_requested"
+        assert feedback["reason"] == "Clarify the migration acceptance criteria."
+        assert feedback["created_at"]
+
+    @pytest.mark.parametrize("state", ["failed", "halted", "rejected_at_gate"])
+    async def test_a_node_needing_intervention_is_never_queued_or_complete(self, session, state):
+        flow = await seed_flow(session, slug="needs-action")
+        await seed_node(session, flow, node_ref="problem", state=state)
+        await seed_node(session, flow, node_ref="done", state="passed")
+        repo = OrchestrationRepository(session)
+        page = await repo.list_flows_page_with_aggregates(org_id=ORG_A, needs_me=True)
+        assert page.total == 1
+        assert page.flows[0].status == FlowStatus.ATTENTION_NEEDED
+        assert page.flows[0].needs_me
+        assert (await repo.list_flows_page_with_aggregates(org_id=ORG_A, status=FlowStatus.COMPLETE)).total == 0

@@ -744,3 +744,22 @@ describe('the nine→five projection covers every engine state', () => {
     expect(engineStateToDisplayState('some_future_state' as NodeEngineState)).toBeNull();
   });
 });
+
+
+it('separates stories from controls and explains a persisted change request', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [
+    makeNode({ node_ref: 'story-1' }),
+    makeNode({ node_ref: 'story-2', wave_ref: 'wave-2' }),
+    makeNode({ node_ref: 'old-story', state: 'superseded' }),
+    makeNode({ node_ref: 'gate', kind: 'gate', state: 'rejected_at_gate',
+      last_gate_decision: { action: 'changes_requested', reason: 'Clarify the migration plan', created_at: '2026-09-14T00:00:00Z' } }),
+    makeNode({ node_ref: 'eval', kind: 'eval' }),
+  ] }));
+  renderGraph();
+  expect(await screen.findByText('2 stories across 2 waves')).toBeInTheDocument();
+  expect(screen.getByText('1 approval gate · 1 evaluation')).toBeInTheDocument();
+  expect(screen.getByRole('alert')).toHaveTextContent('does not start an agent to revise the plan');
+  expect(screen.getByTestId('gate-feedback')).toHaveTextContent('Clarify the migration plan');
+  expect(screen.getByTestId('node-old-story')).not.toBeVisible();
+  expect(screen.getByText(/Superseded steps \(1\)/)).toBeVisible();
+});

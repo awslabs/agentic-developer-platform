@@ -89,8 +89,11 @@ export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
           </span>
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <span className="truncate font-medium text-gray-900 dark:text-gray-100">{node.title}</span>
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
+            {node.kind === 'story' ? 'Story' : node.kind === 'gate' ? 'Approval gate' : 'Evaluation'}
+          </p>
+          <div className="flex items-start gap-2">
+            <span className="min-w-0 break-words font-medium text-gray-900 dark:text-gray-100">{node.title}</span>
             {/* Pending tasks keep their issue number; a committed dispatch adds
                 the verified repository URL and run link below. */}
             {node.issue_ref && (
@@ -124,6 +127,19 @@ export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
             >
               {badge}
             </p>
+          )}
+
+          {node.state === 'rejected_at_gate' && (
+            <div className="mt-2 text-sm text-orange-900 dark:text-orange-200" data-testid="gate-feedback">
+              <p>{node.last_gate_decision === undefined
+                ? 'Refresh to load the recorded feedback.'
+                : node.last_gate_decision?.reason?.trim() || 'No change description was provided.'}</p>
+              {node.last_gate_decision && (
+                <p className="mt-1 text-xs">
+                  Recorded {new Date(node.last_gate_decision.created_at).toLocaleString()}
+                </p>
+              )}
+            </div>
           )}
 
           {isQueued && blockedBy.length > 0 && (

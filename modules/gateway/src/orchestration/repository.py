@@ -40,14 +40,21 @@ from .models import (
 # fetched page while appearing to rank every row.
 FLOW_SORTS: tuple[str, ...] = ("created", "updated", "stalled")
 
+KIND_COUNTS = {"story_count": "story", "gate_count": "gate", "eval_count": "eval"}
+
+
+def _kind_count_columns():
+    return [
+        func.count().filter(OrchestrationNode.kind == kind, OrchestrationNode.state != "superseded").label(name) for name, kind in KIND_COUNTS.items()
+    ]
+
 
 @dataclass(frozen=True)
 class FlowDisplayCounts:
     """Node counts per display state for one flow or one wave.
 
-    `stalled` is **not** simply the count of `failed`/`halted`/`rejected_at_gate`
-    nodes at flow level — see `FlowAggregate.stalled_count`. At wave level it is,
-    because the decision-derived count is aggregated per flow, not per wave.
+    `stalled` covers failed, halted and rejected nodes. The narrower
+    `FlowAggregate.stalled_count` identifies retry stalls from decision records.
     """
 
     queued: int = 0
@@ -71,6 +78,9 @@ class WaveAggregate:
     epic_ref: str
     wave_ref: str
     display_counts: FlowDisplayCounts
+    story_count: int = 0
+    gate_count: int = 0
+    eval_count: int = 0
 
     @property
     def total(self) -> int:
@@ -101,6 +111,10 @@ class FlowAggregate:
     # failures, halts and gate rejections.
     stalled_count: int
     status: FlowStatus
+    story_count: int = 0
+    gate_count: int = 0
+    eval_count: int = 0
+    changes_requested_count: int = 0
     waves: tuple[WaveAggregate, ...] = field(default_factory=tuple)
 
     @property
@@ -115,7 +129,7 @@ class FlowAggregate:
         first-match-wins, so a flow that is both stalled and gated reports only
         `attention_needed` while satisfying this predicate on either ground.
         """
-        return self.display_counts.gate > 0 or self.stalled_count > 0
+        return self.display_counts.gate > 0 or self.display_counts.stalled > 0 or self.stalled_count > 0
 
     @property
     def epic_count(self) -> int:
@@ -233,7 +247,12 @@ class OrchestrationRepository:
         """
         columns = [func.count().filter(OrchestrationNode.state.in_(DISPLAY_TO_ENGINE[display])).label(display.value) for display in DisplayState]
         return (
-            select(OrchestrationNode.flow_id.label("flow_id"), *columns)
+            select(
+                OrchestrationNode.flow_id.label("flow_id"),
+                *columns,
+                *_kind_count_columns(),
+                func.count().filter(OrchestrationNode.state == "rejected_at_gate").label("changes_requested_count"),
+            )
             .where(OrchestrationNode.org_id == org_id)
             .group_by(OrchestrationNode.flow_id)
             .subquery()
@@ -298,6 +317,8 @@ class OrchestrationRepository:
 
         derived: dict[str, Any] = {display.value: func.coalesce(getattr(node_agg.c, display.value), 0) for display in DisplayState}
         derived["stalled_count"] = func.coalesce(stall_agg.c.stalled_count, 0)
+        for name in (*KIND_COUNTS, "changes_requested_count"):
+            derived[name] = func.coalesce(getattr(node_agg.c, name), 0)
 
         base = (
             select(OrchestrationFlow)
@@ -348,6 +369,7 @@ class OrchestrationRepository:
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
             derived["stalled_count"].label("stalled_count"),
+            *(derived[name].label(name) for name in (*KIND_COUNTS, "changes_requested_count")),
             # The honest filtered total, from the same pass as the rows.
             func.count().over().label("total_matching"),
         )
@@ -370,7 +392,7 @@ class OrchestrationRepository:
 
         if needs_me:
             # Not a `status` alias — see `FlowAggregate.needs_me`.
-            stmt = stmt.where(or_(derived["gate"] > 0, derived["stalled_count"] > 0))
+            stmt = stmt.where(or_(derived["gate"] > 0, derived["stalled"] > 0, derived["stalled_count"] > 0))
 
         if status is not None:
             stmt = stmt.where(self._status_predicate(status, derived))
@@ -392,6 +414,10 @@ class OrchestrationRepository:
                     display_counts=agg.display_counts,
                     stalled_count=agg.stalled_count,
                     status=agg.status,
+                    story_count=agg.story_count,
+                    gate_count=agg.gate_count,
+                    eval_count=agg.eval_count,
+                    changes_requested_count=agg.changes_requested_count,
                     waves=tuple(waves_by_flow.get(agg.flow.id, ())),
                 )
                 for agg in aggregates
@@ -412,14 +438,14 @@ class OrchestrationRepository:
             flow=row[0],
             display_counts=counts,
             stalled_count=stalled_count,
+            **{name: int(getattr(row, name) or 0) for name in (*KIND_COUNTS, "changes_requested_count")},
             status=derive_flow_status(
                 queued=counts.queued,
                 in_progress=counts.in_progress,
                 gate=counts.gate,
-                # The decision-derived count, not the state-derived bucket: a
-                # plain failure is not a stall, and only a stall means "a human
-                # needs to go find out why this is wedged".
-                stalled=stalled_count,
+                # Rejections, failures and halts also need attention. Keep the
+                # narrower retry-stall count for its own badge and sort.
+                stalled=max(counts.stalled, stalled_count),
                 complete=counts.complete,
             ),
         )
@@ -434,7 +460,7 @@ class OrchestrationRepository:
         reports `attention_needed` and would otherwise appear under a filter for a
         status it does not have.
         """
-        stalled = derived["stalled_count"]
+        stalled = derived["stalled"] + derived["stalled_count"]
         gate = derived["gate"]
         in_progress = derived["in_progress"]
         queued = derived["queued"]
@@ -496,6 +522,7 @@ class OrchestrationRepository:
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
             derived["stalled_count"].label("stalled_count"),
+            *(derived[name].label(name) for name in (*KIND_COUNTS, "changes_requested_count")),
         )
 
         counts: dict[FlowStatus, int] = dict.fromkeys(FlowStatus, 0)
@@ -536,6 +563,7 @@ class OrchestrationRepository:
                 OrchestrationNode.epic_ref.label("epic_ref"),
                 OrchestrationNode.wave_ref.label("wave_ref"),
                 *columns,
+                *_kind_count_columns(),
             )
             .where(
                 OrchestrationNode.org_id == org_id,
@@ -553,6 +581,7 @@ class OrchestrationRepository:
                     epic_ref=row.epic_ref,
                     wave_ref=row.wave_ref,
                     display_counts=FlowDisplayCounts(**{display.value: int(getattr(row, display.value) or 0) for display in DisplayState}),
+                    **{name: int(getattr(row, name) or 0) for name in KIND_COUNTS},
                 )
             )
         return waves

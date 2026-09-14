@@ -57,7 +57,7 @@ class FlowStatus(StrEnum):
     as queued would have an operator waiting for work that will never start.
     """
 
-    ATTENTION_NEEDED = "attention_needed"  # Something is stalled
+    ATTENTION_NEEDED = "attention_needed"  # Rejection, failure, halt or retry stall
     AWAITING_YOU = "awaiting_you"  # A gate needs a human decision
     RUNNING = "running"  # Work is in flight
     QUEUED = "queued"  # Work exists, none of it has started

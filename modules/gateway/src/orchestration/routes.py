@@ -596,6 +596,9 @@ class WaveSummaryResponse(BaseModel):
     wave_ref: str
     total: int
     done: int
+    story_count: int
+    gate_count: int
+    eval_count: int
     display_counts: FlowDisplayCountsResponse
 
 
@@ -638,6 +641,10 @@ class FlowSummaryResponse(BaseModel):
     stalled_count: int
     display_counts: FlowDisplayCountsResponse
     total_nodes: int
+    story_count: int
+    gate_count: int
+    eval_count: int
+    changes_requested_count: int
     epic_count: int
     wave_count: int
     current_wave_ref: str | None
@@ -678,6 +685,9 @@ def _wave_summary(wave: WaveAggregate) -> WaveSummaryResponse:
         wave_ref=wave.wave_ref,
         total=wave.total,
         done=wave.done,
+        story_count=wave.story_count,
+        gate_count=wave.gate_count,
+        eval_count=wave.eval_count,
         display_counts=FlowDisplayCountsResponse(**asdict(wave.display_counts)),
     )
 
@@ -778,6 +788,10 @@ async def list_flows_route(
                 stalled_count=aggregate.stalled_count,
                 display_counts=FlowDisplayCountsResponse(**asdict(aggregate.display_counts)),
                 total_nodes=aggregate.display_counts.total,
+                story_count=aggregate.story_count,
+                gate_count=aggregate.gate_count,
+                eval_count=aggregate.eval_count,
+                changes_requested_count=aggregate.changes_requested_count,
                 epic_count=aggregate.epic_count,
                 wave_count=len(aggregate.waves),
                 current_wave_ref=aggregate.current_wave_ref,
@@ -832,6 +846,12 @@ def _roll_up_delivery_cost(slug: str, node_costs: list[NodeCost]) -> NodeCost:
     )
 
 
+class GateDecisionSummary(BaseModel):
+    action: Literal["approved", "changes_requested"]
+    reason: str | None
+    created_at: str
+
+
 class GraphNodeResponse(BaseModel):
     """One executable node — story, eval, or gate — as the graph view reads it.
 
@@ -863,6 +883,7 @@ class GraphNodeResponse(BaseModel):
     issue_url: str | None = None
     result_summary: str | None = None
     configuration_problem: str | None = None
+    last_gate_decision: GateDecisionSummary | None = None
     # True when the most recent stall/halt decision for this node was a stall.
     #
     # Load-bearing for AC-3, and not inferable from `state`: stall detection moves
@@ -961,7 +982,14 @@ async def get_flow_graph(
     # remain in the decision log but must not masquerade as the current result.
     dispatches: dict[str, dict] = {}
     result_summaries: dict[str, dict] = {}
+    gate_decisions: dict[str, GateDecisionSummary] = {}
     for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.kind in (DecisionKind.GATE_APPROVED.value, DecisionKind.GATE_REJECTED.value) and decision.node_id:
+            gate_decisions[decision.node_id] = GateDecisionSummary(
+                action="approved" if decision.kind == DecisionKind.GATE_APPROVED.value else "changes_requested",
+                reason=decision.reason,
+                created_at=decision.created_at.isoformat(),
+            )
         if decision.kind not in (DecisionKind.NODE_DISPATCHED.value, DecisionKind.RESULT_OBSERVED.value):
             continue
         try:
@@ -1009,6 +1037,7 @@ async def get_flow_graph(
                 run_id=dispatch.get("run_id"),
                 issue_url=issue_url,
                 result_summary=result.get("evidence"),
+                last_gate_decision=gate_decisions.get(node.id),
                 configuration_problem=(
                     "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
                 ),
