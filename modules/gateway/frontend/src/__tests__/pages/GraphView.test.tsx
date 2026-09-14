@@ -752,7 +752,7 @@ it('separates stories from controls and explains a persisted change request', as
     makeNode({ node_ref: 'story-2', wave_ref: 'wave-2' }),
     makeNode({ node_ref: 'old-story', state: 'superseded' }),
     makeNode({ node_ref: 'gate', kind: 'gate', state: 'rejected_at_gate',
-      last_gate_decision: { action: 'changes_requested', reason: 'Clarify the migration plan', created_at: '2026-09-14T00:00:00Z' } }),
+      last_gate_decision: { action: 'changes_requested', reason: '[input-path=dashboard] Clarify the migration plan', created_at: '2026-09-14T00:00:00Z' } }),
     makeNode({ node_ref: 'eval', kind: 'eval' }),
   ] }));
   renderGraph();
@@ -760,6 +760,17 @@ it('separates stories from controls and explains a persisted change request', as
   expect(screen.getByText('1 approval gate · 1 evaluation')).toBeInTheDocument();
   expect(screen.getByRole('alert')).toHaveTextContent('does not start an agent to revise the plan');
   expect(screen.getByTestId('gate-feedback')).toHaveTextContent('Clarify the migration plan');
+  expect(screen.getByTestId('gate-feedback')).not.toHaveTextContent('input-path');
   expect(screen.getByTestId('node-old-story')).not.toBeVisible();
   expect(screen.getByText(/Superseded steps \(1\)/)).toBeVisible();
+});
+
+it('explains a change request submitted without a note through the old dashboard', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [
+    makeNode({ node_ref: 'gate', kind: 'gate', state: 'rejected_at_gate',
+      last_gate_decision: { action: 'changes_requested', reason: '[input-path=dashboard]', created_at: '2026-09-14T00:02:07Z' } }),
+  ] }));
+  renderGraph();
+  expect(await screen.findByText('No change description was provided.')).toBeVisible();
+  expect(screen.getByTestId('gate-feedback')).not.toHaveTextContent('input-path');
 });

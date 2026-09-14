@@ -58,6 +58,11 @@ export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
+  // Decision reasons carry an audit-source prefix, including when no note was
+  // entered. Show the reviewer's text while preserving the stored audit value.
+  const feedback = node.last_gate_decision?.reason
+    ?.replace(/^\[input-path=(?:dashboard|github_comment)\](?:\s|$)/, '')
+    .trim();
 
   // `superseded` and unknown states get no segment in the bar, and no fill here.
   const style = display ? DISPLAY_STATES[display] : null;
@@ -133,7 +138,7 @@ export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
             <div className="mt-2 text-sm text-orange-900 dark:text-orange-200" data-testid="gate-feedback">
               <p>{node.last_gate_decision === undefined
                 ? 'Refresh to load the recorded feedback.'
-                : node.last_gate_decision?.reason?.trim() || 'No change description was provided.'}</p>
+                : feedback || 'No change description was provided.'}</p>
               {node.last_gate_decision && (
                 <p className="mt-1 text-xs">
                   Recorded {new Date(node.last_gate_decision.created_at).toLocaleString()}
