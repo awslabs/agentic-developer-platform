@@ -18,15 +18,70 @@
  * These are `Link`s, not anchors, for the reason #5079 documented: staying inside
  * the SPA is what keeps identity, the active organization/workspace and the query
  * cache shared between the two UIs. A raw `<a>` would hard-reload and discard them.
+ *
+ * The one exception is an entry the model marks `external`, whose path the server
+ * owns rather than the router. There a `Link` is not "staying in the SPA", it is a
+ * dead end: the push matches no route and falls through to the /next catch-all 404
+ * (#5123). Those render as a real anchor.
  */
 
 import { Link } from 'react-router-dom';
-import type { JourneySection } from './journeys';
+import { handleGitlabSsoClick } from '@/services/gitlabSso';
+import type { JourneyEntry, JourneySection } from './journeys';
 
 interface JourneyEntryCardsProps {
   sections: JourneySection[];
   /** Distinguishes the two pages' generated heading ids. */
   idPrefix: string;
+}
+
+const CARD_CLASS =
+  'block h-full rounded-lg border border-gray-200 bg-white p-4 transition-colors hover:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:bg-gray-800';
+
+function EntryCard({ entry }: { entry: JourneyEntry }) {
+  const body = (
+    <>
+      <span className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-gray-900 dark:text-white">{entry.label}</span>
+        {entry.scope === 'platform' && (
+          // The scope of the data behind the link, not a claim about the actor's
+          // authority.
+          <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs font-normal text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+            Platform-wide
+          </span>
+        )}
+      </span>
+      <span className="mt-1 block text-sm text-gray-600 dark:text-gray-400">
+        {entry.description}
+      </span>
+      {entry.currentUi && (
+        <span className="mt-2 block text-xs text-gray-500 dark:text-gray-500">
+          Opens in the current UI
+        </span>
+      )}
+    </>
+  );
+
+  // Server-owned path: must be a real anchor, or the router push lands on the
+  // /next catch-all 404. GitLab also needs its authenticated SSO handoff (#5123).
+  if (entry.external) {
+    return (
+      <a
+        href={entry.to}
+        onClick={entry.id === 'gitlab' ? handleGitlabSsoClick : undefined}
+        data-testid={`next-entry-card-${entry.id}`}
+        className={CARD_CLASS}
+      >
+        {body}
+      </a>
+    );
+  }
+
+  return (
+    <Link to={entry.to} data-testid={`next-entry-card-${entry.id}`} className={CARD_CLASS}>
+      {body}
+    </Link>
+  );
 }
 
 export function JourneyEntryCards({ sections, idPrefix }: JourneyEntryCardsProps) {
@@ -47,32 +102,7 @@ export function JourneyEntryCards({ sections, idPrefix }: JourneyEntryCardsProps
             <ul className="grid gap-3 sm:grid-cols-2">
               {section.entries.map((entry) => (
                 <li key={entry.id}>
-                  <Link
-                    to={entry.to}
-                    data-testid={`next-entry-card-${entry.id}`}
-                    className="block h-full rounded-lg border border-gray-200 bg-white p-4 transition-colors hover:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:bg-gray-800"
-                  >
-                    <span className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-gray-900 dark:text-white">
-                        {entry.label}
-                      </span>
-                      {entry.scope === 'platform' && (
-                        // The scope of the data behind the link, not a claim about
-                        // the actor's authority.
-                        <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs font-normal text-gray-700 dark:bg-gray-700 dark:text-gray-200">
-                          Platform-wide
-                        </span>
-                      )}
-                    </span>
-                    <span className="mt-1 block text-sm text-gray-600 dark:text-gray-400">
-                      {entry.description}
-                    </span>
-                    {entry.currentUi && (
-                      <span className="mt-2 block text-xs text-gray-500 dark:text-gray-500">
-                        Opens in the current UI
-                      </span>
-                    )}
-                  </Link>
+                  <EntryCard entry={entry} />
                 </li>
               ))}
             </ul>

@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useFeatures } from '@/hooks/useFeatures';
-import { getAccessToken } from '@/services/auth';
+import { GITLAB_PATH, handleGitlabSsoClick } from '@/services/gitlabSso';
 
 interface NavItem {
   to: string;
@@ -202,53 +202,17 @@ export function Navigation() {
         </NavLink>
       ))}
       {/* External: GitLab SSO (Issue #3775, Wave 2).
-          Uses the /api/auth/gitlab-sso endpoint which mints an RS256 JWT and
-          302-redirects to GitLab's JWT callback. A plain <a href> cannot carry
-          the Bearer token (stored in sessionStorage), so we use a click handler
-          that fetches with credentials and navigates to the redirect URL.
-          Falls back to /gitlab/ direct navigation if SSO endpoint is unavailable.
+          `/gitlab/` is a server path with an authenticated handoff, not a client
+          route: /api/auth/gitlab-sso mints an RS256 JWT and 302s to GitLab's JWT
+          callback. A plain <a href> cannot carry the Bearer token (sessionStorage),
+          so the click handler does the fetch and follows the redirect, falling back
+          to plain /gitlab/ navigation on any failure. The handler now lives in
+          services/gitlabSso.ts because the new UI needs the same behaviour (#5123).
           Feature-gated: fail-closed behind FEATURE_GITLAB_ENABLED (Issue #3773). */}
       {features.gitlab && (
         <a
-          href="/gitlab/"
-          onClick={(e) => {
-            const token = getAccessToken();
-            if (!token) return; // Let the default href navigate
-            e.preventDefault();
-            // Fetch the SSO endpoint with auth — redirect: manual lets us
-            // read the Location header from the 302 response.
-            fetch('/api/auth/gitlab-sso', {
-              headers: { Authorization: `Bearer ${token}` },
-              redirect: 'manual',
-            }).then((res) => {
-              // With redirect: manual, a 302 becomes type "opaqueredirect"
-              // and we cannot read the Location header due to CORS.
-              // Instead, re-fetch with redirect: follow — fetch will follow
-              // the 302 to the GitLab callback and we get the final URL.
-              if (res.type === 'opaqueredirect') {
-                // Cannot read Location; re-request letting fetch follow
-                return fetch('/api/auth/gitlab-sso', {
-                  headers: { Authorization: `Bearer ${token}` },
-                  redirect: 'follow',
-                });
-              }
-              return res;
-            }).then((res) => {
-              if (res && res.redirected && res.url) {
-                // fetch followed the 302 — navigate to the final URL
-                window.location.href = res.url;
-              } else if (res && res.ok) {
-                // Unexpected 200 — may have followed redirect already
-                window.location.href = '/gitlab/';
-              } else {
-                // SSO endpoint unavailable (404/503) — fall back
-                window.location.href = '/gitlab/';
-              }
-            }).catch(() => {
-              // Network error — fall back to direct navigation
-              window.location.href = '/gitlab/';
-            });
-          }}
+          href={GITLAB_PATH}
+          onClick={handleGitlabSsoClick}
           className="flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
         >
           <span className="text-xl" aria-hidden="true">
