@@ -6,7 +6,8 @@ Playwright-based end-to-end regression tests for the ADP chat UX. Runs against t
 
 | # | File | Scenario | Regression of |
 |---|------|----------|---------------|
-| 1 | `test_auth.py` | Login round-trip (tokens in sessionStorage) | - |
+| 1 | `test_auth.py` | Email login → hosted Cognito form → PKCE callback and stored tokens | - |
+| 1b | `test_auth.py` | Supplied-token session restoration, authenticated API access, and reload | - |
 | 2 | `test_auth.py` | WebSocket opens after login (CDP observation) | - |
 | 3 | `test_auth.py` | No CSP refusal on WS connect | #117 |
 | 4-9 | `test_routing.py` | Classifier routing (direct_response / long_running) | #118, #129 |
@@ -51,7 +52,18 @@ E2E_CLOUDFRONT_URL=https://your-cf-domain.cloudfront.net \
 
 # Run a specific scenario:
 E2E_CHAT_ENABLED=1 python -m pytest tests/e2e/chat/test_routing.py -v -k "scenario6"
+
+# Validate OAuth login and session restoration without sending chat messages:
+E2E_CHAT_ENABLED=1 python -m pytest tests/e2e/chat/test_auth.py \
+  -v -k "TestLoginRoundTrip or TestSessionRestoration" --timeout=90
 ```
+
+The OAuth test uses the visible email sign-in form and requires a successful
+authorization-code exchange. The separate restoration test seeds real Cognito
+tokens and their expiry once, then checks authenticated access before and after
+reload on `/activity`, independent of the optional chat feature flag. Both use
+`E2E_CLOUDFRONT_URL`; neither substitutes restoration for OAuth. These two tests
+validate authentication only; they do not establish that chat is enabled or works.
 
 ### Environment Variables
 
