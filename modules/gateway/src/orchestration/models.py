@@ -55,7 +55,7 @@ forfeit JSONB; the migration declares the identical variant so the two agree.
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, event
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, event
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -78,6 +78,8 @@ __all__ = [
     "OrchestrationEdge",
     "OrchestrationFlow",
     "OrchestrationNode",
+    "OrchestrationWorkClaim",
+    "ClaimState",
     "AppendOnlyViolationError",
 ]
 
@@ -151,6 +153,20 @@ class DecisionKind(StrEnum):
     AGENT_DISPATCHED = "agent_dispatched"  # Committed delegated dispatch receipt, never human approval
     WAVE_MATERIALIZED = "wave_materialized"  # Bound delivery issue references; never an approval
     WAVE_COORDINATOR_DISPATCHED = "wave_coordinator_dispatched"
+
+
+class ClaimState(StrEnum):
+    """Whether a work claim currently authorizes a run.
+
+    Two members, not a boolean, because "nobody owns this issue right now" and
+    "someone owns it" are read at admission while the *history* of the row has to
+    survive: the claim row is reused across generations rather than deleted, so a
+    released claim keeps its release reason and its generation for the next
+    admission to build on. Stored as `String(16)`, so a future member needs no DDL.
+    """
+
+    HELD = "held"  # An owner holds this issue; a competing claim is refused
+    RELEASED = "released"  # No current owner; the next claim advances generation
 
 
 class AppendOnlyViolationError(RuntimeError):
@@ -406,3 +422,100 @@ def _forbid_decision_bulk_update(orm_execute_state) -> None:
             "orchestration_decisions is append-only; a bulk UPDATE was attempted against it. "
             "Append a new decision record instead of rewriting existing ones."
         )
+
+
+class OrchestrationWorkClaim(Base, TenantMixin):
+    """The single durable execution owner of one issue (issue #5127).
+
+    One row per `(org_id, provider_repository_id, issue_number)`, reused for the
+    lifetime of that issue rather than inserted per run. Admission is a row-locked
+    read plus a compare-and-set against `generation`, which is what makes "exactly
+    one mutating run at a time" hold across *both* launch paths — the engine tick
+    and direct dispatch — instead of each path racing on its own bookkeeping.
+
+    **Why the provider repository id and not the repo name.** Every existing
+    dispatch path keys on the mutable `owner/name` string, so a rename or transfer
+    silently re-points every name-keyed row while the underlying repository — and
+    any run already working on it — is unchanged. A claim keyed on the name would
+    therefore be bypassable by a rename, which is the one thing an ownership
+    record must not be. `provider_repository_id` is GitHub's immutable numeric
+    repository id, `BigInteger` because it is a 64-bit provider integer and
+    `String` would let `"123"` and `123` become two owners of one repository.
+
+    **Why the row survives release.** Deleting on release would lose the release
+    reason and reset the generation, and a reset generation makes a stale worker's
+    token look current again. `state`/`generation` carry the lifecycle instead: a
+    released row keeps its history and the next admission advances the generation,
+    so anything issued under an older generation is permanently distinguishable.
+
+    **What this row cannot do.** `lease_expires_at` records when the owner's lease
+    lapses; it never authorizes a takeover on its own. Lease expiry means "we have
+    lost contact", not "the worker exited" — and a database row cannot revoke a
+    GitHub token that has already been issued. Handover therefore requires the
+    liveness service to report a positive `exited` verdict plus a recorded
+    decision; see `work_claims.py`, which is the only module that mutates this
+    table.
+    """
+
+    __tablename__ = "orchestration_work_claims"
+    __table_args__ = (
+        # THE invariant: one owner per issue per tenant. Enforced by the database
+        # rather than by the admission code, so two concurrent transactions that
+        # both pass their application-level checks still cannot both insert.
+        Index(
+            "uq_orchestration_work_claims_binding",
+            "org_id",
+            "provider_repository_id",
+            "issue_number",
+            unique=True,
+        ),
+        # Admission reads by binding; operators read by tenant and recency.
+        Index("ix_orchestration_work_claims_org_id_state", "org_id", "state"),
+        # Duplicate-event lookup: a replayed event must find its original receipt
+        # instead of being admitted a second time.
+        Index("ix_orchestration_work_claims_claim_event_id", "org_id", "claim_event_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+
+    # --- The binding: which issue this row owns. Immutable once inserted. ---
+    provider_repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    issue_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # --- The owner: the flow/lane, not the individual run. ---
+    # Developer, reviewer and repair runs execute sequentially under ONE owner, so
+    # the owner is the lane and `active_run_id` is whichever run currently holds
+    # it. Keying the claim on the run instead would refuse the reviewer that is
+    # supposed to follow the developer.
+    owner_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    owner_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default=ClaimState.HELD.value)
+
+    # Monotonic, advanced on every fresh admission and never reset. A run holding
+    # generation N when the row has moved to N+1 is stale by construction, which is
+    # what `bind_run` checks instead of trusting the run's own claim to be current.
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # The run currently executing under this claim. NULL between `claim_work` and
+    # `bind_run` (admitted, not yet started) and after release.
+    active_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # The event that produced the current generation. A replay of the same event
+    # returns this generation's receipt rather than being admitted again, so
+    # at-least-once delivery on either path cannot become two runs.
+    claim_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the lease lapses. Evidence of lost contact only — never of an exit, and
+    # never sufficient for takeover on its own.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Why the last release happened, kept on the row so a released claim explains
+    # itself without joining the decision log.
+    release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
