@@ -26,8 +26,16 @@ Playwright-based end-to-end regression tests for the ADP chat UX. Runs against t
 ### Prerequisites
 
 ```bash
-pip install pytest playwright boto3
+pip install pytest pytest-html pytest-timeout playwright boto3 requests
 playwright install chromium
+```
+
+`pytest-html` produces the CI report, `pytest-timeout` supports the CI
+`--timeout=300` limit, and `requests` is required by the file-attachment test.
+To check collection and dependency setup without AWS credentials or live calls:
+
+```bash
+python -m pytest tests/e2e/chat/ --collect-only --timeout=300
 ```
 
 ### Against dev environment
