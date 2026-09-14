@@ -43,6 +43,7 @@ jobs:
           src/components/checkRunStreamer.token-rotation.test.ts
           src/github-comments.test.ts
           src/human-communication.test.ts
+          src/operations-prompt.test.ts
           src/agent-worker-prompt-order.test.ts
       - name: Verify memory reads and writes from shallow clones
         run: npm test -- --runInBand --runTestsByPath src/memory.test.ts

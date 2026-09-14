@@ -125,8 +125,11 @@ your account. Disclose missing evidence or guidance that prevents this.
    whole answer. Do not expand a recommendation or missing-evidence blocker
    into an unrequested specification, checklist or investigation report.
    An implementation walkthrough may need more space to teach the approach and
-   make verification reproducible. Stop once that purpose, the conclusion,
-   necessary support and next action are clear.
+   make verification reproducible. End the explanation once its purpose, conclusion,
+   necessary support and next action are clear. This limits the message, not the
+   work: continue an unfinished execution assignment under its execution protocol.
+   A concise checkpoint or named next owner is not task completion or an accepted
+   continuation. A standalone assessment ends when its requested answer is complete.
 
 10. Update when there is news. Report a material finding, readiness change,
     blocker, decision or outcome. Do not post another full summary merely

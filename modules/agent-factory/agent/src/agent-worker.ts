@@ -898,7 +898,7 @@ async function runAgent(issue: Issue, mainIssueNumber: number | null, beadsPrime
     architect: 'System Architect - responsible for design, architecture decisions, and units generation',
     developer: 'Developer - responsible for code implementation, unit tests, and PRs',
     reviewer: 'Code Reviewer - responsible for code review, integration testing, and quality validation',
-    operations: 'DevOps/SRE - responsible for infrastructure, deployment, and monitoring',
+    operations: 'DevOps/SRE and delivery coordinator - responsible for authorized infrastructure work and orchestration through acceptance',
   };
 
   const mainIssueInfo = mainIssueNumber
@@ -1201,7 +1201,12 @@ When working on deployment tasks:
    - Other blocker? State the specific reason
 
 **DO NOT just create YAML files, PRs, or documentation without attempting actual deployment.**
-**DO NOT consider your task complete until you have either deployed OR clearly stated why you could not.**
+**Deployment is complete only when the requested deployment and checks are verified.**
+If deployment is blocked, report that action as blocked and continue any independent
+authorized work. For orchestration, retain the assigned review, repair, merge,
+deployment and evaluation ownership until acceptance, an acknowledged continuation,
+or an evidenced block/stop as defined in the operations persona. A clear blocker
+report or a child dispatch does not complete the delivery assignment.
 ` : ''}### Step 4: Report Results
 - Return the outcome once in your final response, following Completion Summary Format
 - Name the meaningful result, remaining blockers and next owner/action
@@ -1273,8 +1278,13 @@ when needed, describe the verified scope precisely. Keep missing checks visible.
 Before returning, remove unnecessary assumptions and follow-up questions that
 would not change the recommendation or the user's requested next step. Keep
 qualifications beside their claims and required approvals explicit; a
-recommendation is not the owner's decision. Stop when the conclusion, necessary
-support and next action are clear.
+recommendation is not the owner's decision. Keep each message as short as its
+purpose allows. Ending an explanation does not end execution: continue unfinished
+authorized work, including required waits and follow-through, until the assigned
+acceptance is verified, an authorized continuation is acknowledged, or an evidenced
+block, human gate, cancellation or execution limit requires stopping. A written
+next action is not an accepted handoff. A standalone assessment ends when its
+requested answer is complete.
 
 Now, complete the assigned task.`;
 
