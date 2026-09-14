@@ -346,6 +346,28 @@ describe('NextLayout journeys — Issue #5080', () => {
     });
   });
 
+  describe('focus on first mount versus on journey change — #5123', () => {
+    it('does not take focus into the page on a fresh load', () => {
+      // The regression guard. The heading is a tabIndex={-1} focus target that sits
+      // AFTER the skip link and the "Back to current UI" control, so focusing it on
+      // mount meant the first Tab press landed in the content and reaching the
+      // navigation required tabbing backwards. Nobody has changed journey on a fresh
+      // load, so there is nothing to announce.
+      renderLayout({ perms: PLATFORM_ADMIN });
+      expect(document.body).toHaveFocus();
+    });
+
+    it('moves focus to the page heading when the journey actually changes', () => {
+      // The behaviour the guard must not disable: after a switch, the next Tab
+      // starts in the new journey rather than back at the document top.
+      renderLayout({ perms: PLATFORM_ADMIN });
+      fireEvent.click(screen.getByTestId('next-journey-admin'));
+      const heading = document.querySelector('div[tabindex="-1"]');
+      expect(heading).not.toBeNull();
+      expect(heading).toHaveFocus();
+    });
+  });
+
   describe('resilience', () => {
     it('renders without throwing when auth state is momentarily empty', () => {
       // The guards above normally prevent it, but the navigation must not crash the
