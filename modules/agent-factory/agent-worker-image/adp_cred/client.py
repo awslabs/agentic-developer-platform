@@ -35,8 +35,9 @@ def _get_config() -> tuple[str, str | None, str, str, str, bool]:
 
     missing = []
     if use_sigv4:
-        # SigV4 mode: only need the API Gateway endpoint + identity vars
-        base_url = gateway_endpoint.rstrip("/") + "/agent"
+        # Internal APIs use /internal/{proxy+}. Adding /agent routes them to
+        # the edge ALB, which deliberately denies /internal/* (#5136, #4010).
+        base_url = gateway_endpoint.rstrip("/")
     else:
         # Legacy mode: need direct URL + shared secret
         if not base_url:
