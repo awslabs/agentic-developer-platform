@@ -21,6 +21,26 @@ import pytest
 # HIDDEN mobile copy.
 CURRENT_NAV = 'nav[aria-label="Main navigation"]:visible'
 
+# The preview's navigation landmark. Scoped to the visible one for the same reason
+# CURRENT_NAV is: `NextLayout` renders `NextNav` twice — the desktop sidebar and a
+# second copy inside the mobile drawer. The drawer is only mounted while open, so
+# today a bare selector happens to resolve to one element, but relying on that makes
+# this assertion depend on a mounting detail rather than on what the user can see.
+PREVIEW_NAV = '[data-testid="next-nav"]:visible'
+
+# Which journey owns each route under test. The preview splits navigation into two
+# journeys, so no single view offers all four: asserting them all against whichever
+# journey happens to be active fails for the two that live in the other one. The
+# journey switch exposes `next-journey-<id>` and marks the active tab with
+# `aria-current="page"`.
+PREVIEW_JOURNEYS = ("use", "admin")
+ROUTE_JOURNEY = {
+    "/activity": "use",
+    "/settings/connections": "use",
+    "/budgets": "admin",
+    "/ratelimits": "admin",
+}
+
 CURRENT_PAGES = [
     ("/runs", "Dashboard", "/api/me/agent-run-stats"),
     ("/activity", "Agent Activity", "/api/me/agent-invocations"),
@@ -56,6 +76,34 @@ def _preview(page, base_url, path="/next", home=True):
     expect(page.get_by_test_id("back-to-current-ui")).to_be_visible()
     if home:
         expect(page.get_by_test_id("next-home")).to_be_visible()
+
+
+def _select_journey(page, journey):
+    """Show `journey`'s navigation, or report that it is not offered to this actor.
+
+    Returns False when the switch does not offer the journey. That is a legitimate
+    state, not a failure: `canEnterAdministration` withholds Administration entirely
+    when every administration predicate gates out, and `JourneySwitch` then renders
+    nothing at all rather than a lone tab. The caller decides whether a journey being
+    absent contradicts what the current nav offered.
+    """
+    tab = page.locator(f'[data-testid="next-journey-{journey}"]:visible')
+    if tab.count() == 0:
+        # No switch means only Use ADP is offered, and the preview opens inside it.
+        if journey != "use":
+            return False
+    else:
+        tab.click()
+        expect(tab).to_have_attribute("aria-current", "page", timeout=15_000)
+    expect(page.locator(PREVIEW_NAV)).to_have_count(1, timeout=15_000)
+    return True
+
+
+def _preview_counts(page, routes):
+    """Links per route inside the one visible preview nav."""
+    nav = page.locator(PREVIEW_NAV)
+    expect(nav).to_have_count(1, timeout=15_000)
+    return {route: nav.locator(f'a[href="{route}"]').count() for route in routes}
 
 
 def _identity(page):
@@ -131,11 +179,21 @@ def test_entry_return_and_shared_identity(authed_page, base_url):
 
 
 @pytest.mark.preview_on
-def test_preview_links_match_current_navigation(authed_page, base_url):
+def test_preview_links_match_current_navigation(authed_page, base_url, record_property):
+    """Presence parity per journey, not count parity.
+
+    The preview deliberately offers one destination twice: in Administration both
+    `budgets` ("Budgets") and `model-access-admin` ("Model access") point at
+    /budgets, because Bedrock account routing lives inside the Budgets page today
+    and is surfaced under its own name. The current sidebar has one /budgets link,
+    so asserting equal counts would fail on correct behaviour. The honest comparison
+    is direction: a route the visible current nav OFFERS must be reachable in the
+    preview, and a route it WITHHOLDS must not appear anywhere in it.
+    """
     _current(authed_page)
     _identity(authed_page)
     expect(authed_page.get_by_test_id("try-new-ui")).to_be_visible()
-    routes = ("/activity", "/settings/connections", "/budgets", "/ratelimits")
+    routes = tuple(ROUTE_JOURNEY)
     # Count inside the single VISIBLE nav. Counting both copies would compare two
     # current-UI links against the preview's one and never match, and the intent of
     # this test is the permission/feature gating that decides whether a route is
@@ -144,10 +202,35 @@ def test_preview_links_match_current_navigation(authed_page, base_url):
     expect(nav).to_have_count(1, timeout=15_000)
     visible = {route: nav.locator(f'a[href="{route}"]').count() for route in routes}
     assert all(count <= 1 for count in visible.values()), f"Ambiguous current-nav link counts: {visible}"
+    record_property("current_nav_counts", visible)
+
     authed_page.get_by_test_id("try-new-ui").click()
     _preview(authed_page, base_url)
+
+    # Visit every journey once and record what it offers, so the per-route result is
+    # auditable rather than a bare green.
+    preview = {}
+    for journey in PREVIEW_JOURNEYS:
+        if not _select_journey(authed_page, journey):
+            continue
+        preview[journey] = _preview_counts(authed_page, routes)
+    record_property("preview_nav_counts", preview)
+    assert "use" in preview, "Preview offered no Use ADP navigation"
+
     for route, count in visible.items():
-        expect(authed_page.get_by_test_id("next-current-ui-links").locator(f'a[href="{route}"]')).to_have_count(count)
+        owner = ROUTE_JOURNEY[route]
+        if count:
+            # Offered in the current nav: must be reachable in its owning journey.
+            # At least one, because a destination may legitimately be offered twice.
+            assert owner in preview, f"Current nav offers {route} but the preview did not offer the {owner} journey that owns it"
+            assert preview[owner][route] >= 1, f"Current nav offers {route} but the preview's {owner} journey has no link to it (observed {preview})"
+        else:
+            # Withheld in the current nav: must be absent from EVERY journey, not
+            # just the owning one. Surfacing a gated route in the wrong journey is
+            # still a gating leak. This half stays exact — it is the assertion that
+            # proves a route the actor may not see is not offered.
+            for journey, counts in preview.items():
+                assert counts[route] == 0, f"Current nav withholds {route} but the preview's {journey} journey links to it (observed {preview})"
 
 
 @pytest.mark.preview_off
