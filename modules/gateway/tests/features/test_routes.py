@@ -52,6 +52,7 @@ class TestFeaturesDefaults:
             "FEATURE_ORCHESTRATION_ENGINE_ENABLED",
             "FEATURE_BUDGET_SPEND_ENABLED",
             "FEATURE_AGENT_CONTROL_ENABLED",
+            "FEATURE_NEW_UI_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -78,6 +79,10 @@ class TestFeaturesDefaults:
                 # is that ordinary workloads stay off — so "absent" must mean off,
                 # not "off until someone sets it to something unparseable".
                 "agent_control": False,
+                # Issue #5079: fail-closed. The current UI is the default and the
+                # /next shell is opt-in per environment, so "absent" must mean the
+                # new experience is not advertised at all.
+                "new_ui": False,
             }
         }
 
@@ -268,6 +273,61 @@ class TestBudgetSpendFailClosed:
         data = response.json()["features"]
         assert data["budget_spend"] is True
         assert data["chat"] is True
+        assert data["gitlab"] is False
+        assert data["orchestration_engine"] is False
+
+
+class TestNewUiFailClosed:
+    """The opt-in /next UI shell flag is fail-closed (Issue #5079).
+
+    The current UI is the default experience and stays so. `new_ui` only controls
+    whether the additional /next experience is advertised and routable, and its
+    documented rollback is "flip the flag off": the entry link and /next routes
+    disappear while every current URL keeps working. That rollback only holds if
+    *absence* of the var resolves to off — otherwise the new shell would go live in
+    every environment the moment the gateway deployed.
+    """
+
+    def test_new_ui_false_by_default(self, client, monkeypatch):
+        """With no FEATURE_NEW_UI_ENABLED env var, new_ui is False."""
+        monkeypatch.delenv("FEATURE_NEW_UI_ENABLED", raising=False)
+        response = client.get("/features")
+        assert response.json()["features"]["new_ui"] is False
+
+    def test_new_ui_true_when_explicitly_enabled(self, client, monkeypatch):
+        """FEATURE_NEW_UI_ENABLED=true enables the flag."""
+        monkeypatch.setenv("FEATURE_NEW_UI_ENABLED", "true")
+        response = client.get("/features")
+        assert response.json()["features"]["new_ui"] is True
+
+    def test_new_ui_false_for_non_true_values(self, client, monkeypatch):
+        """Any value other than 'true' keeps the new experience hidden."""
+        for value in ("false", "yes", "1", "", "TRUE-ish"):
+            monkeypatch.setenv("FEATURE_NEW_UI_ENABLED", value)
+            response = client.get("/features")
+            assert response.json()["features"]["new_ui"] is False, value
+
+    def test_new_ui_accepts_mixed_case_true(self, client, monkeypatch):
+        """'True'/'TRUE' enable it — `_is_enabled_strict` lowercases before compare."""
+        for value in ("True", "TRUE"):
+            monkeypatch.setenv("FEATURE_NEW_UI_ENABLED", value)
+            response = client.get("/features")
+            assert response.json()["features"]["new_ui"] is True, value
+
+    def test_new_ui_does_not_affect_other_flags(self, client, monkeypatch):
+        """Enabling the new UI changes no other flag.
+
+        The coexistence contract says the new experience is purely additive: turning
+        it on must not disable, gate or otherwise alter any current-UI capability.
+        """
+        monkeypatch.setenv("FEATURE_NEW_UI_ENABLED", "true")
+        response = client.get("/features")
+        data = response.json()["features"]
+        assert data["new_ui"] is True
+        assert data["chat"] is True
+        assert data["connections"] is True
+        assert data["credentials"] is True
+        assert data["knowledge"] is True
         assert data["gitlab"] is False
         assert data["orchestration_engine"] is False
 

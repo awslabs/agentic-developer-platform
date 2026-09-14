@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom';
 import { Navigation } from '@/components/Navigation';
 import { MobileNav } from '@/components/MobileNav';
 import { NoOrgBanner } from '@/components/NoOrgBanner';
+import { TryNewUiLink } from '@/components/TryNewUiLink';
 import { useAuth } from '@/hooks/useAuth';
 
 /** Well-known org ID for the adp-default free-tier tenant. */
@@ -36,6 +37,11 @@ export function MainLayout() {
 
             {/* User menu */}
             <div className="flex items-center gap-4">
+              {/* Issue #5079: opt-in entry into the /next preview. Renders null
+                  unless the fail-closed `new_ui` flag is on, so this header is
+                  byte-identical to before in every environment that has not
+                  enabled the preview. */}
+              <TryNewUiLink />
               {user && (
                 <div className="flex items-center gap-3">
                   {user.avatarUrl && (

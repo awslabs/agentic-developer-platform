@@ -97,5 +97,17 @@ async def get_features(_current_user=Depends(get_current_user)):
             # gateway-side flag that could activate worker capabilities would make one
             # config change enable a listener the ingress policy may not yet cover.
             "agent_control": _is_enabled_strict("FEATURE_AGENT_CONTROL_ENABLED"),
+            # Fail-closed: the opt-in /next UI shell (Issue #5079, EPIC #5078). The
+            # current UI is the default and stays so; /next is an additional
+            # experience users enter voluntarily. Its documented rollback is "flip
+            # this flag off — the entry link and the /next routes disappear, the
+            # current UI keeps working, and no configured data or model-routing rule
+            # changes". That only holds if absence resolves to *off*: with
+            # `_is_enabled` the new shell would be live in every environment the
+            # moment the gateway shipped, and unsetting the var would not turn it
+            # off again. This flag is a rollout control, NOT a security boundary —
+            # every page reachable under /next enforces the same server-side
+            # authorization as its current-UI counterpart.
+            "new_ui": _is_enabled_strict("FEATURE_NEW_UI_ENABLED"),
         }
     }

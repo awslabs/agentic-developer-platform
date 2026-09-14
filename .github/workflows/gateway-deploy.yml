@@ -494,10 +494,28 @@ jobs:
           fi
           echo "live run control for ${ENVIRONMENT}: ${FEATURE_AGENT_CONTROL_ENABLED}"
 
+          # Issue #5079: the opt-in /next UI shell, enabled one environment at a time
+          # from /adp/${ENVIRONMENT}/gateway/feature-new-ui. Absent parameter =>
+          # "false", and `_is_enabled_strict` accepts only the literal "true", so a
+          # missing or malformed value leaves the current UI as the sole experience
+          # rather than guessing.
+          #
+          # This job is the ONLY place the parameter reaches a running pod. Changing
+          # the SSM value — in either direction — takes effect on the next run of
+          # this job, so enabling or disabling the preview is "put-parameter, then
+          # re-run this workflow". A frontend-only push skips deploy-backend and
+          # will not pick up a changed value.
+          FEATURE_NEW_UI_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-new-ui" "false")
+          if [ -z "$FEATURE_NEW_UI_ENABLED" ] || [ "$FEATURE_NEW_UI_ENABLED" = "None" ]; then
+            FEATURE_NEW_UI_ENABLED="false"
+          fi
+          echo "new UI shell for ${ENVIRONMENT}: ${FEATURE_NEW_UI_ENABLED}"
+
           # Render then apply, so changes to probes, env, resource limits, volume
           # mounts, etc. actually propagate.
           sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
+              -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
               modules/gateway/k8s/deployment.yaml | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
           # Stamp the image tag for this build. The manifest has a generic

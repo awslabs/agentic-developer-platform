@@ -197,6 +197,36 @@ spec:
             # reads its own copy of FEATURE_AGENT_CONTROL_ENABLED independently.
             - name: FEATURE_AGENT_CONTROL_ENABLED
               value: "__FEATURE_AGENT_CONTROL_ENABLED__"
+            # Issue #5079 (NUI-01 of EPIC #5078): the opt-in /next UI shell. Rendered
+            # per environment from /adp/<env>/gateway/feature-new-ui, defaulting to
+            # "false" — same mechanism as the two entries above, because the new
+            # experience is enabled one environment at a time and a committed literal
+            # would arm every environment on its next deploy.
+            #
+            # Disabling the preview: the "Try the new UI" link and the /next routes
+            # disappear, the current UI keeps serving every existing URL, and no
+            # configured data, settings or model-routing rule is touched. No SPA
+            # rebuild is involved — the SPA reads this value from GET /features at
+            # runtime.
+            #
+            # It takes TWO steps, because this value is baked into the pod env at
+            # deploy time:
+            #   1. aws ssm put-parameter --name /adp/<env>/gateway/feature-new-ui \
+            #        --value false --overwrite
+            #   2. re-run gateway-deploy.yml so its deploy-backend job re-renders
+            #      this manifest and rolls the pods.
+            # Step 1 alone changes nothing about a running pod. A frontend-only push
+            # SKIPS deploy-backend entirely, so it will not pick the value up either.
+            #
+            # For an emergency stop without waiting for a deploy:
+            #   kubectl set env deployment/bedrockgateway \
+            #     FEATURE_NEW_UI_ENABLED=false -n adp-gateway
+            # That is reverted by the next deploy, so still do step 1 to make it
+            # durable. Already-open browser sessions request a refresh every
+            # FEATURES_REVALIDATE_MS (see useFeatures.ts). Browser throttling and
+            # network completion can delay observation; a reload is not required.
+            - name: FEATURE_NEW_UI_ENABLED
+              value: "__FEATURE_NEW_UI_ENABLED__"
             # - name: FEATURE_KNOWLEDGE_ENABLED
             #   value: "false"
             # - name: FEATURE_INDEXING_ENABLED

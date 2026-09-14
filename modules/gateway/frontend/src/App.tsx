@@ -10,6 +10,14 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { RoleBasedRedirect } from './components/RoleBasedRedirect';
 import { DashboardRedirect } from './components/DashboardRedirect';
 import { AdminGuard } from './components/AdminGuard';
+// Issue #5079: imported EAGERLY, unlike every /next page below. It is the
+// fallback for "a /next chunk failed to load", so it cannot itself be a chunk
+// that might fail to load. It is a few lines of static markup.
+import { NextUnavailable } from './components/next/NextUnavailable';
+import { NextLoading } from './components/next/NextLoading';
+// Issue #5079: the preview's own feature gate. Eager for the same reason — it is
+// what decides whether any /next chunk is fetched at all.
+import { NewUiGate } from './components/next/NewUiGate';
 
 // Lazy load pages for code splitting
 const Login = lazy(() => import('./pages/Login'));
@@ -42,6 +50,17 @@ const Knowledge = lazy(() => import('./pages/Knowledge')); // Issue #1794
 const GraphView = lazy(() => import('./pages/GraphView')); // Issue #4212
 const FlowsList = lazy(() => import('./pages/FlowsList')); // Issue #4869
 const NotFound = lazy(() => import('./pages/NotFound'));
+
+// Opt-in new UI shell — Issue #5079 (NUI-01 of EPIC #5078).
+//
+// Lazily loaded like every other page, which is what keeps the preview isolated:
+// an environment with `new_ui` off never fetches these chunks, and a failure to
+// fetch them cannot affect the current UI's chunks.
+const NextLayoutLazy = lazy(() =>
+  import('./layouts/NextLayout').then((m) => ({ default: m.NextLayout })),
+);
+const NextHome = lazy(() => import('./pages/next/NextHome'));
+const NextNotFound = lazy(() => import('./pages/next/NextNotFound'));
 
 function App() {
   return (
@@ -119,6 +138,54 @@ function App() {
                   order, so `/flows` and `/flows/:flowId` do not compete. */}
               <Route path="/flows" element={<FeatureGate feature="orchestration_engine"><FlowsList /></FeatureGate>} />
               <Route path="/flows/:flowId" element={<FeatureGate feature="orchestration_engine"><GraphView /></FeatureGate>} />
+            </Route>
+
+            {/* Opt-in new UI — Issue #5079 (NUI-01 of EPIC #5078).
+
+                A SIBLING of the MainLayout block above, inside the same
+                ProtectedRoute + OnboardingGuard. That placement is the whole
+                coexistence contract in one line: /next reuses the existing
+                authentication and onboarding guards (so no second login, no
+                token in a URL, expiry behaves identically), while rendering in
+                its own layout instead of the current header and sidebar. Every
+                existing path above is untouched and still serves its current-UI
+                page.
+
+                Three wrappers, outermost first, each for a distinct failure:
+
+                1. NewUiGate — flag off (including a session that never read
+                   /features, because `new_ui` is fail-closed) redirects to "/",
+                   a working current-UI page. This is the documented rollback.
+                   It is the preview's own gate rather than the shared
+                   FeatureGate because it revalidates the flag on a bounded
+                   interval: an operator's disable has to reach a tab that is
+                   ALREADY inside the preview, not only tabs that reload.
+                2. ErrorBoundary with the NextUnavailable fallback — a /next
+                   chunk that fails to load, or any error thrown by a new-UI
+                   page, renders a screen whose escape hatch is a hard link to
+                   the current UI. It sits OUTSIDE the layout so that a failure
+                   in NextLayout itself is still caught.
+                3. Suspense — the loading state for the lazy chunks. It must be
+                   INSIDE the boundary: a rejected lazy import surfaces through
+                   Suspense and is caught by the boundary above it. */}
+            <Route
+              path="/next"
+              element={
+                <NewUiGate>
+                  <ErrorBoundary fallback={<NextUnavailable />}>
+                    <Suspense fallback={<NextLoading />}>
+                      <NextLayoutLazy />
+                    </Suspense>
+                  </ErrorBoundary>
+                </NewUiGate>
+              }
+            >
+              <Route index element={<NextHome />} />
+              {/* Scoped catch-all: an unknown /next path stays inside this
+                  layout, so the persistent "Back to current UI" control is still
+                  on screen. Without it the app-level 404 below would render with
+                  no way back into the preview or out of it. */}
+              <Route path="*" element={<NextNotFound />} />
             </Route>
           </Route>
 

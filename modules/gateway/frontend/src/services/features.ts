@@ -20,6 +20,8 @@ export interface FeatureFlags {
   budget_spend: boolean;
   /** Live run controls (pause/resume/steer/abort) — Issue #3960. Fail-closed. */
   agent_control: boolean;
+  /** Opt-in /next UI shell — Issue #5079. Fail-closed; rollout control only. */
+  new_ui: boolean;
 }
 
 export interface FeaturesResponse {
@@ -55,6 +57,13 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   // when the controls cannot work. An operator who clicks Abort during an outage
   // and sees no error has been told a run was aborted when it was not (AC-F3).
   agent_control: false,
+  // Fail-closed — Issue #5079. The current UI is the default; /next is an opt-in
+  // additional experience. `useFeatures` returns `data ?? ALL_FEATURES_ENABLED`, so
+  // this value renders BOTH while /features is in flight AND whenever it errors. A
+  // `true` here would advertise "Try the new UI" on every cold load before the flags
+  // arrive, and keep advertising it during any backend outage — and it would defeat
+  // the rollback, which is "flip the flag off and the new shell is gone".
+  new_ui: false,
 };
 
 export async function fetchFeatures(): Promise<FeatureFlags> {
