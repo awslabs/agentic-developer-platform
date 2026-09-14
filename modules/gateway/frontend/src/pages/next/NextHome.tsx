@@ -6,15 +6,19 @@
  * UI is still the default, and where each not-yet-migrated capability actually
  * works today.
  *
- * Deliberately NOT here: the Use ADP / Administration navigation and the grouped
- * journey pages. Those are NUI-02 (#5080) onward. Rendering placeholder nav for
- * them would violate the coexistence rule against presenting nonfunctional
- * controls as available features.
+ * **#5080 update:** this is now the landing page of the *Use ADP* journey, and the
+ * Use ADP / Administration switch and per-journey navigation live in `NextLayout`
+ * around it. The page's own content is still orientation plus honest links: this
+ * story migrates no capability, so every entry opens the page that works today in
+ * the current UI, labelled as such. The cards below are the Use ADP journey's own
+ * entries, from the same gated model the navigation uses.
  */
 
-import { CurrentUiLinks } from '@/components/next/CurrentUiLinks';
+import { useJourneys } from '@/hooks/useJourneys';
+import { JourneyEntryCards } from '@/components/next/JourneyEntryCards';
 
 export default function NextHome() {
+  const { journeys } = useJourneys();
   return (
     <div className="space-y-8" data-testid="next-home">
       <header>
@@ -39,13 +43,13 @@ export default function NextHome() {
           id="next-home-not-migrated"
           className="text-lg font-semibold text-gray-900 dark:text-white mb-1"
         >
-          Where to find everything else
+          Your work in ADP
         </h2>
         <p className="text-sm text-gray-600 dark:text-gray-400 mb-4 max-w-3xl">
           These capabilities have not moved into the preview yet. Each link opens
           the page that works today in the current UI.
         </p>
-        <CurrentUiLinks />
+        <JourneyEntryCards sections={journeys.use.sections} idPrefix="next-home" />
       </section>
     </div>
   );

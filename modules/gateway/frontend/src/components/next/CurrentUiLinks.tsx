@@ -1,26 +1,29 @@
 /**
- * CurrentUiLinks — Issue #5079 (NUI-01 of EPIC #5078).
+ * CurrentUiLinks — Issue #5079 (NUI-01), rebased onto the journey model in #5080.
  *
  * The new /next experience starts with none of its pages migrated. The
  * coexistence contract forbids rendering nonfunctional controls as if they were
  * available features, so instead of stub screens the new shell links to the
  * working current-UI page for each capability.
  *
- * Two rules make these links truthful:
+ * Two rules make these links truthful, and both are now enforced in one place:
  *
  * 1. Every entry carries the SAME feature gate as its current-UI nav entry, so a
  *    module disabled for this deployment is not advertised here either. Sending a
  *    user to a route that `FeatureGate` bounces back to "/" would be a broken
  *    promise, not a fallback.
  * 2. Administration entries carry the same role AND permission predicates the
- *    current sidebar uses — `canViewBudgets() && (isPlatformAdmin() ||
- *    isOrgAdmin())` for Budgets and the `canViewRateLimits()` equivalent for Rate
- *    Limits (`Navigation.tsx`). Checking only the role, as an earlier revision of
- *    this file did, showed an org admin without BUDGET_READ a link the server
- *    would refuse. As in `Navigation`, these are display hints only — the server
- *    is the authorization boundary on every route behind them — but a hint that
- *    disagrees with the sidebar is a misleading link, so the predicates must match
- *    rather than approximate.
+ *    current sidebar uses. Checking only the role, as an early revision did, showed
+ *    an org admin without BUDGET_READ a link the server would refuse. These are
+ *    display hints only — the server is the authorization boundary on every route
+ *    behind them — but a hint that disagrees with the sidebar is a misleading link.
+ *
+ * **#5080 change:** the gating table itself moved to `journeys.ts`, which is now the
+ * single source of truth shared with the navigation, the journey switch and the
+ * journey home pages. This component keeps its exported shape and behaviour and
+ * derives its groups from that model, so there is no longer a second copy of "who
+ * sees Budgets" to keep in agreement by hand. The `Use ADP` / `Administration`
+ * grouping is unchanged, as is the "Opens in the current UI" label on every entry.
  *
  * These are `Link`s, not anchors: staying inside the SPA is what keeps identity,
  * the active org/workspace and the query cache shared between the two UIs. No
@@ -30,6 +33,7 @@
 import { Link } from 'react-router-dom';
 import { useFeatures } from '@/hooks/useFeatures';
 import { usePermissions } from '@/hooks/usePermissions';
+import { buildJourneys, journeyEntries, type JourneyPermissions } from './journeys';
 
 interface CurrentUiLink {
   to: string;
@@ -46,79 +50,46 @@ export interface CurrentUiLinkGroup {
 /**
  * Build the link groups for the capabilities that have not been migrated yet.
  *
- * Exported for direct unit testing of the gating rules without rendering.
+ * Exported for direct unit testing of the gating rules without rendering. The
+ * `perms` shape stays as #5079 defined it — the two administration permissions
+ * plus the two roles — and the remaining journey inputs default to denied, so a
+ * caller that knows only about budgets and rate limits keeps working.
  */
 export function buildCurrentUiLinkGroups(
   features: ReturnType<typeof useFeatures>,
-  perms: {
+  perms: Partial<JourneyPermissions> & {
     isPlatformAdmin: boolean;
     isOrgAdmin: boolean;
     canViewBudgets: boolean;
     canViewRateLimits: boolean;
   },
 ): CurrentUiLinkGroup[] {
-  const useAdp: CurrentUiLink[] = [
-    { to: '/runs', label: 'Agent runs', description: 'The run dashboard and its details.' },
-    { to: '/activity', label: 'Agent activity', description: 'Recent agent activity and invocations.' },
-    { to: '/setup', label: 'CLI setup', description: 'Set up Codex or Claude Code against ADP.' },
+  const journeys = buildJourneys(features, perms);
+
+  // Two entries may legitimately share a destination in the journey model (personal
+  // Model access lives on the Credentials page today). This flat link list is keyed
+  // by destination, so the first entry for a `to` wins and the duplicate is dropped
+  // — the model keeps the distinction, this view does not need it.
+  const toGroup = (title: string, entries: ReturnType<typeof journeyEntries>) => {
+    const seen = new Set<string>();
+    const links: CurrentUiLink[] = [];
+    for (const entry of entries) {
+      if (seen.has(entry.to)) continue;
+      seen.add(entry.to);
+      links.push({ to: entry.to, label: entry.label, description: entry.description });
+    }
+    return { title, links };
+  };
+
+  const groups: CurrentUiLinkGroup[] = [
+    toGroup('Use ADP', journeyEntries(journeys.use)),
   ];
 
-  if (features.chat) {
-    useAdp.push({ to: '/my-chats', label: 'My chats', description: 'Conversation history and new chats.' });
-  }
-  if (features.orchestration_engine) {
-    useAdp.push({ to: '/flows', label: 'Delivery flows', description: 'Flow inventory and flow details.' });
-  }
-  if (features.connections) {
-    useAdp.push({
-      to: '/settings/connections',
-      label: 'Connections',
-      description: 'GitHub repositories and other connected services.',
-    });
-  }
-  if (features.credentials) {
-    useAdp.push({
-      to: '/settings/credentials',
-      label: 'Credentials',
-      description: 'Your vault and connected AWS accounts.',
-    });
-  }
-  if (features.knowledge) {
-    useAdp.push({ to: '/knowledge', label: 'Knowledge', description: 'Your knowledge sources and content.' });
-  }
-  if (features.budget_spend) {
-    useAdp.push({ to: '/budget', label: 'My spend', description: 'Your personal usage and allowance.' });
-  }
-
-  const groups: CurrentUiLinkGroup[] = [{ title: 'Use ADP', links: useAdp }];
-
-  // Administration entries mirror the current sidebar's predicates exactly:
-  // Navigation gates each of these on its own READ permission AND the admin role,
-  // so an admin missing that permission is not pointed at a page the server will
-  // refuse. Each link is gated independently, because the two permissions are
-  // independent — an admin can hold one and not the other.
-  const isAdmin = perms.isPlatformAdmin || perms.isOrgAdmin;
-  const administration: CurrentUiLink[] = [];
-
-  if (isAdmin && perms.canViewBudgets) {
-    administration.push({
-      to: '/budgets',
-      label: 'Budgets',
-      description: 'Spending caps by organization, team and person.',
-    });
-  }
-  if (isAdmin && perms.canViewRateLimits) {
-    administration.push({
-      to: '/ratelimits',
-      label: 'Rate limits',
-      description: 'Request and token limits.',
-    });
-  }
-
+  const administration = toGroup('Administration', journeyEntries(journeys.admin));
   // Only when something survived the predicates — an empty "Administration"
   // heading would advertise a journey with nothing in it.
-  if (administration.length > 0) {
-    groups.push({ title: 'Administration', links: administration });
+  if (administration.links.length > 0) {
+    groups.push(administration);
   }
 
   return groups;
@@ -126,12 +97,12 @@ export function buildCurrentUiLinkGroups(
 
 export function CurrentUiLinks() {
   const features = useFeatures();
-  const { isPlatformAdmin, isOrgAdmin, canViewBudgets, canViewRateLimits } = usePermissions();
+  const perms = usePermissions();
   const groups = buildCurrentUiLinkGroups(features, {
-    isPlatformAdmin: isPlatformAdmin(),
-    isOrgAdmin: isOrgAdmin(),
-    canViewBudgets: canViewBudgets(),
-    canViewRateLimits: canViewRateLimits(),
+    isPlatformAdmin: perms.isPlatformAdmin(),
+    isOrgAdmin: perms.isOrgAdmin(),
+    canViewBudgets: perms.canViewBudgets(),
+    canViewRateLimits: perms.canViewRateLimits(),
   });
 
   return (
