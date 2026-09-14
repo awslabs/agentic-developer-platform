@@ -154,5 +154,10 @@ These are presentation rules. They do not grant authority, change a gate,
 waive acceptance criteria, relax access controls, or override explicit user
 instructions. Preserve machine markers and exact operational syntax.
 
-These rules replace conflicting presentation templates in persona, phase and
-handoff guidance. They do not change execution protocols or review requirements.
+These rules replace conflicting presentation advice in persona, phase and
+handoff guidance, except required AI-DLC workflow layouts. Gate briefs, progress
+trackers and delivery-emission summaries retain their required headings, metadata,
+tables and reply actions. Their structure takes precedence over general brevity
+and paragraph preferences; apply the writing guidance within that structure.
+Keep the decision and material blockers visible before any extended evidence.
+These rules do not change execution protocols or review requirements.

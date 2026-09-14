@@ -91,6 +91,21 @@ GitHub. When publication cannot be verified, the comment says so rather than
 claiming that artifacts were committed and published. A reminder links to the
 current gate for its artifact revision and decision brief.
 
+AI-DLC's persona defines required Gate Brief and Live Tracker layouts. These,
+and the issue-emitter's completion layout, take precedence over generic brevity
+and paragraph preferences. Gates retain stage/scope/status/revision metadata,
+artifact and decision tables, validation and remaining holds, the effect of
+approval, and a supported reply footer. Loop proposals also show wave-to-story
+mapping, target selection and all five emission-lint results. Planned checks
+remain distinct from live results. The tracker retains its progress bar and
+phase/stage/status/artifact/cost table, including during revisions and blocks.
+Update it before the final gate comment; the one-stage-per-run stop remains.
+
+Template and assembly regressions cover these required fields using only shipped
+persona assets. They verify what guidance reaches the worker, not that a model
+always follows it. Fallback gates remain explicitly limited reminders when the
+agent omitted a brief; they do not reconstruct the missing substantive review.
+
 ## Loading and packaging
 
 | Entry point | Policy loading |
