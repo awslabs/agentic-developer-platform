@@ -61,13 +61,10 @@ anybody with no GitHub identity. So a GitHub-less person got an anchor from the
 read side that the authoring side could not parse at all. The parser is now
 registry-aware over all three namespaces.
 
-**Authorable is narrower than parseable, deliberately.** ``users:`` parses (the
-read surface produces it and must be able to round-trip its own output) but is
-**refused by the write guard** with a 422. Nothing enforces a cap keyed on the
-internal fallback: the enforcement layer resolves a person to a provider-backed
-anchor, so a ``users:``-keyed row would display a limit and govern nothing. That
-is the same honest refusal the module already applies to an unlinked GitHub id,
-for the same reason — a rejection is better than a row that looks like success.
+**Native users are authorable.** The internal fallback is validated against the
+current human user and shared person resolver before it can be stored. Both
+branches of enforcement resolve the same native anchor, including linked login
+rows. A stale or nonexistent native anchor is refused.
 
 **One composer.** ``format_person_anchor`` is the only place an anchor string is
 built. Before #4843 the ``github:`` form was hand-rolled in two other modules
@@ -115,12 +112,11 @@ PERSON_ANCHOR_INTERNAL_NAMESPACE = "users"
 PERSON_ANCHOR_GITHUB_PREFIX = f"{PERSON_ANCHOR_PROVIDER_PRECEDENCE[0].value}:"
 
 # Every namespace `parse_person_anchor` accepts, in precedence order with the
-# internal fallback last. Parseable ⊃ authorable, deliberately.
+# internal fallback last. Each registered namespace can carry enforced caps.
 PERSON_ANCHOR_NAMESPACES: tuple[str, ...] = tuple(p.value for p in PERSON_ANCHOR_PROVIDER_PRECEDENCE) + (PERSON_ANCHOR_INTERNAL_NAMESPACE,)
 
-# Namespaces a cap may be STORED under. The internal fallback is excluded: see
-# the module docstring's "authorable is narrower than parseable".
-PERSON_ANCHOR_AUTHORABLE_NAMESPACES: frozenset[str] = frozenset(p.value for p in PERSON_ANCHOR_PROVIDER_PRECEDENCE)
+# Namespaces a cap may be stored and enforced under.
+PERSON_ANCHOR_AUTHORABLE_NAMESPACES: frozenset[str] = frozenset(PERSON_ANCHOR_NAMESPACES)
 
 # Named in the 422 so a caller who supplied the wrong thing is told the right
 # thing rather than left to guess. Built from the registry so a new namespace
@@ -224,8 +220,8 @@ def parse_person_anchor(anchor: str) -> tuple[str, str]:
 def is_authorable_person_anchor(anchor: str) -> bool:
     """Whether a cap row may be STORED under this anchor.
 
-    True for a provider-backed namespace, False for the internal ``users:``
-    fallback and for anything unparseable. Exists so the enforcement layer can
+    True for registered provider and native namespaces, False for unparseable keys.
+    Exists so the enforcement layer can
     ask the registry the question instead of testing ``startswith(github:)`` —
     a test that silently excluded every new namespace from enforcement while the
     authoring side happily stored one (a cap that displays and never governs).
@@ -272,18 +268,16 @@ async def resolve_person_anchor(db: AsyncSession, supplied_anchor: str) -> str:
     """
     namespace, identifier = parse_person_anchor(supplied_anchor)
 
-    if namespace not in PERSON_ANCHOR_AUTHORABLE_NAMESPACES:
-        # Parseable but not authorable (#4843). The read surface produces
-        # `users:<canonical id>` for a person with no external identity, so the
-        # parser must accept it — but no cap can be ENFORCED under it: the
-        # enforcement layer resolves a person to a provider-backed anchor, so a
-        # row keyed on the internal fallback would display a limit and stop
-        # nothing. Refusing it is the same #4511 reasoning as an unlinked id.
-        raise UnresolvablePersonAnchorError(
-            supplied_anchor,
-            f"'{namespace}:' is this platform's internal fallback key and no limit can be enforced against it; "
-            f"anchor the person on a linked external identity instead",
-        )
+    if namespace == PERSON_ANCHOR_INTERNAL_NAMESPACE:
+        from src.budget.person_ledger import resolve_person_identity
+
+        user = await db.get(User, identifier)
+        if user is None or user.user_kind != "human":
+            raise UnresolvablePersonAnchorError(supplied_anchor, "no human user with this id exists")
+        effective_anchor, _ = await resolve_person_identity(db, user.id)
+        if effective_anchor != supplied_anchor:
+            raise UnresolvablePersonAnchorError(supplied_anchor, "this person's identity has changed; refresh before editing their budget")
+        return effective_anchor
 
     # Imported here, not at module scope: src.shared.models.vault imports
     # src.shared.identity.providers, so a top-level import of UserIdentity makes
@@ -352,10 +346,7 @@ async def resolve_caller_person_anchor(db: AsyncSession, caller_id: str) -> tupl
     this is honest-refusal territory until an identity-linking flow exists.
 
     Raises:
-        UnresolvablePersonAnchorError: 422 when the caller has no ``users`` row or
-            no identity in any registered provider namespace. Such a person has no
-            cross-org key, so a cap for them could only ever be inert — the honest
-            answer is to refuse it, not to store it under a fabricated key.
+        UnresolvablePersonAnchorError: 422 when the caller has no provisioned user row.
     """
     from src.shared.models.vault import UserIdentity
 
@@ -398,7 +389,7 @@ async def resolve_caller_person_anchor(db: AsyncSession, caller_id: str) -> tupl
         if provider_user_id:
             return format_person_anchor(provider_user_id, provider.value), user_pk
 
-    raise UnresolvablePersonAnchorError(
-        f"{PERSON_ANCHOR_GITHUB_PREFIX}<unresolved>",
-        "your account has no linked external identity, so it has no cross-organization key a personal limit could be stored against",
-    )
+    from src.budget.person_ledger import resolve_person_identity
+
+    anchor, _ = await resolve_person_identity(db, user_pk)
+    return anchor, user_pk

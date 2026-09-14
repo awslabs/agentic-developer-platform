@@ -734,8 +734,8 @@ class TestPrincipalsTheWideningDoesNotReach:
 
         assert harness.status == 200
 
-    async def test_a_caller_with_no_github_identity_is_skipped(self, session, redis_client):
-        """No linked GitHub account → no ``github:`` anchor → no cap row can match."""
+    async def test_native_individual_budget_is_enforced(self, session, redis_client):
+        """Native users' individual budgets deny requests using the same person ledger."""
         await seed_org(session, HOME_ORG, "Home")
         await seed_user(session, CALLER_CANONICAL_ID, HOME_ORG, sub=CALLER_SUB)
         await seed_membership(session, CALLER_CANONICAL_ID, HOME_ORG, is_active=True)
@@ -744,7 +744,7 @@ class TestPrincipalsTheWideningDoesNotReach:
 
         harness = await _drive(_service(redis_client), session, context=direct_context())
 
-        assert harness.status == 200
+        assert harness.status == 402
 
 
 # =============================================================================

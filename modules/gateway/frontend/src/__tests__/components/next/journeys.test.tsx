@@ -103,7 +103,7 @@ describe('journey model — Issue #5080', () => {
     it('is identical for a member and a platform admin', () => {
       // "An administrator starts with the same user experience as a member." The
       // journeys differ by what Administration adds, not by Use ADP shrinking.
-      expect(useIds({}, PLATFORM_ADMIN)).toEqual(useIds({}, MEMBER));
+      expect(useIds({ budget_spend: true }, PLATFORM_ADMIN)).toEqual(useIds({ budget_spend: true }, MEMBER));
     });
 
     it.each([
@@ -143,7 +143,7 @@ describe('journey model — Issue #5080', () => {
       // chat away from a plain member who has it today.
       expect(useIds({ chat: true }, MEMBER)).toContain('chats-new');
       // And it is not something only admins reach.
-      expect(useIds({ chat: true }, MEMBER)).toEqual(useIds({ chat: true }, PLATFORM_ADMIN));
+      expect(useIds({ chat: true, budget_spend: true }, MEMBER)).toEqual(useIds({ chat: true, budget_spend: true }, PLATFORM_ADMIN));
     });
 
     it('shows Delivery flows and My spend to a member with no permissions', () => {
@@ -224,7 +224,8 @@ describe('journey model — Issue #5080', () => {
 
     it('gates Budgets and Rate limits independently', () => {
       const entries = adminIds({}, { ...PLATFORM_ADMIN, canViewRateLimits: false });
-      expect(entries).toContain('budgets');
+      expect(entries).not.toContain('budgets');
+      expect(useIds({}, PLATFORM_ADMIN)).toContain('my-spend');
       expect(entries).not.toContain('ratelimits');
     });
 
@@ -241,7 +242,8 @@ describe('journey model — Issue #5080', () => {
       // isOrgAdmin. Writing the predicate as isOrgAdmin-only would hide budgets
       // from the platform admin entirely.
       const entries = adminIds({}, { isPlatformAdmin: true, canViewBudgets: true });
-      expect(entries).toContain('budgets');
+      expect(entries).not.toContain('budgets');
+      expect(useIds({}, PLATFORM_ADMIN)).toContain('my-spend');
     });
 
     it.each([

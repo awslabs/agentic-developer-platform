@@ -72,9 +72,9 @@ export function Navigation() {
     navItems.push({ to: '/agents', label: 'Agents', icon: '🤖' });
   }
 
-  // Budget management for org admins (Issue #185)
-  if (canViewBudgets() && (isPlatformAdmin() || isOrgAdmin())) {
-    navItems.push({ to: '/budgets', label: 'Budgets', icon: '💰' });
+  // Routing configuration has its own destination; budgets share /budget.
+  if (canViewBudgets() && isPlatformAdmin()) {
+    navItems.push({ to: '/model-access', label: 'Model access', icon: '🔀' });
   }
 
   // Rate limit management for org admins (Issue #185)
@@ -104,15 +104,9 @@ export function Navigation() {
     navItems.push({ to: '/flows', label: 'Delivery Flows', icon: '🔀' });
   }
 
-  // Budget & Spend for all authenticated users (Issue #4402).
-  //
-  // Deliberately UNGATED by permission, unlike /budgets above. That entry is the admin
-  // CRUD surface for other people's caps; this one shows the caller their own figures,
-  // from endpoints scoped to them server-side that accept no entity parameter. There is
-  // nothing to authorise client-side, and gating on a permission a MEMBER lacks
-  // (MEMBER maps to USAGE_READ only, and resolves to [] on the ID-token path — #4389)
-  // would hide the screen from exactly the users it exists for.
-  if (features.budget_spend) {
+  // Personal spend stays feature-gated for members. Administrators retain their
+  // existing budget-management access when that personal feature is disabled.
+  if (features.budget_spend || (canViewBudgets() && (isPlatformAdmin() || isOrgAdmin()))) {
     navItems.push({ to: '/budget', label: 'Budget & Spend', icon: '💵' });
   }
 

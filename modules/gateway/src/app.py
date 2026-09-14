@@ -87,6 +87,7 @@ UNIT_MODULES = [
     # src.budget.routes, whose unscoped entity_type/entity_id pattern is open
     # IDOR #4384.
     "src.budget.person_cap_routes",
+    "src.budget.overview_routes",
     # Issue #4745 (#4692 · R4): the Bedrock account-routing authoring API — the
     # platform-admin surface over R2's mapping/destination tables. Every route is
     # `require_platform_admin`, org admins included (design ruling 4, §6.5): a mapping

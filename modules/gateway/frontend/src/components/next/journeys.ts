@@ -184,7 +184,7 @@ function nonEmpty(sections: JourneySection[]): JourneySection[] {
  * the caller by the server, so this journey is available to everyone including a
  * MEMBER with no permissions at all.
  */
-function buildUseAdp(features: FeatureFlags): Journey {
+function buildUseAdp(features: FeatureFlags, perms: JourneyPermissions): Journey {
   const work: JourneyEntry[] = [
     {
       id: 'runs',
@@ -301,12 +301,12 @@ function buildUseAdp(features: FeatureFlags): Journey {
     });
   }
   // Feature-gated but deliberately NOT permission-gated — see the file comment.
-  if (features.budget_spend) {
+  if (features.budget_spend || ((perms.isPlatformAdmin || perms.isOrgAdmin) && perms.canViewBudgets)) {
     insight.push({
       id: 'my-spend',
       to: '/budget',
-      label: 'My spend',
-      description: 'Your personal usage and allowance. No administration controls.',
+      label: 'Budget & Spend',
+      description: 'Your monthly spend and budget, with budget management for administrators.',
       currentUi: true,
     });
   }
@@ -403,15 +403,6 @@ function buildAdministration(
   const limits: JourneyEntry[] = [];
   // Both entries gate on their own READ permission AND the admin role, and are
   // gated independently because the permissions are independent.
-  if (isAdmin && perms.canViewBudgets) {
-    limits.push({
-      id: 'budgets',
-      to: '/budgets',
-      label: 'Budgets',
-      description: 'Spending caps by organization, team and person.',
-      currentUi: true,
-    });
-  }
   if (isAdmin && perms.canViewRateLimits) {
     limits.push({
       id: 'ratelimits',
@@ -421,18 +412,14 @@ function buildAdministration(
       currentUi: true,
     });
   }
-  // Administration-side model access is Bedrock account routing, which today
-  // lives inside the Budgets page and whose endpoints still require platform
-  // admin (the design note's "current backend versus requested design"). The
-  // organization-admin extension is a later story, so this entry stays
-  // platform-admin-only and is not advertised to org admins.
+  // Routing configuration stays platform-admin-only on its own Model access page.
   if (perms.isPlatformAdmin && perms.canViewBudgets) {
     limits.push({
       id: 'model-access-admin',
-      to: '/budgets',
+      to: '/model-access',
       label: 'Model access',
       description:
-        'Bedrock destinations and routing rules. Inside the Budgets page today.',
+        'Bedrock destinations and routing rules.',
       currentUi: true,
       scope: 'platform',
     });
@@ -522,7 +509,7 @@ export function buildJourneys(
 ): Record<JourneyId, Journey> {
   const resolved = journeyPermissions(perms);
   return {
-    use: buildUseAdp(features),
+    use: buildUseAdp(features, resolved),
     admin: buildAdministration(features, resolved),
   };
 }

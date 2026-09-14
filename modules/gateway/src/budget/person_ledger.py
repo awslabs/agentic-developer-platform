@@ -41,7 +41,7 @@ from src.shared.identity.person_anchor import (
 )
 from src.shared.models.budget import BudgetUsage, PersonBudgetConfig, PersonBudgetDefault
 from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import User
+from src.shared.models.organization import TeamMembership, User
 from src.shared.models.vault import UserIdentity
 from src.shared.schemas.budget import EntityType, PeriodType
 
@@ -389,7 +389,9 @@ async def resolve_member_partitions(db: AsyncSession, person_user_ids: list[str]
 async def resolve_person_team_keys(db: AsyncSession, person_user_ids: list[str]) -> list[tuple[str, str]]:
     """The ``(org_id, team_id)`` pairs this person belongs to — Issue #4690.
 
-    The team rung's matching key. Derived from the person's OWN ``users`` rows (the
+    The team rung's matching key. Includes all TeamMembership rows, with the
+    primary ``users.team_id`` retained for provisioning paths without membership
+    rows. Derived from the person's OWN identities (the
     fusion ``resolve_person_identity`` already performed), so it is a projection of
     one identity decision rather than a second opinion on who the person is — the
     same discipline ``resolve_person_subs`` keeps for the direct-ledger namespace.
@@ -413,7 +415,8 @@ async def resolve_person_team_keys(db: AsyncSession, person_user_ids: list[str])
         deterministic read order, exactly as the id and sub lists are.
     """
     rows = (await db.execute(select(User.org_id, User.team_id).where(User.id.in_(person_user_ids)))).all()
-    return sorted({(org_id, team_id) for org_id, team_id in rows if org_id and team_id})
+    memberships = (await db.execute(select(TeamMembership.org_id, TeamMembership.team_id).where(TeamMembership.user_id.in_(person_user_ids)))).all()
+    return sorted({(org_id, team_id) for org_id, team_id in [*rows, *memberships] if org_id and team_id})
 
 
 def _tightest(rows: list[PersonBudgetDefault]) -> PersonBudgetDefault:

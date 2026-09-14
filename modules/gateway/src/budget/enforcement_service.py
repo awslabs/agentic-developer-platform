@@ -1540,8 +1540,8 @@ class BudgetEnforcementService:
             # prefix test excluded every namespace added after it from the
             # individual-cap read while the authoring side would happily store one
             # — a cap that displays a limit and governs nothing, the #4511 class.
-            # `users:` still yields None here: nothing can be authored under the
-            # internal fallback, which is why the write guard refuses it too.
+            # Native users now have authorable keys too; the same resolver and
+            # namespace registry are used by the authoring and read surfaces.
             anchor = resolved_anchor if is_authorable_person_anchor(resolved_anchor) else None
 
             # TWO org lists, deliberately different (review fix on #4696 — the
@@ -1573,13 +1573,14 @@ class BudgetEnforcementService:
             # one anchor lookup, and the fusion is paid only when a row exists.
             resolved = await resolve_person_anchor_identity(session, person_user_id)
             if not resolved:
-                return None
+                anchor, _ = await resolve_person_identity(session, person_user_id)
+            else:
+                anchor = format_person_anchor(resolved[1], resolved[0])
             # Composed through the single composer (#4843) — this was the third of
             # the three hand-rolled anchor f-strings the design note flagged. It is
             # the ENFORCEMENT side of the comparison a few lines below, so a
             # spelling that drifts from the authoring side's by one character makes
             # every cap on the install inert.
-            anchor = format_person_anchor(resolved[1], resolved[0])
             limits = await resolve_individual_person_limits(session, anchor, self_authored_by=person_user_id)
             if not limits:
                 return None

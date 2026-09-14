@@ -638,7 +638,7 @@ def _default_unavailable(exc: Exception) -> HTTPException:
     )
 
 
-async def _caller_scope_keys(db: AsyncSession, canonical_user_id: str, active_org_id: str) -> tuple[list[str], list[tuple[str, str]]]:
+async def _caller_scope_keys(db: AsyncSession, canonical_user_id: str, active_org_id: str | None) -> tuple[list[str], list[tuple[str, str]]]:
     """The caller's ``(org_ids, team_keys)`` — which scopes' default rules may govern them.
 
     Server-derived from the caller's fused identity, never from request input: this
@@ -733,7 +733,7 @@ async def get_my_person_cap(
         # resolver knows the rung. Called with the caller's own canonical id so their
         # own row is reported as `own` rather than `admin` — the difference between
         # "the number is yours" and "ask a platform admin".
-        org_ids, team_keys = await _caller_scope_keys(db, canonical_user_id, current_user.org_id)
+        org_ids, team_keys = await _caller_scope_keys(db, canonical_user_id, None)
         limits = await resolve_applicable_person_limits(
             db,
             person_anchor=anchor,
@@ -1246,17 +1246,11 @@ async def _compose_member_budget(
 
     cloud, direct = await read_person_partition_spend(db, org_id, person_user_ids, person_subs, PeriodType(period_type), period_start)
 
-    # A member with no linked identity in any registered provider namespace gets the
-    # internal `users:<id>` anchor from `resolve_person_identity`. They can hold no
-    # individual row keyed on it, so the ladder's top rung is skipped — but a DEFAULT
-    # still governs them, which is the whole point of a default. Passing None for the
-    # anchor is how `resolve_applicable_person_limits` is told to skip that rung
-    # without skipping the ladder.
-    is_internal_anchor = anchor.startswith(f"{PERSON_ANCHOR_INTERNAL_NAMESPACE}:")
+    # Native and externally linked people use the same authorable person key.
     limits = await resolve_applicable_person_limits(
         db,
-        person_anchor=None if is_internal_anchor else anchor,
-        org_ids=await resolve_member_partitions(db, person_user_ids, org_id),
+        person_anchor=anchor,
+        org_ids=await resolve_member_partitions(db, person_user_ids, None),
         team_keys=await resolve_person_team_keys(db, person_user_ids),
         self_authored_by=member.id,
     )
@@ -1264,7 +1258,7 @@ async def _compose_member_budget(
 
     return MemberBudgetResponse(
         user_id=member.id,
-        person_anchor=None if is_internal_anchor else anchor,
+        person_anchor=anchor,
         spend_usd=format_money(cloud + direct, SPEND_PLACES),
         limit_usd=None if limit is None else format_money(Decimal(limit.amount), CAP_PLACES),
         limit_status="uncapped" if limit is None else "capped",
