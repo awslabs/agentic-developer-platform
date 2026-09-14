@@ -1,44 +1,20 @@
-/**
- * The delivery-journey graph — intent → done, on one page, updating live.
- * Issue #4212 (EPIC #4191, intent #4120).
- *
- * The four things this view exists to answer, and where each is:
- *
- *  - **How much is left** (AC-1) — the rollup bar spans the *whole* journey,
- *    pending nodes included, and queued chips render as first-class cards. A view
- *    of only what already ran always looks nearly finished.
- *  - **What runs in parallel** (AC-2) — waves with independent branches render as
- *    side-by-side columns, computed from the edges in `flowLayout`.
- *  - **Where we are, and what is stuck** (AC-3) — the current node is ringed with
- *    `aria-current`; stalled and halted carry distinct reason badges rather than
- *    collapsing into `failed`.
- *  - **What it cost** (AC-4/AC-22) — per node and rolled up, three-valued, with
- *    the scope label on every figure. `unknown` never renders `$0.00`.
- *
- * **Containers group, they never execute** (§8.2). EPICs are `<section>`s and waves
- * are column headers — neither is a node, neither has a state fill, and neither is
- * clickable. Rendering a container as an executable vertex invites an operator to
- * ask why "wave-2" is not running.
- *
- * **Layout is CSS Grid and semantic HTML** (§9): no graph library, no new runtime
- * dependency. The structure is genuinely a nested list, and a real list is what
- * makes it navigable by screen reader.
- */
-
+/** Delivery flow: collapsible waves with dependency-ordered parallel groups. */
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useFlowGraph } from '@/hooks/useFlowGraph';
 import { countByDisplayState } from '@/utils/nodeState';
-import { groupIntoEpics, blockingPredecessors } from '@/utils/flowLayout';
+import { groupIntoEpics } from '@/utils/flowLayout';
 import { RollupBar } from '@/components/orchestration/RollupBar';
 import { PlanSummary } from '@/components/orchestration/PlanSummary';
 import { NodeChip } from '@/components/orchestration/NodeChip';
-import { GateControls } from '@/components/orchestration/GateControls';
+import { WaveCard } from '@/components/orchestration/WaveCard';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
 import { LastUpdated } from '@/components/LastUpdated';
 import { Alert, Spinner } from '@/components/ui';
 
 export function GraphView() {
   const { flowId } = useParams<{ flowId: string }>();
+  const [expandedWaves, setExpandedWaves] = useState<Record<string, boolean>>({});
   const { data, isPending, isError, error, dataUpdatedAt, isFetching } = useFlowGraph(flowId);
 
   if (isPending) {
@@ -72,6 +48,12 @@ export function GraphView() {
   const historicalNodes = data.nodes.filter((node) => node.state === 'superseded');
   const epics = groupIntoEpics({ ...data, nodes: activeNodes });
   const changesRequested = activeNodes.filter((node) => node.state === 'rejected_at_gate');
+  const waves = epics.flatMap((epic) => epic.waves.map((wave) => ({ epicRef: epic.epicRef, wave })));
+  const firstUnfinished = waves.find(({ wave }) => wave.nodes.some((node) => node.state !== 'passed'));
+  const waveKey = (epicRef: string, waveRef: string) => JSON.stringify([flowId, epicRef, waveRef]);
+  const setAllExpanded = (expanded: boolean) => setExpandedWaves(Object.fromEntries(
+    waves.map(({ epicRef, wave }) => [waveKey(epicRef, wave.waveRef), expanded])
+  ));
 
   return (
     <div className="space-y-6 p-6">
@@ -118,67 +100,46 @@ export function GraphView() {
         </p>
       )}
 
+      {waves.length > 0 && (
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="max-w-2xl space-y-1 text-sm text-gray-600 dark:text-gray-400">
+            <p className="font-medium text-gray-900 dark:text-gray-100">Read each wave from top to bottom.</p>
+            <p>Parallel paths can progress together. Each step starts after its own dependencies pass, subject to approvals and worker availability.</p>
+            <p className="text-xs">Wave cards group the plan. Their dependency links determine execution order.</p>
+          </div>
+          <div className="flex shrink-0 gap-3 text-sm">
+            <button type="button" onClick={() => setAllExpanded(true)} className="text-blue-700 underline dark:text-blue-300">Expand all waves</button>
+            <button type="button" onClick={() => setAllExpanded(false)} className="text-blue-700 underline dark:text-blue-300">Collapse all waves</button>
+          </div>
+        </div>
+      )}
+
       {epics.map((epic) => (
-        // A grouping container, not a vertex: no state fill, not interactive.
         <section
           key={epic.epicRef}
           data-testid={`epic-${epic.epicRef}`}
           data-container="epic"
           aria-labelledby={`epic-heading-${epic.epicRef}`}
-          className="rounded-lg border border-gray-200 p-4 dark:border-gray-700"
+          className="min-w-0 space-y-3"
         >
-          <h2
-            id={`epic-heading-${epic.epicRef}`}
-            className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
-          >
+          <h2 id={`epic-heading-${epic.epicRef}`} className="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
             {epic.epicRef}
           </h2>
-          <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
-            Scroll horizontally to view all waves. Each card is labelled Story, Approval gate, or Evaluation.
-          </p>
-
-          <div className="flex gap-4 overflow-x-auto pb-2">
-            {epic.waves.map((wave) => (
-              <div
-                key={wave.waveRef}
-                data-testid={`wave-${epic.epicRef}-${wave.waveRef}`}
-                data-container="wave"
-                data-branch-count={wave.branches.length}
-                className="shrink-0"
-                style={{ width: `${Math.max(1, wave.branches.length) * 18 + Math.max(0, wave.branches.length - 1) * 0.75}rem` }}
-              >
-                <h3 className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
-                  {wave.waveRef} · Stories: {wave.branches.flat().filter((node) => node.kind === 'story' && node.state !== 'superseded').length}
-                </h3>
-
-                {/* One column per independent branch (AC-2). A wave whose nodes
-                    are chained by an edge collapses to a single column, because
-                    they are sequential and drawing them side by side would claim
-                    concurrency the engine will not deliver. */}
-                <div
-                  className="grid gap-3"
-                  style={{ gridTemplateColumns: `repeat(${wave.branches.length}, minmax(0, 1fr))` }}
-                >
-                  {wave.branches.map((branch, branchIndex) => (
-                    <ul
-                      key={branch[0]?.id ?? branchIndex}
-                      data-testid={`branch-${epic.epicRef}-${wave.waveRef}-${branchIndex}`}
-                      className="space-y-2"
-                    >
-                      {branch.map((node) => (
-                        <NodeChip
-                          key={node.id}
-                          node={node}
-                          blockedBy={blockingPredecessors(data, node)}
-                          controls={flowId ? <GateControls node={node} flowId={flowId} /> : undefined}
-                        />
-                      ))}
-                    </ul>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+          {epic.waves.map((wave) => {
+            const key = waveKey(epic.epicRef, wave.waveRef);
+            const needsAttention = wave.nodes.some((node) => ['running', 'awaiting_merge', 'awaiting_gate', 'rejected_at_gate', 'failed', 'halted'].includes(node.state) || node.stalled);
+            const expanded = expandedWaves[key] ?? (needsAttention || firstUnfinished?.wave === wave);
+            return (
+              <WaveCard
+                key={key}
+                epicRef={epic.epicRef}
+                wave={wave}
+                graph={data}
+                expanded={expanded}
+                onToggle={() => setExpandedWaves((current) => ({ ...current, [key]: !expanded }))}
+              />
+            );
+          })}
         </section>
       ))}
       {historicalNodes.length > 0 && (

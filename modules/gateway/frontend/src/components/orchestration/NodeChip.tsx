@@ -29,6 +29,8 @@ export interface NodeChipProps {
   node: GraphNode;
   /** Titles of unfinished predecessors, for the "waiting on" caption. */
   blockedBy?: string[];
+  /** Direct dependencies, including completed steps, for inspecting the plan. */
+  dependencies?: GraphNode[];
   /**
    * Decision controls for this node (issue #4213), passed as a slot rather than
    * imported here. This chip stays presentational: it has no permission check, no
@@ -54,7 +56,7 @@ function reasonBadge(node: GraphNode): string | null {
   return null;
 }
 
-export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
+export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeChipProps) {
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
@@ -67,6 +69,7 @@ export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
   // `superseded` and unknown states get no segment in the bar, and no fill here.
   const style = display ? DISPLAY_STATES[display] : null;
   const isQueued = display === 'queued';
+  const waiting = dependencies?.filter((dependency) => toDisplayState(dependency) !== 'complete') ?? [];
 
   return (
     <li
@@ -147,7 +150,33 @@ export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
             </div>
           )}
 
-          {isQueued && blockedBy.length > 0 && (
+          {dependencies && dependencies.length > 0 && (
+            <details className="mt-2 rounded border border-gray-200 p-2 text-xs dark:border-gray-700">
+              <summary
+                className="cursor-pointer text-gray-600 dark:text-gray-400"
+                data-testid={isQueued && waiting.length > 0 ? `node-blocked-by-${node.node_ref}` : undefined}
+              >
+                {isQueued && waiting.length > 0
+                  ? waiting.length === 1 ? `Waiting on ${waiting[0].title}` : `Waiting on ${waiting.length} steps`
+                  : `${dependencies.length} ${dependencies.length === 1 ? 'dependency' : 'dependencies'}`}
+              </summary>
+              <ul className="mt-2 space-y-2">
+                {dependencies.map((dependency) => {
+                  const state = toDisplayState(dependency);
+                  return (
+                    <li key={dependency.id}>
+                      <span className="block font-medium">{dependency.title}</span>
+                      <span className="text-gray-500 dark:text-gray-400">
+                        {dependency.wave_ref} · {state ? DISPLAY_STATES[state].label : dependency.state}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
+          )}
+
+          {!dependencies && isQueued && blockedBy.length > 0 && (
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid={`node-blocked-by-${node.node_ref}`}>
               Waiting on {blockedBy.join(', ')}
             </p>
