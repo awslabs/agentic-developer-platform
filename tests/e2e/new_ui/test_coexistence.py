@@ -11,6 +11,16 @@ from urllib.parse import urlsplit
 
 import pytest
 
+# The current UI renders <nav aria-label="Main navigation"> twice on every page:
+# the desktop sidebar in `MainLayout` and a second copy inside `MobileNav`'s
+# slide-out panel, which stays in the DOM at desktop widths and is only hidden by
+# `lg:hidden`. Both predate the preview shell. Assertions must therefore address
+# the ONE landmark the user can actually see, not "the" landmark: a bare selector
+# resolves to two elements and Playwright's strict mode raises instead of
+# asserting, and `.first` is worse than useless here because index 0 is the
+# HIDDEN mobile copy.
+CURRENT_NAV = 'nav[aria-label="Main navigation"]:visible'
+
 CURRENT_PAGES = [
     ("/runs", "Dashboard", "/api/me/agent-run-stats"),
     ("/activity", "Agent Activity", "/api/me/agent-invocations"),
@@ -31,7 +41,11 @@ def _goto(page, base_url, path):
 
 
 def _current(page):
-    expect(page.locator('nav[aria-label="Main navigation"]')).to_be_visible(timeout=15_000)
+    # Exactly one visible landmark, not "at least one": 0 means the current UI did
+    # not render, and >1 would mean the desktop and mobile copies are on screen at
+    # once. Both are real failures, so neither is allowed to pass. The fixtures use
+    # a desktop viewport (1440x1000), where the mobile copy is display:none.
+    expect(page.locator(CURRENT_NAV)).to_have_count(1, timeout=15_000)
     expect(page.get_by_test_id("next-layout")).to_have_count(0)
     assert not urlsplit(page.url).path.startswith("/next"), "Expected a current-UI route"
 
@@ -122,8 +136,14 @@ def test_preview_links_match_current_navigation(authed_page, base_url):
     _identity(authed_page)
     expect(authed_page.get_by_test_id("try-new-ui")).to_be_visible()
     routes = ("/activity", "/settings/connections", "/budgets", "/ratelimits")
-    nav = authed_page.locator('nav[aria-label="Main navigation"]')
+    # Count inside the single VISIBLE nav. Counting both copies would compare two
+    # current-UI links against the preview's one and never match, and the intent of
+    # this test is the permission/feature gating that decides whether a route is
+    # offered at all — a per-nav count of 1 or 0, not a DOM-copy tally.
+    nav = authed_page.locator(CURRENT_NAV)
+    expect(nav).to_have_count(1, timeout=15_000)
     visible = {route: nav.locator(f'a[href="{route}"]').count() for route in routes}
+    assert all(count <= 1 for count in visible.values()), f"Ambiguous current-nav link counts: {visible}"
     authed_page.get_by_test_id("try-new-ui").click()
     _preview(authed_page, base_url)
     for route, count in visible.items():
