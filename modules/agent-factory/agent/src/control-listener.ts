@@ -44,9 +44,23 @@ import {
 import { type ControlEnvelope, type EnvelopeFailure, verifyEnvelope } from './control-envelope';
 import { ControlCredentials } from './control-credentials';
 import { readControlKeyring } from './control-keyring';
+import { IMPLEMENTED_CONTROL_VERBS } from './control-runtime';
 
-/** Verbs this build can perform. Empty in S1 — the foundation ships before the verbs. */
-const SUPPORTED_ACTIONS: ReadonlySet<ControlAction> = new Set<ControlAction>();
+/**
+ * Verbs this build can perform.
+ *
+ * Issue #3962: re-exported from the control runtime rather than declared here.
+ * It used to be its own empty set, which made it a second answer to the question
+ * `IMPLEMENTED_CONTROL_VERBS` already answers — two sets that agreed only by
+ * both being empty, and would have to be widened in lockstep by every story that
+ * adds a verb. An alias cannot drift.
+ *
+ * The worker no longer reads this constant at all: it derives the store's set
+ * from the adapter via `listenerActionsFor`, so the verbs on the wire are a
+ * consequence of the transport that exists rather than a claim beside it. This
+ * export is kept for the callers and gates that reference the name.
+ */
+const SUPPORTED_ACTIONS: ReadonlySet<ControlAction> = IMPLEMENTED_CONTROL_VERBS;
 
 /** Verb path segments the listener recognises, supported or not. */
 const KNOWN_ACTIONS: readonly ControlAction[] = ['pause', 'resume', 'steer', 'abort'];

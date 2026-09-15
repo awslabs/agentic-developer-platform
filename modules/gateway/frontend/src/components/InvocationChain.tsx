@@ -42,6 +42,11 @@ const STATUS_GLYPHS: Record<InvocationStatus, { glyph: string; colorClass: strin
   blocked: { glyph: '✗', colorClass: 'text-gray-500' },
   skipped: { glyph: '✗', colorClass: 'text-gray-500' },
   budget_stopped: { glyph: '⊘', colorClass: 'text-amber-600 dark:text-amber-400' },
+  // Issue #3964. The typing did its job: adding `aborted` to the union failed the
+  // build here, which is the only reason this map is not now rendering a
+  // deliberately stopped run as "✗ No-op" via the fallback below. Glyph and colour
+  // match `utils/status.ts` so the chain view and the board agree.
+  aborted: { glyph: '■', colorClass: 'text-amber-600 dark:text-amber-400' },
 };
 
 // ---------------------------------------------------------------------------

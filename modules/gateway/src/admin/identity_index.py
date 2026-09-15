@@ -286,6 +286,8 @@ class IdentityIndexClient:
         user_id: str,
         org_id: str,
         provider_username: str | None = None,
+        user_kind: str | None = None,
+        bot_kind: str | None = None,
     ) -> bool:
         """Update a github_user identity row using SET semantics (UpdateItem).
 
@@ -294,7 +296,10 @@ class IdentityIndexClient:
         operation re-writes the user row.
 
         Always sets: user_id, org_id, updated_at.
-        Conditionally sets: provider_username (only when not None).
+        Conditionally sets: provider_username, user_kind, bot_kind (only when
+        not None). user_kind/bot_kind (Issue #780) mark a row as a known bot
+        identity — read by the webhook Lambda's identity_resolver to route bot
+        senders through the loop guards instead of the default human path.
 
         Returns True if update succeeded, False if all retries exhausted.
         """
@@ -313,6 +318,14 @@ class IdentityIndexClient:
         if provider_username is not None:
             set_parts.append("provider_username = :pun")
             expression_values[":pun"] = {"S": provider_username}
+
+        if user_kind is not None:
+            set_parts.append("user_kind = :ukind")
+            expression_values[":ukind"] = {"S": user_kind}
+
+        if bot_kind is not None:
+            set_parts.append("bot_kind = :bkind")
+            expression_values[":bkind"] = {"S": bot_kind}
 
         update_expression = "SET " + ", ".join(set_parts)
 

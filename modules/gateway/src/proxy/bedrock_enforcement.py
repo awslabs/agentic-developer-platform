@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.proxy.bedrock_principal import resolve_routing_principal
 from src.proxy.bedrock_routing import BedrockTarget, bedrock_routing_resolver
 from src.proxy.bedrock_signing import DestinationCredentials, bedrock_destination_signer
 from src.shared.schemas.auth import TokenContext
@@ -36,7 +37,7 @@ class RoutingDecision:
         return self.target is not None
 
 
-async def resolve_routing_decision(context: TokenContext) -> RoutingDecision:
+async def resolve_routing_decision(context: TokenContext, *, agent_run_id: str | None = None) -> RoutingDecision:
     """Honor the authenticated principal's saved mapping on every request.
 
     The resolver selects person, primary team, organization, or platform, in that
@@ -48,14 +49,19 @@ async def resolve_routing_decision(context: TokenContext) -> RoutingDecision:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        target = await bedrock_routing_resolver.resolve(session, context)
+        if agent_run_id is None:
+            from src.proxy.service import _current_agent_run_id
+
+            agent_run_id = _current_agent_run_id.get()
+        principal, user_id = await resolve_routing_principal(session, context, agent_run_id=agent_run_id)
+        target = await bedrock_routing_resolver.resolve(session, principal, user_id=user_id)
 
         # No applicable mapping: use ambient platform credentials and record
         # that this was the resolved destination. No AssumeRole call is needed.
         if target.is_platform:
             return RoutingDecision(target=target)
 
-        user_id = await bedrock_routing_resolver.resolve_canonical_user_id(session, context)
+        user_id = user_id or await bedrock_routing_resolver.resolve_canonical_user_id(session, principal)
         credentials = await bedrock_destination_signer.get_credentials(
             session,
             target,

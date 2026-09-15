@@ -588,6 +588,7 @@ class TestStatusVocabularyGuard:
         "blocked",  # Issue #4020: a guard stopped the spawn
         "skipped",  # Issue #4020: the worker deduplicated a redelivery
         "budget_stopped",  # Issue #4187: a per-run/per-chain spend cap stopped the run
+        "aborted",  # Issue #3964: a confirmed ADP abort finalization stopped the run
     }
 
     def test_active_statuses_are_real(self):

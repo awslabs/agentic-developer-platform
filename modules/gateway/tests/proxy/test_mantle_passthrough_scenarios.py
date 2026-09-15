@@ -37,6 +37,8 @@ from src.proxy.model_resolver import ModelResolver
 from src.proxy.routes import get_mantle_service, get_token_context, router, set_mantle_service, set_model_resolver
 from src.shared.schemas.auth import TokenContext
 
+pytestmark = pytest.mark.usefixtures("unmapped_mantle_routing")
+
 MANTLE_URL = "https://bedrock-mantle.us-east-1.api.aws"
 
 
@@ -186,7 +188,7 @@ class TestMeteringAccuracy:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured.update(usage=dict(usage), model=model, status=status_code, request_id=request_id)
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -209,7 +211,7 @@ class TestMeteringAccuracy:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured.update(usage=dict(usage), status=status_code)
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -281,7 +283,7 @@ class TestStreamingIntegrity:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured.update(usage=dict(usage))
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -293,7 +295,7 @@ class TestStreamingIntegrity:
         """Run a streaming call, returning (received_bytes, captured_usage)."""
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured.update(usage=dict(usage))
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -502,7 +504,7 @@ class TestStreamingUpstreamErrors:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured.update(status_code=status_code, usage=dict(usage))
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -521,7 +523,7 @@ class TestStreamingUpstreamErrors:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured.update(status_code=status_code)
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -544,7 +546,7 @@ class TestStreamingUpstreamErrors:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured.update(usage=dict(usage), status_code=status_code)
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -621,7 +623,7 @@ class TestInferenceProfileRewrite:
         svc = _profile_service(handler, "us", no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured.update(model=model)
 
         svc._log_usage = spy  # type: ignore[method-assign]

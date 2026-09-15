@@ -233,6 +233,9 @@ def lambda_handler(event, context):
             # Inject resolved identity into the message pipeline
             message.user_id = resolution.user_id
             message.platform_data["org_id"] = resolution.org_id
+            # Slack supplies a workspace ID, not an ADP tenant. Use the
+            # server-resolved organization for the registered run capability.
+            message.platform_data["tenant_id"] = resolution.org_id
             message.platform_data["team_id"] = resolution.team_id
         elif isinstance(resolution, UnresolvedUser):
             # User not linked — send magic-link, do NOT enqueue
@@ -957,29 +960,32 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
     if INPUT_QUEUE_URL.endswith(".fifo"):
         send_kwargs["MessageGroupId"] = session_id
         send_kwargs["MessageDeduplicationId"] = task_id
-    sqs.send_message(**send_kwargs)
-
-    # Phase 4 (#1458): Best-effort invocation row for Slack + WebChat.
-    # Written AFTER SQS publish (unlike Phase 1 which writes before) because
-    # the chat worker does not yet advance status — rows stay at
-    # webhook_received for v1. Never blocks the message handling path.
-    if WEBHOOK_EVENTS_TABLE and message.channel.value in ("slack", "webchat"):
-        try:
-            topic = (message.text[:120] if message.text else "(untitled)") or "(untitled)"
-            log_invocation(
-                WEBHOOK_EVENTS_TABLE,
-                event_id=message.message_id,
-                arrived_at=arrived_at,
-                user_id=message.user_id or "unattributed",
-                channel=message.channel.value,
-                topic=topic,
-                persona=classification.persona,
-                status="webhook_received",
-                tenant_id=pd.get("tenant_id", ""),
-                region=REGION,
-            )
-        except Exception as e:
-            logger.warning("Invocation capture failed (non-fatal): %s", e)
+    # This row authorizes the worker to inherit its human owner's Bedrock
+    # destination. Persist it BEFORE dispatch; capture failure must not enqueue
+    # a job that would otherwise spend using the shared worker's account.
+    try:
+        if not message.user_id or not pd.get("tenant_id"):
+            raise ValueError("Missing chat run owner or tenant")
+        registered = log_invocation(
+            WEBHOOK_EVENTS_TABLE,
+            event_id=message.message_id,
+            arrived_at=arrived_at,
+            user_id=message.user_id or "unattributed",
+            channel=message.channel.value,
+            topic=message.text[:120] or "(untitled)",
+            persona=classification.persona,
+            status="webhook_received",
+            tenant_id=pd.get("tenant_id", ""),
+            region=REGION,
+            account_type=pd.get("account_type") or "human",
+        )
+        if registered is None:
+            raise RuntimeError("Chat run registration unavailable")
+        sqs.send_message(**send_kwargs)
+    except Exception:
+        set_thread_processing(session_id, thread_id, None)
+        logger.exception("Chat dispatch failed before acknowledgement")
+        return {"statusCode": 503, "body": json.dumps({"error": "Could not register and dispatch this run. Please retry."})}
 
     # Always send an acknowledgement. The classifier prompt asks for
     # escalation_note on non-direct paths, but LLMs occasionally omit it —

@@ -49,6 +49,12 @@ from typing import Literal
 
 LivenessVerdict = Literal["live", "unverifiable", "exited"]
 
+# The status a CONFIRMED ADP abort finalization writes (#3964). Named once so the
+# terminal set below, the stats counters and the writer's allowlist all spell it
+# the same way — a typo in one copy would be a status that is terminal to one
+# reader and unknown to the next, which is precisely the drift this module owns.
+ABORTED_STATUS = "aborted"
+
 # Staleness cutoff for active runs (hours). An active run whose last signal is
 # older than this can no longer be claimed as `live` — the tuned value from the
 # #3696 stats guard, kept as ONE constant rather than two. Two independent
@@ -66,6 +72,9 @@ ACTIVE_STALENESS_HOURS = 24
 #                                 deduplicated a redelivery
 #   - budget_stopped           -- #4187: a per-run or per-chain spend cap ended
 #                                 the run (agent-worker-image/entrypoint.py)
+#   - aborted                  -- #3964: an operator stopped the run on purpose
+#                                 and the worker CONFIRMED the abort finalized
+#                                 (agent-worker-image/lib/invocation_status.py)
 #
 # Hoisted out of the inline literal that `ActivityService._map_item` used to
 # carry, so the `completed_at` derivation and this verdict cannot drift apart.
@@ -81,6 +90,22 @@ OBSERVED_TERMINAL_STATUSES = frozenset(
         "blocked",
         "skipped",
         "budget_stopped",
+        # Issue #3964: a deliberately stopped run is over. It reaches this set for
+        # the same reason `budget_stopped` did — the run will never move again, so
+        # leaving it out would keep it reading `live` until the staleness window
+        # expired, and would leave `completed_at` null on a finished run (AC-A3).
+        #
+        # Membership is scoped to a CONFIRMED ADP abort finalization, which is the
+        # only thing that writes this value. A provider's native interruption —
+        # an SDK cancellation, an aborted HTTP request, a signal — is not itself
+        # an aborted run: the harness-neutral contract has adapters normalize
+        # their own outcomes before any status is written, so nothing here (and
+        # nothing in the writer) inspects a provider string to decide this.
+        # Treating a bare interrupt as `aborted` would report a run as
+        # deliberately stopped when it merely lost its transport, which is the
+        # `unverifiable`-collapsed-into-`exited` mistake this module exists to
+        # prevent.
+        ABORTED_STATUS,
     }
 )
 

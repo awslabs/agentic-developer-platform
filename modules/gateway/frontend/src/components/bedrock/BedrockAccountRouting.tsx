@@ -68,6 +68,7 @@ import type { Team } from '@/types';
 import {
   deleteMapping,
   getEffectiveMapping,
+  getDestinationSetup,
   listDestinations,
   listMappings,
   registerDestination,
@@ -388,6 +389,8 @@ function AddRuleModal({
   orgsTruncated,
   destinations,
   initialScope,
+  onDestinationRegistered,
+  onDestinationPrepared,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -396,6 +399,8 @@ function AddRuleModal({
   orgsTruncated: boolean;
   destinations: DestinationSummary[];
   initialScope?: MappingScope;
+  onDestinationRegistered: (destination: DestinationSummary) => void;
+  onDestinationPrepared: () => void;
 }) {
   const toast = useToast();
   const [scopeType, setScopeType] = useState<MappingScopeType>('team');
@@ -408,6 +413,9 @@ function AddRuleModal({
   const [destinationId, setDestinationId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [registering, setRegistering] = useState(false);
+  const [pendingDestination, setPendingDestination] = useState<DestinationSummary | undefined>();
+  const [userOrgId, setUserOrgId] = useState('');
 
   // Re-seed on open: a scope left over from the previously edited rule would be an
   // authoring mistake pre-filled for the operator.
@@ -419,6 +427,8 @@ function AddRuleModal({
     setUserId(initialScope?.user ?? '');
     setDestinationId('');
     setError(null);
+    setRegistering(false);
+    setUserOrgId('');
   }, [isOpen, initialScope]);
 
   /**
@@ -497,7 +507,7 @@ function AddRuleModal({
   // No `.trim()` on the user id any more: since #4827 it is a canonical id chosen from
   // a server-sourced list, not something an operator typed, so there is no whitespace
   // to defend against and trimming would only hide a real id-shape bug.
-  const ready = !!destinationId && ((scopeType === 'org' && !!orgId) || (scopeType === 'team' && !!orgId && !!teamId) || (scopeType === 'user' && !!userId));
+  const ready = options.some((d) => d.id === destinationId) && ((scopeType === 'org' && !!orgId) || (scopeType === 'team' && !!orgId && !!teamId) || (scopeType === 'user' && !!userId));
 
   const handleSave = async () => {
     setSaving(true);
@@ -520,6 +530,25 @@ function AddRuleModal({
     }
   };
 
+  if (registering) {
+    return (
+      <RegisterDestinationModal
+        isOpen
+        onClose={() => setRegistering(false)}
+        orgs={orgs}
+        initialOrgId={scopeType === 'user' ? userOrgId : orgId}
+        initialDestination={pendingDestination}
+        onPrepared={onDestinationPrepared}
+        onRegistered={(message, destination) => {
+          onDestinationRegistered(destination);
+          setDestinationId(destination.id);
+          setRegistering(false);
+          toast.success(message);
+        }}
+      />
+    );
+  }
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Add routing rule" size="md">
       <div className="space-y-4">
@@ -533,7 +562,7 @@ function AddRuleModal({
                   name="routing-scope-type"
                   value={value}
                   checked={scopeType === value}
-                  onChange={() => setScopeType(value)}
+                  onChange={() => { setScopeType(value); setDestinationId(''); }}
                   data-testid={`routing-scope-${value}`}
                 />
                 {value}
@@ -620,7 +649,7 @@ function AddRuleModal({
             label="Person"
             namePrefix="routing-rule-user"
             value={userId}
-            onChange={setUserId}
+            onChange={(id, person) => { setUserId(id); setUserOrgId(person?.orgId ?? ''); setDestinationId(''); }}
             helperText="An admin rule here takes precedence over the person's own selection."
           />
         )}
@@ -642,6 +671,17 @@ function AddRuleModal({
             ? 'Only verified, routing-capable destinations are listed.'
             : 'Only verified destinations linked to the selected organization (or registered platform-wide) are listed.'}
         </p>
+        <div className="space-y-2">
+          {!options.length && <p className="text-sm text-gray-600 dark:text-gray-400">Add an AWS destination and verify its role to continue.</p>}
+          <Button variant="outline" onClick={() => { setPendingDestination(undefined); setRegistering(true); }}>
+            Add destination
+          </Button>
+          {destinations.filter((d) => !d.usable_for_routing && !d.connection_id && (scopeType === 'user' || !orgId || d.owner_org_id === orgId)).map((d) => (
+            <Button key={d.id} variant="secondary" onClick={() => { setPendingDestination(d); setRegistering(true); }}>
+              Continue setup: {d.label}
+            </Button>
+          ))}
+        </div>
 
         {/* Ruling 1's behaviour, stated where the decision is made rather than only in
             the banner: this is the moment an admin can still choose differently. */}
@@ -764,30 +804,40 @@ function RegisterDestinationModal({
   onClose,
   onRegistered,
   orgs,
+  initialOrgId,
+  initialDestination,
+  onPrepared,
 }: {
   isOpen: boolean;
   onClose: () => void;
-  onRegistered: (message: string) => void;
+  onRegistered: (message: string, destination: DestinationSummary) => void;
   orgs: Array<{ id: string; name: string }>;
+  initialOrgId?: string;
+  initialDestination?: DestinationSummary;
+  onPrepared: () => void;
 }) {
-  const [linkOrgId, setLinkOrgId] = useState('');
+  const [linkOrgId, setLinkOrgId] = useState(initialDestination?.owner_org_id ?? initialOrgId ?? '');
 
   useEffect(() => {
-    if (isOpen) setLinkOrgId('');
-  }, [isOpen]);
+    if (isOpen) {
+      setLinkOrgId(initialDestination?.owner_org_id ?? initialOrgId ?? '');
+    }
+  }, [isOpen, initialOrgId, initialDestination]);
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Register new destination account" size="md">
+    <Modal isOpen={isOpen} onClose={onClose} title={initialDestination ? 'Continue destination setup' : 'Add AWS destination'} size="lg">
       <div className="space-y-4">
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          The same CloudFormation quick-create flow as <em>Connect AWS Account</em>, saved into the platform routing registry rather than your
-          personal credentials.
+          Choose the AWS account that will pay for Bedrock usage. Create its role yourself, or ask an AWS administrator to apply the downloaded package and return here to verify it.
         </p>
 
         <ConnectAwsForm
           testIdPrefix="routing-register"
+          onGetSetup={getDestinationSetup}
+          initialConnection={initialDestination ? { handle: initialDestination.id, nickname: initialDestination.label, accountId: initialDestination.account_id } : undefined}
+          onPrepared={onPrepared}
           extraFieldsValid={!!linkOrgId}
-          infoText="Launch opens the AWS Console in the destination account; the template creates the IAM role and its trust policy. The destination is not selectable in a rule until the platform has verified it can assume that role."
+          infoText="ADP access does not grant permission to create AWS roles. Both options use the same Bedrock role and trust settings. The destination becomes available for routing only after ADP verifies it."
           onLaunch={async ({ nickname, accountId }) => {
             const result = await registerDestination({
               source: 'new_account',
@@ -799,22 +849,23 @@ function RegisterDestinationModal({
           }}
           onVerify={async (destinationId) => {
             const result = await verifyDestination(destinationId);
+            if (result.verified) {
+              onRegistered('Destination verified. Select it and save the routing rule to use it.', result.destination);
+              onClose();
+            }
             return { verified: result.verified, reason: describeRoutingReason(result.reason) };
           }}
-          onVerified={() => {
-            onRegistered('Destination registered and verified. It can now be selected in a rule.');
-            onClose();
-          }}
         >
-          <Select
+          {(locked) => <Select
             label="Link to organization"
             name="routing-register-org"
             value={linkOrgId}
+            disabled={locked || !!initialOrgId}
             onChange={(e) => setLinkOrgId(e.target.value)}
             placeholder="Select an organization"
             options={orgs.map((o) => ({ value: o.id, label: o.name || o.id }))}
             helperText="Rules for this organization's teams and users may route here."
-          />
+          />}
         </ConnectAwsForm>
       </div>
     </Modal>
@@ -923,6 +974,7 @@ export function BedrockAccountRouting() {
   const [scopeFilter, setScopeFilter] = useState('all');
   const [showAddRule, setShowAddRule] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
+  const [resumeDestination, setResumeDestination] = useState<DestinationSummary | undefined>();
   const [showLink, setShowLink] = useState(false);
   const [unlinking, setUnlinking] = useState<DestinationSummary | null>(null);
   const [unlinkBusy, setUnlinkBusy] = useState(false);
@@ -1226,7 +1278,7 @@ export function BedrockAccountRouting() {
               <h3 className="text-sm font-medium text-gray-900 dark:text-white">Connected destinations ({destinations?.length ?? 0})</h3>
               <div className="flex gap-2">
                 <Button variant="secondary" size="sm" onClick={() => setShowLink(true)}>Use existing AWS connection</Button>
-                <Button variant="secondary" size="sm" onClick={() => setShowRegister(true)} data-testid="routing-register-open">
+                <Button variant="secondary" size="sm" onClick={() => { setResumeDestination(undefined); setShowRegister(true); }} data-testid="routing-register-open">
                   + Register new account
                 </Button>
               </div>
@@ -1274,6 +1326,13 @@ export function BedrockAccountRouting() {
                         {destination.used_by} {destination.used_by === 1 ? 'rule' : 'rules'}
                       </td>
                       <td className="py-3 text-right">
+                        {!destination.usable_for_routing && !destination.connection_id && (
+                          <Button variant="secondary" size="sm" className="mr-2"
+                            onClick={() => { setResumeDestination(destination); setShowRegister(true); }}
+                            data-testid={`routing-resume-${destination.id}`}>
+                            Continue setup
+                          </Button>
+                        )}
                         <Button
                           variant="secondary"
                           size="sm"
@@ -1311,6 +1370,11 @@ export function BedrockAccountRouting() {
         orgs={orgs}
         orgsTruncated={orgsTruncated}
         destinations={destinations ?? []}
+        onDestinationPrepared={() => setReloadToken((n) => n + 1)}
+        onDestinationRegistered={(destination) => {
+          setDestinations((rows) => [...(rows ?? []).filter((row) => row.id !== destination.id), destination]);
+          setReloadToken((n) => n + 1);
+        }}
       />
 
       <RemoveRuleModal
@@ -1331,7 +1395,8 @@ export function BedrockAccountRouting() {
           </div>
         </div>
       </Modal>
-      <RegisterDestinationModal isOpen={showRegister} onClose={() => setShowRegister(false)} onRegistered={handleChanged} orgs={orgs} />
+      {showRegister && <RegisterDestinationModal isOpen onClose={() => setShowRegister(false)} onRegistered={handleChanged} orgs={orgs}
+        initialDestination={resumeDestination} onPrepared={() => setReloadToken((n) => n + 1)} />}
     </section>
   );
 }

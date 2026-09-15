@@ -226,9 +226,23 @@ class TestObservedExits:
         Issue #4187 added `budget_stopped`: a run the gateway stopped on a spend
         cap is over, so it must read `exited` rather than sitting at `live` until
         the staleness window expires.
+
+        Issue #3964 added `aborted` for the same reason: a run an operator stopped
+        on purpose is finished, and leaving it out left `completed_at` null on a
+        terminal row (AC-A3).
         """
         assert OBSERVED_TERMINAL_STATUSES == frozenset(
-            {"complete", "failed", "rejected", "rate_limited", "no_op", "blocked", "skipped", "budget_stopped"}
+            {
+                "complete",
+                "failed",
+                "rejected",
+                "rate_limited",
+                "no_op",
+                "blocked",
+                "skipped",
+                "budget_stopped",
+                "aborted",
+            }
         )
 
 

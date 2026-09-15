@@ -1,6 +1,6 @@
 """Invocation logger for non-GitHub channels (Slack + WebChat).
 
-Best-effort DDB write mirroring Phase 1's key contract:
+Server-owned run registration mirroring Phase 1's key contract:
   PK: event_id  = message.message_id (UUID)
   SK: arrived_at = ISO 8601 timestamp
 
@@ -50,6 +50,7 @@ def log_invocation(
     status: str = "webhook_received",
     tenant_id: str = "",
     region: str = "us-east-1",
+    account_type: str = "human",
 ) -> dict[str, Any] | None:
     """Write an invocation row to the webhook-events table.
 
@@ -81,6 +82,8 @@ def log_invocation(
         "GSI1PK": tenant_id,
         "GSI1SK": arrived_at,
         "user_id": user_id or "unattributed",
+        "root_human_id": user_id if account_type == "human" else "",
+        "is_human_rooted": account_type == "human",
         "channel": channel,
         "event_type": "chat_message",
         "action": "invoke",

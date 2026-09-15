@@ -51,6 +51,7 @@ vi.mock('@/services/bedrockRouting', async (importOriginal) => {
     getEffectiveMapping: vi.fn(),
     listDestinations: vi.fn(),
     registerDestination: vi.fn(),
+    getDestinationSetup: vi.fn(),
     verifyDestination: vi.fn(),
     listExistingAwsConnections: vi.fn(),
     linkAwsConnection: vi.fn(),
@@ -71,6 +72,7 @@ import {
   getEffectiveMapping,
   listDestinations,
   registerDestination,
+  getDestinationSetup,
   verifyDestination,
   listExistingAwsConnections,
   linkAwsConnection,
@@ -306,6 +308,14 @@ beforeEach(() => {
   mockSetMapping.mockResolvedValue(ORG_RULE);
   mockDeleteMapping.mockResolvedValue(undefined);
   mockVerifyDestination.mockResolvedValue({ destination: ACME_PROD, verified: true, reason: null });
+  vi.mocked(getDestinationSetup).mockResolvedValue({
+    account_id: PENDING.account_id,
+    role_arn: `arn:aws:iam::${PENDING.account_id}:role/ADP-Agent-${PENDING.label}`,
+    region: 'us-east-1',
+    launch_url: 'https://console.aws.amazon.com/cloudformation/quickcreate?fresh=1',
+    download_filename: 'adp-bedrock.zip',
+    download_base64: btoa('portable-cloudformation-package'),
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1129,6 +1139,97 @@ describe('re-verifying a destination', () => {
 // ---------------------------------------------------------------------------
 
 describe('registering a new destination', () => {
+  it('downloads for an AWS administrator and restores the team rule only after verification', async () => {
+    const user = userEvent.setup();
+    mockListDestinations.mockResolvedValue([]);
+    mockRegisterDestination.mockImplementation(async () => {
+      mockListDestinations.mockResolvedValue([PENDING]);
+      return { destination: PENDING, launch_url: 'https://console.aws.amazon.com/' };
+    });
+    const verified = { ...PENDING, routing_capable: true, usable_for_routing: true, verified_at: '2026-09-15T12:00:00Z' };
+    mockVerifyDestination.mockResolvedValueOnce({ destination: PENDING, verified: false, reason: 'role_missing_bedrock_permission' });
+    mockVerifyDestination.mockImplementationOnce(async () => {
+      mockListDestinations.mockResolvedValue([verified]);
+      return { destination: verified, verified: true, reason: null };
+    });
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    URL.createObjectURL = vi.fn(() => 'blob:download');
+    URL.revokeObjectURL = vi.fn();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderPanel();
+    await openAddRule(user, 'team');
+    await user.selectOptions(screen.getByLabelText('Organization'), 'acme');
+    await user.selectOptions(await screen.findByLabelText('Team'), APP_DEV.id);
+    await user.click(screen.getByRole('button', { name: 'Add destination' }));
+    expect(screen.getByLabelText('Link to organization')).toHaveValue('acme');
+    await user.type(screen.getByLabelText('Nickname *'), PENDING.label);
+    await user.type(screen.getByLabelText('AWS Account ID *'), PENDING.account_id);
+    await user.click(screen.getByTestId('routing-register-download'));
+    await waitFor(() => expect(click).toHaveBeenCalledOnce());
+    expect(click.mock.instances[0]).toHaveAttribute('download', 'adp-bedrock.zip');
+    expect(open).not.toHaveBeenCalled();
+    expect(getDestinationSetup).toHaveBeenCalledWith(PENDING.id);
+    expect(screen.getByLabelText('Link to organization')).toBeDisabled();
+    await user.click(screen.getByTestId('routing-register-verify'));
+    expect(await screen.findByTestId('routing-register-verify-failed')).toBeInTheDocument();
+    expect(mockSetMapping).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Retry Verify' }));
+    expect(await screen.findByLabelText('Organization')).toHaveValue('acme');
+    expect(screen.getByLabelText('Team')).toHaveValue(APP_DEV.id);
+    expect(screen.getByLabelText('Destination')).toHaveValue(PENDING.id);
+    expect(mockSetMapping).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId('routing-rule-save'));
+    expect(mockSetMapping).toHaveBeenCalledWith(expect.objectContaining({ scope_type: 'team', org: 'acme', team: APP_DEV.id }), PENDING.id);
+    click.mockRestore();
+  });
+
+  it('resumes a saved destination after returning to the page without registering another one', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(await screen.findByTestId(`routing-resume-${PENDING.id}`));
+    expect(screen.getByLabelText('AWS Account ID *')).toHaveValue(PENDING.account_id);
+    expect(screen.getByLabelText('AWS Account ID *')).toBeDisabled();
+    expect(screen.getByLabelText('Link to organization')).toHaveValue('acme');
+    expect(screen.getByText(/Expected role ARN/)).toHaveTextContent(PENDING.account_id);
+    await user.click(screen.getByTestId('routing-register-verify'));
+    expect(mockVerifyDestination).toHaveBeenCalledWith(PENDING.id);
+    expect(mockRegisterDestination).not.toHaveBeenCalled();
+    expect(mockSetMapping).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('retries setup retrieval with the same saved destination and opens a fresh console link', async () => {
+    const user = userEvent.setup();
+    mockRegisterDestination.mockResolvedValue({ destination: PENDING, launch_url: 'https://old.example' });
+    vi.mocked(getDestinationSetup).mockRejectedValueOnce({ detail: 'Setup details could not be read. Retry.' });
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    renderPanel();
+    await user.click(await screen.findByTestId('routing-register-open'));
+    await user.type(screen.getByLabelText('Nickname *'), 'new-dest');
+    await user.type(screen.getByLabelText('AWS Account ID *'), '123456789012');
+    await user.selectOptions(screen.getByLabelText('Link to organization'), 'acme');
+    await user.click(screen.getByTestId('routing-register-launch'));
+    expect(await screen.findByTestId('routing-register-error')).toHaveTextContent('Setup details could not be read. Retry.');
+    expect(open).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId('routing-register-launch'));
+    await waitFor(() => expect(open).toHaveBeenCalledWith('https://console.aws.amazon.com/cloudformation/quickcreate?fresh=1', '_blank', 'noopener,noreferrer'));
+    expect(mockRegisterDestination).toHaveBeenCalledOnce();
+    expect(getDestinationSetup).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns from destination setup to the unchanged organization rule', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await openAddRule(user, 'org');
+    await user.selectOptions(screen.getByLabelText('Organization'), 'globex');
+    await user.click(screen.getByRole('button', { name: 'Add destination' }));
+    expect(screen.getByLabelText('Link to organization')).toHaveValue('globex');
+    await user.click(screen.getByRole('button', { name: 'Close modal' }));
+    expect(await screen.findByLabelText('Organization')).toHaveValue('globex');
+    expect(screen.getByTestId('routing-scope-org')).toBeChecked();
+    expect(mockRegisterDestination).not.toHaveBeenCalled();
+  });
+
   it('requires an owning org before it can launch', async () => {
     const user = userEvent.setup();
     renderPanel();

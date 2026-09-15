@@ -68,13 +68,14 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
-from src.auth.cfn_template import ROUTING_TEMPLATE_VERSION, build_launch_url, compute_role_arn
+from src.auth.cfn_template import ROUTING_TEMPLATE_VERSION, build_launch_url, compute_role_arn, read_routing_template
 from src.auth.dependencies import get_current_user
+from src.auth.routing_setup import routing_setup_download
 from src.auth.vault_routes import get_secrets_manager
 from src.shared.database import get_db
 from src.shared.identity import resolve_canonical_user_id
@@ -87,6 +88,7 @@ from src.shared.services.secrets_manager import SecretsManagerHelper
 
 from . import service
 from .schemas import (
+    DestinationSetupResponse,
     DestinationSummary,
     EffectiveMappingResponse,
     ExistingAwsConnection,
@@ -765,6 +767,61 @@ async def register_destination(
 
     logger.info("bedrock_routing_destination_registered source=%s account=%s", request.source, destination.account_id)
     return RegisterDestinationResponse(destination=_compose_destination(destination, 0), launch_url=launch_url)
+
+
+@router.get("/destinations/{destination_id}/setup", response_model=DestinationSetupResponse)
+async def destination_setup(
+    destination_id: str,
+    response: Response,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    secrets: Annotated[SecretsManagerHelper, Depends(get_secrets_manager)],
+) -> DestinationSetupResponse:
+    """Resume setup without creating another destination or rotating its ExternalId."""
+    AccessControl(db).require_platform_admin(current_user)
+    response.headers["Cache-Control"] = "no-store"
+    destination = await db.get(BedrockDestinationRegistry, destination_id)
+    if destination is None:
+        raise HTTPException(status_code=404, detail="No such destination.")
+    credential = await db.get(UserCredential, destination.credential_id) if destination.credential_id else None
+    grant = await db.get(BedrockConnectionGrant, destination_id)
+    if (
+        credential is None
+        or grant is not None
+        or credential.credential_type != "aws_role"
+        or credential.owner_scope != "org"
+        or credential.org_id != destination.owner_org_id
+        or destination.role_arn != compute_role_arn(destination.account_id, destination.label)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="This destination uses an existing AWS connection. Ask its owner to update the role, then re-verify it here.",
+        )
+    external_id = await service._destination_external_id(db, destination, secrets)
+    if not external_id:
+        raise HTTPException(
+            status_code=409, detail="The destination's setup details could not be read. Retry or contact your platform administrator."
+        )
+    launch_url = build_launch_url(
+        credential_id=credential.id,
+        nickname=destination.label,
+        external_id=external_id,
+        account_id=destination.account_id,
+        user_id=destination.registered_by_user_id,
+        region=destination.region,
+        template_version=ROUTING_TEMPLATE_VERSION,
+    )
+    template = await asyncio.to_thread(read_routing_template)
+    return DestinationSetupResponse(
+        account_id=destination.account_id,
+        role_arn=destination.role_arn,
+        region=destination.region,
+        launch_url=launch_url,
+        download_filename=f"adp-bedrock-{destination.account_id}.zip",
+        download_base64=routing_setup_download(
+            launch_url=launch_url, account_id=destination.account_id, role_arn=destination.role_arn, region=destination.region, template=template
+        ),
+    )
 
 
 @router.post("/destinations/{destination_id}/verify", response_model=VerifyDestinationResponse)

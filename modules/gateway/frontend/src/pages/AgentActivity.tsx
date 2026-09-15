@@ -344,6 +344,10 @@ const STATUS_OPTIONS = [
   { value: 'skipped', label: 'Skipped' },
   // Issue #4187: filterable so "what did the spend caps stop?" is one click.
   { value: 'budget_stopped', label: 'Budget stopped' },
+  // Issue #3964: filterable so "which runs did we stop on purpose?" is one click —
+  // the question an operator asks when reconciling a spike in ended runs against
+  // deliberate intervention rather than breakage (AC-A11).
+  { value: 'aborted', label: 'Aborted' },
 ];
 
 const CHANNEL_OPTIONS = [

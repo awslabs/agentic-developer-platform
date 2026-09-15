@@ -48,6 +48,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "")
     monkeypatch.setenv("SLACK_BOT_USER_ID", "")
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", "adp-dev-webhook-events")
 
 
 def _make_bedrock_response(classification: dict) -> dict:
@@ -70,6 +71,12 @@ def mocked_aws_services(mock_env):
             AttributeDefinitions=[{"AttributeName": "session_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
+        ddb.create_table(
+            TableName="adp-dev-webhook-events",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
         sqs_client = boto3.client("sqs", region_name="us-east-1")
         sqs_client.create_queue(QueueName="adp-dev-agent-gateway-tasks")
         sqs_client.create_queue(
@@ -89,6 +96,7 @@ def _import_handler(mock_bedrock=None):
             "channels.webchat",
             "channels.slack",
             "github_dispatch",
+            "invocation_logger",
         ):
             del sys.modules[mod_name]
 
@@ -110,7 +118,7 @@ def _send(handler, text="I want a nightly cost report", session_id="sess-pin", p
         route_key="$default",
         body=body,
         connection_id="conn-pin",
-        authorizer_claims={"sub": "user-pin", "email": "pin@example.com"},
+        authorizer_claims={"sub": "user-pin", "email": "pin@example.com", "custom:tenant_id": "test-tenant"},
     )
     return handler.lambda_handler(event, None)
 
@@ -216,7 +224,7 @@ class TestPersonaRejection:
                 "persona": {"evil": True},
             },
             connection_id="conn-pin",
-            authorizer_claims={"sub": "user-pin", "email": "pin@example.com"},
+            authorizer_claims={"sub": "user-pin", "email": "pin@example.com", "custom:tenant_id": "test-tenant"},
         )
         result = handler.lambda_handler(event, None)
 

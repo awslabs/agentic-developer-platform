@@ -46,6 +46,13 @@ def _subprocess_side_effect_fresh_branch(*args, **kwargs):
     return MagicMock(returncode=0, stdout="", stderr="")
 
 
+@pytest.fixture(autouse=True)
+def ready_gateway_proxy(monkeypatch):
+    """Main-sequence tests have a healthy proxy unless explicitly overridden."""
+    monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())
+    monkeypatch.setattr("entrypoint._stop_sigv4_proxy", MagicMock())
+
+
 SAMPLE_ENVELOPE = {
     "version": "1.0",
     "channel": "github",
@@ -1488,7 +1495,7 @@ class TestStsAssumeUserIdTag:
 class TestBedrockViaFlag:
     """Tests for the ADP_BEDROCK_VIA feature flag (scoped agent_env, not os.environ mutation).
 
-    Live values: `gateway` (default), `direct` / `platform` (kill switch).
+    Gateway is required; bypass and retired modes must stop before inference.
     `user` is retired (#4747) and must raise — see test_retired_user_value_raises.
     """
 
@@ -1501,7 +1508,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_default_no_flag_agent_env_retains_irsa(
+    def test_default_uses_gateway_with_customer_creds_scoped_to_tools(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1515,7 +1522,7 @@ class TestBedrockViaFlag:
         monkeypatch,
         tmp_path,
     ):
-        """When ADP_BEDROCK_VIA is not set, agent_env retains all IRSA vars."""
+        """Gateway is the default even when tools use customer AWS credentials."""
         from entrypoint import main
         import entrypoint
 
@@ -1556,11 +1563,12 @@ class TestBedrockViaFlag:
             }
             main()
 
-        # Agent subprocess should have been called with env containing IRSA vars
+        # Model requests use the proxy while tools retain customer credentials.
         call_kwargs = mock_subprocess_run.call_args
         agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
-        assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
+        assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9090"
+        assert agent_env["AWS_ACCESS_KEY_ID"] == "AKUSER"
+        assert "AWS_ROLE_ARN" not in agent_env
 
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
@@ -1571,7 +1579,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_platform_explicit_agent_env_retains_irsa(
+    def test_platform_bypass_is_rejected(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1585,7 +1593,7 @@ class TestBedrockViaFlag:
         monkeypatch,
         tmp_path,
     ):
-        """When ADP_BEDROCK_VIA=platform, agent_env retains IRSA (same as default)."""
+        """Platform bypass cannot override the user routing rule."""
         from entrypoint import main
         import entrypoint
 
@@ -1624,12 +1632,11 @@ class TestBedrockViaFlag:
                 "region": "us-east-1",
                 "provenance_id": "prov-test",
             }
-            main()
+            with pytest.raises(RuntimeError, match="must be gateway"):
+                main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get(
-            "env"
-        ) or mock_subprocess_run.call_args[1].get("env")
-        assert "AWS_ROLE_ARN" in agent_env
+        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
+
 
     @patch("entrypoint._start_sigv4_proxy")
     @patch("entrypoint._receive_one_message")
@@ -1837,7 +1844,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_garbage_value_falls_through_to_platform(
+    def test_unknown_routing_mode_is_rejected(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1851,7 +1858,7 @@ class TestBedrockViaFlag:
         monkeypatch,
         tmp_path,
     ):
-        """ADP_BEDROCK_VIA=foobar falls through to platform mode (safe default)."""
+        """An invalid routing mode cannot silently use the platform account."""
         from entrypoint import main
         import entrypoint
 
@@ -1890,13 +1897,10 @@ class TestBedrockViaFlag:
                 "region": "us-east-1",
                 "provenance_id": "prov-test",
             }
-            main()
+            with pytest.raises(RuntimeError, match="must be gateway"):
+                main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get(
-            "env"
-        ) or mock_subprocess_run.call_args[1].get("env")
-        # IRSA retained — garbage value means platform mode
-        assert "AWS_ROLE_ARN" in agent_env
+        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
 
 
 # --- Test: ADP_GITHUB_LOGIN propagation (Issue #1591) ---
@@ -2221,7 +2225,7 @@ class TestBedrockViaGateway:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_direct_path_sets_claude_code_use_bedrock(
+    def test_direct_bypass_is_rejected(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -2237,7 +2241,7 @@ class TestBedrockViaGateway:
         monkeypatch,
         tmp_path,
     ):
-        """With ADP_BEDROCK_VIA=direct, sets only CLAUDE_CODE_USE_BEDROCK (no proxy)."""
+        """Direct bypass cannot override the user routing rule."""
         from entrypoint import main
         import entrypoint
 
@@ -2260,17 +2264,9 @@ class TestBedrockViaGateway:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        main()
-
-        # Verify subprocess.run was called with direct env
-        call_kwargs = mock_subprocess_run.call_args
-        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-        assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-        # No proxy base URL in direct mode
-        assert "ANTHROPIC_BEDROCK_BASE_URL" not in agent_env
-        assert "ANTHROPIC_BASE_URL" not in agent_env
-
-        # Proxy NOT started
+        with pytest.raises(RuntimeError, match="must be gateway"):
+            main()
+        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
         mock_start_proxy.assert_not_called()
         mock_stop_proxy.assert_not_called()
 
@@ -2285,7 +2281,7 @@ class TestBedrockViaGateway:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_gateway_fallback_on_proxy_failure(
+    def test_gateway_failure_stops_before_model_calls(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -2301,7 +2297,7 @@ class TestBedrockViaGateway:
         monkeypatch,
         tmp_path,
     ):
-        """When proxy fails to start, falls back to direct Bedrock."""
+        """A proxy failure must not move user model calls onto platform billing."""
         from entrypoint import main
         import entrypoint
 
@@ -2329,14 +2325,11 @@ class TestBedrockViaGateway:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        main()
+        with pytest.raises(RuntimeError, match="preserve the user's AWS account routing"):
+            main()
 
-        # Falls back to direct mode — no proxy base URL
-        call_kwargs = mock_subprocess_run.call_args
-        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-        assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-        assert "ANTHROPIC_BEDROCK_BASE_URL" not in agent_env
-        assert "ANTHROPIC_BASE_URL" not in agent_env
+        # No Claude agent process is launched after proxy startup fails.
+        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
 
         # Proxy was attempted but not stopped (it never started)
         mock_start_proxy.assert_called_once()

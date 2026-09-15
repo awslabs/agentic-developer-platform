@@ -546,20 +546,11 @@ class TestFlagIsARealOffSwitch:
 
 
 class TestBothBedrockPathsCapture:
-    """The mantle passthrough is the SECOND write site, and it must not be NULL.
-
-    Wiring only the Bedrock proxy would leave `bedrock_account_id` NULL on 100% of
-    OpenAI-passthrough rows — indistinguishable from "not captured", so any future
-    audit would under-report that route with nothing indicating why. Exactly the
-    trap #4398 documents for `client_tool` at the same two call sites.
-
-    The mantle path is **capture-only and NOT routable** (§7.2): `SigV4MantleAuth`
-    is built once at app startup, so per-request account selection there is a
-    larger refactor, knowingly out of scope. Documented, not omitted.
-    """
+    """Both transports record the account selected before signing."""
 
     @pytest.mark.asyncio
-    async def test_the_mantle_path_captures_the_resolved_account(self):
+    async def test_the_mantle_path_captures_the_signing_decision(self):
+        from src.proxy.bedrock_enforcement import RoutingDecision
         from src.proxy.mantle_service import MantlePassthroughService
 
         _CapturingUsageService.calls = []
@@ -570,10 +561,6 @@ class TestBothBedrockPathsCapture:
             patch("src.proxy.mantle_service.UsageService", _CapturingUsageService),
             patch("src.proxy.mantle_service.reconcile_budget_reservation", AsyncMock()),
             patch("src.proxy.mantle_service.price_completed_usage", AsyncMock(side_effect=price_fixture_usage)),
-            patch(
-                "src.proxy.mantle_service.resolve_shadow_target",
-                AsyncMock(return_value=BedrockTarget(account_id=MAPPED_ACCOUNT, rung="org")),
-            ),
         ):
             await service._log_usage(
                 context=_token_context(),
@@ -583,6 +570,7 @@ class TestBothBedrockPathsCapture:
                 status_code=200,
                 request_id="req-1",
                 agent_run_id=None,
+                routing_decision=RoutingDecision(target=BedrockTarget(account_id=MAPPED_ACCOUNT, rung="org")),
             )
 
         assert _CapturingUsageService.calls, "mantle log_request was never called"
@@ -600,7 +588,6 @@ class TestBothBedrockPathsCapture:
             patch("src.proxy.mantle_service.UsageService", _CapturingUsageService),
             patch("src.proxy.mantle_service.reconcile_budget_reservation", AsyncMock()),
             patch("src.proxy.mantle_service.price_completed_usage", AsyncMock(side_effect=price_fixture_usage)),
-            patch("src.proxy.mantle_service.resolve_shadow_target", AsyncMock(return_value=None)),
         ):
             await service._log_usage(
                 context=_token_context(),
@@ -613,32 +600,3 @@ class TestBothBedrockPathsCapture:
             )
 
         assert _CapturingUsageService.calls[0]["bedrock_account_id"] is None
-
-    def test_the_mantle_path_does_not_route(self):
-        """§7.2 in code: the mantle auth object is not chosen per request.
-
-        The classification is load-bearing for the coverage table — if this path
-        ever *did* select credentials per request, it would need the same
-        enforcement review the proxy path gets in #4744. Asserted so that change
-        cannot happen silently.
-        """
-        from src.proxy import mantle_service
-
-        source = inspect.getsource(mantle_service.MantlePassthroughService._headers)
-        assert "self._auth.sign" in source
-        assert "shadow_target" not in source, "the mantle path is capture-only; a resolved target must not reach signing (§7.2)"
-
-    def test_both_call_sites_pass_the_kwarg(self):
-        """A grep-level guard against a third write site being added without it.
-
-        The column's value comes from whichever `log_request` call runs. A new
-        Bedrock-reaching path that omitted the kwarg would silently write NULL for
-        its whole share of traffic — the partial-rollout spend bug §7 enumerates
-        the paths to prevent.
-        """
-        from src.proxy import mantle_service, service
-
-        for module in (service, mantle_service):
-            source = inspect.getsource(module)
-            assert "resolve_shadow_target(context)" in source, f"{module.__name__} must resolve the shadow target"
-            assert "bedrock_account_id=" in source, f"{module.__name__} must pass bedrock_account_id to log_request"

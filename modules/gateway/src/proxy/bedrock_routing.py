@@ -1,96 +1,13 @@
-"""Bedrock routing resolution — which AWS account *should* serve this call.
+"""Select the most local usable Bedrock destination: user, team, org, platform.
 
-Issue #4743 (R2 · routing foundation), per the design note
-``docs/design-notes/4692-per-principal-bedrock-account-routing.md`` §1.2, §2.2,
-§3.4, §4.4, §7, §8.2.
+The invoke paths use ``bedrock_enforcement.resolve_routing_decision`` first.
+It resolves the signed-in person or the verified cloud-run owner, then passes a
+separate routing context here. The original authentication and spend attribution
+fields are unchanged. Both Claude and OpenAI sign with the resulting decision.
 
-**This module resolves and reports. It never signs anything.** No STS call, no
-``AssumeRole``, no credential construction, no ``get_client`` argument — those are
-issue #4744 (R3). Shadow mode (§8.2 phase 1) means the resolved target is written
-to ``usage_logs.bedrock_account_id`` and to the log, while the request continues to
-be signed with the platform account's ambient IRSA credentials exactly as before.
-The whole point of the phase is that the wrong-account bug becomes **detectable
-before it can cost anyone money**, so nothing here may change where a call lands.
-
-The ladder (§1.2), first match wins, narrowest first::
-
-    1. user      — mapping row scope_type='user'  (canonical users.id)
-    2. team      — mapping row scope_type='team'  (scope_id_org + scope_id_team)
-    3. org        — mapping row scope_type='org'  (scope_id_org)
-    4. platform  — no mapping matched → ambient IRSA, today's behaviour
-
-Rung 4 is the *absence* of a mapping, not a row. It is still returned as an
-explicit :class:`BedrockTarget` rather than ``None`` so that shadow mode can record
-"this call went to the platform account, and that was the correct answer" — which
-is a different fact from "we did not look", and the audit trail needs to
-distinguish them.
-
-Three properties that are requirements rather than choices:
-
-**Latency: the existence gate comes first (§2.2, the #4689 lesson).** Every model
-call would otherwise pay an indexed lookup to learn "no mapping". A process-local
-60s-TTL cached boolean answers the overwhelmingly common case — zero mappings,
-which is *every* install on day one — in **zero queries**. This mirrors
-``BudgetEnforcementService._person_limit_sources_exist`` deliberately, down to the
-unlocked cache and the bounded-staleness trade.
-
-**Isolation: resolution reads ``context.org_id``, never ``attributed_org_id``
-(§3.4).** This is the single most important line in the module.
-``attributed_org_id`` is caller-influenced by design (an internal-plane agent may
-point it at the tenant that triggered a run so *billing* lands there). Keying
-routing off it would let that same header choose **which AWS account gets
-charged** — resurrecting #4132 as a cross-account credential-acquisition bug
-rather than "only" an accounting one. Routing is a strict consumer of the
-authenticated field and writes none of the attribution fields.
-
-**Safety: an unusable destination is NO MATCH, not a failed request (§4.4).** A
-destination that was never verified, or whose role cannot invoke Bedrock, is
-skipped and the walk continues to the next rung. Under the eventual fail-closed
-rule this matters: merely *starting* an AWS-connect flow must not be able to
-reroute a principal's traffic onto an account that fails every call.
-
-Bedrock-reaching path coverage (§7) — enumerated here because a silently partial
-rollout is a spend bug of the same class as a wrong account:
-
-===================================================== ==========================
-Path                                                  Status
-===================================================== ==========================
-Gateway proxy (``src/proxy/service.py``)               **Covered** — resolves and
-                                                       logs on every call.
-Mantle passthrough (``src/proxy/mantle_service.py``)   **Capture only.** The
-                                                       resolved account is logged
-                                                       so the column is not
-                                                       silently NULL on 100% of
-                                                       OpenAI-passthrough rows,
-                                                       but this path is **not
-                                                       routable** by this design
-                                                       (§7.2): ``SigV4MantleAuth``
-                                                       is built once at app
-                                                       startup, so per-request
-                                                       routing there is a larger
-                                                       refactor. Knowingly out of
-                                                       scope, documented not
-                                                       omitted.
-``ADP_BEDROCK_VIA=user`` worker branch                 **Retired (#4747).** No
-                                                       longer a gap. The pod used
-                                                       to call Bedrock with the
-                                                       customer's own credentials,
-                                                       bypassing the gateway — no
-                                                       usage row at all. Ruling
-                                                       3's shadow → enforce →
-                                                       remove path (§7.1) is
-                                                       complete: the value is now
-                                                       a startup error, and the
-                                                       mappings above are the
-                                                       supported way to reach a
-                                                       principal's own account
-                                                       *with* metering.
-agent-factory ``sqs_consumer.py`` / ingest classifier  **Out of scope.**
-                                                       Non-gateway Lambdas on the
-                                                       platform account with no
-                                                       principal context to
-                                                       resolve against.
-===================================================== ==========================
+This module only selects destinations; ``bedrock_signing`` obtains credentials.
+The legacy ``resolve_shadow_target`` helper remains for diagnostic callers and
+must never be interpreted as evidence of the account that signed a request.
 """
 
 from __future__ import annotations

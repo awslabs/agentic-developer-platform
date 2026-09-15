@@ -77,8 +77,7 @@ RETIRED_BEDROCK_VIA = {
         "metering could not see the spend. To route a principal's Bedrock calls to "
         "their own AWS account with metering intact, create a per-principal Bedrock "
         "account mapping (Settings -> Credentials, or the admin Bedrock routing "
-        "surface) and leave ADP_BEDROCK_VIA=gateway. Use ADP_BEDROCK_VIA=direct only "
-        "as the documented kill switch for platform-billed direct Bedrock."
+        "surface) and leave ADP_BEDROCK_VIA=gateway."
     ),
 }
 
@@ -1617,25 +1616,10 @@ def main() -> int:
     # Stage personas and skills into workspace
     _stage_personas_and_skills()
 
-    # Step 10: Build scoped agent env and exec the agent.
-    # ADP_BEDROCK_VIA controls the Bedrock routing path:
-    #   - "gateway" (default): route through platform gateway via sigv4-proxy sidecar
-    #   - "direct": use pod IRSA to call Bedrock directly (fallback/rollback)
-    #   - "platform": alias for "direct" (legacy compat)
-    #
-    # "user" is RETIRED (#4747) — see RETIRED_BEDROCK_VIA above. Setting it is a
-    # startup error, not a silent fallback.
-    #
-    # When ADP_BEDROCK_VIA=gateway AND the persona has assumed a customer role,
-    # the two compose: Bedrock routes through the platform gateway (platform IRSA,
-    # platform billing), while the agent's shell `aws ...` commands use the
-    # customer's STS creds for deployment / inspection work in the customer
-    # account. The sigv4-proxy is started with platform IRSA (customer creds
-    # stripped) so it can authenticate to API Gateway's execute-api SigV4.
-    #
-    # CRITICAL: We build a SEPARATE env dict for the child process. We do NOT
-    # mutate os.environ — the entrypoint's post-agent SQS delete needs
-    # os.environ to retain IRSA for platform-account access.
+    # Step 10: Every agent model call goes through the gateway, which applies
+    # the verified owner's user/team/org routing. Tool AWS credentials stay
+    # scoped to the agent shell; the proxy authenticates using platform IRSA.
+    # Keep os.environ's IRSA intact for post-agent SQS/check-run operations.
     agent_env = os.environ.copy()
     from adp_trigger.transport_identity import preserve_worker_identity
 
@@ -1649,6 +1633,9 @@ def main() -> int:
     # Reject retired routing modes before starting the proxy or spending a token.
     if bedrock_via in RETIRED_BEDROCK_VIA:
         raise RuntimeError(RETIRED_BEDROCK_VIA[bedrock_via])
+
+    if bedrock_via != "gateway":
+        raise RuntimeError("ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported.")
 
     # Start sigv4-proxy subprocess for gateway mode.
     # The proxy must sign with platform IRSA (which has execute-api:Invoke on
@@ -1664,8 +1651,7 @@ def main() -> int:
         }
         proxy_process = _start_sigv4_proxy(proxy_env, tenant_id)
         if proxy_process is None:
-            logger.warning("sigv4-proxy failed to start; falling back to ADP_BEDROCK_VIA=direct")
-            bedrock_via = "direct"
+            raise RuntimeError("Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing.")
         else:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
@@ -1684,35 +1670,11 @@ def main() -> int:
             agent_env["CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_GUARD"] = "1"
             logger.info("ADP_BEDROCK_VIA=gateway — routing through sigv4-proxy → API GW")
 
-    if bedrock_via == "direct" or bedrock_via == "platform":
-        # Direct Bedrock via pod IRSA (fallback/rollback path)
-        agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-        agent_env.pop("ANTHROPIC_BEDROCK_BASE_URL", None)
-        agent_env.pop("ANTHROPIC_BASE_URL", None)
-        logger.info(
-            "ADP_BEDROCK_VIA=%r (normalized: %s) — direct Bedrock via pod IRSA",
-            bedrock_via_raw,
-            bedrock_via,
-        )
-    elif bedrock_via == "gateway":
-        # Gateway-mode Bedrock already wired above. If a customer role was
-        # assumed (line 341-345 above), agent_env retains those AWS_* env vars
-        # AND retains pod IRSA env vars — the SDK's credential chain prefers the
-        # explicit env keys, so shell `aws ...` commands run as the customer.
-        # Strip pod IRSA env vars so they don't shadow customer creds for shell AWS.
-        if "AWS_ACCESS_KEY_ID" in agent_env:
-            for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
-                agent_env.pop(var, None)
-            logger.info(
-                "ADP_BEDROCK_VIA=gateway with customer role assumed — Bedrock via "
-                "platform gateway, customer AWS creds for shell commands"
-            )
-    else:
-        logger.info(
-            "ADP_BEDROCK_VIA=%r (normalized: %s) — agent env retains pod IRSA",
-            bedrock_via_raw,
-            bedrock_via,
-        )
+    # Customer credentials remain available to shell tools. Model traffic
+    # still goes through the local proxy, independently of those credentials.
+    if "AWS_ACCESS_KEY_ID" in agent_env:
+        for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
+            agent_env.pop(var, None)
 
     # Update invocation status to in_progress (best-effort)
     # Issue #3385 (C5): include token_mode provenance on the DDB row.
