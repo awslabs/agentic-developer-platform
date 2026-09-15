@@ -119,79 +119,7 @@ fi
 # refuses to apply if the plan includes resource destroys (unless
 # --confirm-destructive was passed). This prevents silent destruction of live
 # resources from TF drift.
-terraform_update_apply() {
-  local MODULE_NAME="$1"
-  local VAR_FILE="$2"
-  shift 2
-  local EXTRA_VARS=("${@}")
-
-  # 1. Plan to a file (captures the plan for inspection)
-  local PLAN_FILE="/tmp/tf-plan-${MODULE_NAME}-$$.tfplan"
-  local PLAN_OUTPUT="/tmp/tf-plan-${MODULE_NAME}-$$.txt"
-
-  # Disable pipefail around the plan command: terraform plan -detailed-exitcode
-  # returns exit code 2 when changes are present (the expected case for update
-  # mode). With pipefail, the pipeline's exit code would be 2, and set -e would
-  # terminate the script before PIPESTATUS can be captured.
-  set +o pipefail
-  if [ ${#EXTRA_VARS[@]} -gt 0 ]; then
-    terraform plan \
-      -var-file="$VAR_FILE" \
-      "${EXTRA_VARS[@]}" \
-      -out="$PLAN_FILE" \
-      -detailed-exitcode -no-color 2>&1 | tee "$PLAN_OUTPUT"
-  else
-    terraform plan \
-      -var-file="$VAR_FILE" \
-      -out="$PLAN_FILE" \
-      -detailed-exitcode -no-color 2>&1 | tee "$PLAN_OUTPUT"
-  fi
-  local EXIT_CODE=${PIPESTATUS[0]}
-  set -o pipefail
-
-  # Exit code: 0 = no changes, 1 = error, 2 = changes present
-  if [ "$EXIT_CODE" -eq 0 ]; then
-    ok "$MODULE_NAME: no changes"
-    rm -f "$PLAN_FILE" "$PLAN_OUTPUT"
-    return 0
-  elif [ "$EXIT_CODE" -eq 1 ]; then
-    rm -f "$PLAN_FILE" "$PLAN_OUTPUT"
-    fail "$MODULE_NAME: terraform plan failed"
-  fi
-
-  # 2. Check for destroys
-  DESTROYS=$(grep -c 'will be destroyed' "$PLAN_OUTPUT" 2>/dev/null) || DESTROYS=0
-
-  if [ "$DESTROYS" -gt 0 ]; then
-    echo ""
-    echo -e "${RED}━━━ DESTROY GATE ━━━${NC}"
-    echo -e "${RED}$MODULE_NAME plan includes $DESTROYS resource(s) to be destroyed:${NC}"
-    echo ""
-    grep 'will be destroyed' "$PLAN_OUTPUT"
-    echo ""
-
-    if [ "$CONFIRM_DESTRUCTIVE" = true ]; then
-      warn "Operator confirmed destructive apply (--confirm-destructive). Proceeding."
-    else
-      echo "To authorize this apply, re-run with --confirm-destructive."
-      echo "To inspect the full plan: cat $PLAN_OUTPUT"
-      echo ""
-      echo "Known drift issues to check:"
-      echo "  - agent-context/Neptune: full apply may want to destroy 9 Neptune resources (Issue #2769)"
-      echo "  - gateway/kms:Decrypt policy: missing 'moved' block causes destroy+recreate (Issue #2909)"
-      echo "  - platform/EKS access entries: role ARN format drift between CI and manual applies"
-      echo ""
-      fail "Refusing to apply $MODULE_NAME plan with $DESTROYS destroy(s). Pass --confirm-destructive to override."
-    fi
-  fi
-
-  # 3. Apply the saved plan (no -auto-approve needed — plan file is pre-approved)
-  terraform apply "$PLAN_FILE"
-  ok "$MODULE_NAME: applied successfully"
-
-  # Cleanup
-  rm -f "$PLAN_FILE" "$PLAN_OUTPUT"
-}
+source "$SCRIPT_DIR/terraform-update.sh"
 
 # =============================================================================
 # Preflight
@@ -220,7 +148,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/nu
 
 # When config/deployment.yml pins a specific account_id, fail-fast if the
 # operator's creds resolve elsewhere — mirrors preflight's safety check.
-if [ -f "$ROOT_DIR/config/deployment.yml" ] && [ -n "$ADP_ACCOUNT_ID" ] && [ "$ADP_ACCOUNT_ID" != "$ACCOUNT_ID" ]; then
+if [ -n "$ADP_ACCOUNT_ID" ] && [ "$ADP_ACCOUNT_ID" != "$ACCOUNT_ID" ]; then
   fail "config/deployment.yml says account_id=$ADP_ACCOUNT_ID but caller resolves to $ACCOUNT_ID. Either fix config/deployment.yml or switch AWS_PROFILE."
 fi
 
@@ -282,8 +210,13 @@ if [ "$UPDATE_MODE" = true ]; then
   [ "$CLUSTER_STATUS" = "ACTIVE" ] \
     || fail "--update requires a running EKS cluster. Got status: ${CLUSTER_STATUS:-not found}"
 
-  # 3. Gateway namespace must exist (indicates prior deploy)
-  kubectl get namespace adp-gateway &>/dev/null \
+  # Bind all checks and subsequent kubectl calls to the verified target.
+  export KUBECONFIG="${KUBECONFIG:-$(mktemp "${TMPDIR:-/tmp}/adp-${ACCOUNT_ID}-kubeconfig.XXXXXX")}"
+  aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" \
+    --kubeconfig "$KUBECONFIG" >/dev/null || fail "Cannot configure target cluster"
+
+  # 3. Gateway namespace must exist (indicates prior deploy).
+  kubectl get namespace adp-gateway --request-timeout=30s &>/dev/null \
     || fail "--update requires prior gateway deployment. Namespace 'adp-gateway' not found."
 
   ok "Preconditions met: state bucket exists, EKS ACTIVE, adp-gateway namespace present"
@@ -421,7 +354,7 @@ if [ "$DESTROY" = true ]; then
   [ "$confirm" = "yes" ] || { echo "Aborted."; exit 0; }
 
   # Configure kubectl for K8s cleanup steps
-  export KUBECONFIG="/tmp/adp-deploy-kubeconfig"
+  export KUBECONFIG="${KUBECONFIG:-$(mktemp "${TMPDIR:-/tmp}/adp-${ACCOUNT_ID}-kubeconfig.XXXXXX")}"
   if command -v kubectl >/dev/null 2>&1; then
     aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG" 2>/dev/null || true
   fi
@@ -714,14 +647,11 @@ else
     ok "DynamoDB table exists: $LOCK_TABLE"
   fi
 
-  # Replace ACCOUNT_ID placeholders
-  find "$ROOT_DIR/environments/" -name "*.tfvars" 2>/dev/null | while read f; do
-    if grep -q "ACCOUNT_ID" "$f" 2>/dev/null; then
-      sed -i '' "s/ACCOUNT_ID/${ACCOUNT_ID}/g" "$f" 2>/dev/null || sed -i "s/ACCOUNT_ID/${ACCOUNT_ID}/g" "$f"
-    fi
-  done
-  ok "Environment configs updated"
 fi
+
+# Backend configuration is needed for upgrades from a clean checkout too.
+python3 "$SCRIPT_DIR/prepare-backends.py" "$ROOT_DIR/environments/$ENVIRONMENT" "$ACCOUNT_ID"
+ok "Environment backend configs updated"
 
 # =============================================================================
 # Upload source for CodeBuild docker-build steps
@@ -749,7 +679,7 @@ else
 fi
 
 # Configure kubectl (needed for k8s steps — local or CodeBuild deploy step)
-export KUBECONFIG="/tmp/adp-deploy-kubeconfig"
+export KUBECONFIG="${KUBECONFIG:-$(mktemp "${TMPDIR:-/tmp}/adp-${ACCOUNT_ID}-kubeconfig.XXXXXX")}"
 if command -v kubectl >/dev/null 2>&1; then
   aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG" 2>/dev/null || true
 fi
@@ -819,7 +749,7 @@ else
       warn "Update mode: ALB details not yet in SSM (first deploy?). Step 3 will run without VPC origin vars — Step 5 will wire them."
     fi
     terraform_update_apply "gateway" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
-      "${STEP3_EXTRA_VARS[@]}"
+      ${STEP3_EXTRA_VARS[@]+"${STEP3_EXTRA_VARS[@]}"}
   else
     terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
       -auto-approve
@@ -1243,8 +1173,13 @@ refresh_credentials
 # creates (Issue #1052).
 if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_WEBHOOK_INGRESS" = false ]; then
   step "Step 9/11: Deploy webhook-ingress stack"
+  WEBHOOK_UPDATE_ARGS=()
+  if [ "$UPDATE_MODE" = true ]; then
+    WEBHOOK_UPDATE_ARGS+=(--update)
+    [ "$CONFIRM_DESTRUCTIVE" = true ] && WEBHOOK_UPDATE_ARGS+=(--confirm-destructive)
+  fi
   bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
-    --env "$ENVIRONMENT" --region "$AWS_REGION"
+    --env "$ENVIRONMENT" --region "$AWS_REGION" ${WEBHOOK_UPDATE_ARGS[@]+"${WEBHOOK_UPDATE_ARGS[@]}"}
   ok "Webhook-ingress deployed"
 elif [ "$SKIP_WEBHOOK_INGRESS" = true ]; then
   step "Step 9/11: Skipping webhook-ingress (--skip-webhook-ingress)"

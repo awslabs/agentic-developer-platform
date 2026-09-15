@@ -27,6 +27,7 @@ set -euo pipefail
 # Usage:
 #   ./deploy-webhook-ingress.sh [--env dev] [--region us-east-1] [--dry-run]
 #                               [--skip-image] [--skip-lambda] [--skip-terraform]
+#                               [--update] [--confirm-destructive]
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,11 +40,15 @@ DRY_RUN=false
 SKIP_IMAGE=false
 SKIP_LAMBDA=false
 SKIP_TF=false
+UPDATE_MODE=false
+CONFIRM_DESTRUCTIVE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env)            ENVIRONMENT="$2"; shift 2 ;;
     --region)         AWS_REGION="$2"; shift 2 ;;
+    --update)         UPDATE_MODE=true; shift ;;
+    --confirm-destructive) CONFIRM_DESTRUCTIVE=true; shift ;;
     --dry-run)        DRY_RUN=true; shift ;;
     --skip-image)     SKIP_IMAGE=true; shift ;;
     --skip-lambda)    SKIP_LAMBDA=true; shift ;;
@@ -60,12 +65,23 @@ fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 step() { echo -e "\n${BLUE}$1${NC}"; }
 
 command -v aws &>/dev/null || fail "AWS CLI not installed"
+source "$REPO_ROOT/platform/scripts/terraform-update.sh"
 
 # Resolve account / region / bucket (mirror build-lambda-layers.sh).
-ACCOUNT_ID="${ADP_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+if [ -n "${ADP_ACCOUNT_ID:-}" ] && [ "$ADP_ACCOUNT_ID" != "$ACCOUNT_ID" ]; then
+  fail "Target account $ADP_ACCOUNT_ID does not match caller $ACCOUNT_ID"
+fi
 STATE_BUCKET="${ADP_STATE_BUCKET:-adp-terraform-state-${ACCOUNT_ID}}"
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+if [ "$UPDATE_MODE" = true ]; then
+  IMAGE_TAG="${IMAGE_TAG:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
+  aws s3api head-object --bucket "$STATE_BUCKET" \
+    --key "$ENVIRONMENT/modules/webhook-ingress/terraform.tfstate" >/dev/null \
+    || fail "--update requires existing webhook-ingress state"
+else
+  IMAGE_TAG="${IMAGE_TAG:-latest}"
+fi
 
 echo "deploy-webhook-ingress: env=$ENVIRONMENT region=$AWS_REGION account=$ACCOUNT_ID bucket=$STATE_BUCKET"
 [ "$DRY_RUN" = true ] && warn "DRY RUN — no changes will be made"
@@ -131,6 +147,9 @@ else
 fi
 
 BACKEND="${REPO_ROOT}/environments/${ENVIRONMENT}/modules/webhook-ingress-backend.tfvars"
+if [ "$DRY_RUN" = false ] && [ "$SKIP_TF" = false ]; then
+  python3 "$REPO_ROOT/platform/scripts/prepare-backends.py" "$REPO_ROOT/environments/$ENVIRONMENT" "$ACCOUNT_ID"
+fi
 
 # Check if gitlab.zip exists in S3; if not, override gitlab_webhook_enabled to
 # false so terraform doesn't fail on the missing artifact (Issue #3488).
@@ -205,17 +224,24 @@ elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] conditional import of aws_cloudwatch_log_group.agent_bootstrap ($BOOTSTRAP_LOG_GROUP)"
   echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT -var=gateway_api_url=$GATEWAY_API_URL${GITLAB_OVERRIDE:+ $GITLAB_OVERRIDE}"
 else
-  # shellcheck disable=SC2086
-  ( cd "${MODULE_ROOT}/infra" \
-    && terraform init -backend-config="$BACKEND" -input=false -reconfigure >/dev/null \
-    && import_bootstrap_log_group \
-    && terraform apply \
-         -var="environment=${ENVIRONMENT}" \
-         -var="gateway_api_url=${GATEWAY_API_URL}" \
-         $GITLAB_OVERRIDE \
-         $ADVERSARIAL_OVERRIDE \
-         $INTERNAL_API_KEY_OVERRIDE \
-         -input=false -auto-approve )
+  (
+    cd "${MODULE_ROOT}/infra"
+    terraform init -backend-config="$BACKEND" -input=false -reconfigure >/dev/null
+    import_bootstrap_log_group
+    TF_ARGS=(
+      -var="environment=${ENVIRONMENT}"
+      -var="gateway_api_url=${GATEWAY_API_URL}"
+      -var="agent_image=${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}"
+    )
+    [ -z "$GITLAB_OVERRIDE" ] || TF_ARGS+=("$GITLAB_OVERRIDE")
+    [ -z "$ADVERSARIAL_OVERRIDE" ] || TF_ARGS+=("$ADVERSARIAL_OVERRIDE")
+    [ -z "$INTERNAL_API_KEY_OVERRIDE" ] || TF_ARGS+=("$INTERNAL_API_KEY_OVERRIDE")
+    if [ "$UPDATE_MODE" = true ]; then
+      terraform_update_apply webhook-ingress terraform.tfvars "${TF_ARGS[@]}"
+    else
+      terraform apply "${TF_ARGS[@]}" -input=false -auto-approve
+    fi
+  )
   ok "webhook-ingress applied"
 fi
 

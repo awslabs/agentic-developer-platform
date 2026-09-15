@@ -66,7 +66,7 @@ message — nothing is touched.
 | Bootstrap (state bucket / lock table) | Creates if missing | **Skipped** — must already exist |
 | Bedrock model agreements | Runs | Skipped (slow, already done) |
 | Terraform applies | `-auto-approve` | **Plan-first with destroy gate** (§5) |
-| Image tag | `:latest` | **Source SHA** (`git rev-parse --short=12 HEAD`) |
+| Image tag | `:latest` | **Source SHA** (`git rev-parse HEAD`) |
 | Backend rollout | Best-effort | **Mandatory** — script fails if rollout fails |
 | Database migrations | Not run | **Runs alembic** pre- and post-rollout (§6) |
 | Admin bootstrap | Seeds first admin | Skipped — admin already exists |
@@ -92,7 +92,7 @@ Also verify yourself, before running:
 - **Clean checkout.** The image tag comes from `git rev-parse HEAD`; a dirty or
   wrong-branch checkout deploys something other than what you think. Deploy
   from `main` or a pinned release tag.
-- **Do not commit tfvars rewrites.** The script sed-substitutes account IDs
+- **Do not commit tfvars rewrites.** The script substitutes account IDs
   into `environments/**/*.tfvars` in your working tree. These are deploy-time
   artifacts — never commit them (they would point everyone's Terraform
   backends at your account).
@@ -222,17 +222,16 @@ that mode. What changes on a very stale deployment is how risky it becomes:
 
 ### Known gate limitations
 
-- The gate covers the six Terraform applies inside `deploy-all.sh`. The
-  **webhook-ingress stack** is applied by a delegated script with its own
-  `-auto-approve` and is NOT gated (issue #3543, open). Until that closes,
-  cautious operators should run `--skip-webhook-ingress` and converge
-  webhook-ingress manually:
+- The gate covers the Terraform applies inside `deploy-all.sh` and the delegated
+  webhook-ingress upgrade. The standalone equivalent is:
 
   ```bash
-  cd modules/agent-factory/webhook-ingress/infra
-  terraform plan -var-file=... -no-color | grep -c 'will be destroyed'
-  # 0 destroys → terraform apply; any destroys → stop, investigate
+  modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --update
   ```
+
+  Both inspect the saved plan's JSON actions and refuse deletes, replacements
+  in either action order, and removal from state. Failed plans or unreadable
+  plan JSON also stop the upgrade. The same saved plan is passed to apply.
 
 - History note: the gate's destroy detection was broken (ANSI color codes
   defeated the grep) from its introduction until #3664 (2026-07-11). Runs
@@ -244,7 +243,7 @@ that mode. What changes on a very stale deployment is how risky it becomes:
 ## 6. What happens to images, rollouts, and migrations
 
 **Images.** Update mode tags images with the source SHA
-(`IMAGE_TAG=$(git rev-parse --short=12 HEAD)`) for `adp-gateway`,
+(`IMAGE_TAG=$(git rev-parse HEAD)`) for `adp-gateway`,
 `adp-agent-gateway`, and `adp-agent-runtime`, and forwards that tag to
 CodeBuild. This guarantees Kubernetes sees a new image reference and actually
 rolls out — the classic `:latest`-push-no-rollout silent failure cannot happen.
@@ -285,7 +284,7 @@ After the script exits 0:
 # 1. The new image is actually running (tag = your checkout's SHA):
 kubectl get deploy bedrockgateway -n adp-gateway \
   -o jsonpath='{.spec.template.spec.containers[0].image}'
-git rev-parse --short=12 HEAD    # must match the tag above
+git rev-parse HEAD               # must match the tag above
 
 # 2. Pods healthy:
 kubectl get pods -n adp-gateway
@@ -377,7 +376,8 @@ issue** (see the #3565 runbook pattern, EPIC #2571) instead of a terminal:
 
 - **The ADP platform account** — CI pipelines own it; never run `--update`
   against it.
-- **Webhook-ingress destroy-gating** — see §5 (issue #3543).
+- **Fresh webhook deploys** — use standalone `--update` or the parent upgrade
+  command to enable the saved-plan gate.
 - **A `--plan-only` preview** — there is no dry-run flag yet; the plan-gate
   output during a run is the preview. Tracked with per-module
   `--confirm-destructive` scoping in issue #3733.
