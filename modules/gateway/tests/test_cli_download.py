@@ -96,6 +96,10 @@ class TestCliScriptDownload:
             "adp-admin.py",
             "adp-bedrock.py",
             "adp-aws.py",
+            # Issue #5184: added in the same PR that ships the helper, so the
+            # command is never advertised before its file is downloadable.
+            "adp-github.py",
+            "adp-github-admin.py",
         }
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):

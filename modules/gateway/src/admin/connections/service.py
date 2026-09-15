@@ -1575,6 +1575,7 @@ async def _compute_connection_verification(
     installation_id: int,
     org_id: str | None,
     record_present: bool,
+    repositories_live: bool | None = None,
 ) -> ConnectionVerification:
     """Compute the per-connection verification block (Issue #4016).
 
@@ -1602,6 +1603,9 @@ async def _compute_connection_verification(
         tenant_secret_seeded=tenant_secret,
         identity_index_row=forward,
         reverse_identity_row=reverse,
+        # Issue #5184: passed in by the caller, which is the only place that
+        # knows whether the repository list it served came from GitHub.
+        repositories_live=repositories_live,
     )
 
 
@@ -2391,6 +2395,10 @@ async def list_connections(
             github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
 
     connections: list[GitHubConnectionItem] = []
+    # Issue #5184: installation_id → whether its repository list came from a live
+    # GitHub read. Collected here and merged into the verification blocks below,
+    # which are computed in one gather after the loop.
+    repositories_live_by_install: dict[int, bool] = {}
     for mapping in mappings:
         md = mapping.install_metadata or {}
         install_id = int(md.get("installation_id") or 0)
@@ -2410,6 +2418,10 @@ async def list_connections(
         # Issue #2983: Live repo-list read from GitHub with 60s TTL cache.
         # Falls back to stored metadata on failure.
         repositories = await _fetch_live_repos(install_id, github_client)
+        # Issue #5184: remember WHICH of the two we served. None here means the
+        # live read failed, and a snapshot must not be presented as proof of
+        # current access to a specific repository.
+        repositories_live_by_install[install_id] = repositories is not None
         if repositories is None:
             # Graceful degradation — use the stored snapshot.
             repositories = md.get("repositories") or []
@@ -2495,6 +2507,9 @@ async def list_connections(
                 installation_id=c.installation_id,
                 org_id=c.tenant_id or caller_org_id,
                 record_present=c.installation_id in known_install_ids,
+                # Absent for an orphan entry: no repository read was attempted
+                # for it at all, which is None rather than False.
+                repositories_live=repositories_live_by_install.get(c.installation_id),
             )
             for c in connections
         ),
@@ -2510,7 +2525,12 @@ async def list_connections(
                 conn.installation_id,
                 verification,
             )
-            conn.verification = ConnectionVerification()
+            # Issue #5184: the repository-list provenance is known independently
+            # of these checks (it was decided when the list was fetched above),
+            # so it survives their failure rather than degrading to unknown.
+            conn.verification = ConnectionVerification(
+                repositories_live=repositories_live_by_install.get(conn.installation_id),
+            )
 
     # 🔴-2: platform checks read deployment-global singletons, so they go only
     # to callers who can manage connections.

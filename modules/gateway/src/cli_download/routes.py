@@ -70,6 +70,8 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "bg-gateway-proxy.py": (_CLI_DIR / "bg-gateway-proxy.py").resolve(),
     "adp-bedrock.py": (_CLI_DIR / "adp-bedrock.py").resolve(),
     "adp-aws.py": (_CLI_DIR / "adp-aws.py").resolve(),
+    "adp-github.py": (_CLI_DIR / "adp-github.py").resolve(),
+    "adp-github-admin.py": (_CLI_DIR / "adp-github-admin.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
@@ -86,6 +88,8 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "bg-gateway-proxy.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-bedrock.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-aws.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-github.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-github-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }
 
 
