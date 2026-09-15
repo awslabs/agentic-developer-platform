@@ -62,10 +62,20 @@ MACHINE_EVAL_ADDRESS = f"{FLOW_SLUG}/epic-1/wave-1/eval-machine"
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("state", "attempt", "has_activity"),
-    [("running", 1, True), ("awaiting_merge", 1, True), ("awaiting_merge", 2, False), ("passed", 1, False), ("superseded", 1, False)],
+    ("state", "attempt", "has_history"),
+    [
+        ("running", 1, True),
+        ("awaiting_merge", 1, True),
+        ("awaiting_merge", 2, False),
+        ("passed", 1, True),
+        ("halted", 1, True),
+        ("failed", 1, True),
+        ("pending", 1, False),
+        ("ready", 1, False),
+        ("superseded", 1, False),
+    ],
 )
-async def test_story_activity_uses_only_current_committed_dispatch(session, app_with_router, monkeypatch, state, attempt, has_activity):
+async def test_story_activity_uses_only_current_committed_dispatch(session, app_with_router, monkeypatch, state, attempt, has_history):
     from unittest.mock import MagicMock
 
     from src.activity.schemas import InvocationChainItem, InvocationChainResponse
@@ -97,12 +107,19 @@ async def test_story_activity_uses_only_current_committed_dispatch(session, app_
     assert response.status_code == 200, response.text
     card = response.json()["nodes"][0]
     assert card["state"] == state  # Display enrichment cannot promote the story.
-    if has_activity:
+    if has_history:
         service.get_chain.assert_called_once_with(correlation_id="attempt-1", tenant_id=ORG_A)
-        assert card["activity"] == {"invocation_id": "review-1", "persona": "reviewer", "status": "in_progress", "liveness": "live"}
+        assert card["execution_history"]["run_id"] == "attempt-1"
+        assert card["execution_history"]["history_complete"] is True
+        assert card["execution_history"]["runs"][0]["invocation_id"] == "review-1"
+        if state in ("running", "awaiting_merge"):
+            assert card["activity"] == {"invocation_id": "review-1", "persona": "reviewer", "status": "in_progress", "liveness": "live"}
+        else:
+            assert card["activity"] is None
     else:
         service.get_chain.assert_not_called()
         assert card["activity"] is None
+        assert card["execution_history"] is None
 
 
 def route(flow_id: str) -> str:

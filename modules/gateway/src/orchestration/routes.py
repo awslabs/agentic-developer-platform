@@ -74,7 +74,7 @@ from src.orchestration.dispatch_pass import resolve_installation_id
 from src.orchestration.display_state import FlowStatus
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.models import DecisionKind
-from src.orchestration.node_activity import NodeActivity, load_story_activity
+from src.orchestration.node_activity import NodeActivity, StoryExecution, load_story_execution
 from src.orchestration.policy_admission import load_in_force_policy
 from src.orchestration.proposal import LoopProposal, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
@@ -884,6 +884,7 @@ class GraphNodeResponse(BaseModel):
     attempts: int
     run_id: str | None = None
     activity: NodeActivity | None = None
+    execution_history: StoryExecution | None = None
     issue_url: str | None = None
     result_summary: str | None = None
     configuration_problem: str | None = None
@@ -1082,13 +1083,15 @@ async def get_flow_graph(
             )
         )
 
-    activity = await load_story_activity(
-        org_id=current_user.org_id,
-        run_ids=[node.run_id for node in graph_nodes if node.kind == "story" and node.state in ("running", "awaiting_merge") and node.run_id],
-    )
-    for node in graph_nodes:
-        if node.kind == "story" and node.state in ("running", "awaiting_merge"):
-            node.activity = activity.get(node.run_id)
+    # Retain observed history after merge or interruption. Queued/replaced
+    # stories must not borrow a previous attempt's activity.
+    history_nodes = [node for node in graph_nodes if node.kind == "story" and node.run_id and node.state not in ("pending", "ready", "superseded")]
+    executions = await load_story_execution(org_id=current_user.org_id, run_ids=[node.run_id for node in history_nodes])
+    for node in history_nodes:
+        execution = executions.get(node.run_id)
+        node.execution_history = execution
+        if node.state in ("running", "awaiting_merge"):
+            node.activity = execution.activity if execution else None
 
     return FlowGraphResponse(
         flow_id=flow.id,
