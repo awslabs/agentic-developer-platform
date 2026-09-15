@@ -241,6 +241,7 @@ async def cognito_config() -> dict:
     return {
         "user_pool_id": settings.cognito_user_pool_id,
         "client_id": settings.cognito_client_id,
+        "cli_client_id": settings.cognito_cli_client_id,
         "identity_pool_id": "",
         "region": settings.aws_region,
     }
