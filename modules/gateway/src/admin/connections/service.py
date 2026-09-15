@@ -683,6 +683,7 @@ async def install_callback(
     app_slug = get_github_app_provider().get_slug()
     if app_slug:
         await seed_bot_identity(
+            installation_id=installation_id,
             org_id=resolved_org_id,
             app_slug=app_slug,
             github_client=github_client,
@@ -1023,6 +1024,7 @@ async def _handle_no_nonce_install(
             app_slug = get_github_app_provider().get_slug()
             if app_slug:
                 await seed_bot_identity(
+                    installation_id=installation_id,
                     org_id=resolved_org_id,
                     app_slug=app_slug,
                     github_client=github_client,
