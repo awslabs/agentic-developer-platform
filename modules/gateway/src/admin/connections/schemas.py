@@ -78,6 +78,25 @@ class ConnectionVerification(BaseModel):
             "owned by issue #3860; this is observation only."
         ),
     )
+    # Issue #5184: provenance of the sibling ``repositories`` list.
+    #
+    # ``_fetch_live_repos`` degrades to the stored metadata snapshot whenever the
+    # GitHub read fails, and the two are otherwise indistinguishable in the
+    # response. A caller that must PROVE access to a specific repository — the
+    # CLI's ``adp github connect --repo owner/name`` — cannot treat a snapshot as
+    # proof, so the provenance has to travel with the list.
+    #
+    # True is not weakened by the 60s repo cache: a cached list came from a real
+    # GitHub read within that window. Same tri-state convention as above.
+    repositories_live: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the ``repositories`` list on this connection was read live from GitHub "
+            "(within the 60s cache window). False means GitHub could not be reached and the "
+            "stored snapshot was served instead, so the list reflects configuration rather "
+            "than confirmed current access. None when no read was attempted."
+        ),
+    )
 
 
 class PlatformVerification(BaseModel):

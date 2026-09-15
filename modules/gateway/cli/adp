@@ -47,7 +47,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-github-admin.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-github.py adp-github-admin.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -867,6 +867,12 @@ Run a tool:
     claude [args...]      Launch Claude Code (optional — bare 'claude' also works)
     serve                 Run the localhost auth proxy in the FOREGROUND
 
+Connect a repository (uses the platform's GitHub App — you supply no secrets):
+    github connect --repo owner/name
+                          Authorize a repository you have access to on GitHub
+    github status [--repo owner/name]
+                          Sign-in, repository access and agent integration state
+
 Self-management:
     daemon install        Opt in to an always-on proxy, so bare 'codex' works (macOS)
     daemon uninstall      Remove it
@@ -906,6 +912,7 @@ main() {
     case "${command}" in
         bedrock) exec_python_helper "adp-bedrock.py" "$@" ;;
         admin)   exec_python_helper "adp-admin.py" "$@" ;;
+        github)  exec_python_helper "adp-github.py" "$@" ;;
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.
