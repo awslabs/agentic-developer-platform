@@ -26,6 +26,7 @@ import {
   boundReason,
   intersectCapabilities,
   isControlCancellation,
+  listenerActionsFor,
   newAttemptId,
   noVerbsSupported,
   type AttemptEndpoint,
@@ -471,6 +472,108 @@ describe('capability intersection', () => {
 
     expect(bounded.length).toBe(MAX_REASON_LENGTH);
     expect(boundReason('  spaced   out  ')).toBe('spaced out');
+  });
+});
+
+/**
+ * The verb set the worker's listener advertises, derived rather than declared.
+ *
+ * These tests are about a seam, not a feature. Before this story the listener
+ * held its own empty `SUPPORTED_ACTIONS` and the runtime held its own empty
+ * `IMPLEMENTED_CONTROL_VERBS`, and they agreed only because both were empty —
+ * the kind of agreement that ends the first time someone edits one of them.
+ * Everything below is a statement about which of the two failure directions is
+ * now unreachable.
+ */
+describe('listener verb derivation', () => {
+  const allSupported = {
+    pause: { supported: true },
+    resume: { supported: true },
+    steer: { supported: true },
+    abort: { supported: true },
+  };
+  const adapterClaiming = (capabilities: Record<ControlAction, { supported: boolean }>) => ({
+    describe: () => ({
+      protocolVersion: CONTROL_PROTOCOL_VERSION,
+      adapterId: 'fake',
+      adapterVersion: '0',
+      capabilities,
+    }),
+  });
+
+  it('advertises nothing in S3, for both real adapters', () => {
+    expect([...listenerActionsFor(new ClaudeControlAdapter())]).toEqual([]);
+    expect([...listenerActionsFor(new EchoControlAdapter())]).toEqual([]);
+  });
+
+  it('refuses to advertise a verb the adapter supports but ADP has not implemented', () => {
+    // The echo adapter genuinely supports pause and resume. This is the
+    // dangerous direction: advertising them would make the listener answer 200
+    // for a command whose ADP-side handling does not exist.
+    expect([...listenerActionsFor(new EchoControlAdapter())]).toEqual([]);
+    expect(new EchoControlAdapter().describe().capabilities.pause.supported).toBe(true);
+  });
+
+  it('refuses to advertise a verb ADP implemented but the adapter cannot perform', () => {
+    // The other direction: a 501 is the honest answer when the transport is
+    // missing, and it must not become a 200 just because ADP is ready.
+    const actions = listenerActionsFor(
+      adapterClaiming(noVerbsSupported('no transport')),
+      new Set<ControlAction>(ALL_VERBS),
+    );
+
+    expect([...actions]).toEqual([]);
+  });
+
+  it('advertises exactly the two-way intersection when both sides agree', () => {
+    const actions = listenerActionsFor(
+      adapterClaiming({
+        pause: { supported: true },
+        resume: { supported: false },
+        steer: { supported: true },
+        abort: { supported: false },
+      }),
+      new Set<ControlAction>(['pause', 'resume']),
+    );
+
+    expect([...actions].sort()).toEqual(['pause']);
+  });
+
+  it('excludes availability, so a run between attempts does not report a verb missing', () => {
+    // The distinction that makes this a two-way and not a three-way
+    // intersection: with no attempt attached the adapter's *effective*
+    // capabilities are all false, but the build-level answer must not change —
+    // otherwise a verb reads as `not_implemented` during an ordinary retry gap,
+    // sending an operator after a missing feature instead of a transient state.
+    const adapter = new EchoControlAdapter({
+      implementedVerbs: new Set<ControlAction>(['pause']),
+    });
+
+    expect(adapter.currentAttempt()).toBeNull();
+    expect(adapter.capabilities().pause).toBe(false);
+    expect([...listenerActionsFor(adapter, new Set<ControlAction>(['pause']))]).toEqual(['pause']);
+  });
+
+  it('treats a missing capability entry as unsupported rather than throwing', () => {
+    const actions = listenerActionsFor(
+      adapterClaiming({ pause: { supported: true } } as never),
+      new Set<ControlAction>(ALL_VERBS),
+    );
+
+    expect([...actions]).toEqual(['pause']);
+  });
+
+  it('defaults to the ADP-implemented set, so a caller cannot widen it by omission', () => {
+    expect([...listenerActionsFor(adapterClaiming(allSupported))]).toEqual([]);
+  });
+
+  it('is the same set the listener module exports, not a parallel one', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { SUPPORTED_ACTIONS } = require('./control-listener');
+
+    // Identity, not equality: two empty sets are equal today and would stay
+    // equal right up until one of them was widened alone.
+    expect(SUPPORTED_ACTIONS).toBe(IMPLEMENTED_CONTROL_VERBS);
   });
 });
 

@@ -411,10 +411,12 @@ jobs:
         run: |
           cat > .verb-gate.ts <<'TS'
           import { ClaudeControlAdapter } from './src/harnesses/claude-control';
+          import { SUPPORTED_ACTIONS } from './src/control-listener';
           import {
             CONTROL_PROTOCOL_VERSION,
             IMPLEMENTED_CONTROL_VERBS,
             intersectCapabilities,
+            listenerActionsFor,
             noVerbsSupported,
           } from './src/control-runtime';
 
@@ -458,6 +460,42 @@ jobs:
           const missingKeys = ALL_VERBS.filter((v) => typeof caps[v] !== 'boolean');
           if (missingKeys.length > 0) {
             fail(`Capability map is missing boolean entries for: ${JSON.stringify(missingKeys)}.`);
+          }
+
+          // The adapter's RAW claim, before any intersection.
+          //
+          // Checked separately because every other assertion in this gate reads a
+          // post-intersection value, and the intersection hides this defect
+          // perfectly: an adapter claiming `pause: true` with no pause transport
+          // still intersects to false while ADP implements nothing, so the gate
+          // above passes. Verified by mutation — setting `pause: { supported: true }`
+          // in `adapterCapabilities()` exited 0 before this block existed, which
+          // made the comment at the top of this step false.
+          //
+          // It matters because the claim is not inert. W2-02 records it as contract
+          // evidence, and the story that implements pause widens
+          // IMPLEMENTED_CONTROL_VERBS — at which point a stale `true` here silently
+          // becomes a live verb whose `requestPause` still answers 'unavailable'.
+          // The claim must be false while the transport is absent, not merely
+          // outvoted while ADP is empty.
+          const claimed = new ClaudeControlAdapter().describe().capabilities;
+          const claimedTrue = ALL_VERBS.filter((v) => claimed[v]?.supported === true);
+          const unproven = claimedTrue.filter((v) => !EXPECTED_SUPPORTED.has(v));
+          if (unproven.length > 0) {
+            fail(
+              `The adapter CLAIMS support for verbs with no transport: ${JSON.stringify(unproven)}. ` +
+                'The intersection currently hides this, but the story that implements one of these verbs ' +
+                'would turn the stale claim into a live capability.',
+            );
+          }
+          // A false claim must say why: the reason is what an operator reads when
+          // the dashboard shows a verb greyed out, and an empty one renders as an
+          // unexplained absence.
+          const unexplained = ALL_VERBS.filter(
+            (v) => claimed[v]?.supported === false && !(claimed[v]?.reason ?? '').trim(),
+          );
+          if (unexplained.length > 0) {
+            fail(`Unsupported verbs carry no reason: ${JSON.stringify(unexplained)}.`);
           }
 
           // Each of the three inputs must be able to veto on its own. One true
@@ -509,7 +547,36 @@ jobs:
             }
           }
 
+          // The verb set the in-pod listener actually serves. Checked separately
+          // from `caps` because it is a different derivation with a different
+          // consumer: `caps` is what a verb's execution path consults, while this
+          // is what the HTTP surface answers 200-or-501 from. They were two
+          // independently-maintained empty sets until #3962 made one derive from
+          // the other, and the direction that matters is a listener advertising a
+          // verb whose transport does not exist — a command accepted and then
+          // never performed.
+          const served = [...listenerActionsFor(new ClaudeControlAdapter())];
+          const overAdvertised = served.filter((v) => !EXPECTED_SUPPORTED.has(v));
+          if (overAdvertised.length > 0) {
+            fail(
+              `The control listener would serve verbs with no proven boundary: ${JSON.stringify(overAdvertised)}. ` +
+                'The listener set is derived from the adapter, so this means a verb was enabled without its transport.',
+            );
+          }
+
+          // Identity, not equality. Two empty sets compare equal today and would
+          // keep comparing equal right up until one of them was widened alone,
+          // which is the whole failure this alias exists to make impossible.
+          if (SUPPORTED_ACTIONS !== IMPLEMENTED_CONTROL_VERBS) {
+            fail(
+              "control-listener's SUPPORTED_ACTIONS is no longer the same object as IMPLEMENTED_CONTROL_VERBS. " +
+                'Two sets that must agree have become two sets that merely happen to agree.',
+            );
+          }
+
           console.log(`OK: adapter advertises supported=${JSON.stringify(advertised)}, unsupported=${JSON.stringify(ALL_VERBS.filter((v) => !caps[v]))}`);
+          console.log(`OK: adapter claims supported=${JSON.stringify(claimedTrue)} before intersection`);
+          console.log(`OK: listener would serve ${JSON.stringify(served)}`);
           console.log(`OK: all ${probes.length} intersection veto probes hold`);
           TS
           # The exit code is captured and re-raised explicitly, and the temp file is

@@ -337,6 +337,46 @@ export function noVerbsSupported(reason: string): Record<ControlAction, VerbSupp
 }
 
 /**
+ * The verb set a worker's control listener may advertise, derived from an adapter.
+ *
+ * This exists because the listener and the runtime otherwise hold two
+ * independent answers to "which verbs does this build perform". Both are empty
+ * today, so nothing currently disagrees — which is exactly why the seam is worth
+ * closing now rather than after it first matters. The next story to enable a
+ * verb widens one of them, and whichever it forgets produces one of two
+ * failures: widen only the listener and the run answers 200 for a verb with no
+ * transport behind it, accepting a command it will never perform; widen only the
+ * runtime and the run answers 501 for a verb that works. The first is worse,
+ * because a caller is told yes.
+ *
+ * Deriving one from the other makes both states unreachable rather than merely
+ * unlikely — the listener's set becomes a *consequence* of the adapter's facts
+ * instead of a parallel claim about them.
+ *
+ * **Availability is deliberately excluded here**, so this is the two-way
+ * intersection and not the three-way one. The listener's set answers a
+ * build-level question ("is this verb implemented at all") whose answer the
+ * store fixes once per run, while availability is a per-moment fact that changes
+ * as attempts come and go. Feeding availability in would make a verb report
+ * `not_implemented` during any window with no live attempt — a wrong diagnosis
+ * that sends an operator looking for a missing feature instead of a transient
+ * state. The runtime's own {@link ControlRuntimeAdapter.capabilities} remains the
+ * three-way intersection and is what a verb's execution path must consult; a
+ * story that enables a verb owns the "advertised but not available right now"
+ * response, which is a live-state answer rather than a capability one.
+ */
+export function listenerActionsFor(
+  adapter: Pick<ControlRuntimeAdapter, 'describe'>,
+  implemented: ReadonlySet<ControlAction> = IMPLEMENTED_CONTROL_VERBS
+): ReadonlySet<ControlAction> {
+  const claimed = adapter.describe().capabilities;
+  const verbs: ControlAction[] = ['pause', 'resume', 'steer', 'abort'];
+  return new Set<ControlAction>(
+    verbs.filter((verb) => implemented.has(verb) && claimed[verb]?.supported === true)
+  );
+}
+
+/**
  * Owns which attempt is current, and enforces that only that attempt can act.
  *
  * Neutral on purpose: the retry-safety rules are identical for every harness,
