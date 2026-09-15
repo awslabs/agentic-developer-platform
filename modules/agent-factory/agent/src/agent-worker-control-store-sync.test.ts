@@ -251,6 +251,90 @@ describe('store/gate agreement: transitions the gate makes on its own', () => {
   });
 });
 
+describe('store/gate agreement: outcomes that are not a confirmation', () => {
+  it('rejects the command and shows running when the adapter reports unavailable', async () => {
+    // The gateway reads the phase, so an `unavailable` that left it at
+    // `pause_requested` would show a run as pausing forever with no pause behind it.
+    const h = harness();
+    const id = 'cmd-unavailable';
+    expect(h.store.submit('pause', id, 'fp-u').kind).toBe('accepted');
+
+    await applyControlCommand({
+      action: 'pause',
+      commandId: id,
+      adapter: {
+        requestPause: async () => ({ outcome: 'unavailable', reason: 'no barrier is installed' }),
+        resumeFromPause: async () => {},
+      } as never,
+      store: h.store,
+      log: () => {},
+    });
+
+    expect(h.store.snapshot().state).toBe('running');
+    expect(h.statusOf(id)).toBe('rejected');
+    // The reason travels with the rejection: "pause failed" without a cause leaves
+    // an operator unable to tell a retry from a dead end.
+    expect(
+      h.store.snapshot().commands.find((c) => c.command_id === id)?.reason,
+    ).toContain('no barrier');
+  });
+
+  it('rejects a verb no executor implements instead of accepting a silent no-op', async () => {
+    // Unreachable through the listener, which answers an unsupported verb with 501.
+    // Asserted anyway because the failure mode of widening the supported set without
+    // teaching this function the new verb is an *accepted* command that does
+    // nothing — an operator told their abort succeeded when nothing aborted.
+    const h = harness();
+    const id = 'cmd-steer';
+    // Submitted directly: the store's own supported set would refuse it, which is
+    // exactly the guard being bypassed to reach the executor's fallback.
+    h.store.submit('pause', id, 'fp-s');
+
+    await applyControlCommand({
+      action: 'steer' as never,
+      commandId: id,
+      adapter: {
+        requestPause: async () => {
+          throw new Error('requestPause must not be reached for an unsupported verb');
+        },
+        resumeFromPause: async () => {},
+      } as never,
+      store: h.store,
+      log: () => {},
+    });
+
+    expect(h.statusOf(id)).toBe('rejected');
+    expect(
+      h.store.snapshot().commands.find((c) => c.command_id === id)?.reason,
+    ).toContain('steer');
+  });
+
+  it('applies each transition with no logger supplied', async () => {
+    // `log` is optional and the worker always passes one, so the default is only
+    // exercised here. A missing default would crash the executor rather than the
+    // caller — a control command that throws mid-transition leaves the store and
+    // the gate disagreeing, which is the one outcome this module exists to avoid.
+    const h = harness();
+    const id = 'cmd-nolog';
+    expect(h.store.submit('pause', id, 'fp-n').kind).toBe('accepted');
+
+    await applyControlCommand({
+      action: 'pause',
+      commandId: id,
+      adapter: {
+        requestPause: () => h.gate.requestPause(),
+        resumeFromPause: async () => {
+          await h.gate.resume();
+        },
+      } as never,
+      store: h.store,
+    });
+
+    expect(h.store.snapshot().state).toBe('paused');
+    expect(h.statusOf(id)).toBe('applied');
+  });
+});
+
 describe('store/gate agreement: the admitted-tool count', () => {
   it('reports the barrier count so a gateway read is runtime truth', async () => {
     const h = harness();

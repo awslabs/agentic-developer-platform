@@ -284,6 +284,57 @@ describe('adapter identity and capabilities', () => {
     await expect(adapter.resumeFromPause()).resolves.toBeUndefined();
   });
 
+  it('refuses a pause when there is no live attempt to hold', async () => {
+    // A gate and an enabled verb, but nothing running. The barrier is perfectly
+    // capable here — which is the point: capability is not the same as a live
+    // execution to apply it to, and confirming on an adapter between attempts
+    // would report a paused run where there is no run.
+    const adapter = new ClaudeControlAdapter({
+      pauseGate: new PauseGate(),
+      implementedVerbs: PAUSE_AND_RESUME,
+    });
+
+    const result = await adapter.requestPause();
+
+    expect(result.outcome).toBe('unavailable');
+    expect((result as { reason: string }).reason).toContain('no live attempt');
+  });
+
+  it('refuses a pause ADP has not enabled, even though the barrier could hold it', async () => {
+    // The load-bearing case for the three-way intersection. The gate below is real
+    // and would genuinely park a tool, so reaching it directly would return
+    // `confirmed` for a verb the platform has not turned on. The adapter does not
+    // get the deciding vote on its own capability.
+    const gate = new PauseGate();
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: new Set() });
+    await startAttempt(adapter);
+
+    const result = await adapter.requestPause();
+
+    expect(result.outcome).toBe('unavailable');
+    expect((result as { reason: string }).reason).toBeTruthy();
+    // And the gate was never asked, so no state was changed by the refusal.
+    expect(gate.currentPhase()).toBe('running');
+  });
+
+  it('refuses a pause whose request was already cancelled', async () => {
+    // The operator navigated away, or the command was superseded, before the
+    // request reached the barrier. Closing admission now would pause a run for
+    // somebody who is no longer waiting for it, and nothing would resume it except
+    // the expiry.
+    const gate = new PauseGate();
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: PAUSE_AND_RESUME });
+    await startAttempt(adapter);
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await adapter.requestPause({ signal: controller.signal });
+
+    expect(result.outcome).toBe('unavailable');
+    expect((result as { reason: string }).reason).toContain('cancelled');
+    expect(gate.currentPhase()).toBe('running');
+  });
+
   it('reports work as unobservable when no barrier is counting it', async () => {
     const adapter = new ClaudeControlAdapter();
     await startAttempt(adapter);
@@ -932,6 +983,34 @@ describe('pause expiry annotation', () => {
     expect(gate.currentPhase()).toBe('running');
     expect(logged.some((m) => m.includes('pause-expiry annotation not delivered'))).toBe(true);
     await adapter.dispose();
+  });
+
+  it('survives an expiry whose annotation throws rather than declining', async () => {
+    // The other failure shape. `deliver` reporting "not delivered" is handled above;
+    // this is a transport that raises. An auto-resume is a safety mechanism, so an
+    // exception from the courtesy note must not escape and leave the run neither
+    // paused nor resumed.
+    const scheduler = manualScheduler();
+    const gate = new PauseGate({ scheduler, defaultTimeoutMs: 60_000 });
+    const logged: string[] = [];
+    const adapter = new ClaudeControlAdapter({
+      pauseGate: gate,
+      implementedVerbs: PAUSE_AND_RESUME,
+      log: (m) => logged.push(m),
+    });
+    // An attempt whose transport raises on delivery rather than refusing politely.
+    await startAttempt(adapter, { session: { close: () => { throw new Error('transport gone'); } } });
+    const registry = (adapter as unknown as { registry: { deliver: () => Promise<never> } }).registry;
+    jest.spyOn(registry, 'deliver').mockRejectedValue(new Error('transport gone'));
+
+    expect((await adapter.requestPause()).outcome).toBe('confirmed');
+    scheduler.fireAll();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The run resumed regardless — that is the contract; the annotation is context.
+    expect(gate.currentPhase()).toBe('running');
+    expect(logged.some((m) => m.includes('pause-expiry annotation failed'))).toBe(true);
   });
 
   it('emits the release exactly once whether the operator resumes or the budget runs out', async () => {

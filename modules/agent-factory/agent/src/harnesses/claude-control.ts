@@ -442,35 +442,18 @@ class ClaudeAttemptEndpoint implements AttemptEndpoint {
     return this.channel.push(toSdkUserMessage(input)) ? 'delivered' : 'rejected';
   }
 
-  /**
-   * Establish the pause barrier for this attempt (#3961).
-   *
-   * Delegates the decision to the neutral gate: the barrier is the `PreToolUse`
-   * hook this adapter installs, and the gate owns whether holding it amounts to a
-   * confirmed pause. Without a gate the answer is `unavailable`, exactly as in
-   * S3 — the transport can carry input, but carrying input is not a pause.
-   *
-   * No `Query.interrupt()` is called here or anywhere in this adapter. The turn
-   * keeps running; only new tool admission stops, which is what makes resume a
-   * continuation of the same execution rather than a fresh turn.
-   */
-  async requestPause(signal?: AbortSignal): Promise<PauseResult> {
-    if (!this.pauseGate) {
-      return { outcome: 'unavailable', reason: boundReason(NO_PAUSE_GATE_REASON) };
-    }
-    if (signal?.aborted) {
-      return { outcome: 'unavailable', reason: boundReason('pause request was cancelled before it began') };
-    }
-    const result = await this.pauseGate.requestPause();
-    if (result.outcome === 'confirmed') return { outcome: 'confirmed' };
-    if (result.outcome === 'requested') return { outcome: 'requested' };
-    return { outcome: 'unavailable', reason: boundReason(result.reason) };
-  }
-
-  /** Release a confirmed pause or cancel a pending one. Idempotent. */
-  async releasePause(): Promise<void> {
-    await this.pauseGate?.resume();
-  }
+  // `AttemptEndpoint`'s optional `requestPause`/`releasePause` are deliberately
+  // not implemented here — Issue #3961. They look like the natural place for a
+  // per-attempt barrier, and an earlier revision of this story did implement
+  // them. Nothing called them: the registry exposes no pause path, and pause
+  // enters through `ClaudeControlAdapter.requestPause`, which first consults the
+  // three-way capability *intersection*. An endpoint-level entry point would
+  // reach the gate without that check — and since the gate can genuinely hold
+  // tools, it would confirm a pause for a verb ADP had not enabled. That is the
+  // precise failure the intersection exists to prevent, so the second door is
+  // left unbuilt rather than built and guarded.
+  //
+  // `activeWorkCount` below *is* implemented, because the registry does call it.
 
   /**
    * Tool invocations admitted and not yet finished.
