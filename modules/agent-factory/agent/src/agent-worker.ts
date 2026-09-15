@@ -20,9 +20,9 @@ import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
 import { TmpSpillStore } from './utils/spill';
 import { createWorkerToolHooks, developerCheckpointGuidance } from './developer-checkpoints';
-import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh } from './token-refresh';
+import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh, adoptBootstrapToken, getRuntimeGitHubToken } from './token-refresh';
 import { AuthWatchdog } from './lib/authWatchdog';
-import { fetchBrokeredToken, isBrokerEnabled } from './lib/githubTokenBroker';
+import { isBrokerEnabled } from './lib/githubTokenBroker';
 import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { resolveAgentLogGroup } from './lib/logGroup';
@@ -412,31 +412,9 @@ async function refreshAppToken(): Promise<void> {
   const appId = process.env.GH_APP_ID;
   const privateKey = process.env.GH_APP_PRIVATE_KEY;
 
-  // Issue #4272: broker mode — no private key in this process, so the local mint
-  // below cannot run. Route through the gatekeeper instead. Without this branch
-  // the function would hit the `!privateKey` early-return and silently stop
-  // refreshing the token that every gh/git call in the run depends on.
+  if (process.env.ADP_TOKEN_MODE === 'pat') return;
   if (isBrokerEnabled()) {
-    const installationId = process.env.GH_APP_INSTALLATION_ID;
-    const repoOwner = process.env.REPO_OWNER;
-    if (!appId || !installationId || !repoOwner) return; // Not using app auth
-    try {
-      const brokered = await fetchBrokeredToken({
-        installationId,
-        repoOwner,
-        repoName: process.env.REPO_NAME || '',
-      });
-      process.env.GH_TOKEN = brokered.token;
-      process.env.GITHUB_TOKEN = brokered.token;
-      process.env.GH_APP_TOKEN = brokered.token;
-      // Keep the token file in step too: git-askpass-helper prefers the file and
-      // only falls back to $GITHUB_TOKEN, so refreshing env alone would leave
-      // git authenticating with the stale file contents.
-      writeTokenFile(brokered.token);
-      log('INFO', 'Refreshed GitHub App token via gatekeeper for gh CLI');
-    } catch (err) {
-      log('WARN', `Brokered token refresh failed: ${(err as Error).message}`);
-    }
+    await getRuntimeGitHubToken();
     return;
   }
 
@@ -1900,6 +1878,8 @@ async function main(): Promise<void> {
       refreshThresholdMs: TOKEN_REFRESH_THRESHOLD_MS,
     });
 
+    adoptBootstrapToken();
+
     // Issue #4369: tick every 5 min, not 30. `getToken()` is a no-op unless the
     // token is inside the refresh threshold, so a short interval costs nothing —
     // but a 30-min interval against a ~60-min token and a 15-min threshold never
@@ -1939,9 +1919,11 @@ async function main(): Promise<void> {
       writeTokenFile(initialToken);
       log('INFO', 'Initial token written to token file for SDK subprocess');
     } catch (err) {
+      if (brokerMode) throw err;
       log('WARN', `Initial token file write failed: ${(err as Error).message}`);
     }
-  } else {
+  } else if (process.env.ADP_TOKEN_MODE !== 'pat') {
+    if (brokerMode) throw new Error('Brokered GitHub renewal configuration unavailable');
     log('WARN', 'GitHub App credentials not available — token refresh disabled. Token will expire after ~1 hour.');
   }
 

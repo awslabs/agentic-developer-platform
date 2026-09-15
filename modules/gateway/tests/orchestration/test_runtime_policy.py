@@ -259,6 +259,8 @@ async def broker_client(session, assignment, monkeypatch):
     monkeypatch.setattr("src.internal.routes.resolve_tenant_app_credentials", AsyncMock(return_value=("app-test", "test-key")))
     mint = AsyncMock(return_value=("scoped-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()))
     monkeypatch.setattr("src.internal.routes.mint_installation_token_with_expiry", mint)
+    revoke = AsyncMock()
+    monkeypatch.setattr("src.internal.routes._revoke_undelivered_github_token", revoke)
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[verify_internal_or_irsa] = verify_broker_worker
@@ -267,6 +269,7 @@ async def broker_client(session, assignment, monkeypatch):
         yield SimpleNamespace(
             client=client,
             mint=mint,
+            revoke=revoke,
             body={"invocation_id": "worker", "installation_id": INSTALLATION_A, "repo_owner": "aws-e", "repo_name": "adp"},
         )
 
@@ -335,3 +338,48 @@ async def test_endpoint_never_returns_provider_token_with_invalid_lifetime(assig
     response = await broker_client.client.post(GITHUB, json=broker_client.body)
     assert response.status_code == 502, response.text
     assert "must-not-escape" not in response.text
+    broker_client.revoke.assert_awaited_once_with("must-not-escape")
+
+
+@pytest.mark.parametrize("during", ["key_lookup", "mint", "audit"])
+async def test_cancellation_during_provider_work_withholds_token(session, assignment, broker_client, monkeypatch, during):
+    async def cancel():
+        assignment.grant = replace(assignment.grant, expires_at=datetime.now(UTC) - timedelta(seconds=1))
+
+    if during == "key_lookup":
+
+        async def key_lookup(*_):
+            await cancel()
+            return "app-test", "test-key"
+
+        monkeypatch.setattr("src.internal.routes.resolve_tenant_app_credentials", key_lookup)
+    elif during == "mint":
+
+        async def mint(*_, **__):
+            await cancel()
+            return "scoped-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+
+        broker_client.mint.side_effect = mint
+    else:
+        from src.internal.routes import _write_audit
+
+        async def audit(*args, **kwargs):
+            await _write_audit(*args, **kwargs)
+            await cancel()
+
+        monkeypatch.setattr("src.internal.routes._write_audit", audit)
+
+    response = await broker_client.client.post(GITHUB, json=broker_client.body)
+    assert response.status_code == 404, response.text
+    assert "scoped-token" not in response.text
+    if during == "key_lookup":
+        broker_client.mint.assert_not_awaited()
+        broker_client.revoke.assert_not_awaited()
+    else:
+        broker_client.revoke.assert_awaited_once_with("scoped-token")
+
+
+async def test_matching_victim_invocation_and_repo_cannot_replace_authenticated_run(broker_client):
+    response = await broker_client.client.post(GITHUB, json={**broker_client.body, "invocation_id": "victim-run"})
+    assert response.status_code == 404
+    broker_client.mint.assert_not_awaited()

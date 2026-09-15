@@ -51,6 +51,8 @@ def ready_gateway_proxy(monkeypatch):
     """Main-sequence tests have a healthy proxy unless explicitly overridden."""
     monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint._stop_sigv4_proxy", MagicMock())
+    monkeypatch.setattr("entrypoint.BootstrapLogger", MagicMock())
+    monkeypatch.setenv("ADP_GH_TOKEN_BROKER_ENABLED", "0")
 
 
 SAMPLE_ENVELOPE = {
@@ -2173,6 +2175,8 @@ class TestBedrockViaGateway:
         )
         monkeypatch.setenv("SIGV4_PROXY_PORT", "9090")
         monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", str(protected).lower())
+        if protected:
+            monkeypatch.setattr(entrypoint, "_broker_installation_token", lambda **_: ("ghs_test", "123", "2099-01-01T00:00:00Z"))
         monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/projected/worker-token")
         monkeypatch.setattr(entrypoint, "_setup_agent_control", lambda *_: False)

@@ -6,10 +6,9 @@ import { workerAwsCredentials, workerAwsRegion } from '../lib/runIdentity';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { resolveInstallationId } from './installation';
-import { fetchBrokeredToken, isBrokerEnabled } from '../lib/githubTokenBroker';
-// From lib/tokenFile, not token-refresh: the latter imports @octokit/auth-app
-// (ESM-only) which this module's own test suite cannot transform, and a local
-// mint is exactly what the broker path must not be able to reach anyway.
+import { isBrokerEnabled } from '../lib/githubTokenBroker';
+// Local-mint compatibility still publishes through the same atomic file helper.
+// Broker calls load the shared manager lazily; its App-auth import is lazy too.
 import { writeTokenFile } from '../lib/tokenFile';
 import { resolveFallbackBucket, buildFallbackKey } from './s3Fallback';
 
@@ -41,24 +40,8 @@ export async function refreshGitHubToken(): Promise<void> {
   // silently disable refresh for every caller of this helper (agent-pm,
   // agent-superpower, pm-health-monitor, skill-agent).
   if (isBrokerEnabled()) {
-    const installationId = process.env.GH_APP_INSTALLATION_ID;
-    if (!appId || !installationId || !REPO_OWNER) return;
-    try {
-      const brokered = await fetchBrokeredToken({
-        installationId,
-        repoOwner: REPO_OWNER,
-        repoName: REPO_NAME,
-      });
-      process.env.GH_TOKEN = brokered.token;
-      process.env.GITHUB_TOKEN = brokered.token;
-      process.env.GH_APP_TOKEN = brokered.token;
-      writeTokenFile(brokered.token);
-    } catch (err) {
-      // Non-fatal, same contract as the local path below: the caller falls back
-      // to the existing token. But never silent — a swallowed failure here hid
-      // wrong-installation errors entirely once before.
-      console.warn(`[WARN] Brokered GitHub token refresh failed: ${(err as Error).message}`);
-    }
+    const { getRuntimeGitHubToken } = await import('../token-refresh');
+    await getRuntimeGitHubToken();
     return;
   }
 

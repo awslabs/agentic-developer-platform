@@ -12,7 +12,8 @@
  * `token-refresh.ts` re-exports both symbols, so existing importers are unchanged.
  */
 
-import { writeFileSync, renameSync, mkdirSync } from 'fs';
+import { writeFileSync, renameSync, mkdirSync, unlinkSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { dirname } from 'path';
 
 /**
@@ -26,16 +27,18 @@ export const TOKEN_FILE_PATH = process.env.ADP_TOKEN_FILE || '/tmp/.adp-gh-token
  * gh wrapper. Uses write-to-temp + rename for atomicity (no partial reads).
  * File mode 0600 — readable only by the owning user.
  *
- * Non-fatal: if the write fails, the env-var fallback still works for the
- * runtime's own commands (only the SDK subprocess path degrades).
+ * Failure is fatal to this refresh: already-running subprocesses cannot see a
+ * parent environment update. Publish the file before updating in-memory state.
  */
 export function writeTokenFile(token: string): void {
-  const tmpPath = `${TOKEN_FILE_PATH}.tmp`;
+  const tmpPath = `${TOKEN_FILE_PATH}.${randomUUID()}.tmp`;
   try {
     mkdirSync(dirname(TOKEN_FILE_PATH), { recursive: true, mode: 0o700 });
-    writeFileSync(tmpPath, token, { mode: 0o600 });
+    writeFileSync(tmpPath, token, { mode: 0o600, flag: 'wx' });
     renameSync(tmpPath, TOKEN_FILE_PATH);
-  } catch (err) {
-    console.error(`[TokenManager] Failed to write token file: ${(err as Error).message}`);
+  } catch {
+    throw new Error('[TokenManager] Failed to publish GitHub token file');
+  } finally {
+    try { unlinkSync(tmpPath); } catch { /* renamed or never created */ }
   }
 }
