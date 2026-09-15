@@ -64,4 +64,5 @@ raise — not a directory to create.
 - Offline CI lane: `.github/workflows/superplane-domain-ci.yml` — lint + tests over this
   directory. No AWS account, no image build, no deploy.
 - Teardown: registered as the **first** undeploy phase (destroy order is the reverse of
-  deploy order — a domain app sits on top of the platform, so it goes first).
+  deploy order — a domain app sits on top of the platform, so it goes first), including
+  the legacy `deploy-all.sh --destroy` entry point.

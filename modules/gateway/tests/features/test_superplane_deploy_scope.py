@@ -169,6 +169,11 @@ def harness(tmp_path):
     for rel, marker in _SUB_SCRIPTS.items():
         _write_exec(root / rel, f'#!/usr/bin/env bash\necho "{marker}"\nexit 0\n')
 
+    _write_exec(
+        root / "platform" / "scripts" / "undeploy-phases.sh",
+        'phase_superplane() { echo "STUB-SUPERPLANE-TEARDOWN"; return "${TEST_SUPERPLANE_EXIT:-0}"; }\n',
+    )
+
     # Terraform var files the phases reference. Empty is fine: terraform is a no-op stub.
     for rel in (
         "environments/dev/backend.tfvars",
@@ -226,7 +231,7 @@ def harness(tmp_path):
 
     assert_no_real_tooling(bin_dir)
 
-    def run(*flags: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    def run(*flags: str, env: dict | None = None, input_text: str | None = None) -> subprocess.CompletedProcess:
         # Strip every AWS_* variable so an ambient IRSA identity (the agent runtime and
         # ARC runners both have one) cannot reach the child process.
         child_env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
@@ -241,9 +246,10 @@ def harness(tmp_path):
             timeout=300,
             env=child_env,
             cwd=str(root),
+            input=input_text,
             # DEVNULL, so a stub that drains stdin gets EOF immediately instead of
             # blocking on an inherited descriptor.
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL if input_text is None else None,
         )
 
     return run
@@ -450,3 +456,22 @@ class TestSiblingScopeFlagsUnaffected:
         assert_skipped(result.stdout, "agent_factory")
         assert_ran(result.stdout, "agent_context")
         assert_skipped(result.stdout, "superplane")
+
+
+class TestLegacyDestroy:
+    def test_superplane_teardown_precedes_dependencies(self, harness):
+        result = harness("--destroy", input_text="yes\n")
+        assert result.returncode == 0, result.stdout[-3000:] + result.stderr
+        assert result.stdout.index("STUB-SUPERPLANE-TEARDOWN") < result.stdout.index("Destroy 2/6: Agent Context")
+
+    def test_failed_superplane_teardown_preserves_dependencies(self, harness):
+        result = harness("--destroy", input_text="yes\n", env={"TEST_SUPERPLANE_EXIT": "1"})
+        assert result.returncode != 0
+        assert "STUB-SUPERPLANE-TEARDOWN" in result.stdout
+        assert "leaving its dependencies intact" in result.stdout
+        assert "Destroy 2/6: Agent Context" not in result.stdout
+
+    def test_declining_confirmation_runs_no_teardown(self, harness):
+        result = harness("--destroy", input_text="no\n")
+        assert result.returncode == 0
+        assert "STUB-SUPERPLANE-TEARDOWN" not in result.stdout

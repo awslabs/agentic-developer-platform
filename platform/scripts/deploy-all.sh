@@ -417,7 +417,7 @@ run_codebuild() {
 #   - empty-s3-buckets.sh         (non-empty buckets block terraform destroy)
 #   - force-delete-secrets.sh     (avoid 7-day collision on re-deploy)
 #
-# Order: agent-context → webhook-ingress → agent-factory → gateway → platform
+# Order: superplane → agent-context → webhook-ingress → agent-factory → gateway → platform
 # State backend (S3 + DynamoDB) is NOT destroyed — use bootstrap-destroy.sh.
 # GitHub App secrets (adp/gh-app-*) are NOT touched — survive by design.
 # =============================================================================
@@ -425,7 +425,7 @@ if [ "$DESTROY" = true ]; then
   step "Destroying all infrastructure"
   echo "This will destroy ALL ADP infrastructure in $ENVIRONMENT."
   echo ""
-  echo "Destroy order: agent-context → webhook-ingress → agent-factory → gateway → platform"
+  echo "Destroy order: superplane → agent-context → webhook-ingress → agent-factory → gateway → platform"
   echo "State backend and GitHub App secrets will NOT be deleted."
   echo ""
   echo "Type 'yes' to proceed:"
@@ -438,10 +438,16 @@ if [ "$DESTROY" = true ]; then
     aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG" 2>/dev/null || true
   fi
 
+  # Use the same Superplane teardown as undeploy.sh and the undeploy workflow.
+  # A failed domain teardown must stop before removing its platform dependencies.
+  step "Destroy 1/6: Superplane"
+  source "$SCRIPT_DIR/undeploy-phases.sh"
+  phase_superplane || fail "Superplane teardown failed; leaving its dependencies intact"
+
   # -------------------------------------------------------------------------
-  # 1. Agent Context
+  # 2. Agent Context
   # -------------------------------------------------------------------------
-  step "Destroy 1/5: Agent Context"
+  step "Destroy 2/6: Agent Context"
   if [ -d "$ROOT_DIR/modules/agent-context/terraform" ]; then
     kubectl delete namespace agent-context --wait=true --timeout=120s 2>/dev/null || true
 
@@ -462,9 +468,9 @@ if [ "$DESTROY" = true ]; then
   fi
 
   # -------------------------------------------------------------------------
-  # 2. Webhook Ingress (KEDA + Lambda + SQS + API GW + DynamoDB + WAFv2 + KMS)
+  # 3. Webhook Ingress (KEDA + Lambda + SQS + API GW + DynamoDB + WAFv2 + KMS)
   # -------------------------------------------------------------------------
-  step "Destroy 2/5: Webhook Ingress"
+  step "Destroy 3/6: Webhook Ingress"
   if [ -f "$ROOT_DIR/modules/agent-factory/webhook-ingress/infra/terraform.tfvars" ]; then
     # Clean up K8s KEDA resources before TF destroy
     kubectl delete scaledjobs --all -n adp-agents 2>/dev/null || true
@@ -482,9 +488,9 @@ if [ "$DESTROY" = true ]; then
   fi
 
   # -------------------------------------------------------------------------
-  # 3. Agent Factory
+  # 4. Agent Factory
   # -------------------------------------------------------------------------
-  step "Destroy 3/5: Agent Factory"
+  step "Destroy 4/6: Agent Factory"
   if [ -f "$ROOT_DIR/modules/agent-factory/infra/terraform.tfvars" ]; then
     # Clean up K8s resources
     kubectl delete scaledjobs --all -n adp-gateway-agents 2>/dev/null || true
@@ -508,9 +514,9 @@ if [ "$DESTROY" = true ]; then
   fi
 
   # -------------------------------------------------------------------------
-  # 4. Gateway (most complex — ALB, S3, Secrets, CloudFront cleanup first)
+  # 5. Gateway (most complex — ALB, S3, Secrets, CloudFront cleanup first)
   # -------------------------------------------------------------------------
-  step "Destroy 4/5: Gateway"
+  step "Destroy 5/6: Gateway"
 
   # 4a. Delete Ingress and wait for ALB to be removed by the controller
   echo "Cleaning up Ingress resources and ALBs..."
@@ -583,9 +589,9 @@ print(json.dumps(config))
   ok "Gateway destroyed"
 
   # -------------------------------------------------------------------------
-  # 5. Platform (last — EKS, VPC, ECR, IAM)
+  # 6. Platform (last — EKS, VPC, ECR, IAM)
   # -------------------------------------------------------------------------
-  step "Destroy 5/5: Platform"
+  step "Destroy 6/6: Platform"
 
   # Clean up K8s system namespaces before cluster destroy
   kubectl delete namespace arc-systems --wait=true --timeout=120s 2>/dev/null || true

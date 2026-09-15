@@ -115,6 +115,7 @@ Deploy: `modules/agent-factory/scripts/deploy-gateway.sh`
 Module: `modules/domain-apps/superplane/`
 Deploy: `platform/scripts/deploy-all.sh` — Step 12/12, gated by `SUPERPLANE_ENABLED=true` (default **false**) or `--superplane-only`
 Undeploy: `platform/scripts/undeploy.sh` — **first** phase in `PHASE_ORDER` (`phase_superplane` in `undeploy-phases.sh`); `.github/workflows/undeploy.yml` Phase 1/6
+Legacy `platform/scripts/deploy-all.sh --destroy` also calls `phase_superplane` first and stops if it fails.
 
 Deploys **last** and is destroyed **first**: a domain app sits on top of the platform, the
 gateway and the agent runtime, so teardown must remove it before its dependencies go.
