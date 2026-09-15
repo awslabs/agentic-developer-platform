@@ -286,7 +286,16 @@ async def record_status(
     request: Request,
     runtime: RegistrationRuntime = Depends(get_registration_runtime),
 ) -> JSONResponse:
-    return await _call(runtime.status, request, body, live_runtime=runtime if body.status == "in_progress" else None)
+    response = await _call(runtime.status, request, body, live_runtime=runtime if body.status == "in_progress" else None)
+    # The status service has verified the pod, credential and current attempt,
+    # and committed a protected terminal report before releasing ownership.
+    from src.agentauth.run_credential import verify_credential
+    from src.orchestration.work_admission import enabled, worker_checkpoint
+
+    if enabled():
+        caller = verify_credential(runtime.credential(request), env=runtime.runtime.env)
+        await worker_checkpoint(org_id=caller.tenant_id, invocation_id=caller.invocation_id, terminal=body.status != "in_progress")
+    return response
 
 
 @router.post("/control/registration")

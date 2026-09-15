@@ -169,7 +169,10 @@ class RunIdentitySession:
 
 
 def bootstrap_run_identity(envelope: dict) -> RunIdentitySession | None:
+    claims_required = envelope.get("work_claim_required") is True or os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
     if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+        if claims_required:
+            raise RunIdentityError("Work ownership requires protected worker identity")
         return None
     identity = RunIdentitySession(envelope=envelope)
     identity.start()

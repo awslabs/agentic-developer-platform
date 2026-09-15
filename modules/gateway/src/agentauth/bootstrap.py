@@ -102,7 +102,14 @@ class BootstrapStore:
         grant_item = self._grant_item(grant)
         execution_metadata = execution_metadata or {}
         grant_metadata = grant_metadata or {}
-        if set(execution_metadata) - {"issue_number", "installation_id", "chain_depth", "orchestration_node_id", "orchestration_node_attempt"}:
+        if set(execution_metadata) - {
+            "issue_number",
+            "installation_id",
+            "chain_depth",
+            "orchestration_node_id",
+            "orchestration_node_attempt",
+            "provider_repository_id",
+        }:
             raise BootstrapRefusedError("invalid dispatch metadata")
         if set(grant_metadata) - {"dispatch_personas", "max_total_dispatches", "work_item_issue"}:
             raise BootstrapRefusedError("invalid grant metadata")

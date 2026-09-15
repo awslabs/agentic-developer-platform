@@ -45,6 +45,11 @@ on:
         default: ''
   workflow_dispatch:
     inputs:
+      stage1_readback:
+        description: 'Include read-only Stage 1 gateway/worker release inventory'
+        required: false
+        type: boolean
+        default: false
       environment:
         description: 'Deployment environment (dev/staging/prod)'
         required: false
@@ -86,6 +91,10 @@ jobs:
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Stage 1 runtime readback
+        if: github.event_name == 'workflow_dispatch' && inputs.stage1_readback
+        run: python3 modules/gateway/scripts/stage1-runtime-readback.py
 
       - name: Read refresh token from Secrets Manager
         id: token

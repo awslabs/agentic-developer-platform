@@ -589,12 +589,13 @@ def _build_envelope(
     }
 
 
-async def _dispatch_one(
+async def _dispatch_one_unclaimed(
     session: AsyncSession,
     node: OrchestrationNode,
     *,
     config: DispatchPassConfig,
     report: DispatchPassReport,
+    repository_id: int | None = None,
 ) -> None:
     """Resolve genesis, dispatch, and queue the envelope for publication.
 
@@ -748,6 +749,9 @@ async def _dispatch_one(
         user_id=user_id,
         cognito_sub=cognito_sub,
     )
+    if repository_id is not None:
+        envelope["source_ref"]["provider_repository_id"] = repository_id
+        envelope["work_claim_required"] = True
 
     session.add(
         OrchestrationDecision(
@@ -804,6 +808,44 @@ async def _dispatch_one(
         genesis.decision_id,
         org_id,
     )
+
+
+class _AdmissionUnusedError(Exception):
+    """Roll back an ownership reservation when no dispatch was produced."""
+
+
+async def _dispatch_one(session, node, *, config, report) -> None:
+    from .work_admission import admit, enabled, require_authority, resolve_repository_id
+    from .work_claims import ClaimOwner, OwnerKind, WorkClaimError
+
+    if not enabled() or not config.configured:
+        await _dispatch_one_unclaimed(session, node, config=config, report=report)
+        return
+    before = len(report.pending)
+    try:
+        require_authority()
+        installation = await resolve_installation_id(session, org_id=node.org_id)
+        if installation is None:
+            raise WorkClaimError("installation_unresolved", "Ownership requires a tenant installation.")
+        repository_id = await resolve_repository_id(org_id=node.org_id, installation_id=installation, repo=config.repo)
+        issue = int(str(node.issue_ref).lstrip("#"))
+        async with session.begin_nested():
+            await admit(
+                session,
+                org_id=node.org_id,
+                repository_id=repository_id,
+                issue=issue,
+                owner=ClaimOwner(OwnerKind.ENGINE_FLOW, node.flow_id),
+                invocation_id=attempt_run_id(node.id, node.attempts + 1),
+            )
+            await _dispatch_one_unclaimed(session, node, config=config, report=report, repository_id=repository_id)
+            if len(report.pending) == before:
+                raise _AdmissionUnusedError()
+    except _AdmissionUnusedError:
+        return
+    except WorkClaimError as exc:
+        report.record(node.org_id, "undispatchable")
+        logger.warning("orchestration ownership refused node=%s reason=%s", node.id, exc.code)
 
 
 async def run_dispatch_pass(

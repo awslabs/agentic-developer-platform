@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -294,6 +295,48 @@ def resolve_installation_by_id(installation_id: str) -> dict:
         return _installation_error(installation_id, f"http_{e.code}", str(e.reason))
     except Exception as e:  # noqa: BLE001
         return _installation_error(installation_id, "transport_error", str(e))
+
+
+def admit_issue_work(envelope: dict) -> bool:
+    """Reserve only the invocation already written by the trusted producer.
+
+    The gateway resolves tenant, issue and owner from protected authority. The
+    shared internal API key cannot call this endpoint; use SigV4 transport.
+    A transport failure or unknown outcome prevents publication.
+    """
+    import botocore.auth
+    import botocore.awsrequest
+    import botocore.session
+
+    endpoint = os.environ.get("ADP_AGENT_CONTROL_ENDPOINT", "").rstrip("/")
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return False
+    invocation = envelope.get("message_id")
+    if not invocation:
+        return False
+    data = json.dumps({"invocation_id": invocation}).encode()
+    url = endpoint + "/work/admit"
+    try:
+        credentials = botocore.session.get_session().get_credentials()
+        if credentials is None:
+            return False
+        signed = botocore.awsrequest.AWSRequest(method="POST", url=url, data=data, headers={"Content-Type": "application/json"})
+        botocore.auth.SigV4Auth(credentials.get_frozen_credentials(), "execute-api", os.environ.get("AWS_REGION", "us-east-1")).add_auth(signed)
+        request = urllib.request.Request(url, data=data, headers=dict(signed.headers), method="POST")
+        # The URL receives signed credentials. Do not inherit a proxy or follow
+        # a redirect to another host.
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        with opener.open(request, timeout=10) as response:
+            receipt = json.loads(response.read(8193))
+            return response.status == 200 and receipt.get("disposition") in {"admitted", "duplicate", "no_issue"}
+    except Exception:
+        logger.warning("Work admission unavailable invocation=%s", invocation)
+        return False
 
 
 def _open_onboarding_enabled() -> bool:

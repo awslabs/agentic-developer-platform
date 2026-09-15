@@ -211,12 +211,18 @@ async def lifespan(app: FastAPI):
     # The shared refresh boundary caps reads at five seconds and records failure.
     await refresh_pricing_cache()
     pricing_task = asyncio.create_task(maintain_pricing_cache(), name="pricing_cache_refresh")
+    from src.orchestration.work_admission import maintain_work_claims
+
+    claims_task = asyncio.create_task(maintain_work_claims(), name="work_claim_cleanup")
     try:
         yield
     finally:
         pricing_task.cancel()
         with suppress(asyncio.CancelledError):
             await pricing_task
+        claims_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await claims_task
 
     # Issue #144: Shutdown tracing on app shutdown
     shutdown_tracing()

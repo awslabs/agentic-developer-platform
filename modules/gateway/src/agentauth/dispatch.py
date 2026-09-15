@@ -120,6 +120,14 @@ class DispatchService:
             now = self.now()
             invocation = str(uuid.uuid5(uuid.NAMESPACE_URL, f"adp-dispatch:{caller.tenant_id}:{request_key}"))
             envelope = self._envelope(body, caller, grant, invocation, installation, depth, now)
+            from src.orchestration.work_admission import enabled as work_claims_enabled
+
+            if work_claims_enabled():
+                repository_id = int(parent.get("provider_repository_id", {}).get("N", "0"))
+                if repository_id <= 0:
+                    raise BootstrapRefusedError("parent dispatch has no immutable repository identity")
+                envelope["source_ref"]["provider_repository_id"] = repository_id
+                envelope["work_claim_required"] = True
             if graph:
                 envelope["orchestration"] = {
                     "node_id": graph.node_id,
@@ -228,6 +236,11 @@ class DispatchService:
             "envelope_digest": {"S": digest},
             "issue_number": {"N": str(envelope["source_ref"]["issue"])},
             "installation_id": {"N": str(envelope["source_ref"]["installation_id"])},
+            **(
+                {"provider_repository_id": {"N": str(envelope["source_ref"]["provider_repository_id"])}}
+                if "provider_repository_id" in envelope["source_ref"]
+                else {}
+            ),
             "chain_depth": {"N": str(depth)},
             "parent_grant_id": {"S": grant.grant_id},
             "parent_grant_epoch": {"N": str(grant.revocation_epoch)},
@@ -358,6 +371,19 @@ class DispatchService:
         if (self.now() - created).total_seconds() >= 240:
             raise PolicyError(409, "dispatch outcome unknown; inspect the existing invocation before retrying")
         self.store.live_grant(invocation_id=caller.invocation_id, tenant_id=caller.tenant_id, attempt=caller.attempt, now=self.now())
+        from src.orchestration.work_admission import admit_pending
+        from src.orchestration.work_admission import enabled as work_claims_enabled
+        from src.orchestration.work_claims import WorkClaimError
+
+        if work_claims_enabled():
+            from anyio import from_thread
+
+            try:
+                # Gateway dispatch runs in an AnyIO worker; keep SQL on the
+                # request event loop rather than creating a second engine/pool.
+                from_thread.run(admit_pending, self.store, invocation)
+            except WorkClaimError as exc:
+                raise PolicyError(409, f"work ownership refused: {exc.code}") from None
         try:
             self.sqs.send_message(
                 QueueUrl=self.queue_url,
