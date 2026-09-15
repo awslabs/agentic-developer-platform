@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - 'modules/agent-factory/webhook-ingress/**'
+      - '.github/workflows/webhook-ingress-ci.yml'
+      - '.github/workflows/webhook-ingress-deploy.yml'
+      - '.github/scripts/detect-webhook-deploy-changes.sh'
+      - '.github/scripts/tests/test_webhook_deploy_hold.py'
+      - '.github/deployment-holds/webhook-infra.md'
       # Issue #4021: the persona catalogue is guarded by a parity test in
       # lambda/common/tests/test_persona_catalogue_parity.py. Without this path
       # a docs-only PR editing the catalogue runs no CI at all, and the drift
@@ -27,6 +32,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  worker-safety:
+    name: Worker IAM and deployment safety
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - name: Install test dependencies
+        run: pip install pytest PyYAML boto3 moto
+      - name: Check worker policy and deployment hold
+        run: |
+          pytest -q --import-mode=importlib .github/scripts/tests/test_webhook_deploy_hold.py \
+            modules/agent-factory/webhook-ingress/tests/test_worker_iam_boundary.py \
+            modules/agent-factory/webhook-ingress/tests/test_agent_control_manifest.py \
+            modules/agent-factory/webhook-ingress/tests/test_scaledjob_manifest.py
+
   lint:
     name: Lint
     runs-on: arc-runner-org

@@ -8,12 +8,15 @@ import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import Mock
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
+from src.activity.schemas import InvocationChainResponse
+from src.activity.service import ActivityService
 from src.admin.access_control import AdminRole
 from src.auth.dependencies import get_current_user
 from src.orchestration import controls, routes
@@ -70,7 +73,19 @@ class Evidence:
 
 
 @pytest.fixture
-async def api(session, access):
+async def api(session, access, monkeypatch):
+    # Execution and GitHub evidence use local doubles below; the optional
+    # display-history read must also stay offline. Completed stories now retain
+    # history, so a full topology walk otherwise repeats real DynamoDB queries
+    # on every graph refresh (and eventually times out with fixture credentials).
+    activity = Mock(spec=ActivityService)
+
+    def empty_chain(*, correlation_id, tenant_id):
+        assert tenant_id == ORG_A
+        return InvocationChainResponse(correlation_id=correlation_id, items=[], total_count=0)
+
+    activity.get_chain.side_effect = empty_chain
+    monkeypatch.setattr("src.orchestration.node_activity._activity_service", lambda: activity)
     app = FastAPI()
     app.include_router(routes.router)
     app.include_router(controls.router)

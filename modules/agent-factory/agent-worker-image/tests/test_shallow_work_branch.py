@@ -168,9 +168,11 @@ def bootstrap(monkeypatch, tmp_path, request):
     )
     monkeypatch.setattr(entrypoint, "_gh_token_broker_enabled", lambda: True)
     monkeypatch.setattr(
-        entrypoint, "_broker_installation_token", Mock(return_value=("test-token", "1"))
+        entrypoint, "_broker_installation_token", Mock(return_value=("test-token", "1", "2099-01-01T00:00:00Z"))
     )
     monkeypatch.setattr(entrypoint, "_is_already_completed", Mock(return_value=False))
+    monkeypatch.setattr(entrypoint, "is_delivery_completed", Mock(return_value=False))
+    monkeypatch.setattr(entrypoint, "record_delivery_completed", Mock())
     monkeypatch.setattr(entrypoint, "_stage_personas_and_skills", Mock())
     monkeypatch.setattr(
         entrypoint, "create_check_run", Mock(return_value={"id": 1, "html_url": ""})

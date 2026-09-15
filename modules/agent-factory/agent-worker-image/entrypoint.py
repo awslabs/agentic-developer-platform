@@ -28,6 +28,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
@@ -37,6 +38,11 @@ from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
 from lib.engine_registration import draft_registration_note
+from lib.invocation_completion import (
+    InvocationCompletionError,
+    is_delivery_completed,
+    record_delivery_completed,
+)
 from lib.invocation_status import (
     clear_control_endpoint,
     register_control_endpoint,
@@ -45,6 +51,7 @@ from lib.invocation_status import update_status as update_invocation_status
 from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
 from lib.provenance_client import post_provenance
+from lib.status_gateway_client import authority_enabled
 from lib.vault_client import VaultClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -131,7 +138,7 @@ ADP_GH_TOKEN_BROKER_ENV = "ADP_GH_TOKEN_BROKER_ENABLED"
 def _gh_token_broker_enabled(environ: dict | None = None) -> bool:
     """Return True when the GitHub-token gatekeeper is enabled (issue #4272)."""
     env = environ if environ is not None else os.environ
-    return env.get(ADP_GH_TOKEN_BROKER_ENV, "").lower() in ("1", "true", "yes")
+    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true" or env.get(ADP_GH_TOKEN_BROKER_ENV, "").lower() in ("1", "true", "yes")
 
 
 def _broker_installation_token(
@@ -140,7 +147,7 @@ def _broker_installation_token(
     repo_owner: str,
     repo_name: str,
     cred_client: GatewayCredentialClient | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """Mint this run's GitHub token through the gateway gatekeeper.
 
     Issue #4272. Replaces the in-pod ``mint_installation_token`` (and the vault
@@ -151,7 +158,7 @@ def _broker_installation_token(
     bootstrap failure, which the caller surfaces via _fail_bootstrap_status.
 
     Returns:
-        ``(token, app_id)``. The App ID is public (not a credential) and comes
+        ``(token, app_id, expires_at)``. The App ID is public (not a credential) and comes
         back from the gateway because the caller still needs it for the bot commit
         identity and for the GH_APP_ID the JS TokenManager gates on — both of
         which used to be read from the vault alongside the private key.
@@ -174,7 +181,16 @@ def _broker_installation_token(
         repo_name=repo_name,
         purpose="bootstrap GitHub token for agent run",
     )
-    return result["token"], str(result.get("app_id") or "")
+    expires_at = result.get("expires_at", "")
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if expiry.tzinfo is None or expiry <= datetime.now(UTC):
+            raise ValueError("expired token")
+        if not result.get("token") or not result.get("app_id"):
+            raise ValueError("missing token or app ID")
+    except (ValueError, TypeError, AttributeError):
+        raise RuntimeError("GitHub broker returned an unusable token or expiry") from None
+    return result["token"], str(result["app_id"]), expires_at
 
 
 class PatResolutionResult:
@@ -784,6 +800,14 @@ def _load_door_api_key(region: str) -> None:
     cost of this choice is that a misconfiguration shows up as "the agent had no
     context" rather than a hard error, so both failure paths log at WARNING.
     """
+    if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED") == "true":
+        # These shared credentials bypass run-bound authorization. Protected
+        # workers need a mediated Door integration before enabling that feature.
+        for key in ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY"):
+            os.environ.pop(key, None)
+        logger.info("Protected worker uses no shared Door or gateway credentials")
+        return
+
     if os.environ.get("DOOR_API_KEY"):
         logger.debug("DOOR_API_KEY already set in environment; not reading Secrets Manager")
         return
@@ -966,6 +990,31 @@ def main() -> int:
             logger.error("Failed to delete poison message: %s", exc)
         return 1
 
+    # AIDLC can merge an intermediate gate and continue on the same branch.
+    # Legacy workers therefore deduplicate this exact delivery, not the branch.
+    # Do this before credentials, repository work or any in_progress write that
+    # could overwrite an older worker's completed status. Protected dispatch
+    # already binds/retires attempts and must not fall back to direct table I/O.
+    use_completion_receipt = persona in PERSONAS_EXTENDING_BRANCH and not authority_enabled()
+    if use_completion_receipt:
+        try:
+            already_completed = is_delivery_completed(envelope)
+        except InvocationCompletionError as exc:
+            logger.error("AIDLC delivery deferred: %s", exc)
+            bootstrap_log.close()
+            return AGENT_EXIT_RETRYABLE
+        if already_completed:
+            logger.info("AIDLC delivery %s was already completed; acknowledging redelivery", message_id)
+            bootstrap_log.close()
+            # Keep the existing outcome intact: a redelivery is not a new
+            # invocation and must not overwrite complete with skipped.
+            try:
+                _delete_message(queue_url, region, receipt_handle)
+            except Exception:
+                logger.warning("Could not acknowledge completed AIDLC delivery; leaving it for retry")
+                return AGENT_EXIT_RETRYABLE
+            return 0
+
     # Bind this pod to its protected invocation before any repository code,
     # hooks, SDK tools or repository-selected dependencies can execute (#5028).
     from lib.run_identity import bootstrap_run_identity
@@ -1084,7 +1133,7 @@ def main() -> int:
             repo=f"{repo_owner}/{repo_name}",
         )
         try:
-            token, app_id = _broker_installation_token(
+            token, app_id, token_expires_at = _broker_installation_token(
                 installation_id=installation_id,
                 repo_owner=repo_owner,
                 repo_name=repo_name,
@@ -1150,7 +1199,15 @@ def main() -> int:
     # expired before delete). Delete the message and exit cleanly.
     # This is the primary defense against issue #1864 (6h redelivery spawns
     # redundant runs on already-merged stories).
-    if _is_already_completed(repo, issue, token):
+    #
+    # Exempt PERSONAS_EXTENDING_BRANCH (aidlc): that workflow merges a PR at
+    # every gate, not just at final completion (issue #39's PR #41 merged mid-
+    # flow after the reverse-engineering gate; requirements-analysis and
+    # delivery-planning were still pending). For those personas a merged PR on
+    # the branch means "one gate landed," not "this issue is done" — so a new
+    # comment answering the next gate's open questions must not be treated as
+    # a stale redelivery of already-completed work.
+    if persona not in PERSONAS_EXTENDING_BRANCH and _is_already_completed(repo, issue, token):
         logger.info(
             "Idempotency guard: issue #%s already has merged PR on agent branch — "
             "skipping redelivered message (message_id=%s)",
@@ -1214,6 +1271,8 @@ def main() -> int:
     # side adopts the env GITHUB_TOKEN as-is.
     if _token_mode == "pat":
         env_vars["ADP_TOKEN_MODE"] = "pat"
+        for key in ("GH_APP_ID", "GH_APP_PRIVATE_KEY", "GH_APP_KEY", "GH_APP_INSTALLATION_ID", "GH_APP_TOKEN", "GH_APP_TOKEN_EXPIRES_AT"):
+            os.environ.pop(key, None)
         # Write PAT to the askpass token file so git-askpass-helper reads it.
         # TokenManager won't overwrite since it has no app credentials.
         # Use 0o600 + atomic rename to prevent world-readable window.
@@ -1241,9 +1300,12 @@ def main() -> int:
         # being present; with the key gone and no flag to key off, they would go
         # false, the token manager would never initialise, no refresh would ever
         # be scheduled, and the run would die silently at the 1-hour mark.
+        env_vars["ADP_TOKEN_MODE"] = "app"
+        env_vars["GH_APP_TOKEN"] = token
         env_vars["GH_APP_ID"] = str(app_id)
         if _gh_token_broker_enabled():
             env_vars[ADP_GH_TOKEN_BROKER_ENV] = "1"
+            env_vars["GH_APP_TOKEN_EXPIRES_AT"] = token_expires_at
             # Not setting it is NOT sufficient. The agent subprocess env is
             # os.environ.copy() (see the agent_env assembly below), so any
             # GH_APP_PRIVATE_KEY the pod inherited from somewhere else — a
@@ -1252,7 +1314,9 @@ def main() -> int:
             # and the flag would be silently ineffective. Remove it explicitly so
             # the invariant holds regardless of how the pod env was populated.
             os.environ.pop("GH_APP_PRIVATE_KEY", None)
+            os.environ.pop("GH_APP_KEY", None)
         else:
+            os.environ.pop("GH_APP_TOKEN_EXPIRES_AT", None)
             env_vars["GH_APP_PRIVATE_KEY"] = private_key
         # Authoritative installation id for THIS run's target org. The JS worker
         # must re-mint against this installation — NOT installations[0], which is
@@ -1857,6 +1921,13 @@ def main() -> int:
             result.returncode,
         )
         return exit_code
+
+    if use_completion_receipt:
+        try:
+            record_delivery_completed(envelope)
+        except InvocationCompletionError as exc:
+            logger.error("AIDLC acknowledgement deferred: %s", exc)
+            return AGENT_EXIT_RETRYABLE
 
     try:
         _delete_message(queue_url, region, receipt_handle)

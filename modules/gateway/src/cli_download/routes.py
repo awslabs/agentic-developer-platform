@@ -5,12 +5,15 @@ route existed the button pointed at `/api/cli/bg-auth.sh`, which nothing served
 (and its PowerShell sibling had no source file at all), so both downloads were
 dead links.
 
-Four files are serveable: the `adp` CLI and its `install.sh` (Issue #4852 — the
+Five files are serveable: the `adp` CLI and its `install.sh` (Issue #4852 — the
 one-line install path, where install.sh fetches the rest from this same route),
 the Cognito auth helper `bg-cognito-auth.sh` that `adp` wraps, and
 `bg-gateway-proxy.py` — the localhost auth proxy its `serve` subcommand starts
 for Codex. `serve` requires the two to sit side by side, so serving only the
-helper left the documented Codex flow unfinishable (Issue #4156).
+helper left the documented Codex flow unfinishable (Issue #4156). The domain
+helpers `adp-bedrock.py` and `adp-aws.py` provide scriptable destination setup,
+routing and personal AWS account connection through the same authenticated APIs
+as the UI. Only their static code is served here.
 
 Two deliberate design points:
 
@@ -65,6 +68,10 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "install.sh": (_CLI_DIR / "install.sh").resolve(),
     "bg-cognito-auth.sh": (_CLI_DIR / "bg-cognito-auth.sh").resolve(),
     "bg-gateway-proxy.py": (_CLI_DIR / "bg-gateway-proxy.py").resolve(),
+    "adp-bedrock.py": (_CLI_DIR / "adp-bedrock.py").resolve(),
+    "adp-aws.py": (_CLI_DIR / "adp-aws.py").resolve(),
+    "adp-github.py": (_CLI_DIR / "adp-github.py").resolve(),
+    "adp-github-admin.py": (_CLI_DIR / "adp-github-admin.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
@@ -79,6 +86,10 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "install.sh": SHELL_SCRIPT_MEDIA_TYPE,
     "bg-cognito-auth.sh": SHELL_SCRIPT_MEDIA_TYPE,
     "bg-gateway-proxy.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-bedrock.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-aws.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-github.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-github-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }
 
 
@@ -91,8 +102,8 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     Public and unauthenticated by design: the /setup page downloads via
     `window.open`, which cannot attach an Authorization header — and the
     documented `curl … | sh` install line sends no header either. The serveable
-    files are `adp`, `install.sh`, `bg-cognito-auth.sh` and
-    `bg-gateway-proxy.py`, none of which contains secrets.
+    files are `adp`, `install.sh`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py`,
+    `adp-bedrock.py` and `adp-aws.py`, none of which contains secrets.
 
     `script_name` is matched against an explicit allowlist — it is never
     joined onto a filesystem path — so traversal attempts return 404.

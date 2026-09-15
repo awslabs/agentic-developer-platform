@@ -22,6 +22,7 @@
 
 import { DISPLAY_STATES, toDisplayState, isCurrentPosition } from '@/utils/nodeState';
 import { CostFigureDisplay } from './CostFigureDisplay';
+import { StoryJourney } from './StoryJourney';
 import type { GraphNode } from '@/types/orchestration';
 import { Link } from 'react-router-dom';
 
@@ -60,6 +61,9 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeC
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
+  const resultSummary = node.kind === 'story'
+    ? node.result_summary?.replace(/^Agent finished\./, 'Development finished.')
+    : node.result_summary;
   // Decision reasons carry an audit-source prefix, including when no note was
   // entered. Show the reviewer's text while preserving the stored audit value.
   const feedback = node.last_gate_decision?.reason
@@ -116,16 +120,18 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeC
 
           {/* The projected state, as text. The fill is a second channel, never
               the only one. */}
-          {style && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
+          {style && node.kind !== 'story' && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
+          {node.kind === 'story' && <StoryJourney node={node} />}
           {node.configuration_problem && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
-          {node.result_summary && <p className="mt-1 text-sm">{node.result_summary}</p>}
-          <div className="mt-1 flex gap-3 text-xs">
+          {resultSummary && <p className="mt-1 text-sm">{resultSummary}</p>}
+          <div className="mt-1 flex flex-wrap gap-3 text-xs">
             {node.issue_url && (
               <a href={node.issue_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View issue and evidence</a>
             )}
             {node.run_id && (
               <Link to={`/activity?id=${encodeURIComponent(node.run_id)}`} className="text-blue-600 underline">View run</Link>
             )}
+
           </div>
 
           {badge && (

@@ -25,7 +25,18 @@ from pathlib import Path
 
 import pytest
 
-CLI_FILES = ["adp", "install.sh", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py"]
+CLI_FILES = [
+    "adp",
+    "install.sh",
+    "bg-cognito-auth.sh",
+    "bg-gateway-proxy.py",
+    "adp_common.py",
+    "adp-admin.py",
+    "adp-bedrock.py",
+    "adp-aws.py",
+    "adp-github.py",
+    "adp-github-admin.py",
+]
 
 
 class _CliServer:
@@ -103,7 +114,17 @@ def installed(tmp_path: Path, cli_dir: Path, upstream) -> tuple[Path, Path]:
     """An install whose config points at the mock gateway. Returns (bin, home)."""
     bin_dir = tmp_path / "installed-bin"
     bin_dir.mkdir()
-    for name in ("adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py"):
+    for name in (
+        "adp",
+        "bg-cognito-auth.sh",
+        "bg-gateway-proxy.py",
+        "adp_common.py",
+        "adp-admin.py",
+        "adp-bedrock.py",
+        "adp-aws.py",
+        "adp-github.py",
+        "adp-github-admin.py",
+    ):
         target = bin_dir / name
         target.write_bytes((cli_dir / name).read_bytes())
         target.chmod(0o755)
@@ -138,7 +159,7 @@ class TestUpdate:
 
         assert _run_adp(bin_dir, home, ["update"]).returncode == 0
 
-        for name in ("install.sh", "adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py"):
+        for name in CLI_FILES:
             assert f"/api/cli/{name}" in upstream.requested, f"{name} was not fetched"
 
     def test_updates_in_place_without_moving_the_prefix(self, installed) -> None:
@@ -147,7 +168,17 @@ class TestUpdate:
 
         assert _run_adp(bin_dir, home, ["update"]).returncode == 0
 
-        for name in ("adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py"):
+        for name in (
+            "adp",
+            "bg-cognito-auth.sh",
+            "bg-gateway-proxy.py",
+            "adp_common.py",
+            "adp-admin.py",
+            "adp-bedrock.py",
+            "adp-aws.py",
+            "adp-github.py",
+            "adp-github-admin.py",
+        ):
             assert (bin_dir / name).is_file()
         assert not (home / ".adp").exists(), "must not silently install to the default prefix"
 

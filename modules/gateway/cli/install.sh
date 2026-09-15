@@ -42,7 +42,7 @@ DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
 ADP_SCRIPT="adp"
 CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py"
 
 CONFIG_DIR="${HOME}/.bedrock-gateway"
 CONFIG_FILE="${CONFIG_DIR}/config.json"

@@ -573,43 +573,37 @@ describe('resilientQuery', () => {
   });
 
   describe('exponential backoff timing', () => {
-    it('should apply exponential backoff with increasing delays', async () => {
-      let callCount = 0;
-      const callTimes: number[] = [];
+    it.each([0, 0.5, 0.999])('applies exponential backoff with jitter %s', async (jitter) => {
+      const random = jest.spyOn(Math, 'random').mockReturnValue(jitter);
+      try {
+        const callTimes: number[] = [];
+        mockQuery.mockImplementation(() => {
+          callTimes.push(Date.now());
+          if (callTimes.length < 4) {
+            return asyncThrowingGenerator([], new Error('fetch failed')) as any;
+          }
+          return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+        });
 
-      mockQuery.mockImplementation(() => {
-        callCount++;
-        callTimes.push(Date.now());
-        if (callCount < 4) {
-          return asyncThrowingGenerator([], new Error('fetch failed')) as any;
-        }
-        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
-      });
+        const log = jest.fn();
+        const resultsPromise = collectAll(resilientQuery({
+          queryParams: { prompt: 'test', options: {} } as any,
+          maxRetries: 5,
+          baseDelayMs: 1000,
+          maxDelayMs: 120000,
+          log,
+        }));
 
-      const log = jest.fn();
-      const opts: ResilientQueryOptions = {
-        queryParams: { prompt: 'test', options: {} } as any,
-        maxRetries: 5,
-        baseDelayMs: 1000,
-        maxDelayMs: 120000,
-        log,
-      };
-
-      const generator = resilientQuery(opts);
-      const resultsPromise = collectAll(generator);
-
-      // Advance timers to allow retries
-      await jest.advanceTimersByTimeAsync(1500);  // First retry after ~1000ms
-      await jest.advanceTimersByTimeAsync(3000);  // Second retry after ~2000ms
-      await jest.advanceTimersByTimeAsync(5000);  // Third retry after ~4000ms
-
-      await resultsPromise;
-
-      // Check that log was called with retry messages showing increasing delays
-      const retryCalls = log.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('Retrying in')
-      );
-      expect(retryCalls.length).toBe(3);
+        // Three delays total up to 1+2+4 seconds plus three seconds of jitter.
+        // The former 9.5-second advance could leave the final retry pending.
+        await jest.advanceTimersByTimeAsync(10000);
+        expect(await resultsPromise).toEqual([{ type: 'result', subtype: 'success' }]);
+        expect(callTimes.slice(1).map((time, index) => time - callTimes[index]))
+          .toEqual([1000, 2000, 4000].map(delay => delay + jitter * 1000));
+        expect(log.mock.calls.filter(call => call[0].includes('Retrying in'))).toHaveLength(3);
+      } finally {
+        random.mockRestore();
+      }
     });
 
     it('should cap delay at maxDelayMs', async () => {

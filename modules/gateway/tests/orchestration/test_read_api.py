@@ -29,6 +29,7 @@ read, and requiring approval authority to see where delivery stands would be
 authority creep in the direction that grants more than the operation needs.
 """
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -57,6 +58,68 @@ APPROVER = "cognito-sub-the-policy-owner"
 # An internal graph address, which §7.2 makes non-renderable. Used as an
 # `evaluation_acceptance` key so its absence from the response can be asserted.
 MACHINE_EVAL_ADDRESS = f"{FLOW_SLUG}/epic-1/wave-1/eval-machine"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "attempt", "has_history"),
+    [
+        ("running", 1, True),
+        ("awaiting_merge", 1, True),
+        ("awaiting_merge", 2, False),
+        ("passed", 1, True),
+        ("halted", 1, True),
+        ("failed", 1, True),
+        ("pending", 1, False),
+        ("ready", 1, False),
+        ("superseded", 1, False),
+    ],
+)
+async def test_story_activity_uses_only_current_committed_dispatch(session, app_with_router, monkeypatch, state, attempt, has_history):
+    from unittest.mock import MagicMock
+
+    from src.activity.schemas import InvocationChainItem, InvocationChainResponse
+
+    service = MagicMock()
+    service.get_chain.return_value = InvocationChainResponse(
+        correlation_id="attempt-1",
+        total_count=1,
+        items=[
+            InvocationChainItem(
+                invocation_id="review-1", invoked_at="2026-09-15T14:54:00Z", persona="reviewer", status="in_progress", liveness="live"
+            )
+        ],
+    )
+    monkeypatch.setattr("src.orchestration.node_activity._activity_service", lambda: service)
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, node_ref="story-a", state=state, attempts=attempt)
+    await OrchestrationRepository(session).append_decision(
+        org_id=ORG_A,
+        flow_id=flow.id,
+        node_id=node.id,
+        kind=DecisionKind.NODE_DISPATCHED.value,
+        actor_id="service:dispatch",
+        actor_role="service",
+        actor_kind=ActorKind.SERVICE.value,
+        reason=json.dumps({"attempt": 1, "run_id": "attempt-1", "repo": "aws-e/adp", "issue": 5037}),
+    )
+    response = client_for(app_with_router).get(route(flow.id))
+    assert response.status_code == 200, response.text
+    card = response.json()["nodes"][0]
+    assert card["state"] == state  # Display enrichment cannot promote the story.
+    if has_history:
+        service.get_chain.assert_called_once_with(correlation_id="attempt-1", tenant_id=ORG_A)
+        assert card["execution_history"]["run_id"] == "attempt-1"
+        assert card["execution_history"]["history_complete"] is True
+        assert card["execution_history"]["runs"][0]["invocation_id"] == "review-1"
+        if state in ("running", "awaiting_merge"):
+            assert card["activity"] == {"invocation_id": "review-1", "persona": "reviewer", "status": "in_progress", "liveness": "live"}
+        else:
+            assert card["activity"] is None
+    else:
+        service.get_chain.assert_not_called()
+        assert card["activity"] is None
+        assert card["execution_history"] is None
 
 
 def route(flow_id: str) -> str:

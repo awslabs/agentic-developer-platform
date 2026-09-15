@@ -50,6 +50,9 @@ describe('token-refresh broker mode', () => {
     'GH_APP_TOKEN',
     'GH_APP_PRIVATE_KEY',
     'ADP_GH_TOKEN_BROKER_ENABLED',
+    'ADP_AGENT_AUTHORITY_ENABLED',
+    'ADP_TOKEN_MODE',
+    'GH_APP_TOKEN_EXPIRES_AT',
   ];
 
   /** Re-import with a fresh module registry so module-level token state resets. */
@@ -289,6 +292,91 @@ describe('token-refresh broker mode', () => {
 
       await expect(tr.getToken()).rejects.toThrow(/GH_APP_INSTALLATION_ID/);
       expect(mockFetchBrokeredToken).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('renewal isolation', () => {
+    function init(tr: ReturnType<typeof loadModule>) {
+      tr.initTokenManager({ appId: '1', brokerMode: true, owner: 'acme', repo: 'repo', installationId: '2' });
+    }
+
+    it('coalesces the timer, posting helper and forced refresh into one mint', async () => {
+      let resolve!: (value: unknown) => void;
+      mockFetchBrokeredToken.mockImplementation(() => new Promise(done => { resolve = done; }));
+      const tr = loadModule(); init(tr);
+      const pending = [tr.getToken(), tr.getRuntimeGitHubToken(), tr.forceRefresh()];
+      expect(mockFetchBrokeredToken).toHaveBeenCalledTimes(1);
+      resolve({ token: BROKERED_TOKEN, expiresAt: FAR_FUTURE });
+      expect(await Promise.all(pending)).toEqual([BROKERED_TOKEN, BROKERED_TOKEN, BROKERED_TOKEN]);
+      expect(fs.statSync(tokenFile).mode & 0o777).toBe(0o600);
+      expect(fs.readdirSync(path.dirname(tokenFile))).toEqual(['.adp-gh-token']);
+    });
+
+    it('keeps all consumers on the previous token if atomic publication fails', async () => {
+      const tr = loadModule(); init(tr); brokerOk();
+      await tr.getToken();
+      const before = tr.getTokenStatus();
+      fs.unlinkSync(tokenFile);
+      fs.mkdirSync(tokenFile); // rename over a directory must fail on the real filesystem
+      mockFetchBrokeredToken.mockResolvedValue({ token: 'replacement', expiresAt: FAR_FUTURE });
+      await expect(tr.forceRefresh()).rejects.toThrow('Failed to publish');
+      expect(process.env.GITHUB_TOKEN).toBe(BROKERED_TOKEN);
+      expect(tr.getTokenStatus()?.refreshedAt).toEqual(before?.refreshedAt);
+      expect(fs.readdirSync(path.dirname(tokenFile))).toEqual(['.adp-gh-token']);
+      fs.rmdirSync(tokenFile);
+      await expect(tr.forceRefresh()).resolves.toBe('replacement');
+      expect(fs.readFileSync(tokenFile, 'utf8')).toBe('replacement');
+    });
+
+    it('adopts the actual bootstrap expiry without minting or guessing a new hour', async () => {
+      const tr = loadModule(); init(tr);
+      const expiry = new Date(Date.now() + 30 * 60 * 1000);
+      tr.adoptBootstrapToken({ GH_APP_TOKEN: 'bootstrap', GH_APP_TOKEN_EXPIRES_AT: expiry.toISOString() });
+      expect(await tr.getToken()).toBe('bootstrap');
+      expect(tr.getTokenStatus()?.expiresIn).toBeLessThanOrEqual(30 * 60 * 1000);
+      expect(mockFetchBrokeredToken).not.toHaveBeenCalled();
+    });
+
+    it('renews for two hours and publishes for a child with a frozen environment', async () => {
+      jest.useFakeTimers();
+      try {
+        const tr = loadModule(); init(tr);
+        let generation = 0;
+        mockFetchBrokeredToken.mockImplementation(async () => ({
+          token: `generation-${++generation}`, expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        }));
+        await tr.getToken();
+        const childEnv = { ...process.env };
+        const { execFileSync } = require('child_process');
+        const askpass = path.resolve(__dirname, '../../agent-worker-image/git-askpass-helper');
+        for (let minute = 5; minute <= 120; minute += 5) {
+          jest.setSystemTime(Date.now() + 5 * 60 * 1000);
+          await tr.getRuntimeGitHubToken();
+          expect(tr.getTokenStatus()?.valid).toBe(true);
+          expect(execFileSync('bash', [askpass, 'Password for https://github.com'], { env: childEnv, encoding: 'utf8' }).trim())
+            .toBe(`generation-${generation}`);
+        }
+        expect(generation).toBeGreaterThanOrEqual(3);
+        expect(childEnv.GITHUB_TOKEN).toBe('generation-1');
+      } finally { jest.useRealTimers(); }
+    });
+
+    it('never enables App refresh for PAT execution even with inherited App settings', async () => {
+      process.env.ADP_TOKEN_MODE = 'pat';
+      process.env.GITHUB_TOKEN = 'personal-token';
+      const tr = loadModule();
+      expect(tr.canInitTokenManager({ ADP_TOKEN_MODE: 'pat', GH_APP_ID: '1', GH_APP_KEY: 'key', REPO_OWNER: 'acme' })).toBe(false);
+      expect(() => init(tr)).toThrow('PAT');
+      expect(await tr.getRuntimeGitHubToken()).toBe('personal-token');
+      expect(mockFetchBrokeredToken).not.toHaveBeenCalled();
+    });
+
+    it('cannot disable broker mode for an authority worker via an init option', async () => {
+      process.env.ADP_AGENT_AUTHORITY_ENABLED = 'true';
+      const tr = loadModule(); brokerOk();
+      tr.initTokenManager({ appId: '1', privateKey: 'key', brokerMode: false, owner: 'acme', installationId: '2' });
+      await tr.getToken();
+      expect(mockCreateAppAuth).not.toHaveBeenCalled();
     });
   });
 
