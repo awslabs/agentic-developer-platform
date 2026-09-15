@@ -1,8 +1,9 @@
+import { workerAwsCredentials, workerAwsRegion } from '../lib/runIdentity';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { Logger } from '../components/Logger';
 import { resolveFallbackBucket, buildFallbackKey } from '../utils/s3Fallback';
 
-const S3_REGION = process.env.AWS_REGION || 'us-east-1';
+const S3_REGION = workerAwsRegion();
 
 export class S3Fallback {
   private s3: S3Client;
@@ -10,7 +11,7 @@ export class S3Fallback {
   private issueNumber: number;
 
   constructor(logger: Logger, issueNumber: number) {
-    this.s3 = new S3Client({ region: S3_REGION });
+    this.s3 = new S3Client({ region: S3_REGION, credentials: workerAwsCredentials() });
     this.logger = logger;
     this.issueNumber = issueNumber;
   }

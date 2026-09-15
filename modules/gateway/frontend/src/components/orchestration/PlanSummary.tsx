@@ -110,6 +110,20 @@ export function PlanSummary({ stories, waves, gates, evaluations, policy }: Plan
             </p>
           )}
 
+          {policy.user_credentials && (
+            <div data-testid="policy-user-credentials">
+              <p>User credentials retain their configured permissions for {actionList(policy.user_credentials.actions)}.</p>
+              {policy.user_credentials.vault_credential_ids.length > 0 && (
+                <p>Vault credentials: {policy.user_credentials.vault_credential_ids.join(', ')}</p>
+              )}
+              {policy.user_credentials.aws_role_arns.length > 0 && (
+                <p>AWS roles: {policy.user_credentials.aws_role_arns.join(', ')}</p>
+              )}
+              <p>Cancellation or plan expiry stops new credential requests. Credentials already issued follow the provider’s expiry and revocation rules.</p>
+              <p>These credentials may permit additional actions at the provider. ADP still requires the task’s approvals.</p>
+            </div>
+          )}
+
           <p data-testid="policy-limits">
             {/* `max_spend_usd` is rendered as the server sent it. It is a Decimal
                 server-side, and formatting it through a JS float would reintroduce

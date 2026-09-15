@@ -1,3 +1,4 @@
+import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './lib/runIdentity';
 /**
  * Generic Agent Worker
  *
@@ -62,10 +63,14 @@ import { CheckRunStreamer, computeCodexCostUsd } from './components/checkRunStre
 import { CodexEventWatcher } from './components/codexEventWatcher';
 // Issue #3960: live-control foundations. Both modules are transport/SDK-isolated
 // so the control surface is unit-testable without starting a run.
-import { ControlListener, SUPPORTED_ACTIONS } from './control-listener';
+import { ControlListener } from './control-listener';
 import { revalidateQueuedCommand } from './control-revalidation';
 import { parseVerificationKeys } from './control-envelope';
 import { ControlStateStore } from './control-state';
+// Issue #3962: the harness-neutral control contract and its first adapter. The
+// worker composes them; it does not reach past the interface into the SDK.
+import { listenerActionsFor } from './control-runtime';
+import { ClaudeControlAdapter } from './harnesses/claude-control';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -117,7 +122,7 @@ const GH_APP_TOKEN = process.env.GH_APP_TOKEN || '';
 const CWD = process.env.WORK_DIR || process.cwd();
 const MODEL = process.env.ANTHROPIC_MODEL || 'global.anthropic.claude-opus-5';
 const AGENT_TYPE = process.env.AGENT_TYPE || 'developer';
-const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
+const AWS_REGION = workerAwsRegion();
 
 // Beads configuration - distributed state management (shared with PM)
 const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false';
@@ -160,7 +165,7 @@ const EXIT_RETRYABLE = 75;
 
 const LOG_GROUP = resolveAgentLogGroup();
 const LOG_STREAM = `agent-${AGENT_TYPE}-issue-${ISSUE_NUMBER}-${Date.now()}`;
-const cwClient = new CloudWatchLogsClient({ region: AWS_REGION });
+const cwClient = new CloudWatchLogsClient({ region: AWS_REGION, credentials: workerAwsCredentials() });
 let cwBuffer: { timestamp: number; message: string }[] = [];
 let cwInitialized = false;
 
@@ -564,7 +569,7 @@ async function postToMainIssue(mainIssueNumber: number | null, body: string): Pr
     if (bucket) {
       try {
         const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-        const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+        const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
         const key = buildFallbackKey(targetIssue, 'comment');
         await s3.send(new PutObjectCommand({
           Bucket: bucket,
@@ -645,7 +650,7 @@ async function postComment(body: string): Promise<void> {
     if (bucket) {
       try {
         const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-        const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+        const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
         const key = buildFallbackKey(ISSUE_NUMBER, 'comment');
         await s3.send(new PutObjectCommand({
           Bucket: bucket,
@@ -675,7 +680,7 @@ async function getBeadsPrimeContext(cwd: string): Promise<string> {
       cwd,
       encoding: 'utf-8',
       timeout: 10000,
-      env: { ...process.env },
+      env: workerAwsEnvironment(),
     }).trim();
 
     if (output) {
@@ -1439,6 +1444,25 @@ Now, complete the assigned task.`;
     }, 30_000);
 
     try {
+      // Issue #3962: the adapter's three transport hooks (`attemptInputFactory`,
+      // `onAttemptHandle`, `cancellation`) are deliberately NOT passed here yet.
+      //
+      // They are what let an adapter own an attempt's transport, and passing them
+      // changes this call for every run in the platform: `attemptInputFactory`
+      // switches the prompt from a string to a streaming iterable, which is a
+      // different SDK code path taken by all 17 existing callers of this wrapper
+      // and by every ordinary agent run — including the ones with no control
+      // listener and no operator watching. That is a real behaviour change with no
+      // verb to justify it, since S3 implements none: nothing would be steered
+      // into the channel it opens.
+      //
+      // So the hooks stay proven-but-unused at this seam. They are exercised
+      // end-to-end against the real wrapper in `resilientQuery.test.ts` (that is
+      // where the borrowed-handle double-close was caught), which means the story
+      // that first needs them inherits tested plumbing rather than untested
+      // plumbing — and it makes that switch behind its own verb's flag, where the
+      // blast radius is the runs that asked for control instead of all of them.
+      //
       // Labeled loop so we can break out of the `for await` from inside the
       // switch statement.  Without the label, `break` only exits the switch.
       queryLoop:                          // eslint-disable-line no-labels
@@ -1727,7 +1751,7 @@ function buildWorkerSpillStore(): TmpSpillStore {
   const uploadToS3 = bucket
     ? async (key: string, body: string): Promise<void> => {
         const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-        const s3 = new S3Client({ region: AWS_REGION });
+        const s3 = new S3Client({ region: AWS_REGION, credentials: workerAwsCredentials() });
         // Same run-scoped prefix shape as the transcript upload in
         // agent-worker-image/entrypoint.py — keeps spills beside the run they
         // came from, and inherits that prefix's scoping rather than inventing
@@ -1805,7 +1829,7 @@ async function uploadGitChangesToS3(): Promise<void> {
       try { fs.unlinkSync(tarFile); } catch {}
       return;
     }
-    const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+    const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
     const key = buildFallbackKey(ISSUE_NUMBER, 'git-changes', 'tar.gz');
 
     const fileContent = fs.readFileSync(tarFile);
@@ -1976,6 +2000,16 @@ async function main(): Promise<void> {
   // finally block can close the port on every exit path — including a thrown
   // error — rather than only on the success path.
   let controlListener: ControlListener | null = null;
+  // Issue #3962: the harness adapter, constructed unconditionally and outside the
+  // try for the same reason. Constructing it costs nothing and starts nothing —
+  // it holds an attempt registry and no transport until `resilientQuery` attaches
+  // one — so it is not gated on the listener having started. That independence is
+  // deliberate: the adapter is the object the retry-safety rules live in, and
+  // making it conditional on a control listener would tie the correctness of a
+  // retry to whether an operator had enabled an intervention channel.
+  const controlAdapter = new ClaudeControlAdapter({
+    log: (msg) => log('DEBUG', msg),
+  });
   try {
     // Started here, after config resolution and before the SDK query, so a
     // state read is answerable for the whole life of the run. Everything the
@@ -1984,8 +2018,14 @@ async function main(): Promise<void> {
     // unregistered listener cannot exist.
     const controlStore = new ControlStateStore({
       generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
-      // No verbs in S1: every capability reports false and every verb answers 501.
-      supportedActions: SUPPORTED_ACTIONS,
+      // Issue #3962: derived from the adapter rather than declared here. Still
+      // empty — S3 ships the contract, not the verbs, so every capability reports
+      // false and every verb answers 501 exactly as in S1. What changed is that
+      // the emptiness is now a consequence of the adapter's own capability table
+      // instead of a second, independently-maintained claim about it: when S2
+      // implements pause, it cannot enable the wire without enabling the
+      // transport, because there is only one place left to say yes.
+      supportedActions: listenerActionsFor(controlAdapter),
       revalidate: revalidateQueuedCommand,
     });
     const listener = new ControlListener({
@@ -2323,6 +2363,17 @@ Please check the workflow logs for details.`);
       } catch (err) {
         log('WARN', `Control listener stop failed: ${(err as Error).message}`);
       }
+    }
+
+    // Issue #3962: dispose the adapter after the listener, not before. The
+    // listener is what can still answer a request, and a request answered from a
+    // disposed runtime would read the post-teardown state as though it were the
+    // run's — so the surface closes first and the runtime it describes second.
+    // Idempotent, and safe when no attempt was ever attached.
+    try {
+      await controlAdapter.dispose();
+    } catch (err) {
+      log('WARN', `Control adapter dispose failed: ${(err as Error).message}`);
     }
 
     clearInterval(cwFlushTimer);

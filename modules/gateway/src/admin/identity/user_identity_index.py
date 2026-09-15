@@ -41,6 +41,8 @@ class UserIdentityItem(TypedDict, total=False):
     user_id: str
     org_id: str
     provider_username: str | None
+    user_kind: str | None
+    bot_kind: str | None
     updated_at: str
     ttl: int
 
@@ -77,11 +79,15 @@ class UserIdentityIndexClient:
         provider_username: str | None = None,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
         member_org_ids: list[str] | None = None,
+        user_kind: str | None = None,
+        bot_kind: str | None = None,
     ) -> bool:
         """Write a user identity to the new DDB table.
 
         PK=provider, SK=provider_user_id. Upsert semantics (PutItem overwrites).
         Issue #3134: Optional member_org_ids stores the user's tenant memberships.
+        Issue #780: Optional user_kind/bot_kind mark a bot identity — see
+        update_user_core_attrs for the field contract.
         Returns True if write succeeded, False if all retries exhausted.
         """
         if provider not in SUPPORTED_PROVIDERS:
@@ -99,6 +105,12 @@ class UserIdentityIndexClient:
 
         if provider_username is not None:
             item["provider_username"] = {"S": provider_username}
+
+        if user_kind is not None:
+            item["user_kind"] = {"S": user_kind}
+
+        if bot_kind is not None:
+            item["bot_kind"] = {"S": bot_kind}
 
         # Issue #3134: member_org_ids as a DDB List attribute
         if member_org_ids is not None:
@@ -138,6 +150,8 @@ class UserIdentityIndexClient:
         user_id: str,
         org_id: str,
         provider_username: str | None = None,
+        user_kind: str | None = None,
+        bot_kind: str | None = None,
     ) -> bool:
         """Update core attrs on a user identity row using SET semantics (UpdateItem).
 
@@ -146,7 +160,10 @@ class UserIdentityIndexClient:
         operation re-writes the user row.
 
         Always sets: user_id, org_id, updated_at.
-        Conditionally sets: provider_username (only when not None).
+        Conditionally sets: provider_username, user_kind, bot_kind (only when
+        not None) — mirrors the same fields on the old-table client so a bot
+        identity written here resolves identically regardless of which table
+        the webhook Lambda's identity_resolver reads.
 
         Returns True if update succeeded, False if all retries exhausted.
         """
@@ -165,6 +182,14 @@ class UserIdentityIndexClient:
         if provider_username is not None:
             set_parts.append("provider_username = :pun")
             expression_values[":pun"] = {"S": provider_username}
+
+        if user_kind is not None:
+            set_parts.append("user_kind = :ukind")
+            expression_values[":ukind"] = {"S": user_kind}
+
+        if bot_kind is not None:
+            set_parts.append("bot_kind = :bkind")
+            expression_values[":bkind"] = {"S": bot_kind}
 
         update_expression = "SET " + ", ".join(set_parts)
 

@@ -626,14 +626,22 @@ async def github_installation_token(
     # GitHub already scopes the token to one org (one installation = one org);
     # narrowing repo + permissions on top means a hijacked run's live token can
     # touch only the repo it was working on.
+    permissions = getattr(request.state, "agent_github_permissions", AGENT_RUN_PERMISSIONS)
     try:
         token, expires_at = await mint_installation_token_with_expiry(
             app_id,
             private_key,
             binding.installation_id,
             repositories=[body.repo_name],
-            permissions=AGENT_RUN_PERMISSIONS,
+            permissions=permissions,
         )
+        not_after = getattr(request.state, "agent_github_not_after", None)
+        if not_after is not None:
+            from datetime import UTC, datetime
+
+            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if expiry.tzinfo is None or expiry <= datetime.now(UTC) or expiry > not_after:
+                raise ValueError("provider token lifetime exceeds accepted grant")
     except Exception as exc:
         await _write_audit(
             db,
@@ -672,7 +680,7 @@ async def github_installation_token(
             "installation_id": binding.installation_id,
             "repo": f"{body.repo_owner}/{body.repo_name}",
             "repositories": [body.repo_name],
-            "permissions": AGENT_RUN_PERMISSIONS,
+            "permissions": permissions,
             "invocation_id": body.invocation_id,
             "expires_at": expires_at,
             "purpose": body.purpose,

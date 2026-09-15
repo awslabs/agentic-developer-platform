@@ -44,7 +44,7 @@ class AsyncBedrockClient:
       The streaming connection stays alive as long as Bedrock is sending data.
     """
 
-    def __init__(self, region: str, credentials: dict[str, str] | None = None):
+    def __init__(self, region: str, credentials: dict[str, str] | None = None, *, single_attempt: bool = False):
         """Build the two clients.
 
         Args:
@@ -73,7 +73,7 @@ class AsyncBedrockClient:
         invoke_config = Config(
             read_timeout=3600,
             connect_timeout=10,
-            retries={"max_attempts": 2, "mode": "adaptive"},
+            retries={"total_max_attempts": 1, "mode": "standard"} if single_attempt else {"max_attempts": 2, "mode": "adaptive"},
         )
 
         # Streaming: generous read_timeout between chunks.
@@ -83,7 +83,7 @@ class AsyncBedrockClient:
         streaming_config = Config(
             read_timeout=300,
             connect_timeout=10,
-            retries={"max_attempts": 1, "mode": "standard"},
+            retries={"total_max_attempts": 1, "mode": "standard"} if single_attempt else {"max_attempts": 1, "mode": "standard"},
         )
 
         creds = credentials or {}
@@ -110,8 +110,9 @@ class SimplePoolService(IPoolService):
         settings = get_settings()
         self._region = region or settings.aws_region
         self._client = None
+        self._single_attempt_client = None
 
-    async def get_client(self, credentials: DestinationCredentials | None = None) -> Any:
+    async def get_client(self, credentials: DestinationCredentials | None = None, *, single_attempt: bool = False) -> Any:
         """Return a Bedrock client, ambient by default or destination-signed.
 
         Args:
@@ -141,7 +142,14 @@ class SimplePoolService(IPoolService):
         if credentials is not None:
             # No memoization: see the note above. The client is disposable; the
             # credentials behind it are what is cached, one layer up.
+            if single_attempt:
+                return AsyncBedrockClient(credentials.region or self._region, credentials.as_boto3_kwargs(), single_attempt=True)
             return AsyncBedrockClient(credentials.region or self._region, credentials.as_boto3_kwargs())
+
+        if single_attempt:
+            if self._single_attempt_client is None:
+                self._single_attempt_client = AsyncBedrockClient(self._region, single_attempt=True)
+            return self._single_attempt_client
 
         if self._client is None:
             self._client = AsyncBedrockClient(self._region)

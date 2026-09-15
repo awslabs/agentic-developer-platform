@@ -1,3 +1,4 @@
+import { workerAwsCredentials, workerAwsRegion } from '../lib/runIdentity';
 /**
  * Shared GitHub posting utility with token refresh and S3 fallback.
  * All agent files should use this instead of raw gh CLI calls for posting.
@@ -116,7 +117,7 @@ export async function saveToS3Fallback(issueNumber: string | number, label: stri
   if (!bucket) return null;
   try {
     const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-    const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+    const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
     const key = buildFallbackKey(issueNumber, label);
     await s3.send(new PutObjectCommand({
       Bucket: bucket,

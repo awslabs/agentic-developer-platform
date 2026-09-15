@@ -120,6 +120,14 @@ class DispatchService:
             now = self.now()
             invocation = str(uuid.uuid5(uuid.NAMESPACE_URL, f"adp-dispatch:{caller.tenant_id}:{request_key}"))
             envelope = self._envelope(body, caller, grant, invocation, installation, depth, now)
+            from src.orchestration.work_admission import enabled as work_claims_enabled
+
+            if work_claims_enabled():
+                repository_id = int(parent.get("provider_repository_id", {}).get("N", "0"))
+                if repository_id <= 0:
+                    raise BootstrapRefusedError("parent dispatch has no immutable repository identity")
+                envelope["source_ref"]["provider_repository_id"] = repository_id
+                envelope["work_claim_required"] = True
             if graph:
                 envelope["orchestration"] = {
                     "node_id": graph.node_id,
@@ -228,6 +236,11 @@ class DispatchService:
             "envelope_digest": {"S": digest},
             "issue_number": {"N": str(envelope["source_ref"]["issue"])},
             "installation_id": {"N": str(envelope["source_ref"]["installation_id"])},
+            **(
+                {"provider_repository_id": {"N": str(envelope["source_ref"]["provider_repository_id"])}}
+                if "provider_repository_id" in envelope["source_ref"]
+                else {}
+            ),
             "chain_depth": {"N": str(depth)},
             "parent_grant_id": {"S": grant.grant_id},
             "parent_grant_epoch": {"N": str(grant.revocation_epoch)},
@@ -347,6 +360,9 @@ class DispatchService:
     def _publish(self, command, grant, caller):
         invocation = command["invocation_id"]["S"]
         result = {"status": "accepted", "message_id": invocation, "invocation_id": invocation, "correlation_id": grant.flow_id}
+        if command.get("publish_state") == {"S": "refused"}:
+            self._release_refused(command, caller)
+            raise PolicyError(409, "work ownership refused; this request will not publish")
         if command.get("publish_state") == {"S": "published"}:
             return result
         child = self.store.authority.load_execution(invocation_id=invocation, tenant_id=caller.tenant_id)
@@ -358,7 +374,34 @@ class DispatchService:
         if (self.now() - created).total_seconds() >= 240:
             raise PolicyError(409, "dispatch outcome unknown; inspect the existing invocation before retrying")
         self.store.live_grant(invocation_id=caller.invocation_id, tenant_id=caller.tenant_id, attempt=caller.attempt, now=self.now())
+        from src.orchestration.work_admission import admit_pending
+        from src.orchestration.work_admission import enabled as work_claims_enabled
+        from src.orchestration.work_claims import WorkClaimError
+
+        if work_claims_enabled():
+            from functools import partial
+
+            from anyio import from_thread
+
+            try:
+                # Gateway dispatch runs in an AnyIO worker; keep SQL on the
+                # request event loop rather than creating a second engine/pool.
+                from_thread.run(partial(admit_pending, allow_defer=True), self.store, invocation)
+            except WorkClaimError as exc:
+                self._refuse_unpublished(command, caller)
+                raise PolicyError(409, f"work ownership refused: {exc.code}") from None
         try:
+            if work_claims_enabled():
+                # Fence a concurrent definitive refusal before contacting SQS.
+                # 'publishing' means the outcome may be unknown: it must never
+                # be compensated as if nothing could have reached the queue.
+                self.store.client.update_item(
+                    TableName=self.store.table,
+                    Key={k: command[k] for k in ("pk", "sk")},
+                    UpdateExpression="SET publish_state = :publishing",
+                    ConditionExpression="intent_digest = :intent AND publish_state IN (:pending, :publishing)",
+                    ExpressionAttributeValues={":publishing": {"S": "publishing"}, ":pending": {"S": "pending"}, ":intent": command["intent_digest"]},
+                )
             self.sqs.send_message(
                 QueueUrl=self.queue_url,
                 MessageBody=command["envelope_json"]["S"],
@@ -387,3 +430,51 @@ class DispatchService:
             },
         )
         return result
+
+    def _release_refused(self, command, caller):
+        self.store.authority.release_dispatch(
+            tenant_id=caller.tenant_id,
+            grant_id=command["grant_id"]["S"],
+            reservation_id=command["reservation_id"]["S"],
+        )
+
+    def _refuse_unpublished(self, command, caller):
+        """Fence a never-published child before freeing its concurrency slot.
+
+        A transport ambiguity, or any concurrent publisher that passed the
+        publication fence, keeps its reservation. Retrying the same refusal is
+        idempotent and cannot refund the historical dispatch-attempt allowance.
+        """
+        try:
+            self.store.client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Update": {
+                            "TableName": self.store.table,
+                            "Key": {k: command[k] for k in ("pk", "sk")},
+                            "UpdateExpression": "SET publish_state = :refused",
+                            "ConditionExpression": "intent_digest = :intent AND publish_state = :pending",
+                            "ExpressionAttributeValues": {
+                                ":refused": {"S": "refused"},
+                                ":pending": {"S": "pending"},
+                                ":intent": command["intent_digest"],
+                            },
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": self.store.table,
+                            "Key": _key(f"TENANT#{caller.tenant_id}", f"EXEC#{command['invocation_id']['S']}"),
+                            "UpdateExpression": "SET #st = :cancelled",
+                            "ConditionExpression": "#st = :pending AND attribute_not_exists(workload_binding)",
+                            "ExpressionAttributeNames": {"#st": "status"},
+                            "ExpressionAttributeValues": {":cancelled": {"S": "cancelled"}, ":pending": {"S": "pending"}},
+                        }
+                    },
+                ]
+            )
+        except (ClientError, BotoCoreError):
+            current = self.store._read(command["pk"]["S"], command["sk"]["S"])
+            if not current or current.get("publish_state") != {"S": "refused"}:
+                return
+        self._release_refused(command, caller)

@@ -110,6 +110,10 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
   // Issue #4020: blocked/skipped are terminal — without them the modal would
   // claim "Active — not yet terminal" on a row that will never move again.
   // Issue #4187: budget_stopped is terminal too — the run is over.
+  // Issue #3964: and so is aborted. Omitting it here would tell the operator who
+  // just stopped the run that it is "Active — not yet terminal", i.e. that their
+  // own stop did not take — the single most misleading thing this modal could say
+  // about an aborted run (AC-A9).
   const isTerminal = [
     'complete',
     'failed',
@@ -119,6 +123,7 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
     'blocked',
     'skipped',
     'budget_stopped',
+    'aborted',
   ].includes(item.status);
 
   // ---------------------------------------------------------------------------

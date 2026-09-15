@@ -54,7 +54,10 @@ _DEFAULT_WEBHOOK_EVENTS_TABLE = "adp-dev-webhook-events"
 # registration must not be reported as available. Terminal cleanup is best-effort
 # (the pod may be killed first) and pod IPs are reused, so the status is checked
 # independently of whether the fields were actually removed.
-_TERMINAL_STATUSES: frozenset[str] = frozenset({"complete", "failed", "skipped", "budget_stopped", "cancelled"})
+# Issue #3964 adds `aborted`: a run an operator stopped on purpose can accept no
+# further command, so a control registration left behind by best-effort teardown
+# must not be reported as available on it.
+_TERMINAL_STATUSES: frozenset[str] = frozenset({"complete", "failed", "skipped", "budget_stopped", "cancelled", "aborted"})
 
 
 class ExecutionLocator(Protocol):

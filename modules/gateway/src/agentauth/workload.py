@@ -142,3 +142,25 @@ class KubernetesWorkloadVerifier:
             # Do not expose an HTTP exception or request body: TokenReview
             # contains the worker credential, and Authorization contains ours.
             raise WorkloadRefusedError("workload verifier unavailable") from None
+
+    def has_exited(self, *, name: str, uid: str) -> bool:
+        """Positive container-exit evidence for a previously verified workload.
+
+        A timeout, missing pod or reused name cannot prove the original worker
+        stopped. Lease expiry is deliberately absent from this decision.
+        """
+        if not _NAME.fullmatch(name) or not uid:
+            return False
+        try:
+            response = self._client.get(
+                f"/api/v1/namespaces/{self._namespace}/pods/{name}",
+                headers={"Authorization": f"Bearer {self._gateway_token_path.read_text().strip()}"},
+            )
+            response.raise_for_status()
+            pod = response.json()
+            if pod.get("metadata", {}).get("uid") != uid or pod.get("spec", {}).get("serviceAccountName") != self._service_account:
+                return False
+            workers = [c for c in pod.get("status", {}).get("containerStatuses", []) if c.get("name") == "agent-worker"]
+            return len(workers) == 1 and "terminated" in workers[0].get("state", {}) and pod.get("status", {}).get("phase") in {"Succeeded", "Failed"}
+        except (OSError, httpx.HTTPError, ValueError, TypeError, AttributeError):
+            return False

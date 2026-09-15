@@ -45,7 +45,7 @@ delegated to the service that owns it, so this module cannot drift from them.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -66,7 +66,7 @@ from .execution_policy import (
     authorize_action,
 )
 from .flow_budget import release_flow_admission, reserve_flow_admission
-from .models import NodeKind, OrchestrationAcceptedPlan, OrchestrationFlow, OrchestrationNode
+from .models import ClaimState, NodeKind, OrchestrationAcceptedPlan, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
 from .state import NodeState
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,7 @@ class AdmissionInputs:
 
     policy: ExecutionPolicy | None
     plan_version: int
+    refusal: Decision | None = None
 
 
 async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: str) -> AdmissionInputs:
@@ -138,13 +139,9 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
     Both `org_id` and `flow_id` are filtered in SQL, so a flow id belonging to
     another tenant resolves to nothing rather than to that tenant's policy.
 
-    A plan document that cannot be parsed as a policy is treated as **no policy**
-    rather than raising, and says so loudly in the log. The alternative — letting a
-    parse error propagate — would take down the whole dispatch pass for every flow
-    because one flow's document was written by a newer schema. The consequence is
-    explicit and bounded: that flow runs with legacy semantics, and the log names it.
-    Note the rule itself still refuses an unsupported `schema_version`, so a policy
-    that parses but is too new denies rather than degrades.
+    A malformed stored policy refuses this flow without crashing other flows.
+    Only actual absence preserves legacy semantics; unreadable authority cannot
+    remove the restrictions that a human accepted.
     """
     stmt = select(OrchestrationAcceptedPlan).where(
         OrchestrationAcceptedPlan.org_id == org_id,
@@ -152,23 +149,39 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
         OrchestrationAcceptedPlan.superseded_at.is_(None),
     )
     plan = (await session.execute(stmt)).scalar_one_or_none()
-    if plan is None:
-        return AdmissionInputs(policy=None, plan_version=0)
-
-    raw = (plan.plan_document or {}).get("execution_policy")
+    raw = (plan.plan_document or {}).get("execution_policy") if plan is not None else None
     if raw is None:
-        return AdmissionInputs(policy=None, plan_version=plan.version)
+        # Removing an accepted policy withdraws authority. It must not turn old
+        # workers or the next dispatch into an unrestricted legacy flow.
+        documents = await session.scalars(
+            select(OrchestrationAcceptedPlan.plan_document).where(
+                OrchestrationAcceptedPlan.org_id == org_id,
+                OrchestrationAcceptedPlan.flow_id == flow_id,
+            )
+        )
+        version = plan.version if plan is not None else 0
+        if any((document or {}).get("execution_policy") is not None for document in documents):
+            return AdmissionInputs(
+                policy=None,
+                plan_version=version,
+                refusal=Decision.block(DenyReason.STALE_POLICY_VERSION, "accepted policy was removed; authority cannot revert to legacy access"),
+            )
+        return AdmissionInputs(policy=None, plan_version=version)
 
     try:
         return AdmissionInputs(policy=ExecutionPolicy.model_validate(raw), plan_version=plan.version)
     except ValueError:
         logger.exception(
-            "orchestration admission: flow %s (org %s) plan v%s has an unparseable execution_policy — treating the flow as unpolicied",
+            "orchestration admission: flow %s (org %s) plan v%s has an unparseable execution_policy — refusing admission",
             flow_id,
             org_id,
             plan.version,
         )
-        return AdmissionInputs(policy=None, plan_version=plan.version)
+        return AdmissionInputs(
+            policy=None,
+            plan_version=plan.version,
+            refusal=Decision.block(DenyReason.SCHEMA_UNSUPPORTED, "accepted execution policy cannot be validated"),
+        )
 
 
 async def _member_facts(session: AsyncSession, *, org_id: str, user_id: str) -> tuple[str | None, frozenset[str]]:
@@ -324,6 +337,8 @@ async def resolve_authorization_context(
     principal_user_id: str,
     credential_scope: CredentialScope,
     spend: SpendObservation,
+    provider_repository_id: int | None = None,
+    expected_invocation_id: str | None = None,
 ) -> AuthorizationContext:
     """Build the fact set for one admission decision from live state.
 
@@ -343,6 +358,46 @@ async def resolve_authorization_context(
     come from two different reads of a moving ledger.
     """
     member_org_id, member_team_ids = await _member_facts(session, org_id=node.org_id, user_id=principal_user_id)
+    from src.admin.access_control import AccessControl
+    from src.admin.config import Permission, membership_role_to_admin_role
+    from src.shared.identity.workspaces import memberships_for_login
+
+    # Use the existing membership resolver and permission map, requiring an
+    # actual current role. The legacy RBAC rollback flag must not turn a missing
+    # membership into approval authority for an accepted bounded policy.
+    principal_can_authorize = False
+    if member_org_id is not None:
+        _, memberships = await memberships_for_login(session, principal_user_id)
+        pair = memberships.get(node.org_id)
+        if pair is not None and pair[1] is not None:
+            role = membership_role_to_admin_role(pair[1].role)
+            principal_can_authorize = Permission.PLAN_APPROVE in AccessControl(session).get_role_permissions(role)
+    from .work_admission import enabled as work_claims_enabled
+
+    work_owned = True
+    if work_claims_enabled():
+        # A node belonging to a flow does not prove that flow owns the issue.
+        # Check the same immutable binding and invocation the producer reserved.
+        try:
+            issue = int(str(node.issue_ref).lstrip("#"))
+        except (ValueError, TypeError):
+            issue = 0
+        work_owned = bool(
+            provider_repository_id
+            and expected_invocation_id
+            and issue > 0
+            and await session.scalar(
+                select(OrchestrationWorkClaim.id).where(
+                    OrchestrationWorkClaim.org_id == node.org_id,
+                    OrchestrationWorkClaim.provider_repository_id == provider_repository_id,
+                    OrchestrationWorkClaim.issue_number == issue,
+                    OrchestrationWorkClaim.owner_kind == "engine_flow",
+                    OrchestrationWorkClaim.owner_ref == node.flow_id,
+                    OrchestrationWorkClaim.active_run_id == expected_invocation_id,
+                    OrchestrationWorkClaim.state == ClaimState.HELD.value,
+                )
+            )
+        )
 
     return AuthorizationContext(
         policy=policy,
@@ -358,6 +413,7 @@ async def resolve_authorization_context(
         principal_id=principal_user_id,
         member_org_id=member_org_id,
         member_team_ids=member_team_ids,
+        principal_can_authorize=principal_can_authorize,
         # Grant revocation lives in the agentauth plane, which is keyed by run rather
         # than by flow and has no row until a run exists. There is nothing to consult
         # before the first dispatch, so this is False here and the membership and
@@ -369,9 +425,7 @@ async def resolve_authorization_context(
         observed_spend_usd=spend.total_usd,
         observed_attempts=node.attempts,
         observed_concurrency=await _running_count(session, org_id=node.org_id, flow_id=node.flow_id),
-        # The node was read from this flow's own rows under a lock, so it belongs to
-        # the flow whose plan supplied the policy.
-        work_owned_by_policy_flow=True,
+        work_owned_by_policy_flow=work_owned,
     )
 
 
@@ -382,6 +436,10 @@ async def authorize_node_dispatch(
     principal_user_id: str,
     target_repository: str,
     installation_resolved: bool,
+    provider_repository_id: int | None = None,
+    expected_invocation_id: str | None = None,
+    action_override: Action | None = None,
+    continuing_node: bool = False,
 ) -> Decision:
     """Admit or refuse dispatching one node under its flow's accepted policy.
 
@@ -404,8 +462,16 @@ async def authorize_node_dispatch(
     legible operator error rather than a silent widening.
     """
     inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
+    if inputs.refusal is not None:
+        return inputs.refusal
     if inputs.policy is None:
         return Decision.permit("no execution policy in force; legacy semantics apply")
+
+    from .runtime_policy import flow_started_at, policy_github_permissions
+
+    started = await flow_started_at(session, org_id=node.org_id, flow_id=node.flow_id)
+    if started is not None and (utcnow() - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
+        return Decision.block(DenyReason.WALL_CLOCK_LIMIT_EXCEEDED, "flow execution deadline is exhausted")
 
     flow_slug = (
         await session.execute(
@@ -438,8 +504,10 @@ async def authorize_node_dispatch(
         .all()
     )
 
-    action = action_for_node_kind(node.kind)
-    if action is None:
+    action = action_override or action_for_node_kind(node.kind)
+    if action_override is None and node.kind == NodeKind.STORY.value and node.attempts > int(continuing_node):
+        action = Action.REPAIR
+    if action_for_node_kind(node.kind) is None or action is None:
         # A gate is never dispatched, and an unclassifiable kind must not be guessed.
         return Decision.block(
             DenyReason.ACTION_NOT_PERMITTED,
@@ -454,10 +522,22 @@ async def authorize_node_dispatch(
     # real rather than assumed. When they do not, `UNKNOWN` is passed and the rule
     # blocks — which is the point: there is no branch here that reaches for a
     # broader platform credential when the narrow one cannot be established.
-    scope = CredentialScope.SCOPED if installation_resolved and target_repository in inputs.policy.repository_ids else CredentialScope.UNKNOWN
+    scope = CredentialScope.UNKNOWN
+    if installation_resolved and target_repository in inputs.policy.repository_ids:
+        scope = CredentialScope.SCOPED if policy_github_permissions(inputs.policy, action) is not None else CredentialScope.UNSCOPABLE
 
-    # One ledger read, used for the rule's total and for the releases below.
-    spend = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes)
+    # A continuation uses its initialized provider accumulator even before the
+    # first asynchronous usage row arrives. Fresh admissions also reconcile the
+    # settled ledger's completed-node holds.
+    if continuing_node:
+        from .flow_meter import read_flow_meter
+
+        if node.state != NodeState.RUNNING.value:
+            return Decision.block(DenyReason.WORK_NOT_OWNED, "continuation no longer belongs to a running node")
+        meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+        spend = SpendObservation(total_usd=meter.total_usd if meter is not None else None)
+    else:
+        spend = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes)
 
     context = await resolve_authorization_context(
         session,
@@ -467,7 +547,11 @@ async def authorize_node_dispatch(
         principal_user_id=principal_user_id,
         credential_scope=scope,
         spend=spend,
+        provider_repository_id=provider_repository_id,
+        expected_invocation_id=expected_invocation_id,
     )
+    if continuing_node:
+        context = replace(context, observed_attempts=max(0, node.attempts - 1), observed_concurrency=max(0, context.observed_concurrency - 1))
 
     resource = ResourceRef(
         repository_id=target_repository,
@@ -515,6 +599,8 @@ async def authorize_node_dispatch(
         node_id=node.id,
     )
     if not reservation.admitted:
+        if reservation.degraded:
+            return Decision.block(DenyReason.BUDGET_UNAVAILABLE, "flow reservations are unavailable; no new policy-governed work can be admitted")
         # The same typed reason the settled-ledger check uses. A caller cannot act
         # differently on "over cap by the ledger" versus "over cap once concurrent
         # admissions are counted" — both mean this delivery has spent what it was
@@ -524,5 +610,13 @@ async def authorize_node_dispatch(
             DenyReason.SPEND_LIMIT_EXCEEDED,
             f"flow allowance of ${inputs.policy.limits.max_spend_usd} is exhausted once in-flight admissions are counted",
         )
+
+    from .flow_meter import prepare_flow_meter
+
+    if not await prepare_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, nodes=flow_nodes):
+        await release_flow_admission(
+            org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, settled_usd=context.observed_spend_usd or Decimal(0), node_id=node.id
+        )
+        return Decision.block(DenyReason.BUDGET_UNAVAILABLE, "shared model allowance is unavailable; existing usage must be reconciled")
 
     return decision

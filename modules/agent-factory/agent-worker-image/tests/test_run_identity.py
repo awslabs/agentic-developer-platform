@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import stat
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,6 +16,14 @@ from lib.run_identity import (
     bootstrap_run_identity,
     read_workload_token,
 )
+
+
+@pytest.mark.parametrize("source", ["envelope", "configuration"])
+def test_claimed_work_cannot_run_on_legacy_worker(monkeypatch, source):
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true" if source == "configuration" else "false")
+    with pytest.raises(RunIdentityError, match="Work ownership requires"):
+        bootstrap_run_identity({"work_claim_required": source == "envelope"})
 
 
 @pytest.fixture
@@ -100,8 +109,8 @@ def test_workload_proof_is_reread_and_missing_proof_refuses(identity):
         read_workload_token()
 
 
-@pytest.mark.parametrize("irsa", [False, True])
-def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypatch, irsa):
+@pytest.mark.parametrize("preserved", [False, True])
+def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypatch, preserved):
     session, _ = identity
     credentials = MagicMock()
     credentials.access_key = "test-access"
@@ -109,12 +118,16 @@ def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypa
     credentials.token = None
     sdk_session = MagicMock()
     sdk_session.get_credentials.return_value.get_frozen_credentials.return_value = credentials
-    if irsa:
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
-        provider = sdk_session.get_component.return_value.get_provider.return_value
-        provider.load.return_value.get_frozen_credentials.return_value = credentials
-    else:
-        monkeypatch.delenv("AWS_ROLE_ARN", raising=False)
+    for key in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "ADP_WORKER_IRSA_ROLE_ARN", "ADP_WORKER_IRSA_TOKEN_FILE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("ADP_WORKER_IRSA_ROLE_ARN" if preserved else "AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
+    irsa_token = session._directory / "irsa-token"
+    irsa_token.write_text("worker-web-identity")
+    monkeypatch.setenv("ADP_WORKER_IRSA_TOKEN_FILE" if preserved else "AWS_WEB_IDENTITY_TOKEN_FILE", str(irsa_token))
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    sdk_session.create_client.return_value.assume_role_with_web_identity.return_value = {
+        "Credentials": {"AccessKeyId": "test-access", "SecretAccessKey": "test-secret", "SessionToken": "test-session", "Expiration": datetime.now(timezone.utc) + timedelta(hours=1)}
+    }
     monkeypatch.setattr("lib.run_identity.botocore.session.get_session", lambda: sdk_session)
     response = MagicMock()
     response.status_code = 200
@@ -125,12 +138,13 @@ def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypa
     http.post.return_value = response
     monkeypatch.setattr("lib.run_identity.requests.Session", lambda: http)
     assert session._request()["invocation_id"] == "run-a"
-    if irsa:
-        sdk_session.get_credentials.assert_not_called()
+    sdk_session.get_credentials.assert_not_called()
+    assert sdk_session.create_client.return_value.assume_role_with_web_identity.call_args.kwargs["WebIdentityToken"] == "worker-web-identity"
     args, kwargs = http.post.call_args
     assert args[0].endswith("/internal/v1/agent/bootstrap")
     assert kwargs["headers"]["X-Adp-Workload-Token"] == "pod-token-one"
     assert "x-adp-workload-token" in kwargs["headers"]["Authorization"]
+    assert "/us-east-1/execute-api/aws4_request" in kwargs["headers"]["Authorization"]
     assert kwargs["allow_redirects"] is False
     assert http.trust_env is False
     assert json.loads(kwargs["data"]) == {
@@ -174,3 +188,34 @@ def test_refresh_failure_keeps_existing_expiry_and_does_not_log_credentials(
     session._renew()
     assert session.credential_path.read_bytes() == before
     assert "sensitive-token" not in caplog.text
+
+
+def test_authorized_child_waits_without_credential_before_start(identity, monkeypatch):
+    from lib.run_identity import WorkOwnershipPending
+
+    session, _ = identity
+    requests = iter([WorkOwnershipPending("waiting"), reply()])
+
+    def request():
+        response = next(requests)
+        if isinstance(response, Exception):
+            assert not session.credential_path.exists()
+            raise response
+        return response
+
+    monkeypatch.setattr(session, "_request", request)
+    monkeypatch.setattr(session._stop, "wait", lambda _: False)
+    monkeypatch.setattr("lib.run_identity.threading.Thread", MagicMock())
+    session.start()
+    assert session.credential_path.read_text().strip() == "adpr1.first.signature"
+
+
+def test_pending_child_startup_has_bounded_wait(identity, monkeypatch):
+    from lib.run_identity import WorkOwnershipPending
+
+    session, _ = identity
+    monkeypatch.setattr(session, "_request", MagicMock(side_effect=WorkOwnershipPending("waiting")))
+    monkeypatch.setattr("lib.run_identity.time.monotonic", MagicMock(side_effect=[0, 1801]))
+    with pytest.raises(RunIdentityError, match="startup deadline exceeded"):
+        session.start()
+    assert not session.credential_path.exists()

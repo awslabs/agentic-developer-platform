@@ -123,6 +123,7 @@ class EngineAuthorityWriter:
                 "chain_depth": {"N": "0"},
                 "orchestration_node_id": {"S": pending.node_id},
                 "orchestration_node_attempt": {"N": str(pending.node_attempt)},
+                **({"provider_repository_id": {"N": str(source["provider_repository_id"])}} if "provider_repository_id" in source else {}),
             },
             grant_metadata=metadata,
             events_table=self.events_table,

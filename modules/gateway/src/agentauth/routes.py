@@ -32,6 +32,7 @@ from src.agentauth.store import AuthorityStoreError
 from src.agentauth.waves import WaveRequest
 from src.agentauth.workload import WORKLOAD_HEADER, KubernetesWorkloadVerifier, WorkloadRefusedError
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.orchestration.work_claims import WorkClaimError
 
 logger = logging.getLogger("bedrockgateway.agentauth.routes")
 
@@ -206,6 +207,12 @@ class AgentRuntime:
 
     def bootstrap(self, body: BootstrapRequest, token: str) -> dict:
         pod = self.workloads.verify(token)
+        from src.orchestration.work_admission import admit_deferred_bootstrap, enabled
+
+        if enabled():
+            from anyio import from_thread
+
+            from_thread.run(admit_deferred_bootstrap, self.store, body.invocation_id, body.envelope_digest)
         now = datetime.now(UTC)
         record = self.store.bind(invocation_id=body.invocation_id, digest=body.envelope_digest, pod=pod, now=now)
         return issue_bound_credential(record, now=now, env=self.env)
@@ -238,8 +245,15 @@ async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRunt
         )
         record, grant = await runtime.enroll_coordinator(record, grant)
         await runtime.validate_flow(record, grant)
+        from src.orchestration.work_admission import worker_checkpoint
+
+        await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except WorkClaimError as exc:
+        if exc.code == "work_waiting":
+            raise HTTPException(425, "work ownership pending", headers={"Retry-After": "10"}) from None
+        raise HTTPException(404, "not found") from None
     except (BootstrapRefusedError, WorkloadRefusedError):
         raise HTTPException(404, "not found") from None
     except AuthorityStoreError:

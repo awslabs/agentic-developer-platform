@@ -21,9 +21,19 @@ from src.agentauth.grants import TargetRelationship
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, router
 from src.agentauth.run_credential import CREDENTIAL_KEY_ENV, verify_credential
 from src.agentauth.workload import VerifiedPod
-from src.orchestration.models import DecisionKind, OrchestrationDecision, OrchestrationEdge, OrchestrationFlow, OrchestrationNode
+from src.orchestration.models import (
+    DecisionKind,
+    OrchestrationAcceptedPlan,
+    OrchestrationDecision,
+    OrchestrationEdge,
+    OrchestrationFlow,
+    OrchestrationNode,
+)
 from src.shared.models.base import Base
-from src.shared.models.organization import Organization, User
+from src.shared.models.onboarding import TenantMembership
+from src.shared.models.organization import Department, Organization, Team, TeamMembership, User
+from src.shared.models.usage import UsageLog
+from src.shared.models.vault import UserIdentity
 from tests.agentauth.test_human_dispatch import child_dispatch as child_dispatch_fixture
 from tests.agentauth.test_human_dispatch import store as store_fixture
 from tests.orchestration.test_dispatch_pass import (  # noqa: F401
@@ -55,11 +65,18 @@ if os.environ.get("ADP_GRAPH_TEST_DATABASE_URL"):
         database = create_async_engine(os.environ["ADP_GRAPH_TEST_DATABASE_URL"])
         tables = [
             Organization.__table__,
+            Department.__table__,
+            Team.__table__,
             User.__table__,
+            TenantMembership.__table__,
+            TeamMembership.__table__,
+            UserIdentity.__table__,
+            UsageLog.__table__,
             OrchestrationFlow.__table__,
             OrchestrationNode.__table__,
             OrchestrationEdge.__table__,
             OrchestrationDecision.__table__,
+            OrchestrationAcceptedPlan.__table__,
         ]
         async with database.begin() as connection:
             await connection.run_sync(lambda conn: Base.metadata.create_all(conn, tables=tables))

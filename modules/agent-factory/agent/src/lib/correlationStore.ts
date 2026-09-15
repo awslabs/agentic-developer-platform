@@ -1,3 +1,4 @@
+import { workerAwsCredentials, workerAwsRegion } from './runIdentity';
 /**
  * DynamoDB correlation pointer writer for the Node agent runtime.
  *
@@ -14,7 +15,7 @@ let _client: DynamoDBClient | null = null;
 
 function getClient(): DynamoDBClient {
   if (!_client) {
-    _client = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+    _client = new DynamoDBClient({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
   }
   return _client;
 }

@@ -24,6 +24,7 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from src.activity.liveness import (
+    ABORTED_STATUS,
     ACTIVE_STALENESS_HOURS,
     ACTIVE_STATUSES,
     OBSERVED_TERMINAL_STATUSES,
@@ -298,8 +299,14 @@ class StatsService:
         active_runs: list[ActiveRun] = []
         stale_count = 0
         today_counts = TodayCounts()
-        daily_map: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "completed": 0, "failed": 0})
-        persona_map: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "completed": 0, "failed": 0})
+        # Issue #3964: `aborted` is initialized here rather than only incremented,
+        # because these dicts are splatted into `DailyEntry(**counts)` /
+        # `PersonaStats(**counts)` below. A key present on some days and absent on
+        # others would still validate (the field defaults to 0) but would make the
+        # response shape vary by whether anything was aborted that day — a client
+        # reading `entry.aborted` should not have to care.
+        daily_map: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "completed": 0, "failed": 0, "aborted": 0})
+        persona_map: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "completed": 0, "failed": 0, "aborted": 0})
         repo_counts: dict[str, int] = defaultdict(int)
         failures: list[RecentFailure] = []
 
@@ -345,6 +352,13 @@ class StatsService:
                     today_counts.completed += 1
                 elif status == "failed":
                     today_counts.failed += 1
+                # Issue #3964: an `elif` on the SAME chain, deliberately. It is what
+                # makes an aborted row contribute exactly once — to `total` and
+                # `aborted` — and never also to `active`/`failed`/`completed`
+                # (AC-A10). An independent `if` would be a second count on the same
+                # row the moment any status matched two branches.
+                elif status == ABORTED_STATUS:
+                    today_counts.aborted += 1
                 elif status in _ACTIVE_STATUSES and is_fresh:
                     today_counts.active += 1
 
@@ -355,6 +369,8 @@ class StatsService:
                     daily_map[date_part]["completed"] += 1
                 elif status == "failed":
                     daily_map[date_part]["failed"] += 1
+                elif status == ABORTED_STATUS:
+                    daily_map[date_part]["aborted"] += 1
 
             # Per-persona
             if persona:
@@ -363,6 +379,8 @@ class StatsService:
                     persona_map[persona]["completed"] += 1
                 elif status == "failed":
                     persona_map[persona]["failed"] += 1
+                elif status == ABORTED_STATUS:
+                    persona_map[persona]["aborted"] += 1
 
             # Repo counts
             if repo:

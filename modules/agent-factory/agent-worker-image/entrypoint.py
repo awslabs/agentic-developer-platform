@@ -1621,6 +1621,12 @@ def main() -> int:
     # scoped to the agent shell; the proxy authenticates using platform IRSA.
     # Keep os.environ's IRSA intact for post-agent SQS/check-run operations.
     agent_env = os.environ.copy()
+    from adp_trigger.transport_identity import preserve_worker_identity
+
+    preserve_worker_identity(agent_env)
+    from adp_cred.task_credentials import configure_task_credentials
+
+    task_config_path = configure_task_credentials(agent_env)
     bedrock_via_raw = os.environ.get("ADP_BEDROCK_VIA")
     bedrock_via = (bedrock_via_raw or "gateway").strip().lower()
 
@@ -1650,6 +1656,11 @@ def main() -> int:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
             agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = "http://127.0.0.1:9090"
+            if agent_env.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+                # Only this loopback hop is unsigned. The proxy authenticates
+                # upstream with protected IRSA and the current run/pod proof.
+                # Model startup must not mint customer task credentials.
+                agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] = "1"
             # Do NOT set ANTHROPIC_BASE_URL — that routes to the broken translator
             agent_env.pop("ANTHROPIC_BASE_URL", None)
             # claude-agent-sdk >= ~0.3.2xx rejects streaming responses whose
@@ -1693,11 +1704,15 @@ def main() -> int:
     heartbeat.start()
 
     logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
-    result = subprocess.run(
-        ["node", AGENT_BINARY],
-        cwd=WORK_DIR,
-        env=agent_env,
-    )
+    try:
+        result = subprocess.run(
+            ["node", AGENT_BINARY],
+            cwd=WORK_DIR,
+            env=agent_env,
+        )
+    finally:
+        if task_config_path:
+            Path(task_config_path).unlink(missing_ok=True)
 
     # Stop heartbeat BEFORE any message deletion to avoid racing the receipt
     # handle invalidation. Must join to ensure no in-flight API call.
