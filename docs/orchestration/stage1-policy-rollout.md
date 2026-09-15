@@ -12,13 +12,15 @@ direct `aws sts assume-role`/SDK calls are in scope. Existing role ARNs, trusted
 source principals, external IDs, permissions, session tags, duration, refresh,
 role chaining and deployment region must remain usable without customer IAM edits.
 
-The compatibility implementation is present in the draft, but activation is
-still blocked by accepted-policy authorization and live rollout prerequisites:
+The compatibility implementation includes the owner's approved user-credential
+contract. Activation still requires the scoped rollout and live acceptance:
 
-- Accepted-policy AWS credential delivery is refused; connection IDs have no
-  implemented mapping to the resolved vault credential, and no deployment action
-  currently represents Operations work. #5174's AWS work is a Stage 1 release
-  prerequisite, not a capability that can silently disappear after activation.
+- Version 2 policies can explicitly select vault credential IDs and exact customer
+  role ARNs with their user-configured permissions. Saved roles and direct SDK
+  source sessions support this authority for currently implemented task actions.
+  This does not add an engine deployment/coordinator dispatcher: those remain
+  distinct prerequisites in #5174. Existing human/legacy Operations deployment
+  paths retain their semantics until a verified compatible migration.
 - The protected platform role still denies direct STS. Task SDKs now use
   `adp-cred worker-session` as a refreshable default source provider. The gateway
   mints a restricted session of the original worker role, preserving the principal
@@ -68,8 +70,8 @@ auth; the proxy still signs upstream using protected identity and run/pod proof.
 Regression coverage exercises real SDK refresh and signing with disposable STS
 responses, nested CLI environments and a real TLS proxy receiver. Gateway tests
 preserve the saved role's STS parameters without adding `Policy` or `PolicyArns`
-for human and legacy policy-less authority. These tests do not prove live IAM
-trust or accepted-policy deployment support. Acceptance must additionally run
+for human, legacy policy-less and explicitly accepted version 2 user authority.
+These tests do not prove live IAM trust or engine deployment dispatch support. Acceptance must additionally run
 both existing assumption paths against an authorized non-platform fixture,
 deploy/read back/clean up a disposable resource, refresh and chain roles, and
 keep gateway/GitHub/model calls working during deployment. Record source and
@@ -92,14 +94,37 @@ and the proposed IAM route allowlist are wired. Endpoint tests exercise API-key
 rotation, proxy destination restrictions, file URLs and sanitized auditing.
 These paths support human-authorized and legacy policy-less runs.
 
-Accepted-policy credential delivery remains refused, including task source
-sessions. The pending product decision is whether explicitly accepting a named
-credential grants its existing provider permissions, or whether every external
-action must remain constrained by ADP's plan. Copied API keys cannot be immediately
-revoked or narrowed by ADP. No approval for changing that contract has been
-recorded; existing `CredentialScope` semantics and human gates stay strict.
-#5174 must resolve that contract, implement accepted credential selection and
-provider effects, and pass live acceptance before migrating these flows.
+The owner resolved the credential-authority decision on 2026-09-15: **“yes, if the
+role has permissions (given by the user) adp should be able to do it”**, following
+explicit confirmation that workers must also use API keys through ADP vault.
+This is the recorded design amendment to #5128/#5174, implemented as an explicit
+version 2 contract. It is not authorization for infrastructure activation.
+
+A plan may accept `user_credentials` with required
+`permission_mode: user_configured`, `lifetime: provider_managed`, selected
+`vault_credential_ids`, exact `aws_role_arns`, and the existing task `actions`.
+At least one target is required; wildcard roles, duplicate targets and actions
+outside the policy are rejected. Credential selection uses existing vault ACLs at
+human acceptance and again during execution. A model cannot accept this policy.
+Version 1 remains the default and keeps its old serialization/hash and constrained
+credential semantics. Old accepted policies do not acquire user authority.
+
+The broker binds the actual credential ID/secret reference, authenticated user,
+tenant, current assignment, membership/role, accepted version, gates and limits.
+Raw/file delivery still needs enabled delivery and registry/client scopes; proxy
+host restrictions and rotation remain effective. The direct source can assume
+only accepted customer role targets. Destination roles and API keys retain their
+configured provider permissions; ADP does not insert a destination STS policy.
+The accepted plan summary displays these selections and lifetime limits.
+
+Cancellation/expiry stops new issuance/refresh and is rechecked before provider
+effects and credential delivery. Already-issued sessions, copied keys and file
+URLs follow provider lifetime/revocation; ADP does not claim to revoke them
+instantly or constrain every external action they permit. Task approvals remain
+required even if a selected provider credential is capable of broader effects.
+Removing a policy by amendment withdraws authority from dispatch and workers,
+without reverting the flow to legacy permissions. Truly policy-less flows keep
+legacy behavior. Live provider acceptance remains required before migration.
 
 Live release acceptance must exercise an authorized API call through vault proxy
 injection and a tool/SDK consuming an enabled raw API key, plus file delivery
@@ -232,7 +257,14 @@ and platform-role/non-STS explicit denials. Simulation does not exercise custome
 trust policies or an actual assumed session.
 
 The latest pushed CI must be checked independently; these local results do not
-assert full CI success. The preceding revision had failing worker/security checks
-and an unresolved full-gateway-suite workspace assertion. No gate was bypassed.
-No AWS resources, EKS access, active worker flags or accepted-policy credential
-semantics were changed by this implementation work. Live acceptance remains open.
+assert full CI success. At `a6daef07`, security scanning completed but its summary
+gate reported 485 new critical/high findings; the worker runner stopped during
+control-token tests without final step logs; the full gateway suite reported ten
+vault fixture identity failures (the registered dependency now receives the same
+IAM provider double after test module reloads). No gate has been bypassed.
+No AWS resources, EKS access or active worker flags were changed. Live acceptance
+remains open; the credential semantics amendment above requires explicit v2 human
+acceptance before it can apply to a plan.
+
+
+Validation of the user-permission implementation: **2,572 gateway orchestration/internal/agentauth tests passed, 4 skipped**. The auth-module reload/order regression passed **92 tests**, and final schema/endpoint checks passed **139** (overlapping coverage). **21 PlanSummary tests**, frontend TypeScript/Vite build, scoped Ruff, workflow YAML and diff checks passed. Tests use real SQL, policy acceptance and broker endpoints with provider doubles; they cover preserved role options/permissions, raw key rotation, proxy/file delivery, selection/ACL refusals, cancellation during secret/provider calls, source target refresh, legacy serialization and policy removal. Live provider/A0/A1 acceptance is not established by these tests.

@@ -149,12 +149,24 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
         OrchestrationAcceptedPlan.superseded_at.is_(None),
     )
     plan = (await session.execute(stmt)).scalar_one_or_none()
-    if plan is None:
-        return AdmissionInputs(policy=None, plan_version=0)
-
-    raw = (plan.plan_document or {}).get("execution_policy")
+    raw = (plan.plan_document or {}).get("execution_policy") if plan is not None else None
     if raw is None:
-        return AdmissionInputs(policy=None, plan_version=plan.version)
+        # Removing an accepted policy withdraws authority. It must not turn old
+        # workers or the next dispatch into an unrestricted legacy flow.
+        documents = await session.scalars(
+            select(OrchestrationAcceptedPlan.plan_document).where(
+                OrchestrationAcceptedPlan.org_id == org_id,
+                OrchestrationAcceptedPlan.flow_id == flow_id,
+            )
+        )
+        version = plan.version if plan is not None else 0
+        if any((document or {}).get("execution_policy") is not None for document in documents):
+            return AdmissionInputs(
+                policy=None,
+                plan_version=version,
+                refusal=Decision.block(DenyReason.STALE_POLICY_VERSION, "accepted policy was removed; authority cannot revert to legacy access"),
+            )
+        return AdmissionInputs(policy=None, plan_version=version)
 
     try:
         return AdmissionInputs(policy=ExecutionPolicy.model_validate(raw), plan_version=plan.version)

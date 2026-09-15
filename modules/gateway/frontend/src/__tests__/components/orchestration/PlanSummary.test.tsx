@@ -218,3 +218,22 @@ describe('what the summary must not leak', () => {
     expect(screen.getByTestId('plan-summary-policy').textContent).not.toMatch(/\w+\/\w+\/\w+\/\w+/);
   });
 });
+
+
+it('explains user credential permissions and provider lifetime without claiming narrower action enforcement', () => {
+  render(<PlanSummary {...COUNTS} policy={makePolicy({
+    human_decisions: ['deploy'],
+    user_credentials: {
+      permission_mode: 'user_configured', lifetime: 'provider_managed',
+      vault_credential_ids: ['deployment-key'],
+      aws_role_arns: ['arn:aws:iam::222222222222:role/CustomerDeploy'], actions: ['develop'],
+    },
+  })} />);
+  const description = screen.getByTestId('policy-user-credentials');
+  expect(description).toHaveTextContent('retain their configured permissions');
+  expect(description).toHaveTextContent('deployment-key');
+  expect(description).toHaveTextContent('CustomerDeploy');
+  expect(description).toHaveTextContent('Credentials already issued follow');
+  expect(description).toHaveTextContent('may permit additional actions');
+  expect(screen.getByTestId('policy-human-decisions')).toHaveTextContent('deploy');
+});

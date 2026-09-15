@@ -27,6 +27,13 @@ from .state import NodeState
 class WorkerCredentialDecision(Decision):
     permissions: dict[str, str] | None = None
     not_after: datetime | None = None
+    provider_permissions: bool = False
+    credential_id: str | None = None
+    credential_secret_arn: str | None = None
+    credential_ids: tuple[str, ...] = ()
+    aws_role_arns: tuple[str, ...] = ()
+    policy_id: str | None = None
+    plan_version: int | None = None
 
 
 def policy_github_permissions(policy: ExecutionPolicy, action: Action) -> dict[str, str] | None:
@@ -69,12 +76,18 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
 
 
 async def authorize_worker_credential(
-    session, *, execution: dict, grant: DelegatedGrant, broker_path: str, inputs: AdmissionInputs | None = None
+    session,
+    *,
+    execution: dict,
+    grant: DelegatedGrant,
+    broker_path: str,
+    inputs: AdmissionInputs | None = None,
+    credential_request: dict | None = None,
 ) -> Decision:
     """Authorize the existing assignment; this never admits another attempt.
 
-    AWS and raw-secret brokers currently cannot bind a token to an accepted
-    environment connection and action. Refuse those capabilities for policy flows.
+    Version 1 requires constrained provider capabilities. Version 2 may explicitly
+    accept user credentials with their configured provider permissions/lifetime.
     The GitHub broker still must mint only for the authenticated repository.
     """
     if grant.authority.kind != "gate_decision":
@@ -162,6 +175,59 @@ async def authorize_worker_credential(
     elif broker_path == "model" and repo in policy.repository_ids and repo in grant.repo_scope:
         # Model execution remains inside the policy-checking gateway boundary.
         scope = CredentialScope.SCOPED
+    credential_id = None
+    credential_secret_arn = None
+    credential_ids = ()
+    aws_role_arns = ()
+    authority = policy.user_credentials
+    user_paths = {
+        "/internal/v1/credential-assume-role",
+        "/internal/v1/credential-raw-read",
+        "/internal/v1/proxy-request",
+        "/internal/v1/credential-materialize",
+        "/internal/v1/user-credentials",
+        "/internal/v1/worker-task-credentials",
+    }
+    if broker_path in user_paths and authority is not None and action in authority.actions:
+        from src.shared.services.credential_resolver import CredentialNotFoundError
+
+        from .user_credentials import resolve_user_credential
+
+        try:
+            if broker_path == "/internal/v1/worker-task-credentials":
+                aws_role_arns = tuple(authority.aws_role_arns)
+                if not aws_role_arns:
+                    raise CredentialNotFoundError("no approved direct roles")
+            elif broker_path == "/internal/v1/user-credentials":
+                accessible = []
+                for selected_id in authority.vault_credential_ids:
+                    try:
+                        await resolve_user_credential(
+                            session, org_id=grant.tenant_id, user_id=(credential_request or {}).get("user_id", ""), credential_id=selected_id
+                        )
+                        await resolve_user_credential(session, org_id=grant.tenant_id, user_id=principal, credential_id=selected_id)
+                    except CredentialNotFoundError:
+                        continue
+                    accessible.append(selected_id)
+                if not accessible:
+                    raise CredentialNotFoundError("no approved credentials available")
+                credential_ids = tuple(accessible)
+                credential_id = accessible[0]
+            else:
+                request = credential_request or {}
+                selected = await resolve_user_credential(
+                    session, org_id=grant.tenant_id, user_id=request.get("user_id", ""), service=request.get("service"), label=request.get("label")
+                )
+                if selected.id not in authority.vault_credential_ids:
+                    raise CredentialNotFoundError("credential is not approved")
+                # The current plan owner must still have vault access too. This
+                # prevents a worker body from borrowing another user's selection.
+                await resolve_user_credential(session, org_id=grant.tenant_id, user_id=principal, credential_id=selected.id)
+                credential_id, credential_secret_arn = selected.id, selected.secret_arn
+            scope = CredentialScope.USER_GRANTED
+        except CredentialNotFoundError:
+            return Decision.block(DenyReason.CREDENTIAL_SCOPE_UNAVAILABLE, "approved user credential unavailable")
+
     context = await resolve_authorization_context(
         session,
         policy=policy,
@@ -185,9 +251,28 @@ async def authorize_worker_credential(
     decision = authorize_action(
         context,
         action,
-        ResourceRef(repository_id=repo, org_id=grant.tenant_id, node_address=graph_address(node, flow_slug=flow.slug)),
+        ResourceRef(
+            repository_id=repo,
+            org_id=grant.tenant_id,
+            node_address=graph_address(node, flow_slug=flow.slug),
+            user_credential_id=credential_id,
+            aws_role_arn=aws_role_arns[0] if aws_role_arns else None,
+        ),
         accepted_version,
     )
+    if decision.permitted and scope is CredentialScope.USER_GRANTED:
+        return WorkerCredentialDecision(
+            permitted=True,
+            detail=decision.detail,
+            not_after=not_after,
+            provider_permissions=True,
+            credential_id=credential_id,
+            credential_secret_arn=credential_secret_arn,
+            credential_ids=credential_ids,
+            aws_role_arns=aws_role_arns,
+            policy_id=policy.policy_id,
+            plan_version=inputs.plan_version,
+        )
     if decision.permitted and broker_path == "/internal/v1/github-installation-token":
         return WorkerCredentialDecision(permitted=True, detail=decision.detail, permissions=permissions, not_after=not_after)
     return decision

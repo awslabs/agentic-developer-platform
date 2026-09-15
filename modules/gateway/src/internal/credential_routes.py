@@ -37,7 +37,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.agentauth.broker_identity import worker_tenant
+from src.agentauth.broker_identity import user_credential_audit, verify_selected_user_credential, worker_tenant
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding import resolve_credential_binding
 from src.internal.credential_egress import allowed_hosts_for, host_matches, is_binding_enforced
@@ -442,6 +442,9 @@ async def list_user_credentials(
         user_id,
         service or "(all)",
     )
+    authority = getattr(request.state, "agent_user_credential_authority", None)
+    if authority is not None:
+        creds = [credential for credential in creds if credential.id in authority.credential_ids]
     return [CredentialMetadata.from_model(c) for c in creds]
 
 
@@ -536,6 +539,7 @@ async def proxy_request(
         user_id=user.id,
         team_id=user.team_id,
     )
+    await verify_selected_user_credential(request, cred)
 
     # Issue #4076: credential->host binding. Runs on the RESOLVED cred.service
     # (never body.service — caller input must not decide this) and BEFORE
@@ -549,6 +553,7 @@ async def proxy_request(
 
     # Fetch secret and inject.
     secret_value = await _fetch_secret(cred.secret_arn, sm)
+    await verify_selected_user_credential(request, cred, revalidate=True)
     request_headers = inject_credential(
         cred.credential_type,
         secret_value,
@@ -596,6 +601,7 @@ async def proxy_request(
             "service": body.service,
             "label": body.label,
             "credential_id": cred.id,
+            **user_credential_audit(request),
             "method": body.method.upper(),
             "url": body.url,
             "response_status": response.status_code,
@@ -672,6 +678,7 @@ async def credential_materialize(
         user_id=user.id,
         team_id=user.team_id,
     )
+    await verify_selected_user_credential(request, cred)
 
     # Only file-type credentials are allowed through this path.
     if cred.credential_type not in FILE_CREDENTIAL_TYPES:
@@ -686,6 +693,7 @@ async def credential_materialize(
         )
 
     secret_value = await _fetch_secret(cred.secret_arn, sm)
+    await verify_selected_user_credential(request, cred, revalidate=True)
 
     # Upload to S3 and generate presigned URL.
     bucket = settings.vault_materialization_bucket
@@ -735,6 +743,7 @@ async def credential_materialize(
             "service": body.service,
             "label": body.label,
             "credential_id": cred.id,
+            **user_credential_audit(request),
             "credential_type": cred.credential_type,
             "s3_key": s3_key,
             "invocation_id": body.invocation_id,
@@ -750,6 +759,7 @@ async def credential_materialize(
         body.service,
         cred.credential_type,
     )
+    await verify_selected_user_credential(request, cred, revalidate=True)
     return MaterializeResponse(
         materialize_url=materialize_url,
         expires_at=expires_at,
@@ -818,8 +828,10 @@ async def credential_raw_read(
         user_id=user.id,
         team_id=user.team_id,
     )
+    await verify_selected_user_credential(request, cred)
 
     secret_value = await _fetch_secret(cred.secret_arn, sm)
+    await verify_selected_user_credential(request, cred, revalidate=True)
 
     await _touch_last_used(cred.id, db)
     await _write_audit(
@@ -836,6 +848,7 @@ async def credential_raw_read(
             "service": body.service,
             "label": body.label,
             "credential_id": cred.id,
+            **user_credential_audit(request),
             "credential_type": cred.credential_type,
             "purpose": body.purpose,
             "invocation_id": body.invocation_id,
@@ -852,6 +865,7 @@ async def credential_raw_read(
         body.agent_id,
         binding.from_registry,
     )
+    await verify_selected_user_credential(request, cred, revalidate=True)
     return RawReadResponse(
         value=secret_value,
         credential_type=cred.credential_type,

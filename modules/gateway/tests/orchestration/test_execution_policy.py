@@ -27,7 +27,6 @@ import pytest
 from pydantic import ValidationError
 
 from src.orchestration.execution_policy import (
-    POLICY_SCHEMA_VERSION,
     AcceptanceMode,
     Action,
     AuthorizationContext,
@@ -207,7 +206,7 @@ class TestExecutionPolicySchema:
     def test_unsupported_schema_version_rejected_at_parse(self) -> None:
         """`schema_version` is a Literal, so a future document stops at the boundary."""
         with pytest.raises(ValidationError):
-            _policy(schema_version=POLICY_SCHEMA_VERSION + 1)
+            _policy(schema_version=3)
 
     def test_human_gate_must_name_an_allowed_action(self) -> None:
         """A gate on an unpermitted action reads as a control but is not one."""

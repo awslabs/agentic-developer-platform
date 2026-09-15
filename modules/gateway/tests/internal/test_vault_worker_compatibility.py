@@ -76,7 +76,6 @@ async def vault(db_session, monkeypatch):
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: SessionContext)
     monkeypatch.setattr("src.shared.config.get_settings", lambda: settings)
     monkeypatch.setattr("src.internal.credential_routes.get_settings", lambda: settings)
-    monkeypatch.setattr("src.internal.auth_deps.extract_iam_identity_from_headers", lambda _: identity)
     monkeypatch.setattr(
         "src.internal.credential_routes.resolve_credential_binding",
         lambda **_: SimpleNamespace(resolved_user_id="vault-user", from_registry=True, drift_detected=False),
@@ -88,6 +87,12 @@ async def vault(db_session, monkeypatch):
     from src.internal.task_credentials import router as task_router
 
     app.include_router(task_router)
+    # Some integration fixtures reload auth modules. Patch the external IAM lookup
+    # used by each registered dependency, keeping real broker verification intact.
+    for route in app.routes:
+        for dependency in getattr(getattr(route, "dependant", None), "dependencies", []):
+            if dependency.call.__name__ == "verify_internal_or_irsa":
+                monkeypatch.setitem(dependency.call.__globals__, "extract_iam_identity_from_headers", lambda _: identity)
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_secrets_manager] = lambda: sm
     return SimpleNamespace(

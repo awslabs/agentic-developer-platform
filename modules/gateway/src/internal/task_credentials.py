@@ -166,12 +166,15 @@ async def worker_task_credentials(
     grant = getattr(request.state, "agent_broker_grant", None)
     if grant is None or grant.expires_at is None or not grant.is_live(datetime.now(UTC)):
         raise HTTPException(404, "not found")
+    authority = getattr(request.state, "agent_user_credential_authority", None)
+    not_after = min(grant.expires_at, authority.not_after) if authority is not None else grant.expires_at
+    targets = list(authority.aws_role_arns) if authority is not None else None
     try:
-        result = await run_in_threadpool(issue_task_session, invocation_id=body.invocation_id, not_after=grant.expires_at)
+        result = await run_in_threadpool(issue_task_session, invocation_id=body.invocation_id, not_after=not_after, targets=targets)
     except (ValueError, OSError, KeyError, ClientError, BotoCoreError, httpx.HTTPError, yaml.YAMLError):
         logger.warning("Worker task source refused", extra={"invocation_id": body.invocation_id, "grant_id": grant.grant_id})
         raise HTTPException(503, "customer task identity unavailable") from None
-    from src.agentauth.broker_identity import verify_broker_worker
+    from src.agentauth.broker_identity import user_credential_audit, verify_broker_worker
 
     # Isolation/provider lookups may be slow. Recheck live authority before any
     # source credentials leave the gateway; revoked work receives no session.
@@ -188,6 +191,7 @@ async def worker_task_credentials(
             details={
                 "invocation_id": body.invocation_id,
                 "grant_id": current.grant_id,
+                **user_credential_audit(request),
                 "source_role_arn": os.environ.get("AGENT_TASK_SOURCE_ROLE_ARN"),
                 "expires_at": result["Expiration"],
             },
@@ -199,5 +203,9 @@ async def worker_task_credentials(
     current = request.state.agent_broker_grant
     if current.expires_at is None or not current.is_live(datetime.now(UTC)) or expiry > current.expires_at:
         raise HTTPException(404, "not found")
+    if authority is not None:
+        latest = getattr(request.state, "agent_user_credential_authority", None)
+        if latest is None or latest.policy_id != authority.policy_id or latest.aws_role_arns != authority.aws_role_arns or expiry > latest.not_after:
+            raise HTTPException(404, "not found")
     response.headers["Cache-Control"] = "no-store"
     return result

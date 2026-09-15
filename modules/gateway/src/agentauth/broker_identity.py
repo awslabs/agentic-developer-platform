@@ -44,6 +44,7 @@ async def verify_broker_worker(request: Request) -> None:
     from src.shared.config import get_settings
 
     context = None
+    request.state.agent_user_credential_authority = None
     try:
         if request.url.path == "/internal/v1/user-credentials" and request.method == "GET":
             body = dict(request.query_params)
@@ -76,7 +77,9 @@ async def verify_broker_worker(request: Request) -> None:
         from src.shared.database import get_session_factory
 
         async with get_session_factory()() as session:
-            decision = await authorize_worker_credential(session, execution=execution, grant=context[3], broker_path=request.url.path)
+            decision = await authorize_worker_credential(
+                session, execution=execution, grant=context[3], broker_path=request.url.path, credential_request=body
+            )
         if not decision.permitted:
             logger.info(
                 "Worker credential policy refused",
@@ -86,6 +89,7 @@ async def verify_broker_worker(request: Request) -> None:
         if isinstance(decision, WorkerCredentialDecision):
             request.state.agent_github_permissions = decision.permissions
             request.state.agent_github_not_after = decision.not_after
+            request.state.agent_user_credential_authority = decision if decision.provider_permissions else None
         if request.url.path == "/internal/v1/github-installation-token":
             repo = f"{body.get('repo_owner', '')}/{body.get('repo_name', '')}"
             if execution.get("repo") != {"S": repo} or execution.get("installation_id", {}).get("N") != str(body.get("installation_id")):
@@ -114,3 +118,27 @@ async def verify_broker_worker(request: Request) -> None:
         raise HTTPException(404, "not found") from None
     except (AuthorityStoreError, ClientError, BotoCoreError):
         raise HTTPException(503, "agent authority unavailable") from None
+
+
+async def verify_selected_user_credential(request: Request, credential, *, revalidate: bool = False) -> None:
+    """Bind the endpoint's actual selection and repeat live checks before effects."""
+    authority = getattr(request.state, "agent_user_credential_authority", None)
+    if authority is None:
+        return
+    if revalidate:
+        await verify_broker_worker(request)
+        authority = getattr(request.state, "agent_user_credential_authority", None)
+    if authority is None or authority.credential_id != credential.id or authority.credential_secret_arn != credential.secret_arn:
+        raise HTTPException(404, "not found")
+
+
+def user_credential_audit(request: Request) -> dict:
+    authority = getattr(request.state, "agent_user_credential_authority", None)
+    if authority is None:
+        return {}
+    return {
+        "credential_permission_mode": "user_configured",
+        "credential_lifetime": "provider_managed",
+        "execution_policy_id": authority.policy_id,
+        "accepted_plan_version": authority.plan_version,
+    }

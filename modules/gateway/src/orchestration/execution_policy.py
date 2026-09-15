@@ -131,28 +131,31 @@ What this module deliberately does NOT do
   is no path here that writes one. A worker cannot reach these tables at all
   (`compile.py`), and nothing here reads authority from an envelope, an issue
   comment or a row a worker can write (R-O5d).
-- **It never falls back to a broad credential.** `credential_scope` resolving to
-  anything but `SCOPED` is a block. "We could not scope it, so we used the
-  platform role" is the failure this story exists to prevent, so it is not
-  reachable: there is no allow branch that does not require `SCOPED`.
+- **It never falls back to a platform credential.** Version 1 requires `SCOPED`.
+  Version 2 additionally permits `USER_GRANTED` for explicitly accepted user
+  credentials/roles and actions. Their provider permissions and lifetime remain
+  user-configured; no existing policy silently acquires this authority.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from .address import ADDRESS_PATTERN
 
 __all__ = [
     "POLICY_SCHEMA_VERSION",
+    "SUPPORTED_POLICY_SCHEMA_VERSIONS",
+    "UserCredentialAuthority",
     "Action",
     "AcceptanceMode",
     "AuthorizationContext",
@@ -179,6 +182,7 @@ __all__ = [
 # its shape. `authorize_action` denies a version it was not built for
 # (`schema_unsupported`) rather than interpreting it optimistically.
 POLICY_SCHEMA_VERSION = 1
+SUPPORTED_POLICY_SCHEMA_VERSIONS = frozenset({1, 2})
 
 
 class Action(StrEnum):
@@ -224,11 +228,11 @@ class CredentialScope(StrEnum):
     """Whether a narrowly-scoped credential could actually be issued for an action.
 
     Resolved by the caller from the existing credential services, never by this
-    module. Three members rather than a bool because the three have genuinely
-    different causes and only one of them permits:
+    module. Distinct values preserve the source and limits of authority:
 
-    - `SCOPED` — a credential limited to this policy's repositories/connections was
-      obtained. The only value that permits.
+    - `SCOPED` — a credential limited to this policy's repositories/connections.
+    - `USER_GRANTED` — version 2 explicitly accepts a selected user's credential
+      or role with its configured provider permissions and provider-managed lifetime.
     - `UNSCOPABLE` — the provider cannot express a credential this narrow. A block,
       and the issue's named follow-up: the missing provider capability becomes a
       linked implementation prerequisite rather than a reason to relax the rule.
@@ -241,6 +245,7 @@ class CredentialScope(StrEnum):
     """
 
     SCOPED = "scoped"
+    USER_GRANTED = "user_granted"
     UNSCOPABLE = "unscopable"
     UNKNOWN = "unknown"
 
@@ -322,6 +327,35 @@ class PolicyLimits(BaseModel):
     max_concurrent_actions: int = Field(gt=0, le=100)
 
 
+class UserCredentialAuthority(BaseModel):
+    """Explicit approval of user-configured provider permissions, not platform fallback.
+
+    ADP gates credential issuance for the approved work. The provider controls
+    permissions and lifetime of issued credentials, including copied API keys.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    permission_mode: Literal["user_configured"]
+    lifetime: Literal["provider_managed"]
+    vault_credential_ids: list[str] = Field(default_factory=list, max_length=64)
+    aws_role_arns: list[str] = Field(default_factory=list, max_length=32)
+    actions: list[Action] = Field(min_length=1, max_length=len(Action))
+
+    @model_validator(mode="after")
+    def _explicit_targets(self):
+        if not self.vault_credential_ids and not self.aws_role_arns:
+            raise ValueError("user credential authority requires named credentials or IAM roles")
+        for name in ("vault_credential_ids", "aws_role_arns", "actions"):
+            values = getattr(self, name)
+            if len(values) != len(set(values)):
+                raise ValueError(f"{name} must not contain duplicates")
+        if any(not value.strip() or len(value) > 255 for value in self.vault_credential_ids):
+            raise ValueError("invalid vault credential identifier")
+        if any(not re.fullmatch(r"arn:aws(?:-[a-z-]+)?:iam::[0-9]{12}:role/[a-zA-Z0-9+=,.@_/-]+", arn) for arn in self.aws_role_arns):
+            raise ValueError("IAM roles must be exact role ARNs without wildcards")
+        return self
+
+
 class ExecutionPolicy(BaseModel):
     """What a plan owner authorized, recorded on the accepted plan version.
 
@@ -343,7 +377,8 @@ class ExecutionPolicy(BaseModel):
     # Pinned, not defaulted-and-ignored: `authorize_action` refuses a version it
     # was not built for. A `Literal` so an unknown version is a 422 at the
     # boundary, which is where a document this build cannot interpret should stop.
-    schema_version: Literal[POLICY_SCHEMA_VERSION] = POLICY_SCHEMA_VERSION
+    schema_version: Literal[1, 2] = POLICY_SCHEMA_VERSION
+    user_credentials: UserCredentialAuthority | None = None
 
     # --- Server-stamped. A submitted document must leave all three unset. ---
     # Not "may leave unset": :func:`stamp_policy` rejects a document that sets any
@@ -393,6 +428,22 @@ class ExecutionPolicy(BaseModel):
     expires_at: datetime
 
     limits: PolicyLimits
+
+    @model_serializer(mode="wrap")
+    def _preserve_v1_document(self, handler):
+        document = handler(self)
+        if self.user_credentials is None:
+            document.pop("user_credentials", None)
+        return document
+
+    @model_validator(mode="after")
+    def _user_credentials_require_v2(self):
+        if self.user_credentials is not None:
+            if self.schema_version != 2:
+                raise ValueError("user credential permissions require policy schema_version 2")
+            if not set(self.user_credentials.actions) <= set(self.allowed_actions):
+                raise ValueError("credential actions must be declared policy actions")
+        return self
 
     @model_validator(mode="after")
     def _human_gates_are_declared_actions(self) -> ExecutionPolicy:
@@ -487,6 +538,7 @@ class PolicySummary(BaseModel):
     # Where the authority applies. Repository and connection ids are the operator's
     # own names for things, not internal addresses, so they are shown as given.
     repository_ids: list[str]
+    user_credentials: UserCredentialAuthority | None = None
     environment_connection_ids: list[str]
     team_ids: list[str]
     # What may happen without asking again — `allowed_actions` minus `human_gates`.
@@ -513,6 +565,7 @@ def summarize_policy(policy: ExecutionPolicy) -> PolicySummary:
     """
     return PolicySummary(
         repository_ids=list(policy.repository_ids),
+        user_credentials=policy.user_credentials.model_copy(deep=True) if policy.user_credentials is not None else None,
         environment_connection_ids=list(policy.environment_connection_ids),
         team_ids=list(policy.team_ids),
         autonomous_actions=[action for action in Action if policy.permits(action)],
@@ -673,6 +726,8 @@ class ResourceRef:
     # policy cannot authorize an action against another tenant's node even if the
     # caller resolved everything else correctly.
     org_id: str | None = None
+    user_credential_id: str | None = None
+    aws_role_arn: str | None = None
 
 
 @dataclass(frozen=True)
@@ -840,10 +895,10 @@ def authorize_action(
     # reconstructed from a stored `plan_document` dict by a future reader, or
     # constructed directly in a test. Interpreting an unknown version optimistically
     # is the one failure mode a version field exists to prevent.
-    if policy.schema_version != POLICY_SCHEMA_VERSION:
+    if policy.schema_version not in SUPPORTED_POLICY_SCHEMA_VERSIONS:
         return Decision.block(
             DenyReason.SCHEMA_UNSUPPORTED,
-            f"policy schema version {policy.schema_version} is not supported by this build (expected {POLICY_SCHEMA_VERSION})",
+            f"policy schema version {policy.schema_version} is not supported by this build (supported {sorted(SUPPORTED_POLICY_SCHEMA_VERSIONS)})",
         )
 
     # --- Version: act only on the policy actually in force ------------------
@@ -963,10 +1018,19 @@ def authorize_action(
                 f"action {action.value!r} targets an environment connection this policy does not authorize",
             )
 
-    # --- Delegated identity: a scoped credential, or nothing ---------------
-    # No branch below this permits without `SCOPED`. That absence is the control:
-    # "we could not scope it, so we used the platform credential" has no code path.
-    if context.credential_scope is not CredentialScope.SCOPED:
+    # --- Delegated identity: scoped or explicitly accepted user authority --
+    # USER_GRANTED is a distinct v2 contract, never a fallback from SCOPED.
+    user_authority = policy.user_credentials
+    user_granted = (
+        context.credential_scope is CredentialScope.USER_GRANTED
+        and policy.schema_version == 2
+        and user_authority is not None
+        and action in user_authority.actions
+        and (resource.user_credential_id is not None or resource.aws_role_arn is not None)
+        and (resource.user_credential_id is None or resource.user_credential_id in user_authority.vault_credential_ids)
+        and (resource.aws_role_arn is None or resource.aws_role_arn in user_authority.aws_role_arns)
+    )
+    if context.credential_scope is not CredentialScope.SCOPED and not user_granted:
         return Decision.block(
             DenyReason.CREDENTIAL_SCOPE_UNAVAILABLE,
             f"a credential scoped to this policy could not be issued for {action.value!r} ({context.credential_scope.value}); "
