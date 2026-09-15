@@ -1018,12 +1018,19 @@ def wave2_artifact_payloads() -> dict:
             "suites": {
                 "tests/activity/test_status_aborted.py": "passed",
                 "tests/test_status_vocabulary.py": "passed",
+                "src/__tests__/utils/status.test.ts": "passed",
+                "src/__tests__/components/InvocationChain.test.tsx": "passed",
             },
         },
         "stats_schema_keys": {
             # Exported from the backend Pydantic models, per the issue's "export
             # fixture JSON before comparing keys, never jq a TypeScript source file".
             "levels": {
+                "response": ["window_days", "active_runs", "today", "daily", "by_persona", "recent_failures", "top_repos", "spend"],
+                "active_runs": ["invocation_id", "invoked_at", "persona", "repo", "topic"],
+                "recent_failures": ["invocation_id", "invoked_at", "persona", "repo", "topic", "error_message"],
+                "top_repos": ["repo", "total"],
+                "spend": ["total_cost_usd", "total_tokens", "total_calls"],
                 "today": ["total", "completed", "failed", "active", "aborted"],
                 "daily": ["date", "total", "completed", "failed", "aborted"],
                 "by_persona": ["persona", "total", "completed", "failed", "aborted"],
@@ -2892,3 +2899,19 @@ class TestTheDocumentedFixtureConfig:
         index = (self.DOC.parent / "README.md").read_text(encoding="utf-8")
 
         assert "agent-control-evaluation.md" in index
+
+
+@pytest.mark.parametrize("artifact,field,value,check", [
+    ("harness_neutrality", "adapter_a", {}, "W2-06"),
+    ("aborted_counters", "seeded_aborted", 0, "W2-07"),
+    ("aborted_counters", "seeded_aborted", True, "W2-07"),
+    ("vocabulary_parity", "suites", {}, "W2-08"),
+    ("vocabulary_parity", "suites", {"arbitrary": "passed"}, "W2-08"),
+    ("stats_schema_keys", "levels", {}, "W2-09"),
+    ("stats_schema_keys", "levels", {"today": []}, "W2-09"),
+])
+def test_wave2_rejects_empty_or_vacuous_evidence(tmp_path, artifact, field, value, check):
+    payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+    payloads[artifact][field] = value
+    results = run_wave2(tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads))
+    assert results[check].status == _mod.STATUS_FAILED

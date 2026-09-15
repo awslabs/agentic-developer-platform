@@ -1488,6 +1488,8 @@ class Driver:
         # NOT have become an aborted run.
         neutrality = self._artifact("harness_neutrality")
         first, second = neutrality["adapter_a"], neutrality["adapter_b"]
+        if not isinstance(first, dict) or not first or not isinstance(second, dict) or not second:
+            raise AssertionError("both adapters must record nonempty normalized outcome accounting")
         if first != second:
             raise AssertionError(
                 f"two adapters' normalized outcome accounting differs: {first!r} vs {second!r}. The "
@@ -1518,6 +1520,9 @@ class Driver:
 
         before, after = counters["today_before"], counters["today_after"]
         seeded = counters["seeded_aborted"]
+
+        if type(seeded) is not int or seeded <= 0:
+            raise AssertionError("seeded_aborted must be a positive row count")
 
         delta_total = after["total"] - before["total"]
         delta_aborted = after[ABORTED_STATUS] - before[ABORTED_STATUS]
@@ -1622,9 +1627,16 @@ class Driver:
                 "an unknown status reached the invocation table despite being rejected; validation must "
                 "happen BEFORE the write, not be corrected after it"
             )
-        failed_suites = [
-            name for name, status in (parity.get("suites") or {}).items() if status != "passed"
-        ]
+        suites = parity["suites"]
+        required_suites = {
+            "tests/activity/test_status_aborted.py",
+            "tests/test_status_vocabulary.py",
+            "src/__tests__/utils/status.test.ts",
+            "src/__tests__/components/InvocationChain.test.tsx",
+        }
+        if not isinstance(suites, dict) or not required_suites.issubset(suites):
+            raise AssertionError("vocabulary parity must include every required writer/reader/renderer suite")
+        failed_suites = [name for name, status in suites.items() if status != "passed"]
         if failed_suites:
             raise AssertionError(
                 f"shared vocabulary/renderer parity suites did not pass on merged head: "
@@ -1710,8 +1722,14 @@ class Driver:
         # checks above are a fixed list in this file and would not notice a field
         # ADDED to the schema and omitted by the deployment.
         fixture = self._artifact("stats_schema_keys")
-        for level, expected_keys in (fixture.get("levels") or {}).items():
-            actual = body.get(level)
+        levels = fixture["levels"]
+        required_levels = {"response", "today", "daily", "by_persona", "active_runs", "recent_failures", "top_repos", "spend"}
+        if not isinstance(levels, dict) or not required_levels.issubset(levels):
+            raise AssertionError("schema-derived keys must cover every stats response level")
+        for level, expected_keys in levels.items():
+            if not isinstance(expected_keys, list) or not expected_keys or not all(isinstance(key, str) and key for key in expected_keys):
+                raise AssertionError(f"schema-derived keys for {level!r} must be a nonempty string list")
+            actual = body if level == "response" else body.get(level)
             actual_keys = set(
                 actual.keys()
                 if isinstance(actual, dict)

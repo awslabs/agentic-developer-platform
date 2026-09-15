@@ -383,3 +383,12 @@ around. Waves 3 and 4 are still unregistered and still refused outright.
 * `platform/scripts/tests/test_agent_control_eval.py` — its guard tests (run in CI)
 * `.github/workflows/agent-control-ci.yml` — the CI job
 * `modules/gateway/src/activity/control_schemas.py` — the response contract W1-09 checks against
+
+
+For W2-08, `vocabulary_parity.suites` must include passing results for
+`tests/activity/test_status_aborted.py`, `tests/test_status_vocabulary.py`,
+`src/__tests__/utils/status.test.ts`, and
+`src/__tests__/components/InvocationChain.test.tsx`.
+For W2-09, export nonempty backend schema key lists for `response` (the root),
+`today`, `daily`, `by_persona`, `active_runs`, `recent_failures`, `top_repos`, and
+`spend` into `stats_schema_keys.levels`. Empty evidence cannot establish parity.
