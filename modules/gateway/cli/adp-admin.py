@@ -41,6 +41,8 @@ def parser():
     setup.add_argument("--dry-run", action="store_true", help="Check setup without changing configuration")
     setup.add_argument("--yes", action="store_true", help="Approve provider changes with explicit inputs")
     setup.add_argument("--json", action="store_true")
+    if Path(__file__).with_name("adp-bedrock.py").is_file():
+        commands.add_parser("bedrock", help="Connect and verify Bedrock destinations; inspect routing")
     return root
 
 
