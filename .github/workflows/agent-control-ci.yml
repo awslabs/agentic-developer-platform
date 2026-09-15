@@ -69,6 +69,21 @@ on:
       # gate would not run on exactly the PRs most likely to break it.
       - 'modules/agent-factory/agent/src/control-envelope.ts'
       - 'modules/agent-factory/agent/src/control-envelope.test.ts'
+      # Harness-neutral control runtime (#3962). The adapter contract, the Claude
+      # adapter and the retry-safe attempt lifecycle in resilientQuery.
+      #
+      # resilientQuery.ts is listed even though it is not a "control" file by
+      # name: it is where an attempt is torn down and rebuilt, so it is where the
+      # three retry-safety properties (replace-on-retry, invalidate-before-
+      # teardown, stale-is-inert) are actually enforced. It also has 17 callers
+      # outside the control path, which is the reason a PR touching it must run
+      # this gate — the regression most likely to reach production from that file
+      # is breaking one of those callers, not breaking control.
+      - 'modules/agent-factory/agent/src/control-runtime.ts'
+      - 'modules/agent-factory/agent/src/control-runtime.test.ts'
+      - 'modules/agent-factory/agent/src/harnesses/**'
+      - 'modules/agent-factory/agent/src/utils/resilientQuery.ts'
+      - 'modules/agent-factory/agent/src/utils/resilientQuery.test.ts'
       # The shared vectors both verifiers must agree on. The fixture is generated
       # by the Python script below and consumed by the TypeScript suite: an edit
       # to either side alone is the drift these vectors exist to catch.
@@ -219,6 +234,14 @@ jobs:
         # verb added to SUPPORTED_ACTIONS without its transport would make every
         # control route report outcomes it cannot deliver; this fails the build on
         # that change even if the suite were edited in the same commit.
+        #
+        # #3962 made this stage-parameterized instead of an unconditional "must be
+        # empty". S2/S4/S6 each deliver one verb, and against the old form their
+        # only way forward was to delete the guard — which is how a gate that
+        # cannot express "three of four" dies. It now compares against an explicit
+        # expected set (still empty at this stage: all four verbs unsupported) and
+        # additionally pins the verb universe, so adding a fifth verb without
+        # updating this list fails here rather than passing unexamined.
         env:
           # Importing control_service pulls in src/activity/__init__.py -> routes.py
           # -> src/auth/__init__.py, and the auth middleware constructs AuthService()
@@ -237,21 +260,47 @@ jobs:
 
           from src.activity.control_service import SUPPORTED_ACTIONS
 
+          # The four public verbs. Pinned here so a fifth verb cannot appear
+          # without a deliberate edit to this gate.
+          ALL_VERBS = {"pause", "resume", "steer", "abort"}
+
+          # Verbs with a proven runtime boundary as of this stage. S3 delivers the
+          # adapter contract and the Claude transport, NOT a verb: pause without
+          # proven tool quiescence would let the dashboard claim "Paused" while a
+          # Bash call is still writing to the repository. S2/S4/S6 each add their
+          # verb to this set in the same change that proves it.
+          EXPECTED_SUPPORTED: set[str] = set()
+
           # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
-          # the check below if this ever becomes a getattr-with-default. Assert the
-          # real type so a refactor that drops the constant fails here rather than
-          # reporting OK.
+          # a truthiness check, so a refactor that drops the constant could report
+          # OK. Assert the real type first.
           if not isinstance(SUPPORTED_ACTIONS, frozenset):
               sys.exit(
                   f"SUPPORTED_ACTIONS must be a frozenset, got {type(SUPPORTED_ACTIONS).__name__}."
               )
 
-          if SUPPORTED_ACTIONS:
+          unknown = set(SUPPORTED_ACTIONS) - ALL_VERBS
+          if unknown:
               sys.exit(
-                  f"SUPPORTED_ACTIONS must be empty in this story, found: {sorted(SUPPORTED_ACTIONS)}. "
-                  "Implementing a verb requires its transport, state contract and evaluation in the same change."
+                  f"SUPPORTED_ACTIONS contains verbs this gate does not know about: {sorted(unknown)}. "
+                  "Add them to ALL_VERBS here and to the adapter capability contract."
               )
-          print("OK: no control verb is advertised as supported")
+
+          if set(SUPPORTED_ACTIONS) != EXPECTED_SUPPORTED:
+              unexpected = sorted(set(SUPPORTED_ACTIONS) - EXPECTED_SUPPORTED)
+              missing = sorted(EXPECTED_SUPPORTED - set(SUPPORTED_ACTIONS))
+              sys.exit(
+                  "SUPPORTED_ACTIONS does not match this stage's expected set.\n"
+                  f"  advertised without proof: {unexpected}\n"
+                  f"  expected but absent:      {missing}\n"
+                  "Implementing a verb requires its transport, state contract and evaluation "
+                  "in the same change; then add it to EXPECTED_SUPPORTED in this workflow."
+              )
+          print(
+              "OK: advertised verbs match this stage — "
+              f"supported={sorted(EXPECTED_SUPPORTED)}, "
+              f"unsupported={sorted(ALL_VERBS - EXPECTED_SUPPORTED)}"
+          )
           PY
 
       - name: Run pod-security manifest assertions
@@ -291,6 +340,13 @@ jobs:
         working-directory: modules/agent-factory/agent
         # The listener is wired into agent-worker.ts; a type error there is a
         # runtime crash in a pod that is already executing a customer's work.
+        #
+        # This step also carries the control runtime's provider-free guarantee,
+        # which is partly a TYPE guarantee: the shared surface must not expose
+        # Query/SDKUserMessage or require an AsyncIterable input. ts-jest
+        # typechecks per test file, so a cross-module boundary break — exactly
+        # what a bad adapter/consumer seam produces — can pass the suite below
+        # and still fail the image build. Project-wide `tsc` is what catches it.
         run: npx tsc --noEmit
 
       - name: Run control-listener tests
@@ -303,8 +359,18 @@ jobs:
         # committed vectors the gateway's test_envelope_vectors.py verifies from
         # the other side, so leaving it out meant a divergence between the two
         # verifiers could merge green.
+        #
+        # Issue #3962 adds the three control-runtime suites. They are pinned by
+        # path for the same reason as everything else here — a deleted control
+        # test file must break the build rather than glob to a green "no tests".
+        # resilientQuery.test.ts is included because it holds the retry-safety
+        # evidence (cancel during backoff, stale-handle inertness, dispose-once)
+        # AND the regression guard proving the legacy no-option path used by 17
+        # other callers is unchanged. A control edit that broke those callers
+        # would otherwise merge green from this workflow's point of view.
         run: |
           npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
+            src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -313,8 +379,149 @@ jobs:
             --collectCoverageFrom='src/control-keyring.ts' \
             --collectCoverageFrom='src/control-revalidation.ts' \
             --collectCoverageFrom='src/lib/runIdentity.ts' \
+            --collectCoverageFrom='src/control-runtime.ts' \
+            --collectCoverageFrom='src/harnesses/claude-control.ts' \
+            --collectCoverageFrom='src/utils/resilientQuery.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
             --ci --verbose
+
+      - name: Assert the control adapter advertises no verb as supported
+        working-directory: modules/agent-factory/agent
+        # The pod-side half of the gateway's SUPPORTED_ACTIONS gate above. Those
+        # two sets are owned by different modules in different languages and
+        # nothing else compares them, so a verb enabled on one side only is
+        # exactly the drift this pair exists to catch — and it is the worse of the
+        # two directions: an adapter that claims `pause: true` while the gateway
+        # rejects the verb is a dashboard promising an operator a capability that
+        # no route will honour.
+        #
+        # This runs the real adapter rather than reading the source as text,
+        # because the property under test is the *intersection* result. Grepping
+        # for `supported: false` would pass on an adapter whose intersection was
+        # written with `||` instead of `&&`, which is the specific mistake that
+        # turns three independent gates into one.
+        #
+        # Reading the adapter's capability map alone does NOT catch that mistake,
+        # which was verified by mutation rather than assumed: with no attempt
+        # attached all three inputs are falsy, so `a || b || c` and `a && b && c`
+        # both yield false and the gate passed. Hence the explicit veto probes
+        # below — each one supplies exactly one true input and requires the result
+        # to still be false, which is what "independently owned gates" means and is
+        # false under `||` for every probe.
+        run: |
+          cat > .verb-gate.ts <<'TS'
+          import { ClaudeControlAdapter } from './src/harnesses/claude-control';
+          import {
+            CONTROL_PROTOCOL_VERSION,
+            IMPLEMENTED_CONTROL_VERBS,
+            intersectCapabilities,
+            noVerbsSupported,
+          } from './src/control-runtime';
+
+          const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
+          // Verbs with a proven runtime boundary at this stage. Empty in S3.
+          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>();
+
+          const fail = (msg: string): never => {
+            console.error(msg);
+            process.exit(1);
+          };
+
+          if (CONTROL_PROTOCOL_VERSION !== 1) {
+            fail(`Control protocol version changed to ${CONTROL_PROTOCOL_VERSION}. Bump the gateway peer and this gate together.`);
+          }
+
+          const implemented = [...IMPLEMENTED_CONTROL_VERBS];
+          if (implemented.length !== EXPECTED_SUPPORTED.size) {
+            fail(`IMPLEMENTED_CONTROL_VERBS is ${JSON.stringify(implemented)}, expected ${JSON.stringify([...EXPECTED_SUPPORTED])}.`);
+          }
+
+          // A live adapter with an attempt attached would be the strongest form of
+          // this check, but no attempt is needed: availability only ever removes
+          // verbs from the intersection, so an adapter that reports false here with
+          // no attempt and true with one would mean availability ADDED a
+          // capability, which the contract forbids.
+          const caps = new ClaudeControlAdapter().capabilities();
+          const advertised = ALL_VERBS.filter((v) => caps[v] === true);
+          const unexpected = advertised.filter((v) => !EXPECTED_SUPPORTED.has(v));
+          if (unexpected.length > 0) {
+            fail(
+              `Adapter advertises verbs with no proven boundary: ${JSON.stringify(unexpected)}. ` +
+                'A verb becomes true only in the change that proves its runtime boundary, ' +
+                "and the gateway's SUPPORTED_ACTIONS must enable it in the same PR.",
+            );
+          }
+
+          // Every verb must be explicitly present. `caps[v] === undefined` is
+          // falsy, so a dropped key would read as "unsupported" and pass silently
+          // while the real surface reported nothing at all for that verb.
+          const missingKeys = ALL_VERBS.filter((v) => typeof caps[v] !== 'boolean');
+          if (missingKeys.length > 0) {
+            fail(`Capability map is missing boolean entries for: ${JSON.stringify(missingKeys)}.`);
+          }
+
+          // Each of the three inputs must be able to veto on its own. One true
+          // input with the other two false must still produce false; under `||` it
+          // produces true, which is precisely the collapse of three gates into one.
+          const supported = { supported: true as const, reason: '' };
+          const allSupported = { pause: supported, resume: supported, steer: supported, abort: supported };
+          const probes: ReadonlyArray<{ name: string; caps: Record<string, boolean> }> = [
+            {
+              name: 'adapter support alone must not enable a verb',
+              caps: intersectCapabilities({
+                implemented: new Set(),
+                adapter: allSupported,
+                available: new Set(ALL_VERBS),
+              }),
+            },
+            {
+              name: 'ADP implementation alone must not enable a verb',
+              caps: intersectCapabilities({
+                implemented: new Set(ALL_VERBS),
+                adapter: noVerbsSupported('no proven boundary'),
+                available: new Set(ALL_VERBS),
+              }),
+            },
+            {
+              name: 'availability alone must not enable a verb',
+              caps: intersectCapabilities({
+                implemented: new Set(),
+                adapter: noVerbsSupported('no proven boundary'),
+                available: new Set(ALL_VERBS),
+              }),
+            },
+            {
+              name: 'unavailability must veto an implemented+supported verb',
+              caps: intersectCapabilities({
+                implemented: new Set(ALL_VERBS),
+                adapter: allSupported,
+                available: new Set(),
+              }),
+            },
+          ];
+          for (const probe of probes) {
+            const leaked = ALL_VERBS.filter((v) => probe.caps[v] === true);
+            if (leaked.length > 0) {
+              fail(
+                `Capability intersection is not an intersection: ${probe.name} — but ${JSON.stringify(leaked)} came back true. ` +
+                  'The three inputs are independently owned and must be combined with && so each can veto alone.',
+              );
+            }
+          }
+
+          console.log(`OK: adapter advertises supported=${JSON.stringify(advertised)}, unsupported=${JSON.stringify(ALL_VERBS.filter((v) => !caps[v]))}`);
+          console.log(`OK: all ${probes.length} intersection veto probes hold`);
+          TS
+          # The exit code is captured and re-raised explicitly, and the temp file is
+          # removed on both paths. Written this way because the obvious form —
+          # `npx ts-node .verb-gate.ts` then `rm -f` — makes the successful `rm` the
+          # step's last command, so the whole gate reports success on a real
+          # violation under any shell without `-e`. Verified by mutation: enabling a
+          # verb exits 1 here, and exited 0 before this change.
+          npx ts-node .verb-gate.ts
+          status=$?
+          rm -f .verb-gate.ts
+          exit $status
 
       - name: Setup Python
         uses: actions/setup-python@v7
