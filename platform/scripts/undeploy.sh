@@ -83,8 +83,9 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  --dry-run              Show what would be destroyed without executing"
-      echo "  --skip <phase>         Skip a phase (repeatable). Phases: agent_context,"
-      echo "                         webhook_ingress, agent_factory, gateway, platform"
+      echo "  --skip <phase>         Skip a phase (repeatable). Phases: superplane,"
+      echo "                         agent_context, webhook_ingress, agent_factory, gateway,"
+      echo "                         platform"
       echo "  --from <phase>         Start from a specific phase (skip all prior)"
       echo "  --bootstrap            Also destroy Terraform state backend (separate prompt)"
       echo "  --yes                  Skip confirmation prompt (account-ID gate still required)"
@@ -127,10 +128,11 @@ info() { echo -e "${CYAN}  $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Phase definitions (ordered)
 # ---------------------------------------------------------------------------
-# Phase order: agent_context -> webhook_ingress -> agent_factory -> gateway -> platform
+# Phase order: superplane -> agent_context -> webhook_ingress -> agent_factory -> gateway -> platform
 # This matches undeploy-phases.sh function names and deploy-all.sh --destroy order.
-PHASE_ORDER=(agent_context webhook_ingress agent_factory gateway platform)
+PHASE_ORDER=(superplane agent_context webhook_ingress agent_factory gateway platform)
 PHASE_ESTIMATED_TIME=(
+  "1-3 min"    # superplane
   "2-5 min"    # agent_context
   "1-3 min"    # webhook_ingress
   "3-8 min"    # agent_factory
@@ -250,7 +252,7 @@ _phase0_account_gate() {
   if [[ "$AUTO_YES" != true ]]; then
     echo -e "${YELLOW}  This will DESTROY all ADP infrastructure in account $caller_account ($ADP_ENVIRONMENT).${NC}"
     echo ""
-    echo "  Destroy order: agent_context -> webhook_ingress -> agent_factory -> gateway -> platform"
+    echo "  Destroy order: superplane -> agent_context -> webhook_ingress -> agent_factory -> gateway -> platform"
     echo ""
     echo "  Resources that SURVIVE (by design):"
     echo "    - Terraform state backend (S3 + DynamoDB) — use --bootstrap to include"
@@ -305,6 +307,18 @@ _dry_run_report() {
     echo -e "  ${BLUE}$phase${NC}${skip_marker} (est. $est):"
 
     case "$phase" in
+      superplane)
+        # Reports "not deployed" until U3 lands the module's Terraform (Issue #5037).
+        # Present here so a dry-run lists the phase rather than printing an empty block
+        # for it, which reads as "nothing will happen" instead of "nothing exists yet".
+        local sp_tf_state="no"
+        aws s3api head-object --bucket "$state_bucket" \
+          --key "${ADP_ENVIRONMENT}/modules/superplane/terraform.tfstate" >/dev/null 2>&1 && sp_tf_state="yes"
+        local sp_tf_present="no"
+        ls "$ROOT_DIR/modules/domain-apps/superplane/infra/control-plane"/*.tf >/dev/null 2>&1 && sp_tf_present="yes"
+        echo "    Module Terraform present: $sp_tf_present"
+        echo "    Terraform state: $sp_tf_state"
+        ;;
       agent_context)
         local ns_exists="no"
         kubectl get namespace agent-context >/dev/null 2>&1 && ns_exists="yes"

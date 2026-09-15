@@ -53,6 +53,7 @@ class TestFeaturesDefaults:
             "FEATURE_BUDGET_SPEND_ENABLED",
             "FEATURE_AGENT_CONTROL_ENABLED",
             "FEATURE_NEW_UI_ENABLED",
+            "FEATURE_SUPERPLANE_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -83,6 +84,11 @@ class TestFeaturesDefaults:
                 # /next shell is opt-in per environment, so "absent" must mean the
                 # new experience is not advertised at all.
                 "new_ui": False,
+                # Issue #5037: fail-closed. The Superplane domain app must not change
+                # any existing surface's behaviour while its gate is off, and the
+                # infrastructure behind it belongs to later units — so "absent" must
+                # mean no route is reachable, not "reachable but broken".
+                "superplane": False,
             }
         }
 
