@@ -121,6 +121,16 @@ variable "enable_container_insights" {
   default     = false
 }
 
+# Issue #4999: without this, NetworkPolicy objects in the cluster are accepted
+# but never enforced. Default false — enabling it activates every existing
+# policy at once, so it is a per-environment decision. See the module variable
+# in modules/eks/variables.tf for the pre-enablement audit requirement.
+variable "enable_network_policy_controller" {
+  description = "Enable the EKS Auto Mode network-policy controller (what actually enforces NetworkPolicy objects). Audit existing policies for deny-without-allow gaps before enabling."
+  type        = bool
+  default     = false
+}
+
 variable "state_bucket" {
   description = "S3 bucket for Terraform state and CodeBuild source zips. Defaults to adp-terraform-state-<account_id>."
   type        = string
@@ -130,6 +140,24 @@ variable "state_bucket" {
 
 variable "securityagent_log_retention_days" {
   description = "Retention for the nightly Security Agent log group (#4443)."
+  type        = number
+  default     = 30
+}
+
+variable "manage_bedrock_invocation_logging" {
+  description = "Own the account/region Bedrock logging singleton in this platform state. Set false before first apply when another state owns it."
+  type        = bool
+  default     = true
+}
+
+variable "bedrock_invocation_logging_enabled" {
+  description = "Enable provider invocation logging. False removes the logging configuration but retains its destinations and encryption key."
+  type        = bool
+  default     = true
+}
+
+variable "bedrock_invocation_log_retention_days" {
+  description = "Retention for Bedrock invocation logs in CloudWatch and S3 (must be a finite CloudWatch retention value)"
   type        = number
   default     = 30
 }

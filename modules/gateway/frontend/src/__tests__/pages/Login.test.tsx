@@ -8,6 +8,7 @@ vi.mock('@/services/auth', () => ({
   buildLoginUrl: vi.fn(),
   buildGitHubLoginUrl: vi.fn(),
   fetchLoginOptions: vi.fn(),
+  storePostLoginRedirect: vi.fn(),
 }));
 
 // Mock cognito config

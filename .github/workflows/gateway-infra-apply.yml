@@ -32,12 +32,12 @@ on:
         required: false
         default: 'no'
       apply_targets:
-        description: 'Optional. Space-separated Terraform resource addresses to scope this run to (passed as -target to plan). Empty = full plan/apply (default). Use to publish a specific resource without dragging in unrelated pending drift, e.g. "aws_ssm_parameter.redis_iam_username[0] aws_ssm_parameter.redis_cache_name[0]".'
+        description: 'Optional. Space-separated Terraform resource addresses to scope this run to (passed as -target to plan). Empty = full plan/apply (default). Use to publish a specific resource without dragging in unrelated pending drift, e.g. "aws_ssm_parameter.redis_iam_username[0] aws_ssm_parameter.redis_cache_name[0]". WARNING (#4932): a scoped run converges ONLY these addresses. Its "Plan: N to change" counts just the targeted subset, so a green scoped run does NOT prove main''s Terraform is live for any other module — the post-apply convergence guard cannot assert convergence and will say so in the summary.'
         required: false
         default: ''
 
 concurrency:
-  group: tf-apply-gateway-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
+  group: gateway-release-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
 
 env:
@@ -504,6 +504,35 @@ jobs:
             set +f
             echo "::warning::Scoped apply — plan restricted to targets: ${APPLY_TARGETS}"
           fi
+          # Issue #4932: record scope for the post-apply convergence guard and the
+          # summary. A scoped run's "Plan: N to change" counts only the targeted
+          # subset, so convergence of the module as a whole cannot be asserted from
+          # it — run 34573620121 reported "0 to add, 2 to change" while a bare plan
+          # on the same head saw 38, because the operator scoped it to three
+          # pre-signup addresses. The broker module was simply never in the plan.
+          echo "scoped=$([ -n "${APPLY_TARGETS:-}" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+          # Issue #4932: publish the EFFECTIVE TF_VAR_* context to the job env so the
+          # post-apply guard plans with byte-identical inputs. Step-scoped `env:` does
+          # not reach later steps, and the unsets above are load-bearing: a guard that
+          # re-planned without them would see an empty ALB context and report a false
+          # residual diff that destroys the CloudFront /api origin + API GW route body
+          # (#3859 / #3843). Only vars still set after the unsets are exported; every
+          # value here is single-line (ARNs, DNS names, JSON lists) so plain
+          # NAME=value is safe.
+          for v in TF_VAR_internal_plane_alb_arn TF_VAR_internal_plane_alb_dns \
+                   TF_VAR_internal_plane_alb_security_group_ids TF_VAR_internal_alb_arn \
+                   TF_VAR_internal_alb_dns TF_VAR_alb_security_group_ids \
+                   TF_VAR_enable_vpc_origin TF_VAR_gitlab_origin_dns \
+                   TF_VAR_gitlab_origin_arn TF_VAR_orchestration_dispatch_queue_url \
+                   TF_VAR_orchestration_dispatch_queue_arn \
+                   TF_VAR_orchestration_webhook_events_table \
+                   TF_VAR_orchestration_webhook_events_kms_key_arn \
+                   TF_VAR_orchestration_github_app_secret_arn_pattern; do
+            if [ -n "${!v+x}" ]; then
+              printf '%s=%s\n' "$v" "${!v}" >> "$GITHUB_ENV"
+            fi
+          done
 
           terraform plan -var-file="../../../${{ env.VAR_FILE }}" \
             "${TARGET_ARGS[@]}" \
@@ -608,10 +637,125 @@ jobs:
             --query 'Invalidation.{Id:Id,Status:Status}' \
             --output table
 
+      # Issue #4932: prove the apply actually converged the module. Run 34573620121
+      # reported a green "Plan: 0 to add, 2 to change" and an operator reasonably read
+      # that as "main's Terraform is now live" — but the run was dispatched with
+      # apply_targets scoped to three pre-signup addresses, so the github-auth-broker
+      # module was never in the plan and its IDENTITY_INDEX_TABLE /
+      # USER_IDENTITY_INDEX_TABLE env vars never landed. The first real sign-in logged
+      # "IDENTITY_INDEX_TABLE is not configured" (harmless in shadow mode; a total
+      # login outage once sign-in enforcement flips). Terraform did emit "Applied
+      # changes may be incomplete", but buried in ~2,900 log lines.
+      #
+      # This re-plans with NO -target and the same var-file + TF_VAR_* context the
+      # apply used (exported to $GITHUB_ENV by the plan step), then:
+      #   - full apply + empty plan   -> converged, pass
+      #   - full apply + residual     -> FAIL loudly, list every residual address
+      #   - scoped apply              -> residual is expected by construction, so warn
+      #                                  and record "not asserted" rather than fail
+      #
+      # Runs AFTER the CloudFront invalidation deliberately: this guard can fail the
+      # run, and the invalidation must still happen for whatever the apply did change
+      # (an uninvalidated /api/* edge cache is its own outage class — deploy-instance
+      # #1062). Skipped when the apply failed; that already fails the run.
+      - name: Convergence guard (post-apply plan must be empty)
+        id: converge
+        if: steps.apply.outcome == 'success'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -uo pipefail
+          EXIT_CODE=0
+          terraform plan -var-file="../../../${{ env.VAR_FILE }}" \
+            -detailed-exitcode -no-color 2>&1 | tee /tmp/converge-plan.txt || EXIT_CODE=$?
+
+          # Residual resource addresses, for the summary. Terraform prints one
+          # `  # <address> <verb>` header per planned resource at exactly two spaces
+          # of indent; "(N unchanged ... hidden)" notes are always indented deeper, so
+          # the 2-space anchor plus the non-"(" first char excludes them. Matching on
+          # the address rather than an enumerated verb list keeps replace / tainted /
+          # "read during apply" headers in the report too. Display only — the
+          # authoritative pass/fail signal is -detailed-exitcode above.
+          grep -E '^  # [^ (]+ ' /tmp/converge-plan.txt > /tmp/converge-residual.txt 2>/dev/null || true
+          RESIDUAL_COUNT=$(wc -l < /tmp/converge-residual.txt | tr -d ' ')
+
+          if [ "$EXIT_CODE" -eq 1 ]; then
+            echo "verdict=plan-error" >> "$GITHUB_OUTPUT"
+            echo "::error::Convergence guard could not plan (terraform error). The apply succeeded but convergence is UNVERIFIED — inspect this step's log."
+            exit 1
+          fi
+
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "verdict=converged" >> "$GITHUB_OUTPUT"
+            echo "residual_count=0" >> "$GITHUB_OUTPUT"
+            echo "Converged: post-apply plan is empty — live state matches this ref's Terraform."
+            exit 0
+          fi
+
+          # EXIT_CODE == 2: residual diff.
+          echo "residual_count=$RESIDUAL_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Residual plan after apply — $RESIDUAL_COUNT resource(s) still differ:"
+          cat /tmp/converge-residual.txt || true
+
+          if [ "${{ steps.plan.outputs.scoped }}" = "true" ]; then
+            echo "verdict=not-asserted-scoped" >> "$GITHUB_OUTPUT"
+            echo "::warning::Scoped apply (apply_targets was set) — $RESIDUAL_COUNT resource(s) remain unconverged by construction."
+            echo "::warning::This run does NOT prove main's Terraform is live for anything outside the targeted addresses (#4932)."
+            exit 0
+          fi
+
+          echo "::error::Apply completed but the module did NOT converge: $RESIDUAL_COUNT resource(s) still differ from this ref's Terraform."
+          echo "::error::Live state does not match main. Review the residual plan above and re-run a full apply, or fix the underlying drift."
+          echo "verdict=residual-drift" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      # Issue #4932: Scope and Convergence are reported here, not just buried in the
+      # log. "Status: applied" alone is what let a targeted run be read as "main's
+      # Terraform is live" when 36 resources (including the broker's identity-index
+      # env vars) were never planned.
       - name: Summary
         if: always()
+        env:
+          APPLY_TARGETS: ${{ inputs.apply_targets }}
         run: |
           echo "## Terraform Apply -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status**: ${{ steps.apply.outcome == 'success' && 'applied' || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "${APPLY_TARGETS:-}" ]; then
+            echo "- **Scope**: ⚠️ SCOPED to \`${APPLY_TARGETS}\` — only these addresses (and their dependencies) were planned/applied" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Scope**: full (no \`apply_targets\`)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          RESIDUAL="${{ steps.converge.outputs.residual_count }}"
+          case "${{ steps.converge.outputs.verdict }}" in
+            converged)
+              echo "- **Convergence**: ✅ converged — post-apply plan is empty, live state matches this ref" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            not-asserted-scoped)
+              echo "- **Convergence**: ⚠️ NOT ASSERTED — scoped apply left ${RESIDUAL} resource(s) unconverged. This run does **not** prove this ref's Terraform is live outside the targeted addresses." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            residual-drift)
+              echo "- **Convergence**: ❌ RESIDUAL DRIFT — ${RESIDUAL} resource(s) still differ from this ref after a full apply" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            plan-error)
+              echo "- **Convergence**: ❓ UNVERIFIED — the post-apply plan itself errored" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "- **Convergence**: not checked (apply did not succeed)" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+
+          if [ -s /tmp/converge-residual.txt ]; then
+            {
+              echo ""
+              echo "<details><summary>Residual plan after apply (${RESIDUAL} resource(s))</summary>"
+              echo ""
+              echo '```'
+              sed 's/^  # //' /tmp/converge-residual.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

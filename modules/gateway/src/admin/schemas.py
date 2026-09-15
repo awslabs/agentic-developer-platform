@@ -123,6 +123,23 @@ class BudgetConfigResponse(BaseModel):
     budget_amount_usd: Decimal
     enforcement_mode: str
     updated_at: datetime
+    # Issue #4669: an ADVISORY sentence about the cap that was just written — never a
+    # reason it was refused. A `root_user` cap authored in a partition where the
+    # person's agent runs do not bill is inert: it displays, it validates, and it will
+    # never see a dollar (#4620). The operator finds that out weeks later, from spend
+    # that never stopped. So the create path says so at the moment of authoring.
+    #
+    # It is a field on the 201 rather than a 4xx on purpose. Which partition a
+    # person's runs bill to can change, an org admin may legitimately want the cap in
+    # place before it does, and this check reads a foreign tenant's ledger — a
+    # cross-tenant read must not be able to VETO a write inside this tenant.
+    #
+    # `None` by default, so every existing caller, transform and test that never saw
+    # this field is unaffected.
+    advisory: str | None = Field(
+        None,
+        description="Advisory warning about the created budget. Never a rejection — the budget was created.",
+    )
 
 
 class BudgetConfigUpdateRequest(BaseModel):
@@ -277,6 +294,16 @@ class BudgetListItem(BaseModel):
     entity_type: str
     entity_id: str
     entity_display_name: str | None = Field(None, description="Human-readable name for the entity (e.g. email, github username)")
+    # Issue #4948: "this budget's entity does not resolve to a tenancy row in this org,
+    # so nothing will ever match it". Set only for org/department/team rows, where the
+    # id namespace is checkable; person-scoped kinds keep their own resolution (#4536)
+    # and never set this. Flagged, never filtered out — the row is a spend control
+    # somebody believes is in force, and removing it from the list removes the only
+    # evidence they have.
+    entity_unresolved: bool = Field(
+        default=False,
+        description="True when the entity id matches no organization/department/team in this org; the config cannot be enforced.",
+    )
     # Issue #4328: PeriodType, not a bare str (see BudgetConfigResponse).
     period_type: PeriodType
     budget_amount_usd: Decimal
@@ -339,6 +366,12 @@ class RateLimitListItem(BaseModel):
 
     entity_type: str
     entity_id: str
+    entity_display_name: str | None = Field(None, description="Human-readable name for org/department/team entities")
+    # Issue #4948 — see BudgetListItem.entity_unresolved.
+    entity_unresolved: bool = Field(
+        default=False,
+        description="True when the entity id matches no organization/department/team in this org; the config cannot be enforced.",
+    )
     rpm: int | None
     tpm: int | None
     concurrent_requests: int | None

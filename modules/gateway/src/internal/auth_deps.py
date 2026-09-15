@@ -17,6 +17,7 @@ to the shared secret. Shared-secret callers must send no X-Caller-Identity.
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import Header, HTTPException, Request
 
@@ -150,6 +151,11 @@ async def verify_internal_or_irsa(
             )
 
         request.state.token_context = token_context
+        if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and token_context.scope == "internal":
+            from src.agentauth.broker_identity import BROKER_PATHS, verify_broker_worker
+
+            if request.url.path in BROKER_PATHS:
+                await verify_broker_worker(request)
         logger.debug(
             "Internal endpoint authenticated via IRSA: agent=%s",
             token_context.user_id,
@@ -157,4 +163,9 @@ async def verify_internal_or_irsa(
         return
 
     # Legacy path: validate the shared-secret header.
+    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+        from src.agentauth.broker_identity import BROKER_PATHS
+
+        if request.url.path in BROKER_PATHS:
+            raise HTTPException(403, "worker credential brokers require IAM transport")
     _verify_internal_key(x_internal_api_key)

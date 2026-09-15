@@ -11,6 +11,7 @@
  * 7. PM continues workflow until complete or 30-minute timeout
  */
 
+import { loadHumanCommunication } from './human-communication';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
@@ -862,6 +863,8 @@ function loadRules(): string {
   if (agentMemoryContext) {
     rules.push(agentMemoryContext);
   }
+
+  rules.push(loadHumanCommunication([path.join(rulesDir, 'personas')]));
 
   return rules.join('\n\n---\n\n');
 }
@@ -2554,6 +2557,8 @@ async function executeQuickTask(issue: Issue, assessment: DepthAssessment): Prom
 
   const prompt = `You are @agent-pm executing a ${assessment.depth.toUpperCase()} task directly.
 
+${loadHumanCommunication([path.join(CWD, '.adp-rules', 'personas')])}
+
 ## Task
 **Issue #${issue.number}: ${issue.title}**
 
@@ -2602,14 +2607,11 @@ OR if you determine this needs a specialist agent:
 - **WebSearch/WebFetch**: Research if needed
 
 ## Completion
-When done, post a comment to issue #${issue.number} with:
-\`\`\`
-## ✅ Quick Task Complete
-
-**What was done**: [Brief summary]
-**Changes**: [Files changed or PR link]
-**Verification**: [How it was tested]
-\`\`\`
+Post one outcome comment to issue #${issue.number}. Start with the capability
+and its actual state, including any blocker. Link the PR or artifact, describe
+checks run and checks still missing, and name the next owner/action. Separate
+implementation, merge, deployment and acceptance. Do not call the task complete
+merely because this run ended.
 
 Then close the issue if the work is complete, or explain next steps if follow-up is needed.
 
@@ -2927,9 +2929,10 @@ Now proceeding to assign agents to ready work...`);
 
           if (monitoringResult.completed) {
             log('INFO', 'All agents completed successfully');
-            await postComment(`## All Agents Complete
+            await postComment(`## Coordination run ended
 
-All triggered agents have completed their work.
+The monitor reports all tracked work complete. Review the linked task outcomes
+for capability readiness; this notice does not verify deployment or acceptance.
 
 **Next Steps:**
 - Review the changes made by each agent

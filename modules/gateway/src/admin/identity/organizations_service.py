@@ -1,7 +1,7 @@
 """Transactional organization CRUD service.
 
 Issue #387: Single authoritative writer for tenant records.
-Pattern: Postgres transaction first, then DDB write-through + Cognito side-effects post-commit.
+Pattern: validate Postgres and require the Cognito group, then commit and project DDB.
 """
 
 import logging
@@ -10,7 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.installations.guards import assert_new_installation_ids_claimable_by
-from src.shared.models.organization import Department, Organization, Team
+from src.shared.exceptions import BedrockGatewayError
+from src.shared.models.organization import CREATED_VIA_OPERATOR, Department, Organization, Team
 from src.shared.models.vault import ChannelTenantMap
 
 from .cognito_sync import CognitoSyncService
@@ -66,7 +67,7 @@ class OrganizationsService:
     async def create_organization(self, req: OrganizationCreateRequest) -> OrganizationResponse:
         """Create org + default dept + team + channel_tenant_map in one transaction.
 
-        Post-commit: DDB write-through + Cognito group creation.
+        The Cognito group must succeed before commit; DDB projection follows.
         """
         github_ids = _extract_github_installation_ids(req.channels)
 
@@ -86,6 +87,11 @@ class OrganizationsService:
             settings=settings,
             github_installation_ids=github_ids,
             cognito_client_ids=[],
+            # Issue #4842 (R6=a): stamped, not inherited. This is the canonical
+            # org-create route (D4=A) and it is platform-admin gated, so the
+            # tenant is operator-provisioned by definition. Stating the value
+            # keeps the trust decision in code rather than in a column default.
+            created_via=CREATED_VIA_OPERATOR,
         )
         self._db.add(org)
 
@@ -148,6 +154,19 @@ class OrganizationsService:
                     )
                 )
 
+        # Validate database constraints first, then require the idempotent group
+        # operation to succeed. An IAM failure must not return a successful org.
+        # A group left behind by a later DB failure is safe on the same-id retry.
+        await self._db.flush()
+        if not await self._cognito_sync.ensure_org_group(req.id):
+            await self._db.rollback()
+            raise BedrockGatewayError(
+                "cognito_provisioning_failed",
+                "Cognito organization group creation failed. Retry the same organization request.",
+                502,
+                {"org_id": req.id},
+            )
+
         # Commit the transaction
         await self._db.commit()
         await self._db.refresh(org)
@@ -161,9 +180,6 @@ class OrganizationsService:
             github_installation_ids=github_ids,
             cognito_client_ids=[],
         )
-
-        # Step 7: Cognito group creation (idempotent)
-        await self._cognito_sync.ensure_org_group(req.id)
 
         # Step 8: Audit event
         logger.info(

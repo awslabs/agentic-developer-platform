@@ -107,7 +107,7 @@ variable "pricing_refresh_memory" {
 variable "pricing_refresh_timeout" {
   description = "Timeout for pricing refresh Lambda (seconds)"
   type        = number
-  default     = 60
+  default     = 180
 }
 
 variable "pricing_refresh_schedule" {
@@ -130,11 +130,9 @@ variable "cloudwatch_kms_key_arn" {
 
 variable "alarm_actions" {
   description = <<-EOT
-    SNS topic ARNs notified by the unknown-model-pricing alarm (Issue #4592).
-
-    Empty means the alarm still evaluates and is visible in the console but
-    pages nobody — which is how three mispriced model ids went unnoticed for
-    weeks. Set this in any environment where budget figures are trusted.
+    Existing SNS topic ARNs notified by budget pricing alarms. When empty, this
+    module creates an encrypted pricing topic and subscribed SQS operational
+    inbox. The default provides machine delivery, not human paging.
   EOT
   type        = list(string)
   default     = []

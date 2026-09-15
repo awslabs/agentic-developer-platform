@@ -682,12 +682,22 @@ class TestDenominatorIsThePersonsOwnSpend:
 
         assert harness.status == 200
 
-    async def test_non_root_user_rows_are_not_summed(self, session, redis_client, person_topology):
-        """Only `root_user` rows — never mixed with `user`/`org` (the #4322 family).
+    async def test_coarser_grain_and_mis_keyed_rows_are_not_summed(self, session, redis_client, person_topology):
+        """Two rows that look like the person's and are not (the #4322 family).
 
-        The person's direct `user` spend and the tenant's `org` total describe the
-        same dollars from different angles; adding them to the `root_user` line
-        re-counts the same money several times over and raises a false denial.
+        Since #4396 the denominator is ``root_user`` + ``user``, so this test is about
+        the rows that still must NOT enter it:
+
+        * the **organization** total describes the same dollars at a coarser grain —
+          the person's own spend re-aggregated, plus every colleague's;
+        * a ``user`` row keyed by the person's **canonical id** is not the direct
+          ledger, which is keyed by Cognito ``sub``. Reading the `user` half by
+          canonical id would both miss the real rows and pick up whatever else
+          happens to sit under that id.
+
+        Both are seeded far above the cap, so summing either denies and fails here.
+        ``test_fused_person_envelope.py`` owns the positive half: the ``user`` row
+        keyed by the person's real sub DOES count.
         """
         await seed_person_cap(session, "100.00")
         await seed_root_usage(session, RUN_ORG, CALLER_CANONICAL_ID, "10.00")
@@ -696,7 +706,7 @@ class TestDenominatorIsThePersonsOwnSpend:
 
         harness = await _drive(_service(redis_client), session, context=agent_context())
 
-        assert harness.status == 200, "only root_user rows belong in the person denominator (§7.3)"
+        assert harness.status == 200, "only the person's two person-grain ledgers belong in the denominator (§7.3)"
 
     async def test_shadow_user_partition_is_included(self, session, redis_client, session_scoped_shadow_user=None):
         """A partition known only from `users.org_id` still counts (§7.3).
@@ -749,13 +759,19 @@ class TestPrincipalsWithNoPersonCeiling:
 
         assert harness.status == 200
 
-    async def test_unattributed_request_is_skipped(self, session, redis_client, person_topology):
-        """No `attributed_user_id` — a plain human's own spend is `(USER, sub)`.
+    async def test_unattributed_service_account_request_is_skipped(self, session, redis_client, person_topology):
+        """A service account with no attribution belongs to nobody's personal ceiling.
 
-        Fusing a signed-in human's direct spend into the person envelope is #4396's
-        job, deliberately not this layer's.
+        Since #4396 an *unattributed* request is no longer skipped on that ground
+        alone — a direct human caller now falls back to their token identity and IS
+        enforced (``test_fused_person_envelope.py``). This one is skipped for a
+        different and narrower reason: ``account_type="service"`` has no ``users``
+        row, so there is no person to charge. The cap is seeded tiny and the ledger
+        large, so a fallback that resolved a service account to *some* person would
+        deny and fail here.
         """
         await seed_person_cap(session, "0.01")
+        await seed_root_usage(session, RUN_ORG, CALLER_CANONICAL_ID, "500.00")
 
         harness = await _drive(
             _service(redis_client),
@@ -765,13 +781,8 @@ class TestPrincipalsWithNoPersonCeiling:
 
         assert harness.status == 200
 
-    async def test_caller_with_no_github_identity_is_skipped(self, session, redis_client):
-        """No linked GitHub identity → no `github:` anchor → no row can match.
-
-        C3 only ever writes `github:` anchors, so this caller provably has no cap;
-        the check returns before paying for a partition fan-out that would read zero
-        rows. Seeded with a `users:`-anchored cap row that must NOT be honoured.
-        """
+    async def test_native_individual_budget_is_enforced(self, session, redis_client):
+        """Native users' individual budgets deny requests using the same person ledger."""
         await seed_org(session, RUN_ORG, "AWS-E")
         await seed_user(session, CALLER_CANONICAL_ID, RUN_ORG, sub=CALLER_SUB)
         await seed_membership(session, CALLER_CANONICAL_ID, RUN_ORG, is_active=True)
@@ -780,7 +791,7 @@ class TestPrincipalsWithNoPersonCeiling:
 
         harness = await _drive(_service(redis_client), session, context=agent_context())
 
-        assert harness.status == 200
+        assert harness.status == 402
 
 
 # =============================================================================
@@ -1016,3 +1027,85 @@ class TestSourceLevelInvariants:
         from src.shared.identity.person_anchor import format_person_anchor
 
         assert format_person_anchor(CALLER_GITHUB_ID) == PERSON_ANCHOR
+
+
+class TestReviewPinsOn4689:
+    """Pins for the #4689 review fixes."""
+
+    def test_direct_lookup_never_uses_the_fault_swallowing_resolver(self):
+        """The direct-caller person key must come from a STRICT lookup.
+
+        `resolve_canonical_user_id` swallows SQLAlchemyError into a raw-sub
+        fallback; routed through it, a transient DB error became a silent
+        fail-open the PersonBudgetLayerSkipped pager never saw. A fault must
+        propagate to the containment wrapper.
+        """
+        import inspect
+
+        # #4690 moved the preamble into `_resolve_person_limits`, so inspecting
+        # `_check_person_budget` alone would make this pin vacuously pass while the
+        # lookup it guards lives elsewhere. Both are checked, and any future split
+        # must extend this list rather than let the pin go quiet.
+        source = inspect.getsource(BudgetEnforcementService._check_person_budget) + inspect.getsource(BudgetEnforcementService._resolve_person_limits)
+        # Call sites, not mentions: the fix's own comment names the resolver.
+        assert "resolve_canonical_user_id(" not in source
+        assert "_resolve_root_principal(" not in source
+
+    @pytest.mark.asyncio
+    async def test_existence_gate_answers_from_cache_within_the_ttl(self):
+        """One query per TTL window, not per request."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        service = BudgetEnforcementService(db_session=MagicMock())
+        session = MagicMock()
+        empty = MagicMock()
+        # Since #4690 the gate asks both existence questions as two EXISTS
+        # subqueries in ONE statement, so the result is a single row of two bools.
+        empty.one.return_value = (False, False)
+        session.execute = AsyncMock(return_value=empty)
+
+        assert await service._any_person_caps_exist(session) is False
+        assert await service._any_person_caps_exist(session) is False
+        assert session.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_existence_gate_expires_and_rechecks(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        import src.budget.enforcement_service as module
+
+        service = BudgetEnforcementService(db_session=MagicMock())
+        session = MagicMock()
+        row = MagicMock()
+        row.one.return_value = (True, False)
+        session.execute = AsyncMock(return_value=row)
+
+        assert await service._any_person_caps_exist(session) is True
+        # Age the cache past the TTL and confirm a fresh read happens.
+        cached_value, cached_at = service._person_caps_exist_cache
+        service._person_caps_exist_cache = (cached_value, cached_at - module._PERSON_CAPS_EXISTENCE_TTL_SECONDS - 1)
+        assert await service._any_person_caps_exist(session) is True
+        assert session.execute.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_widened_gate_stays_one_round_trip_and_keeps_the_rungs_apart(self):
+        """#4690's widening must not add a hot-path query, nor pre-``or`` the answers.
+
+        Two failure modes this pins at once. A second `SELECT` for the defaults
+        table would put a round trip back on every JWT model invoke — the #4689
+        regression. Collapsing the pair into one bool before caching would make
+        every install with a personal cap pay the defaults ladder's org/team
+        fan-out, which is work only a default's existence justifies.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        service = BudgetEnforcementService(db_session=MagicMock())
+        session = MagicMock()
+        result = MagicMock()
+        result.one.return_value = (False, True)
+        session.execute = AsyncMock(return_value=result)
+
+        assert await service._person_limit_sources_exist(session) == (False, True)
+        # A default alone opens the gate: this is the whole point of #4690.
+        assert await service._any_person_caps_exist(session) is True
+        assert session.execute.await_count == 1

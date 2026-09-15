@@ -48,11 +48,11 @@ export interface GateControlsProps {
 type ControlMode = 'gate' | 'resume';
 
 function controlModeFor(node: GraphNode): ControlMode | null {
-  if (node.kind === 'gate' && node.state === 'awaiting_gate') return 'gate';
+  if ((node.kind === 'gate' || node.kind === 'eval') && node.state === 'awaiting_gate') return 'gate';
   // A stall lands the node in `failed`, so `failed` covers both "stuck" and
   // "broke" — both are resumable, and the engine's transition table is what
   // decides legality, not this component.
-  if (node.state === 'failed' || node.state === 'halted') return 'resume';
+  if (node.state === 'failed' || node.state === 'halted' || node.state === 'rejected_at_gate' || node.state === 'awaiting_merge') return 'resume';
   return null;
 }
 
@@ -61,6 +61,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
   const features = useFeatures();
   const queryClient = useQueryClient();
   const [reason, setReason] = useState('');
+  const [feedback, setFeedback] = useState('');
 
   const mode = controlModeFor(node);
 
@@ -74,12 +75,20 @@ export function GateControls({ node, flowId }: GateControlsProps) {
       if (action === 'reject') return rejectGate(node.id, trimmed);
       return resumeNode(node.id, trimmed);
     },
-    onSuccess: () => {
+    onSuccess: (result, action) => {
       // The decision changed promotion state, so the graph this chip sits in is
       // now stale. Invalidating is what makes the new state visible without
       // waiting out the 30s poll.
       setReason('');
+      setFeedback(action === 'reject'
+        ? 'Changes requested. Work behind this gate is paused. No revision agent has been started.'
+        : action === 'approve'
+          ? 'Approval recorded. Eligible work can start on the next engine check.'
+          : result.state === 'ready' && node.kind === 'gate'
+            ? 'Review will reopen on the next engine check. This does not approve the gate.'
+            : 'Retry requested. The engine will check this work again.');
       queryClient.invalidateQueries({ queryKey: ['orchestration', 'flow-graph', flowId] });
+      queryClient.invalidateQueries({ queryKey: ['orchestration', 'flows'] });
     },
   });
 
@@ -87,12 +96,25 @@ export function GateControls({ node, flowId }: GateControlsProps) {
   if (!features.orchestration_engine) return null;
   // Then authority. Hidden, not disabled — see the header.
   if (!hasPermission(Permission.PLAN_APPROVE)) return null;
-  if (mode === null) return null;
+  if (mode === null) return feedback ? <p role="status" className="mt-2 text-sm">{feedback}</p> : null;
 
   const busy = mutation.isPending;
 
   return (
     <div className="mt-2 space-y-2" data-testid={`gate-controls-${node.node_ref}`}>
+      {feedback && <p role="status" className="text-sm">{feedback}</p>}
+      {mode === 'gate' && (
+        <p className="text-xs text-gray-600 dark:text-gray-400">
+          Add a note to request changes. This pauses work behind the gate; it does not start a revision agent.
+        </p>
+      )}
+      {node.state === 'rejected_at_gate' && (
+        <p className="text-xs text-gray-600 dark:text-gray-400">
+          {node.kind === 'gate'
+            ? 'Reopen review after updating the plan, or to reconsider this decision. Reopening does not approve or start the work.'
+            : 'Retry this evaluation after addressing the feedback. Its new result will need review.'}
+        </p>
+      )}
       <label className="block">
         <span className="sr-only">Reason for this decision</span>
         <input
@@ -100,7 +122,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
           value={reason}
           onChange={(event) => setReason(event.target.value)}
           disabled={busy}
-          placeholder="Reason (optional)"
+          placeholder={mode === 'gate' ? 'Decision note (required to request changes)' : 'Reason (optional)'}
           data-testid="gate-controls-reason"
           className="w-full rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
         />
@@ -116,7 +138,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
               onClick={() => mutation.mutate('approve')}
               data-testid="gate-approve"
             >
-              Approve
+              {node.kind === 'eval' ? 'Accept evaluation' : 'Approve'}
             </Button>
             {/* "Request changes", not "Reject": the backend target is
                 `rejected_at_gate`, which leaves the node live and re-openable.
@@ -124,7 +146,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
             <Button
               size="sm"
               variant="secondary"
-              disabled={busy}
+              disabled={busy || !reason.trim()}
               onClick={() => mutation.mutate('reject')}
               data-testid="gate-reject"
             >
@@ -139,7 +161,9 @@ export function GateControls({ node, flowId }: GateControlsProps) {
             onClick={() => mutation.mutate('resume')}
             data-testid="node-resume"
           >
-            {node.state === 'halted' ? 'Override halt and resume' : 'Resume'}
+            {node.state === 'rejected_at_gate'
+              ? node.kind === 'gate' ? 'Reopen review' : 'Retry evaluation'
+              : node.state === 'halted' ? 'Override halt and resume' : node.state === 'awaiting_merge' ? 'Retry story' : 'Resume'}
           </Button>
         )}
 

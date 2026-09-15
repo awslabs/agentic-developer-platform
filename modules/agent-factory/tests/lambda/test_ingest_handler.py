@@ -22,8 +22,17 @@ from unittest.mock import MagicMock
 import boto3
 import pytest
 from moto import mock_aws
+from botocore.exceptions import ClientError
 
-from tests.conftest import mock_apigw_event
+from tests.conftest import mock_apigw_event as _mock_apigw_event
+
+
+def mock_apigw_event(**kwargs):
+    """Valid signed-in chat fixtures include the user's tenant claim."""
+    claims = dict(kwargs.get("authorizer_claims") or {})
+    if claims.get("sub"):
+        claims.setdefault("custom:tenant_id", "test-tenant")
+    return _mock_apigw_event(**{**kwargs, "authorizer_claims": claims})
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +62,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "")
     monkeypatch.setenv("SLACK_BOT_USER_ID", "")
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", "adp-dev-webhook-events")
 
 
 def _make_bedrock_response(classification: dict) -> dict:
@@ -77,6 +87,13 @@ def mocked_aws_services(mock_env):
             BillingMode="PAY_PER_REQUEST",
         )
 
+        ddb.create_table(
+            TableName="adp-dev-webhook-events",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
         # Create SQS queues
         sqs_client = boto3.client("sqs", region_name="us-east-1")
         sqs_client.create_queue(QueueName="adp-dev-agent-gateway-tasks")
@@ -96,7 +113,7 @@ def _import_handler(mock_bedrock=None):
     # Clear any cached module imports
     for mod_name in list(sys.modules.keys()):
         if mod_name in ("handler", "classifier", "channels", "channels.base",
-                        "channels.webchat", "channels.slack", "github_dispatch"):
+                        "channels.webchat", "channels.slack", "github_dispatch", "invocation_logger"):
             del sys.modules[mod_name]
 
     import handler  # noqa: F811
@@ -123,6 +140,7 @@ class TestConnectEvent:
             route_key="$connect",
             connection_id="conn-001",
             token="fake-jwt",
+            authorizer_claims={"sub": "user-connect"},
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
@@ -358,6 +376,7 @@ class TestMalformedPayload:
             route_key="$default",
             body="this is not json{{{",
             connection_id="conn-bad",
+            authorizer_claims={"sub": "user-bad-json"},
         )
         result = handler.lambda_handler(event, None)
         # The webchat adapter returns None for unparseable bodies -> handler returns 200 OK
@@ -532,6 +551,7 @@ class TestExtendedClaimsPersistence:
         connect_event["requestContext"]["authorizer"] = {
             "claims": {
                 "sub": "user-sqs-1",
+                "custom:tenant_id": "test-tenant",
                 "email": "sqs@example.com",
                 "custom:org_id": "org-sqs",
                 "custom:team_id": "team-sqs",
@@ -726,11 +746,11 @@ class TestParseAttachmentsWithStringArtifactIds:
         assert "art_bbb222" in att
 
 
-class TestNoSubDropsMessage:
-    """Issue #88: WebChat messages with no Cognito sub must be dropped, not fall back to connectionId."""
+class TestNoSubRejectsMessage:
+    """#88/#5013: reject missing Cognito identity without falling back to connectionId."""
 
-    def test_no_authorizer_claims_drops_message(self, mocked_aws_services):
-        """Message with no authorizer claims at all is dropped (returns 200 OK, no side effects)."""
+    def test_no_authorizer_claims_rejects_message(self, mocked_aws_services):
+        """Message with no authorizer claims at all is rejected explicitly."""
         handler = _import_handler()
         event = mock_apigw_event(
             route_key="$default",
@@ -740,11 +760,11 @@ class TestNoSubDropsMessage:
         )
         result = handler.lambda_handler(event, None)
 
-        assert result["statusCode"] == 200
-        assert result["body"] == "OK"
+        assert result["statusCode"] == 401
+        assert json.loads(result["body"])["code"] == "connection_identity_expired"
 
-    def test_empty_claims_drops_message(self, mocked_aws_services):
-        """Message with authorizer claims but missing 'sub' is dropped."""
+    def test_empty_claims_rejects_message(self, mocked_aws_services):
+        """Message with authorizer claims but missing 'sub' is rejected."""
         handler = _import_handler()
         event = mock_apigw_event(
             route_key="$default",
@@ -754,8 +774,8 @@ class TestNoSubDropsMessage:
         )
         result = handler.lambda_handler(event, None)
 
-        assert result["statusCode"] == 200
-        assert result["body"] == "OK"
+        assert result["statusCode"] == 401
+        assert json.loads(result["body"])["code"] == "connection_identity_expired"
 
     def test_valid_sub_reaches_sqs_as_user_id(self, mocked_aws_services):
         """When sub IS present, it flows through as user_id on the SQS message (not connectionId)."""
@@ -915,3 +935,117 @@ class TestCognitoSubPropagation:
         assert task["user_id"] == cognito_sub
         # cognito_sub is additive — it doesn't break existing keys
         assert task["cognito_sub"] == cognito_sub
+
+
+class TestConnectionIdentityFailures:
+    """#5013: encrypted claims storage must fail closed and notify the client."""
+
+    @staticmethod
+    def _kms_denial(operation):
+        return ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "kms:Decrypt denied on private-key"}},
+            operation,
+        )
+
+    def test_connect_rejects_kms_denial(self, mocked_aws_services, monkeypatch):
+        handler = _import_handler()
+        monkeypatch.setattr(handler.sessions_table, "put_item", MagicMock(side_effect=self._kms_denial("PutItem")))
+        dispatch = MagicMock()
+        monkeypatch.setattr(handler, "handle_unified_message", dispatch)
+        event = mock_apigw_event(route_key="$connect", authorizer_claims={"sub": "native-user"})
+
+        result = handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 503
+        payload = json.loads(result["body"])
+        assert payload["code"] == "connection_identity_unavailable"
+        assert "reconnect" in payload["content"]
+        assert "private-key" not in result["body"]
+        dispatch.assert_not_called()
+
+    @pytest.mark.parametrize("connection_id,claims", [("conn-missing", None), ("", {"sub": "user"})])
+    def test_connect_rejects_missing_identity(self, mocked_aws_services, monkeypatch, connection_id, claims):
+        handler = _import_handler()
+        put = MagicMock()
+        monkeypatch.setattr(handler.sessions_table, "put_item", put)
+        result = handler.lambda_handler(
+            mock_apigw_event(route_key="$connect", connection_id=connection_id, authorizer_claims=claims), None
+        )
+        assert result["statusCode"] == 401
+        put.assert_not_called()
+
+    @pytest.mark.parametrize("action", ["sendMessage", "upload-token", "upload-complete"])
+    @pytest.mark.parametrize("failure", ["kms_denied", "missing", "expired"])
+    def test_restore_failure_posts_error_without_dispatch(
+        self, mocked_aws_services, monkeypatch, action, failure
+    ):
+        handler = _import_handler()
+        get = MagicMock(return_value={})
+        if failure == "kms_denied":
+            get.side_effect = self._kms_denial("GetItem")
+        elif failure == "expired":
+            get.return_value = {"Item": {"sub": "native-user", "expires_at": 1}}
+        monkeypatch.setattr(handler.sessions_table, "get_item", get)
+        apigw = MagicMock()
+        monkeypatch.setattr(handler, "_get_apigw_client", lambda: apigw)
+        dispatch = MagicMock()
+        upload = MagicMock()
+        monkeypatch.setattr(handler, "handle_unified_message", dispatch)
+        monkeypatch.setattr(handler, "handle_upload_token", upload)
+        monkeypatch.setattr(handler, "handle_upload_complete", upload)
+        event = mock_apigw_event(
+            connection_id="conn-denied",
+            body={"action": action, "text": "test", "session_id": "session-test", "request_id": "request-test"},
+        )
+
+        result = handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == (503 if failure == "kms_denied" else 401)
+        get.assert_called_once_with(Key={"session_id": "conn#conn-denied"}, ConsistentRead=True)
+        dispatch.assert_not_called()
+        upload.assert_not_called()
+        apigw.post_to_connection.assert_called_once()
+        args = apigw.post_to_connection.call_args.kwargs
+        assert args["ConnectionId"] == "conn-denied"
+        frame = json.loads(args["Data"])
+        # Both current AG-UI and legacy chat hooks recognize this failure shape.
+        assert frame["type"] == "response"
+        assert frame["status"] == "failed"
+        assert frame["session_id"] == "session-test"
+        assert frame["request_id"] == "request-test"
+        assert "reconnect" in frame["content"]
+        assert frame["error"] == frame["content"]
+        assert "private-key" not in str(frame)
+
+    @pytest.mark.parametrize("partial_context", [False, True])
+    def test_signed_authorizer_context_survives_connect_message_round_trip(
+        self, mocked_aws_services, monkeypatch, partial_context
+    ):
+        handler = _import_handler()
+        connect = mock_apigw_event(route_key="$connect", connection_id="conn-native")
+        connect["requestContext"]["authorizer"] = {
+            "X-Agent-UserId": "native-user",
+            "X-Agent-Email": "native@example.com",
+            "X-Agent-Tenant": "tenant-1",
+            "X-Agent-OrgId": "org-1",
+            "X-Agent-TeamId": "team-1",
+            "X-Agent-DepartmentId": "dept-1",
+            "X-Agent-AccountType": "human",
+            "X-Agent-Role": "member",
+        }
+        assert handler.lambda_handler(connect, None)["statusCode"] == 200
+        dispatch = MagicMock(return_value={"statusCode": 200})
+        monkeypatch.setattr(handler, "handle_unified_message", dispatch)
+        event = mock_apigw_event(connection_id="conn-native", body={"action": "sendMessage", "text": "test"})
+        assert "authorizer" not in event["requestContext"]
+        if partial_context:
+            event["requestContext"]["authorizer"] = {"claims": {"sub": "", "custom:org_id": "old-org"}}
+
+        handler.lambda_handler(event, None)
+
+        message = dispatch.call_args.args[0]
+        assert message.user_id == "native-user"
+        assert message.user_name == "native@example.com"
+        for key, value in {"tenant_id": "tenant-1", "org_id": "org-1", "team_id": "team-1",
+                           "department_id": "dept-1", "account_type": "human", "role": "member"}.items():
+            assert message.platform_data[key] == value

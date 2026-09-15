@@ -27,7 +27,7 @@ from enum import StrEnum
 
 
 class NodeState(StrEnum):
-    """The nine declared states of an orchestration-graph node (R-N2).
+    """The declared states of an orchestration-graph node (R-N2).
 
     `rejected` and `skipped` are deliberately absent (R-N2c): `rejected` is a
     frontend-only phantom with no backend writer, and `skipped` has no writer
@@ -38,6 +38,7 @@ class NodeState(StrEnum):
     PENDING = "pending"  # Node exists on the graph; predecessors not satisfied
     READY = "ready"  # Predecessors satisfied; not yet dispatched
     RUNNING = "running"  # Dispatched; execution in flight
+    AWAITING_MERGE = "awaiting_merge"  # Worker finished; merged code/checks not yet verified
     AWAITING_GATE = "awaiting_gate"  # Execution finished; human decision required
     PASSED = "passed"  # Accepted (gate approved, or evaluation green)
     REJECTED_AT_GATE = "rejected_at_gate"  # Human refused; successors stay pending
@@ -83,11 +84,18 @@ LEGAL_TRANSITIONS: dict[NodeState, dict[NodeState, frozenset[ActorKind]]] = {
         NodeState.SUPERSEDED: _ENGINE_OR_HUMAN,  # Amendment
     },
     NodeState.RUNNING: {
+        NodeState.AWAITING_MERGE: _ENGINE_OR_HUMAN,
         NodeState.AWAITING_GATE: _ENGINE_OR_HUMAN,  # Finished; needs a human decision
         NodeState.PASSED: _ENGINE_OR_HUMAN,  # Evaluation green — no gate required
         NodeState.FAILED: _ENGINE_OR_HUMAN,  # Execution failed
         NodeState.HALTED: _ENGINE_OR_HUMAN,  # Defect-cycle bound exhausted (R-Q9c)
         NodeState.SUPERSEDED: _ENGINE_OR_HUMAN,  # Amendment
+    },
+    NodeState.AWAITING_MERGE: {
+        NodeState.READY: _HUMAN_ONLY,  # Explicit retry when work needs correction
+        NodeState.PASSED: _ENGINE_OR_HUMAN,
+        NodeState.FAILED: _ENGINE_OR_HUMAN,
+        NodeState.SUPERSEDED: _ENGINE_OR_HUMAN,
     },
     NodeState.AWAITING_GATE: {
         # Gate approval and refusal are human acts by definition; a service

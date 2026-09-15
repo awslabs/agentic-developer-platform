@@ -45,8 +45,8 @@ HUMAN_ONLY_PAIRS = [
 class TestVocabulary:
     """The declared vocabulary itself (R-N2, R-N2c)."""
 
-    def test_exactly_nine_states(self):
-        assert len(NodeState) == 9
+    def test_declared_states(self):
+        assert len(NodeState) == 10
 
     def test_states_are_the_declared_spellings(self):
         # Downstream stories and ACs cite these exact strings; a rename here is
@@ -56,6 +56,7 @@ class TestVocabulary:
             "ready",
             "running",
             "awaiting_gate",
+            "awaiting_merge",
             "passed",
             "rejected_at_gate",
             "failed",
@@ -108,12 +109,14 @@ class TestTransitionTable:
             NodeState.PENDING: {NodeState.READY, NodeState.SUPERSEDED},
             NodeState.READY: {NodeState.RUNNING, NodeState.SUPERSEDED},
             NodeState.RUNNING: {
+                NodeState.AWAITING_MERGE,
                 NodeState.AWAITING_GATE,
                 NodeState.PASSED,
                 NodeState.FAILED,
                 NodeState.HALTED,
                 NodeState.SUPERSEDED,
             },
+            NodeState.AWAITING_MERGE: {NodeState.READY, NodeState.PASSED, NodeState.FAILED, NodeState.SUPERSEDED},
             NodeState.AWAITING_GATE: {
                 NodeState.PASSED,
                 NodeState.REJECTED_AT_GATE,
@@ -326,7 +329,7 @@ class TestHumanOnlyEdges:
 
     def test_recovery_edges_into_ready_are_human_only(self):
         """failed/halted/rejected_at_gate -> ready all require a human."""
-        for from_state in (NodeState.FAILED, NodeState.HALTED, NodeState.REJECTED_AT_GATE):
+        for from_state in (NodeState.FAILED, NodeState.HALTED, NodeState.REJECTED_AT_GATE, NodeState.AWAITING_MERGE):
             assert LEGAL_TRANSITIONS[from_state][NodeState.READY] == frozenset({ActorKind.HUMAN})
 
     def test_terminal_states_have_no_service_reachable_successor(self):
@@ -340,5 +343,5 @@ class TestSmokeTest:
     """The mechanical check issue #4193 and the wave-1 evaluation both run."""
 
     def test_smoke_assertion(self):
-        assert len(NodeState) == 9
+        assert len(NodeState) == 10
         assert NodeState("halted") in TERMINAL_STATES

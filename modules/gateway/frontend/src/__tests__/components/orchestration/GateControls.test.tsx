@@ -146,6 +146,29 @@ describe('the fail-closed engine flag', () => {
 });
 
 describe('which control a state earns', () => {
+  it('offers evidence acceptance on a finished evaluation', async () => {
+    const user = userEvent.setup();
+    renderControls(makeNode('awaiting_gate', 'eval'));
+    await user.click(screen.getByRole('button', { name: 'Accept evaluation' }));
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined);
+  });
+
+  it('reopens a gate after requested changes', async () => {
+    const user = userEvent.setup();
+    renderControls(makeNode('rejected_at_gate'));
+    expect(screen.getByText(/Reopening does not approve or start the work/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Reopen review' }));
+    expect(mockResume).toHaveBeenCalledWith('node-1', undefined);
+  });
+
+  it('allows an explicit retry, but no approval, while merge checks are pending', async () => {
+    const user = userEvent.setup();
+    renderControls(makeNode('awaiting_merge', 'story'));
+    expect(screen.queryByTestId('gate-approve')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry story' }));
+    expect(mockResume).toHaveBeenCalledWith('node-1', undefined);
+  });
+
   it('offers approve/reject on a gate awaiting a decision', () => {
     renderControls(makeNode('awaiting_gate'));
 
@@ -214,9 +237,12 @@ describe('recording a decision', () => {
     const user = userEvent.setup();
     renderControls(makeNode('awaiting_gate'));
 
+    expect(screen.getByTestId('gate-reject')).toBeDisabled();
+    await user.type(screen.getByTestId('gate-controls-reason'), 'Clarify the migration plan');
     await user.click(screen.getByTestId('gate-reject'));
 
-    await waitFor(() => expect(mockReject).toHaveBeenCalledWith('node-1', undefined));
+    await waitFor(() => expect(mockReject).toHaveBeenCalledWith('node-1', 'Clarify the migration plan'));
+    expect(screen.getByRole('status')).toHaveTextContent('No revision agent has been started');
     expect(mockApprove).not.toHaveBeenCalled();
   });
 

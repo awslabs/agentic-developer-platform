@@ -94,9 +94,9 @@ async def _resolve_user_id_in_context(token_context, db: AsyncSession) -> None:
     """
     if token_context.account_type != "human":
         return
-    stmt = select(User).where(User.cognito_sub == token_context.user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+    from src.shared.identity.workspaces import workspace_user
+
+    user = await workspace_user(db, token_context.user_id, token_context.org_id, username=token_context.cognito_username)
     if user is not None:
         token_context.user_id = user.id
 

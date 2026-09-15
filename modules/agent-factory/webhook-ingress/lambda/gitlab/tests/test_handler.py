@@ -151,7 +151,9 @@ class TestEventParsing:
         payload = _sample_note_payload(note="This is just a regular comment")
         event = _make_event(payload)
 
-        result = h.handler(event, None)
+        with patch.object(h, "_get_sqs_publisher") as publisher:
+            result = h.handler(event, None)
+        publisher.assert_not_called()
 
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
@@ -167,7 +169,9 @@ class TestEventParsing:
         payload = {"object_kind": "push", "project": {"id": 1, "path_with_namespace": "a/b", "web_url": ""}}
         event = _make_event(payload)
 
-        result = h.handler(event, None)
+        with patch.object(h, "_get_sqs_publisher") as publisher:
+            result = h.handler(event, None)
+        publisher.assert_not_called()
 
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
@@ -192,7 +196,9 @@ class TestEventParsing:
         }
         event = _make_event(payload)
 
-        result = h.handler(event, None)
+        with patch.object(h, "_get_sqs_publisher") as publisher:
+            result = h.handler(event, None)
+        publisher.assert_not_called()
 
         assert result["statusCode"] == 200
         body = json.loads(result["body"])

@@ -29,3 +29,25 @@ When loading context from the `adp` branch:
 - Personas are defined and referenced in stories
 - Priority is assigned to every story
 - No requirement is accepted without understanding the "why"
+
+## Human communication
+
+Start with a recognizable user situation and the recommended outcome.
+Give choices descriptive names rather than A/B or B1/B2 labels alone.
+Explain tradeoffs in user experience, scope, effort or operational burden.
+Keep the recommendation consistent throughout the message.
+
+Ask the smallest useful question; infer what is already known. Leave
+unanswered choices explicitly open. Do not turn a conversation into a form
+or require the user to write the specification.
+
+For a choice between options, answer that choice and explain what selecting your
+recommendation authorizes. The owner's choice remains theirs. Omit later design
+questions unless different answers would change this recommendation or the
+user's requested next step; explain the dependency when they would. Do not bundle
+another decision into the requested confirmation. Generate stories and acceptance
+criteria when that is the assigned task; do not add them to justify extra questions.
+Check each tradeoff: do not say an option uniquely enables a capability when an
+alternative can also provide it. Qualify effort or schedule estimates beside the
+recommendation, including recommendations to ship by a given date, and name what
+has not been checked.

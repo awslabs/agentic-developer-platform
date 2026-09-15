@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useFeatures } from '@/hooks/useFeatures';
-import { getAccessToken } from '@/services/auth';
+import { GITLAB_PATH, handleGitlabSsoClick } from '@/services/gitlabSso';
 
 interface NavItem {
   to: string;
@@ -33,7 +33,12 @@ export function Navigation() {
   // These are anchors INTO the system dashboard, so they share its feature gate.
   if (features.system_dashboard && isPlatformAdmin()) {
     if (canViewOrganizations()) {
-      navItems.push({ to: '/admin/system#organizations', label: 'Organizations', icon: '🏢' });
+      // Issue #4841: relabelled from "Organizations" to disambiguate from the structural
+      // panel added below. This entry is an anchor into the system dashboard's
+      // "Top Organizations (24h)" USAGE section; the new entry is where orgs, departments
+      // and teams are actually created and managed. Two links both labelled
+      // "Organizations" gave no way to tell which one did what.
+      navItems.push({ to: '/admin/system#organizations', label: 'Org Usage', icon: '📊' });
     }
     if (canViewPool()) {
       navItems.push({ to: '/admin/system#pool', label: 'Pool Health', icon: '🔄' });
@@ -67,9 +72,9 @@ export function Navigation() {
     navItems.push({ to: '/agents', label: 'Agents', icon: '🤖' });
   }
 
-  // Budget management for org admins (Issue #185)
-  if (canViewBudgets() && (isPlatformAdmin() || isOrgAdmin())) {
-    navItems.push({ to: '/budgets', label: 'Budgets', icon: '💰' });
+  // Routing configuration has its own destination; budgets share /budget.
+  if (canViewBudgets() && isPlatformAdmin()) {
+    navItems.push({ to: '/model-access', label: 'Model access', icon: '🔀' });
   }
 
   // Rate limit management for org admins (Issue #185)
@@ -85,15 +90,23 @@ export function Navigation() {
   // Agent Activity for all authenticated users (Issue #1457)
   navItems.push({ to: '/activity', label: 'Agent Activity', icon: '📋' });
 
-  // Budget & Spend for all authenticated users (Issue #4402).
+  // Delivery Flows — the orchestration engine's entry point (Issue #4869).
   //
-  // Deliberately UNGATED by permission, unlike /budgets above. That entry is the admin
-  // CRUD surface for other people's caps; this one shows the caller their own figures,
-  // from endpoints scoped to them server-side that accept no entity parameter. There is
-  // nothing to authorise client-side, and gating on a permission a MEMBER lacks
-  // (MEMBER maps to USAGE_READ only, and resolves to [] on the ID-token path — #4389)
-  // would hide the screen from exactly the users it exists for.
-  if (features.budget_spend) {
+  // Feature-gated because `orchestration_engine` is a per-environment opt-in and
+  // `ALL_FEATURES_ENABLED` has it fail-CLOSED (#4209): an environment not running
+  // the engine must not advertise a menu item whose route redirects away.
+  //
+  // Deliberately UNGATED by permission, like /budget above. The endpoint behind it
+  // requires USAGE_READ, which is exactly what a MEMBER has — and that permission
+  // resolves to [] on the ID-token path (#4389), so a client-side check would hide
+  // the page from the operators it exists for.
+  if (features.orchestration_engine) {
+    navItems.push({ to: '/flows', label: 'Delivery Flows', icon: '🔀' });
+  }
+
+  // Personal spend stays feature-gated for members. Administrators retain their
+  // existing budget-management access when that personal feature is disabled.
+  if (features.budget_spend || (canViewBudgets() && (isPlatformAdmin() || isOrgAdmin()))) {
     navItems.push({ to: '/budget', label: 'Budget & Spend', icon: '💵' });
   }
 
@@ -150,6 +163,18 @@ export function Navigation() {
     navItems.push({ to: '/admin/tenant-links', label: 'Tenant Org Links', icon: '🏢' });
   }
 
+  // Organizations structure panel — orgs, departments, teams (Issue #4841).
+  //
+  // Gated on ORG_READ, which is the permission the underlying list route enforces, so an
+  // ORG ADMIN sees this link too: the server filters the list to their own org and the
+  // dept/team write routes gate on ORG_UPDATE scoped to target_org_id. Creating an
+  // organization is platform-admin-only (the identity router is `require_admin`), so that
+  // button — not this link — carries the narrower gate. This check is COSMETIC: the server
+  // is the boundary on every route the panel calls.
+  if (canViewOrganizations()) {
+    navItems.push({ to: '/admin/organizations', label: 'Organizations', icon: '🏢' });
+  }
+
   return (
     <nav className="flex flex-col gap-1" aria-label="Main navigation">
       {navItems.map((item) => (
@@ -171,53 +196,17 @@ export function Navigation() {
         </NavLink>
       ))}
       {/* External: GitLab SSO (Issue #3775, Wave 2).
-          Uses the /api/auth/gitlab-sso endpoint which mints an RS256 JWT and
-          302-redirects to GitLab's JWT callback. A plain <a href> cannot carry
-          the Bearer token (stored in sessionStorage), so we use a click handler
-          that fetches with credentials and navigates to the redirect URL.
-          Falls back to /gitlab/ direct navigation if SSO endpoint is unavailable.
+          `/gitlab/` is a server path with an authenticated handoff, not a client
+          route: /api/auth/gitlab-sso mints an RS256 JWT and 302s to GitLab's JWT
+          callback. A plain <a href> cannot carry the Bearer token (sessionStorage),
+          so the click handler does the fetch and follows the redirect, falling back
+          to plain /gitlab/ navigation on any failure. The handler now lives in
+          services/gitlabSso.ts because the new UI needs the same behaviour (#5123).
           Feature-gated: fail-closed behind FEATURE_GITLAB_ENABLED (Issue #3773). */}
       {features.gitlab && (
         <a
-          href="/gitlab/"
-          onClick={(e) => {
-            const token = getAccessToken();
-            if (!token) return; // Let the default href navigate
-            e.preventDefault();
-            // Fetch the SSO endpoint with auth — redirect: manual lets us
-            // read the Location header from the 302 response.
-            fetch('/api/auth/gitlab-sso', {
-              headers: { Authorization: `Bearer ${token}` },
-              redirect: 'manual',
-            }).then((res) => {
-              // With redirect: manual, a 302 becomes type "opaqueredirect"
-              // and we cannot read the Location header due to CORS.
-              // Instead, re-fetch with redirect: follow — fetch will follow
-              // the 302 to the GitLab callback and we get the final URL.
-              if (res.type === 'opaqueredirect') {
-                // Cannot read Location; re-request letting fetch follow
-                return fetch('/api/auth/gitlab-sso', {
-                  headers: { Authorization: `Bearer ${token}` },
-                  redirect: 'follow',
-                });
-              }
-              return res;
-            }).then((res) => {
-              if (res && res.redirected && res.url) {
-                // fetch followed the 302 — navigate to the final URL
-                window.location.href = res.url;
-              } else if (res && res.ok) {
-                // Unexpected 200 — may have followed redirect already
-                window.location.href = '/gitlab/';
-              } else {
-                // SSO endpoint unavailable (404/503) — fall back
-                window.location.href = '/gitlab/';
-              }
-            }).catch(() => {
-              // Network error — fall back to direct navigation
-              window.location.href = '/gitlab/';
-            });
-          }}
+          href={GITLAB_PATH}
+          onClick={handleGitlabSsoClick}
           className="flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
         >
           <span className="text-xl" aria-hidden="true">

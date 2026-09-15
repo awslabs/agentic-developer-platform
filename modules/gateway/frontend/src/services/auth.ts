@@ -218,6 +218,32 @@ function generateBrokerState(): string {
     .join('');
 }
 
+const POST_LOGIN_REDIRECT_KEY = 'post_login_redirect';
+
+/**
+ * Remember where an unauthenticated user was headed, across the external
+ * OAuth round-trip (GitHub broker or Cognito hosted UI both leave the SPA
+ * entirely, so router state does not survive). Deep links like the CLI
+ * approval page (/cli-auth?code=...) land here via ProtectedRoute → Login.
+ */
+export function storePostLoginRedirect(path: string): void {
+  sessionStorage.setItem(POST_LOGIN_REDIRECT_KEY, path);
+}
+
+/**
+ * Retrieve and clear the stored destination. Single-use, and validated to be
+ * an internal path ("/x..." but not "//host") so a crafted value can never
+ * turn the login flow into an open redirect.
+ */
+export function consumePostLoginRedirect(): string | null {
+  const path = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
+  sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
+  if (!path || !path.startsWith('/') || path.startsWith('//')) {
+    return null;
+  }
+  return path;
+}
+
 /**
  * Store the broker login nonce for the callback (Issue #4133)
  */
@@ -469,13 +495,15 @@ export function parseIdTokenForUser(idToken: string): User | null {
   const payload = parseTokenPayload<CognitoIdTokenPayload>(idToken);
   if (!payload) return null;
 
-  // Determine role from custom attribute. Leave undefined when the JWT
+  // Platform groups match backend authority, including after a workspace switch.
+  // Otherwise determine role from custom attribute. Leave undefined when the JWT
   // carries no claim — the UI hides the role badge in that case rather
   // than showing a misleading default like "org admin" for users who
   // haven't been approved/assigned yet.
   let role: AdminRole | undefined;
   const customRole = payload['custom:role'];
-  if (customRole === 'platform_admin') {
+  const groups = payload['cognito:groups'] ?? [];
+  if (customRole === 'platform_admin' || customRole === 'admin' || groups.includes('admins') || groups.includes('platform-admins')) {
     role = AdminRole.PLATFORM_ADMIN;
   } else if (customRole === 'org_admin') {
     role = AdminRole.ORG_ADMIN;
@@ -525,6 +553,7 @@ export function parseIdTokenForUser(idToken: string): User | null {
     name: displayName,
     role,
     orgId: payload['custom:org_id'],
+    teamId: payload['custom:team_id'],
     deptId: payload['custom:department_id'],
     // Issue #4389: `?? []` keeps this total. A role present in the AdminRole enum
     // but absent from ROLE_PERMISSIONS would otherwise yield `undefined`, and
@@ -656,7 +685,23 @@ export async function handleOAuthCallback(code: string): Promise<LoginResponse> 
 /**
  * Refresh the current session using stored refresh token
  */
-export async function refreshToken(): Promise<{ token: string; expiresAt: string }> {
+let pendingRefresh: Promise<{ token: string; expiresAt: string }> | null = null;
+
+export async function refreshToken(options: { fresh?: boolean } = {}): Promise<{ token: string; expiresAt: string }> {
+  // A workspace switch needs a refresh started AFTER the server saved claims.
+  // Serialize against the background timer so an older response cannot later
+  // overwrite the new session tokens.
+  if (options.fresh && pendingRefresh) await pendingRefresh.catch(() => undefined);
+  if (pendingRefresh) return pendingRefresh;
+  pendingRefresh = performTokenRefresh();
+  try {
+    return await pendingRefresh;
+  } finally {
+    pendingRefresh = null;
+  }
+}
+
+async function performTokenRefresh(): Promise<{ token: string; expiresAt: string }> {
   const storedRefreshToken = getRefreshToken();
   if (!storedRefreshToken) {
     throw new Error('No refresh token available');

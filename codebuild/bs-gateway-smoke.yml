@@ -17,3 +17,9 @@ phases:
   post_build:
     commands:
       - docker image inspect adp-gateway:pr-smoke --format 'Smoke build OK — {{.Id}}'
+      # Issue #4969: prove the built image can actually import the shared pricing
+      # policy and load its rate snapshots. pricing_policy/ is COPY'd in, not
+      # pip-installed, so a dropped COPY line or a missing snapshots/*.json still
+      # builds green and only fails later — as an ImportError on the first priced
+      # request, or as a Lambda silently billing at default rates.
+      - docker run --rm --entrypoint python adp-gateway:pr-smoke -m pricing_policy.selfcheck

@@ -1100,50 +1100,28 @@ class TestRegistrationCannotExtendAnApprovedFlow:
         assert await count_rows(session, OrchestrationAcceptedPlan) == 1
 
 
-class TestGateArmingIsAPreExistingEngineGap:
-    """A `gate`-kind node never reaches `awaiting_gate`, and that is not this story's doing.
-
-    The re-review raised auto-inserted wave gates being permanently unanswerable as
-    a blocker on this PR. It is a real behaviour — but it is the engine's, not
-    registration's, and these tests establish which by pinning both paths.
-
-    Nothing promotes a gate node: `dispatch_pass` is story-nodes-only (a gate has no
-    `issue_ref`, so it cannot produce a `source_ref`), and `state.py`'s only edge
-    into `awaiting_gate` starts at `running`, which a gate never reaches. The
-    acceptance gate works solely because it is *born* in `awaiting_gate`.
-
-    These tests document the gap and would fail — deliberately, and informatively —
-    when the engine learns to arm gates, at which point the limitation note in
-    `registration.py` should go with them. Tracked as issue #4575, whose definition
-    of done includes updating this class.
-    """
+class TestGateArming:
+    """Both author-declared and inserted gates become answerable (#4575)."""
 
     async def drive(self, session, rounds: int = 10) -> None:
         for _ in range(rounds):
             await run_tick(session)
             await run_dispatch_pass(session, dispatch_config())
 
-    async def test_an_author_declared_gate_also_stalls_on_the_acceptance_path(self, session, registrar):
-        """The control: no #4528 code involved, and the gate stalls identically.
-
-        A plain `compile_proposal` with `PLAN_ACCEPTED` and a gate the *author*
-        declared. If this passes, the stall cannot be attributed to registration's
-        transforms — which is the entire point of the test.
-        """
+    async def test_author_gate_is_presented_after_all_predecessors_pass(self, session, registrar):
         await seed_org(session)
         await compile_proposal(session, author_gated_proposal(), registrar)
 
         nodes = await nodes_by_ref(session)
-        nodes["story-a"].state = NodeState.PASSED.value
+        for ref in ("story-a", "eval-w1"):
+            nodes[ref].state = NodeState.PASSED.value
         await session.flush()
         await self.drive(session)
 
         nodes = await nodes_by_ref(session)
         assert nodes["my-gate"].kind == NodeKind.GATE.value
-        assert nodes["my-gate"].state == NodeState.PENDING.value, (
-            "an author-declared gate advanced on the plain acceptance path — the engine now arms gates, so the "
-            "wave-gate limitation documented in registration.py is stale and should be removed"
-        )
+        assert nodes["my-gate"].state == NodeState.AWAITING_GATE.value
+        assert nodes["my-gate"].attempts == 0
         assert nodes["story-c"].state == NodeState.PENDING.value
 
     async def test_the_acceptance_gate_is_answerable_because_it_is_born_armed(self, session, registrar):

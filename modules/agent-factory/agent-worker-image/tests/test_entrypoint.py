@@ -46,6 +46,13 @@ def _subprocess_side_effect_fresh_branch(*args, **kwargs):
     return MagicMock(returncode=0, stdout="", stderr="")
 
 
+@pytest.fixture(autouse=True)
+def ready_gateway_proxy(monkeypatch):
+    """Main-sequence tests have a healthy proxy unless explicitly overridden."""
+    monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())
+    monkeypatch.setattr("entrypoint._stop_sigv4_proxy", MagicMock())
+
+
 SAMPLE_ENVELOPE = {
     "version": "1.0",
     "channel": "github",
@@ -1486,7 +1493,11 @@ class TestStsAssumeUserIdTag:
 
 
 class TestBedrockViaFlag:
-    """Tests for the ADP_BEDROCK_VIA feature flag (scoped agent_env, not os.environ mutation)."""
+    """Tests for the ADP_BEDROCK_VIA feature flag (scoped agent_env, not os.environ mutation).
+
+    Gateway is required; bypass and retired modes must stop before inference.
+    `user` is retired (#4747) and must raise — see test_retired_user_value_raises.
+    """
 
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
@@ -1497,7 +1508,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_default_no_flag_agent_env_retains_irsa(
+    def test_default_uses_gateway_with_customer_creds_scoped_to_tools(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1511,7 +1522,7 @@ class TestBedrockViaFlag:
         monkeypatch,
         tmp_path,
     ):
-        """When ADP_BEDROCK_VIA is not set, agent_env retains all IRSA vars."""
+        """Gateway is the default even when tools use customer AWS credentials."""
         from entrypoint import main
         import entrypoint
 
@@ -1552,11 +1563,12 @@ class TestBedrockViaFlag:
             }
             main()
 
-        # Agent subprocess should have been called with env containing IRSA vars
+        # Model requests use the proxy while tools retain customer credentials.
         call_kwargs = mock_subprocess_run.call_args
         agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
-        assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
+        assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9090"
+        assert agent_env["AWS_ACCESS_KEY_ID"] == "AKUSER"
+        assert "AWS_ROLE_ARN" not in agent_env
 
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
@@ -1567,7 +1579,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_platform_explicit_agent_env_retains_irsa(
+    def test_platform_bypass_is_rejected(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1581,7 +1593,7 @@ class TestBedrockViaFlag:
         monkeypatch,
         tmp_path,
     ):
-        """When ADP_BEDROCK_VIA=platform, agent_env retains IRSA (same as default)."""
+        """Platform bypass cannot override the user routing rule."""
         from entrypoint import main
         import entrypoint
 
@@ -1620,13 +1632,13 @@ class TestBedrockViaFlag:
                 "region": "us-east-1",
                 "provenance_id": "prov-test",
             }
-            main()
+            with pytest.raises(RuntimeError, match="must be gateway"):
+                main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get(
-            "env"
-        ) or mock_subprocess_run.call_args[1].get("env")
-        assert "AWS_ROLE_ARN" in agent_env
+        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
 
+
+    @patch("entrypoint._start_sigv4_proxy")
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
     @patch("entrypoint.create_check_run")
@@ -1636,7 +1648,8 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_user_mode_strips_irsa_from_agent_env(
+    @pytest.mark.parametrize("raw_value", ["user", "USER", " user ", "User"])
+    def test_retired_user_value_raises(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1647,10 +1660,22 @@ class TestBedrockViaFlag:
         mock_create_cr,
         mock_delete_msg,
         mock_receive_msg,
+        mock_start_proxy,
         monkeypatch,
         tmp_path,
+        raw_value,
     ):
-        """When ADP_BEDROCK_VIA=user and user creds exist, agent_env has IRSA stripped."""
+        """ADP_BEDROCK_VIA=user is retired (#4747) and fails LOUDLY, not silently.
+
+        Before #4747 this value stripped IRSA so the customer's own credentials
+        served Bedrock — billed to them, metered nowhere. Deleting the branch
+        without this guard would let `=user` fall through to the trailing `else`
+        and run on pod IRSA, i.e. silently switch the payer. That silent switch
+        is the billing surprise ruling 3 forbids, so it must raise.
+
+        Parametrized over case/whitespace variants because normalization runs
+        BEFORE the guard — `USER` and ` user ` must not sneak past it.
+        """
         from entrypoint import main
         import entrypoint
 
@@ -1658,11 +1683,10 @@ class TestBedrockViaFlag:
         monkeypatch.setenv("AWS_REGION", "us-east-1")
         monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        monkeypatch.setenv("AWS_PROFILE", "default")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", raw_value)
 
         ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
-        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-3")
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-retired")
         mock_vault = MagicMock()
         mock_vault_cls.return_value = mock_vault
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
@@ -1690,85 +1714,121 @@ class TestBedrockViaFlag:
                 "region": "us-east-1",
                 "provenance_id": "prov-test",
             }
+            with pytest.raises(RuntimeError, match="ADP_BEDROCK_VIA=user is retired"):
+                main()
+
+        # The error must be actionable: name the retirement AND the replacement.
+        message = entrypoint.RETIRED_BEDROCK_VIA["user"]
+        assert "#4747" in message
+        assert "mapping" in message
+
+        # It must fail BEFORE spending anything: no proxy started, no agent exec'd.
+        mock_start_proxy.assert_not_called()
+        assert not any(
+            call.args and call.args[0] and call.args[0][0] == "node"
+            for call in mock_subprocess_run.call_args_list
+        )
+
+    def test_no_code_path_branches_on_user_value(self):
+        """The #4747 acceptance criterion: no routing branch handles `user`.
+
+        Asserted against the source because the behavioral tests above can only
+        prove the guard fires — they cannot prove a *second* `user` branch wasn't
+        left behind further down. The original story cited one line range but
+        there were two such branches, which is exactly the failure this catches.
+        The guard itself is a rejection lookup keyed by value, not an
+        `== "user"` comparison, so it does not trip this check.
+        """
+        import entrypoint
+
+        source = Path(entrypoint.__file__).read_text()
+        assert 'bedrock_via == "user"' not in source
+        assert "bedrock_via == 'user'" not in source
+
+    @patch("entrypoint._stop_sigv4_proxy")
+    @patch("entrypoint._start_sigv4_proxy")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_gateway_mode_os_environ_retains_irsa(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_start_proxy,
+        mock_stop_proxy,
+        monkeypatch,
+        tmp_path,
+    ):
+        """CRITICAL: os.environ keeps IRSA when gateway mode strips it from agent_env.
+
+        Inherited from the deleted `=user` version of this test (#4747). The
+        invariant is still live: gateway mode with a customer role assumed pops
+        IRSA vars from the SCOPED agent_env, and the post-agent SQS delete needs
+        os.environ to still hold IRSA for platform-account access. Re-pointed
+        rather than deleted — the `user` branch was only one of two callers of
+        this strip, and dropping the test would leave the survivor uncovered.
+        """
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "gateway")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-gw-irsa")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+        mock_start_proxy.return_value = MagicMock()
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
+            }
             main()
 
         agent_env = mock_subprocess_run.call_args.kwargs.get(
             "env"
         ) or mock_subprocess_run.call_args[1].get("env")
-        # IRSA vars stripped from agent env
+        # Customer creds serve shell AWS; IRSA stripped from the SCOPED env only.
         assert "AWS_ROLE_ARN" not in agent_env
-        assert "AWS_WEB_IDENTITY_TOKEN_FILE" not in agent_env
-        assert "AWS_PROFILE" not in agent_env
-        # User creds remain
         assert agent_env["AWS_ACCESS_KEY_ID"] == "AKUSER"
-        assert agent_env["AWS_SECRET_ACCESS_KEY"] == "SKUSER"
-        assert agent_env["AWS_SESSION_TOKEN"] == "STUSER"
-
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.create_check_run")
-    @patch("entrypoint.update_check_run")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    @patch("entrypoint.shutil.copytree")
-    @patch("entrypoint.subprocess.run")
-    def test_user_mode_os_environ_unchanged(
-        self,
-        mock_subprocess_run,
-        mock_copytree,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_update_cr,
-        mock_create_cr,
-        mock_delete_msg,
-        mock_receive_msg,
-        monkeypatch,
-        tmp_path,
-    ):
-        """CRITICAL: os.environ must retain IRSA vars even when ADP_BEDROCK_VIA=user."""
-        from entrypoint import main
-        import entrypoint
-
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
-        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
-
-        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
-        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-4")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
-        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
-            mock_gw = MagicMock()
-            mock_gw_cls.return_value = mock_gw
-            mock_gw.is_configured = True
-            mock_gw.assume_role.return_value = {
-                "profile_name": "adp-aws-default",
-                "access_key_id": "AKUSER",
-                "secret_access_key": "SKUSER",
-                "session_token": "STUSER",
-                "expiration": "2026-05-13T22:00:00Z",
-                "region": "us-east-1",
-                "provenance_id": "prov-test",
-            }
-            main()
-
-        # os.environ MUST still have IRSA (for post-agent SQS delete)
+        # os.environ MUST still have IRSA (for the post-agent SQS delete).
         assert os.environ.get("AWS_ROLE_ARN") == "arn:aws:iam::123456789012:role/irsa-role"
         assert os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE") == "/var/run/secrets/token"
 
@@ -1781,7 +1841,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_user_mode_no_user_creds_no_strip(
+    def test_unknown_routing_mode_is_rejected(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1795,205 +1855,7 @@ class TestBedrockViaFlag:
         monkeypatch,
         tmp_path,
     ):
-        """When ADP_BEDROCK_VIA=user but no AWS_ACCESS_KEY_ID (assume-role didn't run), no strip."""
-        from entrypoint import main
-        import entrypoint
-
-        # developer persona does NOT trigger assume-role
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
-        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
-        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-
-        # developer persona — not in PERSONAS_NEEDING_AWS, so no assume-role
-        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-5")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
-        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-
-        main()
-
-        agent_env = mock_subprocess_run.call_args.kwargs.get(
-            "env"
-        ) or mock_subprocess_run.call_args[1].get("env")
-        # IRSA vars should still be present — no strip because no user creds
-        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
-        assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
-
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.create_check_run")
-    @patch("entrypoint.update_check_run")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    @patch("entrypoint.shutil.copytree")
-    @patch("entrypoint.subprocess.run")
-    def test_user_mode_case_insensitive(
-        self,
-        mock_subprocess_run,
-        mock_copytree,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_update_cr,
-        mock_create_cr,
-        mock_delete_msg,
-        mock_receive_msg,
-        monkeypatch,
-        tmp_path,
-    ):
-        """ADP_BEDROCK_VIA=USER (uppercase) works the same as 'user'."""
-        from entrypoint import main
-        import entrypoint
-
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
-        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", "USER")
-
-        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
-        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-6")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
-        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
-            mock_gw = MagicMock()
-            mock_gw_cls.return_value = mock_gw
-            mock_gw.is_configured = True
-            mock_gw.assume_role.return_value = {
-                "profile_name": "adp-aws-default",
-                "access_key_id": "AKUSER",
-                "secret_access_key": "SKUSER",
-                "session_token": "STUSER",
-                "expiration": "2026-05-13T22:00:00Z",
-                "region": "us-east-1",
-                "provenance_id": "prov-test",
-            }
-            main()
-
-        agent_env = mock_subprocess_run.call_args.kwargs.get(
-            "env"
-        ) or mock_subprocess_run.call_args[1].get("env")
-        assert "AWS_ROLE_ARN" not in agent_env
-
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.create_check_run")
-    @patch("entrypoint.update_check_run")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    @patch("entrypoint.shutil.copytree")
-    @patch("entrypoint.subprocess.run")
-    def test_user_mode_whitespace_tolerance(
-        self,
-        mock_subprocess_run,
-        mock_copytree,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_update_cr,
-        mock_create_cr,
-        mock_delete_msg,
-        mock_receive_msg,
-        monkeypatch,
-        tmp_path,
-    ):
-        """ADP_BEDROCK_VIA=' user ' (with whitespace) is handled correctly."""
-        from entrypoint import main
-        import entrypoint
-
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
-        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", " user ")
-
-        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
-        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-7")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
-        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
-            mock_gw = MagicMock()
-            mock_gw_cls.return_value = mock_gw
-            mock_gw.is_configured = True
-            mock_gw.assume_role.return_value = {
-                "profile_name": "adp-aws-default",
-                "access_key_id": "AKUSER",
-                "secret_access_key": "SKUSER",
-                "session_token": "STUSER",
-                "expiration": "2026-05-13T22:00:00Z",
-                "region": "us-east-1",
-                "provenance_id": "prov-test",
-            }
-            main()
-
-        agent_env = mock_subprocess_run.call_args.kwargs.get(
-            "env"
-        ) or mock_subprocess_run.call_args[1].get("env")
-        assert "AWS_ROLE_ARN" not in agent_env
-
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.create_check_run")
-    @patch("entrypoint.update_check_run")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    @patch("entrypoint.shutil.copytree")
-    @patch("entrypoint.subprocess.run")
-    def test_garbage_value_falls_through_to_platform(
-        self,
-        mock_subprocess_run,
-        mock_copytree,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_update_cr,
-        mock_create_cr,
-        mock_delete_msg,
-        mock_receive_msg,
-        monkeypatch,
-        tmp_path,
-    ):
-        """ADP_BEDROCK_VIA=foobar falls through to platform mode (safe default)."""
+        """An invalid routing mode cannot silently use the platform account."""
         from entrypoint import main
         import entrypoint
 
@@ -2032,71 +1894,10 @@ class TestBedrockViaFlag:
                 "region": "us-east-1",
                 "provenance_id": "prov-test",
             }
-            main()
+            with pytest.raises(RuntimeError, match="must be gateway"):
+                main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get(
-            "env"
-        ) or mock_subprocess_run.call_args[1].get("env")
-        # IRSA retained — garbage value means platform mode
-        assert "AWS_ROLE_ARN" in agent_env
-
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.create_check_run")
-    @patch("entrypoint.update_check_run")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    @patch("entrypoint.shutil.copytree")
-    @patch("entrypoint.subprocess.run")
-    def test_user_mode_non_aws_persona_logs_warning(
-        self,
-        mock_subprocess_run,
-        mock_copytree,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_update_cr,
-        mock_create_cr,
-        mock_delete_msg,
-        mock_receive_msg,
-        monkeypatch,
-        tmp_path,
-        caplog,
-    ):
-        """When ADP_BEDROCK_VIA=user but persona not in PERSONAS_NEEDING_AWS, warning logged."""
-        from entrypoint import main
-        import entrypoint
-
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
-        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
-        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-
-        # 'developer' persona — not in PERSONAS_NEEDING_AWS
-        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-9")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
-        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            main()
-
-        assert any("does not assume customer role" in record.message for record in caplog.records)
+        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
 
 
 # --- Test: ADP_GITHUB_LOGIN propagation (Issue #1591) ---
@@ -2406,7 +2207,7 @@ class TestBedrockViaGateway:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_direct_path_sets_claude_code_use_bedrock(
+    def test_direct_bypass_is_rejected(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -2422,7 +2223,7 @@ class TestBedrockViaGateway:
         monkeypatch,
         tmp_path,
     ):
-        """With ADP_BEDROCK_VIA=direct, sets only CLAUDE_CODE_USE_BEDROCK (no proxy)."""
+        """Direct bypass cannot override the user routing rule."""
         from entrypoint import main
         import entrypoint
 
@@ -2445,17 +2246,9 @@ class TestBedrockViaGateway:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        main()
-
-        # Verify subprocess.run was called with direct env
-        call_kwargs = mock_subprocess_run.call_args
-        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-        assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-        # No proxy base URL in direct mode
-        assert "ANTHROPIC_BEDROCK_BASE_URL" not in agent_env
-        assert "ANTHROPIC_BASE_URL" not in agent_env
-
-        # Proxy NOT started
+        with pytest.raises(RuntimeError, match="must be gateway"):
+            main()
+        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
         mock_start_proxy.assert_not_called()
         mock_stop_proxy.assert_not_called()
 
@@ -2470,7 +2263,7 @@ class TestBedrockViaGateway:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_gateway_fallback_on_proxy_failure(
+    def test_gateway_failure_stops_before_model_calls(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -2486,7 +2279,7 @@ class TestBedrockViaGateway:
         monkeypatch,
         tmp_path,
     ):
-        """When proxy fails to start, falls back to direct Bedrock."""
+        """A proxy failure must not move user model calls onto platform billing."""
         from entrypoint import main
         import entrypoint
 
@@ -2514,14 +2307,11 @@ class TestBedrockViaGateway:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        main()
+        with pytest.raises(RuntimeError, match="preserve the user's AWS account routing"):
+            main()
 
-        # Falls back to direct mode — no proxy base URL
-        call_kwargs = mock_subprocess_run.call_args
-        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-        assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-        assert "ANTHROPIC_BEDROCK_BASE_URL" not in agent_env
-        assert "ANTHROPIC_BASE_URL" not in agent_env
+        # No Claude agent process is launched after proxy startup fails.
+        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
 
         # Proxy was attempted but not stopped (it never started)
         mock_start_proxy.assert_called_once()
@@ -2597,6 +2387,8 @@ class TestGhAppCredentialsExported:
             "-----BEGIN RSA PRIVATE KEY-----\nfake-key-content\n-----END RSA PRIVATE KEY-----"
         )
 
+    @patch("entrypoint._stop_sigv4_proxy")
+    @patch("entrypoint._start_sigv4_proxy")
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
     @patch("entrypoint.create_check_run")
@@ -2606,7 +2398,7 @@ class TestGhAppCredentialsExported:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_gh_app_credentials_survive_bedrock_via_user_mode(
+    def test_gh_app_credentials_survive_irsa_strip(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -2617,19 +2409,29 @@ class TestGhAppCredentialsExported:
         mock_create_cr,
         mock_delete_msg,
         mock_receive_msg,
+        mock_start_proxy,
+        mock_stop_proxy,
         monkeypatch,
         tmp_path,
     ):
-        """GH_APP_* vars must NOT be stripped by the ADP_BEDROCK_VIA=user agent_env assembly."""
+        """GH_APP_* vars must NOT be stripped by the IRSA-popping agent_env assembly.
+
+        Was `..._survive_bedrock_via_user_mode` before #4747. The strip it guards
+        is not gone — gateway mode with an assumed customer role pops the same
+        AWS_* vars — so this is re-pointed at that path rather than deleted. The
+        invariant is unchanged: popping AWS_* must not take GH_APP_* with it, or
+        the agent loses its GitHub App identity.
+        """
         from entrypoint import main
         import entrypoint
 
         ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "gateway")
         monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123:role/irsa")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        mock_start_proxy.return_value = MagicMock()
 
         mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-app-survive")
         mock_vault = MagicMock()
@@ -2668,10 +2470,10 @@ class TestGhAppCredentialsExported:
             "env"
         ) or mock_subprocess_run.call_args[1].get("env")
 
-        # GH_APP_* must survive the user-mode IRSA stripping (which only pops AWS_* vars)
+        # GH_APP_* must survive the IRSA stripping (which only pops AWS_* vars)
         assert agent_env["GH_APP_ID"] == "77788"
         assert agent_env["GH_APP_PRIVATE_KEY"] == "secret-private-key-pem"
-        # Confirm IRSA was stripped (user mode works as designed)
+        # Confirm the strip this test guards actually happened.
         assert "AWS_ROLE_ARN" not in agent_env
 
     @patch("entrypoint._receive_one_message")
@@ -3567,7 +3369,7 @@ class TestZeroTokenFailureDetection:
     def test_handle_success_nonzero_cost_no_diff_stays_success(
         self, mock_run_cmd, mock_find_pr, mock_post, mock_status, tmp_path, monkeypatch
     ):
-        """cost>0/no-diff → genuine 'no changes needed' success preserved."""
+        """A successful process without a diff does not establish task completion."""
         import entrypoint
 
         mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
@@ -3583,7 +3385,9 @@ class TestZeroTokenFailureDetection:
         assert rc == 0
         args = mock_post.call_args[0]
         assert args[3] == "completed"
-        assert "no changes needed" in args[4]
+        assert "no local changes" in args[4].lower()
+        assert "no changes needed" not in args[4]
+        assert "task completion is not verified" in args[4]
         assert mock_status.call_args[0][2] == "complete"
 
     @patch("entrypoint.update_invocation_status")

@@ -288,11 +288,12 @@ if [ "$UPDATE_MODE" = true ]; then
 
   ok "Preconditions met: state bucket exists, EKS ACTIVE, adp-gateway namespace present"
 
-  # Determine source SHA for image tagging (§2)
-  SOURCE_SHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo "manual-$(date +%s)")
-  export IMAGE_TAG="$SOURCE_SHA"
-  ok "Image tag for this update: $IMAGE_TAG"
 fi
+# Pin fresh installs and updates to the source being deployed. Reusing :latest
+# can leave an old Ready pod serving while migration verification reports success.
+SOURCE_SHA=$(git -C "$ROOT_DIR" rev-parse HEAD) || fail "Cannot pin deployment to a source commit"
+export IMAGE_TAG="$SOURCE_SHA"
+ok "Image tag for this deployment: $IMAGE_TAG"
 
 # =============================================================================
 # Helper: refresh AWS credentials (cross-account / short-lived sessions)
@@ -791,6 +792,11 @@ else
   # longer build them here — that path now works for stage-by-stage applies and
   # CI too, not just this script. See modules/gateway/infra/main.tf.
 
+  # Freeze the old pricing writer before Terraform changes either Lambda.
+  python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" quiesce \
+    --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
+    || fail "Could not quiesce pricing refresh before the gateway update"
+
   # Gateway infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/infra"
   terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
@@ -831,41 +837,15 @@ if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
   echo "Skipping gateway deploy (--agent-factory-only or --agent-context-only)"
   ok "Skipped"
 else
-  # ─── Migrations (update mode only — run BEFORE backend rollout, §3) ───
-  if [ "$UPDATE_MODE" = true ]; then
-    step "Step 4a/11: Run database migrations"
-
-    # Find a running gateway pod (mirrors run-gateway-migrations.yml logic)
-    NS="adp-gateway"
-    POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running \
-      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
-
-    if [ -z "$POD" ]; then
-      warn "No running gateway pod found. Skipping migrations (will run after rollout if pods start)."
-    else
-      echo "Running alembic migrations on $NS/$POD..."
-      echo "=== Current revision ==="
-      kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current 2>&1 || true
-      echo ""
-      echo "=== Upgrading to head ==="
-      kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic upgrade head \
-        || fail "Alembic migration failed. Check: kubectl exec -n $NS $POD -- env PYTHONPATH=/app alembic history"
-      echo ""
-      echo "=== New revision ==="
-      kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current
-      ok "Migrations complete"
-    fi
-  fi
-
+  # Migrations run after rollout on Ready replicas of this exact release.
   # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
     cd "$ROOT_DIR/modules/gateway"
     docker build -t adp-gateway .
     aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-    if [ "$UPDATE_MODE" = true ]; then
-      docker tag adp-gateway:latest "$REGISTRY/adp-gateway:${IMAGE_TAG}"
-      docker push "$REGISTRY/adp-gateway:${IMAGE_TAG}"
-    fi
+    docker run --rm --entrypoint python adp-gateway:latest -m pricing_policy.selfcheck
+    docker tag adp-gateway:latest "$REGISTRY/adp-gateway:${IMAGE_TAG}"
+    docker push "$REGISTRY/adp-gateway:${IMAGE_TAG}"
     docker tag adp-gateway:latest "$REGISTRY/adp-gateway:latest"
     docker push "$REGISTRY/adp-gateway:latest"
   else
@@ -1062,43 +1042,21 @@ else
     echo "$HEALTH" | grep -q '"status"' \
       || warn "Health check inconclusive. Verify: kubectl exec -n adp-gateway deploy/bedrockgateway -- curl http://localhost:8080/health"
 
-    # Post-rollout migration (runs on the NEW pod which has updated alembic files).
-    # The pre-rollout step (Step 4a) catches half-applied prior migrations but
-    # cannot apply new revisions introduced by the update (old image lacks them).
-    # This step mirrors CI's ordering: gateway-deploy.yml runs migrations AFTER
-    # the new image is live (needs: [deploy-backend]).
-    # Pick the NEWEST running gateway pod: right after rollout status returns,
-    # old pods can still be Terminating (phase=Running), and an unordered pick
-    # could exec into an old pod — silently no-oping the new revisions again.
-    POST_POD=$(kubectl get pods -n adp-gateway -l app=bedrockgateway \
-      --field-selector=status.phase=Running \
-      --sort-by=.metadata.creationTimestamp \
-      -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null) || true
-    if [ -n "$POST_POD" ]; then
-      echo "Running post-rollout migrations on new pod ($POST_POD)..."
-      kubectl exec -n adp-gateway "$POST_POD" -- env PYTHONPATH=/app alembic upgrade head \
-        || fail "Post-rollout alembic migration failed. The new image is live but schema may be stale. Check: kubectl exec -n adp-gateway $POST_POD -- env PYTHONPATH=/app alembic history"
-      ok "Post-rollout migrations complete"
-    else
-      warn "No running pod found after rollout — cannot run post-rollout migrations"
-    fi
   else
-    # Fresh-deploy mode: :latest tag, non-fatal rollout check
-    kubectl set image deployment/bedrockgateway bedrockgateway="${REGISTRY}/adp-gateway:latest" -n adp-gateway 2>/dev/null || true
-    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || warn "Rollout not complete"
-
-    # Run database migrations (alembic upgrade head) — required for fresh deploys
-    # where Terraform creates the RDS instance but doesn't populate the schema.
-    # Idempotent on re-deploys (alembic tracks applied versions).
-    echo "Running database migrations..."
-    _GW_POD=$(kubectl get pods -n adp-gateway -l app=bedrockgateway --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-    if [ -n "$_GW_POD" ]; then
-      kubectl exec -n adp-gateway "$_GW_POD" -- env PYTHONPATH=/app alembic upgrade head 2>&1 | tail -5
-      ok "Database migrations applied"
-    else
-      warn "No running gateway pod found — skipping migrations (will retry at Step 8)"
-    fi
+    # Fresh deployments require the same release-image readiness as updates.
+    kubectl set image deployment/bedrockgateway bedrockgateway="${REGISTRY}/adp-gateway:${IMAGE_TAG}" -n adp-gateway
+    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || fail "Gateway rollout not complete"
   fi
+
+  PRICING_RELEASE_IMAGE="${REGISTRY}/adp-gateway:${IMAGE_TAG}"
+  python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" migrate \
+    --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
+    --expected-image "$PRICING_RELEASE_IMAGE" \
+    || fail "Gateway image is deployed but pricing migrations or activation are incomplete"
+  python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" finalize \
+    --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
+    --expected-image "$PRICING_RELEASE_IMAGE" \
+    || fail "Pricing refresh verification failed; its schedule remains disabled"
 fi
 ok "Gateway deployed"
 

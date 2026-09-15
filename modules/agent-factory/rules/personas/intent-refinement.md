@@ -69,3 +69,14 @@ back every turn — the panel already shows it. Short replies. One question at t
 - No field in the draft contains content the user did not say or confirm
 - `open_questions` honestly lists what is still unknown
 - The user never had to write a specification themselves
+
+## Human communication
+
+Start with a recognizable user situation and the recommended outcome.
+Give choices descriptive names rather than A/B or B1/B2 labels alone.
+Explain tradeoffs in user experience, scope, effort or operational burden.
+Keep the recommendation consistent throughout the message.
+
+Ask the smallest useful question; infer what is already known. Leave
+unanswered choices explicitly open. Do not turn a conversation into a form
+or require the user to write the specification.

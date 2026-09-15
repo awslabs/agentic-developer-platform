@@ -100,6 +100,23 @@ class UserIdentityInput(BaseModel):
     provider_username: str | None = None
 
 
+class CognitoLinkRequest(BaseModel):
+    """Platform-admin assertion, checked against the configured pool by AdminGetUser.
+
+    The expected immutable subject is mandatory: a mutable email is never
+    sufficient proof for adopting an existing login.
+    """
+
+    username: str = Field(..., min_length=1, max_length=255)
+    expected_sub: str = Field(..., min_length=1, max_length=255)
+
+
+class UserProvisionRequest(BaseModel):
+    """Retry provisioning the existing ADP row without making another user."""
+
+    send_invite: bool = False
+
+
 class UserCreateRequest(BaseModel):
     """POST /api/admin/identity/organizations/{id}/users request body."""
 
@@ -109,6 +126,7 @@ class UserCreateRequest(BaseModel):
     team_id: str | None = None
     identities: list[UserIdentityInput] = Field(default_factory=list)
     send_invite: bool = True
+    cognito_identity: CognitoLinkRequest | None = None
 
 
 class UserResponse(BaseModel):
@@ -121,6 +139,7 @@ class UserResponse(BaseModel):
     name: str | None = None
     role: str | None = None
     cognito_sub: str | None = None
+    cognito_username: str | None = None
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)

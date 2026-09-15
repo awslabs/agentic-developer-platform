@@ -7,12 +7,14 @@ group membership (enforced via require_admin dependency).
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
 from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user, require_admin
 from src.shared.database import get_db
+from src.shared.exceptions import BedrockGatewayError
 from src.shared.schemas.auth import TokenContext
 
 from .identities_service import IdentitiesService
@@ -52,13 +54,40 @@ async def create_organization(
     db: AsyncSession = Depends(get_db),
     current_user: TokenContext = Depends(get_current_user),
 ):
-    """Create a new organization with default dept, team, and channel mappings."""
+    """Create a new organization with default dept, team, and channel mappings.
+
+    - 409 if the id or name is already taken (a genuine conflict).
+    - 500 for anything else.
+
+    Issue #4842: this handler used to map EVERY exception to 409. A conflict tells
+    the caller "your input collides with existing state, change it and retry" —
+    so a DB outage, a bug in the service, or a failed Cognito call all arrived
+    looking like the caller's fault, and an operator retrying with a different id
+    got the same 409 forever with nothing pointing at the real cause. Only an
+    integrity violation is a conflict; everything else is ours and must surface
+    as a 5xx so it is visible as a server error.
+    """
     svc = OrganizationsService(db)
     try:
         return await svc.create_organization(req)
+    except IntegrityError as e:
+        # Unique/PK violation — the id or name is taken. The one genuine 409.
+        logger.warning("Conflict creating organization %s: %s", req.id, e)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Organization {req.id} conflicts with an existing organization (duplicate id or name).",
+        ) from e
+    except BedrockGatewayError:
+        # Carries its own status code; app.py's registered handler renders it.
+        # Re-raised untouched so an InstallationClaimError stays a 409/403 with
+        # its own message rather than being flattened into this route's 409.
+        raise
     except Exception as e:
-        logger.error("Failed to create organization %s: %s", req.id, e)
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        logger.exception("Failed to create organization %s", req.id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create organization {req.id}.",
+        ) from e
 
 
 @router.get("/organizations", response_model=OrganizationListResponse)
@@ -167,13 +196,19 @@ async def create_user(
     # gates *which role* they may grant. Raised as-is (BedrockGatewayError carries
     # its own status code) so it is never swallowed by the 409 handler below.
     await AccessControl(db).require_assignable_role(current_user, req.role, target_org_id=org_id)
+    if req.cognito_identity:
+        AccessControl(db).require_platform_admin(current_user)
 
     svc = UsersService(db, identity_writer=IdentityIndexWriter())
     try:
         return await svc.create_user(org_id, req)
+    except BedrockGatewayError:
+        raise
+    except IntegrityError as e:
+        raise HTTPException(status_code=409, detail="User conflicts with an existing identity") from e
     except Exception as e:
-        logger.error("Failed to create user in org %s: %s", org_id, e)
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        logger.exception("Failed to create user in org %s", org_id)
+        raise HTTPException(status_code=500, detail="Failed to create user") from e
 
 
 @router.get("/organizations/{org_id}/users", response_model=UserListResponse)

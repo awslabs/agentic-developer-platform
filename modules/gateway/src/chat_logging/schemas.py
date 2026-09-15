@@ -32,10 +32,12 @@ class UsageInfo(BaseModel):
     Lambda can price cached traffic correctly.
     """
 
-    input_tokens: int = Field(default=0, description="Number of input tokens")
-    output_tokens: int = Field(default=0, description="Number of output tokens")
-    cache_read_input_tokens: int = Field(default=0, description="Tokens served from prompt cache")
-    cache_creation_input_tokens: int = Field(default=0, description="Tokens written to prompt cache")
+    input_tokens: int | None = Field(default=None, description="Number of input tokens")
+    output_tokens: int | None = Field(default=None, description="Number of output tokens")
+    cache_read_input_tokens: int | None = Field(default=None, description="Tokens served from prompt cache")
+    cache_creation_input_tokens: int | None = Field(default=None, description="Tokens written to prompt cache")
+
+    cache_creation: dict[str, Any] | None = Field(default=None, description="Raw cache-write usage by duration")
 
 
 class ChatLogResponse(BaseModel):
@@ -96,6 +98,9 @@ class ChatLog(BaseModel):
     # Scrubbed content
     request: ChatLogRequest = Field(description="Scrubbed request body")
     response: ChatLogResponse = Field(description="Scrubbed response body")
+
+    # Set only by the gateway completion path, never extracted from client JSON.
+    pricing_decision: dict[str, Any] | None = Field(default=None, description="Server-produced durable pricing decision")
 
     # Scrubbing info
     scrubbing: ScrubbingMetadata = Field(description="Information about scrubbing applied")

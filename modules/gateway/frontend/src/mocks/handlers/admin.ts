@@ -32,17 +32,21 @@ export const adminHandlers = [
     return HttpResponse.json(org);
   }),
 
-  http.post('/api/admin/organizations', async ({ request }) => {
-    const body = await request.json() as { name: string };
-    const newOrg = {
-      id: `org-${Date.now()}`,
-      name: body.name,
-      aws_accounts: [],
-      role_mappings: {},
-      settings: {},
-      created_at: new Date().toISOString(),
-    };
-    return HttpResponse.json(newOrg, { status: 201 });
+  // Issue #4842 (D4=Option A): this route is deprecated and returns 410 in
+  // production. The mock mirrors that instead of the old 201 — a mock that
+  // succeeds where the real backend refuses is worse than no mock at all,
+  // because a feature built against it passes in dev mode and fails on deploy.
+  // Org creation now goes to POST /api/admin/identity/organizations, which takes
+  // a different body (caller-supplied `id`, plus `plan`/`channels`).
+  http.post('/api/admin/organizations', () => {
+    return HttpResponse.json(
+      {
+        detail:
+          'POST /admin/organizations is no longer available. Use POST /api/admin/identity/organizations, ' +
+          'which also creates the default department, default team, and channel mappings this route omitted.',
+      },
+      { status: 410 }
+    );
   }),
 
   http.patch('/api/admin/organizations/:id', async ({ params, request }) => {
@@ -158,6 +162,82 @@ export const adminHandlers = [
       page,
       page_size: pageSize,
       has_more: start + pageSize < users.length,
+    });
+  }),
+
+  // The platform-wide member picker's source — Issue #4827.
+  //
+  // Mocked because the Bedrock-routing panel's person rung is now a picker over every
+  // platform user, and in mock mode a picker with no options is indistinguishable from
+  // the raw-id field it replaced.
+  //
+  // `user-dept-admin-001` deliberately carries NO github_username, matching the
+  // identities mock below, so the "no GitHub linked" label branch is reachable here.
+  // A branch nothing can reach is a branch that rots.
+  http.get('/api/admin/users', ({ request }) => {
+    const url = new URL(request.url);
+    const q = (url.searchParams.get('q') || '').toLowerCase();
+    const page = parseInt(url.searchParams.get('page') || '1');
+    const pageSize = parseInt(url.searchParams.get('page_size') || '50');
+
+    const people = mockUsers.map((u) => ({
+      id: u.user_id,
+      org_id: u.org_id || 'org-001',
+      email: `${u.user_id}@example.com`,
+      name: u.user_id.replace('user-', 'User '),
+      github_username: u.user_id === 'user-dept-admin-001' ? null : u.user_id.replace('user-', ''),
+    }));
+
+    // Server-side search, mirroring the real endpoint's fields: a mock that ignored
+    // `q` would let a broken search box pass in mock mode.
+    const matches = q
+      ? people.filter((p) => [p.email, p.name, p.github_username].some((field) => field?.toLowerCase().includes(q)))
+      : people;
+    const start = (page - 1) * pageSize;
+
+    return HttpResponse.json({
+      items: matches.slice(start, start + pageSize),
+      total: matches.length,
+      page,
+      page_size: pageSize,
+      has_more: start + pageSize < matches.length,
+    });
+  }),
+
+  // A member's linked provider identities — Issue #4687.
+  //
+  // Mocked because setting somebody's person limit needs their GitHub numeric id, and
+  // this endpoint is the only server-side source of it (`user_identities`). Doubled
+  // `/api` in the path because the real router mounts at `/api/admin/identity/*` while
+  // apiClient's base is already `/api` — see the note on `getMemberGithubUserId`.
+  //
+  // The last mock user deliberately has NO github identity, so the "no linked GitHub
+  // identity" branch is reachable in mock mode: that path declines to write a cap, and a
+  // branch nothing can reach is a branch that rots.
+  http.get('/api/api/admin/identity/users/:userId/identities', ({ params }) => {
+    const userId = params.userId as string;
+    if (userId === 'user-dept-admin-001') {
+      return HttpResponse.json({ identities: [], total: 0 });
+    }
+    return HttpResponse.json({
+      identities: [
+        {
+          id: `identity-${userId}`,
+          user_id: userId,
+          org_id: 'org-001',
+          team_id: 'team-001',
+          provider: 'github',
+          // A numeric id, as `user_identities.provider_user_id` carries for GitHub — the
+          // anchor is `github:<this>`, so a non-numeric placeholder here would model a
+          // key the real resolver would reject.
+          provider_user_id: '20402445',
+          provider_username: userId.replace('user-', ''),
+          verification_method: 'oauth',
+          verified_at: '2024-01-01T00:00:00Z',
+          created_at: '2024-01-01T00:00:00Z',
+        },
+      ],
+      total: 1,
     });
   }),
 

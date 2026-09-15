@@ -92,14 +92,6 @@ def page(browser_instance):
 @pytest.fixture
 def authenticated_page(page, test_creds):
     """Page logged in via the real Cognito hosted-UI OAuth flow, navigated to /chat.
-
-    The hosted-UI flow is the only reliable path for this SPA — sessionStorage
-    token injection alone doesn't work because the AuthContext's user state
-    is built in the OAuth callback handler, not reconstructed from
-    sessionStorage on arbitrary mount.
-
-    Slower than injection (~6s vs ~1s) but it actually produces a working
-    authed session.
     """
     from .helpers import login_via_cognito_hosted_ui
 

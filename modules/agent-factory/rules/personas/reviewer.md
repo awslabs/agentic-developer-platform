@@ -30,3 +30,28 @@ When loading context from the `adp` branch:
 - Error handling covers failure paths
 - No credentials, tokens, or secrets in code
 - PR is ready to merge — no open threads, no pending changes
+
+## Human communication
+
+Lead with the verdict for the reviewed revision and the number of blockers.
+Describe the practical impact of each blocker before the file/line details.
+Keep evidence and a concrete fix with each finding.
+
+Separate three concepts: impact severity, confidence in the finding, and
+whether it blocks approval under the review policy. Low impact does not mean
+low confidence. Label optional follow-ups explicitly.
+
+State validation gaps and outstanding required checks. A security review
+finding no vulnerabilities is not proof of full functional acceptance.
+Put the complete criteria matrix and cleared hypotheses after the summary.
+Preserve required engine attribution as a compact line.
+
+When no reviewable revision is supplied, give a brief blocked outcome: what
+cannot be concluded, what evidence is only author-reported, and what the author
+must provide next. Do not search for substitute code or produce a review matrix
+for an absent target. Stop after the verdict, evidence limit and next handoff;
+do not speculate about defects or enumerate future tests before seeing the target.
+Once a target is available, extract testable behavior from the handoff and ask
+only for missing criteria that affect the review. Omit routine “no files changed”
+footers; internal review records are writes too. Branch-routing mechanics belong
+in setup guidance only when they affect the requested review path.

@@ -32,17 +32,21 @@ spec:
           ports:
             - containerPort: 8080
               protocol: TCP
-          # Memory sized for 4 uvicorn workers + streaming/chat-logging buffers:
-          # pods were observed at 769Mi under normal agent load, i.e. 75% of the
-          # old 1Gi limit — one busy burst away from an OOM-kill mid-stream.
-          # Requests raised with limits so the HPA's utilization math (which is
-          # computed against REQUESTS) stays meaningful: 75% of 1Gi ≈ the level
-          # we already reach today. CPU is untouched — the gateway is async
-          # I/O-bound and idles at 1-2% even under full agent traffic.
+          # Memory sized for 4 uvicorn workers + streaming/chat-logging buffers.
+          # The memory REQUEST is 1.25Gi (raised from 1Gi): the HPA's utilization
+          # math is computed against requests, and at a 1Gi request the observed
+          # ~800Mi idle baseline was already 80% — above the 75% scale-out target —
+          # so the autoscaler pinned the fleet at 4-5 pods even at idle and had
+          # almost no burst headroom left before its ceiling. At 1.25Gi the 75%
+          # line is ~960Mi, comfortably above idle baseline, so idle settles toward
+          # minReplicas and scale-out fires only on real load. The 2Gi LIMIT is
+          # unchanged — it stays the OOM ceiling, now with more room above the
+          # request. CPU is untouched: the gateway is async I/O-bound and idles at
+          # 1-2% even under full agent traffic. See k8s/hpa.yaml.
           resources:
             requests:
               cpu: 250m
-              memory: 1Gi
+              memory: 1.25Gi
             limits:
               cpu: 1000m
               memory: 2Gi
@@ -71,6 +75,18 @@ spec:
             - configMapRef:
                 name: bedrockgateway-config
           env:
+            - name: AGENT_RUN_CREDENTIAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-authority-signing
+                  key: run-credential-key
+                  optional: true
+            - name: AGENT_CONTROL_ENVELOPE_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-authority-signing
+                  key: envelope-signing-key
+                  optional: true
             - name: BG_LOG_FORMAT
               value: "json"
             - name: BG_LOG_LEVEL
@@ -133,14 +149,24 @@ spec:
               value: "false"
             - name: FEATURE_LOGS_ENABLED
               value: "false"
-            # Issue #4209: orchestration engine + graph UI. Fail-closed, so absent
-            # would already mean off — set explicitly anyway, because this is the
-            # entry an operator flips to opt an environment in, and the three-place
-            # parity test reads it here. Legacy GitHub-driven mode is the default
-            # and stays fully supported (ruling D-R20); do not flip this to enable
-            # the engine for everyone.
+            # Issue #4209: orchestration engine + graph UI. Fail-closed.
+            #
+            # Rendered PER ENVIRONMENT, not hard-coded. This one file is applied
+            # verbatim to whichever environment gateway-deploy.yml targets, so a
+            # literal "true" here would opt EVERY environment in at once —
+            # including prod — which ruling D-R20 forbids: legacy GitHub-driven
+            # mode is a supported product mode, not a migration state.
+            #
+            # gateway-deploy.yml substitutes this placeholder from
+            # `/adp/<env>/gateway/feature-orchestration-engine`, defaulting to
+            # "false" when the parameter is absent — so the opt-in is an operator
+            # action on ONE environment and the default stays off. Nothing to
+            # merge, nothing to revert: `aws ssm put-parameter` in, delete out.
+            #
+            # Do NOT replace this with a literal, and do NOT use `kubectl set env`
+            # (every deploy re-applies this file and would silently revert it).
             - name: FEATURE_ORCHESTRATION_ENGINE_ENABLED
-              value: "false"
+              value: "__FEATURE_ORCHESTRATION_ENGINE_ENABLED__"
             # Issue #4402 (U-5 of EPIC #4324): the Budget & Spend screen. Fail-closed
             # like the entry above, so absent already means off — but it has to be set
             # HERE rather than with `kubectl set env`, because gateway-deploy.yml
@@ -151,6 +177,56 @@ spec:
             # the SPA.
             - name: FEATURE_BUDGET_SPEND_ENABLED
               value: "true"
+            # Issue #3960: the live-run control path (gateway proxy -> in-pod control
+            # listener). Rendered per environment from
+            # /adp/<env>/gateway/feature-agent-control, defaulting to "false" —
+            # same mechanism and same reason as the entry two above.
+            #
+            # Per-environment matters more here than for a UI screen. Turning this
+            # on opens an authenticated channel into a running agent pod, and the
+            # rollout invariant for this story is that ordinary workloads stay off:
+            # the one legitimate "true" is an operator-created isolated fixture
+            # (evaluation #3967), which is an `aws ssm put-parameter` against a
+            # single environment, not a committed literal every environment
+            # inherits on its next deploy.
+            #
+            # Note this flag does not make any control verb work — all four are
+            # unsupported in S1 and an authorized caller on a live run gets 501. It
+            # gates the route surface, the ping/state read path and the capability
+            # report. It also cannot start a listener in an agent pod: the worker
+            # reads its own copy of FEATURE_AGENT_CONTROL_ENABLED independently.
+            - name: FEATURE_AGENT_CONTROL_ENABLED
+              value: "__FEATURE_AGENT_CONTROL_ENABLED__"
+            # Issue #5079 (NUI-01 of EPIC #5078): the opt-in /next UI shell. Rendered
+            # per environment from /adp/<env>/gateway/feature-new-ui, defaulting to
+            # "false" — same mechanism as the two entries above, because the new
+            # experience is enabled one environment at a time and a committed literal
+            # would arm every environment on its next deploy.
+            #
+            # Disabling the preview: the "Try the new UI" link and the /next routes
+            # disappear, the current UI keeps serving every existing URL, and no
+            # configured data, settings or model-routing rule is touched. No SPA
+            # rebuild is involved — the SPA reads this value from GET /features at
+            # runtime.
+            #
+            # It takes TWO steps, because this value is baked into the pod env at
+            # deploy time:
+            #   1. aws ssm put-parameter --name /adp/<env>/gateway/feature-new-ui \
+            #        --value false --overwrite
+            #   2. re-run gateway-deploy.yml so its deploy-backend job re-renders
+            #      this manifest and rolls the pods.
+            # Step 1 alone changes nothing about a running pod. A frontend-only push
+            # SKIPS deploy-backend entirely, so it will not pick the value up either.
+            #
+            # For an emergency stop without waiting for a deploy:
+            #   kubectl set env deployment/bedrockgateway \
+            #     FEATURE_NEW_UI_ENABLED=false -n adp-gateway
+            # That is reverted by the next deploy, so still do step 1 to make it
+            # durable. Already-open browser sessions request a refresh every
+            # FEATURES_REVALIDATE_MS (see useFeatures.ts). Browser throttling and
+            # network completion can delay observation; a reload is not required.
+            - name: FEATURE_NEW_UI_ENABLED
+              value: "__FEATURE_NEW_UI_ENABLED__"
             # - name: FEATURE_KNOWLEDGE_ENABLED
             #   value: "false"
             # - name: FEATURE_INDEXING_ENABLED

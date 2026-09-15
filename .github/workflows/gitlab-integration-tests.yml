@@ -95,6 +95,19 @@ jobs:
             --name "/adp/${ENV}/webhook-ingress/sqs-queue-url" \
             --query "Parameter.Value" --output text 2>/dev/null || echo "")
 
+          # Secrets fetched at runtime are not masked automatically. Register
+          # them before GITHUB_ENV makes them visible in later step headers.
+          for adp_secret_name in GITLAB_WEBHOOK_SECRET GITLAB_TOKEN WEBHOOK_SECRET; do
+            adp_mask_value="${!adp_secret_name:-}"
+            if [ -n "$adp_mask_value" ]; then
+              adp_mask_value="${adp_mask_value//%/%25}"
+              adp_mask_value="${adp_mask_value//$'\r'/%0D}"
+              adp_mask_value="${adp_mask_value//$'\n'/%0A}"
+              printf '::add-mask::%s\n' "$adp_mask_value"
+            fi
+          done
+          unset adp_mask_value adp_secret_name
+
           # Export all to GITHUB_ENV
           {
             echo "GITLAB_WEBHOOK_ENDPOINT=${GITLAB_WEBHOOK_ENDPOINT}"
@@ -108,6 +121,13 @@ jobs:
             echo "WEBHOOK_SQS_QUEUE_URL=${WEBHOOK_SQS_QUEUE_URL}"
             echo "TEST_ENV=${ENV}"
           } >> "$GITHUB_ENV"
+
+      - name: Verify GitLab publish and ignore contracts
+        working-directory: modules/agent-factory
+        env:
+          GITLAB_WEBHOOK_SECRET: test-gitlab-secret
+          GITLAB_WEBHOOK_SECRET_ARN: ''
+        run: python3 -m pytest webhook-ingress/lambda/gitlab/tests -q --tb=short
 
       - name: Run GitLab E2E tests
         working-directory: modules/agent-factory

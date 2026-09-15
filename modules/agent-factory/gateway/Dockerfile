@@ -1,5 +1,7 @@
 # Agent Gateway — SQS Consumer (Pure Python)
 # Uses Claude via Bedrock directly — no TypeScript, no subprocess.
+# Build context: modules/agent-factory (shared personas are baked in).
+# docker build -f gateway/Dockerfile .
 
 FROM public.ecr.aws/docker/library/python:3.13-slim
 
@@ -17,11 +19,12 @@ RUN groupadd -g 10001 agentgw && useradd -u 10001 -g agentgw -s /bin/sh agentgw
 
 WORKDIR /app
 
-COPY app/requirements.txt /app/app/requirements.txt
+COPY gateway/app/requirements.txt /app/app/requirements.txt
 RUN pip install --no-cache-dir -r /app/app/requirements.txt
 
-COPY app/ /app/app/
-COPY entrypoint.sh /app/entrypoint.sh
+COPY gateway/app/ /app/app/
+COPY rules/personas/ /app/personas/
+COPY gateway/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh && chown -R agentgw:agentgw /app
 
 USER agentgw:agentgw

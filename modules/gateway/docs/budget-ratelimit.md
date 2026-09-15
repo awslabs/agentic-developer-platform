@@ -144,6 +144,21 @@ A person's own platform-wide limit (`person_budget_configs`, issue #4630 / desig
 note `docs/design-notes/4620-cross-org-person-budgets.md` §5.3) denies in **every**
 org their agents run in. It is reported with `scope: "person"`:
 
+**What it governs, since #4396: the person's TOTAL spend.** The denominator is the
+person's own direct, interactive use **plus** the cloud agents they triggered,
+summed across every GitHub org they belong to — one number, and the same one
+`/api/me/budget` displays as `person_envelope.spend_usd`. Two consequences:
+
+- **Interactive (JWT) requests are subject to this cap**, not just agent runs.
+  Before #4396 an unattributed request skipped the person layer entirely, so a
+  person could sit inside their limit while spending freely from their own machine.
+- The two ledgers summed are disjoint by construction — direct spend settles under
+  `entity_type="user"` keyed by Cognito sub, agent spend under
+  `entity_type="root_user"` keyed by canonical `users.id`, in a table uniquely keyed
+  including `entity_type` — so each dollar is counted exactly once. Org/department/
+  team rows are **not** part of the sum: those are the same dollars at a coarser
+  grain, and adding them would double-count (#4322).
+
 ```json
 {
   "error": "budget_exceeded",
@@ -173,7 +188,8 @@ org their agents run in. It is reported with `scope: "person"`:
 in `message`.
 
 **Overshoot bound — this cap is bounded, not atomic.** Unlike the per-org hierarchy
-caps, the person layer's denominator is the **settled** ledger only. It takes no
+caps, the person layer's denominator is the **settled** ledger only — for both
+halves of the total above, direct and cloud alike. It takes no
 Redis reservation, because `ReservationTarget.key()` embeds `{org_id}` as a Redis
 Cluster hash tag to keep the multi-key atomic Lua single-slot, and a
 partition-spanning person key cannot carry one (§5.5); the recorded ruling on #4620

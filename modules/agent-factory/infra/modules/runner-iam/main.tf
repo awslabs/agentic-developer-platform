@@ -91,6 +91,10 @@ resource "aws_iam_policy" "runner_boundary" {
           "iam:UntagRole", "iam:UpdateRole",
           "sts:AssumeRole", "sts:GetCallerIdentity",
           "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
+          # EPIC #4997: platform Terraform owns regional invocation logging.
+          "bedrock:GetModelInvocationLoggingConfiguration",
+          "bedrock:PutModelInvocationLoggingConfiguration",
+          "bedrock:DeleteModelInvocationLoggingConfiguration",
           # Read/agreement APIs for platform/scripts/enable-bedrock-models.sh,
           # a prerequisite step of platform-infra-apply.yml. The boundary caps
           # the runner's effective permissions, so omitting these here denies

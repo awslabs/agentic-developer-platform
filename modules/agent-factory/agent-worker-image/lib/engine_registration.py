@@ -276,14 +276,31 @@ def _success_note(result: dict[str, Any]) -> str:
     that reply — the feature's own success message triggering the feature. A fence
     is ignored by the parser's code-awareness rule while staying copy-pasteable,
     which is the property the human actually needs from this line.
+
+    **The label is "Flow", and the id is a link when the gateway gives us one
+    (#4885).** It said "Plan" over a `flow_id`, directly above a line promising the
+    thing was "visible in the graph UI" — with no address for that UI anywhere in
+    the comment. The one artifact the reader needed, they had to already know how to
+    find, and the label pointed at the wrong noun while they looked. `flow_url` is
+    composed by the gateway (`draft_routes._flow_url`) because only it knows the
+    user-facing origin: this worker's `ADP_GATEWAY_ENDPOINT` is the API Gateway
+    invoke URL, and pasting that would hand an operator a link to the machine plane.
+    When the gateway sends no URL the id still prints bare — a missing link is a
+    degraded comment, never a missing plan.
     """
     accept_command = result.get("accept_command") or "@agent-engine accept"
     already = result.get("already_registered")
 
+    flow_id = result.get("flow_id")
+    flow_url = result.get("flow_url")
+    # A Markdown link only for an absolute URL. A relative one resolves against
+    # github.com and 404s, which reads as a broken feature rather than an absent link.
+    flow_ref = f"[`{flow_id}`]({flow_url})" if flow_url else f"`{flow_id}`"
+
     lines = [
         "### Delivery loop registered with the orchestration engine",
         "",
-        f"**Plan**: `{result.get('flow_id')}` (v{result.get('plan_version')}) — "
+        f"**Flow**: {flow_ref} (v{result.get('plan_version')}) — "
         f"{result.get('nodes_created')} nodes, {result.get('edges_created')} edges",
         "**State**: `draft` — the plan is visible in the graph UI and executes nothing.",
         f"**Acceptance gate**: `{result.get('acceptance_gate_address')}`",

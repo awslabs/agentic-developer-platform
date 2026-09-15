@@ -12,10 +12,13 @@
  * - operations: Infrastructure, deployment, monitoring
  */
 
+import { loadHumanCommunication } from './human-communication';
+import { assistantText } from './reporting-text';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
-import { createSpillHooks, TmpSpillStore } from './utils/spill';
+import { TmpSpillStore } from './utils/spill';
+import { createWorkerToolHooks, developerCheckpointGuidance } from './developer-checkpoints';
 import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh } from './token-refresh';
 import { AuthWatchdog } from './lib/authWatchdog';
 import { fetchBrokeredToken, isBrokerEnabled } from './lib/githubTokenBroker';
@@ -57,6 +60,12 @@ import { CheckRunStreamer, computeCodexCostUsd } from './components/checkRunStre
 // Codex Event Watcher — stream Codex delegation sub-steps to the live page
 // while a codex-bridge delegation is in flight (issue #2884, EPIC #2702).
 import { CodexEventWatcher } from './components/codexEventWatcher';
+// Issue #3960: live-control foundations. Both modules are transport/SDK-isolated
+// so the control surface is unit-testable without starting a run.
+import { ControlListener, SUPPORTED_ACTIONS } from './control-listener';
+import { revalidateQueuedCommand } from './control-revalidation';
+import { parseVerificationKeys } from './control-envelope';
+import { ControlStateStore } from './control-state';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -764,6 +773,8 @@ function loadRules(): string {
     rules.push(`## Agent Memory\n${fs.readFileSync(memoryRules, 'utf-8')}`);
   }
 
+  rules.push(loadHumanCommunication([path.join(rulesDir, 'personas')]));
+
   return rules.join('\n\n---\n\n');
 }
 
@@ -887,7 +898,7 @@ async function runAgent(issue: Issue, mainIssueNumber: number | null, beadsPrime
     architect: 'System Architect - responsible for design, architecture decisions, and units generation',
     developer: 'Developer - responsible for code implementation, unit tests, and PRs',
     reviewer: 'Code Reviewer - responsible for code review, integration testing, and quality validation',
-    operations: 'DevOps/SRE - responsible for infrastructure, deployment, and monitoring',
+    operations: 'DevOps/SRE and delivery coordinator - responsible for authorized infrastructure work and orchestration through acceptance',
   };
 
   const mainIssueInfo = mainIssueNumber
@@ -975,32 +986,27 @@ ${wrapUntrusted(commentsContext)}
 
 ### Step 1: Analyze and Plan
 - Read the issue carefully to understand what's being asked
-- Research as needed (web search for external docs, grep/glob for codebase)
-- Create a clear, numbered implementation plan
+- Identify whether the task is a bounded assessment, repository review, implementation or deployment
+- Research only what the requested conclusion needs; use supplied evidence for a bounded scenario
+- Create a clear plan for the assigned role and task
 
 ### Step 2: Post Your Plan
-**Before doing any implementation work**, post your plan to the issue using:
-\`\`\`bash
-gh issue comment ${ISSUE_NUMBER} --body "## 📋 Implementation Plan
+For a small read-only assessment answerable from the supplied material, skip a
+separate plan comment and return the answer as your final response. Do not launch
+a repository scan or create specification artifacts just to fill a role template.
+If the task is hypothetical, assess its stated premises; do not replace them with
+today's implementation. A missing review target calls for a brief blocked outcome.
 
-**Agent**: @agent-${AGENT_TYPE}
-**Issue**: #${issue.number}
-
-### Analysis
-[Your analysis of what needs to be done]
-
-### Implementation Steps
-1. [Step 1 - be specific]
-2. [Step 2 - be specific]
-3. [Continue as needed...]
-
-### Expected Deliverables
-- [File/artifact 1]
-- [File/artifact 2]
-
----
-Starting implementation..."
-\`\`\`
+For implementation, substantial investigation or a workflow that requires a plan,
+post a short plan before substantive work using
+\`gh issue comment ${ISSUE_NUMBER} --body-file <plan-file>\`.
+Use a few sentences for the intended outcome, main steps and verification.
+Match the plan to your role; do not announce implementation for an assessment.
+Existing approval gates and required AIDLC plan artifacts still apply; the small
+assessment exception does not bypass them or authorize execution.
+Apply phase templates when the task is part of that workflow, not merely because
+the persona has those templates available.
+${developerCheckpointGuidance(AGENT_TYPE)}
 
 ### Step 3: Execute Your Plan
 - Follow your plan step by step
@@ -1042,9 +1048,9 @@ Before editing or creating any code file, read and internalize \`docs/agent-codi
 
 Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
-## Pre-submit checks (MANDATORY before creating a PR)
+## Pre-submit checks (MANDATORY before requesting review)
 
-Before you push your branch and open the PR, run the linters and tests for the module(s) you touched. A PR that lands with red CI wastes the reviewer's time, trains everyone to ignore the signal, and ships bugs the linter would have caught.
+Before requesting review or marking a draft PR ready, run the linters and tests for the module(s) you touched. Incomplete branch checkpoints and draft PRs may be published before these finish, with their check status clearly stated. They are not a review handoff and do not relax merge gates.
 
 ### Module → check commands
 
@@ -1059,7 +1065,7 @@ Before you push your branch and open the PR, run the linters and tests for the m
 ### Rules
 
 - **Run ALL commands for EVERY module you touched.** If your diff spans two modules, run two sets of checks.
-- **If any command fails**, fix the underlying issue before pushing. Do NOT suppress warnings with \`# noqa\` or \`eslint-disable\` unless the rule genuinely doesn't apply — and note why in a comment.
+- **If any command fails**, fix the underlying issue before requesting review. You may push an incomplete checkpoint with the failure disclosed. Do NOT suppress warnings with \`# noqa\` or \`eslint-disable\` unless the rule genuinely doesn't apply — and note why in a comment.
 - **If a check fails on code you didn't touch** (pre-existing debt), note it in the PR description as "pre-existing on main: <file>:<line> <rule>" and move on. Don't clean up unrelated debt in the same PR (surgical changes principle from \`docs/agent-coding-guidelines.md\`).
 - **Auto-fix tools are fine**: \`ruff check --fix\`, \`ruff format\`, \`eslint --fix\`. Treat their output as code you wrote — review the diff before committing.
 
@@ -1071,9 +1077,14 @@ Failing to run these checks is a process bug. PRs that land with lint/test failu
 
 ${AGENT_TYPE === 'reviewer' ? `### Step 3.4: Spec-vs-diff Review (MANDATORY for @agent-reviewer)
 
-You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the PR description, verify against the code.
+When assigned a PR review, treat it as an INDEPENDENT review — don't trust the PR description, verify against the code.
 
-**If you cannot find PR_NUMBER in the environment**, stop and report the setup failure in an issue comment — don't proceed with an unscoped review.
+**If you cannot find PR_NUMBER in the environment**, do not proceed with an unscoped
+PR review. If the task deliberately supplies no review target, return a brief final
+response explaining what cannot be assessed and asking the author for the revision
+and its check results. Otherwise report the missing review setup in your final
+response. Do not select an unrelated PR or manufacture a review/security result.
+The steps below apply once the assigned review target is available.
 
 1. **Identify the PR and the driving issue:**
    \`\`\`bash
@@ -1095,39 +1106,21 @@ You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the 
 5. **Check for committed files that should not exist:**
    The repo's AGENTS.md at the root defines a set of "must not commit" rules (e.g. \`agent_learning/*.md\`, \`tfplan\` files, anything under \`.terraform/\`). Grep the diff's file list for violations — these are HIGH-confidence merge blockers and the agent should propose fixes.
 
-6. **Categorize every finding by confidence:**
-   - **HIGH**: certain merge blocker, verified against code
-   - **MEDIUM**: likely issue, worth discussing before merge
-   - **LOW**: nice-to-have, file as a follow-up
+6. **Label each finding independently:**
+   - Impact severity: high / medium / low, with the practical consequence
+   - Confidence: high / medium / low, with the evidence or uncertainty
+   - Approval impact: blocker / discussion needed / optional follow-up
+   Existing acceptance, security and prohibited-file requirements remain blockers.
 
-7. **Write the review summary to a file:**
-   \`\`\`bash
-   mkdir -p data/code-review
-   cat > data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md <<'SUMMARY'
-   # Review of PR #$PR_NUMBER
-
-   ## Driving issue
-   - #$ISSUE_NUMBER: <issue title>
-
-   ## Acceptance criteria checklist
-   - [x|✗] <criterion 1> — <where in diff it's satisfied OR why it's not>
-   - [x|✗] <criterion 2> — ...
-
-   ## Findings (by confidence)
-
-   ### HIGH — merge blockers
-   - <file:line>: <concrete issue + exact line in diff>
-
-   ### MEDIUM — discuss before merge
-   - ...
-
-   ### LOW — follow-up candidates
-   - ...
-
-   ## Recommendation
-   APPROVE / REQUEST CHANGES / BLOCK
-   SUMMARY
-   \`\`\`
+7. **Write the review summary to a file** at
+   \`data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md\`:
+   - Start with verdict (APPROVE / REQUEST CHANGES / BLOCK), reviewed revision,
+     blocker count and the most important consequence.
+   - Describe each blocker in plain language, then evidence, file/line and fix.
+   - State validation gaps and outstanding required checks. Keep optional
+     follow-ups separate and retain the required engine attribution line.
+   - Follow with the full acceptance-criteria checklist (satisfied/missing,
+     evidence per criterion) and detailed findings. Do not bury blockers below it.
 
 8. **Post the review summary to the PR:**
    \`\`\`bash
@@ -1137,7 +1130,7 @@ You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the 
 9. **Only after Step 8:** proceed to the security review step below.
 
 **DO NOT approve a PR if**:
-- Any HIGH finding is unresolved
+- Any merge-blocking finding is unresolved
 - Any acceptance criterion from the issue is ✗
 - Any file committed to the PR matches a "must not commit" rule in AGENTS.md
 
@@ -1175,7 +1168,12 @@ You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the 
 
 **DO NOT merge without completing /security-review.**
 ` : ''}${AGENT_TYPE === 'operations' ? `### Step 3.5: Execution (MANDATORY for @agent-operations)
-**You are the DEPLOYMENT agent. Your job is to EXECUTE infrastructure changes, not just prepare them.**
+**For authorized deployment work, execute and verify the requested infrastructure changes.**
+
+The following execution steps apply only to an authorized deployment task. For
+an assessment of a supplied record, assess that record and label its provenance;
+do not run deployment commands or treat absent deployment authorization as a
+blocker. Keep conclusions within the supplied evidence.
 
 When working on deployment tasks:
 
@@ -1203,12 +1201,16 @@ When working on deployment tasks:
    - Other blocker? State the specific reason
 
 **DO NOT just create YAML files, PRs, or documentation without attempting actual deployment.**
-**DO NOT consider your task complete until you have either deployed OR clearly stated why you could not.**
+**Deployment is complete only when the requested deployment and checks are verified.**
+If deployment is blocked, report that action as blocked and continue any independent
+authorized work. For orchestration, retain the assigned review, repair, merge,
+deployment and evaluation ownership until acceptance, an acknowledged continuation,
+or an evidenced block/stop as defined in the operations persona. A clear blocker
+report or a child dispatch does not complete the delivery assignment.
 ` : ''}### Step 4: Report Results
-- Summarize what you accomplished
-- List files created/modified
-- Note any issues encountered
-- Recommend next steps
+- Return the outcome once in your final response, following Completion Summary Format
+- Name the meaningful result, remaining blockers and next owner/action
+- Include file changes only when they help the user assess the requested work
 
 ## Available Tools
 
@@ -1238,55 +1240,51 @@ ${beadsPrimeContext}` : ''}
 
 ## Completion Summary Format
 
-**IMPORTANT**: When your work is complete, your FINAL message must be a well-structured summary that stakeholders can easily read and understand. Use this EXACT format:
+Your FINAL message is the human outcome report. Follow the shared writing rules
+and your persona's format. Start with the capability/problem and its actual
+state, including any blocker; then evidence, limitations and next owner/action.
+Use a few connected paragraphs or brief sections when helpful. Distinguish a
+prepared design, PR opened, code merged, deployment and verified acceptance.
+A run ending does not establish any of those states. Do not use a generic
+"Task Complete" heading when work or required checks remain.
 
-\`\`\`
-## ✅ Task Complete: [Brief title of what was accomplished]
+The runtime publishes your final response as the issue's outcome. For an issue
+assessment, do not first use \`gh issue comment\` to publish the assessment and
+then return a recap: both would appear on the same issue. Return the full answer
+only here. Required gate comments, formal PR reviews and audit records still
+belong in their designated places; link to those with a brief status and next
+action rather than repeating their findings in the final response.
+Keep technical inventories, commands and long test matrices below the summary
+or in linked evidence. For implementation work, include the shared policy's
+walkthrough of the mechanism, decisions and reproducible verification in the
+final response. Critical caveats must remain visible.
 
-### What Was Done
-[2-4 bullet points describing the key accomplishments in business terms. Focus on OUTCOMES, not just actions. Example: "Deployed agent-mail service to EKS cluster" not "Ran kubectl apply"]
-
-### Key Deliverables
-| Deliverable | Status | Location/Details |
-|-------------|--------|------------------|
-| [e.g., Docker image] | ✅ Ready | [e.g., ECR: xxx.dkr.ecr...] |
-| [e.g., K8s manifests] | ✅ Created | [e.g., k8s/agent-mail/] |
-| [e.g., PR] | ✅ Opened | [e.g., #268] |
-
-### Verification
-[How can someone verify this work is complete? Include specific commands or URLs]
-
-### Next Steps
-[What should happen next? Who/what is unblocked by this work?]
-
-### Issues Encountered (if any)
-[Only include if there were significant issues. Briefly describe and how resolved]
-
-${AGENT_TYPE === 'operations' ? `### Deployment Status (REQUIRED for @agent-operations)
-| Action | Status | Details |
-|--------|--------|---------|
-| Deployment Executed? | ✅ Yes / ❌ No | [If No, explain WHY: awaiting approval, missing creds, etc.] |
-| Service Running? | ✅ Yes / ❌ No / N/A | [Status check result] |
-| Endpoint Accessible? | ✅ Yes / ❌ No / N/A | [URL/IP or reason not accessible] |
-
-**If deployment was NOT executed, clearly explain why and what is needed to proceed.**
-` : ''}### Learnings
-[Document insights that would help future work on this codebase or similar tasks:
-- Gotchas or non-obvious configurations discovered
-- Useful patterns or approaches that worked well
-- Things that didn't work and why
-- Recommendations for improving the process
-Keep each learning to 1-2 sentences. These help future agents and humans avoid repeating mistakes.]
-\`\`\`
-
-Your summary will be posted to the parent issue for stakeholders to review. Make it clear, concise, and actionable.
-
-**Also write learnings to file**: After posting your summary, save detailed learnings to \`agent_learning/{date}-issue-{number}-learnings.md\`. This file is read by future agents — make it HIGH QUALITY:
+${AGENT_TYPE === 'operations' ? `For operations, name the target environment and state separately whether
+ deployment ran, the service is running, and the endpoint was checked. Report
+ passed, failed, skipped and not-run checks; explain missing deployment or
+ acceptance checks and the next action. Include relevant cleanup/cost exposure.
+` : ''}
+**Write handoff learnings to file**: Before returning your final report, save detailed learnings to \`agent_learning/{date}-issue-{number}-learnings.md\`. This file is read by future agents — make it HIGH QUALITY:
 - What worked and what didn't (specific commands, configurations, error messages)
 - Key technical decisions and why they were made
 - Gotchas, workarounds, and things that took multiple attempts
 - Exact versions, endpoints, resource names that future agents will need
 - NEVER include secrets, API keys, tokens, passwords, or private keys in learnings
+
+Writing the required learnings record is a file change, even when no source code
+changed. Do not end with blanket claims such as "no files changed" or "no actions
+taken". Omit routine scope footers and bookkeeping unless requested or consequential;
+when needed, describe the verified scope precisely. Keep missing checks visible.
+Before returning, remove unnecessary assumptions and follow-up questions that
+would not change the recommendation or the user's requested next step. Keep
+qualifications beside their claims and required approvals explicit; a
+recommendation is not the owner's decision. Keep each message as short as its
+purpose allows. Ending an explanation does not end execution: continue unfinished
+authorized work, including required waits and follow-through, until the assigned
+acceptance is verified, an authorized continuation is acknowledged, or an evidenced
+block, human gate, cancellation or execution limit requires stopping. A written
+next action is not an accepted handoff. A standalone assessment ends when its
+requested answer is complete.
 
 Now, complete the assigned task.`;
 
@@ -1474,7 +1472,8 @@ Now, complete the assigned task.`;
             // otherwise be re-sent on every remaining turn and force an early
             // (lossy) compaction. The hook fails open — a storage error leaves
             // the original output in place.
-            hooks: createSpillHooks({
+            hooks: createWorkerToolHooks({
+              agentType: AGENT_TYPE,
               store: buildWorkerSpillStore(),
               log: (msg) => log('INFO', msg),
             }),
@@ -1526,9 +1525,9 @@ Now, complete the assigned task.`;
                 codexCostUsd: computeCodexCostUsd(codexUsage.inputTokens, codexUsage.outputTokens),
               });
             }
-            // Stream tool_use to the live status comment so users watching the
-            // issue page see what the agent is currently doing.
+            // Publish intentional explanations as well as technical activity.
             if (activeLiveComment) {
+              activeLiveComment.setExplanation(assistantText(assistantMsg.message.content));
               for (const block of assistantMsg.message.content) {
                 if (block.type === 'tool_use' && typeof block.name === 'string') {
                   const inputPreview = JSON.stringify(block.input ?? {}).slice(0, 80);
@@ -1973,6 +1972,54 @@ async function main(): Promise<void> {
   let agentSucceeded = false;
   let agentResult = '';
 
+  // Issue #3960: the in-pod control listener. Declared outside the try so the
+  // finally block can close the port on every exit path — including a thrown
+  // error — rather than only on the success path.
+  let controlListener: ControlListener | null = null;
+  try {
+    // Started here, after config resolution and before the SDK query, so a
+    // state read is answerable for the whole life of the run. Everything the
+    // listener needs was placed in this process's env by the entrypoint, which
+    // only does so when the flag is on and registration succeeded — so an
+    // unregistered listener cannot exist.
+    const controlStore = new ControlStateStore({
+      generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
+      // No verbs in S1: every capability reports false and every verb answers 501.
+      supportedActions: SUPPORTED_ACTIONS,
+      revalidate: revalidateQueuedCommand,
+    });
+    const listener = new ControlListener({
+      bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
+      port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),
+      token: process.env.ADP_CONTROL_TOKEN || '',
+      tokenExpiresAt: process.env.ADP_CONTROL_TOKEN_EXPIRES_AT || '',
+      credentialFile: process.env.ADP_CONTROL_CREDENTIAL_FILE,
+      generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
+      store: controlStore,
+      // Issue #5028: this run's own identity and the gateway's public verification
+      // keys. Both are placed here by the entrypoint. An absent key map means
+      // live-control commands are refused — the read paths still work, and no verb
+      // is implemented yet, so that is the expected state today.
+      runId: process.env.ADP_CONTROL_RUN_ID || '',
+      envelopeKeys: parseVerificationKeys(process.env.ADP_CONTROL_ENVELOPE_KEYS),
+      envelopeKeysFile: process.env.ADP_CONTROL_ENVELOPE_KEYS_FILE,
+      logger: (level, message, context) => log(level.toUpperCase(), message, context),
+    });
+    const outcome = await listener.start();
+    if (outcome.started) {
+      controlListener = listener;
+      log('INFO', `Control listener started on port ${outcome.port}`);
+    } else if (outcome.reason !== 'disabled') {
+      // A failure to start is logged at WARN and the run continues: control is an
+      // add-on, and refusing to work without it would make an intervention
+      // channel a new way for ordinary runs to die. 'disabled' is silent because
+      // it is the normal state for every ordinary workload.
+      log('WARN', `Control listener unavailable (${outcome.reason}): ${outcome.detail ?? ''}`);
+    }
+  } catch (err) {
+    log('WARN', `Control listener setup failed (non-blocking): ${(err as Error).message}`);
+  }
+
   try {
     await ensureAdpBranch();
   } catch (err) {
@@ -2059,7 +2106,7 @@ async function main(): Promise<void> {
 
     // Initialize live status comment (edit-in-place progress)
     const token = process.env.GH_APP_TOKEN || process.env.GITHUB_TOKEN || GITHUB_TOKEN;
-    activeLiveComment = new LiveStatusComment(createWorkerStages(), {
+    activeLiveComment = new LiveStatusComment(createWorkerStages(AGENT_TYPE), {
       owner: REPO_OWNER,
       repo: REPO_NAME,
       issueNumber: parseInt(ISSUE_NUMBER),
@@ -2110,12 +2157,8 @@ Working on this task...`);
       );
     }
 
-    // Mark analyze through PR stages as complete (agent handles all internally)
+    // The runtime observes execution ending, not implementation/test/PR outcomes.
     activeLiveComment.transition(1, 'complete');
-    activeLiveComment.transition(2, 'complete');
-    activeLiveComment.transition(3, 'complete');
-    activeLiveComment.transition(4, 'complete');
-    activeLiveComment.transition(5, 'complete');
 
     // Complete task in Beads (if claimed)
     if (beadsAvailable && beadsTaskId) {
@@ -2156,25 +2199,24 @@ Working on this task...`);
     // Status will be set to Done automatically by GitHub project automation
     // when the PR is merged and the issue is closed.
 
-    // Finalize live status comment with success summary
-    const runDuration = Date.now() - (activeLiveComment.getStages()[0]?.startedAt || Date.now());
-    await activeLiveComment.finalizeSuccess({
-      durationMs: runDuration,
-      details: result ? result.substring(0, 500) : undefined,
-    }).catch(err => log('WARN', `Could not finalize live comment: ${(err as Error).message}`));
-
-    // Post completion to main issue
-    const summary = `## @agent-${AGENT_TYPE} Completed
-
-**Task**: #${issue.number} - ${issue.title}
-**Status**: Done
-**Completed**: ${new Date().toISOString()}
-${beadsTaskId ? `**Beads ID**: ${beadsTaskId}` : ''}
-
-### Summary
-${result}`;
-
-    await postToMainIssue(mainIssueNumber, summary);
+    // Publish one full outcome without cutting away qualifications or blockers.
+    const outcome = result || 'The run ended without an outcome report. Task completion has not been verified.';
+    let outcomeUrl: string | undefined;
+    try {
+      await activeLiveComment.finalizeSuccess({ details: outcome });
+      outcomeUrl = activeLiveComment.getCommentUrl() || undefined;
+    } catch (err) {
+      log('WARN', `Could not finalize live comment: ${(err as Error).message}`);
+    }
+    if (outcomeUrl) {
+      writeResultMetadata({ outcome_comment_url: outcomeUrl });
+      if (mainIssueNumber && mainIssueNumber !== issue.number) {
+        await postToMainIssue(mainIssueNumber,
+          `Agent run ended for **${issue.title}** (#${issue.number}). [Outcome, remaining work and next action](${outcomeUrl}).`);
+      }
+    } else {
+      await postToMainIssue(mainIssueNumber, outcome);
+    }
 
     log('INFO', 'Work completed successfully');
     agentSucceeded = true;
@@ -2182,6 +2224,13 @@ ${result}`;
   } catch (error) {
     const err = error as Error;
     log('ERROR', `Agent failed: ${err.message}`);
+    if (activeLiveComment) {
+      await activeLiveComment.finalizeFailure({
+        error: err.message,
+        durationMs: activeLiveComment.getDurationMs(),
+      }).catch(finalizeErr => log('WARN', `Could not finalize live comment: ${finalizeErr.message}`));
+    }
+
 
     // Report failure to Beads (if task was claimed)
     if (beadsAvailable && beadsTaskId) {
@@ -2259,6 +2308,20 @@ Please check the workflow logs for details.`);
         });
       } catch (expErr) {
         log('WARN', `[experience-save] Hook failed (non-blocking): ${(expErr as Error).message}`);
+      }
+    }
+
+    // Issue #3960: close the control port before the process exits. Placed with
+    // the other teardown rather than after it because `process.exit` below is
+    // unconditional — anything past that line never runs. Awaited so the socket
+    // is actually closed rather than merely asked to close, and wrapped because a
+    // teardown throw here would mask the run's real outcome.
+    if (controlListener) {
+      try {
+        await controlListener.stop();
+        log('INFO', 'Control listener stopped');
+      } catch (err) {
+        log('WARN', `Control listener stop failed: ${(err as Error).message}`);
       }
     }
 

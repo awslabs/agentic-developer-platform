@@ -213,8 +213,14 @@ MY_IP=$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')
 export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"   # locks EKS API to you
 terraform apply -var-file=../../environments/dev/platform.tfvars -auto-approve
 ```
-Creates ~94 resources: VPC, EKS (Auto Mode, v1.35), ECR repos, IAM, CodeBuild
-projects, security-scans bucket. ~10–15 min.
+Creates VPC, EKS (Auto Mode, v1.35), ECR repos, IAM, CodeBuild projects,
+security-scans bucket, and Bedrock invocation logging. ~10–15 min.
+
+Bedrock Runtime invocation logging defaults to CloudWatch and an encrypted S3
+destination, including large request/response bodies, with 30-day retention.
+The setting applies to the entire account/region and must have one Terraform
+owner. For shared accounts, existing configurations, disable/retention options
+and delivery verification, follow [Bedrock invocation logging](bedrock-invocation-logging.md).
 
 ### ⚠️ Gotchas hit on a real run
 

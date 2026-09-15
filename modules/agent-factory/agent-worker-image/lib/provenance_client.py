@@ -170,7 +170,9 @@ def post_provenance(
     use_sigv4 = bool(gateway_endpoint)
 
     if use_sigv4:
-        base_url = gateway_endpoint + "/agent"
+        # Internal APIs use /internal/{proxy+}. Adding /agent routes them to
+        # the edge ALB, which deliberately denies /internal/* (#5136, #4010).
+        base_url = gateway_endpoint
     elif gateway_url and api_key:
         base_url = gateway_url
     else:

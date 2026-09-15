@@ -1,0 +1,442 @@
+name: Agent Control CI
+
+# Test gates for the live-control path (Issue #3960, revision revival-2026-09-12).
+#
+# The control path is split across three languages and four directories, and no
+# existing workflow covers all of them: the gateway proxy is Python, the in-pod
+# listener is TypeScript, the token minting is Python in a different module with a
+# different dependency set, and the evaluation harness is a standalone script. A
+# change to any one of them can break the contract the other three rely on, so
+# they are gated together here rather than left to whichever module workflow
+# happens to be triggered by the paths in a given PR.
+#
+# Job names are fixed by the story's acceptance criteria (AC-S7) and are used as
+# required-check names — renaming a job silently removes a required check rather
+# than failing, so treat these three strings as a contract:
+#   Agent control tests / Worker control tests / Control evaluation harness tests
+#
+# Test files are pinned BY NAME in every job. A directory-wide invocation would
+# pass in the state that matters least — a PR that deletes a control test file
+# would go green, because "no tests" and "all tests pass" are the same exit code
+# to a glob. Pinning means removing a file breaks the build, which is the point of
+# a gate. For the same reason no job uses `--passWithNoTests`.
+#
+# This workflow deliberately requires NO AWS credentials and no cluster. Every
+# test here is a unit or text assertion; the live acceptance of this path against
+# a real cluster belongs to evaluation #3967, which is a separate, credentialed,
+# operator-initiated run. A CI job that needed a deploy credential to prove a
+# proxy's authorization logic would be both slower and a much larger blast radius
+# than the thing it verifies.
+
+on:
+  pull_request:
+    paths:
+      # Gateway control proxy: the authorization, status-ordering and SSRF surface
+      - 'modules/gateway/src/activity/control_service.py'
+      - 'modules/gateway/src/activity/control_schemas.py'
+      - 'modules/gateway/src/activity/routes.py'
+      - 'modules/gateway/src/orchestration/controls.py'
+      - 'modules/gateway/src/features/routes.py'
+      - 'modules/gateway/tests/activity/test_control_proxy.py'
+      - 'modules/gateway/tests/activity/test_agent_control_flag_parity.py'
+      - 'modules/gateway/tests/orchestration/test_controls.py'
+      - 'modules/gateway/tests/features/test_routes.py'
+      # Read as text by test_agent_control_flag_parity.py, which is the only check
+      # that the flag exists in all four places at once. Editing one of these
+      # without the others is exactly the drift that suite exists to catch — so a
+      # PR touching them has to be able to trigger it.
+      - 'modules/gateway/frontend/src/services/features.ts'
+      - 'modules/gateway/k8s/deployment.yaml'
+      - 'modules/gateway/k8s/configmap.yaml'
+      - '.github/workflows/gateway-deploy.yml'
+      # In-pod control listener (TypeScript)
+      - 'modules/agent-factory/agent/src/control-listener.ts'
+      - 'modules/agent-factory/agent/src/control-credentials.ts'
+      - 'modules/agent-factory/agent/src/control-keyring.ts'
+      - 'modules/agent-factory/agent/src/control-state.ts'
+      - 'modules/agent-factory/agent/src/control-authorization.ts'
+      - 'modules/agent-factory/agent/src/lib/runIdentity*'
+      - 'modules/agent-factory/agent/src/lib/githubTokenBroker*'
+      - 'modules/agent-factory/agent-worker-image/adp_trigger/transport_identity.py'
+      - 'modules/agent-factory/agent-worker-image/lib/gateway_credential_client.py'
+      - 'modules/agent-factory/agent/src/control-revalidation.ts'
+      - 'modules/agent-factory/agent/src/control-revalidation.test.ts'
+      - 'modules/agent-factory/agent/src/control-listener.test.ts'
+      - 'modules/agent-factory/agent/src/agent-worker.ts'
+      # Worker-side verification of the gateway's authorization envelope (#5028).
+      # Listed separately from the listener because a change confined to the
+      # verifier or its fixture matches none of the paths above, so the parity
+      # gate would not run on exactly the PRs most likely to break it.
+      - 'modules/agent-factory/agent/src/control-envelope.ts'
+      - 'modules/agent-factory/agent/src/control-envelope.test.ts'
+      # The shared vectors both verifiers must agree on. The fixture is generated
+      # by the Python script below and consumed by the TypeScript suite: an edit
+      # to either side alone is the drift these vectors exist to catch.
+      - 'modules/agent-factory/agent/src/__fixtures__/control-envelope-vectors.json'
+      - 'modules/gateway/src/agentauth/envelope.py'
+      - 'modules/gateway/tests/agentauth/test_envelope_vectors.py'
+      - 'modules/gateway/tests/agentauth/generate_envelope_vectors.py'
+      # Delegated authority and the CLI need the same fast gate as the listener.
+      - 'modules/gateway/src/agentauth/**'
+      - 'modules/gateway/tests/agentauth/**'
+      # The gateway contract tests exercise these real ingress writers/handlers.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/agent_authority.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/service_authority.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/service_identity.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/spawn_persona.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/sqs_publisher.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/webhook_events.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/eventbridge/handler.py'
+      - 'modules/agent-factory/webhook-ingress/infra/eventbridge.tf'
+      - 'modules/gateway/src/orchestration/dispatch_pass.py'
+      - 'modules/gateway/tests/orchestration/test_dispatch_pass.py'
+      - 'modules/agent-factory/agent-worker-image/adp_trigger/**'
+      - 'modules/agent-factory/agent-worker-image/tests/test_adp_trigger.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_adp_trigger_control.py'
+      - 'modules/agent-factory/agent-worker-image/lib/run_identity.py'
+      - 'modules/agent-factory/agent-worker-image/lib/control_renewal.py'
+      - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_status_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_control_renewal.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_run_identity.py'
+      # Per-run token minting and the control record on the invocation row
+      - 'modules/agent-factory/agent-worker-image/entrypoint.py'
+      - 'modules/agent-factory/agent-worker-image/lib/invocation_status.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_control_token.py'
+      # Pod security surface: ingress policy, bind address, flag/port propagation
+      - 'modules/agent-factory/webhook-ingress/infra/scaledjob-netpol.tf'
+      - 'modules/agent-factory/webhook-ingress/infra/scaledjob.tf'
+      - 'modules/agent-factory/webhook-ingress/infra/variables.tf'
+      - 'modules/agent-factory/webhook-ingress/tests/test_agent_control_manifest.py'
+      # Evaluation harness
+      - 'platform/scripts/agent-control-eval.py'
+      - 'platform/scripts/tests/test_agent_control_eval.py'
+      # The fixture-config runbook. Listed because its example config is parsed
+      # and validated by the harness tests: a doc-only edit that drifts the
+      # example from the harness must fail CI, not merge quietly. The operator
+      # cannot run the harness in CI, so this doc is all they have going in.
+      - 'docs/runbooks/agent-control-evaluation.md'
+      # This workflow
+      - '.github/workflows/agent-control-ci.yml'
+    branches:
+      - main
+
+concurrency:
+  group: agent-control-ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  agent-control-tests:
+    # AC-S7 required-check name. Do not rename.
+    name: Agent control tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/gateway/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: modules/gateway
+        run: pip install -e ".[dev]"
+
+      - name: Lint control modules
+        working-directory: modules/gateway
+        run: |
+          ruff check \
+            src/activity/control_service.py \
+            src/activity/control_schemas.py \
+            tests/activity/test_control_proxy.py
+          ruff format --check \
+            src/activity/control_service.py \
+            src/activity/control_schemas.py \
+            tests/activity/test_control_proxy.py
+
+      - name: Run gateway control-proxy tests
+        working-directory: modules/gateway
+        # test_agent_control_flag_parity.py is pinned here rather than left to a
+        # glob because it is the only check that the flag exists in all three
+        # places (backend dict, frontend interface + default, k8s env) and is
+        # rendered per environment instead of hard-coded. Those are text-level
+        # assertions about files no runtime test can see, so nothing else fails
+        # when a PR lands two of the three edits.
+        run: |
+          pytest \
+            tests/activity/test_control_proxy.py \
+            tests/activity/test_agent_control_flag_parity.py \
+            tests/orchestration/test_controls.py \
+            tests/features/test_routes.py \
+            -v --tb=short --timeout=120
+
+      - name: Run delegated authorization tests
+        working-directory: modules/gateway
+        # Require the existing security suites by name, then collect the whole
+        # directory so new bootstrap/route integration tests join this gate.
+        # Deleting a required suite must fail rather than reduce coverage silently.
+        run: |
+          for suite in \
+            test_adapter.py test_envelope.py test_envelope_vectors.py \
+            test_execution.py test_grants.py test_policy.py \
+            test_run_credential.py test_store.py test_store_lifecycle.py \
+            test_store_reservations.py test_wave_dispatch.py test_revalidation.py; do
+            test -f "tests/agentauth/$suite" || exit 1
+          done
+          pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py -v --tb=short --timeout=120
+
+      # Coverage is enforced per-file with `--cov-fail-under`, not as a repo-wide
+      # average. The story requires >=85% line AND branch on the NEW control
+      # modules specifically; a global gate would let a large well-covered
+      # codebase mask an untested branch in exactly the authorization code this
+      # story exists to establish. `--cov-branch` is required: the interesting
+      # failures here are all one-sided branches (a tenant check that only ever
+      # sees the matching tenant is 100% line-covered and unproven).
+      - name: Enforce control-module coverage (>=85% line and branch)
+        working-directory: modules/gateway
+        # `--cov=src.activity.control_service` (dotted module), NOT
+        # `--cov=src/activity/control_service.py`. The path form does not error —
+        # coverage warns "No data to report" and totals 0%, so the gate measures
+        # nothing at all. Verified locally: the dotted form reports 100% line and
+        # branch on both modules; the path form reports 0.00%.
+        run: |
+          pytest tests/activity/test_control_proxy.py \
+            --cov=src.activity.control_service \
+            --cov=src.activity.control_schemas \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-fail-under=85 \
+            --timeout=120
+
+      - name: Assert no control verb is advertised as supported
+        working-directory: modules/gateway
+        # The story's central invariant, asserted outside the test suite too. A
+        # verb added to SUPPORTED_ACTIONS without its transport would make every
+        # control route report outcomes it cannot deliver; this fails the build on
+        # that change even if the suite were edited in the same commit.
+        env:
+          # Importing control_service pulls in src/activity/__init__.py -> routes.py
+          # -> src/auth/__init__.py, and the auth middleware constructs AuthService()
+          # at import time, which raises without this variable. The first version of
+          # this step had no env block and died in the import, so the assertion below
+          # never executed — a failing build, but for the wrong reason, and it would
+          # have kept failing identically after a real verb was added.
+          #
+          # A dummy value is correct here: this step imports a module and reads one
+          # constant. It signs nothing and serves no request. The gateway's own suite
+          # sets the same placeholder in tests/conftest.py.
+          BG_TOKEN_SECRET_KEY: ci-placeholder-not-a-real-secret
+        run: |
+          python - <<'PY'
+          import sys
+
+          from src.activity.control_service import SUPPORTED_ACTIONS
+
+          # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
+          # the check below if this ever becomes a getattr-with-default. Assert the
+          # real type so a refactor that drops the constant fails here rather than
+          # reporting OK.
+          if not isinstance(SUPPORTED_ACTIONS, frozenset):
+              sys.exit(
+                  f"SUPPORTED_ACTIONS must be a frozenset, got {type(SUPPORTED_ACTIONS).__name__}."
+              )
+
+          if SUPPORTED_ACTIONS:
+              sys.exit(
+                  f"SUPPORTED_ACTIONS must be empty in this story, found: {sorted(SUPPORTED_ACTIONS)}. "
+                  "Implementing a verb requires its transport, state contract and evaluation in the same change."
+              )
+          print("OK: no control verb is advertised as supported")
+          PY
+
+      - name: Run pod-security manifest assertions
+        working-directory: modules/agent-factory/webhook-ingress
+        # In this job rather than a fourth one: these assert the same boundary the
+        # gateway tests assume (which pods may reach the listener port), and a
+        # failure here means the proxy tests above are proving a contract the
+        # cluster does not enforce.
+        run: pytest tests/test_agent_control_manifest.py -v --tb=short --timeout=60
+
+      - name: Validate control Terraform
+        working-directory: modules/agent-factory/webhook-ingress/infra
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false -no-color
+          terraform validate -no-color
+
+  worker-control-tests:
+    # AC-S7 required-check name. Do not rename.
+    name: Worker control tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+
+      - name: Install agent dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: modules/agent-factory/agent
+        # The listener is wired into agent-worker.ts; a type error there is a
+        # runtime crash in a pod that is already executing a customer's work.
+        run: npx tsc --noEmit
+
+      - name: Run control-listener tests
+        working-directory: modules/agent-factory/agent
+        # Pinned by path, and --coverage scoped to the new modules so the
+        # threshold below cannot be satisfied by unrelated well-covered files.
+        #
+        # control-envelope.test.ts is selected explicitly alongside the listener
+        # suite. It is the cross-language half of the parity gate: it verifies the
+        # committed vectors the gateway's test_envelope_vectors.py verifies from
+        # the other side, so leaving it out meant a divergence between the two
+        # verifiers could merge green.
+        run: |
+          npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
+            --coverage \
+            --collectCoverageFrom='src/control-listener.ts' \
+            --collectCoverageFrom='src/control-state.ts' \
+            --collectCoverageFrom='src/control-envelope.ts' \
+            --collectCoverageFrom='src/control-credentials.ts' \
+            --collectCoverageFrom='src/control-keyring.ts' \
+            --collectCoverageFrom='src/control-revalidation.ts' \
+            --collectCoverageFrom='src/lib/runIdentity.ts' \
+            --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
+            --ci --verbose
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install worker test dependencies
+        # Intentionally a minimal, explicit set rather than the gateway's
+        # pyproject: this module ships in the agent-runtime image and must not
+        # acquire the gateway's dependency tree just to be tested.
+        #
+        # `requests` and `PyJWT` are here because the test imports `entrypoint`,
+        # which imports `lib.check_run` (-> requests) and `lib.github_token`
+        # (-> jwt) at module scope. Without them collection errors and the job
+        # exits 2 having run ZERO tests, which is how this step first failed: the
+        # suite did not fail, it never ran, so the story's coverage bar was
+        # unproven rather than met.
+        #
+        # Both are pinned to the same floors as the agent-runtime image's own
+        # install (see agent-worker-image/Dockerfile) so the tests exercise the
+        # versions that actually ship, not whatever pip resolves today.
+        #
+        # This list is the transitive import closure of entrypoint.py + lib/,
+        # audited with an AST walk rather than by fixing one ImportError at a
+        # time — `jwt` is one import line past `requests` and would have failed
+        # the job again on the next run.
+        run: |
+          pip install pytest pytest-cov pytest-timeout \
+            'boto3>=1.34' \
+            'requests>=2.31' \
+            'PyJWT[crypto]>=2.9'
+
+      - name: Run control token-minting tests
+        working-directory: modules/agent-factory/agent-worker-image
+        # `--cov=lib.invocation_status` (dotted), NOT `--cov=lib/invocation_status.py`:
+        # the path form collects no data at all and reports 0%.
+        #
+        # `--cov=entrypoint` as well, because the decisions that make the channel
+        # safe live there: the flag read, the pod-IP hard stop, the TTL bound and
+        # the teardown backstops. Measuring only the DDB writer left all four
+        # ungated.
+        run: |
+          pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py \
+            --cov=lib.invocation_status \
+            --cov=entrypoint \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=json:coverage-control.json \
+            -v --tb=short --timeout=60
+
+      - name: Run agent trigger compatibility and control CLI tests
+        working-directory: modules/agent-factory/agent-worker-image
+        run: |
+          pytest tests/test_adp_trigger.py tests/test_adp_trigger_control.py tests/test_run_identity.py tests/test_gateway_credential_client.py \
+            tests/test_control_renewal.py \
+            -v --tb=short --timeout=60
+
+      - name: Enforce coverage on the new control functions (>=85% line and branch)
+        working-directory: modules/agent-factory/agent-worker-image
+        # Scoped to the functions this story adds rather than `--cov-fail-under` on
+        # the whole file. `lib/invocation_status.py` and `entrypoint.py` are both
+        # pre-existing — the latter is 2800 lines of unrelated code — so a
+        # whole-file gate would fail on code this PR never touched, and the usual
+        # fix for that is to lower the threshold, which defeats the gate. This
+        # asserts the new functions at >=85% line AND branch while leaving the
+        # legacy baseline recorded but not weakened.
+        run: python tests/assert_control_coverage.py coverage-control.json
+
+  control-evaluation-harness-tests:
+    # AC-S7 required-check name. Do not rename.
+    name: Control evaluation harness tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install harness test dependencies
+        # httpx is a real dependency of the harness, not a test-only one: `main`
+        # imports it to build the probe client. Without it the eleven tests that
+        # drive the published end-to-end command cannot run — and because they are
+        # the ones covering `main`, their absence showed up as a coverage drop
+        # (83%) rather than as an obviously missing dependency.
+        run: pip install pytest pytest-cov pytest-timeout 'boto3>=1.34' 'httpx>=0.28'
+
+      - name: Run evaluation harness tests
+        # The harness itself never runs in CI — it requires an operator-created
+        # isolated fixture and a real credential (evaluation #3967). What CI
+        # proves is that its GUARDS work: that it refuses a non-isolated fixture,
+        # refuses the wrong account, and redacts credentials from evidence. Those
+        # are exactly the properties that are unverifiable at the moment they
+        # matter, because by then someone is running it against a live account.
+        #
+        # Bare `--cov` with an explicit --cov-config, rather than
+        # `--cov=platform/scripts/agent-control-eval.py`: the harness is a
+        # hyphenated executable, so coverage cannot import that name to locate it
+        # and silently measures NOTHING ("No data was collected") while the job
+        # still goes green. `--cov=.` collects the whole scripts tree instead,
+        # which makes --cov-fail-under a statement about unrelated scripts. The
+        # config's `include` is what pins the threshold to this one file.
+        run: |
+          pytest platform/scripts/tests/test_agent_control_eval.py \
+            --cov \
+            --cov-config=platform/scripts/tests/.coveragerc-agent-control \
+            --cov-report=term-missing \
+            --cov-fail-under=85 \
+            -v --tb=short --timeout=60
+
+      - name: Assert the harness cannot run without an explicit fixture
+        # A smoke check that the entry point fails closed when invoked bare. If
+        # this ever exits 0, the harness has acquired a default target — and the
+        # default target for a control-plane evaluation would be whatever account
+        # the ambient credential resolves to.
+        run: |
+          if python platform/scripts/agent-control-eval.py > /tmp/bare.log 2>&1; then
+            echo "FAIL: harness exited 0 with no fixture configured"
+            cat /tmp/bare.log
+            exit 1
+          fi
+          echo "OK: harness refused to run without an explicit fixture"

@@ -190,6 +190,12 @@ variable "cognito_refresh_token_validity" {
   default     = 43200
 }
 
+variable "cognito_cli_refresh_token_validity" {
+  type        = number
+  description = "Refresh token validity in minutes for the CLI app client (default: 1440 = 24 hours). Short by design — this is the credential that sits on developer laptops."
+  default     = 1440
+}
+
 variable "cognito_id_token_validity" {
   type        = number
   description = "ID token validity in minutes (default: 60 = 1 hour)"
@@ -230,12 +236,15 @@ variable "enable_github_auth_broker" {
 }
 
 variable "github_auth_allowlist_mode" {
-  type        = string
-  description = "Allowlist mode for GitHub auth broker: 'org' (GitHub org membership), 'explicit' (not implemented in the broker; denies), or 'open' (no enforcement — requires github_auth_allow_open_signup). Issue #3986: defaults to 'org' so the shipped default fails closed."
+  type = string
+  # Issue #4844: 'platform' added. It is a mode this variable ACCEPTS, not one any
+  # environment is set to — flipping an environment to it is a deliberate operator
+  # action after a verified deploy and smoke test, never part of a merge.
+  description = "Allowlist mode for GitHub auth broker: 'org' (GitHub org membership), 'platform' (≥1 platform org membership — #4844), 'explicit' (not implemented in the broker; denies), or 'open' (no enforcement — requires github_auth_allow_open_signup). Issue #3986: defaults to 'org' so the shipped default fails closed."
   default     = "org"
   validation {
-    condition     = contains(["org", "explicit", "open"], var.github_auth_allowlist_mode)
-    error_message = "Allowlist mode must be 'org', 'explicit', or 'open'."
+    condition     = contains(["org", "platform", "explicit", "open"], var.github_auth_allowlist_mode)
+    error_message = "Allowlist mode must be 'org', 'platform', 'explicit', or 'open'."
   }
   # Cross-variable checks are gated on enable_github_auth_broker so that
   # deployments with the broker disabled (the default) are unaffected by the
@@ -248,6 +257,13 @@ variable "github_auth_allowlist_mode" {
     condition     = !var.enable_github_auth_broker || var.github_auth_allowlist_mode != "open" || var.github_auth_allow_open_signup
     error_message = "github_auth_allowlist_mode = 'open' disables allowlist enforcement entirely; set github_auth_allow_open_signup = true to acknowledge this."
   }
+  # Issue #4844: no validation is needed to guarantee 'platform' mode has a
+  # projection to read. Both identity-index tables are unconditional resources of
+  # this root module and their names are passed to both Lambdas unconditionally
+  # (see the module "cognito" and module "github_auth_broker" blocks in main.tf),
+  # so IDENTITY_INDEX_TABLE cannot be empty in a deployed environment. The
+  # Lambda-side guard for an unset table (reader ⇒ UNAVAILABLE ⇒ deny) remains as
+  # defence in depth, and is covered by the fail-closed tests.
 }
 
 variable "github_auth_allowed_orgs" {
@@ -495,6 +511,10 @@ variable "orchestration_dispatch_repo" {
     dispatch happens.
   EOT
   default     = ""
+  validation {
+    condition     = var.orchestration_dispatch_repo == "" || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.orchestration_dispatch_repo))
+    error_message = "orchestration_dispatch_repo must be empty or an owner/repository name."
+  }
 }
 
 variable "orchestration_dispatch_max_per_tick" {
@@ -542,6 +562,12 @@ variable "orchestration_webhook_events_table" {
     an unwired bridge is visible rather than reading as "nobody has commented".
   EOT
   default     = ""
+}
+
+variable "orchestration_agent_authority_enabled" {
+  description = "Enable protected engine dispatch together with worker/gateway authority migration. Requires the webhook events table and KMS key inputs."
+  type        = bool
+  default     = false
 }
 
 variable "orchestration_webhook_events_kms_key_arn" {
@@ -709,8 +735,19 @@ variable "agent_context_ingestion_queue_arn" {
 
 variable "budget_alarm_sns_topic_arns" {
   type        = list(string)
-  description = "SNS topic ARNs notified by budget-enforcement alarms. Empty means the alarms still evaluate and are visible in the console but page nobody — set this in any environment where uncapped spend matters."
+  description = "SNS topic ARNs notified by budget alarms. When empty, pricing alarms use a dedicated encrypted SNS topic with an SQS operational inbox; other budget-enforcement alarms remain console-only."
   default     = []
+}
+
+variable "pricing_refresh_timeout" {
+  description = "Pricing refresh Lambda timeout in seconds; includes bounded source fetches, publication and metrics."
+  type        = number
+  default     = 180
+
+  validation {
+    condition     = var.pricing_refresh_timeout >= 180 && var.pricing_refresh_timeout <= 900
+    error_message = "Pricing refresh needs at least 180 seconds for its 120-second source deadline and publication; Lambda permits at most 900."
+  }
 }
 
 # =============================================================================
@@ -727,4 +764,10 @@ variable "cloudfront_enable_ipv6" {
   description = "Publish AAAA records for the frontend distribution. Set false when an IPv4-only tunnel (e.g. a ZTNA client) fronts the distribution and its web ACL allowlists IPv4 addresses only — otherwise IPv6 clients bypass the tunnel and are blocked by the ACL's default action. Default true preserves prior behaviour."
   type        = bool
   default     = true
+}
+
+variable "user_identity_index_v2_read" {
+  type        = string
+  description = "Issue #4849: whether the auth Lambdas' membership-eligibility read tries the v2 user-identity-index table before the legacy one. String, not bool, because it is passed straight through to a Lambda env var. Mirrors the webhook-ingress reader's USER_IDENTITY_INDEX_V2_READ flag (#537) so all readers can be moved together."
+  default     = "false"
 }

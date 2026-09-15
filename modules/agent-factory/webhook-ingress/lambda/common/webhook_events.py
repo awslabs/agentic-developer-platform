@@ -32,6 +32,7 @@ from typing import Any
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,9 @@ class WebhookEventLogger:
         comment_body: str | None = None,
         sender_github_id: str | None = None,
         sender_is_bot: bool = False,
+        actor_kind: str | None = None,
+        actor_user_id: str | None = None,
+        create_only: bool = False,
     ) -> dict[str, Any]:
         """Record a webhook event in DynamoDB.
 
@@ -235,6 +239,9 @@ class WebhookEventLogger:
             authorized_user_id: Canonical user whose credentials this run
                 may access (#3174). Set at spawn from chain policy; empty
                 string means no vault access. Written but unread until S2.
+            actor_kind: Acting principal type, separate from human attribution.
+            actor_user_id: Actual acting principal, separate from human authority.
+            create_only: Preserve an existing invocation row on an ingress retry.
             engine_command: Issue #4527 — this delivery is an ``@agent-engine``
                 comment. Marks the row ``engine_command_status=pending`` so the
                 orchestration tick picks it up. Nothing else about the row
@@ -333,6 +340,10 @@ class WebhookEventLogger:
         # user whose credentials this run may access (ships dark until S2).
         if authorized_user_id:
             item["authorized_user_id"] = authorized_user_id
+        if actor_kind:
+            item["actor_kind"] = actor_kind
+        if actor_user_id:
+            item["actor_user_id"] = actor_user_id
         # Issue #4527: mark the row for the orchestration tick. The three
         # attributes are written together or not at all — a pending marker with no
         # body would make the tick wake up to a command it cannot parse, and a body
@@ -351,7 +362,14 @@ class WebhookEventLogger:
             item["engine_command_sender_is_bot"] = bool(sender_is_bot)
 
         try:
-            self._table.put_item(Item=item)
+            self._table.put_item(
+                Item=item,
+                **(
+                    {"ConditionExpression": "attribute_not_exists(event_id)"}
+                    if create_only
+                    else {}
+                ),
+            )
             logger.info(
                 "Logged webhook event: event_id=%s tenant=%s user=%s status=%s",
                 event_id,
@@ -360,6 +378,16 @@ class WebhookEventLogger:
                 status,
             )
         except Exception as e:
+            if (
+                create_only
+                and isinstance(e, ClientError)
+                and e.response["Error"]["Code"] == "ConditionalCheckFailedException"
+            ):
+                return {
+                    "event_id": event_id,
+                    "arrived_at": arrived_at,
+                    "already_recorded": True,
+                }
             # Best-effort logging — never block the webhook response.
             # Issue #4347: but no longer SILENTLY. Under #4187 enforce this row is
             # the run's authorization record, so a dropped write means the run

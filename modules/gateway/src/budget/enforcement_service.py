@@ -7,6 +7,7 @@ checks budget constraints at each level.
 """
 
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -26,7 +27,8 @@ from src.shared.metrics import (
     emit_person_budget_layer_skipped,
     emit_run_binding_drift,
 )
-from src.shared.models.budget import BudgetConfig, BudgetUsage, PersonBudgetConfig
+from src.shared.models.budget import BudgetConfig, BudgetUsage, PersonBudgetConfig, PersonBudgetDefault
+from src.shared.models.organization import User
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import (
     DenyReason,
@@ -38,6 +40,13 @@ from src.shared.schemas.budget import (
 
 from .config import budget_config
 from .grace_window import GraceWindow
+
+# `person_ledger` is a deliberate LEAF (its own docstring): models and shared
+# schemas only, no router/service/auth, so a module-level import here cannot
+# reintroduce a cycle. Only the TYPE is imported at module level — the ladder
+# FUNCTIONS stay function-local, for symmetry with `person_anchor.py`'s own note
+# and so the import list at each call site names exactly what that path reads.
+from .person_ledger import PersonLimit
 from .pricing import PricingService, pricing_service
 from .reservations import ReservationStore, ReservationTarget
 from .run_binding import RunBinding, RunBindingError, RunBindingResolver, resolve_run_binding
@@ -89,6 +98,10 @@ _INFRASTRUCTURE_FAULTS: tuple[type[BaseException], ...] = (
 # canonical `users.id` is a generated UUID (`shared/models/organization.py`), which
 # contains no colon, so no bare human id can ever equal a `service:`-qualified value.
 _SERVICE_PRINCIPAL_PREFIX = "service:"
+
+# How long the "any person caps exist?" verdict may be reused per process (review
+# fix on #4689). Bounded staleness in both directions — see _any_person_caps_exist.
+_PERSON_CAPS_EXISTENCE_TTL_SECONDS = 60.0
 
 
 def _qualify_root_principal_id(root_principal_id: str, *, is_human_rooted: bool | None) -> str:
@@ -173,6 +186,10 @@ class BudgetEnforcementService:
                 for testing). When omitted, one is built lazily from config.
         """
         self.db_session = db_session
+        # ``((individual_caps_exist, defaults_exist), monotonic_stamp)`` — see
+        # ``_person_limit_sources_exist``. A PAIR since #4690: a default rule is a
+        # person limit too, but it gates strictly more work than an individual cap.
+        self._person_caps_exist_cache: tuple[tuple[bool, bool], float] | None = None
         self._pricing = pricing or pricing_service
         self._grace_window = grace_window
         self._reservations = reservations
@@ -898,8 +915,10 @@ class BudgetEnforcementService:
                     # cannot catch it — it compares a Cognito sub against a
                     # canonical users.id, disjoint namespaces that never match.
                     # Attribution exists to label AGENT spend; agents authenticate
-                    # as IAM. (Fusing direct human spend into the per-person
-                    # envelope is #4396's job, deliberately not this line's.)
+                    # as IAM. (#4396 fused direct human spend into the per-person
+                    # envelope on the READ side, over the `(USER, sub)` rows that
+                    # already exist — so this guard stays exactly as narrow as it
+                    # was, and must: widening it is the double-debit above.)
                     if binding.root_human_id and context.auth_source == "iam":
                         object.__setattr__(
                             context,
@@ -1076,6 +1095,7 @@ class BudgetEnforcementService:
         model_id: str,
         input_tokens: int,
         output_tokens: int,
+        actual_cost_usd: Decimal | None = None,
     ) -> None:
         """Adjust this request's reservation from estimate to settled actual (#4287).
 
@@ -1107,7 +1127,7 @@ class BudgetEnforcementService:
         if not store.enabled:
             return
 
-        actual_cost = self._pricing.calculate_cost(model_id, input_tokens, output_tokens)
+        actual_cost = actual_cost_usd if actual_cost_usd is not None else self._pricing.calculate_cost(model_id, input_tokens, output_tokens)
 
         targets = [
             ReservationTarget(
@@ -1341,6 +1361,253 @@ class BudgetEnforcementService:
             )
             return None
 
+    async def _person_limit_sources_exist(self, session: AsyncSession) -> tuple[bool, bool]:
+        """Short-TTL process-local gate: do ANY person limits exist, individual or default?
+
+        Review fix on #4689, **widened to cover ``person_budget_defaults`` by #4690**.
+        Both tables are empty on most installs, and without this gate every JWT
+        model invoke pays several sequential identity/limit queries to learn "no
+        limit". One round trip per TTL window per process answers the common case
+        instead — and it stays ONE round trip after the widening, because the two
+        existence questions are asked as two ``EXISTS`` subqueries in a single
+        statement rather than a query each. Adding a hot-path round trip here is
+        the #4689 lesson and the thing this method exists to prevent.
+
+        The two answers are returned SEPARATELY rather than pre-``or``ed because
+        they gate different amounts of work: with individual caps but no defaults,
+        the person layer does exactly what it did before #4690 (one indexed cap
+        read, fan-out only if it matched), whereas a default existing means the
+        applicable-limit ladder must resolve the person's orgs and teams even when
+        they have no personal row — that is the point of a default. Collapsing the
+        pair would make every install with a personal cap pay the defaults path.
+
+        Trade documented at the call site: a first-ever limit of either kind starts
+        enforcing within the TTL, not instantly; deleting the last one wastes
+        queries for one window. The cache is deliberately per-process and unlocked
+        — a stale read is bounded by the TTL and both failure directions are benign.
+
+        Returns:
+            ``(individual_caps_exist, defaults_exist)``.
+        """
+        now = time.monotonic()
+        cached = self._person_caps_exist_cache
+        if cached is not None and now - cached[1] < _PERSON_CAPS_EXISTENCE_TTL_SECONDS:
+            return cached[0]
+        row = (
+            await session.execute(
+                select(
+                    select(PersonBudgetConfig.id).exists(),
+                    select(PersonBudgetDefault.id).exists(),
+                )
+            )
+        ).one()
+        exists = (bool(row[0]), bool(row[1]))
+        self._person_caps_exist_cache = (exists, now)
+        return exists
+
+    async def _any_person_caps_exist(self, session: AsyncSession) -> bool:
+        """Does ANY person limit exist — individual cap or default rule?
+
+        The gate the person layer actually skips on. Since #4690 a default rule is
+        a person limit too, so a gate that asked only about ``person_budget_configs``
+        would skip the layer on precisely the install a platform admin had just
+        bounded everybody on — the default would be authored, displayed, and govern
+        nothing (the #4511 inert-cap class, at platform scale).
+        """
+        individual, defaults = await self._person_limit_sources_exist(session)
+        return individual or defaults
+
+    async def _resolve_person_limits(
+        self,
+        session: AsyncSession,
+        context: TokenContext,
+    ) -> tuple[dict[str, PersonLimit], str, list[str], list[str], list[str]] | None:
+        """Who is this caller, which limits govern them, and what does the denominator span?
+
+        Issue #4690. The shared preamble of ``_check_person_budget`` (the deny path)
+        and ``_person_cap_headroom`` (the headers path). Extracted rather than
+        duplicated because the ladder made the preamble long enough that two copies
+        would drift, and drift here is precisely the FR-1.4 class the headers path
+        was added to close: a ``X-Budget-Remaining`` computed against a different
+        rung than the 402 enforces is a worse answer than no header at all.
+
+        The order of operations is load-bearing and unchanged from #4661/#4689:
+
+        1. **The existence gate first.** No person limit of either kind on the
+           install → return immediately, zero identity work. This is the
+           overwhelmingly common case platform-wide.
+        2. **Then the person key**, from the run binding if attributed or the token
+           identity otherwise (#4396), skipping service principals.
+        3. **Then ONE deterministic anchor lookup**, and — only if a limit is
+           actually going to be consumed — the fused-identity scan, partition
+           derivation and sub projection that the denominator needs.
+
+        **The #4690 addition costs nothing on an install with no defaults.** The
+        existence gate reports the two tables separately; with the defaults table
+        empty, this resolves only the top rung, by the same single indexed anchor
+        read as before. The org/team resolution a default requires happens only
+        where a default exists.
+
+        Returns:
+            ``(limits, anchor, person_user_ids, person_subs, partitions)``, or
+            ``None`` when this caller has no person limit to apply — a service
+            principal, a non-human account, an unprovisioned identity, or a person
+            matched by neither an individual row nor any default rule. ``None`` is
+            the only honest "unlimited", and it is now a strictly narrower set of
+            callers than before #4690.
+
+            ``anchor`` is the person key the limits were matched on, carried out so
+            the denial can NAME the person (a #4630 review pin: ``scope="person"``
+            alone does not say which person, and an operator needs the anchor to
+            find the row). It is the fused anchor, so on a person with no linked
+            GitHub identity it is ``resolve_person_identity``'s ``users:<id>``
+            form — still a key that identifies them, which is what the message
+            needs, even though no INDIVIDUAL row can be stored under it.
+        """
+        # `person_ledger` is a deliberate leaf (review fix on #4689): unlike the
+        # previous me_routes underscore-privates, these carry a stability contract
+        # for this second consumer and import no router — the anchor-prefix import
+        # stays function-local only for symmetry with `person_anchor.py`'s own note.
+        from src.shared.identity.person_anchor import format_person_anchor, is_authorable_person_anchor
+
+        from .person_ledger import (
+            resolve_applicable_person_limits,
+            resolve_individual_person_limits,
+            resolve_member_partitions,
+            resolve_person_anchor_identity,
+            resolve_person_identity,
+            resolve_person_subs,
+            resolve_person_team_keys,
+        )
+
+        # The overwhelmingly common case platform-wide is "no person limit exists at
+        # all" — both tables are empty on most installs. This short-TTL
+        # process-local gate keeps that case at ~zero cost instead of several
+        # sequential identity/limit queries on EVERY JWT model invoke (review fix on
+        # #4689), which landed squarely on the gateway latency path. Cost of the
+        # cache: the first limit ever authored takes up to the TTL to start
+        # enforcing, and deleting the last one wastes queries for one TTL window —
+        # both bounded and documented in budget-ratelimit.md.
+        individual_caps_exist, defaults_exist = await self._person_limit_sources_exist(session)
+        if not (individual_caps_exist or defaults_exist):
+            return None
+
+        attributed_user_id = context.attributed_user_id or ""
+
+        if attributed_user_id:
+            # §7.3's double-count guard: a service principal (EventBridge / scheduled
+            # / CI / alarm) is not a person, has no GitHub anchor, and must not be
+            # charged against anybody's personal ceiling — nor against a default,
+            # which is a rule about PEOPLE.
+            if attributed_user_id.startswith(_SERVICE_PRINCIPAL_PREFIX):
+                return None
+            person_user_id = attributed_user_id
+        else:
+            # A direct (JWT) caller: there is no run binding, so the person key comes
+            # from the token identity (#4396).
+            # Not a person: unattended/service principals never carry a personal
+            # ceiling (mirrors the read surface's not_applicable case).
+            if context.account_type != "human":
+                return None
+            # STRICT lookup, deliberately NOT the read surface's resolver (review
+            # fix on #4689): `resolve_canonical_user_id` swallows SQLAlchemyError
+            # into a raw-sub fallback — tolerable for a degraded dollar figure on
+            # a page, but HERE it turned a transient DB error into a silent
+            # fail-open that never reached the containment wrapper, so the
+            # PersonBudgetLayerSkipped pager stayed dark. A fault must propagate
+            # to the wrapper; only a genuine no-row (unprovisioned identity, no
+            # direct ledger to govern) skips quietly.
+            person_user_id = await session.scalar(select(User.id).where(User.cognito_sub == context.user_id).limit(1))
+            if not person_user_id:
+                return None
+
+        # Limit first, fan-out second — for real this time (review fix on #4661: the
+        # previous shape ran the cross-tenant fused-id scan before the cap read,
+        # paying it on every attributed request when the overwhelmingly common
+        # outcome is "no limit"). Only the single deterministic anchor lookup runs
+        # unconditionally; the fused-id scan and partition derivation are deferred
+        # until a limit proves they will be consumed.
+        if defaults_exist:
+            # A default exists, so membership must be resolved BEFORE the limit is
+            # known: which rule applies is a function of the person's orgs and
+            # teams. This is the one place #4690 genuinely costs queries, and only
+            # on installs that have chosen to author a default. The standalone
+            # anchor pre-query is skipped on this branch (review fix on #4696) —
+            # the fusion below derives the anchor anyway; one query, one authority.
+            resolved_anchor, person_user_ids = await resolve_person_identity(session, person_user_id)
+            # Asks the namespace registry whether a cap can be STORED under this
+            # anchor, rather than testing for the `github:` prefix (#4843). The
+            # prefix test excluded every namespace added after it from the
+            # individual-cap read while the authoring side would happily store one
+            # — a cap that displays a limit and governs nothing, the #4511 class.
+            # Native users now have authorable keys too; the same resolver and
+            # namespace registry are used by the authoring and read surfaces.
+            anchor = resolved_anchor if is_authorable_person_anchor(resolved_anchor) else None
+
+            # TWO org lists, deliberately different (review fix on #4696 — the
+            # critical finding): the SPEND denominator may include the
+            # caller-influenced attributed org (#4132) because widening it only
+            # COUNTS MORE spend — the fail-safe direction. The DEFAULT LADDER must
+            # not: which rule governs a person is authorization-adjacent, and
+            # unioning the attributed org let an X-Agent-OrgId header select a
+            # foreign org's more generous default over a tight platform ceiling.
+            # Ladder candidates are server-derived memberships ONLY.
+            ladder_org_ids = await resolve_member_partitions(session, person_user_ids, None)
+            partitions = sorted(set(ladder_org_ids) | ({context.attributed_org_id} if context.attributed_org_id else set()))
+            limits = await resolve_applicable_person_limits(
+                session,
+                person_anchor=anchor,
+                org_ids=ladder_org_ids,
+                team_keys=await resolve_person_team_keys(session, person_user_ids),
+                # The person's own id, so a limit they authored on themselves is
+                # named as theirs in the 402, not as an admin's grant (review fix
+                # on #4696).
+                self_authored_by=person_user_id,
+            )
+        else:
+            # No default exists anywhere on the install, so the ladder provably
+            # degenerates to its top rung. Taking it directly is what keeps #4690
+            # free for these installs: resolving the person's orgs and teams only to
+            # find no default would put that fan-out back on the hot path for every
+            # request — the #4689 regression, reintroduced. Limit-first fast path:
+            # one anchor lookup, and the fusion is paid only when a row exists.
+            resolved = await resolve_person_anchor_identity(session, person_user_id)
+            if not resolved:
+                anchor, _ = await resolve_person_identity(session, person_user_id)
+            else:
+                anchor = format_person_anchor(resolved[1], resolved[0])
+            # Composed through the single composer (#4843) — this was the third of
+            # the three hand-rolled anchor f-strings the design note flagged. It is
+            # the ENFORCEMENT side of the comparison a few lines below, so a
+            # spelling that drifts from the authoring side's by one character makes
+            # every cap on the install inert.
+            limits = await resolve_individual_person_limits(session, anchor, self_authored_by=person_user_id)
+            if not limits:
+                return None
+
+            # A limit exists: NOW pay for the denominator's identity fusion. The
+            # resolver re-runs the anchor lookup internally (one extra single-row
+            # query on the rare limited path) — reused rather than forked, so
+            # authoring, the C1 read and this layer cannot drift on what "the same
+            # person" means.
+            resolved_anchor, person_user_ids = await resolve_person_identity(session, person_user_id)
+            if resolved_anchor != anchor:
+                # Only possible if identity rows changed between the two lookups
+                # mid-request. The limit was matched on `anchor`; refusing to enforce
+                # it against a denominator resolved for a DIFFERENT anchor beats
+                # denying someone on another person's spend.
+                logger.warning("Person anchor changed between cap lookup and identity fusion; skipping the person layer for this request")
+                return None
+            partitions = await resolve_member_partitions(session, person_user_ids, context.attributed_org_id)
+
+        if not limits:
+            return None
+
+        # The direct half's key namespace (#4396). A projection of the fusion just
+        # performed, not a second opinion on who the person is.
+        person_subs = await resolve_person_subs(session, person_user_ids)
+        return limits, resolved_anchor, person_user_ids, person_subs, partitions
+
     async def _check_person_budget(
         self,
         session: AsyncSession,
@@ -1378,190 +1645,179 @@ class BudgetEnforcementService:
         caps keep their live Redis denominator, so each org's own ceiling stays
         bounded exactly as tightly as it is today.
 
+        **The denominator is the person's TOTAL spend — direct + cloud (#4396).**
+        Widened from cloud-only by the operator ruling of 2026-09-05 (thread on
+        #4669/#4685): *the person's limit governs total spend across all GitHub orgs,
+        and the person sees ONE number tracked against it.* Two consequences, both
+        deliberate:
+
+        * **JWT (direct, interactive) callers now pass through this layer.** Before
+          #4396 an unattributed request returned ``None`` immediately, so a person
+          could sit inside their personal limit while spending freely from their own
+          machine. The person key for such a caller is resolved from the token
+          identity instead of from a run binding — see below.
+        * **The figure enforced here is the figure ``/me/budget`` displays.** Both
+          call the same ``_read_person_partition_spend``, so "displayed == enforced"
+          is a shared code path rather than two derivations that happen to agree.
+          That was the explicit requirement of the ruling.
+
+        **No double-count, and it needs no offsetting skip.** The two ledgers summed
+        are disjoint by construction: ``user`` rows are keyed by Cognito sub, all
+        ``root_user`` rows by canonical ``users.id``, and ``budget_usage`` is uniquely
+        keyed including ``entity_type``. A direct request writes only the ``user``
+        row (the tracker's ``!= user_id`` gate suppresses the other); a hosted run's
+        ``user`` row is keyed by the shared *worker* identity, never by this person's
+        sub. ``me_routes``' fused-envelope section header states the full argument.
+
+        **This is why the equality-skip in ``_get_entity_hierarchy`` is left
+        untouched.** The issue asked for it to be revisited, and revisiting it
+        concludes: leave it. It prevents a second *reservation* against one party
+        inside one request — a live-Redis concern about one org's hierarchy — which is
+        a different question from what this settled cross-org read sums. Relaxing it
+        would reintroduce the 2x debit its own comment documents, without changing
+        anything here.
+
         **Identity is C1's, reused verbatim.** ``_resolve_person_identity`` fuses
         the person's ``users.id`` rows through ``user_identities.provider_user_id``
         (§3.3 — one GitHub account legitimately holds one ``users.id`` *per tenant*,
         so summing by canonical id alone under-reports for exactly the multi-org
-        population this ships for), ``_resolve_member_partitions`` derives the
-        partition set server-side (§7.3, including the shadow-user union), and
-        ``_read_settled_spend`` performs the same full 5-filter single-row read
-        enforcement already compares against. The cross-org read is a **widened
-        partition set over an unchanged predicate** — never a relaxed predicate and
-        never a SQL aggregate. A third identity fusion in this module would be the
-        #4511 class: an enforcement layer reading a different person key than C3
+        population this ships for), ``_resolve_person_subs`` projects that same fusion
+        onto the Cognito subs the direct ledger is keyed by, ``_resolve_member_partitions``
+        derives the partition set server-side (§7.3, including the shadow-user union),
+        and ``_read_settled_spend`` performs the same full 5-filter single-row read
+        enforcement already compares against. The cross-org read is a **widened key
+        and partition set over an unchanged predicate** — never a relaxed predicate
+        and never a SQL aggregate. A second identity fusion in this module would be
+        the #4511 class: an enforcement layer reading a different person key than C3
         writes is an inert cap.
 
-        **Cap first, denominator second.** One indexed read of
-        ``person_budget_configs``; when it returns nothing — essentially every
-        request on the platform — the partition fan-out and every spend read are
-        skipped entirely.
+        **The applicable limit may be a DEFAULT, not the person's own row (#4690).**
+        When no individual ``person_budget_configs`` row matches, this layer no
+        longer concludes "unlimited": ``resolve_applicable_person_limits`` walks
+        individual row → team default → org default → platform default, so a
+        platform admin's single "$1,000 each" rule governs everybody who has never
+        authored a limit, including people who join later. The denial names which
+        rung supplied the number, because "you are over your limit" is unactionable
+        to somebody who never set one.
+
+        **Cap first, denominator second.** At most two single-row indexed lookups
+        (the person key, then the anchor) before the limit read; when that returns
+        nothing — essentially every request on an install with no person limits at
+        all — the partition fan-out and every spend read are skipped entirely.
+        Direct callers pay one extra ``users`` lookup on ``cognito_sub`` (an indexed
+        column) relative to pre-#4396, which is the irreducible cost of them being
+        subject to the cap at all. #4690 adds NO query to an install with no
+        defaults: the existence gate reports the two tables separately and the
+        ladder degenerates to its top rung when the defaults table is empty.
 
         Returns:
-            ``None`` when this caller has no person cap to apply. Otherwise an
-            ``EnforcementResult``: a denial for a ``hard`` cap that is exceeded, or
+            ``None`` when this caller has no person limit to apply. Otherwise an
+            ``EnforcementResult``: a denial for a ``hard`` limit that is exceeded, or
             an allow (possibly carrying warnings) in every other case. Deliberately
             no ``ReservationTarget`` in the return — see above.
         """
-        # Function-local import: `me_routes` imports `_INFRASTRUCTURE_FAULTS` from
-        # this module, so a module-level import here is a cycle. Same technique
-        # `person_anchor.py` already uses for its own.
-        from src.shared.identity.person_anchor import PERSON_ANCHOR_GITHUB_PREFIX
+        from .person_ledger import read_person_partition_spend
 
-        from .me_routes import _read_settled_spend, _resolve_member_partitions, _resolve_person_anchor_id, _resolve_person_identity
-
-        attributed_user_id = context.attributed_user_id or ""
-
-        # A JWT human's own direct spend is accounted under `(USER, sub)`, not as a
-        # root principal; fusing it into the person line is #4396's job, deliberately
-        # not this one's.
-        if not attributed_user_id:
+        resolved = await self._resolve_person_limits(session, context)
+        if resolved is None:
             return None
-
-        # §7.3's double-count guard: a service principal (EventBridge / scheduled /
-        # CI / alarm) is not a person, has no GitHub anchor, and must not be charged
-        # against anybody's personal ceiling.
-        if attributed_user_id.startswith(_SERVICE_PRINCIPAL_PREFIX):
-            return None
-
-        # Cap first, fan-out second — for real this time (review fix on #4661: the
-        # previous shape ran the cross-tenant fused-id scan before the cap read,
-        # paying it on every attributed request when the overwhelmingly common
-        # outcome is "no cap"). Only the single deterministic anchor lookup runs
-        # unconditionally; the fused-id scan and partition derivation are deferred
-        # until a cap row proves they will be consumed.
-        anchor_id = await _resolve_person_anchor_id(session, attributed_user_id)
-
-        # C3 only ever writes `github:` anchors (`format_person_anchor`), so a
-        # caller with no linked GitHub identity cannot have a matching row.
-        # The prefix comes from the shared constant, never a raw literal, so the
-        # key this reads stays the key C3 writes by construction (#4511 class).
-        if not anchor_id:
-            return None
-        anchor = f"{PERSON_ANCHOR_GITHUB_PREFIX}{anchor_id}"
-
-        cap_rows = (
-            (
-                await session.execute(
-                    select(PersonBudgetConfig)
-                    .where(
-                        PersonBudgetConfig.person_anchor == anchor,
-                        # Calendar periods only. A run/chain cap is lifetime-scoped
-                        # and `get_period_start_end` raises for it, so a stray
-                        # non-calendar row must be filtered here rather than
-                        # faulting the layer. Sorted because
-                        # `CALENDAR_PERIOD_TYPES` is a frozenset — unsorted, the
-                        # generated SQL varies between runs for no reason.
-                        PersonBudgetConfig.period_type.in_(sorted(CALENDAR_PERIOD_TYPES)),
-                    )
-                    # Deterministic evaluation order, so which of several exceeded
-                    # periods is named in the denial is stable rather than an
-                    # accident of row order.
-                    .order_by(PersonBudgetConfig.period_type)
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-        if not cap_rows:
-            return None
-
-        # A cap exists: NOW pay for the denominator's identity fusion. The resolver
-        # re-runs the anchor lookup internally (one extra single-row query on the
-        # rare capped path) — reused rather than forked, so authoring, the C1 read
-        # and this layer cannot drift on what "the same person" means.
-        resolved_anchor, person_user_ids = await _resolve_person_identity(session, attributed_user_id)
-        if resolved_anchor != anchor:
-            # Only possible if identity rows changed between the two lookups
-            # mid-request. The cap was matched on `anchor`; refusing to enforce a
-            # cap against a denominator resolved for a DIFFERENT anchor beats
-            # denying someone on another person's spend.
-            logger.warning("Person anchor changed between cap lookup and identity fusion; skipping the person layer for this request")
-            return None
-
-        partitions = await _resolve_member_partitions(session, person_user_ids, context.attributed_org_id)
+        limits, anchor, person_user_ids, person_subs, partitions = resolved
 
         warnings: list[str] = []
 
-        for cap_row in cap_rows:
-            period_type = PeriodType(cap_row.period_type)
+        # Deterministic evaluation order, so which of several exceeded periods is
+        # named in the denial is stable rather than an accident of dict order.
+        for limit in sorted(limits.values(), key=lambda item: item.period_type):
+            period_type = PeriodType(limit.period_type)
             period_start, _ = get_period_start_end(period_type)
 
-            # The cross-org denominator: the SAME predicate, over a widened
-            # partition set. Summing across the person's fused ids cannot
-            # double-count — they are distinct `users` primary keys addressing
-            # disjoint rows of a table uniquely keyed on `entity_id` — and
-            # `root_user` rows only, never mixed with `user`/`org` rows, which
-            # would re-count the same dollar (§7.3, the #4322 family).
+            # The cross-org denominator: the SAME predicate, over a widened key
+            # and partition set. `_read_person_partition_spend` is the read
+            # surface's own function, called here rather than reimplemented, so
+            # `/me/budget`'s figure and this one cannot drift — the ruling's
+            # "displayed == enforced" is a shared code path, not a coincidence.
+            # Summing cloud and direct cannot double-count: `root_user` rows are
+            # keyed by canonical `users.id` and `user` rows by Cognito sub, in a
+            # table uniquely keyed including `entity_type`, and no write path
+            # produces both for one dollar (§7.3, the #4322 family — the argument
+            # in full lives on `me_routes`' fused-envelope section header).
+            # `organization`/`department`/`team` rows stay excluded: those re-count
+            # the same dollar at a coarser grain.
             current_spend = Decimal("0")
             for org_id in partitions:
-                for entity_id in person_user_ids:
-                    current_spend += await _read_settled_spend(
-                        session,
-                        org_id,
-                        EntityType.ROOT_USER,
-                        entity_id,
-                        period_type,
-                        period_start,
-                    )
+                cloud, direct = await read_person_partition_spend(
+                    session,
+                    org_id,
+                    person_user_ids,
+                    person_subs,
+                    period_type,
+                    period_start,
+                )
+                current_spend += cloud + direct
 
             projected_spend = current_spend + estimated_cost
-            enforcement_mode = EnforcementMode(cap_row.enforcement_mode)
+            enforcement_mode = EnforcementMode(limit.enforcement_mode)
 
-            if projected_spend > cap_row.budget_amount_usd:
+            if projected_spend > limit.amount:
                 if enforcement_mode == EnforcementMode.HARD:
                     logger.warning(
-                        f"Person budget exceeded (hard limit): {anchor} - {cap_row.period_type} "
-                        f"cap ${cap_row.budget_amount_usd}, settled ${current_spend} across "
-                        f"{len(partitions)} partition(s), projected ${projected_spend}"
+                        f"Person budget exceeded (hard limit): {anchor} - {limit.period_type} limit "
+                        f"${limit.amount} from {limit.scope_label} (source={limit.source}), settled "
+                        f"${current_spend} across {len(partitions)} partition(s), projected ${projected_spend}"
                     )
                     return EnforcementResult(
                         allowed=False,
                         deny_reason=DenyReason.BUDGET_EXCEEDED,
-                        # The anchor and period are named HERE, and in the WARN
-                        # above, because they are what an operator needs to find the
-                        # knob — and `scope="person"` alone does not say which
-                        # person or which period.
+                        # The anchor, the period AND (new in #4690) the source rung
+                        # are all named here and in the WARN above, because they are
+                        # what somebody needs to find the knob. `scope="person"`
+                        # alone says neither which person nor which period (the
+                        # #4630 pin), and since #4690 it does not say whose number
+                        # it is either: a person stopped at a platform default they
+                        # never authored, told only "personal spending limit
+                        # exceeded", goes looking for a limit of their own that does
+                        # not exist.
                         blocked_reason=(
-                            f"Personal spending limit exceeded for {anchor} ({cap_row.period_type}): "
-                            f"${projected_spend:.2f} of ${cap_row.budget_amount_usd:.2f} across all organizations"
+                            f"Personal spending limit exceeded for {anchor} ({limit.period_type}, "
+                            f"from {limit.scope_label}): ${projected_spend:.2f} of ${limit.amount:.2f} "
+                            f"across all organizations"
                         ),
                         # `exceeded_entity_type`/`exceeded_entity_id` stay None
                         # DELIBERATELY. A person is not an `EntityType`, and minting
                         # one would make `entity_type="person"` authorable through
                         # `budget_configs` — an inert cap nothing enforces, which is
                         # the #4511 class this EPIC exists to remove.
-                        budget_amount_usd=cap_row.budget_amount_usd,
+                        budget_amount_usd=limit.amount,
                         current_spend_usd=current_spend,
                         enforcement_mode=enforcement_mode,
                         # The discriminator the worker classifies the stop by. A new
                         # scope that is not threaded end-to-end silently misreports
                         # as `hierarchy_cap_exceeded` and sends the operator to
-                        # raise an ORG budget — the wrong knob, and nobody can raise
-                        # this one but the person themselves.
+                        # raise an ORG budget — the wrong knob, and (for a personal
+                        # row) nobody can raise this one but the person themselves.
                         scope="person",
-                        scope_cap_usd=cap_row.budget_amount_usd,
+                        scope_cap_usd=limit.amount,
                     )
 
                 # Soft means informational: the figure is reported and nothing is
                 # denied — the same meaning `_check_entity_budget` gives the column
                 # on `budget_configs`, so there is one enforcement semantic for
-                # `enforcement_mode` rather than a per-table special case.
+                # `enforcement_mode` rather than a per-table special case. Only an
+                # individual row can be soft; defaults are written `hard` (#4690).
                 logger.info(
-                    f"Person budget exceeded (soft limit): {anchor} - {cap_row.period_type} "
-                    f"cap ${cap_row.budget_amount_usd}, projected ${projected_spend}"
+                    f"Person budget exceeded (soft limit): {anchor} - {limit.period_type} limit ${limit.amount}, projected ${projected_spend}"
                 )
                 warnings.append(
-                    f"Personal spending limit exceeded for {cap_row.period_type}: "
-                    f"${projected_spend:.2f} / ${cap_row.budget_amount_usd:.2f} across all organizations"
+                    f"Personal spending limit exceeded for {limit.period_type} (from {limit.scope_label}): "
+                    f"${projected_spend:.2f} / ${limit.amount:.2f} across all organizations"
                 )
                 continue
 
-            utilization = calculate_budget_utilization(cap_row.budget_amount_usd, projected_spend)
+            utilization = calculate_budget_utilization(limit.amount, projected_spend)
             if utilization >= budget_config.budget_critical_threshold_percent:
-                warnings.append(f"Personal spending limit {cap_row.period_type} at {utilization:.1f}% (critical)")
+                warnings.append(f"Personal spending limit {limit.period_type} at {utilization:.1f}% (critical)")
             elif utilization >= budget_config.budget_warning_threshold_percent:
-                warnings.append(f"Personal spending limit {cap_row.period_type} at {utilization:.1f}%")
+                warnings.append(f"Personal spending limit {limit.period_type} at {utilization:.1f}%")
 
         return EnforcementResult(allowed=True, warnings=warnings)
 
@@ -1671,6 +1927,51 @@ class BudgetEnforcementService:
             usage.total_cost_usd += cost
             usage.total_tokens += total_tokens
             usage.request_count += 1
+
+    async def _person_cap_headroom(self, session: AsyncSession, context: TokenContext):
+        """The caller's tightest HARD person-limit headroom, or ``None``.
+
+        Review fix on #4689, for the headers surface only — the deny path stays
+        ``_check_person_budget``. Both now share ``_resolve_person_limits``, so the
+        person key, the ladder rung and the fused denominator are literally the same
+        computation; the headroom reported here is the headroom the 402 enforces.
+        Evaluated per applicable limit over that limit's OWN period. Returns
+        ``(remaining, limit, period_end)`` for the tightest. Faults propagate to the
+        caller's fail-open handler ("unavailable"), which is the honest header
+        answer for an unreadable person ledger.
+
+        **Since #4690 the reported limit may be a default** the person never
+        authored. That is the requirement, not a leak: these headers are read by
+        exactly the population defaults exist to bound, and advertising headroom
+        that enforcement will not honour is the FR-1.4 class of defect.
+
+        ``soft`` limits are skipped: a non-enforcing ceiling in
+        ``X-Budget-Remaining`` would be the opposite lie. Only an individual row can
+        be soft — defaults are always written ``hard``.
+        """
+        from .person_ledger import read_person_partition_spend
+
+        resolved = await self._resolve_person_limits(session, context)
+        if resolved is None:
+            return None
+        # The anchor is dropped here deliberately: headers carry numbers, not a
+        # person key, and the deny path is where naming the person matters.
+        limits, _anchor, person_user_ids, person_subs, partitions = resolved
+
+        tightest = None
+        for limit in sorted(limits.values(), key=lambda item: item.period_type):
+            if limit.enforcement_mode != EnforcementMode.HARD.value:
+                continue
+            period_type = PeriodType(limit.period_type)
+            period_start, period_end = get_period_start_end(period_type)
+            total = Decimal("0")
+            for org_id in partitions:
+                cloud, direct = await read_person_partition_spend(session, org_id, person_user_ids, person_subs, period_type, period_start)
+                total += cloud + direct
+            remaining = limit.amount - total
+            if tightest is None or remaining < tightest[0]:
+                tightest = (remaining, limit.amount, period_end)
+        return tightest
 
     async def get_budget_status_for_headers(self, context: TokenContext) -> dict[str, Any]:
         """
@@ -1790,6 +2091,23 @@ class BudgetEnforcementService:
                             lowest_remaining = remaining
                             corresponding_limit = budget.budget_amount_usd
                             corresponding_reset = period_end
+
+                # The PERSON layer (review fix on #4689): #4396 subjects every
+                # JWT caller to the personal limit, and these headers are read by
+                # exactly that population — omitting it advertised headroom
+                # enforcement will not honour (the FR-1.4 class). Same primitives
+                # as _check_person_budget, so the header figure IS the enforced
+                # figure; gated on the same existence cache, so the empty-table
+                # common case costs nothing. Soft rows are skipped: a
+                # non-enforcing ceiling in X-Budget-Remaining would be the
+                # opposite lie.
+                person = await self._person_cap_headroom(session, context)
+                if person is not None:
+                    person_remaining, person_limit, person_reset = person
+                    if lowest_remaining is None or person_remaining < lowest_remaining:
+                        lowest_remaining = person_remaining
+                        corresponding_limit = person_limit
+                        corresponding_reset = person_reset
 
                 if lowest_remaining is not None:
                     return {
@@ -1953,6 +2271,7 @@ async def reconcile_budget_reservation(
     model_id: str,
     input_tokens: int,
     output_tokens: int,
+    actual_cost_usd: Decimal | None = None,
 ) -> None:
     """Metering-side entry point for reservation reconciliation (Issue #4287).
 
@@ -1976,6 +2295,7 @@ async def reconcile_budget_reservation(
             model_id=model_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            **({"actual_cost_usd": actual_cost_usd} if actual_cost_usd is not None else {}),
         )
     except Exception as exc:
         logger.warning(f"Budget reservation reconcile failed: {exc}")

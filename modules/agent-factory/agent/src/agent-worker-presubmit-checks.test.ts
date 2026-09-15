@@ -1,4 +1,3 @@
-import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -6,8 +5,10 @@ const SOURCE_PATH = path.join(__dirname, 'agent-worker.ts');
 const source = fs.readFileSync(SOURCE_PATH, 'utf-8');
 
 describe('agent-worker pre-submit checks contract', () => {
-  it('contains the "Pre-submit checks (MANDATORY before creating a PR)" heading', () => {
-    expect(source).toContain('## Pre-submit checks (MANDATORY before creating a PR)');
+  it('requires pre-submit checks before requesting review, allowing draft progress', () => {
+    expect(source).toContain('## Pre-submit checks (MANDATORY before requesting review)');
+    expect(source).toContain('Incomplete branch checkpoints and draft PRs may be published before these finish');
+    expect(source).not.toContain('fix the underlying issue before pushing');
   });
 
   it('contains the ruff check command string', () => {
@@ -31,7 +32,7 @@ describe('agent-worker pre-submit checks contract', () => {
   });
 
   it('appears in the shared scaffolding, not inside per-agent-type conditionals', () => {
-    const presubmitIndex = source.indexOf('## Pre-submit checks (MANDATORY before creating a PR)');
+    const presubmitIndex = source.indexOf('## Pre-submit checks (MANDATORY before requesting review)');
     expect(presubmitIndex).toBeGreaterThan(-1);
 
     // Must appear after the shared Step 3 section

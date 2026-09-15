@@ -104,6 +104,15 @@ resource "aws_eks_access_entry" "admins" {
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = each.key
   type          = "STANDARD"
+
+  # Match agent-factory/infra's runner entry and provider default tags (#5006).
+  # Only that shared principal gets these overrides; other operator entries
+  # retain platform tags and visible drift. All access grants remain managed.
+  tags = each.key == "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-agent-runner-role" ? {
+    Module = "agent-factory"
+    Name   = "adp-${var.environment}-agent-runner-access"
+    Owner  = "agent-team"
+  } : {}
 }
 
 resource "aws_eks_access_policy_association" "admins" {
@@ -596,6 +605,62 @@ resource "aws_eks_addon" "metrics_server" {
     Service = "eks"
     Purpose = "metrics-api-for-hpa"
   })
+}
+
+# =============================================================================
+# NetworkPolicy enforcement — EKS Auto Mode network-policy controller (#4999)
+# =============================================================================
+# A Kubernetes NetworkPolicy is only a declaration. Something has to translate
+# it into per-pod enforcement and program the dataplane. Auto Mode ships that
+# controller but leaves it OFF, and nothing in this repo asked for it — so every
+# NetworkPolicy we have ever written has been decorative.
+#
+# That is not a theoretical gap. Evaluation #3967 (check W1-04) applied a plain
+# deny-all ingress policy to a probe pod, with labels confirmed matching the
+# podSelector, and a non-gateway caller still got HTTP 200. The namespace's
+# `default-deny-egress` and `agent-scaledjob-egress` policies had been in place
+# for months and were equally unenforced, so the worker egress restriction that
+# operators and prior security reviews believed was protecting the sandbox was
+# not restricting anything.
+#
+# Enablement is a ConfigMap, not an addon. On Auto Mode there is no managed
+# `vpc-cni` addon and no `aws-node` DaemonSet to configure — AWS documents this
+# single key instead:
+#   https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
+# Note what is deliberately NOT touched here: `compute_config` above, and the
+# default NodeClass. The NodeClass already reports `networkPolicy: DefaultAllow`
+# — that is the mode, not a disablement, so mutating it would be a cluster-wide
+# networking change with no bearing on this gap (#4999 non-goals).
+#
+# `kubernetes_config_map` (create) rather than `kubernetes_config_map_v1_data`
+# (patch) because on an Auto Mode cluster this ConfigMap does not exist at all —
+# confirmed absent on adp-dev-eks-cluster (`NotFound`). If a future environment
+# has it pre-created out-of-band, this resource will fail loudly on
+# "already exists" rather than silently diverge; import it or switch that
+# environment to the patch resource. A loud failure is the intended behaviour.
+#
+# Default-off (see variables.tf). Enabling it is the moment four existing
+# policies begin to bite at once, so it must be a deliberate per-environment
+# decision — and it must land AFTER the ADOT collector egress policy in
+# modules/agent-factory/webhook-ingress/infra/scaledjob-netpol.tf, or agent
+# telemetry stops with no error anywhere. Rollback is this variable back to
+# false plus an apply; enforcement stops and today's behaviour returns.
+resource "kubernetes_config_map" "amazon_vpc_cni" {
+  count = var.enable_network_policy_controller ? 1 : 0
+
+  metadata {
+    name      = "amazon-vpc-cni"
+    namespace = "kube-system"
+  }
+
+  data = {
+    "enable-network-policy-controller" = "true"
+  }
+
+  depends_on = [
+    aws_eks_cluster.main,
+    time_sleep.wait_for_access_entry,
+  ]
 }
 
 # CI runner EKS access is managed in the workflow pre-apply step

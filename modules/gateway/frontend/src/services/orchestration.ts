@@ -9,8 +9,14 @@
  * misses the SPA fallback and returns HTML with a 200 (issue #4330).
  */
 
-import { apiClient } from './api';
-import type { FlowGraph, GateDecisionResult, ResumeResult } from '@/types/orchestration';
+import { apiClient, buildQueryString } from './api';
+import type {
+  FlowGraph,
+  FlowList,
+  FlowListParams,
+  GateDecisionResult,
+  ResumeResult,
+} from '@/types/orchestration';
 
 /**
  * Fetch a whole flow for the graph view: every node including ones that have
@@ -58,4 +64,37 @@ export async function resumeNode(nodeId: string, reason?: string): Promise<Resum
     `/orchestration/nodes/${encodeURIComponent(nodeId)}/resume`,
     { reason: reason ?? null }
   );
+}
+
+/**
+ * List the caller's org's delivery flows (issue #4869).
+ *
+ * The entry point the engine had none of: the graph view is addressable only by
+ * flow id, so before this a flow nobody had the id for was invisible along with
+ * every gate waiting on a human.
+ *
+ * **Filtering and paging happen server-side, and that is load-bearing.** The
+ * status and needs-me predicates are derived from node and decision aggregates,
+ * so a client cannot compute them from a page it already holds — and filtering a
+ * page client-side would show "3 flows need you" out of the 25 that happened to
+ * be fetched, which is a lie about the rest of the list.
+ *
+ * `limit` over 100 is a 422 rather than a silent clamp, so a caller cannot
+ * believe it received 500 rows and page as though it had.
+ */
+export async function listFlows(params: FlowListParams = {}): Promise<FlowList> {
+  // `buildQueryString` drops undefined/null/'' — so an unset filter is absent
+  // from the URL rather than sent as an empty value the route would 422 on
+  // (`status=` is not a member of the enum).
+  const query = buildQueryString({
+    limit: params.limit,
+    offset: params.offset,
+    q: params.q,
+    status: params.status,
+    // Sent only when true: `needs_me=false` is the default server-side, and
+    // omitting it keeps the shared-link URL to the filters actually applied.
+    needs_me: params.needs_me ? true : undefined,
+    sort: params.sort,
+  });
+  return apiClient.get<FlowList>(`/orchestration/flows${query}`);
 }

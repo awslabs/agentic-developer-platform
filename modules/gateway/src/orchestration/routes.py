@@ -44,8 +44,13 @@ readable" is the guarantee amendment rests on, and a guarantee with no read path
 untestable end-to-end. It is a read, gated on the same permission.
 """
 
+import json
 import logging
-from typing import Annotated, Any
+import re
+from collections import defaultdict
+from dataclasses import asdict
+from decimal import Decimal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict
@@ -56,11 +61,22 @@ from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.orchestration.amend import AmendmentContext, FlowNotFoundError, amend_plan
 from src.orchestration.compile import ApprovalContext, ProposalRejectedError, TenantMismatchError, compile_proposal
-from src.orchestration.cost import COST_SCOPE_LABEL, AggregateCost, CostStatus, NodeCost, UnknownReason, get_flow_cost
+from src.orchestration.cost import (
+    COST_SCOPE_LABEL,
+    AggregateCost,
+    CostStatus,
+    NodeCost,
+    UnknownReason,
+    get_cost_by_address_prefixes,
+    get_flow_cost,
+)
 from src.orchestration.dispatch_pass import resolve_installation_id
+from src.orchestration.display_state import FlowStatus
+from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.models import DecisionKind
-from src.orchestration.proposal import LoopProposal
-from src.orchestration.repository import OrchestrationRepository
+from src.orchestration.policy_admission import load_in_force_policy
+from src.orchestration.proposal import LoopProposal, split_address
+from src.orchestration.repository import OrchestrationRepository, WaveAggregate
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
@@ -550,6 +566,294 @@ async def get_flow_cost_route(
     return _flow_cost_response(flow.id, aggregate)
 
 
+class FlowDisplayCountsResponse(BaseModel):
+    """Node counts in the five-value display vocabulary (#4212's §1.3 projection).
+
+    Five keys, always all five, including zeroes: the rollup bar renders segments
+    from these and a missing key would silently drop a segment rather than draw an
+    empty one. `superseded` has no key because it is in no bucket — see
+    `display_state.py`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    queued: int
+    in_progress: int
+    gate: int
+    stalled: int
+    complete: int
+
+
+class WaveSummaryResponse(BaseModel):
+    """One wave's rollup, for the rail on a flow card.
+
+    Ordered by first appearance (`MIN(node.created_at)`) in the enclosing list —
+    **not** by `wave_ref`, which sorts `wave-10` before `wave-2`. The order of the
+    array is the order the rail renders, so it is part of the contract.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    epic_ref: str
+    wave_ref: str
+    total: int
+    done: int
+    story_count: int
+    gate_count: int
+    eval_count: int
+    display_counts: FlowDisplayCountsResponse
+
+
+class FlowSummaryResponse(BaseModel):
+    """One flow as the list page reads it: identity plus everything derived.
+
+    **`OrchestrationFlow.state` is deliberately absent.** It defaults to
+    `pending`, has no writer anywhere in `src/`, and is therefore permanently
+    `"pending"` for every flow that exists — publishing it would put a meaningless
+    word where operators look for status. `status` below is derived from the
+    flow's nodes instead, consistent with container state being derived and never
+    stored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    slug: str
+    title: str
+    intent_ref: str | None
+    # --- The design loop's story (#4885) -----------------------------------
+    # Both ride the flow row already fetched by the page query: no new query, no
+    # change to the join, no change to the statement-count bound #4869 pins.
+    #
+    # `null` means "we do not know" and MUST reach the client as `null`. It is the
+    # honest value for every flow registered before #4885, and the card renders no
+    # stage strip at all for it — an empty or all-pending strip would assert
+    # design gates that never happened. Neither field is defaulted to `""`/`{}`
+    # here for exactly that reason.
+    description: str | None
+    design_history: dict[str, Any] | None
+    # One of the six `FlowStatus` values, derived by `derive_flow_status`.
+    status: str
+    # Surfaced alongside `status` because `status` is first-match-wins: a flow that
+    # is both stalled and gated reports `attention_needed`, and the card still has
+    # to be able to say "1 waiting on you".
+    awaiting_gate_count: int
+    # Decision-derived (latest `node_stalled` wins), NOT the count of `failed`
+    # nodes — a stall and a plain failure share an engine state.
+    stalled_count: int
+    display_counts: FlowDisplayCountsResponse
+    total_nodes: int
+    story_count: int
+    gate_count: int
+    eval_count: int
+    changes_requested_count: int
+    epic_count: int
+    wave_count: int
+    current_wave_ref: str | None
+    waves: list[WaveSummaryResponse]
+    # Agent-run Bedrock spend under this flow's address prefix, three-valued.
+    # `unknown` carries no amount, so a client cannot render absence as $0.00.
+    delivery_cost: NodeCostResponse
+    created_at: str
+    updated_at: str | None
+
+
+class FlowListResponse(BaseModel):
+    """A page of flows, the filtered total, and the unfiltered status chips.
+
+    `total` counts rows matching the **filters across all pages** — it is not
+    `len(flows)`. A client showing "Showing 3 of 5" needs both numbers, and a
+    `total` that only described the current page would make the pager lie about
+    how much is there.
+
+    `status_counts` is **unfiltered and tenant-wide**, which is why it is a
+    separate number from `total`: the chips describe the population the operator
+    is choosing among, so they still total 5 while a `needs_me` filter shows 3.
+    Every status is present including zeroes — "nothing is stalled" is information.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    flows: list[FlowSummaryResponse]
+    total: int
+    limit: int
+    offset: int
+    status_counts: dict[str, int]
+
+
+def _wave_summary(wave: WaveAggregate) -> WaveSummaryResponse:
+    return WaveSummaryResponse(
+        epic_ref=wave.epic_ref,
+        wave_ref=wave.wave_ref,
+        total=wave.total,
+        done=wave.done,
+        story_count=wave.story_count,
+        gate_count=wave.gate_count,
+        eval_count=wave.eval_count,
+        display_counts=FlowDisplayCountsResponse(**asdict(wave.display_counts)),
+    )
+
+
+@router.get("/flows", response_model=FlowListResponse)
+async def list_flows_route(
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    q: Annotated[str | None, Query(max_length=256)] = None,
+    status: Annotated[FlowStatus | None, Query()] = None,
+    needs_me: Annotated[bool, Query()] = False,
+    sort: Annotated[Literal["created", "updated", "stalled"], Query()] = "created",
+) -> FlowListResponse:
+    """The tenant's delivery flows, with derived status, wave rollups and cost.
+
+    Without this route the orchestration engine has no entry point in the UI at
+    all: the graph view is reachable only by knowing a flow id, so a flow nobody
+    has the id for is invisible along with every gate waiting on a human.
+
+    Gated on `USAGE_READ`, identical to the detail and cost routes — seeing where
+    delivery stands must not require `PLAN_APPROVE`, which is *write* authority
+    over promotion state. The check runs before any read, so a denied caller
+    learns nothing about what exists.
+
+    **An empty tenant is `200 {"flows": [], "total": 0}`, never 404.** Unlike the
+    detail route, where "no such flow" and "a flow with no work" are genuinely
+    different answers, "this org has no flows" is a true and complete answer to
+    the question asked.
+
+    `limit` over 100 is a **422**, not a silent clamp: a client that asked for 500
+    and received 100 would page as though it had 500 and skip four fifths of the
+    list.
+
+    Every aggregate filters `org_id` in SQL; the page's flow ids are never used as
+    the only scoping. Query count is constant in page size (three, or four with
+    the chips) — see `list_flows_page_with_aggregates`.
+    """
+    await access.check_permission(
+        current_user,
+        Permission.USAGE_READ,
+        target_org_id=current_user.org_id,
+    )
+
+    repo = OrchestrationRepository(db)
+
+    page = await repo.list_flows_page_with_aggregates(
+        org_id=current_user.org_id,
+        limit=limit,
+        offset=offset,
+        q=q,
+        status=status,
+        needs_me=needs_me,
+        sort=sort,
+    )
+
+    # ONE grouped ledger query for the whole page: a flow's slug is its graph
+    # address prefix (`compile.address_of`), so every flow's spend comes back from
+    # a single `or_()` of prefix predicates. A per-flow cost call here would be the
+    # N+1 the address-keyed cost model exists to avoid.
+    slugs = [aggregate.flow.slug for aggregate in page.flows]
+    ledger = await get_cost_by_address_prefixes(db, org_id=current_user.org_id, address_prefixes=slugs)
+
+    # Attribute each measured address back to its flow by its FIRST segment, which
+    # is the flow slug. Summed per slug rather than per node: the card shows one
+    # figure per flow.
+    #
+    # Known limitation (#4885): `orchestration_flows` has no `uq(org_id, slug)`,
+    # so two flows in one tenant may share a slug and their spend is then
+    # indistinguishable by address. Noted rather than worked around — the fix is a
+    # constraint, which is a migration.
+    measured: dict[str, list[NodeCost]] = defaultdict(list)
+    for node_cost in ledger:
+        try:
+            flow_slug, _, _, _ = split_address(node_cost.address)
+        except ValueError:
+            # A malformed address predates or bypassed validation. Skipped rather
+            # than guessed at: attributing it to a flow by string-slicing would
+            # put someone else's spend on this card.
+            logger.warning("skipping malformed graph_address in cost rollup: %r", node_cost.address)
+            continue
+        measured[flow_slug].append(node_cost)
+
+    flows: list[FlowSummaryResponse] = []
+    for aggregate in page.flows:
+        flows.append(
+            FlowSummaryResponse(
+                id=aggregate.flow.id,
+                slug=aggregate.flow.slug,
+                title=aggregate.flow.title,
+                intent_ref=aggregate.flow.intent_ref,
+                description=aggregate.flow.description,
+                design_history=aggregate.flow.design_history,
+                status=aggregate.status.value,
+                awaiting_gate_count=aggregate.awaiting_gate_count,
+                stalled_count=aggregate.stalled_count,
+                display_counts=FlowDisplayCountsResponse(**asdict(aggregate.display_counts)),
+                total_nodes=aggregate.display_counts.total,
+                story_count=aggregate.story_count,
+                gate_count=aggregate.gate_count,
+                eval_count=aggregate.eval_count,
+                changes_requested_count=aggregate.changes_requested_count,
+                epic_count=aggregate.epic_count,
+                wave_count=len(aggregate.waves),
+                current_wave_ref=aggregate.current_wave_ref,
+                waves=[_wave_summary(wave) for wave in aggregate.waves],
+                delivery_cost=_node_cost_response(_roll_up_delivery_cost(aggregate.flow.slug, measured.get(aggregate.flow.slug, []))),
+                created_at=aggregate.flow.created_at.isoformat(),
+                updated_at=aggregate.flow.updated_at.isoformat() if aggregate.flow.updated_at else None,
+            )
+        )
+
+    status_counts = await repo.count_flows_by_status(org_id=current_user.org_id)
+
+    return FlowListResponse(
+        flows=flows,
+        total=page.total,
+        limit=limit,
+        offset=offset,
+        status_counts={flow_status.value: count for flow_status, count in status_counts.items()},
+    )
+
+
+def _roll_up_delivery_cost(slug: str, node_costs: list[NodeCost]) -> NodeCost:
+    """Sum a flow's measured addresses into one figure, three-valued.
+
+    A flow with no ledger rows at all is `UNKNOWN` with a reason — **never
+    `$0.00`**. That distinction is the whole point of the cost model: `$0.00`
+    asserts the work was free, while `unknown` says nobody measured it. A flow
+    that has not started yet and a flow that genuinely cost nothing must not read
+    the same.
+
+    Unlike `get_flow_cost` this does not mark the total `partial`, because it has
+    no node list to know how many addresses *should* have rows. The figure is
+    therefore "what the ledger holds for this flow", and the card labels it as
+    spend so far.
+    """
+    if not node_costs:
+        return NodeCost(
+            address=slug,
+            status=CostStatus.UNKNOWN,
+            reason=UnknownReason.NO_USAGE_ROWS,
+        )
+
+    total = sum((cost.amount_usd or Decimal(0) for cost in node_costs), Decimal(0))
+    return NodeCost(
+        address=slug,
+        # Rows exist, so this is a measurement either way: > 0 is known, == 0 is a
+        # verified zero. Neither is `unknown`.
+        status=CostStatus.KNOWN if total > 0 else CostStatus.NONE_INCURRED,
+        amount_usd=total,
+        total_tokens=sum(cost.total_tokens for cost in node_costs),
+        call_count=sum(cost.call_count for cost in node_costs),
+    )
+
+
+class GateDecisionSummary(BaseModel):
+    action: Literal["approved", "changes_requested"]
+    reason: str | None
+    created_at: str
+
+
 class GraphNodeResponse(BaseModel):
     """One executable node — story, eval, or gate — as the graph view reads it.
 
@@ -577,6 +881,11 @@ class GraphNodeResponse(BaseModel):
     title: str
     issue_ref: str | None
     attempts: int
+    run_id: str | None = None
+    issue_url: str | None = None
+    result_summary: str | None = None
+    configuration_problem: str | None = None
+    last_gate_decision: GateDecisionSummary | None = None
     # True when the most recent stall/halt decision for this node was a stall.
     #
     # Load-bearing for AC-3, and not inferable from `state`: stall detection moves
@@ -630,6 +939,14 @@ class FlowGraphResponse(BaseModel):
     nodes: list[GraphNodeResponse]
     edges: list[GraphEdgeResponse]
     cost: FlowCostResponse
+    # What the owner authorized for this delivery, or `None` when no policy is in
+    # force (#5128). `None` is a real and permanent state, not a transitional one:
+    # every flow accepted before policies existed has no policy and never will, and
+    # those flows run with legacy semantics. So the client must render nothing rather
+    # than an empty or zeroed policy — a summary reading "0 autonomous actions,
+    # $0.00" describes a policy that authorizes nothing, which is the opposite of
+    # what an unpolicied flow does.
+    execution_policy: PolicySummary | None = None
 
 
 @router.get("/flows/{flow_id}", response_model=FlowGraphResponse)
@@ -668,8 +985,36 @@ async def get_flow_graph(
 
     nodes = await repo.list_nodes(org_id=current_user.org_id, flow_id=flow.id)
     edges = await repo.list_edges(org_id=current_user.org_id, flow_id=flow.id)
+    # The same loader admission uses, so the view describes the policy that is
+    # actually deciding rather than a second reading of the plan document. It resolves
+    # the version currently in force, which is what makes an amendment show up here
+    # without a superseded version ever being shown as current.
+    policy_inputs = await load_in_force_policy(db, org_id=current_user.org_id, flow_id=flow.id)
     aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
     stalled_node_ids = await _stalled_node_ids(repo, org_id=current_user.org_id, flow_id=flow.id)
+
+    # Only committed dispatch records can produce run links. Older attempts
+    # remain in the decision log but must not masquerade as the current result.
+    dispatches: dict[str, dict] = {}
+    result_summaries: dict[str, dict] = {}
+    gate_decisions: dict[str, GateDecisionSummary] = {}
+    for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.kind in (DecisionKind.GATE_APPROVED.value, DecisionKind.GATE_REJECTED.value) and decision.node_id:
+            gate_decisions[decision.node_id] = GateDecisionSummary(
+                action="approved" if decision.kind == DecisionKind.GATE_APPROVED.value else "changes_requested",
+                reason=decision.reason,
+                created_at=decision.created_at.isoformat(),
+            )
+        if decision.kind not in (DecisionKind.NODE_DISPATCHED.value, DecisionKind.RESULT_OBSERVED.value):
+            continue
+        try:
+            detail = json.loads(decision.reason or "{}")
+            if not isinstance(detail, dict):
+                continue
+            target = dispatches if decision.kind == DecisionKind.NODE_DISPATCHED.value else result_summaries
+            target[decision.node_id] = detail
+        except (ValueError, TypeError):
+            continue
 
     # Keyed by address because that is what `get_flow_cost` returns them under.
     # Built once rather than searched per node: a linear scan inside the node loop
@@ -680,6 +1025,19 @@ async def get_flow_graph(
     for node in nodes:
         address = f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}"
         node_cost = cost_by_address.get(address)
+        dispatch = dispatches.get(node.id, {})
+        if dispatch.get("attempt") != node.attempts:
+            dispatch = {}
+        result = result_summaries.get(node.id, {})
+        if result.get("attempt") != node.attempts:
+            result = {}
+        source_repo = dispatch.get("repo", "")
+        source_issue = dispatch.get("issue")
+        issue_url = (
+            f"https://github.com/{source_repo}/issues/{source_issue}"
+            if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source_repo) and isinstance(source_issue, int) and source_issue > 0
+            else None
+        )
         graph_nodes.append(
             GraphNodeResponse(
                 id=node.id,
@@ -691,6 +1049,13 @@ async def get_flow_graph(
                 title=node.title,
                 issue_ref=node.issue_ref,
                 attempts=node.attempts,
+                run_id=dispatch.get("run_id"),
+                issue_url=issue_url,
+                result_summary=result.get("evidence"),
+                last_gate_decision=gate_decisions.get(node.id),
+                configuration_problem=(
+                    "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
+                ),
                 stalled=node.id in stalled_node_ids,
                 # `get_flow_cost` returns one entry per node passed in, so the
                 # fallback is unreachable today. It is UNKNOWN rather than a zero
@@ -726,4 +1091,5 @@ async def get_flow_graph(
         nodes=graph_nodes,
         edges=[GraphEdgeResponse(from_node_id=edge.from_node_id, to_node_id=edge.to_node_id) for edge in edges],
         cost=_flow_cost_response(flow.id, aggregate),
+        execution_policy=summarize_policy(policy_inputs.policy) if policy_inputs.policy is not None else None,
     )

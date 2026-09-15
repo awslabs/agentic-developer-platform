@@ -500,7 +500,7 @@ class TestRevisionChain:
             module = _load_migration(path.name)
             revisions.add(module.revision)
             if module.down_revision:
-                parents.add(module.down_revision)
+                parents.update((module.down_revision,) if isinstance(module.down_revision, str) else module.down_revision)
 
         heads = revisions - parents
         assert len(heads) == 1, f"expected exactly one head, found: {sorted(heads)}"

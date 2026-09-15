@@ -19,6 +19,22 @@ eks_node_max_size       = 10
 # Adds CloudWatch metric + log ingestion cost (bounded by cluster size).
 enable_container_insights = true
 
+# Enforce NetworkPolicy (#4999). Until this was set, the cluster ran no
+# network-policy enforcement agent, so all four existing policies were inert:
+# worker egress was not actually restricted, and the agent control-listener
+# ingress boundary that evaluation #3967 must prove (check W1-04) could not be
+# proven because a deny-all policy let traffic through.
+#
+# ORDERING IS LOAD-BEARING. This must not be applied until the ADOT collector
+# egress policy has already been applied by the webhook-ingress module
+# (modules/agent-factory/webhook-ingress/infra/scaledjob-netpol.tf). The
+# namespace's default-deny-egress selects all pods; before that policy existed
+# the collector matched no allow rule, so enabling enforcement first stops all
+# agent traces/metrics/logs with no error visible anywhere. See
+# docs/runbooks/network-policy-enforcement.md for the ordered procedure,
+# post-apply verification and rollback.
+enable_network_policy_controller = true
+
 # Human operator role(s) that need EKS cluster-admin, beyond the deploying
 # caller and the CI runner (those two are added automatically in main.tf).
 # Without an entry here, a CI apply (running as agent-runner-role) can destroy a

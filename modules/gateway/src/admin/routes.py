@@ -9,10 +9,11 @@ import logging
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin import org_members, team_memberships
 from src.admin.access_control import AccessControl
 from src.admin.agent_onboarding_schemas import (
     AgentOnboardRequest,
@@ -46,6 +47,7 @@ from src.admin.config import (
 )
 from src.admin.exceptions import AccessDeniedError
 from src.admin.log_service import LogService
+from src.admin.memberships import project_member_org_ids
 from src.admin.policy_scoping_schemas import (
     AgentTypesListResponse,
     PolicyPreviewRequest,
@@ -66,7 +68,6 @@ from src.admin.schemas import (
     CognitoUserListResponse,
     CognitoUserResponse,
     LogQueryResponse,
-    OrganizationCreateRequest,
     OrganizationListResponse,
     OrganizationResponse,
     OrganizationUpdateRequest,
@@ -82,6 +83,7 @@ from src.admin.schemas import (
     UsageTimeseriesResponse,
 )
 from src.admin.service import AdminService
+from src.admin.team_membership_claims import commit_team_memberships
 from src.auth.dependencies import get_current_user  # Issue #133: Real Cognito JWT auth
 from src.shared.database import get_db
 from src.shared.schemas.admin import (
@@ -89,11 +91,17 @@ from src.shared.schemas.admin import (
     DepartmentListResponse,
     DepartmentResponse,
     DepartmentUpdateRequest,
+    OrgMemberAddRequest,
+    PlatformUserListResponse,
     ServiceAccountCreateRequest,
     ServiceAccountListResponse,
     ServiceAccountResponse,
     TeamCreateRequest,
     TeamListResponse,
+    TeamMemberAddRequest,
+    TeamMembershipListResponse,
+    TeamMembershipResponse,
+    TeamMembershipSetRequest,
     TeamResponse,
     TeamUpdateRequest,
     UserCreateRequest,
@@ -147,19 +155,45 @@ def get_cognito_service() -> CognitoService | None:
 # Organization Endpoints
 
 
-@router.post("/organizations", response_model=OrganizationResponse, status_code=201)
-async def create_organization(
-    request: OrganizationCreateRequest,
-    service: Annotated[AdminService, Depends(get_admin_service)],
-    access: Annotated[AccessControl, Depends(get_access_control)],
-    current_user: Annotated[TokenContext, Depends(get_current_user)],
-) -> OrganizationResponse:
-    """Create a new organization.
+CANONICAL_ORG_CREATE_ROUTE = "POST /api/admin/identity/organizations"
 
-    Requires platform admin privileges.
+
+@router.post("/organizations", status_code=410, dependencies=[Depends(get_current_user)])
+async def create_organization_gone() -> None:
+    """Deprecated. Use ``POST /api/admin/identity/organizations`` instead.
+
+    Issue #4842 (ruling D4 = Option A): this route is retired because it created
+    an incomplete tenant, not because it duplicated a working one.
+
+    It wrote an ``organizations`` row and nothing else. The canonical route also
+    writes the default department, the default team, and the ``channel_tenant_map``
+    rows — and three of the platform's four org-creating paths write that bundle,
+    so this one was the outlier. Two consequences of the omission were silent:
+
+    * ``users.team_id`` defaults to ``f"{org_id}-team-default"``, a row this route
+      never created, and there is no FK on that column to catch the dangling
+      pointer.
+    * With no ``channel_tenant_map`` row, the installation resolver fails closed
+      for binding writes — that table is the only record that can *grant*
+      installation ownership, whereas ``organizations.github_installation_ids`` is
+      merely an assertion a tenant makes about itself.
+
+    Safe to retire: it had zero product callers. The one client function
+    (``frontend/src/services/admin.ts::createOrganization``) was a dead export
+    referenced only by its own unit test, and is removed in the same change.
+
+    Takes no request body so the 410 is returned for any payload — a caller still
+    on this route must see the pointer, not a 422 about a schema that no longer
+    matters.
     """
-    await access.check_permission(current_user, Permission.ORG_CREATE)
-    return await service.create_organization(request)
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            f"POST /admin/organizations is no longer available. Use {CANONICAL_ORG_CREATE_ROUTE}, "
+            "which also creates the default department, default team, and channel mappings this "
+            "route omitted."
+        ),
+    )
 
 
 @router.get("/organizations", response_model=OrganizationListResponse)
@@ -797,6 +831,210 @@ async def delete_team(
     await service.delete_team(org_id, team_id)
 
 
+@router.get("/organizations/{org_id}/teams", response_model=TeamListResponse)
+async def list_org_teams(
+    org_id: str,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> TeamListResponse:
+    """List every team in the organization, across all departments.
+
+    Issue #4840. Complements the department-scoped listing above: the team pickers
+    in the membership UI need the org-wide set, since assigning a second team means
+    choosing from every team in the org.
+    """
+    await access.check_permission(current_user, Permission.ORG_READ, target_org_id=org_id)
+
+    teams, total = await service.list_org_teams(org_id, page, page_size)
+
+    return TeamListResponse(
+        items=teams,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(page * page_size) < total,
+    )
+
+
+# Team Membership Endpoints (Issue #4840)
+#
+# Many-to-many user<->team membership. Permissions deliberately mirror the sibling
+# team routes above — ORG_UPDATE for writes, ORG_READ for reads, both via
+# check_permission(..., target_org_id=org_id) — rather than introducing a new gating
+# mechanism for the same class of resource. Tenant scoping beyond the permission
+# check (does this user, and this team, actually belong to {org_id}?) is enforced in
+# src/admin/team_memberships.py, which resolves both by (id, org_id) and raises 404
+# for anything outside the org.
+
+
+@router.get("/organizations/{org_id}/users/{user_id}/teams", response_model=TeamMembershipListResponse)
+async def list_user_teams(
+    org_id: str,
+    user_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> TeamMembershipListResponse:
+    """List a user's team memberships, primary first."""
+    await access.check_permission(current_user, Permission.ORG_READ, target_org_id=org_id)
+
+    rows = await team_memberships.list_memberships(db, user_id=user_id, org_id=org_id)
+    return TeamMembershipListResponse(
+        items=[TeamMembershipResponse.model_validate(row) for row in rows],
+        total=len(rows),
+    )
+
+
+@router.put("/organizations/{org_id}/users/{user_id}/teams", response_model=TeamMembershipListResponse)
+async def replace_user_teams(
+    org_id: str,
+    user_id: str,
+    request: TeamMembershipSetRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> TeamMembershipListResponse:
+    """Replace a user's entire team-membership set. Idempotent — the UI's save action.
+
+    The body is the full intended set, not a diff: teams absent from it are removed.
+    More than one ``is_primary`` entry is refused with a stable, machine-readable
+    error code (``team_membership_second_primary``).
+    """
+    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+
+    await team_memberships.replace_memberships(
+        db,
+        user_id=user_id,
+        org_id=org_id,
+        desired=[m.model_dump() for m in request.memberships],
+    )
+    await commit_team_memberships(db, user_id=user_id, org_id=org_id)
+
+    refreshed = await team_memberships.list_memberships(db, user_id=user_id, org_id=org_id)
+    return TeamMembershipListResponse(
+        items=[TeamMembershipResponse.model_validate(row) for row in refreshed],
+        total=len(refreshed),
+    )
+
+
+@router.post("/organizations/{org_id}/members", response_model=UserResponse, status_code=201)
+async def add_org_member(
+    org_id: str,
+    request: OrgMemberAddRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> UserResponse:
+    """Place an existing platform person into this organization. Idempotent.
+
+    Issue #4943. The members panel picks people from the PLATFORM-wide roster
+    (``GET /admin/users``, #4827) while every membership write below is org-scoped,
+    so an admin could pick a real person and the only possible outcome was a 404 —
+    there was no route for "bring this person into this org" at all. This is that
+    route, and the operator's standing ruling is what it implements: adding is a
+    MAPPING decision, an admin placing a person into an org and a team.
+
+    **Platform-admin only, not ``ORG_UPDATE``.** The body names a person the caller
+    must be able to *see* to have chosen, and the roster they are chosen from is
+    ``require_platform_admin`` for tenant-isolation reasons (#4827). Gating this on
+    ORG_UPDATE would let an org admin pull any user id they guessed into their own
+    tenant — a cross-tenant write dressed as a member add. An org admin wanting a
+    person in their org uses the access-request flow, which is a *request* a
+    platform admin decides, and the refusal below says so rather than returning a
+    bare "access denied" that reads as a bug.
+
+    Returns the person's ``users`` row **in this org**, whose id is what any
+    following org-scoped write (notably the team add) must use — for somebody who
+    came from another org it is not the id that was submitted.
+    """
+    # First statement in the body, by the convention the sibling routes state: an
+    # authority check placed after any other work is one refactor away from being
+    # skipped. The rule itself stays in require_platform_admin — only the message is
+    # specialized, so the gate cannot drift from its siblings.
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError as exc:
+        raise AccessDeniedError(
+            message=(
+                "Only a platform administrator can add a person to an organization. "
+                "An organization admin can assign people who are already members to teams, and requests new ones through the access-request flow."
+            ),
+        ) from exc
+
+    # The role field is free-form and becomes org authority, so it is ceiling-checked
+    # exactly as the sibling user-create route checks it. Kept even though the gate
+    # above already limits callers to platform admins: this is the guard that stays
+    # correct if the gate is ever widened.
+    await access.require_assignable_role(current_user, request.role, target_org_id=org_id)
+
+    user = await org_members.add_user_to_org(db, user_id=request.user_id, org_id=org_id, role=request.role)
+    await db.commit()
+    await db.refresh(user)
+
+    # Post-commit, per project_member_org_ids' own contract: the projection is a
+    # read-optimized copy of COMMITTED state, and it is what the platform-mode
+    # sign-in gate reads — without this the person is a member in Postgres and still
+    # ineligible to sign in.
+    await project_member_org_ids(db, user_id=user.id)
+
+    return UserResponse.model_validate(user)
+
+
+@router.post("/organizations/{org_id}/teams/{team_id}/members", response_model=TeamMembershipResponse, status_code=201)
+async def add_team_member(
+    org_id: str,
+    team_id: str,
+    request: TeamMemberAddRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> TeamMembershipResponse:
+    """Add one membership. Idempotent on ``(user_id, team_id)``.
+
+    Requesting ``is_primary`` when the user already has a different primary team is
+    refused with ``team_membership_second_primary`` rather than silently re-pointing
+    the Cognito claim — use the replace-set endpoint to move a primary deliberately.
+    """
+    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+
+    membership = await team_memberships.add_membership(
+        db,
+        user_id=request.user_id,
+        team_id=team_id,
+        org_id=org_id,
+        role=request.role or team_memberships.DEFAULT_TEAM_ROLE,
+        is_primary=request.is_primary,
+        source=request.source or "admin",
+        external_id=request.external_id,
+    )
+    await commit_team_memberships(db, user_id=request.user_id, org_id=org_id)
+    await db.refresh(membership)
+    return TeamMembershipResponse.model_validate(membership)
+
+
+@router.delete("/organizations/{org_id}/teams/{team_id}/members/{user_id}", status_code=204)
+async def remove_team_member(
+    org_id: str,
+    team_id: str,
+    user_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> None:
+    """Remove one membership. Idempotent.
+
+    Removing the primary promotes the oldest remaining membership, so the user is
+    never left on teams with no primary.
+    """
+    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+
+    await team_memberships.remove_membership(db, user_id=user_id, team_id=team_id, org_id=org_id)
+    await commit_team_memberships(db, user_id=user_id, org_id=org_id)
+
+
 # User Management Endpoints
 
 
@@ -949,6 +1187,14 @@ async def remove_user(
     Requires org admin privileges.
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+    target = await service.get_user_authz_state(org_id, user_id)
+    await access.require_modifiable_target(
+        current_user,
+        target.membership_role,
+        target_is_platform_admin=(target.users_role or "").strip().lower() in PLATFORM_LEVEL_ROLES,
+    )
+    if current_user.user_id in {target.cognito_sub, target.user_id}:
+        raise AccessDeniedError(message="Cannot remove your own account")
     await service.remove_user(org_id, user_id, cognito_service)
 
 
@@ -1183,6 +1429,55 @@ async def get_available_roles(
         allowed = [r for r in ASSIGNABLE_ROLES if r not in PLATFORM_LEVEL_ROLES and ROLE_RANK.get(r, 0) <= ceiling]
 
     return AvailableRolesResponse(roles=allowed).model_dump()
+
+
+# =============================================================================
+# Platform-wide Member Listing (Issue #4827)
+# =============================================================================
+
+
+@router.get("/users", response_model=PlatformUserListResponse)
+async def list_platform_users(
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    q: Annotated[str | None, Query(max_length=255, description="Case-insensitive search over email, name, and GitHub username")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> PlatformUserListResponse:
+    """Every platform member, for the person-scoped admin pickers. Platform-admin only.
+
+    Issue #4827. The Bedrock-routing panel's person rung was a free-text field asking
+    for an internal ``users.id``, which no operator can produce — so the control read
+    as broken even though the server was correctly refusing wrong ids. This endpoint is
+    the missing half: the list an admin picks a real id *out of*.
+
+    **Why not an existing endpoint.** Every other member listing here is per-org
+    (``/organizations/{org_id}/users``, ``/organizations/{org_id}/cognito/users``) and
+    gated on ``ORG_READ`` for that one org. A platform admin authoring a person rule may
+    pin any user in any org, so an org-scoped picker cannot express the authority the
+    surface actually has.
+
+    **``require_platform_admin``, not ``ORG_READ``.** This is the widest read of the
+    member table in the API — a cross-tenant roster. ``ORG_READ`` would let a tenant's
+    own org_admin enumerate every other tenant's members, which is a tenant-isolation
+    break, not a picker. The check is the first statement in the body for the reason
+    ``bedrock_routing`` states: an authority check placed after any other work is one
+    refactor away from being skipped. ``test_authz.py``'s convention.
+
+    Read-only. No writes, no schema change, no cost beyond one paginated SELECT.
+    """
+    access.require_platform_admin(current_user)
+
+    users, total = await service.list_platform_users(q=q, page=page, page_size=page_size)
+
+    return PlatformUserListResponse(
+        items=users,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(page * page_size) < total,
+    )
 
 
 # =============================================================================

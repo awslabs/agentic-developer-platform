@@ -15,6 +15,11 @@ output "cognito_user_pool_endpoint" {
 }
 
 # Cognito User Pool Client Outputs
+output "cli_client_id" {
+  description = "Cognito app client ID for web CLI login (short refresh validity + rotation)"
+  value       = aws_cognito_user_pool_client.cli.id
+}
+
 output "cognito_user_pool_client_id" {
   description = "ID of the Cognito User Pool Client"
   value       = aws_cognito_user_pool_client.main.id

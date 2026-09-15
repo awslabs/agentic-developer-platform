@@ -71,6 +71,28 @@ class UserIdentity(Base, TenantMixin):
     provider: Mapped[str] = mapped_column(String(20), nullable=False)
     provider_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
     provider_username: Mapped[str | None] = mapped_column(String(255))
+    # Which of a person's rows in ONE provider is their canonical one (#4843).
+    #
+    # `(user_id, provider)` is NOT plainly unique and deliberately stays that way:
+    # three write paths accept a legitimate second same-provider account (admin
+    # identity-add, admin user-create, magic-link confirm), and a plain unique
+    # constraint would turn those currently-successful actions into IntegrityError
+    # 500s. So the invariant is expressed as a PARTIAL unique index — at most ONE
+    # primary row per (user_id, provider) — created by migration 042.
+    #
+    # Why it exists at all: the person anchor must resolve to the same string on
+    # the authoring side and the enforcement side, or the cap is inert (#4511).
+    # That agreement was previously held by an `ORDER BY provider_user_id ASC`
+    # convention hand-copied into three call sites — one edit away from an inert
+    # cap. This flag makes it a database invariant instead. Anchor resolvers order
+    # `is_primary DESC, provider_user_id ASC`, so the flag decides when set and the
+    # old convention remains the tiebreaker when it is not.
+    #
+    # Defaults to False, NOT True: a new row must not silently displace an existing
+    # primary and re-key a live cap. Migration 042 backfills the existing rows using
+    # the same `provider_user_id ASC` rule the resolvers used, so every anchor
+    # resolves to a byte-identical string across the migration.
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     verification_method: Mapped[str] = mapped_column(String(20), nullable=False)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

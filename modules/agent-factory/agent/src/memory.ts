@@ -39,6 +39,9 @@ interface ContextFile {
 // ============================================================================
 
 const ADP_BRANCH = 'adp';
+// clone --depth implies a single-branch fetch mapping. Name the destination so
+// a successful fetch updates origin/adp rather than only FETCH_HEAD.
+const ADP_FETCH = `git fetch origin +refs/heads/${ADP_BRANCH}:refs/remotes/origin/${ADP_BRANCH}`;
 const CONTEXT_ROOT = 'agent_context';
 const DEFAULT_MAX_FILES = 5;
 
@@ -127,15 +130,13 @@ export function configureMemory(config: MemoryConfig): void {
 export async function ensureAdpBranch(): Promise<void> {
   const { cwd } = cfg();
 
-  // Try fetching the branch from origin
-  const fetched = run(`git fetch origin ${ADP_BRANCH}`, cwd);
-  if (fetched !== null) {
-    // Check if the remote branch ref exists after fetch
-    const refCheck = run(`git rev-parse --verify origin/${ADP_BRANCH}`, cwd);
-    if (refCheck !== null) {
-      log('INFO', 'adp branch exists on origin');
-      return;
-    }
+  // A failed lookup is not evidence of absence: never create an orphan branch
+  // just because the remote is unavailable or credentials could not fetch it.
+  const remote = runOrThrow(`git ls-remote --heads origin refs/heads/${ADP_BRANCH}`, cwd);
+  if (remote) {
+    runOrThrow(ADP_FETCH, cwd);
+    log('INFO', 'adp branch exists on origin');
+    return;
   }
 
   log('INFO', 'adp branch not found — creating orphan branch');
@@ -258,7 +259,7 @@ async function readContextFolder(folderPath: string): Promise<string[]> {
   const maxFiles = maxFilesPerFolder ?? DEFAULT_MAX_FILES;
 
   // Ensure we have the latest
-  run(`git fetch origin ${ADP_BRANCH}`, cwd);
+  run(ADP_FETCH, cwd);
 
   // List files in the folder on origin/adp
   const listing = run(`git ls-tree --name-only origin/${ADP_BRANCH}:${folderPath}`, cwd);
@@ -297,7 +298,7 @@ async function writeToAdpBranch(filePath: string, content: string): Promise<void
 
   try {
     // Fetch latest
-    run(`git fetch origin ${ADP_BRANCH}`, cwd);
+    runOrThrow(ADP_FETCH, cwd);
 
     // Checkout adp branch
     runOrThrow(`git checkout origin/${ADP_BRANCH}`, cwd);

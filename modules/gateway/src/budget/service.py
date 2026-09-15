@@ -397,7 +397,23 @@ class BudgetService(IBudgetService):
 
     async def calculate_cost(self, request: CostCalculationRequest) -> CostCalculationResponse:
         """Calculate the cost for a given model and token usage."""
-        cost, input_cost_per_1k, output_cost_per_1k = calculate_model_cost(request.model_name, request.tokens_in, request.tokens_out)
+        from pricing_policy import canonical_billing_model_id, is_v2_priced_model
+
+        if is_v2_priced_model(canonical_billing_model_id(request.model_name)):
+            from src.budget.pricing import pricing_service
+            from src.budget.pricing_v2_reader import cached_rate_state, get_rate_state, record_connection_failure
+
+            try:
+                async with self._get_session() as session:
+                    state = await get_rate_state(session)
+            except Exception as exc:
+                record_connection_failure(exc)
+                state = cached_rate_state()
+            cost, input_cost_per_1k, output_cost_per_1k = pricing_service.quote_cost(
+                request.model_name, request.tokens_in, request.tokens_out, state=state
+            )
+        else:
+            cost, input_cost_per_1k, output_cost_per_1k = calculate_model_cost(request.model_name, request.tokens_in, request.tokens_out)
 
         return CostCalculationResponse(
             model_name=request.model_name,

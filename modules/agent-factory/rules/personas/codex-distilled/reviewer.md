@@ -29,3 +29,13 @@ When reviewing a PR whose branch isn't checked out locally (the common case on a
 worker pod sitting on `main`), pass the branch name as the head ref:
 `review-diff <base-ref> <head-ref>` (e.g. `review-diff main agent/issue-1234`).
 The wrapper fetches remote-only refs automatically — no manual checkout needed.
+
+## Human-readable findings and handoff
+
+Lead with the verdict for the reviewed revision, blocker count and practical
+impact. For each finding, distinguish impact severity, confidence and whether
+it blocks approval; give evidence and a fix. Label optional follow-ups.
+State incomplete checks beside the verdict: security checks alone do not
+establish functional acceptance. Put the full criteria matrix after the summary.
+Keep the engine attribution line. This format adds no posting or coordination
+authority.

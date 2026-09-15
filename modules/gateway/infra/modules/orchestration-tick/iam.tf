@@ -192,6 +192,21 @@ resource "aws_iam_role_policy" "tick" {
           ]
         }
       ] : [],
+      # Keep the conditional object in its own list: Terraform cannot unify a
+      # heterogeneous tuple (with and without Condition) against an empty list.
+      var.webhook_events_table_name != "" ? [
+        {
+          Sid    = "EngineRuns"
+          Effect = "Allow"
+          Action = ["dynamodb:PutItem", "dynamodb:GetItem"]
+          Resource = [
+            "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/${var.webhook_events_table_name}"
+          ]
+          Condition = {
+            "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["orch:*"] }
+          }
+        }
+      ] : [],
       # The table is encrypted with a customer-managed key, so Query and UpdateItem
       # both fail at RUNTIME without this — not at plan time, which is why it is
       # called out rather than assumed. Mirrors `WebhookEventsKMSDecrypt` on the
@@ -202,6 +217,7 @@ resource "aws_iam_role_policy" "tick" {
           Effect = "Allow"
           Action = [
             "kms:Decrypt",
+            "kms:GenerateDataKey",
             "kms:DescribeKey"
           ]
           Resource = [var.webhook_events_kms_key_arn]

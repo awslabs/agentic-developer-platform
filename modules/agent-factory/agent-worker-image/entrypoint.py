@@ -14,14 +14,18 @@ Idempotency: uses envelope message_id to prevent duplicate comments/branches.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -33,6 +37,10 @@ from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
 from lib.engine_registration import draft_registration_note
+from lib.invocation_status import (
+    clear_control_endpoint,
+    register_control_endpoint,
+)
 from lib.invocation_status import update_status as update_invocation_status
 from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
@@ -47,6 +55,31 @@ PERSONAS_DIR = Path("/app/personas")
 SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
+
+# Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
+#
+# Issue #4747 (ruling 3 of #4692): `user` routed Bedrock through the customer's
+# own assumed credentials, bypassing the gateway — so those calls were billed to
+# the customer but written to no `usage_logs` row at all. Per-principal routing
+# (#4742-#4746) replaces it with a mapping that reaches the same account *with*
+# metering, so the mode is retired rather than migrated.
+#
+# This is a rejection guard, NOT a routing branch: no path honors `user` as a
+# mode. It fails loudly on purpose. Falling through to the trailing `else` would
+# silently run the agent on pod IRSA — i.e. platform-billed Bedrock for someone
+# who explicitly asked to be billed on their own account. A silent billing
+# switch is exactly what the ruling forbids, so an unroutable pod must die
+# before it spends anything rather than spend it against the wrong account.
+RETIRED_BEDROCK_VIA = {
+    "user": (
+        "ADP_BEDROCK_VIA=user is retired (issue #4747, ruling 3 of #4692). It billed "
+        "Bedrock to the customer's account while writing no usage row, so platform "
+        "metering could not see the spend. To route a principal's Bedrock calls to "
+        "their own AWS account with metering intact, create a per-principal Bedrock "
+        "account mapping (Settings -> Credentials, or the admin Bedrock routing "
+        "surface) and leave ADP_BEDROCK_VIA=gateway."
+    ),
+}
 
 # Exit code by which the Node worker asks for the SQS message to be RETRIED rather
 # than acked. Step 13 below deletes the message on every other terminal exit, so a
@@ -473,10 +506,38 @@ def _is_already_completed(repo: str, issue: int, token: str) -> bool:
     return False
 
 
+def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
+    """Read GitHub's bounded display and the independent explanation archive.
+
+    Older workers only wrote the GitHub display. Preserve it as a clearly
+    labeled fallback; never describe that potentially clipped record as full.
+    Each read is best-effort so one missing artifact cannot hide the other.
+    """
+    def read(name: str) -> str:
+        try:
+            with open(os.path.join(directory, name), "r", encoding="utf-8") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            return ""
+        except Exception as exc:
+            logger.warning("Could not read report %s (non-fatal): %s", name, exc)
+            return ""
+
+    github_text = read("adp-check-run-final.md")
+    transcript_text = read("adp-run-transcript.md")
+    if not transcript_text.strip():
+        transcript_text = (
+            "_Archive source: GitHub display fallback. The independent explanation "
+            "transcript was unavailable; this record may be truncated or incomplete._\n\n"
+            + github_text
+        ) if github_text else ""
+    return github_text, transcript_text
+
+
 def _upload_transcript_to_s3(
     final_text: str, repo: str, issue: int, message_id: str, arrived_at: str, persona: str
 ) -> str | None:
-    """Upload the full untruncated transcript to S3 (best-effort).
+    """Upload the captured explanation transcript or labeled fallback (best-effort).
 
     Object key: {persona}/{org}/{repo_name}/issue-{issue}/{timestamp}-{run_id}.md
 
@@ -513,7 +574,7 @@ def _upload_transcript_to_s3(
             Body=final_text.encode("utf-8"),
             ContentType="text/markdown",
         )
-        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text))
+        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text.encode("utf-8")))
         return key
     except Exception as exc:
         logger.warning("Failed to upload transcript to S3 (non-fatal): %s", exc)
@@ -787,6 +848,19 @@ def _describe_vault_fetch_failure(exc: Exception, secret_path: str) -> str:
     return f"failed to read tenant secret {secret_path} — {detail}"
 
 
+def _checkout_existing_work_branch(branch: str) -> None:
+    """Extend a remote branch even when clone --depth only mapped main.
+
+    A bare `fetch origin branch` otherwise updates FETCH_HEAD alone: checkout
+    fails, and finalization later cannot push the missing local branch. Register
+    the mapping before fetching so checkout also establishes a usable upstream.
+    Never reset an existing local branch or discard its changes.
+    """
+    run_cmd(["git", "remote", "set-branches", "--add", "origin", branch], cwd=WORK_DIR)
+    run_cmd(["git", "fetch", "origin", branch], cwd=WORK_DIR)
+    run_cmd(["git", "checkout", branch], cwd=WORK_DIR)
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -891,6 +965,12 @@ def main() -> int:
         except Exception as exc:
             logger.error("Failed to delete poison message: %s", exc)
         return 1
+
+    # Bind this pod to its protected invocation before any repository code,
+    # hooks, SDK tools or repository-selected dependencies can execute (#5028).
+    from lib.run_identity import bootstrap_run_identity
+
+    bootstrap_run_identity(envelope)
 
     # Read correlation context from SQS envelope.
     # ENVELOPE CONTRACT: handler.py publishes correlation fields NESTED under
@@ -1298,6 +1378,7 @@ def main() -> int:
     # issue, so concurrent-run race conditions don't apply here.
     branch_name = f"agent/issue-{issue}"
     wip_sha: str = ""
+    work_branch_ready = False
     try:
         # Detect whether the remote branch exists. Use subprocess.run directly
         # because run_cmd hardcodes check=True; we want to inspect returncode.
@@ -1342,8 +1423,7 @@ def main() -> int:
                     "Branch %s exists with open PR; extending instead of resetting",
                     branch_name,
                 )
-                run_cmd(["git", "fetch", "origin", branch_name], cwd=WORK_DIR)
-                run_cmd(["git", "checkout", branch_name], cwd=WORK_DIR)
+                _checkout_existing_work_branch(branch_name)
             elif persona in PERSONAS_EXTENDING_BRANCH:
                 # (a-aidlc) AIDLC stages commit artifacts sequentially on one
                 # branch without opening a PR until the end. Never delete the
@@ -1355,8 +1435,7 @@ def main() -> int:
                     branch_name,
                     persona,
                 )
-                run_cmd(["git", "fetch", "origin", branch_name], cwd=WORK_DIR)
-                run_cmd(["git", "checkout", branch_name], cwd=WORK_DIR)
+                _checkout_existing_work_branch(branch_name)
             else:
                 # (a) Stale branch, no PR — delete it and start fresh from main.
                 logger.info(
@@ -1375,6 +1454,7 @@ def main() -> int:
             # First run on this issue — clean creation
             run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
 
+        work_branch_ready = True
         run_cmd(
             ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
             cwd=WORK_DIR,
@@ -1386,12 +1466,16 @@ def main() -> int:
         logger.info("WIP branch %s created; sha=%s", branch_name, wip_sha[:7])
     except Exception as exc:
         bootstrap_log.step_error(7, "wip_branch", exc)
-        # Issue #4030 deliberately does NOT write status=failed here. Unlike the
-        # other bootstrap error exits this one does not re-raise: it falls back
-        # to the default-branch sha and the run continues to in_progress. Marking
-        # the row failed would be a lie, and would be overwritten moments later.
-        logger.warning("WIP branch creation failed (non-fatal): %s", exc)
-        # Fall back to default-branch HEAD sha for the Check Run
+        # Never launch the model on main after a failed branch checkout. A WIP
+        # commit/push failure remains nonfatal once the work branch is ready.
+        if not work_branch_ready:
+            _fail_bootstrap_status(
+                message_id, arrived_at, f"could not prepare work branch {branch_name}"
+            )
+            bootstrap_log.close()
+            raise
+        logger.warning("WIP commit/push failed (non-fatal): %s", exc)
+        # Fall back to the current work-branch HEAD sha for the Check Run
         try:
             sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
             wip_sha = sha_result.stdout.strip()
@@ -1532,27 +1616,20 @@ def main() -> int:
     # Stage personas and skills into workspace
     _stage_personas_and_skills()
 
-    # Step 10: Build scoped agent env and exec the agent.
-    # ADP_BEDROCK_VIA controls the Bedrock routing path:
-    #   - "gateway" (default): route through platform gateway via sigv4-proxy sidecar
-    #   - "direct": use pod IRSA to call Bedrock directly (fallback/rollback)
-    #   - "user": use customer's assumed credentials for both Bedrock + AWS calls
-    #     (legacy: operations persona on customer-billed Bedrock)
-    #   - "platform": alias for "direct" (legacy compat)
-    #
-    # When ADP_BEDROCK_VIA=gateway AND the persona has assumed a customer role,
-    # the two compose: Bedrock routes through the platform gateway (platform IRSA,
-    # platform billing), while the agent's shell `aws ...` commands use the
-    # customer's STS creds for deployment / inspection work in the customer
-    # account. The sigv4-proxy is started with platform IRSA (customer creds
-    # stripped) so it can authenticate to API Gateway's execute-api SigV4.
-    #
-    # CRITICAL: We build a SEPARATE env dict for the child process. We do NOT
-    # mutate os.environ — the entrypoint's post-agent SQS delete needs
-    # os.environ to retain IRSA for platform-account access.
+    # Step 10: Every agent model call goes through the gateway, which applies
+    # the verified owner's user/team/org routing. Tool AWS credentials stay
+    # scoped to the agent shell; the proxy authenticates using platform IRSA.
+    # Keep os.environ's IRSA intact for post-agent SQS/check-run operations.
     agent_env = os.environ.copy()
     bedrock_via_raw = os.environ.get("ADP_BEDROCK_VIA")
     bedrock_via = (bedrock_via_raw or "gateway").strip().lower()
+
+    # Reject retired routing modes before starting the proxy or spending a token.
+    if bedrock_via in RETIRED_BEDROCK_VIA:
+        raise RuntimeError(RETIRED_BEDROCK_VIA[bedrock_via])
+
+    if bedrock_via != "gateway":
+        raise RuntimeError("ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported.")
 
     # Start sigv4-proxy subprocess for gateway mode.
     # The proxy must sign with platform IRSA (which has execute-api:Invoke on
@@ -1568,8 +1645,7 @@ def main() -> int:
         }
         proxy_process = _start_sigv4_proxy(proxy_env, tenant_id)
         if proxy_process is None:
-            logger.warning("sigv4-proxy failed to start; falling back to ADP_BEDROCK_VIA=direct")
-            bedrock_via = "direct"
+            raise RuntimeError("Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing.")
         else:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
@@ -1583,52 +1659,11 @@ def main() -> int:
             agent_env["CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_GUARD"] = "1"
             logger.info("ADP_BEDROCK_VIA=gateway — routing through sigv4-proxy → API GW")
 
-    if bedrock_via == "direct" or bedrock_via == "platform":
-        # Direct Bedrock via pod IRSA (fallback/rollback path)
-        agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-        agent_env.pop("ANTHROPIC_BEDROCK_BASE_URL", None)
-        agent_env.pop("ANTHROPIC_BASE_URL", None)
-        logger.info(
-            "ADP_BEDROCK_VIA=%r (normalized: %s) — direct Bedrock via pod IRSA",
-            bedrock_via_raw,
-            bedrock_via,
-        )
-    elif bedrock_via == "user" and "AWS_ACCESS_KEY_ID" in agent_env:
+    # Customer credentials remain available to shell tools. Model traffic
+    # still goes through the local proxy, independently of those credentials.
+    if "AWS_ACCESS_KEY_ID" in agent_env:
         for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
             agent_env.pop(var, None)
-        logger.info(
-            "ADP_BEDROCK_VIA=%r (normalized: user) — agent env stripped of IRSA; "
-            "user account credentials will be used for all agent AWS calls",
-            bedrock_via_raw,
-        )
-    elif bedrock_via == "user" and persona not in PERSONAS_NEEDING_AWS:
-        logger.warning(
-            "ADP_BEDROCK_VIA=user set but persona=%r does not assume customer role "
-            "(not in PERSONAS_NEEDING_AWS=%s). Agent will use pod IRSA for all AWS "
-            "calls including Bedrock. Either add this persona to PERSONAS_NEEDING_AWS "
-            "or unset ADP_BEDROCK_VIA on the ScaledJob.",
-            persona,
-            sorted(PERSONAS_NEEDING_AWS),
-        )
-    elif bedrock_via == "gateway":
-        # Gateway-mode Bedrock already wired above. If a customer role was
-        # assumed (line 341-345 above), agent_env retains those AWS_* env vars
-        # AND retains pod IRSA env vars — the SDK's credential chain prefers the
-        # explicit env keys, so shell `aws ...` commands run as the customer.
-        # Strip pod IRSA env vars so they don't shadow customer creds for shell AWS.
-        if "AWS_ACCESS_KEY_ID" in agent_env:
-            for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
-                agent_env.pop(var, None)
-            logger.info(
-                "ADP_BEDROCK_VIA=gateway with customer role assumed — Bedrock via "
-                "platform gateway, customer AWS creds for shell commands"
-            )
-    else:
-        logger.info(
-            "ADP_BEDROCK_VIA=%r (normalized: %s) — agent env retains pod IRSA",
-            bedrock_via_raw,
-            bedrock_via,
-        )
 
     # Update invocation status to in_progress (best-effort)
     # Issue #3385 (C5): include token_mode provenance on the DDB row.
@@ -1638,6 +1673,13 @@ def main() -> int:
         run_id=_keda_job_name,
         token_mode=_token_mode,
     )
+
+    # Issue #3960: mint the control token and register this pod's control endpoint.
+    # Ordered deliberately AFTER the in_progress write and BEFORE the agent exec:
+    # registration targets a row that exists, and the child env carries the token
+    # before the process that starts the listener is created. No-op when the flag
+    # is off; on failure control is unavailable and the run proceeds unchanged.
+    control_registered = _setup_agent_control(agent_env, message_id, arrived_at)
 
     # Flush bootstrap logs to CloudWatch before entering the agent phase.
     # From here on, the Node agent SDK / OTEL handles observability.
@@ -1665,6 +1707,12 @@ def main() -> int:
     if proxy_process is not None:
         _stop_sigv4_proxy(proxy_process)
 
+    # Issue #3960: revoke the control credential as soon as the agent process is
+    # gone. Before the terminal handlers, not after: those make GitHub API calls
+    # that can take seconds or fail, and the window where a token remains valid
+    # for a pod whose agent has already exited should be as short as possible.
+    _teardown_agent_control(message_id, arrived_at, control_registered)
+
     # Issue #4186 (Phase 1): persist the SDK session id the Node worker
     # captured, so the identifier outlives the process that created it.
     # Deliberately before the terminal handlers, which overwrite the status but
@@ -1681,17 +1729,9 @@ def main() -> int:
             repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url
         )
 
-    # Read the final rendered Markdown written by CheckRunStreamer (if any).
-    # This preserves the full per-turn transcript across the process boundary.
-    # Read outside the check-run block so S3 upload can use it independently.
-    final_text: str = ""
-    cr_final_path = "/tmp/adp-check-run-final.md"
-    try:
-        if os.path.exists(cr_final_path):
-            with open(cr_final_path, "r", encoding="utf-8") as fh:
-                final_text = fh.read()
-    except Exception:
-        pass
+    # GitHub's clipped display is separate from the readable explanation archive.
+    # Read outside the check-run block so archival remains independent of finalize.
+    final_text, transcript_text = _read_run_reports()
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
@@ -1740,11 +1780,11 @@ def main() -> int:
         except Exception as exc:
             logger.warning("Failed to finalize check run (non-fatal): %s", exc)
 
-    # Persist full untruncated transcript to S3 (best-effort, non-fatal).
-    # Issue #3057: transcripts exceed the GitHub Check Run 65,535-char limit;
-    # S3 gives us a durable, auditable archive.
+    # Persist the independent transcript, preserving explanations beyond GitHub's
+    # display limit. This includes captured explanations and selected previews,
+    # not raw tool results or a complete terminal log. Upload remains best-effort.
     transcript_key = _upload_transcript_to_s3(
-        final_text, repo, issue, message_id, arrived_at, persona
+        transcript_text, repo, issue, message_id, arrived_at, persona
     )
 
     # Issue #4187: a run the gateway stopped on a spend cap is neither a success
@@ -1994,6 +2034,294 @@ def _read_result_metadata() -> dict | None:
         return None
 
 
+# Absolute ceiling on a control token's lifetime (Issue #3960). Applied on top of
+# the pod deadline, so raising `agent_pod_deadline_seconds` cannot quietly extend
+# how long a leaked credential stays valid.
+MAX_CONTROL_TOKEN_TTL_SECONDS = 6 * 60 * 60
+
+
+def _is_agent_control_enabled() -> bool:
+    """Strict, fail-closed read of the worker's own control flag (Issue #3960).
+
+    Only the exact string ``"true"`` enables. Read here rather than inherited from
+    any gateway-side decision: the gateway runs an independent reader, and a
+    gateway flag that could start a listener in a pod would let one config change
+    open a port the ingress NetworkPolicy may not yet cover (revival-design §3).
+    """
+    return os.environ.get("FEATURE_AGENT_CONTROL_ENABLED", "").strip() == "true"
+
+
+def _control_port() -> int:
+    """The pinned control port. Pinned because the ingress policy names one port.
+
+    Reads ``ADP_CONTROL_PORT`` — the name the ScaledJob template renders from
+    ``var.agent_control_port`` (scaledjob.tf) and the same name the Node listener
+    reads (agent-worker.ts). One name across all three sides is deliberate: an
+    earlier revision read ``AGENT_CONTROL_PORT`` here while Terraform injected
+    ``ADP_CONTROL_PORT``, so a configured non-default port was silently ignored
+    and the pod bound 8770 while the policy allowed the configured port. Nothing
+    errors in that state; the listener is simply unreachable.
+
+    Invalid or absent values resolve to the default rather than to an arbitrary
+    port: a pod listening on a port the policy does not cover is unreachable, and
+    that failure surfaces as a mysterious timeout rather than a config error.
+    """
+    raw = os.environ.get("ADP_CONTROL_PORT", "").strip()
+    if raw.isdigit() and 0 < int(raw) < 65536:
+        return int(raw)
+    return 8770
+
+
+def _setup_agent_control(
+    agent_env: dict,
+    message_id: str,
+    arrived_at: str,
+) -> bool:
+    """Mint a per-run control token and register this pod's control endpoint.
+
+    Issue #3960. Returns True when the run's control channel is registered and the
+    child env carries what the listener needs to start.
+
+    **The token is minted here, in the pod, and never travels inbound.** It is
+    generated with ``secrets.token_urlsafe`` (a CSPRNG — never ``random``), handed
+    to the Node worker through its env, and written to the invocation row so the
+    gateway can present it. No component outside this pod chooses it, so a
+    compromised gateway cannot pick a token for a pod, and a token cannot be
+    reused across runs.
+
+    **Registration precedes the listener, and both are gated on the flag.** When
+    the flag is off, nothing is minted, nothing is written and no port is
+    advertised — the row is byte-identical to a run without this feature (FR-1.1).
+
+    **The token's lifetime is bounded by the pod's, not by a fixed window.** The
+    expiry is derived from ``ADP_POD_DEADLINE_SECONDS`` — the same
+    ``activeDeadlineSeconds`` Kubernetes enforces on this pod — so a token cannot
+    outlive the process it authenticates; a leaked token from a finished run is
+    already expired even if terminal cleanup never ran.
+
+    **The generation is assigned by the invocation row, not read from config.**
+    ``register_control_endpoint`` returns it from an atomic increment, so a retry
+    pod for the same message gets a strictly higher number than the attempt it
+    replaces and the listener's generation check has something real to compare.
+
+    Fail-soft but *loud*: any failure returns False, is logged, and leaves control
+    unavailable. Control is an observability/intervention add-on; it must never
+    abort the run it is attached to. What it must not do is fail silently, since
+    the UI would then offer a channel that does not exist (FR-1.12, NFR-10).
+    """
+    if not _is_agent_control_enabled():
+        logger.info("Agent control disabled (FEATURE_AGENT_CONTROL_ENABLED not 'true')")
+        return False
+
+    # The pod IP arrives via the downwardAPI. Absent means the deployment did not
+    # project it — treated as a hard stop, never as a licence to bind every
+    # interface, which is the whole point of the explicit-bind requirement.
+    pod_ip = os.environ.get("POD_IP", "").strip()
+    if not pod_ip:
+        logger.error(
+            "Agent control enabled but POD_IP is not set — control unavailable. "
+            "The scaledjob must project status.podIP via the downwardAPI."
+        )
+        return False
+
+    try:
+        # 32 bytes of CSPRNG entropy. `secrets`, not `random`: `random` is
+        # deterministic from its seed and is not a credential source.
+        token = secrets.token_urlsafe(32)
+        port = _control_port()
+
+        # Bound by the pod deadline so the credential cannot outlive the listener
+        # that honours it.
+        expires_at = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() + _control_token_ttl_seconds()),
+        )
+
+        # The generation comes back from the write. It is not computed here: see
+        # register_control_endpoint for why the row is the only source that
+        # actually differs between attempts.
+        generation = register_control_endpoint(
+            message_id,
+            arrived_at,
+            address=pod_ip,
+            port=port,
+            token=token,
+            token_expires_at=expires_at,
+        )
+        if generation is None:
+            # Deliberately does NOT start the listener. An unregistered listener is
+            # an open port nothing can reach through the policy and nothing knows
+            # the token for: pure attack surface with no capability.
+            logger.error(
+                "Control endpoint registration failed — not starting listener "
+                "(control_registration_failed)"
+            )
+            return False
+
+        # Child env only. os.environ is untouched so the token does not leak into
+        # any other subprocess this entrypoint spawns (gh, git, the sigv4 proxy).
+        agent_env["ADP_CONTROL_TOKEN"] = token
+        agent_env["ADP_CONTROL_TOKEN_EXPIRES_AT"] = expires_at
+        agent_env["ADP_CONTROL_PORT"] = str(port)
+        agent_env["ADP_CONTROL_BIND_ADDRESS"] = pod_ip
+        agent_env["ADP_CONTROL_GENERATION"] = str(generation)
+
+        # Issue #5028: the listener's own identity and the keys it verifies the
+        # gateway's command authorization with.
+        #
+        # `ADP_MESSAGE_ID` is this run's id. It is trusted *here* in a way it is
+        # deliberately not trusted at the gateway: the gateway must not believe a
+        # worker's claim about which run it is, but a worker comparing an envelope's
+        # target against its own id only ever narrows what it will accept. A
+        # rewritten value makes this pod refuse commands meant for it, which is a
+        # self-inflicted denial of service and not an escalation.
+        #
+        # The keys are public verification keys, passed through verbatim. There is
+        # no signing key in this environment and no code in the agent that would
+        # use one — see control-envelope.ts.
+        agent_env["ADP_CONTROL_RUN_ID"] = message_id
+        envelope_keys = os.environ.get("ADP_CONTROL_ENVELOPE_KEYS", "").strip()
+        envelope_keys_file = os.environ.get("ADP_CONTROL_ENVELOPE_KEYS_FILE", "").strip()
+        if envelope_keys_file:
+            agent_env["ADP_CONTROL_ENVELOPE_KEYS_FILE"] = envelope_keys_file
+        if envelope_keys:
+            agent_env["ADP_CONTROL_ENVELOPE_KEYS"] = envelope_keys
+        else:
+            # Not fatal: no verb is implemented yet, so a pod with no key is the
+            # normal state today and refusing to start control here would remove
+            # the read paths for no benefit. The listener fails closed on its own
+            # when a command needs authorization it cannot check.
+            logger.info(
+                "No ADP_CONTROL_ENVELOPE_KEYS provided — live-control commands will be refused "
+                "(read paths unaffected)"
+            )
+
+        # Armed only after the write succeeded, so there is no path where a
+        # teardown is scheduled for a registration that never happened.
+        _install_control_teardown_guard(message_id, arrived_at)
+
+        if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+            from lib.control_renewal import ControlRenewal
+
+            global _control_renewal_session
+            _control_renewal_session = ControlRenewal(
+                run_id=message_id, generation=generation, token=token, expires_at=expires_at,
+            )
+            _control_renewal_session.start()
+            agent_env["ADP_CONTROL_CREDENTIAL_FILE"] = str(_control_renewal_session.path)
+
+        logger.info(
+            "Agent control registered: port=%d generation=%d expires_at=%s",
+            port,
+            generation,
+            expires_at,
+        )
+        return True
+    except Exception as exc:
+        logger.error("Agent control setup failed (control unavailable): %s", exc)
+        return False
+
+
+def _control_token_ttl_seconds() -> int:
+    """Token TTL, bounded by the deadline Kubernetes actually enforces.
+
+    Reads ``ADP_POD_DEADLINE_SECONDS``, which the ScaledJob renders from the same
+    ``var.agent_pod_deadline_seconds`` it passes to ``activeDeadlineSeconds``. The
+    two therefore cannot drift: whatever wall-clock limit the pod is killed at is
+    the limit the credential expires at.
+
+    Falls back to ``MAX_CONTROL_TOKEN_TTL_SECONDS`` when unset or unparseable, and
+    never exceeds it. The cap is not redundant with the deadline: an operator can
+    raise ``agent_pod_deadline_seconds``, and an unbounded TTL would silently turn
+    a leaked token into a near-permanent one. A too-short TTL only costs the
+    ability to control a long run's tail; a too-long one is a live credential for
+    a pod that no longer exists.
+    """
+    raw = os.environ.get("ADP_POD_DEADLINE_SECONDS", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return min(int(raw), MAX_CONTROL_TOKEN_TTL_SECONDS)
+    return MAX_CONTROL_TOKEN_TTL_SECONDS
+
+
+# Registered control channel awaiting teardown, or None. Module-level because the
+# backstops that consume it — an atexit hook and a SIGTERM handler — cannot be
+# passed arguments (Issue #3960).
+_pending_control_teardown: tuple[str, str] | None = None
+_control_renewal_session = None
+
+
+def _install_control_teardown_guard(message_id: str, arrived_at: str) -> None:
+    """Arrange for the control credential to be revoked however this pod ends.
+
+    The normal path calls :func:`_teardown_agent_control` right after the agent
+    process exits, which is where teardown *should* happen — as early as possible.
+    This guard exists for the paths that never reach that line:
+
+    * an exception anywhere in the post-agent handling (PR creation, check-run
+      finalisation, S3 upload — all of which make network calls that can raise),
+    * ``activeDeadlineSeconds`` expiring, which is a SIGTERM from Kubernetes,
+    * a node drain or eviction, likewise SIGTERM.
+
+    Without it, those endings leave a live token and a pod IP on the row. That is
+    the dangerous residue: pod IPs get reused, so a stale address eventually names
+    somebody else's pod, and the token stays valid until its expiry. The gateway
+    defends independently (it refuses terminal runs and checks expiry), but a
+    credential should not depend on a second component declining to use it.
+
+    SIGTERM is handled rather than left to the default so the revocation happens
+    inside the grace period; the handler then re-raises the signal with the default
+    disposition so the exit status and observable behaviour are unchanged.
+    """
+    global _pending_control_teardown
+    _pending_control_teardown = (message_id, arrived_at)
+
+    atexit.register(_revoke_pending_control)
+    try:
+        signal.signal(signal.SIGTERM, _control_sigterm_handler)
+    except (ValueError, OSError) as exc:
+        # Only possible off the main thread. Not fatal: atexit still covers the
+        # exception paths, and control is an add-on that must never break a run.
+        logger.warning("Could not install control teardown signal handler: %s", exc)
+
+
+def _control_sigterm_handler(signum, _frame) -> None:
+    """Revoke the control credential, then die exactly as SIGTERM would have."""
+    _revoke_pending_control()
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _revoke_pending_control() -> None:
+    """Idempotent backstop: clear the control record if it has not been cleared.
+
+    Idempotent by clearing the pending key first, so the normal-path call, the
+    atexit hook and a SIGTERM arriving mid-teardown cannot produce a second write.
+    """
+    global _pending_control_teardown, _control_renewal_session
+    renewal, _control_renewal_session = _control_renewal_session, None
+    if renewal is not None:
+        renewal.close()
+    pending, _pending_control_teardown = _pending_control_teardown, None
+    if pending is None:
+        return
+    try:
+        clear_control_endpoint(*pending)
+    except Exception as exc:
+        logger.warning("Control endpoint teardown failed (non-fatal): %s", exc)
+
+
+def _teardown_agent_control(message_id: str, arrived_at: str, was_registered: bool) -> None:
+    """Remove the control token and address at terminal teardown.
+
+    Skipped entirely when registration never happened, so a flag-off run performs
+    no control writes at all — including no deletes, which would otherwise be an
+    observable difference from a run predating the feature.
+    """
+    if not was_registered:
+        return
+    _revoke_pending_control()
+
+
 def _record_session_id(message_id: str, arrived_at: str) -> str | None:
     """Record the SDK session id on the invocation row (issue #4186, Phase 1).
 
@@ -2119,6 +2447,15 @@ def _register_authored_draft(persona: str, issue: int) -> str:
     return draft_registration_note(work_dir=WORK_DIR, issue=issue)
 
 
+def _outcome_report_link(meta: dict | None, repo: str, issue: int) -> str:
+    """Reference the worker's single outcome report without trusting arbitrary URLs."""
+    url = (meta or {}).get("outcome_comment_url")
+    prefix = f"https://github.com/{repo}/issues/{issue}#issuecomment-"
+    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix):].isdigit():
+        return f"\n\n[Outcome, remaining work and next action]({url})."
+    return ""
+
+
 def _handle_success(
     repo: str,
     issue: int,
@@ -2165,7 +2502,7 @@ def _handle_success(
             # Backfill it before returning — this is the path #1723 missed
             # (the backfill was only wired into the entrypoint-creates-PR block,
             # which this early return never reaches).
-            logger.info("No agent changes beyond WIP commit")
+            logger.info("No local changes or unpushed commits remain")
 
             # Distinguish a genuine "no changes needed" verdict from an
             # infrastructure failure the SDK swallowed (issue #2883). A run that
@@ -2206,7 +2543,11 @@ def _handle_success(
             # entrypoint finds nothing left to push. Registration therefore has to
             # be wired here too, not only on the PR-creating path below.
             draft_note = _register_authored_draft(persona, issue)
-            summary = f"Agent `{persona}` finished — no changes needed."
+            if self_pr:
+                git_outcome = f"PR #{self_pr} is open: https://github.com/{repo}/pull/{self_pr}."
+            else:
+                git_outcome = "No local changes remain to push; task completion is not verified by this check."
+            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(meta, repo, issue)
             _post_comment(
                 repo,
                 issue,
@@ -2219,7 +2560,7 @@ def _handle_success(
                 message_id,
                 arrived_at,
                 "complete",
-                summary=f"{persona} — no changes needed",
+                summary=f"{persona} — run ended; " + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
             return 0
 
@@ -2228,6 +2569,8 @@ def _handle_success(
 
         # Create PR if one doesn't already exist on this branch
         pr_already_exists = False
+        existing_pr_number = ""
+        transcript_only = False
         try:
             existing_pr = run_cmd(
                 [
@@ -2263,6 +2606,7 @@ def _handle_success(
                 "skipping PR creation (review was delivered as PR comments)",
                 branch,
             )
+            transcript_only = True
             pr_already_exists = True  # skip the create block below
 
         if not pr_already_exists:
@@ -2286,7 +2630,7 @@ def _handle_success(
             )
             # On success: write pointer + provenance for the PR (fail-soft)
             _write_outbound_correlation(repo, f"pr:{branch}", "pr_create")
-        else:
+        elif existing_pr_number:
             # The agent opened its OWN PR (via the SDK's `gh pr create`), so the
             # entrypoint's marker-prepend above was skipped. Agent-authored PR
             # bodies therefore carry NO adp-* correlation marker — which means
@@ -2295,7 +2639,13 @@ def _handle_success(
             # edit the PR body to prepend the marker if it isn't already there.
             _ensure_pr_body_marker(repo, existing_pr_number, branch)
         draft_note = _register_authored_draft(persona, issue)
-        summary = f"Agent `{persona}` completed. PR opened on branch `{branch}`."
+        if transcript_only:
+            git_outcome = f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+        elif existing_pr_number:
+            git_outcome = f"PR #{existing_pr_number} is open: https://github.com/{repo}/pull/{existing_pr_number}."
+        else:
+            git_outcome = f"PR opened on branch `{branch}`; merge and deployment are not verified by this check."
+        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(_read_result_metadata(), repo, issue)
         _post_comment(
             repo,
             issue,
@@ -2308,7 +2658,7 @@ def _handle_success(
             message_id,
             arrived_at,
             "complete",
-            summary=f"{persona} — completed, PR on {branch}",
+            summary=f"{persona} — run ended; " + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )
     except subprocess.CalledProcessError as exc:
         logger.error("Post-agent git/PR step failed: %s", exc.stderr or exc)

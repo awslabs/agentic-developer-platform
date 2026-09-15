@@ -298,13 +298,16 @@ class TestTenantIsolation:
         assert "4242" not in response.text, "an org_id query parameter was honoured; the partition list is not server-derived"
         assert {line["org_id"] for line in response.json()["per_org"]} == {HOME_ORG, RUN_ORG}
 
-    async def test_only_root_user_rows_are_summed(self, session, operator_topology):
-        """``user``/``org`` rows in a member partition never enter the total (§7.3).
+    async def test_only_the_two_person_grain_ledgers_are_summed(self, session, operator_topology):
+        """Coarser-grain rows never enter the total; the two person ledgers both do.
 
-        Mixing entity types re-counts the same dollar — the #4322 double-count
-        family. Both decoys are seeded in a partition the caller genuinely belongs
-        to, so membership cannot be what excludes them; only the ``entity_type``
-        filter can.
+        Since #4396 the total is ``root_user`` (cloud, keyed by canonical id) **plus**
+        ``user`` (direct, keyed by Cognito sub). Those two are disjoint by namespace,
+        so summing one row of each counts each dollar exactly once. An
+        ``organization`` row is a different grain — it is the *same* dollars
+        re-aggregated, plus every colleague's — so adding it is the #4322
+        double-count. Both decoys sit in a partition the caller genuinely belongs to,
+        so membership cannot be what separates them; only ``entity_type`` can.
         """
         session.add(
             BudgetUsage(
@@ -337,10 +340,13 @@ class TestTenantIsolation:
             response = await client.get("/me/budget")
 
         body = response.json()
-        assert Decimal(line_for(body, RUN_ORG)["cloud_spend_usd"]) == Decimal("264.600000")
-        assert Decimal(body["person_envelope"]["spend_usd"]) == Decimal("264.600000"), (
-            "the cross-org total mixed entity types; the same dollar is counted more than once"
+        run_line = line_for(body, RUN_ORG)
+        assert Decimal(run_line["cloud_spend_usd"]) == Decimal("264.600000")
+        assert Decimal(run_line["direct_spend_usd"]) == Decimal("111.000000")
+        assert Decimal(body["person_envelope"]["spend_usd"]) == Decimal("375.600000"), (
+            "the fused total is wrong: it must be cloud + direct, and must not pick up the org-grain row"
         )
+        assert "222" not in response.text, "an organization-grain row entered the person total; the same dollar is counted twice"
 
 
 # ===========================================================================

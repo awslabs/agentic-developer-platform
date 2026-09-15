@@ -484,18 +484,17 @@ class TestEntityTypeContract:
         # migration, only the data backfill in alembic 032.
         assert len(EntityType.ORGANIZATION.value) <= 20
 
-    def test_the_ratelimit_enum_is_a_different_contract(self):
-        """`src/ratelimit/models.py` keeps `ORGANIZATION = "organization"`.
+    def test_ratelimit_uses_org_and_accepts_its_legacy_contract(self):
+        """#4952 aligns rate limits with the admin writer's ``org`` spelling.
 
-        Pinned so nobody "fixes the inconsistency" by aligning the two: that enum
-        keys `rate_limit_configs`, a different table with its own persisted rows,
-        and changing it would break rate limiting exactly the way the budget bug
-        broke caps — silently.
+        Migration 044 normalizes persisted legacy rows; the rate-limit loader
+        also accepts both spellings while the backend rolls out before migration.
+        Legacy reload/enforcement is covered in test_org_scope_enforcement.py.
         """
         from src.ratelimit.models import EntityType as RateLimitEntityType
 
-        assert RateLimitEntityType.ORGANIZATION.value == "organization"
-        assert RateLimitEntityType.ORGANIZATION.value != EntityType.ORGANIZATION.value
+        assert RateLimitEntityType.ORGANIZATION.value == EntityType.ORGANIZATION.value == "org"
+        assert RateLimitEntityType("organization") is RateLimitEntityType.ORGANIZATION
 
     def test_the_tracker_lambda_agrees_with_the_reader(self):
         """The writer/reader agreement, asserted from the reader's side too.

@@ -34,6 +34,7 @@ def test_app(
     mock_pool_service: MockPoolService,
     model_resolver: ModelResolver,
     mock_token_context: TokenContext,
+    unmapped_routing,
 ) -> FastAPI:
     """Create a test app with routes configured."""
     app = FastAPI()
@@ -294,6 +295,7 @@ class TestBedrockRoutes:
         assert response.status_code == 400
         assert "model" in response.json()["detail"].lower()
 
+    @pytest.mark.usefixtures("unmapped_routing")
     def test_invoke_model_preserves_anthropic_fields(
         self,
         mock_pool_service: MockPoolService,

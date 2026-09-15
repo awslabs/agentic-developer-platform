@@ -60,12 +60,26 @@ export default function ClaudeSetup() {
             </h4>
             <p className="mt-1">
               Your stored refresh token is no longer valid, so the helper cannot mint a token.
-              Return to the Connect CLI panel above and re-run{' '}
+              Re-run{' '}
               <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
-                bg-cognito-auth.sh import
+                adp login
               </code>{' '}
-              with a freshly revealed token. This applies to both Claude Code and Codex — the same
-              helper mints the token for each.
+              and approve in the browser — one click, no token to copy. This applies to both Claude
+              Code and Codex — the same helper mints the token for each.
+            </p>
+          </div>
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">
+              adp login fails — web sign-in not enabled
+            </h4>
+            <p className="mt-1">
+              This deployment has not provisioned the CLI sign-in backend yet (an administrator
+              needs to apply the gateway infrastructure). Until then, use the headless fallback in
+              the Sign in step:{' '}
+              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
+                adp import
+              </code>{' '}
+              with a revealed refresh token.
             </p>
           </div>
           <div>
@@ -114,7 +128,7 @@ export default function ClaudeSetup() {
 
       {/* Info alert */}
       <Alert variant="info" title="About the platform">
-        The platform provides a secure, managed way to access Amazon Bedrock from Claude Code.
+        The platform provides a secure, managed way to reach Amazon Bedrock from your CLI tools.
         It handles authentication, rate limiting, cost tracking, and usage monitoring automatically.
       </Alert>
 

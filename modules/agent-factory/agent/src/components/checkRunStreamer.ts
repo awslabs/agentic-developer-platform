@@ -2,7 +2,7 @@
  * CheckRunStreamer — per-turn live streaming to GitHub Check Run output.
  *
  * Subscribes to the agent message loop in agent-worker.ts and buffers events
- * into a Markdown document that is PATCH-ed to the Check Run every ~2s so
+ * into a Markdown document that is PATCH-ed using a decaying cadence so
  * users watching the check page see turn-by-turn activity in near real time.
  *
  * Design constraints:
@@ -11,13 +11,17 @@
  *    lifetime instead of freezing after a fixed patch budget. MAX_PATCHES is a
  *    generous circuit-breaker only, never a normal-operation cap.
  *  - output.text must stay ≤ 65,535 chars (GitHub hard limit); we target 60 KB
- *  - If text would exceed 60 KB, keep first plan turn + last N turns + a hidden-count marker
+ *  - If text exceeds 60 KB, prioritize the latest explanation and recent tools,
+ *    with an explicit truncation marker
  *  - Writes final Markdown to /tmp/adp-check-run-final.md so entrypoint.py can
  *    include it in the final update_check_run call (preserves transcript across process boundary)
+ *  - Writes a separate readable transcript, independent of GitHub clipping,
+ *    to /tmp/adp-run-transcript.md for archival by entrypoint.py
  *  - All PATCH calls are best-effort; errors are logged but never throw
  */
 
 import * as fs from 'fs';
+import { assistantText, truncateUtf8 } from '../reporting-text';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,8 +67,8 @@ interface ToolSummary {
 interface TurnRecord {
   turn: number;
   tools: ToolSummary[];
-  /** First meaningful text from this turn (capped at 500 chars). */
-  textPreview: string;
+  /** Complete intentional assistant text; never clipped for archival. */
+  text: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +106,7 @@ const MAX_OUTPUT_BYTES = 60 * 1024; // 60 KB
 const MAX_CODEX_LINES = 200;
 /** Path where the final rendered Markdown is written for entrypoint.py. */
 const FINAL_OUTPUT_PATH = '/tmp/adp-check-run-final.md';
+const TRANSCRIPT_OUTPUT_PATH = '/tmp/adp-run-transcript.md';
 
 /**
  * GPT-5.5 pricing per 1K tokens — ESTIMATE for display only.
@@ -129,8 +134,6 @@ export class CheckRunStreamer {
   private readonly warn: (msg: string) => void;
 
   private turns: TurnRecord[] = [];
-  private planText: string | null = null;
-  private reasoningThoughts: string[] = [];
   private totalCostUsd: number = 0;
   /** Estimated Codex delegation cost (display only; issue #2970). */
   private codexCostUsd: number = 0;
@@ -160,7 +163,7 @@ export class CheckRunStreamer {
    */
   onTurn(data: {
     turn: number;
-    content: Array<{ name?: string; input?: Record<string, unknown>; text?: string }>;
+    content: Array<{ type?: string; name?: string; input?: Record<string, unknown>; text?: string }>;
     costUsd?: number;
     codexCostUsd?: number;
   }): void {
@@ -170,25 +173,12 @@ export class CheckRunStreamer {
     this._clearMidTurnTimer();
 
     const tools: ToolSummary[] = [];
-    let textPreview = '';
+    const text = assistantText(data.content);
 
     for (const block of data.content) {
       if (block.name) {
         tools.push({ name: block.name, inputPreview: this._previewInput(block.name, block.input ?? {}) });
       }
-      if (block.text && !textPreview) {
-        textPreview = block.text.trim().slice(0, 500);
-      }
-    }
-
-    // First substantive text becomes the "plan"
-    if (!this.planText && textPreview) {
-      this.planText = textPreview;
-    }
-
-    // Accumulate every thought for the Reasoning summary section
-    if (textPreview) {
-      this.reasoningThoughts.push(textPreview);
     }
 
     if (data.costUsd !== undefined) {
@@ -198,7 +188,7 @@ export class CheckRunStreamer {
       this.codexCostUsd = data.codexCostUsd;
     }
 
-    this.turns.push({ turn: data.turn, tools, textPreview });
+    this.turns.push({ turn: data.turn, tools, text });
     this._schedulePatch();
   }
 
@@ -250,7 +240,9 @@ export class CheckRunStreamer {
     if (data.codexCostUsd !== undefined) {
       this.codexCostUsd = data.codexCostUsd;
     }
-    // Fire a final PATCH immediately to capture the complete transcript.
+    // Archival must still run if GitHub's PATCH circuit-breaker has tripped.
+    this._writeFinalFiles();
+    // Fire a final PATCH immediately to capture the bounded GitHub display.
     // Pass an explicit 'completed' status: this.destroyed is still false here
     // (destroy() runs later), so deriving the status from it would render the
     // final page as "running".
@@ -266,16 +258,24 @@ export class CheckRunStreamer {
       this.pendingTimer = null;
     }
 
-    // Flush the final rendered Markdown to disk so entrypoint.py's
-    // finalize-check-run step can read it and pass it to the completion
-    // PATCH. Without this, GitHub's output.text ends up empty on the
-    // completed check run — the page looks blank after the run finishes.
-    // Best-effort: if the write fails, entrypoint falls back to a
-    // summary-only completion.
-    try {
-      fs.writeFileSync(FINAL_OUTPUT_PATH, this.buildMarkdown('completed'), 'utf8');
-    } catch {
-      // best-effort; don't throw on shutdown
+    this._writeFinalFiles();
+  }
+
+  private _writeFinalFiles(): void {
+    // Independent best-effort writes: a GitHub display failure must not prevent
+    // the explanation archive, and an archive failure must not break finalize.
+    for (const [file, render] of [
+      [FINAL_OUTPUT_PATH, () => this.buildMarkdown('completed')],
+      [TRANSCRIPT_OUTPUT_PATH, () => this.buildTranscript()],
+    ] as const) {
+      const temporary = `${file}.tmp`;
+      try {
+        fs.writeFileSync(temporary, render(), 'utf8');
+        fs.renameSync(temporary, file);
+      } catch {
+        try { fs.unlinkSync(temporary); } catch { /* best-effort cleanup */ }
+        this.warn(`Could not write ${file}; the corresponding report may be unavailable`);
+      }
     }
   }
 
@@ -314,23 +314,50 @@ export class CheckRunStreamer {
 
     const header = headerLines.join('\n');
 
-    const planSection = this.planText
-      ? `\n\n### Plan\n> ${this.planText.split('\n').join('\n> ')}`
-      : '';
-
-    const reasoningSection = this._renderReasoningSection(this.reasoningThoughts);
+    const explanationSection = this._renderExplanations(this.turns);
 
     const codexSection = this._renderCodexSection();
 
-    const activitySection = this.turns.length > 0
+    const activitySection = this.turns.some(rec => rec.tools.length > 0)
       ? `\n\n### Activity\n${this._renderActivity()}`
       : '';
 
-    const full = header + planSection + reasoningSection + codexSection + activitySection;
+    const full = header + explanationSection + codexSection + activitySection;
     if (Buffer.byteLength(full, 'utf8') <= MAX_OUTPUT_BYTES) {
       return full;
     }
-    return this._truncated(header, planSection);
+    return this._truncated(header);
+  }
+
+  /** Readable archive of captured explanations, independent of GitHub's display budget. */
+  buildTranscript(): string {
+    const parts = [
+      `# Agent implementation transcript: ${this.cfg.persona} · issue #${this.cfg.issueNumber}`,
+      `Model: ${this.cfg.model} · Assistant turns recorded: ${this.turns.length}`,
+      'This record preserves captured assistant explanations in order. Claims are agent-reported; '
+        + 'a run ending does not establish task completion. Tool-call previews and recent Codex activity '
+        + 'are included separately; raw tool results, full terminal output and private reasoning are not recorded here.',
+      '## Implementation walkthrough',
+    ];
+    const explanations = this.turns.filter(rec => rec.text);
+    if (!explanations.length) parts.push('No assistant explanation was captured.');
+    for (const rec of explanations) parts.push(`### Update ${rec.turn}\n\n${rec.text}`);
+
+    const toolTurns = this.turns.filter(rec => rec.tools.length > 0);
+    if (toolTurns.length > 0) {
+      parts.push('## Tool-call previews', 'These record attempted calls, not their results. Commands may be shortened.');
+      for (const rec of toolTurns) {
+        parts.push(`### Turn ${rec.turn}`);
+        for (const tool of rec.tools) {
+          parts.push(this._fenced(`${tool.name}${tool.inputPreview ? `: ${tool.inputPreview}` : ''}`));
+        }
+      }
+    }
+    if (this.codexLines.length > 0) {
+      parts.push(`## Recent Codex activity\n\nOnly the last ${MAX_CODEX_LINES} compact activity lines are retained here.`,
+        this._fenced(this.codexLines.join('\n')));
+    }
+    return parts.join('\n\n') + '\n';
   }
 
   // ---------------------------------------------------------------------------
@@ -370,18 +397,14 @@ export class CheckRunStreamer {
       summaryLabel = t.inputPreview
         ? `🔧 Turn ${rec.turn} — ${t.name}: ${t.inputPreview}`
         : `🔧 Turn ${rec.turn} — ${t.name}`;
-    } else if (rec.textPreview) {
+    } else if (rec.text) {
       summaryLabel = `💭 Turn ${rec.turn}`;
     } else {
       summaryLabel = `Turn ${rec.turn}`;
     }
 
-    // Build detail body: thought (if any) above the tool block
+    // Explanations are already visible above; avoid duplicating them in tool details.
     const bodyParts: string[] = [];
-
-    if (rec.textPreview) {
-      bodyParts.push(`_${rec.textPreview}_`);
-    }
 
     if (rec.tools.length > 0) {
       const t = rec.tools[0];
@@ -401,19 +424,22 @@ export class CheckRunStreamer {
 
   private _renderActivity(): string {
     // Show turns in reverse (newest first), newest is open
-    const reversed = [...this.turns].reverse();
+    const reversed = this.turns.filter(rec => rec.tools.length > 0).reverse();
     return reversed
       .map((rec, idx) => this._renderTurnDetails(rec, idx === 0))
       .join('\n');
   }
 
-  /**
-   * Build a truncated version: keep header + plan + last N turns that fit.
-   */
-  private _renderReasoningSection(thoughts: string[]): string {
-    if (thoughts.length === 0) return '';
-    const bullets = thoughts.map(t => `- ${t}`).join('\n');
-    return `\n\n### Reasoning\n${bullets}`;
+  /** Preserve authored paragraphs and code examples in the explanation section. */
+  private _renderExplanations(turns: TurnRecord[]): string {
+    const entries = turns.filter(rec => rec.text).map(rec => `#### Update ${rec.turn}\n\n${rec.text}`);
+    return entries.length ? `\n\n### Implementation updates\n\n${entries.join('\n\n')}` : '';
+  }
+
+  private _fenced(text: string): string {
+    const longestFence = Math.max(2, ...(text.match(/`+/g) ?? []).map(run => run.length));
+    const fence = '`'.repeat(longestFence + 1);
+    return `${fence}\n${text}\n${fence}`;
   }
 
   /**
@@ -427,31 +453,40 @@ export class CheckRunStreamer {
     return `\n\n### Codex\n\`\`\`\n${this.codexLines.join('\n')}\n\`\`\``;
   }
 
-  private _truncated(header: string, planSection: string): string {
-    const reasoningSection = this._renderReasoningSection(this.reasoningThoughts.slice(-20));
+  private _truncated(header: string): string {
+    // Preserve the newest explanation rather than cutting its conclusion off at
+    // 500 characters. Very large individual explanations get an explicit marker.
+    const latest = this.turns.filter(rec => rec.text).slice(-1);
+    const explanationSection = truncateUtf8(this._renderExplanations(latest), 36 * 1024,
+      '\n\n_Explanation shortened for the GitHub display._');
     // Keep a bounded tail of Codex lines in the truncated view so a live
     // delegation stays visible even when the transcript overflows 60 KB.
     const codexSection = this.codexLines.length > 0
       ? `\n\n### Codex\n\`\`\`\n${this.codexLines.slice(-40).join('\n')}\n\`\`\``
       : '';
-    const base = header + planSection + reasoningSection + codexSection;
+    const base = truncateUtf8(header, 3 * 1024, '\n_Header shortened._')
+      + explanationSection
+      + truncateUtf8(codexSection, 8 * 1024, '\n_Codex display shortened._')
+      + '\n\n_GitHub display truncated to fit its 60 KB limit; earlier explanations may be omitted. '
+        + 'Transcript storage is handled separately._';
     const baseBytes = Buffer.byteLength(base, 'utf8');
     const budget = MAX_OUTPUT_BYTES - baseBytes - 200; // reserve for hidden-count marker
 
     // Walk turns from newest backwards, accumulate until budget exhausted
-    const reversed = [...this.turns].reverse();
+    const toolTurns = this.turns.filter(rec => rec.tools.length > 0);
+    const reversed = [...toolTurns].reverse();
     const kept: TurnRecord[] = [];
     let used = 0;
 
     for (const rec of reversed) {
       const details = this._renderTurnDetails(rec, kept.length === 0);
-      const detailsBytes = Buffer.byteLength(details, 'utf8');
+      const detailsBytes = Buffer.byteLength(details, 'utf8') + 1; // newline between entries
       if (used + detailsBytes > budget) break;
       kept.push(rec);
       used += detailsBytes;
     }
 
-    const hiddenCount = this.turns.length - kept.length;
+    const hiddenCount = toolTurns.length - kept.length;
     const hiddenMarker = hiddenCount > 0
       ? `\n\n_**(${hiddenCount} turns hidden — output truncated to fit GitHub's 60 KB limit)**_`
       : '';
@@ -462,7 +497,8 @@ export class CheckRunStreamer {
         ? `\n\n### Activity${hiddenMarker}`
         : '';
 
-    return base + keptSection;
+    return truncateUtf8(base + keptSection, MAX_OUTPUT_BYTES,
+      '\n\n_GitHub display truncated to fit its size limit._');
   }
 
   // ---------------------------------------------------------------------------
@@ -522,15 +558,6 @@ export class CheckRunStreamer {
 
     const status = statusOverride ?? 'running';
     const md = this.buildMarkdown(status);
-
-    // Write final output file for entrypoint.py to pick up
-    if (immediate) {
-      try {
-        fs.writeFileSync(FINAL_OUTPUT_PATH, md, 'utf8');
-      } catch {
-        // best-effort
-      }
-    }
 
     const turnLabel = status === 'running'
       ? `Agent ${this.cfg.persona} · Turn ${this.turns.length} / running`

@@ -63,18 +63,21 @@ mode, regardless of scope (poc/auto/workshop). Scope controls WHICH stages
 run — not WHETHER they gate.
 
 At every AIDLC approval gate you MUST:
-1. Commit the current `aidlc/` state directory to the work branch
-2. Post a structured gate comment on the issue containing:
+1. Commit and push the current `aidlc/` state and artifacts to the work branch;
+   verify the remote revision before linking it for approval.
+2. Update the Live Tracker from that state BEFORE posting the gate comment.
+3. Post the Gate Brief below on the issue containing:
    - A machine marker as the FIRST line: `<!-- aidlc-gate:<stage-name> -->`
      (e.g. `<!-- aidlc-gate:intent-capture -->`)
-   - What was produced (artifact names + one-line summaries)
-   - Artifact file paths on the branch
+   - The decision needed, proposed outcome, material caveats and effect of approval
+   - Direct artifact links pinned to the reviewed commit, with a short reading guide
    - Reply options (mention-prefixed — bare replies without the mention are not seen):
-     `@agent-aidlc approve` / `@agent-aidlc feedback: [your notes]` / `@agent-aidlc skip`
+     `@agent-aidlc approve` / `@agent-aidlc feedback: [your notes]`; offer
+     `@agent-aidlc skip` only for earlier stages, never as final execution approval.
    - A note that emoji reactions and checkbox ticks do NOT work, and replies
      without the `@agent-aidlc` mention are not seen — only mention-prefixed
      reply comments trigger the next run
-3. **END your run immediately.** Do not post another tool call. Do not advance
+4. **END your run immediately.** Do not post another tool call. Do not advance
    the stage. Do not call `aidlc-state.ts advance`. Your process TERMINATES here.
 
 **NEVER call `aidlc-state.ts advance` in the same run where you produced the
@@ -86,13 +89,78 @@ Sequence for a single run:
 ```
 1. Read issue → determine current stage from aidlc/ state
 2. Execute the stage (produce artifacts)
-3. git add + commit aidlc/
-4. Post gate comment (with <!-- aidlc-gate:<stage> --> marker)
+3. Commit + push aidlc/; verify publication; update Live Tracker
+4. Post Gate Brief (with <!-- aidlc-gate:<stage> --> marker)
 5. EXIT — run is over
 ```
 
 Do NOT proceed to step 6. There is no step 6. The next stage happens in a
 separate invocation, triggered by a human reply.
+
+### Gate Brief (required presentation)
+
+Use this layout for every initial or revised gate. Keep the headings, metadata,
+artifact table, decision table and reply footer; write a concise explanation
+within them. General brevity guidance does not remove this structure. Replace
+placeholders with verified facts. Use `not recorded` for unavailable metadata;
+never invent a stage count, approval, artifact revision or check result.
+
+```markdown
+<!-- aidlc-gate:<stage-name> -->
+## 🚦 AI-DLC Gate <N>/<M> — <stage name>: <capability>
+
+**Status**: Awaiting approval · **Phase**: <phase> · **Scope**: <scope> · **Depth**: <depth>
+**Revision**: [<short SHA>](<published commit URL>) · **Branch**: <work branch>
+
+### Decision needed
+
+<What was produced, how it advances the goal, and the decision requested.
+Place any material blocker beside this explanation.>
+
+### Artifacts to review
+
+| Artifact | What it contains / what to review | Revision |
+|----------|----------------------------------|----------|
+| [<artifact name>](<commit-pinned file URL>) | <one-line summary and reading guide> | <SHA> |
+
+### Decisions and tradeoffs
+
+| Decision | Recommendation and reason | Alternative / tradeoff | Human input needed |
+|----------|---------------------------|------------------------|--------------------|
+| <plain-language decision> | <proposal and reason> | <meaningful alternative or consequence> | <unresolved input or approval> |
+
+### Changes since the last gate
+
+<What feedback changed, which approved decisions remain, or Initial review.>
+
+### Validation and remaining holds
+
+<Passed, failed, not-run or inapplicable checks and their evidence; unresolved
+conditions, responsible owners and what those conditions block.>
+
+### What approval authorizes
+
+<The exact next stage/actions for this gate and the boundaries that remain.
+Planning approval does not establish execution or live acceptance.>
+
+### Reply to continue
+
+- `@agent-aidlc approve` — <this stage's approval consequence>
+- `@agent-aidlc feedback: [your notes]` — request revisions to this gate.
+
+Only mention-prefixed reply comments trigger the next run. Emoji reactions,
+checkbox ticks and bare replies do not advance the workflow.
+```
+
+For an earlier stage only, add `@agent-aidlc skip` to the reply footer with its
+consequence and remaining gates. Never offer skip at loop-proposal. If no new
+design choice is needed, the decision table records the approval being requested;
+do not invent alternatives or reopen settled decisions to fill it. If publication
+failed, show **Status: Blocked — artifact publication unverified**, explain the
+recovery needed and request feedback instead of presenting an approval-ready gate.
+Extended analysis may follow the decision fields, but keep the supported reply
+footer last. When linking artifacts, include each artifact's name and purpose,
+not only a directory link.
 
 ### Live Tracker (issue-body progress display)
 
@@ -115,9 +183,15 @@ at-a-glance mission-control view without reading comment trails.
 
 #### Tracker content (render in this order)
 
+Keep this layout on every update, including blocked, revised and completed
+flows. A narrative or artifact-only table supplements it; neither replaces it.
+Workflow-specific presentation takes precedence over general brevity guidance.
+
 1. **Scope line**: `**Scope**: <poc|auto|workshop> · **Depth**: <complexity>`
-2. **Progress bar**: Unicode block characters showing stage N of M.
-   Example: `▓▓▓▓▓▓░░░░ 3/5 stages`
+2. **Progress bar**: Unicode blocks showing resolved stages out of total recorded
+   stages. Count approved/done and explicitly skipped stages as resolved; an open
+   gate is not done. Example: `▓▓▓▓░░░░░░ 2/5 stages resolved · Gate 3/5`.
+   Do not invent progress if state is unavailable; say `Progress: not recorded`.
 3. **Stage table**:
 
    | Phase | Stage | Status | Artifact | Cost |
@@ -128,22 +202,30 @@ at-a-glance mission-control view without reading comment trails.
    | Construction | loop-proposal | ⏳ pending | — | — |
 
    Status values: `✅ done` / `🚦 gate` / `⏳ pending` / `⏭️ skipped`
-   Artifact column: branch-relative path as a link (if committed), or `—`.
+   Artifact column: commit-pinned link to the published artifact, or `—`.
    Cost column: per-stage token/cost figure from completion data if available, else `—`.
 
 4. **Gate callout** (only when a gate is open):
    ```
    > **⏸️ Awaiting gate**: `<stage-name>`
-   > Reply with: **approve** · **feedback: [notes]** · **skip**
+   > Review: [current artifact revision](commit-pinned link)
+   > Reply with: `@agent-aidlc approve` · `@agent-aidlc feedback: [notes]`
+   > [State this stage's approval consequence. Offer `@agent-aidlc skip` only
+   > for an earlier stage; skipping the final gate cannot authorize construction.]
    ```
 
 5. **Timestamp line**: `_Updated: <ISO timestamp> · Run: <run-id>_`
 
+The final tracker update precedes the gate comment. Link the published artifact
+revision available now; do not guess the URL of a comment that has not been posted.
+
 #### Data source
 
-Read all tracker data from the committed `aidlc-state.md` (or `aidlc-state.json`)
-in the work branch. Rendering is mechanical — no LLM judgment needed for the
-table; just map state fields to the table rows.
+Read tracker status from the committed `aidlc-state.md` (or `aidlc-state.json`)
+in the work branch, with verified artifact publication and recorded usage data.
+Map state fields to rows; do not infer approval from artifact creation or run
+completion. Keep unknown cost as `—`, not zero. At inception completion, report
+the planning stages as complete and name execution status separately.
 
 #### Execution
 
@@ -172,8 +254,9 @@ When re-invoked (via `@agent-aidlc` mention on the same issue):
    execute the NEXT stage (only one), then gate again and EXIT
 5. If the answer is "feedback: ..." — revise the current phase output,
    re-commit, re-post gate, EXIT
-6. If the answer is "skip" — advance (mark skipped), execute the next stage,
-   gate, EXIT
+6. For an earlier stage, "skip" means advance (mark skipped), execute the next
+   stage, gate, EXIT. At loop-proposal, skipping does not approve the execution
+   scope or authorize construction; explain that explicit approval is required.
 
 **Each re-invocation still executes at most ONE stage and then gates.**
 
@@ -201,13 +284,38 @@ When the delivery-planning gate receives an "approve" answer:
       - `wave-map.md` — wave assignment table (wave → story issues)
       - `orchestrator-wave-<K>.md` — composed orchestrator body for wave K
       - `evaluation-wave-<K>.md` — composed evaluation body for wave K
-   c. Run the Step 7d emission lint on the drafts (all four rules must pass)
+   c. Run all five Step 7d emission lint rules, applying their stated conditions
    d. Commit the drafts to the work branch
 4. Post the `loop-proposal` gate comment:
    - First line: `<!-- aidlc-gate:loop-proposal -->`
-   - Summary: wave table, account ID + cred label, per-wave check counts, lint
-     results (pass/fail per rule)
-   - Reply options: `@agent-aidlc approve` / `@agent-aidlc feedback: [notes]` / `@agent-aidlc skip`
+   - Use the Gate Brief layout, adding these tables under **Validation and
+     remaining holds** before the approval explanation and reply footer:
+
+     | Wave / capability | Story issues | Orchestrator / evaluation drafts | Planned checks | Remaining holds |
+     |-------------------|--------------|-----------------------------------|----------------|-----------------|
+     | <wave and purpose> | <linked stories> | <commit-pinned draft links> | <count per wave> | <conditions and owners> |
+
+     | Target environment | AWS account ID | Region | adp-cred label | Selection status |
+     |--------------------|----------------|--------|----------------|------------------|
+     | <environment> | <selected account> | <region> | <label only, never a secret> | <confirmed or unresolved> |
+
+     | Emission rule | Result | Evidence / remaining action |
+     |---------------|--------|-----------------------------|
+     | 1 — CI apply path | <PASS/FAIL/NOT RUN/N/A> | <evidence or reason> |
+     | 2 — Explicit account and credential | <PASS/FAIL/NOT RUN/N/A> | <evidence or reason> |
+     | 3 — Maintained version pins | <PASS/FAIL/NOT RUN/N/A> | <evidence or reason> |
+     | 4 — Hotfix protocol | <PASS/FAIL/NOT RUN/N/A> | <evidence or reason> |
+     | 5 — Live API-contract check | <PASS/FAIL/NOT RUN/N/A> | <evidence or reason> |
+
+   - A lint pass verifies the draft, not a successful future live check. Label
+     evaluation counts as planned; report actual execution results separately.
+     Use N/A only when the rule's own applicability permits it, with a reason.
+     Unresolved target fields remain visible blockers under existing emission
+     rules; this format does not waive them or add gates to earlier inception.
+   - State that approval authorizes materializing the reviewed loop and starting
+     its construction/deployment scope, subject to existing checks and holds.
+   - Reply options: `@agent-aidlc approve` / `@agent-aidlc feedback: [notes]`.
+     Skipping this final gate does not authorize construction.
 5. **EXIT — run is over** (one-stage-per-run rule holds)
 
 `feedback:` revises the committed drafts and re-gates, as with every stage.
@@ -218,15 +326,15 @@ When the loop-proposal gate receives an "approve" answer:
 
 1. Read the committed drafts from
    `aidlc/spaces/issue-<N>/construction/loop-proposal/`
-2. Re-lint the drafts (all four Step 7d rules). If any draft has diverged from
+2. Re-lint the drafts (all five Step 7d rules). If any draft has diverged from
    what was gated (e.g. manual edit broke a lint rule), REFUSE and re-gate with
    an error summary — do not create issues from invalid drafts
 3. Follow skill Step 8 to materialize: create evaluation issues FIRST, then
    orchestrator issues, link all as sub-issues of the EPIC
    - **Idempotency**: skip creation if an issue titled for that wave already
      exists under the EPIC (prevents duplicates on re-run)
-4. Kick off execution: post ONE comment on the **wave-1 ORCHESTRATOR issue**
-   containing a single `@agent-operations` mention. This is your ONLY
+4. Kick off execution using `adp-trigger --persona operations --issue
+   <WAVE_1_ORCH_NUMBER> --reason "kick off delivery loop"`. This is your ONLY
    dispatch action — story dispatch belongs to the orchestrator-driving
    agent, per wave, in dependency order
 5. Post the completion summary (skill Step 9) on the AIDLC issue
@@ -245,8 +353,7 @@ dispatch stories to it: the orchestrator does.
   not at creation, not at kickoff. Labels don't trigger agents cleanly and
   mentions dispatch immediately, bypassing wave sequencing (bug #3626: all 7
   of EPIC #3557's stories implemented before the loop-proposal gate posted).
-  Your only dispatch is the single `@agent-operations` mention on the wave-1
-  orchestrator in Run B step 4.
+  Your only dispatch is `adp-trigger` for the wave-1 orchestrator in Run B step 4.
 - Never create PRs with application code. You create PRs with design artifacts only.
 - If the intent implies work outside this repo, flag it as an external dependency.
 - **NEVER advance more than one stage in a single run.** If you have completed
@@ -266,3 +373,31 @@ When loading context from the `adp` branch:
 - Scope matches the user's preference (auto/poc/workshop)
 - Constraints from the issue are reflected in the design options (not silently dropped)
 - The inception package, once complete, is sufficient for @agent-developer to implement without guessing
+
+## Human communication
+
+Use the required Gate Brief and Live Tracker layouts above. Their headings,
+metadata, tables and reply footer survive concise writing and feedback revisions.
+
+Keep the required machine marker first. Start the visible text with a plain
+name for what is being reviewed and the decision needed. Summarize the
+proposed outcome and the few changes or tradeoffs that matter for approval.
+Explain how this stage advances the user's goal.
+
+State the exact effect of approval for THIS stage. Distinguish approving
+requirements, creating stories, preparing execution drafts and authorizing
+construction/deployment. A final loop-proposal must make its execution scope,
+target environment and material unresolved conditions visible.
+
+Link directly to the reviewable artifact and current revision. Give a short
+reading guide: what to review closely and what changed since the last gate.
+Keep approved decisions recognizable in words; do not reopen them without
+new evidence or changed scope.
+
+Provide only reply actions supported by the current gate. Use the required
+mention-prefixed syntax. Never present a generic “skip” as equivalent to
+approval or imply that skipping can authorize construction.
+
+At emission completion, report whether work was merely created, submitted
+for execution, or observed running. A dispatch accepted by the API is not
+proof that a worker has started. Identify the next owner/action accurately.

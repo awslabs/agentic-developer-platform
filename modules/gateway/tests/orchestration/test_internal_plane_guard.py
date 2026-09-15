@@ -332,22 +332,49 @@ class TestOrchestrationRouterIsOperatorPlane:
         it breaks this test until someone adds it here and states its permission
         out loud. Anything that touches promotion state must still be
         PLAN_APPROVE — that is asserted separately below.
+
+        Issue #4869: the allowlist is keyed by **(path, method)**, not by path.
+        It was path-keyed while every path had exactly one method, and `GET
+        /orchestration/flows` (the flows list) ended that: it shares its path with
+        the `POST` that creates flow, node and edge rows. Under a path-keyed dict
+        the two methods cannot state different permissions, and the failure mode is
+        the dangerous direction — whichever entry was written would be asserted
+        against BOTH handlers, so the list read and the promotion write would be
+        held to one permission and one of them would be wrong. Keying on the method
+        too is strictly more precise and keeps the equality check intact: a new
+        METHOD on an existing path is now also a review moment, where before it
+        would have inherited its sibling's entry silently.
         """
         from src.auth.dependencies import get_current_user
         from src.orchestration.routes import router as orchestration_router
 
-        # path -> the permission that route must check. ADDING A ROUTE REQUIRES A
-        # LINE HERE, and that is the review moment: if the route reads or writes
-        # promotion state, the answer is PLAN_APPROVE and nothing weaker.
+        # (path, method) -> the permission that route must check. ADDING A ROUTE
+        # REQUIRES A LINE HERE, and that is the review moment: if the route reads or
+        # writes promotion state, the answer is PLAN_APPROVE and nothing weaker.
         expected_permissions = {
             # Issue #4320: the engine's ingress for plan state. It CREATES flow,
             # node and edge rows, so it is promotion activity of the strongest
             # kind — PLAN_APPROVE and nothing weaker.
-            "/orchestration/flows": "Permission.PLAN_APPROVE",
-            "/orchestration/flows/{flow_id}/amendments": "Permission.PLAN_APPROVE",
-            "/orchestration/flows/{flow_id}/plans": "Permission.PLAN_APPROVE",
+            ("/orchestration/flows", "POST"): "Permission.PLAN_APPROVE",
+            # Issue #4869: the flows list — the engine's entry point in the UI.
+            # Same path as the POST above, deliberately weaker permission, and the
+            # two must not be confused for each other. This handler reads
+            # `orchestration_flows` plus node and decision AGGREGATES: per-flow
+            # counts, a stalled/not-stalled boolean, and wave rollups. It carries
+            # USAGE_READ because that is what the operator it exists for holds, and
+            # because it surfaces no acceptance record — no `actor_id`, no
+            # `actor_role`, no reason text, no plan document. The `orchestration_
+            # decisions` read is a COUNT of stalls per flow, not an approval.
+            #
+            # If a future change surfaces attribution or plan content here, the
+            # permission must become PLAN_APPROVE: *who approved what* is the
+            # approval record, and reading it under a spend-read permission is the
+            # escalation the sibling guard below exists to stop.
+            ("/orchestration/flows", "GET"): "Permission.USAGE_READ",
+            ("/orchestration/flows/{flow_id}/amendments", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/plans", "GET"): "Permission.PLAN_APPROVE",
             # Read-only cost rollup. Reads usage_logs, never promotion state.
-            "/orchestration/flows/{flow_id}/cost": "Permission.USAGE_READ",
+            ("/orchestration/flows/{flow_id}/cost", "GET"): "Permission.USAGE_READ",
             # Issue #4212: the graph view's read. Returns the flow's nodes, edges
             # and cost — the graph's *structure and progress*, which is what the
             # sibling `plan_approve` guard below deliberately excludes from its
@@ -367,10 +394,10 @@ class TestOrchestrationRouterIsOperatorPlane:
             # become PLAN_APPROVE: *who approved what* is the approval record,
             # and reading it under a spend-read permission is the escalation the
             # sibling guard exists to stop.
-            "/orchestration/flows/{flow_id}": "Permission.USAGE_READ",
+            ("/orchestration/flows/{flow_id}", "GET"): "Permission.USAGE_READ",
         }
 
-        actual_paths = set()
+        actual_routes = set()
         unguarded = []
         for route in orchestration_router.routes:
             endpoint = getattr(route, "endpoint", None)
@@ -378,16 +405,19 @@ class TestOrchestrationRouterIsOperatorPlane:
                 continue
 
             path = getattr(route, "path", "?")
-            actual_paths.add(path)
             dependency_calls = {getattr(dep, "call", None) for dep in getattr(getattr(route, "dependant", None), "dependencies", []) or []}
             source = inspect.getsource(endpoint)
 
-            required = expected_permissions.get(path)
-            if get_current_user not in dependency_calls or required is None or required not in source:
-                unguarded.append(path)
+            # HEAD/OPTIONS are synthesised by Starlette alongside a GET handler and
+            # have no handler of their own, so they are not their own review moment.
+            for method in sorted(set(getattr(route, "methods", set()) or set()) - {"HEAD", "OPTIONS"}):
+                actual_routes.add((path, method))
+                required = expected_permissions.get((path, method))
+                if get_current_user not in dependency_calls or required is None or required not in source:
+                    unguarded.append((path, method))
 
-        assert actual_paths == set(expected_permissions), (
-            f"orchestration route surface changed: {sorted(actual_paths ^ set(expected_permissions))}. "
+        assert actual_routes == set(expected_permissions), (
+            f"orchestration route surface changed: {sorted(actual_routes ^ set(expected_permissions))}. "
             "Add the new route to expected_permissions with the permission it enforces."
         )
 

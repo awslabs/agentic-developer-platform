@@ -22,6 +22,51 @@
 # Issue: #346, #1204, #4028, #4130
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# The webhook-events write grant, and why it is conditional (#5028 AC4)
+# -----------------------------------------------------------------------------
+# This is the one grant in this policy that cannot be scoped correctly by IAM.
+# Every agent worker assumes THIS SINGLE ROLE, and the row it needs to write is
+# keyed (event_id, arrived_at) — both caller-supplied. So `UpdateItem` on
+# `table/adp-*-webhook-events` is unavoidably "any worker may write any run's
+# row", including another run's `control_address` and `control_token`, which
+# redirects that run's control channel to a listener of the writer's choosing.
+# No condition key fixes it: the row key is data, and "the run this pod is
+# actually executing" does not exist at the IAM layer.
+#
+# The fix is therefore to remove the grant, not narrow it. When
+# agent_authority_enabled is true the three writers
+# (agent-worker-image/lib/invocation_status.py: update_status,
+# register_control_endpoint, clear_control_endpoint) route through the gateway's
+# /internal/v1/agent/self routes instead, which authenticate the invocation and
+# attempt via the run credential + TokenReview-verified pod and derive the row
+# key from the protected authority table the worker cannot write. The gateway
+# holds the write grant in its place (iam.tf, WebhookEventsSelfWrite).
+#
+# Still granted when the flag is OFF, which is the default. The worker's gateway
+# path deliberately has no DynamoDB fallback, so removing this grant while the
+# flag is off would leave nothing writing the row at all and freeze every run's
+# status at webhook_received — the #1455 gate failure. Code and permission move
+# together, keyed off the same variable, so neither half can ship alone.
+#
+# correlation-pointers is a separate statement (DynamoDBTableMgmt) and is NOT
+# touched: its advisory lineage is not an authority input and its writers have
+# not moved. Authority-enabled roles also carry the explicit permissions
+# boundary in agent-authority-boundary.tf: omission alone is insufficient when
+# AdministratorAccess or another broad policy is attached to the worker role.
+locals {
+  agent_worker_events_write = var.agent_authority_enabled ? [] : [
+    {
+      Sid    = "DynamoDBWebhookEventsUpdate"
+      Effect = "Allow"
+      Action = [
+        "dynamodb:UpdateItem"
+      ]
+      Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-webhook-events"
+    }
+  ]
+}
+
 resource "aws_iam_role" "agent_scaledjob" {
   name = "${local.name_prefix}-agent-scaledjob-role"
 
@@ -65,13 +110,12 @@ resource "aws_iam_role" "agent_scaledjob" {
 # Size: ~2.2 KB — well within the inline policy limit.
 # =============================================================================
 
-resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
-  name = "agent-worker-scoped-permissions"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
+locals {
+  agent_worker_scoped_policy = {
     Version = "2012-10-17"
-    Statement = [
+    # concat, so the webhook-events write grant can be dropped entirely rather
+    # than narrowed in place (#5028 AC4 — see local.agent_worker_events_write).
+    Statement = concat(local.agent_worker_events_write, [
       {
         Sid    = "BedrockModelInvoke"
         Effect = "Allow"
@@ -119,14 +163,6 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
           "dynamodb:UpdateItem"
         ]
         Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-correlation-pointers"
-      },
-      {
-        Sid    = "DynamoDBWebhookEventsUpdate"
-        Effect = "Allow"
-        Action = [
-          "dynamodb:UpdateItem"
-        ]
-        Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-webhook-events"
       },
       {
         # The webhook-events (and correlation-pointers) tables are encrypted
@@ -408,6 +444,12 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
           }
         }
       }
-    ]
-  })
+    ])
+  }
+}
+
+resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
+  name   = "agent-worker-scoped-permissions"
+  role   = aws_iam_role.agent_scaledjob.id
+  policy = jsonencode(local.agent_worker_scoped_policy)
 }

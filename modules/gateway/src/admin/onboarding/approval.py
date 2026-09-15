@@ -14,10 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.cognito_claims import emit_metric, sync_cognito_role_claims
 from src.admin.identity.identity_index_writer import IdentityIndexWriter
-from src.admin.memberships import upsert_tenant_membership
+from src.admin.memberships import project_member_org_ids, upsert_tenant_membership
 from src.shared.models.base import new_uuid, utcnow
 from src.shared.models.onboarding import Tenant, TenantAccessRequest
-from src.shared.models.organization import Department, Organization, Team, User
+from src.shared.models.organization import (
+    CREATED_VIA_OPERATOR,
+    Department,
+    Organization,
+    Team,
+    User,
+)
 from src.shared.models.vault import UserIdentity
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,11 @@ async def approve_request(
                 joined_via="onboarding_approval",
             )
         await db.commit()
+        # Issue #4849: this branch upserts a membership but returns before the
+        # post-commit projection block below, so re-approves — the branch that
+        # *heals* the pre-#4006 no-row cohort — never refreshed member_org_ids.
+        if existing_user is not None:
+            await project_member_org_ids(db, user_id=existing_user.id, writer=identity_writer)
         # Re-sync Cognito claims in case a prior approval predated this step or
         # the attributes were cleared — cheap + idempotent. (team_id is omitted
         # on this path; role + org_id are what gate the SPA nav/dashboard.)
@@ -97,6 +108,12 @@ async def approve_request(
         settings={},
         github_installation_ids=[],
         cognito_client_ids=[],
+        # Issue #4842 (R6=a): stamped, not inherited. An access request only
+        # reaches this function after a platform admin approved it, so the row is
+        # operator-onboarded — the same standing as a directly provisioned
+        # tenant. Recorded explicitly because the alternative is trusting a
+        # column default, and this path had no test proving which value it got.
+        created_via=CREATED_VIA_OPERATOR,
     )
     db.add(org)
 
@@ -230,6 +247,16 @@ async def approve_request(
             logger.exception("DDB write-through failed for github identity (onboarding approval)")
             emit_metric("ADP/Onboarding", "OnboardingApproval.DdbWriteFailure")
 
+        # Issue #4849: the two writes above seed the identity rows from the
+        # *request* (they must — the rows may not exist yet, and only this path
+        # projects the cognito-provider row). This re-projects from committed
+        # Postgres truth via the shared helper, which also covers any additional
+        # github identity rows the user holds in other orgs — user_identities is
+        # uniquely indexed per (provider, provider_user_id, org_id), so a
+        # multi-org user has more than one and request.provider_user_id names
+        # only the one being approved.
+        await project_member_org_ids(db, user_id=user_id, writer=identity_writer)
+
     # Post-commit: sync role/org/team onto the Cognito user so the next token
     # the user mints carries them (the pre-token Lambda reads Cognito attrs, not
     # Postgres). Without this the approved user logs in with an empty role/org →
@@ -353,6 +380,11 @@ async def attach_approved_member(
     request.decided_at = now
 
     await db.commit()
+
+    # Issue #4849: this path (the #4018 org-admin approval class, and the
+    # login auto-match attach) created a membership but never projected it, so
+    # member_org_ids stayed stale for every member attached to an existing org.
+    await project_member_org_ids(db, user_id=user_id)
 
     # Post-commit, best-effort: the pre-token-generation Lambda reads Cognito
     # attributes rather than Postgres, so without this the approved member logs

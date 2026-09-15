@@ -24,6 +24,10 @@ from src.shared.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Keep cancellation-shielded stream finalizers alive until they schedule the
+# existing asynchronous S3 write, even after the response task has disappeared.
+_stream_finalizers: set[asyncio.Task] = set()
+
 
 class ChatLoggingService:
     """Service for async chat logging with PII scrubbing.
@@ -123,6 +127,9 @@ class ChatLoggingService:
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
         root_human_id: str = "",
+        pricing_decision: dict[str, Any] | None = None,
+        pricing_capture: Any = None,
+        only_priced: bool = False,
     ) -> None:
         """Fire-and-forget log a chat interaction.
 
@@ -147,6 +154,23 @@ class ChatLoggingService:
                 Empty when the request is not human-rooted. The budget-usage-tracker
                 Lambda reads it to write the cumulative ``root_user`` ledger row.
         """
+        if only_priced and (pricing_capture is None or pricing_capture.decision is None):
+            return
+        if pricing_capture is not None and pricing_capture.is_claude:
+            # Never send a new Claude request down the historical no-decision
+            # path after missing usage or a pricing failure.
+            if pricing_capture.decision is None:
+                return
+            pricing_decision = pricing_capture.decision
+            measured = pricing_decision["usage"]
+            event_usage = {
+                "input_tokens": measured["uncached_input_tokens"],
+                "output_tokens": measured["output_tokens"],
+                "cache_creation": pricing_capture.raw_usage.get("cache_creation"),
+            }
+            for name in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+                event_usage[name] = measured[name] if measured["raw"][name] is not None else None
+            response_body = {**response_body, "usage": event_usage}
         if not self.should_log(model):
             return
 
@@ -166,6 +190,7 @@ class ChatLoggingService:
                 response_body=response_body,
                 headers=headers,
                 root_human_id=root_human_id,
+                pricing_decision=pricing_decision,
             ),
             name=f"chat_log_{request_id}",
         )
@@ -185,6 +210,7 @@ class ChatLoggingService:
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
         root_human_id: str = "",
+        pricing_decision: dict[str, Any] | None = None,
     ) -> None:
         """Implementation of chat logging.
 
@@ -233,6 +259,7 @@ class ChatLoggingService:
                 user_id=user_id,
                 team_id=team_id,
                 root_human_id=root_human_id,
+                pricing_decision=pricing_decision,
                 account_type=account_type,
                 model=model,
                 api_format=api_format,
@@ -295,6 +322,7 @@ class ChatLoggingService:
         pii_types_found: list[str],
         patterns_matched: list[str],
         headers_scrubbed: list[str],
+        pricing_decision: dict[str, Any] | None = None,
     ) -> ChatLog:
         """Build the ChatLog record from components.
 
@@ -322,10 +350,11 @@ class ChatLoggingService:
         usage = None
         if usage_data:
             usage = UsageInfo(
-                input_tokens=usage_data.get("input_tokens", 0),
-                output_tokens=usage_data.get("output_tokens", 0),
-                cache_read_input_tokens=usage_data.get("cache_read_input_tokens", 0),
-                cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens", 0),
+                input_tokens=usage_data.get("input_tokens"),
+                output_tokens=usage_data.get("output_tokens"),
+                cache_read_input_tokens=usage_data.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens"),
+                cache_creation=usage_data.get("cache_creation"),
             )
 
         response = ChatLogResponse(
@@ -358,6 +387,7 @@ class ChatLoggingService:
             request=request,
             response=response,
             scrubbing=scrubbing,
+            pricing_decision=pricing_decision,
         )
 
     @property
@@ -387,7 +417,7 @@ class StreamingResponseBuffer:
         """Initialize the buffer."""
         self._chunks: list[dict[str, Any]] = []
         self._content_parts: list[str] = []
-        self._usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        self._usage: dict[str, Any] = {}
         self._stop_reason: str | None = None
         self._model: str | None = None
 
@@ -409,13 +439,15 @@ class StreamingResponseBuffer:
             delta = chunk.get("delta", {})
             self._stop_reason = delta.get("stop_reason")
             delta_usage = chunk.get("usage", {})
-            self._usage["output_tokens"] = delta_usage.get("output_tokens", 0)
+            self._usage.update(delta_usage)
 
         elif chunk_type == "message_start":
             message = chunk.get("message", {})
             self._model = message.get("model")
             start_usage = message.get("usage", {})
-            self._usage["input_tokens"] = start_usage.get("input_tokens", 0)
+            # message_start output is provisional (usually zero), not final
+            # generation usage. Only a terminal message_delta confirms output.
+            self._usage.update({name: value for name, value in start_usage.items() if name != "output_tokens"})
 
     def reconstruct_response(self) -> dict[str, Any]:
         """Reconstruct the full response from buffered chunks.
@@ -438,7 +470,7 @@ class StreamingResponseBuffer:
         return "".join(self._content_parts)
 
     @property
-    def usage(self) -> dict[str, int]:
+    def usage(self) -> dict[str, Any]:
         """Get the usage statistics."""
         return self._usage.copy()
 
@@ -468,6 +500,9 @@ def create_streaming_logging_wrapper(
     headers: dict[str, str] | None,
     start_time: float,
     root_human_id: str = "",
+    pricing_decision: dict[str, Any] | None = None,
+    pricing_capture: Any = None,
+    only_priced: bool = False,
 ) -> Any:
     """Create a streaming response wrapper that buffers chunks for logging.
 
@@ -500,6 +535,7 @@ def create_streaming_logging_wrapper(
     async def stream_with_logging():
         """Wrap stream to buffer response for logging."""
         buffer = StreamingResponseBuffer()
+        completed = False
 
         try:
             async for chunk in stream:
@@ -529,28 +565,62 @@ def create_streaming_logging_wrapper(
 
                 yield chunk
 
-            # After stream completes, log the reconstructed response
-            latency_ms = (time.monotonic() - start_time) * 1000
-            reconstructed_response = buffer.reconstruct_response()
-
-            chat_logger.log_chat_async(
-                request_id=request_id,
-                timestamp=timestamp,
-                org_id=org_id,
-                user_id=user_id,
-                team_id=team_id,
-                account_type=account_type,
-                model=model,
-                api_format=api_format,
-                latency_ms=latency_ms,
-                request_body=request_body,
-                response_body=reconstructed_response,
-                headers=headers,
-                root_human_id=root_human_id,
-            )
+            completed = True
 
         except Exception as e:
             logger.warning(f"Error in stream logging wrapper: {e}")
             raise
+        finally:
+
+            async def finalize():
+                if not completed:
+                    # Closing the service generator executes its pricing finally
+                    # block when the client disconnected while parked at yield.
+                    close = getattr(stream, "aclose", None)
+                    if close is not None:
+                        try:
+                            await close()
+                        except Exception:
+                            logger.exception("Failed to close stream during pricing finalization")
+                    task = getattr(pricing_capture, "finalization_task", None)
+                    if task is not None:
+                        try:
+                            await asyncio.shield(task)
+                        except Exception:
+                            logger.exception("Stream usage finalization failed")
+                    # A partial stream without final measured usage must never
+                    # become a fabricated zero-cost or legacy-priced event.
+                    if pricing_capture is None or not pricing_capture.is_claude or pricing_capture.decision is None:
+                        return
+                latency_ms = (time.monotonic() - start_time) * 1000
+                reconstructed_response = buffer.reconstruct_response()
+                if pricing_capture is not None and pricing_capture.is_claude:
+                    # This buffer saw the raw Bedrock events, including usage that an
+                    # OpenAI-format stream omits during translation.
+                    reconstructed_response = pricing_capture.buffer.reconstruct_response()
+
+                chat_logger.log_chat_async(
+                    request_id=request_id,
+                    timestamp=timestamp,
+                    org_id=org_id,
+                    user_id=user_id,
+                    team_id=team_id,
+                    account_type=account_type,
+                    model=model,
+                    api_format=api_format,
+                    latency_ms=latency_ms,
+                    request_body=request_body,
+                    response_body=reconstructed_response,
+                    headers=headers,
+                    root_human_id=root_human_id,
+                    pricing_decision=pricing_decision,
+                    pricing_capture=pricing_capture,
+                    only_priced=only_priced,
+                )
+
+            finalizer = asyncio.create_task(finalize(), name=f"chat_finalize_{request_id}")
+            _stream_finalizers.add(finalizer)
+            finalizer.add_done_callback(_stream_finalizers.discard)
+            await asyncio.shield(finalizer)
 
     return stream_with_logging()

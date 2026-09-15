@@ -57,6 +57,9 @@ GATEWAY_OK = {
     "already_registered": False,
     "acceptance_gate_address": "loop/epic-1/wave-1/accept",
     "accept_command": "@agent-engine accept",
+    # Composed server-side (#4885) — the worker knows only the API Gateway invoke
+    # URL, so it cannot build a user-facing link itself.
+    "flow_url": "https://gateway.example.com/flows/flow-abc123",
 }
 
 
@@ -417,7 +420,7 @@ class TestRunIdHeader:
 class TestSuccessNote:
     """What the human reads, and the one command they type."""
 
-    def test_success_note_names_the_plan_and_the_accept_command(self, tmp_path):
+    def test_success_note_names_the_flow_and_the_accept_command(self, tmp_path):
         write_proposal(tmp_path, valid_document())
 
         with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
@@ -429,6 +432,78 @@ class TestSuccessNote:
         # The plan must be described as executing nothing — this is the promise the
         # whole story rests on.
         assert "draft" in note and "executes nothing" in note
+
+    def test_the_id_is_labelled_flow_not_plan(self, tmp_path):
+        """#4885: the value is a `flow_id`, so calling it a "Plan" misdirects.
+
+        The reader is being sent to find this thing in the graph UI, where it is
+        addressed as a flow. A plan is the versioned document attached to it — a
+        different noun that also appears in this note, as `v1`.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "**Flow**:" in note
+        assert "**Plan**:" not in note
+
+    def test_the_flow_id_links_to_the_gateway_url(self, tmp_path):
+        """The note promises the plan is "visible in the graph UI"; this is the address.
+
+        Without it the reader had to already know how to reach the UI in order to
+        follow an instruction telling them it was there.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "[`flow-abc123`](https://gateway.example.com/flows/flow-abc123)" in note
+
+    def test_the_url_is_taken_from_the_gateway_not_composed_here(self, tmp_path):
+        """Only the gateway knows the user-facing origin.
+
+        This worker holds `ADP_GATEWAY_ENDPOINT`, the API Gateway invoke URL — the
+        machine plane. Composing a link from it would send an operator somewhere they
+        cannot use. So the URL is whatever the response said, verbatim.
+        """
+        write_proposal(tmp_path, valid_document())
+        response = {**GATEWAY_OK, "flow_url": "https://adp.internal.example/flows/flow-abc123"}
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(response))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "(https://adp.internal.example/flows/flow-abc123)" in note
+        assert ENDPOINT not in note
+
+    @pytest.mark.parametrize("missing", [None, ""])
+    def test_without_a_url_the_id_is_still_printed_bare(self, tmp_path, missing):
+        """A missing link degrades the comment; it must never lose the plan.
+
+        `flow_url` is `None` when `BG_GATEWAY_BASE_URL` is unset on the gateway, and
+        absent entirely if this worker image is newer than the gateway it calls. Both
+        are ordinary rollout states, not failures.
+        """
+        write_proposal(tmp_path, valid_document())
+        response = {**GATEWAY_OK, "flow_url": missing}
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(response))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "`flow-abc123`" in note
+        assert "](" not in note, "a falsy flow_url produced a link anyway"
+
+    def test_a_response_with_no_flow_url_key_at_all_still_succeeds(self, tmp_path):
+        """An older gateway does not send the field. Registration still worked."""
+        write_proposal(tmp_path, valid_document())
+        response = {key: value for key, value in GATEWAY_OK.items() if key != "flow_url"}
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(response))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "**Flow**: `flow-abc123`" in note
+        assert "@agent-engine accept" in note
 
     def test_the_accept_command_is_quoted_from_the_gateway_not_hardcoded(self, tmp_path):
         """If the parser's wording changes, the comment follows it automatically."""

@@ -186,8 +186,16 @@ def test_triage_runs_between_the_scan_and_the_handoff(jobs, triage_job):
     empty prefix, and -- with the temporary guard now gone -- hard-fails the
     barrier as STALLED, blaming a triage pass that had not yet run.
     """
-    assert triage_job["needs"] == "code-review", (
-        "triage consumes the findings the scan published, so it must depend on it"
+    # `needs` may be a string or a list, and triage legitimately gained a second
+    # dependency (#4792's `scan_gate`, which decides whether this scan file has
+    # already been turned into issues). The invariant is that the EDGE to the scan
+    # exists, not that it is the only one -- a stricter assertion would fail any
+    # future gate for doing exactly what it was asked to do.
+    triage_needs = triage_job["needs"]
+    triage_needs = [triage_needs] if isinstance(triage_needs, str) else triage_needs
+    assert "code-review" in triage_needs, (
+        "triage consumes the findings the scan published, so it must depend on it. "
+        f"Found {triage_job['needs']!r}"
     )
     assert jobs["deliver"]["needs"] == ["code-review", "triage"], (
         "deliver must depend on BOTH: `code-review` for the run date it consumes "
@@ -369,15 +377,32 @@ def test_the_gate_lints_the_body_that_will_actually_be_filed(triage_bodies):
     )
 
 
-def test_the_plan_is_authored_from_the_dedup_output_not_from_the_raw_findings(
+def test_the_plan_s_finding_set_comes_from_the_dedup_output_not_the_raw_findings(
     triage_bodies,
 ):
-    """The producer's input is the deduped document. Handing it the raw findings
-    would re-file every already-accepted finding as new -- nightly issue spam
-    against the baseline the dedup step exists to honour."""
+    """The producer's COVERAGE input is the deduped document. Driving coverage from
+    the raw findings would re-file every already-accepted finding as new -- nightly
+    issue spam against the baseline the dedup step exists to honour.
+
+    The raw document IS handed to the producer, deliberately, but only under
+    `--raw-findings`: it is the sole artifact still holding the scanner's own
+    account of each finding, which the per-work-item authoring call needs so its
+    `validation` section can assert the defect is CLOSED rather than merely that
+    new code runs. That cannot widen the night, because the detail projection is
+    keyed by the deduped id list and returns nothing outside it
+    (`test_the_detail_projection_takes_only_the_findings_of_this_night`, and
+    end-to-end in `test_a_raw_document_holding_suppressed_findings_does_not_widen_the_night`).
+
+    So the gate is on WHICH FLAG the raw document may arrive under, not on whether
+    it appears at all.
+    """
     author = _one_step(triage_bodies, "author_grouping_plan.py")
     assert "--new-findings new-findings.json" in author
-    assert "code-review-findings.json" not in author
+    flags = re.findall(r"(--[\w-]+)\s+\S*code-review-findings\.json", author)
+    assert set(flags) <= {"--raw-findings"}, (
+        f"the raw findings document reaches the producer under {sorted(set(flags))}; "
+        "it may only arrive as `--raw-findings` (detail), never as its findings input"
+    )
 
 
 # --------------------------------------------------------------------------

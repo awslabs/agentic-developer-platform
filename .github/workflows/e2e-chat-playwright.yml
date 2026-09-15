@@ -87,11 +87,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pytest pytest-html playwright boto3
+          pip install pytest pytest-html pytest-timeout playwright boto3 requests
           playwright install chromium --with-deps
 
       - name: Run E2E chat suite
+        shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p test-results
           python -m pytest tests/e2e/chat/ \
             -v \
             --tb=short \

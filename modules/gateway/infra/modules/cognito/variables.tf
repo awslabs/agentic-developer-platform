@@ -80,6 +80,16 @@ variable "refresh_token_validity" {
   }
 }
 
+variable "cli_refresh_token_validity" {
+  type        = number
+  description = "Refresh token validity in minutes for the CLI app client (default 1440 = 24 hours; deliberately much shorter than the SPA client's)"
+  default     = 1440
+  validation {
+    condition     = var.cli_refresh_token_validity >= 60 && var.cli_refresh_token_validity <= 43200
+    error_message = "CLI refresh token validity must be between 60 minutes (1 hour) and 43200 minutes (30 days)."
+  }
+}
+
 variable "id_token_validity" {
   type        = number
   description = "ID token validity in minutes"
@@ -156,11 +166,18 @@ variable "github_oauth_client_secret" {
 
 variable "pre_signup_allowlist_mode" {
   type        = string
-  description = "Allowlist mode for Pre Sign-Up trigger: 'org' (GitHub org membership), 'explicit' (DDB allowlist), or 'open' (allow all)"
+  description = "Allowlist mode for Pre Sign-Up trigger: 'org' (GitHub org membership), 'platform' (≥1 platform org membership — #4844), 'explicit' (DDB allowlist), or 'open' (allow all — requires pre_signup_allow_open_signup)"
   default     = "org"
   validation {
-    condition     = contains(["org", "explicit", "open"], var.pre_signup_allowlist_mode)
-    error_message = "Allowlist mode must be 'org', 'explicit', or 'open'."
+    condition     = contains(["org", "platform", "explicit", "open"], var.pre_signup_allowlist_mode)
+    error_message = "Allowlist mode must be 'org', 'platform', 'explicit', or 'open'."
+  }
+  # Issue #4844: 'open' now requires the same acknowledgement flag the broker has
+  # required since #3986. Caught in the plan rather than at runtime, where it
+  # would surface as a total sign-up denial.
+  validation {
+    condition     = var.pre_signup_allowlist_mode != "open" || var.pre_signup_allow_open_signup
+    error_message = "pre_signup_allowlist_mode = 'open' disables allowlist enforcement entirely; set pre_signup_allow_open_signup = true to acknowledge this."
   }
 }
 
@@ -168,6 +185,12 @@ variable "pre_signup_allowed_orgs" {
   type        = string
   description = "Comma-separated list of GitHub org names allowed to sign up (used when allowlist_mode is 'org')"
   default     = ""
+}
+
+variable "pre_signup_allow_open_signup" {
+  type        = bool
+  description = "Escape hatch (#3986/#4844): honour pre_signup_allowlist_mode = 'open'. Mirrors the broker's allow_open_signup so both copies of the allowlist agree."
+  default     = false
 }
 
 variable "github_token_secret_arn" {
@@ -191,4 +214,43 @@ variable "enable_reserved_concurrency" {
   description = "Enable reserved concurrent executions on Cognito trigger Lambdas. Set to false on fresh accounts where Lambda quota is too low (Issue #2910)."
   type        = bool
   default     = true
+}
+
+# -----------------------------------------------------------------------------
+# Membership-eligibility projection read (Issue #4849)
+# -----------------------------------------------------------------------------
+# The pre-signup trigger reads `member_org_ids` off the identity-index rows to
+# answer "does this GitHub identity hold any platform org membership?" without a
+# gateway call. Names/ARNs arrive as variables rather than cross-module
+# references: the tables live in the gateway root module, and referencing back
+# into the root from here would close the cloudfront -> api_gateway ->
+# github_auth_broker -> cloudfront dependency loop documented at
+# modules/gateway/infra/main.tf:723-736.
+#
+# All default to empty/false so the read is inert until wired: an unset table name
+# makes check_platform_membership return UNAVAILABLE, which in shadow mode is a
+# log line and nothing more.
+
+variable "identity_index_table_name" {
+  description = "Name of the legacy identity-index DynamoDB table (Issue #4849 eligibility read)"
+  type        = string
+  default     = ""
+}
+
+variable "user_identity_index_table_name" {
+  description = "Name of the v2 user-identity-index DynamoDB table (Issue #4849 eligibility read)"
+  type        = string
+  default     = ""
+}
+
+variable "identity_index_table_arns" {
+  description = "ARNs of the identity-index tables the pre-signup Lambda may GetItem from. Empty grants nothing."
+  type        = list(string)
+  default     = []
+}
+
+variable "user_identity_index_v2_read" {
+  description = "Read the v2 user-identity-index table first, falling back to the legacy table. Mirrors the webhook-ingress reader's flag (#537) so all readers move together."
+  type        = string
+  default     = "false"
 }

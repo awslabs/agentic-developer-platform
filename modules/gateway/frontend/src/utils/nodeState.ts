@@ -119,6 +119,7 @@ export function engineStateToDisplayState(state: NodeEngineState): DisplayState 
     case 'passed':
       return 'complete';
     case 'running':
+    case 'awaiting_merge':
       return 'in_progress';
     case 'awaiting_gate':
       return 'gate';
@@ -150,7 +151,7 @@ export function engineStateToDisplayState(state: NodeEngineState): DisplayState 
  */
 export function isCurrentPosition(node: Pick<GraphNode, 'state' | 'stalled'>): boolean {
   if (node.stalled) return false;
-  return node.state === 'running' || node.state === 'awaiting_gate';
+  return node.state === 'running' || node.state === 'awaiting_merge' || node.state === 'awaiting_gate';
 }
 
 /** Count nodes per display state, skipping those that occupy no segment. */

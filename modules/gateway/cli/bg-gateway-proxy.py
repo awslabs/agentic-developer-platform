@@ -214,6 +214,8 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
             self._send_error_body(400, "proxy_bad_request", str(exc))
             return
 
+        body = self._normalize_model(body)
+
         connection = self._open_upstream()
         try:
             connection.request(
@@ -273,6 +275,29 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
             chunks.append(self.rfile.read(size))
             self.rfile.readline()  # trailing CRLF
         return b"".join(chunks)
+
+    def _normalize_model(self, body: bytes) -> bytes:
+        """Prefix bare model names on the OpenAI route with ``openai.``.
+
+        Codex's in-app model picker writes short slugs (``gpt-5.6-sol``) into
+        config.toml, but the gateway's OpenAI passthrough only serves models
+        under their prefixed ids (``openai.gpt-5.6-sol``). Rewriting here lets
+        in-app model switching work without hand-editing config.toml.
+        Anything that is not JSON with a string ``model`` passes through
+        untouched.
+        """
+        if not body or not self.path.startswith("/openai/"):
+            return body
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            return body
+        model = payload.get("model") if isinstance(payload, dict) else None
+        if not isinstance(model, str) or not model or model.startswith("openai."):
+            return body
+        payload["model"] = f"openai.{model}"
+        self.log_message("model %r -> %r", model, payload["model"])
+        return json.dumps(payload).encode("utf-8")
 
     def _upstream_headers(self, token: str, body: bytes) -> dict[str, str]:
         headers = {name: value for name, value in self.headers.items() if name.lower() not in DROPPED_REQUEST_HEADERS}

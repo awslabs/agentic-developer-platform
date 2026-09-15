@@ -1073,37 +1073,59 @@ def test_security_scan_workflow_is_byte_identical_to_main():
     _assert_unchanged_vs_main(".github/workflows/security-scan.yml")
 
 
-def test_this_unit_touches_no_workflow_but_the_test_binding():
-    """No out-of-scope change to a relied-upon pipeline.
+def _assert_dedup_workflow_scope(changed: set[str]):
+    """The unit's scope restriction applies when its implementation changes.
 
-    The allow-list carries the nightly as well as Script Tests, which it did not
-    when U8 landed. That was planned obsolescence of the same kind U5 hit with
-    this suite's old `len(jobs) == 1` fixture: U8 authored no workflow steps, so
-    "touches no workflow at all" and "touches nothing out of scope" were the same
-    sentence then and stopped being so the moment a later unit wired the scripts
-    into their caller. U11's wiring (#4598) is a step in the nightly by
-    definition -- the nightly IS this EPIC's pipeline -- so the narrow form would
-    fail every future unit for doing exactly what it was asked to do.
-
-    The property actually worth defending is that the pre-existing, unrelated
-    scan pipeline does not change as a side effect of this EPIC. That is
-    unaffected: `security-scan.yml` is not on this list and is separately
-    asserted byte-identical to main by the test above, which is the stronger
-    check of the two.
+    Unrelated PRs also run Script Tests. They must be able to maintain other
+    workflows (for example AIDLC reminders) without changing this unit's policy.
     """
-    ref = _main_ref()
-    if ref is None:
-        pytest.skip("no network and no local main ref; cannot compare against main")
-    completed = _git("diff", "--name-only", ref, "--", ".github/workflows/")
-    assert completed.returncode == 0, f"git diff failed: {completed.stderr}"
-    changed = {line for line in completed.stdout.split() if line}
+    unit_paths = {
+        ".github/scripts/dedup_security_findings.py",
+        ".github/scripts/normalize_security_findings.py",
+    }
+    if changed.isdisjoint(unit_paths):
+        return
+    workflows = {p for p in changed if p.startswith(".github/workflows/")}
     allowed = {
         ".github/workflows/security-agent-nightly.yml",
         ".github/workflows/script-tests.yml",
     }
-    assert changed <= allowed, (
-        f"unexpected workflow changes: {sorted(changed - allowed)}"
+    assert workflows <= allowed, (
+        f"unexpected workflow changes alongside the dedup unit: {sorted(workflows - allowed)}"
     )
+
+
+def test_this_unit_touches_no_workflow_but_the_test_binding():
+    """Dedup implementation changes must stay within the unit's pipeline scope.
+
+    The separate security-scan byte-identity and private-findings checks still
+    run for every PR; unrelated workflow edits do not bypass those protections.
+    """
+    ref = _main_ref()
+    if ref is None:
+        pytest.skip("no network and no local main ref; cannot compare against main")
+    completed = _git("diff", "--name-only", ref, "--")
+    assert completed.returncode == 0, f"git diff failed: {completed.stderr}"
+    _assert_dedup_workflow_scope(set(completed.stdout.splitlines()))
+
+
+def test_unrelated_workflow_maintenance_is_outside_the_dedup_units_scope():
+    _assert_dedup_workflow_scope({".github/workflows/aidlc-gate-nudge.yml"})
+
+
+@pytest.mark.parametrize("unit", ["dedup_security_findings.py", "normalize_security_findings.py"])
+@pytest.mark.parametrize("workflow", ["security-scan.yml", "aidlc-gate-nudge.yml"])
+def test_dedup_changes_still_reject_out_of_scope_workflow_edits(unit, workflow):
+    with pytest.raises(AssertionError, match="unexpected workflow changes"):
+        _assert_dedup_workflow_scope({f".github/scripts/{unit}", f".github/workflows/{workflow}"})
+
+
+def test_dedup_changes_can_update_their_own_workflow_bindings():
+    _assert_dedup_workflow_scope({
+        ".github/scripts/dedup_security_findings.py",
+        ".github/workflows/security-agent-nightly.yml",
+        ".github/workflows/script-tests.yml",
+    })
 
 
 def test_no_public_artifact_upload_path_exists_for_findings():

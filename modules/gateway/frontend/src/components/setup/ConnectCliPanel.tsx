@@ -1,10 +1,10 @@
 /**
  * ConnectCliPanel — seed the CLI from the browser session. Issue #4146.
  *
- * Signing in with GitHub never creates a Cognito password, so `bg-cognito-auth.sh
- * login` cannot work for those users. `import` (shipped in #4145) covers them: it
- * takes the refresh token the SPA already holds and writes a working
- * ~/.bedrock-gateway/ config from it.
+ * Signing in with GitHub never creates a Cognito password, so the password login
+ * flow cannot work for those users. `adp import` (shipped in #4145, fronted by the
+ * `adp` CLI in #4852) covers them: it takes the refresh token the SPA already holds
+ * and writes a working ~/.bedrock-gateway/ config from it.
  *
  * Security shape — do not "simplify" these away:
  * - The token is NEVER interpolated into the copyable command. `import` reads it
@@ -24,7 +24,7 @@ export function ConnectCliPanel() {
   const refreshToken = getRefreshToken();
   const baseUrl = getGatewayBaseUrl();
 
-  const importCommand = `bg-cognito-auth.sh import --gateway-url ${baseUrl}`;
+  const importCommand = `adp import --gateway-url ${baseUrl}`;
 
   // AuthCallback guards only on id/access tokens and stores `refreshToken || ''`,
   // so a fully logged-in user can legitimately hold no refresh token. Showing the

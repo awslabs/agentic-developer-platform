@@ -152,3 +152,27 @@ variable "enable_container_insights" {
   description = "Enable CloudWatch Container Insights via the amazon-cloudwatch-observability EKS addon. Ships pod logs and metrics to CloudWatch."
   default     = false
 }
+
+# NetworkPolicy enforcement — Auto Mode network-policy controller (#4999)
+variable "enable_network_policy_controller" {
+  type        = bool
+  description = <<-DESC
+    Enable the EKS Auto Mode network-policy controller, which is what actually
+    ENFORCES Kubernetes NetworkPolicy objects. While false, NetworkPolicies are
+    accepted by the apiserver and have no effect: no PolicyEndpoint objects are
+    created and a deny-all policy does not deny anything (#4999, evaluation
+    #3967 check W1-04).
+
+    Defaults to false because flipping it on is not additive — it makes every
+    NetworkPolicy already present in the cluster take effect simultaneously. Any
+    pod that is selected by a deny policy but matched by no allow policy loses
+    that traffic at the TCP layer, with no pod restart and no error surfaced to
+    the workload. Before enabling in an environment, audit the existing policies
+    for exactly that gap (in adp-agents this is why the ADOT collector needed
+    an egress policy first, or all agent telemetry would have stopped silently).
+
+    Rollback: set back to false and apply. Enforcement stops and the previous
+    unenforced behaviour returns.
+  DESC
+  default     = false
+}

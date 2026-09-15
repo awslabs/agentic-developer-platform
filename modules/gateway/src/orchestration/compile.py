@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .execution_policy import PolicyRejectedError, stamp_policy
 from .genesis import APPROVAL_DECISION_KINDS
 from .models import DecisionKind
 from .proposal import LoopProposal, Violation, split_address, validate_proposal
@@ -70,8 +71,10 @@ __all__ = [
     "ApprovalContext",
     "CompileResult",
     "NonApprovalSupersedeError",
+    "PolicyNotAcceptableError",
     "ProposalRejectedError",
     "TenantMismatchError",
+    "accept_execution_policy",
     "address_of",
     "compile_proposal",
     "plan_hash",
@@ -121,6 +124,22 @@ class NonApprovalSupersedeError(ProposalRejectedError):
     """
 
 
+class PolicyNotAcceptableError(ProposalRejectedError):
+    """Raised when an execution policy cannot be accepted as submitted (#5128).
+
+    Two causes, both refusals of the *document* rather than of the author's
+    authority: it declared a server-stamped field (id, hash, principal), or a
+    non-human actor tried to accept one.
+
+    A subclass for the same reason as the two above — a caller asking only "was
+    this refused?" catches it — and separately catchable because a model
+    attempting to accept its own authority is an escalation attempt worth alerting
+    on, not a typo. The route maps it to 422, matching the issue's "malformed
+    policy → 422" contract; the *unauthorized-scope* case is a different path and
+    keeps the existing uniform denial.
+    """
+
+
 @dataclass(frozen=True)
 class ApprovalContext:
     """Who approved this plan, and for which tenant. **Server-resolved.**
@@ -163,6 +182,11 @@ class CompileResult:
     already_compiled: bool = False
 
 
+# Fields of `LoopProposal` that describe how the plan came to be rather than what
+# it executes, and are therefore NOT part of its identity. See `plan_hash`.
+HASH_EXCLUDED_FIELDS = frozenset({"description", "design_history"})
+
+
 def plan_hash(proposal: LoopProposal) -> str:
     """Stable SHA-256 of a proposal document.
 
@@ -174,9 +198,115 @@ def plan_hash(proposal: LoopProposal) -> str:
     Note this hashes the document as *authored*, including its declared `org_id`.
     That is intended: the hash answers "is this the same document?", and a
     document differing only in declared tenant is not the same document.
+
+    **`description` and `design_history` are excluded (#4885), and that exclusion
+    is load-bearing twice over.**
+
+    Semantically: they are provenance *about* how the plan came to be, not the
+    plan's executable content. Two documents differing only in their use-case
+    sentence describe the same graph, the same waves and the same dependencies —
+    they are the same plan, and the hash answers exactly that question.
+
+    Operationally: `plan_hash` is what idempotency compares. Including the new
+    fields would change the hash of every document that carries them, so a
+    fail-soft retry spanning the #4885 deploy — the worker retries by
+    construction — would no longer match its own in-force plan. It would fall
+    through the idempotency return and be refused 409 as a plan-of-record
+    rewrite, turning a dropped connection into a permanent failure. `EXCLUDED`
+    is a frozenset rather than an inline literal so a field added to it here
+    cannot be forgotten by a reader who only greps for the field name.
+
+    **`execution_policy` is deliberately NOT excluded (#5128)**, which is worth
+    stating because the symmetry with the two fields above is misleading. Those are
+    provenance; a policy is authority. Two documents differing only in what they
+    authorize are *not* the same plan, and excluding the policy would make an
+    amendment that widened a repository list or raised a spend cap hash identically
+    to the narrower plan already in force — so it would hit the idempotency return
+    and be silently discarded as a retry. The widening would appear to succeed and
+    have no effect.
+
+    This is safe for retries only because the policy's stamped id is *derived* from
+    its content rather than minted per acceptance (`execution_policy.stamp_policy`).
+    A minted id would reintroduce exactly the #4885 failure this docstring
+    describes.
+
+    **A policyless document omits the key rather than serialising it as `null`**,
+    which is the other half of keeping #5128 retry-safe. `model_dump` emits
+    `"execution_policy": null` for every legacy plan, and that key alone changes the
+    canonical JSON — so every plan authored before this field existed would hash
+    differently after the deploy, and an in-flight retry would be refused 409 as a
+    plan-of-record rewrite. Dropping the key when there is no policy makes the
+    legacy document byte-identical to what it was, so adding the field is a true
+    no-op for the plans that do not use it. `exclude_none` would be the wrong tool
+    here: it would also strip nulls from nested policy fields and from unrelated
+    optional fields, changing hashes it has no business changing.
     """
-    canonical = json.dumps(proposal.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    document = proposal.model_dump(mode="json", exclude=HASH_EXCLUDED_FIELDS)
+    if document.get("execution_policy") is None:
+        document.pop("execution_policy", None)
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def accept_execution_policy(
+    proposal: LoopProposal,
+    *,
+    decision: ApprovalContext,
+    decision_kind: DecisionKind,
+) -> LoopProposal:
+    """Bind a submitted execution policy to its acceptor, or refuse it (#5128).
+
+    Returns the proposal unchanged when it carries no policy, which is what
+    preserves legacy semantics for every existing flow: no policy, no new
+    behaviour, not even a stamped empty one.
+
+    **A model may propose a policy but may never accept one.** That distinction is
+    enforced here, on `decision.actor_kind`, because this function is where a
+    proposed policy becomes an accepted grant. The draft-registration path
+    (`draft_routes.py`) compiles with `ActorKind.SERVICE` and is exactly the case
+    that must be refused: an agent registering a draft is proposing, and if its
+    compile could stamp a policy then an agent would be authorizing its own
+    autonomous actions — the whole authority model inverted in one call.
+
+    Refusing rather than silently dropping the policy is the safer of the two
+    failures. Dropping it would compile the graph while discarding the *bounds*,
+    producing a flow that runs with legacy unbounded semantics while its author
+    believes it is constrained. A refusal cannot be misread that way.
+
+    Args:
+        proposal: The document being compiled.
+        decision: Server-resolved acceptance context. Both the principal and the
+            tenant come from here, never from the document.
+        decision_kind: The decision kind this compile records, used only in the
+            refusal message so an operator can see which path attempted it.
+
+    Returns:
+        The proposal, with `execution_policy` stamped when one was present.
+
+    Raises:
+        PolicyNotAcceptableError: A non-human actor attempted acceptance, or the
+            document declared a server-stamped field.
+    """
+    policy = proposal.execution_policy
+    if policy is None:
+        return proposal
+
+    if ActorKind(decision.actor_kind) is not ActorKind.HUMAN:
+        raise PolicyNotAcceptableError(
+            f"a {decision.actor_kind.value if isinstance(decision.actor_kind, ActorKind) else decision.actor_kind!r} actor "
+            f"cannot accept an execution policy (attempted via {decision_kind.value!r}); a model may propose one, but accepting "
+            "delegated authority is a human act. Submit the plan without a policy, or have an authorized human accept it."
+        )
+
+    try:
+        stamped = stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)
+    except PolicyRejectedError as exc:
+        # Translated rather than propagated so every refusal from this module is a
+        # `ProposalRejectedError` subclass, which is what the routes' existing
+        # handlers catch. `from exc` keeps the original cause for the logs.
+        raise PolicyNotAcceptableError(str(exc)) from exc
+
+    return proposal.model_copy(update={"execution_policy": stamped})
 
 
 async def compile_proposal(
@@ -225,6 +355,9 @@ async def compile_proposal(
             approver's resolved org. No rows written.
         NonApprovalSupersedeError: `decision_kind` is not an approval kind and a
             plan is already in force for the flow. No rows written.
+        PolicyNotAcceptableError: The document carries an execution policy that a
+            non-human actor tried to accept, or that declared a server-stamped
+            field. No rows written.
     """
     # --- Gate 1: authoritative re-validation -------------------------------
     # The advisory CLI may or may not have run. This is the control, and it runs
@@ -244,6 +377,18 @@ async def compile_proposal(
             f"proposal declares org_id {proposal.org_id!r} but the approver's resolved org is {decision.org_id!r}; "
             "a proposal is never re-homed to the approver's tenant"
         )
+
+    # --- Gate 2a: stamp the execution policy, if the document carries one -----
+    # Runs BEFORE the hash and the document dump below, deliberately: the stamp is
+    # part of the plan's executable content, so it must be inside what
+    # `plan_hash` covers and inside what the plan store holds. Stamping afterwards
+    # would persist an unstamped policy and hash a document that never existed.
+    #
+    # `stamp_policy` is content-derived (see `execution_policy`), so this is
+    # idempotent in the way that matters: a resubmission of the same document
+    # stamps to the same id and therefore the same `document_hash`, and the
+    # idempotency return below still recognises it as a retry.
+    proposal = accept_execution_policy(proposal, decision=decision, decision_kind=decision_kind)
 
     repo = OrchestrationRepository(session)
     document = proposal.model_dump(mode="json")
@@ -359,6 +504,14 @@ async def _resolve_flow(repo: OrchestrationRepository, *, proposal: LoopProposal
     node's address, so it is what the document actually identifies. Two tenants
     may each have a `delivery-loop` flow, and they are different flows — which is
     why the lookup is over the tenant's flows and never global.
+
+    The design-loop capture fields (#4885) are written **on creation only**. An
+    existing flow keeps whatever it already has, which is the same rule
+    `title` and `intent_ref` have always followed here: this function resolves a
+    flow, it does not reconcile one. Updating them on every compile would let a
+    later document silently rewrite the recorded design history of a flow whose
+    gates a human already answered — and an amendment (`amend.py` reaches this
+    same path) would overwrite the inception record of the plan it amends.
     """
     for candidate in await repo.list_flows(org_id=org_id):
         if candidate.slug == proposal.flow_slug:
@@ -369,6 +522,13 @@ async def _resolve_flow(repo: OrchestrationRepository, *, proposal: LoopProposal
         slug=proposal.flow_slug,
         title=proposal.title,
         intent_ref=proposal.intent_ref,
+        description=proposal.description,
+        # Dumped to plain JSON, not handed over as the Pydantic model: this value
+        # goes into a JSON column, and `mode="json"` is what turns the validated
+        # `approved_at` datetimes back into the ISO strings the column stores and
+        # the API re-serialises. `None` stays `None` — the absent case must not
+        # become `{}`, which would render as a design history with no stages.
+        design_history=(proposal.design_history.model_dump(mode="json") if proposal.design_history else None),
     )
 
 

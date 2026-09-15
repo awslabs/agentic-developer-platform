@@ -170,6 +170,16 @@ def _emit_metrics(report: TickReport) -> None:
                     }
                 )
 
+        result_report = getattr(report, "result_report", None)
+        if result_report is not None:
+            metric_data.extend(
+                [
+                    {"MetricName": "ResultsExamined", "Value": result_report.examined, "Unit": "Count"},
+                    {"MetricName": "ResultsAdvanced", "Value": result_report.advanced, "Unit": "Count"},
+                    {"MetricName": "ResultErrors", "Value": result_report.errors, "Unit": "Count"},
+                ]
+            )
+
         # Stall/halt counters (issue #4211). Emitted in the same call rather than
         # from a second client so a CloudWatch failure cannot leave the tick's
         # numbers landing while detection's silently do not.
@@ -351,7 +361,11 @@ async def _run() -> TickReport:
             # fail-closed and never raises — with the engine flag off this is an
             # immediate, silent no-op that reads nothing (#4527).
             engine_command_report = await run_engine_command_pass(session)
+            from .results import observe_results
+
+            result_report = await observe_results(session)
             report = await run_tick(session)
+            report.errors += result_report.errors
             # `from_env` reads `ORCH_DEFECT_CYCLE_BOUND` and never raises — a bad
             # value degrades to the default bound rather than failing the tick
             # (#4403). Read per invocation, so retuning the knob takes effect on the
@@ -384,6 +398,7 @@ async def _run() -> TickReport:
         setattr(report, _STALL_REPORT_ATTR, stall_report)
         setattr(report, _DISPATCH_REPORT_ATTR, dispatch_report)
         setattr(report, _ENGINE_COMMAND_REPORT_ATTR, engine_command_report)
+        setattr(report, "result_report", result_report)
         return report
 
 
@@ -481,6 +496,15 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
                 "commands_capped": engine_command_report.capped,
                 "commands_enabled": engine_command_report.enabled,
             }
+        )
+
+    result_report = getattr(report, "result_report", None)
+    if result_report is not None:
+        summary.update(
+            results_examined=result_report.examined,
+            results_advanced=result_report.advanced,
+            results_waiting=result_report.waiting,
+            result_errors=result_report.errors,
         )
 
     # Unconditional, single-line, machine-greppable. This is the line that proves

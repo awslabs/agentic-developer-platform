@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
+from pricing_policy import canonical_billing_model_id, is_v2_priced_model, legacy_flat_rates, legacy_flat_table
 from src.shared.schemas.budget import EntityType, PeriodType
 
 from .config import budget_config
@@ -28,10 +29,21 @@ def calculate_model_cost(model_name: str, tokens_in: int, tokens_out: int) -> tu
     """
     Calculate the cost for a model based on input and output tokens.
 
+    OpenAI and Claude quotes use the live shared V2 cache. Other providers
+    retain their curated compatibility rates.
+
+    This is an estimator and a reporting helper — ``/budget/cost`` and the
+    pre-request middleware estimate. Settlement uses the durable pricing decision
+    (design §4.3); do not route billing through here.
+
     Returns:
         Tuple of (total_cost, input_cost_per_1k, output_cost_per_1k)
     """
-    pricing = budget_config.model_pricing.get(model_name, budget_config.model_pricing["default"])
+    if is_v2_priced_model(canonical_billing_model_id(model_name)):
+        from .pricing import pricing_service
+
+        return pricing_service.quote_cost(model_name, tokens_in, tokens_out)
+    pricing, _known = legacy_flat_rates(model_name)
 
     input_cost_per_1k = pricing["input"]
     output_cost_per_1k = pricing["output"]
@@ -189,5 +201,11 @@ def validate_budget_amount(amount: Decimal) -> bool:
 
 
 def get_model_names() -> list[str]:
-    """Get list of supported model names."""
-    return [name for name in budget_config.model_pricing.keys() if name != "default"]
+    """Get list of supported model names.
+
+    Issue #4969: sourced from the shared snapshot rather than the retired
+    ``budget_config.model_pricing``. Sorted for a stable order — the old dict
+    order was insertion order in a hand-edited literal, which is not a contract
+    anything should have depended on.
+    """
+    return sorted(name for name in legacy_flat_table() if name != "default")

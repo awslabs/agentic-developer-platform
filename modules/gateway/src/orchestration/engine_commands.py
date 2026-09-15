@@ -523,7 +523,7 @@ async def _resolve_gate(
     stmt = select(OrchestrationNode).where(
         OrchestrationNode.org_id == org_id,
         OrchestrationNode.flow_id == flow_id,
-        OrchestrationNode.kind == NodeKind.GATE.value,
+        OrchestrationNode.kind.in_([NodeKind.GATE.value, NodeKind.EVAL.value]),
     )
     if gate_ref is not None:
         stmt = stmt.where(OrchestrationNode.node_ref == gate_ref)

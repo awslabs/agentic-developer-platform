@@ -99,13 +99,10 @@ wave land before the next starts. A proposal that declares its own gates is pass
 through untouched — an author who thought about gating is not overridden by a
 default whose whole purpose is to cover authors who did not.
 
-**This transform ships OFF by default.** A wave gate is not yet answerable (see the
-"Known limitation" note below), so inserting one auto-wedges the plan at wave 1
-rather than "asking the human one extra time". Until #4575 teaches the engine to
-arm a wave gate, `gate_every_wave_enabled()` defaults to `False` and the transform
-runs only when an operator opts in with a truthy `ORCHESTRATION_AUTONOMY_GATE_EVERY_WAVE`.
-The acceptance gate below is separate and always inserted — it is what makes a
-draft accept-ready, not an autonomy default.
+The transform remains opt-in via `ORCHESTRATION_AUTONOMY_GATE_EVERY_WAVE`
+so upgrading does not silently change authors' autonomy preferences. Gate nodes
+are presented by the tick once their predecessors pass (#4575). The acceptance
+gate is separate and always inserted so drafts require approval before execution.
 
 It is a registration-time transform over the document, not a compile-time special
 case, for one concrete reason: the transformed document is what
@@ -118,33 +115,6 @@ is exactly the code nobody re-checks.
 than adding the gate alongside them. A gate hanging off the side of a boundary the
 work flows straight past is decoration; the point is that the next wave's
 predecessor is the gate.
-
-**Known limitation: a wave gate is not yet answerable.** Nothing in the engine
-promotes a `gate`-kind node into `awaiting_gate`. `dispatch_pass` is
-story-nodes-only by design (a gate has no `issue_ref`, so it can never produce a
-complete `source_ref`) and counts everything else `undispatchable`, and the only
-`* -> awaiting_gate` edge in `state.py` starts from `running`, which a gate node
-never reaches. So an auto-inserted wave gate sits at `pending` and the wave behind
-it does not start.
-
-This is **pre-existing engine behaviour, not something registration introduces**:
-an author-declared gate compiled through the ordinary acceptance path
-(`PLAN_ACCEPTED`) stalls identically, as does an `eval` node. Verified by driving
-both paths with real `run_tick`/`run_dispatch_pass`. Closing it means teaching the
-engine to advance non-story nodes, which is a change to every flow in the engine
-and belongs in its own story — tracked as issue #4575 rather than smuggled in here.
-
-What that means for *this* story is bounded, and worth being precise about because
-"gates don't work" would sound like it breaks the feature: the **acceptance gate is
-unaffected**, because it is *born* in `awaiting_gate` rather than having to be
-promoted into it. So the promise this story makes — a draft lands inert, one human
-`@agent-engine accept` makes it live, the accepted plan then executes — holds
-end-to-end. The wave gates are the autonomy default's *extra* training wheels, and
-until the engine can arm them (#4575) a gated multi-wave plan would execute wave 1
-and then wait — which is exactly why the transform is OFF by default. An operator
-who understands that limitation and still wants the extra gates can opt in with
-`ORCHESTRATION_AUTONOMY_GATE_EVERY_WAVE=1`, which is the lever the setting exists to
-provide.
 
 --------------------------------------------------------------------------------
 Tenant isolation
@@ -218,16 +188,10 @@ _FALSE_SPELLINGS = frozenset({"0", "false", "no", "off"})
 def gate_every_wave_enabled() -> bool:
     """Whether a gateless proposal gets a gate at every wave boundary.
 
-    **Default False (#4575).** The autonomy default *wants* to be "ask the human at
-    every wave", but an auto-inserted wave gate is not yet answerable: nothing in
-    the engine arms a `gate`-kind node (see the "Known limitation" note above), so
-    a gated multi-wave plan runs wave 1 and then **waits forever**. Defaulting this
-    on therefore turns every gateless multi-wave proposal into an unfinishable
-    plan — strictly worse than the acceptance gate alone, which still guards "may
-    this plan run at all". So the fail-safe reading has inverted: until #4575
-    teaches the engine to arm a wave gate, an unread flag must mean "do not insert a
-    gate a human cannot answer". Turning the training wheels on is now an explicit,
-    operator-made opt-in via a truthy spelling.
+    Defaults to False to preserve existing autonomy preferences. Operators may
+    opt into an inserted checkpoint for every wave; authored gates always remain
+    in place, and the engine presents them once their prerequisites pass. The
+    separate acceptance gate still requires approval before a draft starts.
     """
     raw = os.environ.get(AUTONOMY_FLAG_ENV)
     if raw is None:

@@ -25,9 +25,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.sts_assume_service import STSAssumeError, assume_role
 from src.shared.database import get_db
-from src.shared.models.organization import User
 from src.shared.models.vault import UserCredential
 from src.shared.schemas.auth import TokenContext
+from src.shared.services.routing_probe import (
+    ROUTING_REASON_PROBE_INCONCLUSIVE as _ROUTING_REASON_PROBE_INCONCLUSIVE,
+)
+from src.shared.services.routing_probe import (
+    ROUTING_REASON_USER_PINNED as _ROUTING_REASON_USER_PINNED,
+)
+from src.shared.services.routing_probe import (
+    probe_assumable_for_any_principal,
+)
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
 from .cfn_template import build_launch_url, compute_role_arn
@@ -40,7 +48,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/credentials/aws", tags=["aws-connect"])
 
 
-async def _resolve_user_id(cognito_sub: str, db: AsyncSession) -> str:
+async def _resolve_user_id(cognito_sub: str, db: AsyncSession, *, org_id: str = "", username: str = "") -> str:
     """Resolve a Cognito sub (what TokenContext.user_id actually holds) to
     the Postgres `users.id` UUID required by user_credentials.user_id FK.
 
@@ -48,9 +56,9 @@ async def _resolve_user_id(cognito_sub: str, db: AsyncSession) -> str:
     registered user — but defensive in case someone signed in without going
     through onboarding).
     """
-    stmt = select(User).where(User.cognito_sub == cognito_sub)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+    from src.shared.identity.workspaces import login_user, workspace_user
+
+    user = await workspace_user(db, cognito_sub, org_id, username=username) if org_id else await login_user(db, cognito_sub)
     if user is None:
         raise HTTPException(
             status_code=404,
@@ -108,6 +116,14 @@ class ConnectVerifyRequest(BaseModel):
 class ConnectVerifyResponse(BaseModel):
     status: str  # "verified" | "failed"
     reason: str | None = None
+    # Issue #4742: whether this connection's role can serve as a Bedrock routing
+    # destination — i.e. it is assumable for any platform principal, not pinned
+    # to the one user who created it. None when not determined (e.g. the assume
+    # itself failed, or an idempotent re-verify of a row predating this field).
+    routing_capable: bool | None = None
+    # Machine-readable explanation when routing_capable is False. The R4 admin UI
+    # renders it; keep the vocabulary stable.
+    routing_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +148,7 @@ async def connect_start(
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
 ) -> ConnectStartResponse:
     # Resolve Cognito sub → Postgres users.id (FK on user_credentials.user_id)
-    db_user_id = await _resolve_user_id(token_context.user_id, db)
+    db_user_id = await _resolve_user_id(token_context.user_id, db, org_id=token_context.org_id, username=token_context.cognito_username)
 
     # Resolve effective org_id — falls back to users.org_id when token is empty
     # (Issue #600: GitHub-federated users may have empty org_id in token)
@@ -218,7 +234,7 @@ async def connect_verify(
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
 ) -> ConnectVerifyResponse:
     # Resolve Cognito sub → Postgres users.id for the scoped lookup
-    db_user_id = await _resolve_user_id(token_context.user_id, db)
+    db_user_id = await _resolve_user_id(token_context.user_id, db, org_id=token_context.org_id, username=token_context.cognito_username)
 
     # Resolve effective org_id — falls back to users.org_id when token is empty
     # (Issue #600: GitHub-federated users may have empty org_id in token)
@@ -240,9 +256,15 @@ async def connect_verify(
             detail={"error": "not_found", "message": "Credential not found"},
         )
 
-    # Idempotency: already verified → no-op
+    # Idempotency: already verified → no-op. Replay the stored routing
+    # classification rather than re-probing (rows written before #4742 simply
+    # have no value, which the None default reports honestly).
     if cred.scopes and cred.scopes.get("status") == "verified":
-        return ConnectVerifyResponse(status="verified")
+        return ConnectVerifyResponse(
+            status="verified",
+            routing_capable=cred.scopes.get("routing_capable"),
+            routing_reason=cred.scopes.get("routing_reason"),
+        )
 
     # Read secret payload to get role_arn and external_id
     secret_value: str = await asyncio.to_thread(sm.get_secret, cred.secret_arn)
@@ -276,26 +298,72 @@ async def connect_verify(
         )
         return ConnectVerifyResponse(status="failed", reason=reason)
 
+    # The assume works. Now classify WHICH kind of role it is — read-only v1
+    # (single-user) or routing-capable v2 — so the routing registry and the admin
+    # dropdowns can filter on it. A probe failure never downgrades `status`: a v1
+    # connection is perfectly valid for its own read-only purpose.
+    routing_capable, routing_reason = await _probe_routing_capability(
+        role_arn=role_arn,
+        external_id=external_id,
+        default_region=secret_data.get("default_region", "us-east-1"),
+        user_id=db_user_id,
+        label=cred.label,
+    )
+
     # Success — update the scopes JSON to verified
     updated_scopes = dict(cred.scopes) if cred.scopes else {}
     updated_scopes["status"] = "verified"
     updated_scopes["verified_at"] = datetime.now(UTC).isoformat()
+    updated_scopes["routing_capable"] = routing_capable
+    if routing_reason is not None:
+        updated_scopes["routing_reason"] = routing_reason
+    else:
+        updated_scopes.pop("routing_reason", None)
     cred.scopes = updated_scopes
     await db.commit()
 
     logger.info(
-        "AWS connect verified credential_id=%s user=%s role_arn=%s",
+        "AWS connect verified credential_id=%s user=%s role_arn=%s routing_capable=%s",
         cred.id,
         token_context.user_id,
         role_arn,
+        routing_capable,
     )
 
-    return ConnectVerifyResponse(status="verified")
+    return ConnectVerifyResponse(
+        status="verified",
+        routing_capable=routing_capable,
+        routing_reason=routing_reason,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+#: Machine-readable reason a verified connection is not usable as a Bedrock
+#: routing destination. Stable vocabulary — the admin UI renders these.
+#:
+#: Issue #4745 moved the definitions into ``src/shared/services/routing_probe.py``
+#: alongside the probe that produces them, and re-exports them here so #4742's
+#: callers and tests keep importing them from where they were introduced. Two
+#: literals in two modules is a vocabulary that drifts.
+ROUTING_REASON_USER_PINNED = _ROUTING_REASON_USER_PINNED
+ROUTING_REASON_PROBE_INCONCLUSIVE = _ROUTING_REASON_PROBE_INCONCLUSIVE
+
+#: The v1/v2 assumability classifier, now shared. Issue #4745 (R4) needs the same
+#: check at mapping-save time, and design note §6.7 item 1 is explicit that there
+#: must be exactly ONE assume probe: *"Reuse it; do not write a second assume
+#: probe. Two probes with different conditions is how 'verified here, broken
+#: there' happens."* So the implementation moved to
+#: :mod:`src.shared.services.routing_probe` and this name is an alias, not a copy.
+#:
+#: Note what the admin path adds on top and this one deliberately does NOT: the
+#: ``bedrock:InvokeModel`` capability probe (§6.7 item 3). A connection being
+#: classified here may be a perfectly valid read-only v1 credential, and a missing
+#: Bedrock permission is not a defect in *that* purpose — it only disqualifies the
+#: role as a routing destination, which is a question only the routing surface asks.
+_probe_routing_capability = probe_assumable_for_any_principal
 
 
 def _sts_error_to_reason(code: str) -> str:

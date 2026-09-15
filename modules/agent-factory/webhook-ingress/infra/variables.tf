@@ -438,3 +438,69 @@ variable "webhook_lambda_security_group_ids" {
   type        = list(string)
   default     = []
 }
+
+# -----------------------------------------------------------------------------
+# Live run control (Issue #3960)
+# -----------------------------------------------------------------------------
+# The control channel lets an authorized owner reach INTO a running agent pod.
+# Every variable here defaults to the off/closed position, and the rollout
+# invariant is that ordinary workloads stay off until each verb's writer and its
+# readers are deployed. Enabling the flag on a shared environment before then is
+# how a control that appears to pause a run without doing so reaches a user.
+
+variable "agent_control_enabled" {
+  description = "Whether agent-worker pods start a live control listener. Strict: the worker acts on the exact string \"true\" and nothing else, so a typo leaves the feature off rather than half-on. Off by default and intended to stay off for ordinary workloads until a verb is actually implemented — this story ships the authenticated path with every verb answering 501. Read INDEPENDENTLY of the gateway's own FEATURE_AGENT_CONTROL_ENABLED: a config change on one side must not be able to start a listener on the other."
+  type        = bool
+  default     = false
+}
+
+variable "agent_authority_enabled" {
+  description = "Enable protected dispatch and mandatory pre-repository pod bootstrap. Keep off until the delegated-authority acceptance and writer migration are complete."
+  type        = bool
+  default     = false
+}
+
+variable "agent_authority_worker_image_digests" {
+  description = "Approved immutable worker image digests for TokenReview bootstrap; never image tags."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for digest in var.agent_authority_worker_image_digests : can(regex("^sha256:[0-9a-f]{64}$", digest))])
+    error_message = "Worker images must be identified by sha256:<64 lowercase hex digits>."
+  }
+}
+
+variable "agent_control_signing_key_slot" {
+  description = "Active gateway Ed25519 key slot. Switch only after every active listener reports the incoming verification key. See the delegated-authority key rotation runbook."
+  type        = string
+  default     = "primary"
+  validation {
+    condition     = contains(["primary", "secondary"], var.agent_control_signing_key_slot)
+    error_message = "Signing key slot must be primary or secondary."
+  }
+}
+
+variable "agent_control_publish_both_keys" {
+  description = "Publish both key slots during a staged rotation. Set false only after the old signer is gone and its 30-second forwarding window has elapsed."
+  type        = bool
+  default     = true
+}
+
+variable "agent_control_port" {
+  description = "TCP port the in-pod control listener binds, and the ONE port the ingress NetworkPolicy admits. Must match the gateway's AGENT_CONTROL_PORT: the gateway pins the port it will dial rather than reading it from the invocation row, so that a rewritten row cannot redirect control traffic at, say, the kubelet. Changing it here without changing it there breaks control with a 409 rather than falling back."
+  type        = number
+  default     = 8770
+
+  validation {
+    # A privileged port would not bind: the pod runs as UID 1001 with all
+    # capabilities dropped (see securityContext in scaledjob.tf).
+    condition     = var.agent_control_port > 1024 && var.agent_control_port < 65536
+    error_message = "agent_control_port must be an unprivileged port (1025-65535); agent pods run as non-root with NET_BIND_SERVICE dropped."
+  }
+}
+
+variable "gateway_namespace" {
+  description = "Namespace the Bedrock gateway runs in. Used by the control-listener INGRESS allowlist to select which pods may reach a running agent's control port. Matched via the apiserver-managed `kubernetes.io/metadata.name` label rather than a hand-applied one, so it cannot silently stop matching."
+  type        = string
+  default     = "adp-gateway"
+}

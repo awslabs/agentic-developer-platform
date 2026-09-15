@@ -67,9 +67,10 @@ export function ScriptDownload({
   );
 }
 
-export function ScriptDownloadList() {
-  // Both entries are served by GET /api/cli/{script_name}
-  // (modules/gateway/src/cli_download/routes.py).
+export function ScriptDownloadList({ files }: { files?: string[] }) {
+  // Every entry is served by GET /api/cli/{script_name}
+  // (modules/gateway/src/cli_download/routes.py) — the allowlist there and this
+  // list must stay in step, or a card offers a download that 404s.
   //
   // Removed here: the legacy `bg-auth.sh` (deprecated SigV4 credential exchange)
   // and `bg-auth.ps1` — which had no source file in the repo at all, so that
@@ -77,6 +78,15 @@ export function ScriptDownloadList() {
   //
   // Issue #4156: bg-gateway-proxy.py was missing, so Codex users following the
   // `serve` flow could not get the second of the two files it needs.
+  //
+  // Issue #4852: `adp` and `install.sh` joined the list. They are last, not
+  // first, because the /setup page's primary flow is the one-line `curl … | sh`
+  // install — these cards are for reading the source before running it, and for
+  // air-gapped machines where the curl cannot reach the gateway.
+  //
+  // `files` filters the cards to the calling tab's own needs: each setup tab is
+  // self-contained, so the Claude Code tab must not advertise the Codex-only
+  // proxy (and its python3 note). Omit it for the full list.
   const scripts: ScriptDownloadProps[] = [
     {
       scriptName: 'bg-cognito-auth.sh',
@@ -92,7 +102,23 @@ export function ScriptDownloadList() {
       platform: 'unix',
       downloadUrl: '/api/cli/bg-gateway-proxy.py',
     },
+    {
+      scriptName: 'adp',
+      description:
+        'The adp CLI — one command for login, status and per-tool setup. Normally installed by install.sh; download it directly only if you want to read it first.',
+      platform: 'unix',
+      downloadUrl: '/api/cli/adp',
+    },
+    {
+      scriptName: 'install.sh',
+      description:
+        'Installer for the adp CLI. Places adp and the two scripts above side by side in ~/.adp/bin and remembers this gateway URL. Run: sh install.sh --gateway-url <this gateway>.',
+      platform: 'unix',
+      downloadUrl: '/api/cli/install.sh',
+    },
   ];
+
+  const visible = files ? scripts.filter((script) => files.includes(script.scriptName)) : scripts;
 
   return (
     <div className="space-y-4">
@@ -100,7 +126,7 @@ export function ScriptDownloadList() {
         Download Helper Scripts
       </h2>
       <div className="space-y-3">
-        {scripts.map((script) => (
+        {visible.map((script) => (
           <ScriptDownload key={script.scriptName} {...script} />
         ))}
       </div>

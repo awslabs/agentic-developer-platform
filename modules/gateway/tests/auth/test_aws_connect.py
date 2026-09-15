@@ -8,6 +8,8 @@ Coverage:
   - verify failure propagates user-friendly reason
   - verify is idempotent (second call on verified row is no-op)
   - tenant isolation: user A cannot verify user B's pending credential
+  - Issue #4742: verify classifies the role as routing-capable (v2) or
+    single-user (v1) and records a machine-readable reason
 """
 
 from __future__ import annotations
@@ -487,3 +489,162 @@ class TestOrgIdFallback:
         )
         assert resp2.status_code == 200
         assert resp2.json()["status"] == "verified"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Issue #4742 — routing-capability probe (child G of #4692)
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingCapabilityProbe:
+    """`connect_verify` classifies a verified role as a usable Bedrock routing
+    destination or not.
+
+    The probe repeats the assume WITHOUT session tags. A v1-shaped role's trust
+    policy conditions on `aws:RequestTag/adp:user_id`, so it denies an untagged
+    assume; a v2 routing role has no such condition and allows it. So the two
+    cases are distinguished by the `send_session_tags=False` call's outcome.
+
+    **Two patch targets, one per call site.** #4745 moved the probe into
+    `src.shared.services.routing_probe` so that the mapping-save path and this one
+    share exactly one assume probe (design note §6.7 item 1). `assume_role` is
+    therefore resolved in *that* module's namespace by the probe, and in this
+    module's by the verify assume, so patching only one of them leaves the other
+    reaching the real STS. Patching both separately is also the sharper shape: the
+    tagged verify assume and the untagged probe are now distinct mocks, so a test
+    can no longer confuse one for the other.
+    """
+
+    def _create_pending_credential(self, client) -> str:
+        resp = client.post(
+            "/auth/credentials/aws/connect",
+            json={"nickname": "routing-probe", "account_id": "123456789012"},
+        )
+        assert resp.status_code == 201
+        return resp.json()["credential_id"]
+
+    @staticmethod
+    def _probe_calls(mock_assume):
+        """The assume calls made with tags suppressed — i.e. the probes."""
+        return [c for c in mock_assume.call_args_list if c.kwargs.get("send_session_tags") is False]
+
+    @patch("src.shared.services.routing_probe.assume_role")
+    @patch("src.auth.aws_connect_routes.assume_role")
+    def test_v2_role_classified_routing_capable(self, mock_assume, mock_probe_assume, alice_client):
+        """Untagged assume succeeds → no single-user pin → routing-capable."""
+        mock_assume.return_value = MagicMock()
+        mock_probe_assume.return_value = MagicMock()
+
+        cred_id = self._create_pending_credential(alice_client)
+        resp = alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "verified"
+        assert body["routing_capable"] is True
+        assert body["routing_reason"] is None
+
+    @patch("src.shared.services.routing_probe.assume_role")
+    @patch("src.auth.aws_connect_routes.assume_role")
+    def test_v1_role_classified_not_routing_capable(self, mock_assume, mock_probe_assume, alice_client):
+        """A v1-shaped role: the tagged assume works, the untagged one is denied
+        by the RequestTag condition. Must be reported as NOT routing-capable with
+        the re-run-v2 reason the admin UI renders."""
+        from src.auth.aws_connect_routes import ROUTING_REASON_USER_PINNED
+        from src.internal.sts_assume_service import STSAssumeError
+
+        mock_assume.return_value = MagicMock()
+        mock_probe_assume.side_effect = STSAssumeError("denied", code="AccessDenied")
+
+        cred_id = self._create_pending_credential(alice_client)
+        resp = alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        # The connection is still VERIFIED — v1 is valid for its read-only
+        # purpose. Only routing is unavailable.
+        assert body["status"] == "verified"
+        assert body["routing_capable"] is False
+        assert body["routing_reason"] == ROUTING_REASON_USER_PINNED
+
+    @patch("src.shared.services.routing_probe.assume_role")
+    @patch("src.auth.aws_connect_routes.assume_role")
+    def test_probe_sends_no_session_tags(self, mock_assume, mock_probe_assume, alice_client):
+        """Guards the probe's whole mechanism: if it sent tags, a v1 role would
+        pass and every connection would be misreported as routing-capable."""
+        mock_assume.return_value = MagicMock()
+        mock_probe_assume.return_value = MagicMock()
+
+        cred_id = self._create_pending_credential(alice_client)
+        alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
+
+        probes = self._probe_calls(mock_probe_assume)
+        assert len(probes) == 1, "expected exactly one untagged probe assume"
+        # And the real verify assume must still be tagged.
+        tagged = [c for c in mock_assume.call_args_list if c.kwargs.get("send_session_tags") is not False]
+        assert len(tagged) == 1
+
+    @patch("src.shared.services.routing_probe.assume_role")
+    @patch("src.auth.aws_connect_routes.assume_role")
+    def test_transient_probe_error_is_distinguishable(self, mock_assume, mock_probe_assume, alice_client):
+        """Throttling is not evidence about the trust policy. Fail closed on
+        routing, but with a reason that tells an operator to re-probe rather than
+        to re-run CloudFormation."""
+        from src.auth.aws_connect_routes import ROUTING_REASON_PROBE_INCONCLUSIVE
+        from src.internal.sts_assume_service import STSAssumeError
+
+        mock_assume.return_value = MagicMock()
+        mock_probe_assume.side_effect = STSAssumeError("slow down", code="Throttling")
+
+        cred_id = self._create_pending_credential(alice_client)
+        resp = alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
+
+        body = resp.json()
+        assert body["status"] == "verified"
+        assert body["routing_capable"] is False
+        assert body["routing_reason"] == ROUTING_REASON_PROBE_INCONCLUSIVE
+
+    @patch("src.shared.services.routing_probe.assume_role")
+    @patch("src.auth.aws_connect_routes.assume_role")
+    def test_classification_persisted_and_replayed_on_reverify(self, mock_assume, mock_probe_assume, alice_client):
+        """The registry reads `routing_capable` off the row, so it must persist.
+        An idempotent re-verify replays it without a second probe."""
+        from src.auth.aws_connect_routes import ROUTING_REASON_USER_PINNED
+        from src.internal.sts_assume_service import STSAssumeError
+
+        mock_assume.return_value = MagicMock()
+        mock_probe_assume.side_effect = STSAssumeError("denied", code="AccessDeniedException")
+
+        cred_id = self._create_pending_credential(alice_client)
+        alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
+
+        mock_assume.reset_mock()
+        mock_probe_assume.reset_mock()
+        resp2 = alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
+
+        body = resp2.json()
+        assert body["status"] == "verified"
+        assert body["routing_capable"] is False
+        assert body["routing_reason"] == ROUTING_REASON_USER_PINNED
+        mock_assume.assert_not_called()
+        # Neither assume runs again: the replay must not re-probe either.
+        mock_probe_assume.assert_not_called()
+
+    @patch("src.shared.services.routing_probe.assume_role")
+    @patch("src.auth.aws_connect_routes.assume_role")
+    def test_failed_verify_does_not_probe(self, mock_assume, mock_probe_assume, alice_client):
+        """No point probing a role that cannot be assumed at all — and the
+        response must not claim a classification it never made."""
+        from src.internal.sts_assume_service import STSAssumeError
+
+        mock_assume.side_effect = STSAssumeError("role not found", code="NoSuchEntity")
+
+        cred_id = self._create_pending_credential(alice_client)
+        resp = alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
+
+        body = resp.json()
+        assert body["status"] == "failed"
+        assert body["routing_capable"] is None
+        # Asserted on the probe's OWN mock: with the probe in another module, a
+        # count of this module's calls would be trivially zero and prove nothing.
+        mock_probe_assume.assert_not_called()

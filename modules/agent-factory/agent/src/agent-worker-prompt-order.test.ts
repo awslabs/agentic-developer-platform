@@ -198,7 +198,7 @@ describe('agent-worker prompt ordering (#4183)', () => {
       '### Step 4: Report Results',
       '## Branch naming (MANDATORY)',
       '## Coding Guidelines (MANDATORY for all code changes)',
-      '## Pre-submit checks (MANDATORY before creating a PR)',
+      '## Pre-submit checks (MANDATORY before requesting review)',
       '## Available Tools',
       '### Beads Task Management (bd)',
       '## Completion Summary Format',

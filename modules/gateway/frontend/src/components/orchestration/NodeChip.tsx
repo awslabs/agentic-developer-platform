@@ -23,11 +23,14 @@
 import { DISPLAY_STATES, toDisplayState, isCurrentPosition } from '@/utils/nodeState';
 import { CostFigureDisplay } from './CostFigureDisplay';
 import type { GraphNode } from '@/types/orchestration';
+import { Link } from 'react-router-dom';
 
 export interface NodeChipProps {
   node: GraphNode;
   /** Titles of unfinished predecessors, for the "waiting on" caption. */
   blockedBy?: string[];
+  /** Direct dependencies, including completed steps, for inspecting the plan. */
+  dependencies?: GraphNode[];
   /**
    * Decision controls for this node (issue #4213), passed as a slot rather than
    * imported here. This chip stays presentational: it has no permission check, no
@@ -53,14 +56,20 @@ function reasonBadge(node: GraphNode): string | null {
   return null;
 }
 
-export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
+export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeChipProps) {
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
+  // Decision reasons carry an audit-source prefix, including when no note was
+  // entered. Show the reviewer's text while preserving the stored audit value.
+  const feedback = node.last_gate_decision?.reason
+    ?.replace(/^\[input-path=(?:dashboard|github_comment)\](?:\s|$)/, '')
+    .trim();
 
   // `superseded` and unknown states get no segment in the bar, and no fill here.
   const style = display ? DISPLAY_STATES[display] : null;
   const isQueued = display === 'queued';
+  const waiting = dependencies?.filter((dependency) => toDisplayState(dependency) !== 'complete') ?? [];
 
   return (
     <li
@@ -88,14 +97,13 @@ export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
           </span>
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <span className="truncate font-medium text-gray-900 dark:text-gray-100">{node.title}</span>
-            {/* The issue NUMBER, not a link. `issue_ref` is a bare number
-                (`models.py`) and the repo it belongs to is resolved server-side
-                from an env var at dispatch time — it is not on the wire here. So
-                a URL would have to be guessed, and a link that 404s is worse than
-                a number an operator can search. Linking these is a follow-up that
-                needs the repo on the payload first. */}
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
+            {node.kind === 'story' ? 'Story' : node.kind === 'gate' ? 'Approval gate' : 'Evaluation'}
+          </p>
+          <div className="flex items-start gap-2">
+            <span className="min-w-0 break-words font-medium text-gray-900 dark:text-gray-100">{node.title}</span>
+            {/* Pending tasks keep their issue number; a committed dispatch adds
+                the verified repository URL and run link below. */}
             {node.issue_ref && (
               <span
                 className="shrink-0 font-mono text-xs text-gray-500 dark:text-gray-400"
@@ -109,6 +117,16 @@ export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
           {/* The projected state, as text. The fill is a second channel, never
               the only one. */}
           {style && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
+          {node.configuration_problem && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
+          {node.result_summary && <p className="mt-1 text-sm">{node.result_summary}</p>}
+          <div className="mt-1 flex gap-3 text-xs">
+            {node.issue_url && (
+              <a href={node.issue_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View issue and evidence</a>
+            )}
+            {node.run_id && (
+              <Link to={`/activity?id=${encodeURIComponent(node.run_id)}`} className="text-blue-600 underline">View run</Link>
+            )}
+          </div>
 
           {badge && (
             <p
@@ -119,7 +137,46 @@ export function NodeChip({ node, blockedBy = [], controls }: NodeChipProps) {
             </p>
           )}
 
-          {isQueued && blockedBy.length > 0 && (
+          {node.state === 'rejected_at_gate' && (
+            <div className="mt-2 text-sm text-orange-900 dark:text-orange-200" data-testid="gate-feedback">
+              <p>{node.last_gate_decision === undefined
+                ? 'Refresh to load the recorded feedback.'
+                : feedback || 'No change description was provided.'}</p>
+              {node.last_gate_decision && (
+                <p className="mt-1 text-xs">
+                  Recorded {new Date(node.last_gate_decision.created_at).toLocaleString()}
+                </p>
+              )}
+            </div>
+          )}
+
+          {dependencies && dependencies.length > 0 && (
+            <details className="mt-2 rounded border border-gray-200 p-2 text-xs dark:border-gray-700">
+              <summary
+                className="cursor-pointer text-gray-600 dark:text-gray-400"
+                data-testid={isQueued && waiting.length > 0 ? `node-blocked-by-${node.node_ref}` : undefined}
+              >
+                {isQueued && waiting.length > 0
+                  ? waiting.length === 1 ? `Waiting on ${waiting[0].title}` : `Waiting on ${waiting.length} steps`
+                  : `${dependencies.length} ${dependencies.length === 1 ? 'dependency' : 'dependencies'}`}
+              </summary>
+              <ul className="mt-2 space-y-2">
+                {dependencies.map((dependency) => {
+                  const state = toDisplayState(dependency);
+                  return (
+                    <li key={dependency.id}>
+                      <span className="block font-medium">{dependency.title}</span>
+                      <span className="text-gray-500 dark:text-gray-400">
+                        {dependency.wave_ref} · {state ? DISPLAY_STATES[state].label : dependency.state}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
+          )}
+
+          {!dependencies && isQueued && blockedBy.length > 0 && (
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid={`node-blocked-by-${node.node_ref}`}>
               Waiting on {blockedBy.join(', ')}
             </p>

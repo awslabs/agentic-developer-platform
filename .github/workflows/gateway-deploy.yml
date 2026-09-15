@@ -8,7 +8,22 @@ on:
       - 'modules/gateway/k8s/**'
       - 'modules/gateway/frontend/**'
       - 'modules/gateway/alembic/versions/**'
+      - 'modules/gateway/lambda/budget-usage-tracker/**'
+      - 'modules/gateway/lambda/pricing-refresh/**'
+      - 'modules/gateway/lambda/shared/pricing_fallback.py'
+      - 'modules/gateway/lambda/shared/*.py'
+      - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/build-budget-lambda-archives.py'
+      - 'modules/gateway/lambda/shared/root_principal.py'
+      # Issue #4969: shared pricing policy, vendored into both budget Lambda zips
+      # AND baked into the gateway image. A change here must redeploy all three or
+      # the estimator and the settlement path run different rates.
+      - 'modules/gateway/pricing_policy/**'
       - '.github/workflows/gateway-deploy.yml'
+      - '.github/workflows/run-gateway-migrations.yml'
+      - '.github/workflows/pricing-finalize.yml'
+      - 'codebuild/bs-gateway-build.yml'
+      - 'modules/gateway/pyproject.toml'
     branches:
       - main
   workflow_dispatch:
@@ -34,6 +49,12 @@ on:
         required: false
         default: 'dev'
 
+concurrency:
+  # Serialize with infra and standalone finalization. Account aliases (empty
+  # platform input vs an explicit account ID) must not produce different locks.
+  group: gateway-release-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
@@ -50,6 +71,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
       migrations: ${{ steps.filter.outputs.migrations }}
+      budget_lambdas: ${{ steps.filter.outputs.budget_lambdas }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -60,6 +82,7 @@ jobs:
             echo "backend=true" >> "$GITHUB_OUTPUT"
             echo "frontend=true" >> "$GITHUB_OUTPUT"
             echo "migrations=false" >> "$GITHUB_OUTPUT"
+            echo "budget_lambdas=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # On push: diff the merge against its parent.
@@ -70,6 +93,7 @@ jobs:
           BACKEND=false
           FRONTEND=false
           MIGRATIONS=false
+          BUDGET_LAMBDAS=false
           if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/Dockerfile|modules/gateway/k8s/)'; then
             BACKEND=true
           fi
@@ -87,15 +111,30 @@ jobs:
             # even after the fix had merged. Force a backend rebuild.
             BACKEND=true
           fi
+          if echo "$CHANGED" | grep -qE '^modules/gateway/lambda/(budget-usage-tracker/|pricing-refresh/|shared/.*\.py$)'; then
+            BUDGET_LAMBDAS=true
+            BACKEND=true
+          fi
+          # #4969: pricing_policy ships in three artifacts — both Lambda zips and
+          # the gateway image. Updating only some of them leaves the pre-request
+          # estimator and the settlement authority on different rates, which is the
+          # exact class of drift this package was introduced to eliminate.
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/pricing_policy/|modules/gateway/scripts/(pricing-rollout|build-budget-lambda-archives)\.py|\.github/workflows/(gateway-deploy|run-gateway-migrations|pricing-finalize)\.yml|codebuild/bs-gateway-build\.yml|modules/gateway/pyproject\.toml)'; then
+            BUDGET_LAMBDAS=true
+            BACKEND=true
+          fi
           echo "backend=$BACKEND" >> "$GITHUB_OUTPUT"
           echo "frontend=$FRONTEND" >> "$GITHUB_OUTPUT"
           echo "migrations=$MIGRATIONS" >> "$GITHUB_OUTPUT"
+          echo "budget_lambdas=$BUDGET_LAMBDAS" >> "$GITHUB_OUTPUT"
 
   deploy-backend:
     name: Build and Deploy Backend
     runs-on: arc-runner-org
     needs: changes
     if: needs.changes.outputs.backend == 'true'
+    outputs:
+      release_image: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ github.sha }}
     # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
     permissions:
       contents: read
@@ -112,6 +151,32 @@ jobs:
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Deploy budget tracker and pricing code
+        if: needs.changes.outputs.budget_lambdas == 'true'
+        # These functions are provisioned by Terraform, but their source changes
+        # must ship with the gateway. Update code only, before enabling new event
+        # producers in the backend. Keep both archives in sync with budget-lambda/main.tf.
+        run: |
+          set -euo pipefail
+          python3 modules/gateway/scripts/pricing-rollout.py quiesce \
+            --account-id "${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}" --environment "$ENVIRONMENT"
+          python3 modules/gateway/scripts/build-budget-lambda-archives.py --output /tmp
+          for name in pricing-refresh budget-usage-tracker; do
+            function="arn:aws:lambda:${AWS_REGION}:${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}:function:bedrockgw-${ENVIRONMENT}-${name}"
+            if ! aws lambda get-function-configuration --function-name "$function" \
+                --query FunctionName --output text >/dev/null 2>/tmp/budget-function-error; then
+              if grep -q 'ResourceNotFoundException' /tmp/budget-function-error; then
+                echo "::notice::${name} is not provisioned in this environment; skipping code update."
+                continue
+              fi
+              cat /tmp/budget-function-error >&2
+              exit 1
+            fi
+            aws lambda update-function-code --function-name "$function" \
+              --zip-file "fileb:///tmp/${name}.zip" --query '{FunctionName:FunctionName,CodeSha256:CodeSha256}'
+            aws lambda wait function-updated --function-name "$function"
+          done
 
       - name: Compute build vars
         id: vars
@@ -139,18 +204,22 @@ jobs:
       - name: Export image tag
         run: echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
 
-      - name: Upload CFN template to S3
-        # Issue #562: the AWS connect flow pre-signs a GET URL on this object.
-        # It needs to exist in S3 before the gateway pod can build valid Quick-Create
+      - name: Upload CFN templates to S3
+        # Issue #562: the AWS connect flow pre-signs a GET URL on these objects.
+        # They need to exist in S3 before the gateway pod can build valid Quick-Create
         # URLs. Idempotent — copy-over on every deploy picks up template edits.
+        # Issue #4742: v2 is the routing-capable role (Bedrock invoke, no
+        # single-user trust pin); v1 stays for the read-only connect flow.
         run: |
           BUCKET=$(aws ssm get-parameter \
             --name "/adp/${ENVIRONMENT}/gateway/frontend-bucket" \
             --query "Parameter.Value" --output text)
-          aws s3 cp \
-            modules/gateway/src/auth/cfn_templates/aws_role_v1.yaml \
-            "s3://${BUCKET}/cfn-templates/aws_role_v1.yaml" \
-            --content-type application/x-yaml
+          for v in v1 v2; do
+            aws s3 cp \
+              "modules/gateway/src/auth/cfn_templates/aws_role_${v}.yaml" \
+              "s3://${BUCKET}/cfn-templates/aws_role_${v}.yaml" \
+              --content-type application/x-yaml
+          done
 
       # =====================================================================
       # Issue #1008: First-deploy support — ensure namespace, configmap,
@@ -184,6 +253,11 @@ jobs:
           REDIS_CACHE_NAME=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-cache-name")
           COGNITO_USER_POOL_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id")
           COGNITO_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")
+          # Web CLI login app client. Deliberately NOT in the required-vars
+          # loop below: the param appears only after the Terraform that adds
+          # the CLI client applies, and deploys before that must not fail —
+          # the /auth/cli endpoints 503 cleanly while this is empty.
+          COGNITO_CLI_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
           COGNITO_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-domain")
           CF_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cloudfront-domain")
           # User-facing origin: the custom domain when gateway-infra published one,
@@ -256,6 +330,36 @@ jobs:
           # "true" per env via SSM once the WARN logs are clean.
           VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-enforce-credential-host-binding" "false")
 
+          # Issue #4743: Bedrock routing shadow mode. Observation only — the
+          # resolved destination is recorded in usage_logs.bedrock_account_id and
+          # changes nothing about where a request goes (enforcement is #4744).
+          # Defaults "true" because the captured column is what #4744 is gated on,
+          # and with zero mappings the existence gate makes it free. Set the SSM
+          # param to "false" + `kubectl rollout restart` to stop observing.
+          BEDROCK_ROUTING_SHADOW_MODE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/bedrock-routing-shadow-mode" "true")
+
+          # Issue #3960: CIDRs the gateway may dial an in-pod control listener in.
+          # This is the SSRF allowlist for the one outbound path that deliberately
+          # targets PRIVATE addresses, so it cannot be defaulted to something
+          # convenient — the default is EMPTY, which fails closed (every control
+          # request answers 409 "not configured"). An operator who forgets the SSM
+          # param gets a clear misconfiguration instead of a gateway willing to
+          # dial arbitrary private addresses.
+          #
+          # Not discovered from the cluster at deploy time on purpose: reading the
+          # live pod CIDR would silently re-widen the allowlist whenever the VPC
+          # changed, which is exactly the kind of change nobody reviews.
+          AGENT_CONTROL_CLUSTER_POD_CIDRS=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agent-control-cluster-pod-cidrs" "")
+          # The authority configuration parameters are encrypted at rest.
+          get_authority_ssm() { aws ssm get-parameter --with-decryption --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+          AGENT_AUTHORITY_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-enabled" "false")
+          AGENT_AUTHORITY_TABLE=$(get_authority_ssm "/adp/${ENVIRONMENT}/webhook-ingress/agent-authority-table" "")
+          WEBHOOK_EVENTS_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/webhook-events-table" "adp-${ENVIRONMENT}-webhook-events")
+          AGENT_DISPATCH_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
+          BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
+          AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
+          AGENT_AUTHORITY_KEY_ID=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-key-id" "disabled")
+
           sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
               -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
               -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -268,6 +372,7 @@ jobs:
               -e "s|__REDIS_IAM_AUTH__|true|g" \
               -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
               -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
+              -e "s|__COGNITO_CLI_CLIENT_ID__|${COGNITO_CLI_CLIENT_ID}|g" \
               -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
               -e "s|__CORS_ALLOWED_ORIGINS__|${CORS_ORIGINS}|g" \
               -e "s|__GATEWAY_BASE_URL__|${FRONTEND_URL}|g" \
@@ -284,6 +389,16 @@ jobs:
               -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
               -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
               -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
+              -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
+              -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
+              -e "s|__AGENT_CONTROL_CLUSTER_POD_CIDRS__|${AGENT_CONTROL_CLUSTER_POD_CIDRS}|g" \
+              -e "s|__AGENT_AUTHORITY_ENABLED__|${AGENT_AUTHORITY_ENABLED}|g" \
+              -e "s|__AGENT_AUTHORITY_TABLE__|${AGENT_AUTHORITY_TABLE}|g" \
+              -e "s|__WEBHOOK_EVENTS_TABLE__|${WEBHOOK_EVENTS_TABLE}|g" \
+              -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
+              -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
+              -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
+              -e "s|__AGENT_AUTHORITY_KEY_ID__|${AGENT_AUTHORITY_KEY_ID}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---
@@ -348,9 +463,60 @@ jobs:
           EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-          # Apply the deployment manifest so changes to probes, env,
-          # resource limits, volume mounts, etc. actually propagate.
-          kubectl apply -f modules/gateway/k8s/deployment.yaml -n ${{ env.NAMESPACE }}
+          get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+
+          # Issue #4209 / D-R20: the orchestration graph UI is opt-in PER
+          # ENVIRONMENT. deployment.yaml is one file applied to whichever
+          # environment this workflow targets, so the value cannot live in it —
+          # a literal "true" would arm prod on the next deploy too.
+          #
+          # Absent parameter => "false". `_is_enabled_strict` only accepts the
+          # literal "true", so a missing or malformed value leaves the engine UI
+          # invisible rather than guessing.
+          FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "false")
+          if [ -z "$FEATURE_ORCHESTRATION_ENGINE_ENABLED" ] || [ "$FEATURE_ORCHESTRATION_ENGINE_ENABLED" = "None" ]; then
+            FEATURE_ORCHESTRATION_ENGINE_ENABLED="false"
+          fi
+          echo "orchestration graph UI for ${ENVIRONMENT}: ${FEATURE_ORCHESTRATION_ENGINE_ENABLED}"
+
+          # Issue #3960: same per-environment mechanism, and for a stronger reason —
+          # this flag opens an authenticated channel into a running agent pod. The
+          # rollout invariant is that ordinary workloads stay off; the one legitimate
+          # "true" is an operator-created isolated fixture (evaluation #3967), set
+          # with `aws ssm put-parameter` on that one environment.
+          #
+          # Absent parameter => "false", and `_is_enabled_strict` accepts only the
+          # literal "true", so a missing or malformed value leaves the control path
+          # closed rather than guessing.
+          FEATURE_AGENT_CONTROL_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
+          if [ -z "$FEATURE_AGENT_CONTROL_ENABLED" ] || [ "$FEATURE_AGENT_CONTROL_ENABLED" = "None" ]; then
+            FEATURE_AGENT_CONTROL_ENABLED="false"
+          fi
+          echo "live run control for ${ENVIRONMENT}: ${FEATURE_AGENT_CONTROL_ENABLED}"
+
+          # Issue #5079: the opt-in /next UI shell, enabled one environment at a time
+          # from /adp/${ENVIRONMENT}/gateway/feature-new-ui. Absent parameter =>
+          # "false", and `_is_enabled_strict` accepts only the literal "true", so a
+          # missing or malformed value leaves the current UI as the sole experience
+          # rather than guessing.
+          #
+          # This job is the ONLY place the parameter reaches a running pod. Changing
+          # the SSM value — in either direction — takes effect on the next run of
+          # this job, so enabling or disabling the preview is "put-parameter, then
+          # re-run this workflow". A frontend-only push skips deploy-backend and
+          # will not pick up a changed value.
+          FEATURE_NEW_UI_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-new-ui" "false")
+          if [ -z "$FEATURE_NEW_UI_ENABLED" ] || [ "$FEATURE_NEW_UI_ENABLED" = "None" ]; then
+            FEATURE_NEW_UI_ENABLED="false"
+          fi
+          echo "new UI shell for ${ENVIRONMENT}: ${FEATURE_NEW_UI_ENABLED}"
+
+          # Render then apply, so changes to probes, env, resource limits, volume
+          # mounts, etc. actually propagate.
+          sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+              -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
+              -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
+              modules/gateway/k8s/deployment.yaml | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
           # Stamp the image tag for this build. The manifest has a generic
           # placeholder; this line pins to the commit SHA for audit.
@@ -359,6 +525,34 @@ jobs:
             -n ${{ env.NAMESPACE }}
 
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
+
+      - name: Update the scheduled orchestration engine
+        # The engine runs in Lambda using this same image. An EKS rollout alone
+        # leaves ticks on the previous digest indefinitely (#4575).
+        env:
+          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ENGINE_FUNCTION="arn:aws:lambda:${AWS_REGION}:${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}:function:adp-${ENVIRONMENT}-orchestration-tick"
+          if ! aws lambda get-function --function-name "$ENGINE_FUNCTION" \
+              --query Configuration.FunctionName --output text >/dev/null 2>/tmp/engine-function-error; then
+            if grep -q 'ResourceNotFoundException' /tmp/engine-function-error; then
+              echo "::notice::The orchestration engine is not provisioned in this environment."
+              exit 0
+            fi
+            cat /tmp/engine-function-error >&2
+            exit 1
+          fi
+          ENGINE_DIGEST=$(aws ecr describe-images --repository-name adp-gateway \
+            --image-ids imageTag="${{ github.sha }}" --query 'imageDetails[0].imageDigest' --output text)
+          ENGINE_PINNED_IMAGE="${ENGINE_IMAGE%:*}@${ENGINE_DIGEST}"
+          aws lambda update-function-code --function-name "$ENGINE_FUNCTION" \
+            --image-uri "$ENGINE_PINNED_IMAGE" --query '{FunctionName:FunctionName,LastUpdateStatus:LastUpdateStatus}'
+          aws lambda wait function-updated-v2 --function-name "$ENGINE_FUNCTION"
+          ENGINE_LIVE_IMAGE=$(aws lambda get-function --function-name "$ENGINE_FUNCTION" \
+            --query Code.ResolvedImageUri --output text)
+          test "$ENGINE_LIVE_IMAGE" = "$ENGINE_PINNED_IMAGE"
+          echo "Scheduled engine now uses ${ENGINE_LIVE_IMAGE}"
 
       - name: Wire ALB to CloudFront (Section 6 — first deploy)
         id: wire_alb
@@ -605,18 +799,52 @@ jobs:
     # workflow_dispatch (fresh-account deploys need migrations to run unconditionally).
     if: |
       always() &&
-      (needs.changes.outputs.migrations == 'true' || github.event_name == 'workflow_dispatch') &&
+      (needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch') &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
     uses: ./.github/workflows/run-gateway-migrations.yml
     with:
+      expected_image: ${{ needs.deploy-backend.outputs.release_image }}
+      account_id: ${{ inputs.account_id || '' }}
       environment: ${{ inputs.environment || 'dev' }}
       customer_account_id: ${{ inputs.customer_account_id || '' }}
       customer_aws_label: ${{ inputs.customer_aws_label || '' }}
       customer_user_id: ${{ inputs.customer_user_id || '' }}
 
+  finalize-pricing:
+    name: Verify and activate daily pricing
+    needs: [deploy-backend, run-migrations]
+    if: needs.deploy-backend.result == 'success' && needs.run-migrations.result == 'success'
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+      - name: Verify release pricing and enable the schedule
+        env:
+          PRICING_RELEASE_IMAGE: ${{ needs.deploy-backend.outputs.release_image }}
+        run: |
+          set -euo pipefail
+          if ! command -v kubectl >/dev/null; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          python3 modules/gateway/scripts/pricing-rollout.py finalize \
+            --account-id "${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}" --environment "$ENVIRONMENT" \
+            --expected-image "$PRICING_RELEASE_IMAGE"
+          # First rollout requires reviewed budget-lambda infra. If this gate
+          # fails, apply that reviewed plan, then dispatch pricing-finalize.yml
+          # at this release ref. The schedule stays disabled on failure.
+
   smoke-test:
     name: Post-deploy Smoke Test
-    needs: [deploy-backend, deploy-frontend, run-migrations]
+    needs: [deploy-backend, deploy-frontend, run-migrations, finalize-pricing]
     # Issue #3031: Real-token smoke against the deployed gateway.
     # Runs after backend + frontend + migrations are done. Skipped dependencies
     # are fine (e.g. frontend-only push still triggers smoke if backend succeeded
@@ -625,7 +853,8 @@ jobs:
       always() &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped') &&
       (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped') &&
-      (needs.run-migrations.result == 'success' || needs.run-migrations.result == 'skipped')
+      (needs.run-migrations.result == 'success' || needs.run-migrations.result == 'skipped') &&
+      (needs.finalize-pricing.result == 'success' || needs.finalize-pricing.result == 'skipped')
     uses: ./.github/workflows/gateway-smoke.yml
     # Graceful skip: when the smoke token hasn't been captured yet, the workflow
     # exits cleanly (token step exits 0 → subsequent steps skip → job succeeds).

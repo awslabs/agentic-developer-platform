@@ -44,12 +44,18 @@ still present at `shared/schemas/budget.py:51`; this story does not migrate thos
 but it does not copy them either.
 """
 
-import re
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# Imported, never redefined — see module docstring (R-N2a).
+# Imported, never redefined — see module docstring (R-N2a). The address grammar
+# moved to `address.py` (#5128) so `execution_policy.py` can constrain its
+# evaluation-address keys to the same pattern without the two modules importing
+# each other; it is re-exported below so existing importers are unaffected.
+from .address import ADDRESS_PATTERN, split_address
+from .execution_policy import ExecutionPolicy
 from .models import NodeKind
 from .state import NodeState
 
@@ -59,16 +65,9 @@ __all__ = [
     "ProposedEdge",
     "ProposedNode",
     "Violation",
+    "split_address",
     "validate_proposal",
 ]
-
-
-# A graph address is `flow/epic/wave/node` — exactly four non-empty segments
-# (D-R13). Segments allow word characters, dots and hyphens: enough for slugs and
-# issue refs, and deliberately not `/`, which would let one segment forge two and
-# make a three-segment address parse as four.
-_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
-ADDRESS_PATTERN = re.compile(rf"^{_SEGMENT}/{_SEGMENT}/{_SEGMENT}/{_SEGMENT}$")
 
 # The executable node kinds, derived from the store's enum rather than listed.
 # Hand-listing them here is exactly how the vocabulary would drift.
@@ -143,6 +142,103 @@ class ProposedEdge(BaseModel):
     to_address: str
 
 
+# --- The design loop's story (#4885) ---------------------------------------
+# The canonical five AIDLC inception stages, in order, from
+# `modules/agent-factory/rules/personas/aidlc.md`. Spelled here as the single
+# server-side list a document is validated against: a typo that parsed would
+# become a permanently unrenderable chip on the card, and nothing downstream
+# could tell it from a real stage. Ordered because the strip renders in this
+# order, and a card whose gates read out of sequence misrepresents the process.
+DESIGN_STAGES: tuple[str, ...] = (
+    "intent-capture",
+    "reverse-engineering",
+    "requirements-analysis",
+    "delivery-planning",
+    "loop-proposal",
+)
+
+# `skipped` and `not_reached` are DIFFERENT and must not be merged.
+#
+#   approved     — the gate ran and a human approved it.
+#   open         — the gate is posted and a human is being waited on right now.
+#   skipped      — scope decided this stage does not run at all (`poc` skips
+#                  reverse-engineering). It is NOT pending work.
+#   not_reached  — the stage will run, but the loop has not got there yet.
+#
+# Collapsing `skipped` into `not_reached` makes a stage that is never coming read
+# as unfinished work, which is the exact confusion the strip exists to remove;
+# collapsing it the other way claims a gate was answered when nobody looked at it.
+DESIGN_STAGE_STATES: tuple[str, ...] = ("approved", "open", "skipped", "not_reached")
+
+# Hard cap on the use-case description, enforced at write time. This string rides
+# EVERY row of the flows list response, so an unbounded body would inflate the
+# whole page for one flow's sake. Over-length is REJECTED, never truncated:
+# silently cutting a sentence mid-word ships a description whose author cannot
+# tell it was altered, and the fix (write a shorter one) belongs with them.
+DESCRIPTION_MAX_LEN = 500
+
+
+class DesignStage(BaseModel):
+    """One AIDLC gate's outcome within a flow's design history.
+
+    `name` and `state` are `Literal`s rather than plain `str`s — the opposite
+    choice to `ProposedNode.kind` above, and deliberately so. `kind` stays a str
+    because `validate_proposal` can report a precise violation for one bad node
+    while still checking the rest of the document. There is no equivalent
+    reporting pass for design history, and no execution depends on it, so the
+    type IS the validation and an unknown stage name is a 422 at the boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Literal[DESIGN_STAGES]  # type: ignore[valid-type]
+    state: Literal[DESIGN_STAGE_STATES]  # type: ignore[valid-type]
+    # Present ONLY for `approved`. An `approved_at` on an open or skipped stage
+    # would be a timestamp for an approval that did not happen, and the card
+    # renders it as one — so it is rejected rather than ignored.
+    approved_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _approved_at_only_when_approved(self) -> "DesignStage":
+        if self.state == "approved":
+            if self.approved_at is None:
+                raise ValueError(f"stage {self.name!r} is 'approved' but carries no approved_at")
+        elif self.approved_at is not None:
+            raise ValueError(f"stage {self.name!r} is {self.state!r}, which cannot carry an approved_at")
+        return self
+
+
+class DesignHistory(BaseModel):
+    """The inception record for a flow: its scope and its five gates' outcomes.
+
+    A whole-object model rather than a free-form dict, so an invalid history is
+    refused at the API boundary instead of persisting as an unrenderable blob. A
+    JSON column will accept anything; this is what makes it not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # `auto` | `poc` | `workshop` (aidlc.md "Scope Modes"). Scope decides WHICH
+    # stages run — never whether they gate — which is why `skipped` is a stage
+    # state and not a property of the scope.
+    scope: Literal["auto", "poc", "workshop"]
+    stages: list[DesignStage] = Field(min_length=1, max_length=len(DESIGN_STAGES))
+
+    @model_validator(mode="after")
+    def _no_duplicate_stages(self) -> "DesignHistory":
+        """One entry per stage. A duplicate makes "N of 5 approved" ambiguous.
+
+        Two rows for `delivery-planning`, one approved and one open, describe
+        contradictory states for the same gate and the strip would render
+        whichever came last — an arbitrary answer to a question with a real one.
+        """
+        names = [stage.name for stage in self.stages]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"design history names the same stage more than once: {', '.join(duplicates)}")
+        return self
+
+
 class LoopProposal(BaseModel):
     """A complete plan an authoring agent proposes for approval.
 
@@ -169,20 +265,41 @@ class LoopProposal(BaseModel):
     nodes: list[ProposedNode] = Field(default_factory=list)
     edges: list[ProposedEdge] = Field(default_factory=list)
 
+    # --- The design loop's story (#4885), both optional -------------------
+    # Provenance about how this plan came to be, NOT part of the plan's
+    # executable content — which is why `compile.plan_hash` excludes both. Two
+    # documents differing only in description are the same plan, and hashing
+    # them differently would refuse a fail-soft retry that spanned the deploy as
+    # a plan-of-record rewrite.
+    #
+    # Optional, and an omission is honoured as `NULL` rather than defaulted:
+    # a hand-authored proposal has no design loop behind it, and an author who
+    # cannot state a stage's outcome must leave it out rather than guess. That is
+    # what keeps "we do not know" reachable by construction.
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LEN)
+    design_history: DesignHistory | None = None
 
-def split_address(address: str) -> tuple[str, str, str, str]:
-    """Split a validated graph address into its four segments.
-
-    Raises:
-        ValueError: If `address` is not of the form `flow/epic/wave/node`. Callers
-            that have already run `validate_proposal` cannot hit this; the raise
-            exists so a caller that skipped validation fails loudly here rather
-            than writing a malformed address to the store.
-    """
-    if not ADDRESS_PATTERN.match(address):
-        raise ValueError(f"not a graph address of the form 'flow/epic/wave/node': {address!r}")
-    flow, epic, wave, node = address.split("/")
-    return flow, epic, wave, node
+    # --- The authority the owner delegates (#5128), optional --------------
+    # What autonomous actions this plan's agents may take, where, and within what
+    # bounds. **Unlike the two fields above, this IS part of the plan's executable
+    # content** and so is deliberately covered by `compile.plan_hash`: two
+    # documents differing only in what they authorize are not the same plan, and
+    # hashing them alike would let an amendment that widened authority be mistaken
+    # for a retry of the narrower one.
+    #
+    # Optional, and **an omission preserves legacy semantics exactly**: a plan with
+    # no policy dispatches as it did before this field existed. That is what keeps
+    # the change opt-in, and it is why the default is `None` rather than a
+    # permissive policy — a default that authorized anything would silently widen
+    # every existing flow on deploy, and a default that authorized nothing would
+    # silently halt them all.
+    #
+    # `policy_id`, `policy_hash` and `principal_id` inside this block are
+    # server-stamped: a submitted document setting any of them is rejected by
+    # `execution_policy.stamp_policy`, not overwritten. An author cannot name their
+    # own policy identity or principal, for the same reason `org_id` above is
+    # compared rather than trusted.
+    execution_policy: ExecutionPolicy | None = None
 
 
 def _check_addresses(proposal: LoopProposal) -> list[Violation]:

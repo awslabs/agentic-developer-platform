@@ -1,15 +1,17 @@
 # Bedrock Gateway CLI Tools
 
-CLI tools for authenticating with the Bedrock Gateway and configuring Claude Code.
+CLI tools for authenticating with the Bedrock Gateway and configuring Claude Code
+or Codex.
 
 ## Contents
 
 | File | Description |
 |------|-------------|
-| `bg-cognito-auth.sh` | Cognito authentication helper (login, import, refresh, token, serve) |
+| `adp` | **The CLI you run.** Thin wrapper: `login`, `status`, `codex setup`, `claude setup`, `update` |
+| `install.sh` | Installer for `adp` — one line, run via `curl … \| sh` from your gateway |
+| `bg-cognito-auth.sh` | Cognito authentication core (login, import, refresh, token, serve). `adp` delegates every auth verb to it |
 | `bg-gateway-proxy.py` | Localhost auth proxy started by `serve` — zero-touch auth for Codex (stdlib python3, no pip installs) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
-| `install.sh` | Installation script |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
 | `examples/claude-settings-cognito.json` | Claude Code settings (Anthropic format via gateway) |
 
@@ -17,9 +19,47 @@ CLI tools for authenticating with the Bedrock Gateway and configuring Claude Cod
 
 ### Prerequisites
 
-- `curl`, `jq`, `aws` CLI v2
-- A Cognito user account (ask your platform admin)
-- Claude Code installed (`npm install -g @anthropic-ai/claude-code`)
+- `curl`, `jq`
+- A Cognito user account (ask your platform admin) — GitHub sign-in counts
+- Claude Code (`npm install -g @anthropic-ai/claude-code`) or the Codex CLI
+
+The `aws` CLI is **not** required. Refresh is routed through the gateway, so
+ordinary users need no AWS credentials of their own.
+
+### Start to finish
+
+```bash
+curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh | sh -s -- \
+    --gateway-url https://<CLOUDFRONT_DOMAIN>/api
+adp login          # approve once in the browser
+adp status         # confirm you are signed in
+adp claude setup   # or: adp codex setup
+claude             # or: adp codex
+```
+
+The installer puts `adp`, `bg-cognito-auth.sh` and `bg-gateway-proxy.py` side by
+side in `~/.adp/bin` (override with `--prefix`), adds that directory to your PATH,
+and remembers the gateway URL in `~/.bedrock-gateway/config.json` — which is why
+no later command needs a flag. `adp update` re-pulls from the same gateway;
+`adp update --rollback` undoes it. `sh install.sh --uninstall` removes the files
+and leaves your session alone.
+
+**One login is shared by every tool.** `adp login` seeds `~/.bedrock-gateway/`
+once; both `setup` verbs only write config and never authenticate, so adding a
+second tool costs one command and no second sign-in.
+
+The `setup` verbs **merge** into `~/.claude/settings.json` and
+`~/.codex/config.toml` — your existing permissions, hooks, MCP servers and other
+providers survive — and re-running them changes nothing.
+
+> Prefer to read what you run? `curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh -o install.sh`,
+> read it, then `sh install.sh --gateway-url https://<CLOUDFRONT_DOMAIN>/api`.
+
+The rest of this document covers the underlying scripts directly. Everything below
+still works — `adp` wraps it rather than replacing it — and is what to read if you
+want the details, are debugging, or maintain a hand-installed setup.
+
+## Using the scripts directly (no `adp`)
 
 ### Step 1: Install the auth script
 
@@ -27,8 +67,6 @@ CLI tools for authenticating with the Bedrock Gateway and configuring Claude Cod
 cp cli/bg-cognito-auth.sh ~/bin/
 chmod +x ~/bin/bg-cognito-auth.sh
 ```
-
-> **Note:** `install.sh` installs only `bg-auth.sh` (the legacy SigV4 helper). `bg-cognito-auth.sh` must be copied manually, as above.
 
 ### Step 2: Configure Claude Code
 
@@ -39,17 +77,24 @@ cp cli/examples/claude-settings-bedrock-gateway.json ~/.claude/settings.json
 
 Edit `~/.claude/settings.json` and replace `<CLOUDFRONT_DOMAIN>` with your gateway domain.
 
-### Step 3: Login (one-time)
+### Step 3: Sign in (one-time, browser approval — no password, no copy-paste)
 
 ```bash
-~/bin/bg-cognito-auth.sh login \
-  --gateway-url https://<CLOUDFRONT_DOMAIN>/api \
-  --user-pool-id <USER_POOL_ID> \
-  --client-id <CLIENT_ID> \
-  --region us-east-1
+~/bin/bg-cognito-auth.sh login --web --gateway-url https://<CLOUDFRONT_DOMAIN>/api
 ```
 
-It will prompt for username and password. Tokens are saved to `~/.bedrock-gateway/`.
+Your browser opens the dashboard's approval page showing the same short code as
+your terminal — click **Approve** and you're signed in. Tokens are saved to
+`~/.bedrock-gateway/`, minted on a **CLI-specific app client**: the on-disk
+refresh token is short-lived (24 h by default, vs 30 days for the browser) and
+**rotates on every background refresh**, so a stolen copy dies the next time
+your machine refreshes.
+
+Fallbacks:
+- **Cognito password account** (not created via GitHub sign-in): use `login`
+  without `--web` — it prompts for username/password.
+- **Headless machine** (SSH, no browser): use `import` — see the next section.
+- `--no-browser` prints the approval URL instead of opening a browser.
 
 ### Step 4: Launch Claude Code
 
@@ -59,9 +104,14 @@ claude
 
 That's it. Claude Code calls `bg-cognito-auth.sh token` automatically via `apiKeyHelper`, which returns a fresh Cognito JWT. The token auto-refreshes — you won't need to login again for 30 days.
 
-## Signed in with GitHub? Use `import` instead of `login`
+## Headless machine? Use `import` instead of `login --web`
 
-If you signed in to the gateway dashboard with GitHub, you have **no Cognito password** — your account was provisioned with a random one you never see. `login` cannot work for you. Instead, seed the CLI from the session the browser already established:
+`login --web` needs a browser on the same machine. On a box that has none (SSH
+target, container), seed the CLI from a browser session on another machine.
+This also remains the fallback while a deployment hasn't enabled web CLI login
+yet (`login --web` reports it). Note the pasted refresh token is the **SPA
+client's** (30-day, non-rotating) — prefer `login --web` wherever a browser
+exists:
 
 1. Sign in to the dashboard with GitHub.
 2. Open **Settings → Connect CLI**, click **Reveal token**, and copy the refresh token.
@@ -152,6 +202,12 @@ wire_api = "responses"
 env_key = "ADP_GATEWAY_DUMMY"
 ```
 
+> **Model switching inside Codex just works.** The in-app `/model` picker
+> writes short slugs (`gpt-5.6-sol`) into this file, but the gateway serves
+> models under their prefixed ids (`openai.gpt-5.6-sol`). The proxy adds the
+> missing `openai.` prefix on the way through, so either spelling is fine —
+> the model just has to be one the gateway actually serves.
+
 ### Step 4: Run the proxy, then Codex
 
 ```bash
@@ -167,6 +223,15 @@ ADP_GATEWAY_DUMMY=unused codex
 That's it. Leave the proxy running as long as you like — token refresh happens
 per request, behind the scenes.
 
+> **With `adp` installed this is one command: `adp codex`.** It health-checks the
+> proxy, starts it in the background if needed, sets `ADP_GATEWAY_DUMMY` itself
+> and hands you into Codex — one terminal, no prefix to remember. The two steps
+> above are what it automates, and remain the path for a hand-installed setup with
+> no `adp`. To make the bare `codex` command work, `adp daemon install` keeps the
+> proxy always-on (macOS); `adp daemon uninstall` reverts it. Claude Code needs
+> none of this — `apiKeyHelper` refreshes per request, so bare `claude` works and
+> `adp claude` is only a fail-fast login check.
+
 ### How it works
 
 ```
@@ -177,6 +242,8 @@ codex  ──POST http://127.0.0.1:9191/openai/v1/responses
         │    └─ reuses the cached JWT, or renews ~5 min before the 60-min expiry
         ├─ drops any client Authorization / x-api-key
         ├─ sets Authorization: Bearer <fresh token>
+        ├─ prefixes bare model names with `openai.` on /openai/* requests
+        │    (the in-app /model picker writes short slugs)
         └─ forwards to <gateway_url> and streams the response back verbatim
              (SSE chunks unbuffered — Codex sends stream=true)
 ```
@@ -243,6 +310,9 @@ Developer runs `claude`
 ## Auth Commands
 
 ```bash
+# Sign in via browser approval (primary path — no password, no copy-paste)
+bg-cognito-auth.sh login --web --gateway-url https://gateway.example.com/api
+
 # Login (interactive, one-time — requires a Cognito password)
 bg-cognito-auth.sh login --gateway-url https://gateway.example.com/api
 
@@ -329,6 +399,11 @@ See `.github/workflows/gateway-agent-test.yml` for a complete working example.
 
 ## Token Refresh
 
+- `login --web` tokens ride the CLI app client: refresh tokens last 24 hours
+  (deployment-configurable) and ROTATE — each refresh returns a new refresh
+  token and invalidates the old one. The helper already persists the rotated
+  token; just don't copy `tokens.json` between machines (the copy dies on the
+  original's next refresh).
 - Access tokens expire in 60 minutes
 - `bg-cognito-auth.sh token` auto-refreshes 5 minutes before expiry
 - Refresh tokens last 30 days

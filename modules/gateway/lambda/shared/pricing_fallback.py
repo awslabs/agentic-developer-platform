@@ -1,261 +1,48 @@
 """
 Hardcoded Model Pricing Fallback for Lambda Functions.
 
-This module provides a fallback pricing table when the AWS Pricing API is
-unavailable or the model_pricing database table is empty. Prices are based
-on AWS Bedrock published rates.
+Rates used when the active V2 pricing generation is unavailable — a cold
+deployment, or a database the Lambda cannot reach. This is the settlement
+authority's bootstrap table: its values write ``budget_usage.total_cost_usd`` and
+``usage_logs.cost_usd``.
 
 Issue #234: Budget Usage Tracking Lambda
 Issue #1486: Added cache_read_input/cache_creation_input rates and new model IDs
 Issue #4592: Added Claude Opus 5, Sonnet 4.5 and bare-id Sonnet 4.6 entries
+Issue #4969: The rates are no longer written here.
 
-Every Claude entry must carry all four keys (input, output, cache_read_input,
-cache_creation_input). Agent traffic is cache-dominated, and the "default" row
-has no cache rates at all — a base-rate-only entry misprices the majority of
-the tokens it is supposed to fix.
+Until #4969 this module owned a hand-maintained literal, and so did
+``src/budget/pricing.py``, because no import path exists between ``src/`` and
+``lambda/``. Two independently edited tables priced the same traffic and drifted:
+GPT-5.6 Luna was billing 5.00x its published rate. Both now derive from the
+shared ``pricing_policy`` snapshot, which ships in this Lambda's zip as well as
+the gateway image, so there is exactly one place a rate can be wrong.
 
-Source: AWS Bedrock pricing page (https://aws.amazon.com/bedrock/pricing/)
+``MODEL_PRICING``, ``resolve_model_id``, ``get_model_pricing`` and
+``calculate_cost`` keep their signatures — the tracker handler and its tests call
+them — but the numbers behind them come from the snapshot.
+
+Every Claude entry still carries all four keys (input, output, cache_read_input,
+cache_creation_input). Agent traffic is cache-dominated, and the "default" row has
+no cache rates at all, so a base-rate-only entry misprices the majority of the
+tokens it is supposed to fix. The snapshot's curated section preserves those
+four-key entries verbatim (design §7).
+
+Source: the versioned snapshot under ``pricing_policy/snapshots/``, itself
+verified against AWS Bedrock publications — see design §10.
 """
 
 import logging
 from decimal import Decimal
 from typing import Any
 
+from pricing_policy import legacy_flat_rates, legacy_flat_table
+
 logger = logging.getLogger(__name__)
 
-# Pricing per 1000 tokens (USD)
-# Source: AWS Bedrock pricing page
-# Last updated: February 2026
-MODEL_PRICING: dict[str, dict[str, Decimal]] = {
-    # Claude 3.5 models (latest)
-    "anthropic.claude-3-5-sonnet-20241022-v2:0": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-        "cache_read_input": Decimal("0.0003"),
-        "cache_creation_input": Decimal("0.00375"),
-    },
-    "anthropic.claude-3-5-haiku-20241022-v1:0": {
-        "input": Decimal("0.0008"),
-        "output": Decimal("0.004"),
-        "cache_read_input": Decimal("0.00008"),
-        "cache_creation_input": Decimal("0.001"),
-    },
-    # Claude 4 models (2025)
-    "anthropic.claude-opus-4-20250514-v1:0": {
-        "input": Decimal("0.015"),
-        "output": Decimal("0.075"),
-        "cache_read_input": Decimal("0.0015"),
-        "cache_creation_input": Decimal("0.01875"),
-    },
-    "anthropic.claude-sonnet-4-20250514-v1:0": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-        "cache_read_input": Decimal("0.0003"),
-        "cache_creation_input": Decimal("0.00375"),
-    },
-    "anthropic.claude-haiku-4-20250514-v1:0": {
-        "input": Decimal("0.0008"),
-        "output": Decimal("0.004"),
-        "cache_read_input": Decimal("0.00008"),
-        "cache_creation_input": Decimal("0.001"),
-    },
-    # Claude 4.x updated models (2025-2026) — Issue #1486, #1622
-    # These use version-number naming (no date suffix)
-    # Opus 4.x rate: $5/$25 per MTok (corrected from retired $15/$75 Opus 4.1 rate — #1622)
-    "anthropic.claude-opus-4-6-v1": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-        "cache_read_input": Decimal("0.0005"),  # 0.1× input
-        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
-    },
-    "anthropic.claude-opus-4-7-v1": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-        "cache_read_input": Decimal("0.0005"),  # 0.1× input
-        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
-    },
-    "anthropic.claude-opus-4-8-v1": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-        "cache_read_input": Decimal("0.0005"),  # 0.1× input
-        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
-    },
-    "anthropic.claude-sonnet-4-6-v1": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-        "cache_read_input": Decimal("0.0003"),
-        "cache_creation_input": Decimal("0.00375"),
-    },
-    # NOTE: bare (un-suffixed) id forms like 'anthropic.claude-sonnet-4-6' and
-    # 'anthropic.claude-opus-4-8' are resolved by the suffix-variant retry in
-    # get_model_pricing, not by per-id alias rows — one mechanism for the whole
-    # class instead of a hand-maintained duplicate row per id shape. Issue #4592.
-    # Sonnet 4.5 keeps the dated id form. Sonnet-family rate: $3/$15 per MTok.
-    # Issue #4592.
-    "anthropic.claude-sonnet-4-5-20250929-v1:0": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-        "cache_read_input": Decimal("0.0003"),
-        "cache_creation_input": Decimal("0.00375"),
-    },
-    # Claude 5 models (2026) — Issue #4592
-    # Opus 5 rate VERIFIED against the published price list at $5/$25 per MTok
-    # (same as Opus 4.6-4.8 — confirmed, not assumed).
-    "anthropic.claude-opus-5": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-        "cache_read_input": Decimal("0.0005"),  # 0.1× input
-        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
-    },
-    # Opus 4.5 dated form — live via the 'opus45' /model alias
-    # (src/proxy/model_resolver.py); previously missed the table entirely and
-    # billed at the Sonnet-tier default. Opus 4.x rate. Issue #4592.
-    "anthropic.claude-opus-4-5-20251101-v1:0": {
-        "input": Decimal("0.005"),
-        "output": Decimal("0.025"),
-        "cache_read_input": Decimal("0.0005"),  # 0.1× input
-        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
-    },
-    "anthropic.claude-haiku-4-5-20251001-v1:0": {
-        "input": Decimal("0.0008"),
-        "output": Decimal("0.004"),
-        "cache_read_input": Decimal("0.00008"),
-        "cache_creation_input": Decimal("0.001"),
-    },
-    # Claude 3 models
-    "anthropic.claude-3-opus-20240229-v1:0": {
-        "input": Decimal("0.015"),
-        "output": Decimal("0.075"),
-    },
-    "anthropic.claude-3-sonnet-20240229-v1:0": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-    },
-    "anthropic.claude-3-haiku-20240307-v1:0": {
-        "input": Decimal("0.00025"),
-        "output": Decimal("0.00125"),
-    },
-    # Claude 2.x models (legacy)
-    "anthropic.claude-v2:1": {
-        "input": Decimal("0.008"),
-        "output": Decimal("0.024"),
-    },
-    "anthropic.claude-v2": {
-        "input": Decimal("0.008"),
-        "output": Decimal("0.024"),
-    },
-    "anthropic.claude-instant-v1": {
-        "input": Decimal("0.0008"),
-        "output": Decimal("0.0024"),
-    },
-    # Amazon Titan Text models
-    "amazon.titan-text-express-v1": {
-        "input": Decimal("0.0002"),
-        "output": Decimal("0.0006"),
-    },
-    "amazon.titan-text-lite-v1": {
-        "input": Decimal("0.00015"),
-        "output": Decimal("0.0002"),
-    },
-    "amazon.titan-text-premier-v1:0": {
-        "input": Decimal("0.0005"),
-        "output": Decimal("0.0015"),
-    },
-    # Amazon Titan Embed models (text)
-    "amazon.titan-embed-text-v1": {
-        "input": Decimal("0.0001"),
-        "output": Decimal("0"),  # Embeddings don't have output tokens
-    },
-    "amazon.titan-embed-text-v2:0": {
-        "input": Decimal("0.00002"),
-        "output": Decimal("0"),
-    },
-    # Cohere models
-    "cohere.command-text-v14": {
-        "input": Decimal("0.0015"),
-        "output": Decimal("0.002"),
-    },
-    "cohere.command-light-text-v14": {
-        "input": Decimal("0.0003"),
-        "output": Decimal("0.0006"),
-    },
-    "cohere.command-r-v1:0": {
-        "input": Decimal("0.0005"),
-        "output": Decimal("0.0015"),
-    },
-    "cohere.command-r-plus-v1:0": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-    },
-    # Meta Llama models
-    "meta.llama3-8b-instruct-v1:0": {
-        "input": Decimal("0.0003"),
-        "output": Decimal("0.0006"),
-    },
-    "meta.llama3-70b-instruct-v1:0": {
-        "input": Decimal("0.00265"),
-        "output": Decimal("0.0035"),
-    },
-    "meta.llama3-1-8b-instruct-v1:0": {
-        "input": Decimal("0.00022"),
-        "output": Decimal("0.00022"),
-    },
-    "meta.llama3-1-70b-instruct-v1:0": {
-        "input": Decimal("0.00099"),
-        "output": Decimal("0.00099"),
-    },
-    "meta.llama3-1-405b-instruct-v1:0": {
-        "input": Decimal("0.00532"),
-        "output": Decimal("0.016"),
-    },
-    "meta.llama3-2-1b-instruct-v1:0": {
-        "input": Decimal("0.0001"),
-        "output": Decimal("0.0001"),
-    },
-    "meta.llama3-2-3b-instruct-v1:0": {
-        "input": Decimal("0.00015"),
-        "output": Decimal("0.00015"),
-    },
-    "meta.llama3-2-11b-instruct-v1:0": {
-        "input": Decimal("0.00016"),
-        "output": Decimal("0.00016"),
-    },
-    "meta.llama3-2-90b-instruct-v1:0": {
-        "input": Decimal("0.00072"),
-        "output": Decimal("0.00072"),
-    },
-    # Mistral models
-    "mistral.mistral-7b-instruct-v0:2": {
-        "input": Decimal("0.00015"),
-        "output": Decimal("0.0002"),
-    },
-    "mistral.mixtral-8x7b-instruct-v0:1": {
-        "input": Decimal("0.00045"),
-        "output": Decimal("0.0007"),
-    },
-    "mistral.mistral-large-2402-v1:0": {
-        "input": Decimal("0.004"),
-        "output": Decimal("0.012"),
-    },
-    "mistral.mistral-small-2402-v1:0": {
-        "input": Decimal("0.001"),
-        "output": Decimal("0.003"),
-    },
-    # AI21 Jurassic models
-    "ai21.j2-ultra-v1": {
-        "input": Decimal("0.0125"),
-        "output": Decimal("0.0125"),
-    },
-    "ai21.j2-mid-v1": {
-        "input": Decimal("0.0125"),
-        "output": Decimal("0.0125"),
-    },
-    # Default fallback pricing (conservative estimate)
-    "default": {
-        "input": Decimal("0.003"),
-        "output": Decimal("0.015"),
-    },
-}
+# Derived from the shared snapshot, built once at import. Same flat shape the
+# hand-maintained literal had, including the conservative "default" row.
+MODEL_PRICING: dict[str, dict[str, Decimal]] = legacy_flat_table()
 
 
 def resolve_model_id(model_id: str) -> str:
@@ -300,39 +87,27 @@ def get_model_pricing(model_id: str) -> dict[str, Decimal]:
     """
     resolved_id = resolve_model_id(model_id)
 
-    if resolved_id in MODEL_PRICING:
-        return MODEL_PRICING[resolved_id]
-
-    # Try case-insensitive matching
-    model_lower = resolved_id.lower()
-    for key in MODEL_PRICING:
-        if key.lower() == model_lower:
-            return MODEL_PRICING[key]
-
-    # Issue #4592: live callers and the table disagree about version suffixes —
-    # model_resolver.py emits bare 'anthropic.claude-opus-4-8' while the table
-    # keys 'anthropic.claude-opus-4-8-v1', and ':0'/'-v1'-suffixed forms arrive
-    # for ids the table keys bare. Retrying the suffix variants fixes the whole
-    # class instead of a hand-maintained alias row per id shape.
-    for candidate in (
-        f"{resolved_id}-v1",
-        resolved_id.removesuffix(":0"),
-        resolved_id.removesuffix("-v1:0"),
-        resolved_id.removesuffix("-v1"),
-    ):
-        if candidate != resolved_id and candidate in MODEL_PRICING:
-            return MODEL_PRICING[candidate]
+    # Issue #4969: the lookup itself now lives in the shared package. It applies
+    # the same case-insensitive match and the same #4592 suffix-variant retry
+    # ('anthropic.claude-opus-4-8' vs '...-4-8-v1', and ':0'-suffixed arrivals for
+    # bare keys) that this function used to implement locally — one mechanism, in
+    # one place, instead of two copies to keep in step.
+    rates, known = legacy_flat_rates(model_id)
+    if known:
+        return rates
 
     # Issue #1486: Unknown model — log a WARNING so this is observable.
     # Previously this was silent, causing Opus 4.6 to be priced as Sonnet.
+    # The boundary between "known" and "unknown" is unchanged by #4969, so the
+    # metric fires on exactly the ids it fired on before.
     logger.warning(
-        "Unknown model '%s' (resolved: '%s') — using default pricing. Add this model to MODEL_PRICING in pricing_fallback.py.",
+        "Unknown model '%s' (resolved: '%s') — using default pricing. Add this model to the pricing_policy snapshot.",
         model_id,
         resolved_id,
     )
     _emit_unknown_model_metric(resolved_id)
 
-    return MODEL_PRICING["default"]
+    return rates
 
 
 # Lazy singleton + per-container dedup for the unknown-model metric. The metric

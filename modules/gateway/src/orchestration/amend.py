@@ -33,8 +33,8 @@ which is the softer-door failure in a different disguise.
 additive: it upserts the proposal's nodes and never touches a node the proposal
 omits, because for a first compile there is nothing to omit. Amendment is where
 absence becomes meaningful — a node dropped from the new plan must stop being
-worked. So this module supersedes the dropped nodes, and that is the only
-behaviour it adds.
+worked. This module supersedes dropped nodes, reconciles retained definitions and
+replaces the live dependency topology. Prior plan documents retain the history.
 
 **Preservation is the point (semantics 4).** A node whose address *and* definition
 are unchanged keeps its state, its attempt count and its run history. Re-planning
@@ -56,18 +56,20 @@ append-only, both from the store story's `029_orchestration_graph.py`.
 
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .compile import (
     ApprovalContext,
     ProposalRejectedError,
     TenantMismatchError,
+    accept_execution_policy,
     address_of,
     plan_hash,
     upsert_edges,
     upsert_nodes,
 )
-from .models import DecisionKind, OrchestrationNode
+from .models import DecisionKind, OrchestrationFlow, OrchestrationNode
 from .proposal import LoopProposal, validate_proposal
 from .repository import OrchestrationRepository
 from .state import ActorKind, NodeState, transition
@@ -225,6 +227,21 @@ async def amend_plan(
             f"amendment declares flow_slug {proposal.flow_slug!r} but flow {flow_id!r} is {flow.slug!r}; an amendment must target the flow it amends"
         )
 
+    # --- Stamp the amended execution policy (#5128) ------------------------
+    # An amendment producing a new accepted version IS how a policy is amended, so
+    # a re-submitted policy is re-stamped here and the new version carries it.
+    #
+    # The same `accept_execution_policy` the original path uses, imported rather
+    # than reimplemented, for the same reason this module already shares
+    # `validate_proposal` and `upsert_nodes` (AC-29 parity): a second acceptance
+    # rule here would be free to accept a policy `compile_proposal` refuses, and
+    # the amendment path is the *easier* one to reach. In particular this is what
+    # stops an amendment from being the way a SERVICE actor gets a policy accepted.
+    #
+    # Before the hash, so the stamp is inside what idempotency compares — see
+    # `compile.plan_hash` on why the policy is hashed at all.
+    proposal = accept_execution_policy(proposal, decision=actor.to_approval(), decision_kind=DecisionKind.PLAN_AMENDED)
+
     document = proposal.model_dump(mode="json")
     document_hash = plan_hash(proposal)
 
@@ -232,6 +249,11 @@ async def amend_plan(
     # prior row, the superseded nodes, the new nodes and the decision land
     # together or not at all.
     async with session.begin_nested():
+        # Serialize amendments before reading the current version, including flows
+        # with no nodes yet. Dispatch/tick lock nodes in the same ID order below.
+        await session.execute(
+            select(OrchestrationFlow).where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.id == flow.id).with_for_update()
+        )
         in_force = await repo.get_accepted_plan(org_id=actor.org_id, flow_id=flow.id)
 
         # --- Idempotency (R-NF2) -------------------------------------------
@@ -253,13 +275,26 @@ async def amend_plan(
         superseded_version = in_force.version if in_force is not None else None
 
         # --- Supersede the dropped nodes -----------------------------------
-        # The one behaviour amendment adds over compile: absence in the new plan
+        # Unlike additive compilation, absence in the replacement plan
         # is meaningful. Done BEFORE the upsert so the "already on the graph" set
         # is the pre-amendment one — running it after would see the newly inserted
         # nodes too and, since they are all in the new plan, do nothing wrong but
         # cost a pointless second pass.
         proposed_addresses = {node.address for node in proposal.nodes}
-        existing_nodes = await repo.list_nodes(org_id=actor.org_id, flow_id=flow.id)
+        existing_nodes = list(
+            (
+                await session.execute(
+                    select(OrchestrationNode)
+                    .where(OrchestrationNode.org_id == actor.org_id, OrchestrationNode.flow_id == flow.id)
+                    .order_by(OrchestrationNode.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        _reconcile_definitions(existing_nodes, proposal)
         nodes_superseded = _supersede_absent_nodes(
             existing_nodes,
             proposed_addresses=proposed_addresses,
@@ -277,6 +312,26 @@ async def amend_plan(
             org_id=actor.org_id,
             flow_id=flow.id,
         )
+        # Executable edges describe only the current plan. Keeping removed edges
+        # would strand successors behind nodes that are now superseded.
+        desired = {(node_ids[e.from_address], node_ids[e.to_address]) for e in proposal.edges}
+        existing_edges = await repo.list_edges(org_id=actor.org_id, flow_id=flow.id)
+        before = {(e.from_node_id, e.to_node_id) for e in existing_edges}
+        for node in existing_nodes:
+            if address_of(flow.slug, node) not in proposed_addresses:
+                continue
+            if NodeState(node.state) not in {NodeState.PENDING, NodeState.READY}:
+                old_inputs = {source for source, target in before if target == node.id}
+                new_inputs = {source for source, target in desired if target == node.id}
+                if old_inputs != new_inputs:
+                    raise ProposalRejectedError(
+                        f"cannot change prerequisites of started node {address_of(flow.slug, node)!r}; use a new node address"
+                    )
+        for edge in existing_edges:
+            if (edge.from_node_id, edge.to_node_id) not in desired:
+                await session.delete(edge)
+        await session.flush()
+        flow.title = proposal.title
         edges_created = await upsert_edges(
             repo,
             proposal=proposal,
@@ -337,6 +392,25 @@ async def amend_plan(
             nodes_superseded=nodes_superseded,
             edges_created=edges_created,
         )
+
+
+def _reconcile_definitions(existing_nodes: list[OrchestrationNode], proposal: LoopProposal) -> None:
+    """Update unstarted routing without changing execution identity or history."""
+    proposed_by_address = {node.address: node for node in proposal.nodes}
+    for node in existing_nodes:
+        address = address_of(proposal.flow_slug, node)
+        proposed = proposed_by_address.get(address)
+        if proposed is None:
+            continue
+        if node.state == NodeState.SUPERSEDED.value:
+            raise ProposalRejectedError(f"cannot reuse superseded node {address!r}; use a new node address")
+        if node.kind != proposed.kind:
+            raise ProposalRejectedError(f"cannot change kind of node {address!r}; use a new node address")
+        if node.issue_ref != proposed.issue_ref:
+            if node.attempts or NodeState(node.state) not in {NodeState.PENDING, NodeState.READY}:
+                raise ProposalRejectedError(f"cannot change issue_ref of started node {address!r}; use a new node address")
+            node.issue_ref = proposed.issue_ref
+        node.title = proposed.title
 
 
 def _supersede_absent_nodes(
