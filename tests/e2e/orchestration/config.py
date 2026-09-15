@@ -217,9 +217,10 @@ def _check_embedded_secrets(document: dict[str, Any], problems: list[str]) -> No
         if isinstance(node, dict):
             for key, value in node.items():
                 child = f"{trail}.{key}" if trail else str(key)
-                # `secret_refs` is the one place a secret-like NAME is expected;
-                # its values are still checked for credential shapes below.
-                in_secret_refs = trail == "secret_refs" or trail.startswith("secret_refs.")
+                # `secret_refs` is the one place a secret-like NAME is expected,
+                # including the section key itself; its values are still checked
+                # for credential shapes below.
+                in_secret_refs = child == "secret_refs" or child.startswith("secret_refs.")
                 if not in_secret_refs and _SECRET_LIKE_KEY.search(str(key)):
                     problems.append(
                         f"{child}: secret-like key is not allowed in a config file; "
