@@ -272,6 +272,7 @@ class DenyReason(StrEnum):
     WORK_NOT_OWNED = "work_not_owned"
     CREDENTIAL_SCOPE_UNAVAILABLE = "credential_scope_unavailable"
     SPEND_UNKNOWN = "spend_unknown"
+    BUDGET_UNAVAILABLE = "budget_unavailable"
     SPEND_LIMIT_EXCEEDED = "spend_limit_exceeded"
     ATTEMPT_LIMIT_EXCEEDED = "attempt_limit_exceeded"
     CONCURRENCY_LIMIT_EXCEEDED = "concurrency_limit_exceeded"

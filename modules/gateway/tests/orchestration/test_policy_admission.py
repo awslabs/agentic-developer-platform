@@ -78,6 +78,20 @@ DEPT_A = "dept-test"
 EXPIRY = datetime.now(UTC) + timedelta(days=30)
 
 
+@pytest.fixture(autouse=True)
+async def healthy_policy_reservations(monkeypatch):
+    """Permitting-policy cases require real atomic holds, not an absent backend."""
+    import fakeredis.aioredis
+
+    from src.budget.reservations import ReservationStore
+    from src.orchestration import flow_budget
+
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(flow_budget, "_reservations", ReservationStore(redis_url=None, ttl_seconds=120, client=client))
+    yield
+    await client.aclose()
+
+
 @pytest.fixture
 async def engine():
     eng = create_async_engine(
@@ -583,10 +597,15 @@ class TestLimitsAreObservedFromEngineState:
         assert decision.reason is DenyReason.SPEND_LIMIT_EXCEEDED
 
     async def test_spend_below_the_cap_permits(self, session: AsyncSession) -> None:
-        flow, node = await _fixture(session, policy=_policy(limits=_limits(max_spend_usd=Decimal("10.00"))))
+        flow, node = await _fixture(session, policy=_policy(limits=_limits(max_spend_usd=Decimal("50.00"))))
         spent = await _make_node(session, flow, node_ref="s12", state=NodeState.PASSED)
         await _make_usage(session, spent, cost_usd="1.50")
         assert (await _authorize(session, node)).permitted
+
+    async def test_unspent_policy_cannot_admit_a_run_larger_than_its_allowance(self, session: AsyncSession) -> None:
+        _, node = await _fixture(session, policy=_policy(limits=_limits(max_spend_usd=Decimal("4.00"))))
+        decision = await _authorize(session, node)
+        assert decision.reason is DenyReason.SPEND_LIMIT_EXCEEDED
 
     async def test_expired_policy_blocks(self, session: AsyncSession) -> None:
         _, node = await _fixture(session, policy=_policy(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
@@ -740,3 +759,31 @@ class TestUnparseablePolicyDegradesLoudly:
         inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
         assert inputs.policy is None
         assert (await _authorize(session, node)).permitted
+
+
+@pytest.mark.parametrize("mismatch", [None, "owner", "repository", "invocation", "released", "missing_identity"])
+async def test_enforced_policy_checks_actual_issue_claim(session, monkeypatch, mismatch):
+    from src.orchestration.work_admission import admit, maintain_worker_claim
+    from src.orchestration.work_claims import ClaimOwner, OwnerKind
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    flow, node = await _fixture(session, policy=_policy())
+    await admit(
+        session,
+        org_id=ORG_A,
+        repository_id=123,
+        issue=int(str(node.issue_ref).lstrip("#")),
+        owner=ClaimOwner(OwnerKind.ENGINE_FLOW, "different-flow" if mismatch == "owner" else flow.id),
+        invocation_id="reserved-run",
+    )
+    if mismatch == "released":
+        await maintain_worker_claim(session, org_id=ORG_A, invocation_id="reserved-run", terminal=True)
+    decision = await _authorize(
+        session,
+        node,
+        provider_repository_id=None if mismatch == "missing_identity" else (321 if mismatch == "repository" else 123),
+        expected_invocation_id="another-run" if mismatch == "invocation" else "reserved-run",
+    )
+    assert decision.permitted is (mismatch is None)
+    if mismatch:
+        assert decision.reason is DenyReason.WORK_NOT_OWNED

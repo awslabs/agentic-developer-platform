@@ -228,10 +228,9 @@ class TestTheBindingIsStableAndShared:
         """
         assert admission_cost_usd(_policy(limits=_limits(max_spend_usd=Decimal("50.00")))) == Decimal("25.00")
 
-    def test_the_hold_never_exceeds_the_whole_allowance(self) -> None:
-        """Otherwise a small policy's first action denies with the cap untouched —
-        an outage wearing a limit's clothing."""
-        assert admission_cost_usd(_policy(limits=_limits(max_spend_usd=Decimal("4.00")))) == Decimal("4.00")
+    def test_a_small_policy_cannot_shrink_the_actual_run_ceiling(self) -> None:
+        """A smaller reservation does not lower the actual per-run cap."""
+        assert admission_cost_usd(_policy(limits=_limits(max_spend_usd=Decimal("4.00")))) == Decimal("25.00")
 
 
 # ---------------------------------------------------------------------------
@@ -483,19 +482,13 @@ class TestReconciliationRestoresOnlyValidHeadroom:
 
 
 # ---------------------------------------------------------------------------
-# Availability: an outage relaxes contention, never reconciliation
+# Unavailable reservation enforcement refuses new admissions
 # ---------------------------------------------------------------------------
 
 
-class TestAnOutageDegradesRatherThanHalts:
-    async def test_an_unreachable_redis_still_admits(self) -> None:
-        """A cache blip must not stop an entire platform's delivery.
-
-        This is a real, deliberate reduction in enforcement, which is why it is
-        `degraded=True` rather than an ordinary permit — an allow indistinguishable
-        from a healthy allow is just fail-open. The settled-ledger check is
-        unaffected by Redis and still denies once the lagged total reaches the cap.
-        """
+class TestUnavailableReservationsBlock:
+    async def test_an_unreachable_redis_refuses_new_admission(self) -> None:
+        """The accepted bound cannot be honored without concurrent holds."""
         client = MagicMock()
         client.register_script = MagicMock(return_value=AsyncMock(side_effect=ConnectionError("redis down")))
         store = ReservationStore(redis_url=None, ttl_seconds=RESERVATION_TTL, client=client)
@@ -508,7 +501,7 @@ class TestAnOutageDegradesRatherThanHalts:
             node_id="node-1",
             store=store,
         )
-        assert outcome.admitted
+        assert not outcome.admitted
         assert outcome.degraded
 
     async def test_an_outage_does_not_relax_unknown_spend(self, session, monkeypatch, redis_client, clock) -> None:
@@ -533,22 +526,19 @@ class TestAnOutageDegradesRatherThanHalts:
         assert not decision.permitted
         assert decision.reason is DenyReason.SPEND_UNKNOWN
 
-    async def test_no_backend_configured_keeps_pre_5128_behaviour(self, session, monkeypatch) -> None:
-        """An environment with no Redis keeps the settled-ledger check rather than
-        refusing all work — which is what the shipped test environment is, and why
-        every other admission test in this package still passes."""
+    async def test_no_backend_configured_refuses_policy_governed_work(self, session, monkeypatch) -> None:
+        """Missing enforcement is distinguishable from an exhausted budget."""
         monkeypatch.setattr(flow_budget, "_reservations", ReservationStore(redis_url=None, ttl_seconds=RESERVATION_TTL))
         _, node = await _fixture(session, policy=_policy())
-        assert (await _authorize(session, node)).permitted
+        assert (await _authorize(session, node)).reason is DenyReason.BUDGET_UNAVAILABLE
 
     async def test_the_rollback_lever_disables_reservations(self, session, monkeypatch, flow_store, redis_client) -> None:
-        """`budget_reservation_enabled=False` is the documented rollback, and it must
-        bypass the counter entirely rather than merely be ignored."""
+        """Turning off reservations stops new bounded-policy admissions."""
         monkeypatch.setattr("src.budget.config.budget_config", _budget_config(budget_reservation_enabled=False))
 
         flow, first = await _fixture(session, policy=_policy())
         for ref in ("s8", "s9", "s10"):
             extra = await _make_node(session, flow, node_ref=ref)
-            assert (await _authorize(session, extra)).permitted
-        assert (await _authorize(session, first)).permitted
+            assert (await _authorize(session, extra)).reason is DenyReason.BUDGET_UNAVAILABLE
+        assert (await _authorize(session, first)).reason is DenyReason.BUDGET_UNAVAILABLE
         assert await _keys(redis_client) == []

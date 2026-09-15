@@ -66,7 +66,7 @@ from .execution_policy import (
     authorize_action,
 )
 from .flow_budget import release_flow_admission, reserve_flow_admission
-from .models import NodeKind, OrchestrationAcceptedPlan, OrchestrationFlow, OrchestrationNode
+from .models import ClaimState, NodeKind, OrchestrationAcceptedPlan, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
 from .state import NodeState
 
 logger = logging.getLogger(__name__)
@@ -324,6 +324,8 @@ async def resolve_authorization_context(
     principal_user_id: str,
     credential_scope: CredentialScope,
     spend: SpendObservation,
+    provider_repository_id: int | None = None,
+    expected_invocation_id: str | None = None,
 ) -> AuthorizationContext:
     """Build the fact set for one admission decision from live state.
 
@@ -343,6 +345,32 @@ async def resolve_authorization_context(
     come from two different reads of a moving ledger.
     """
     member_org_id, member_team_ids = await _member_facts(session, org_id=node.org_id, user_id=principal_user_id)
+    from .work_admission import enabled as work_claims_enabled
+
+    work_owned = True
+    if work_claims_enabled():
+        # A node belonging to a flow does not prove that flow owns the issue.
+        # Check the same immutable binding and invocation the producer reserved.
+        try:
+            issue = int(str(node.issue_ref).lstrip("#"))
+        except (ValueError, TypeError):
+            issue = 0
+        work_owned = bool(
+            provider_repository_id
+            and expected_invocation_id
+            and issue > 0
+            and await session.scalar(
+                select(OrchestrationWorkClaim.id).where(
+                    OrchestrationWorkClaim.org_id == node.org_id,
+                    OrchestrationWorkClaim.provider_repository_id == provider_repository_id,
+                    OrchestrationWorkClaim.issue_number == issue,
+                    OrchestrationWorkClaim.owner_kind == "engine_flow",
+                    OrchestrationWorkClaim.owner_ref == node.flow_id,
+                    OrchestrationWorkClaim.active_run_id == expected_invocation_id,
+                    OrchestrationWorkClaim.state == ClaimState.HELD.value,
+                )
+            )
+        )
 
     return AuthorizationContext(
         policy=policy,
@@ -369,9 +397,7 @@ async def resolve_authorization_context(
         observed_spend_usd=spend.total_usd,
         observed_attempts=node.attempts,
         observed_concurrency=await _running_count(session, org_id=node.org_id, flow_id=node.flow_id),
-        # The node was read from this flow's own rows under a lock, so it belongs to
-        # the flow whose plan supplied the policy.
-        work_owned_by_policy_flow=True,
+        work_owned_by_policy_flow=work_owned,
     )
 
 
@@ -382,6 +408,8 @@ async def authorize_node_dispatch(
     principal_user_id: str,
     target_repository: str,
     installation_resolved: bool,
+    provider_repository_id: int | None = None,
+    expected_invocation_id: str | None = None,
 ) -> Decision:
     """Admit or refuse dispatching one node under its flow's accepted policy.
 
@@ -467,6 +495,8 @@ async def authorize_node_dispatch(
         principal_user_id=principal_user_id,
         credential_scope=scope,
         spend=spend,
+        provider_repository_id=provider_repository_id,
+        expected_invocation_id=expected_invocation_id,
     )
 
     resource = ResourceRef(
@@ -515,6 +545,8 @@ async def authorize_node_dispatch(
         node_id=node.id,
     )
     if not reservation.admitted:
+        if reservation.degraded:
+            return Decision.block(DenyReason.BUDGET_UNAVAILABLE, "flow reservations are unavailable; no new policy-governed work can be admitted")
         # The same typed reason the settled-ledger check uses. A caller cannot act
         # differently on "over cap by the ledger" versus "over cap once concurrent
         # admissions are counted" — both mean this delivery has spent what it was
