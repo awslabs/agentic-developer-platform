@@ -26,6 +26,10 @@ export const featuresHandlers = [
         orchestration_engine: false,
         budget_spend: false,
         agent_control: false,
+        // Issue #5037: the Superplane domain app. Mocked off for the same reason as
+        // the flags above — the infrastructure behind it belongs to later units, so a
+        // test seeing `true` would exercise a route with nothing behind it.
+        superplane: false,
       },
     });
   }),

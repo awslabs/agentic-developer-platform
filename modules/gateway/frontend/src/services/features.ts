@@ -22,6 +22,8 @@ export interface FeatureFlags {
   agent_control: boolean;
   /** Opt-in /next UI shell — Issue #5079. Fail-closed; rollout control only. */
   new_ui: boolean;
+  /** Superplane domain app — Issue #5037 (EPIC #4910). Fail-closed. */
+  superplane: boolean;
 }
 
 export interface FeaturesResponse {
@@ -64,6 +66,15 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   // arrive, and keep advertising it during any backend outage — and it would defeat
   // the rollback, which is "flip the flag off and the new shell is gone".
   new_ui: false,
+  // Fail-closed — Issue #5037. `useFeatures` returns `data ?? ALL_FEATURES_ENABLED`, so
+  // this value renders BOTH while the /features fetch is in flight AND whenever it
+  // errors. A `true` here would surface a Superplane nav entry and route on every cold
+  // load before the flags arrive, and keep surfacing them during any backend outage.
+  //
+  // It would also break the story's first acceptance criterion in the most direct way
+  // available: the criterion is that no existing ADP surface changes behaviour while the
+  // gate is off, and a fail-open default means the gate is never observably off.
+  superplane: false,
 };
 
 export async function fetchFeatures(): Promise<FeatureFlags> {
