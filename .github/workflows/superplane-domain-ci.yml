@@ -66,6 +66,7 @@ on:
       # The suites themselves.
       - 'modules/gateway/tests/features/test_superplane_flag.py'
       - 'modules/gateway/tests/features/test_superplane_registration.py'
+      - 'modules/gateway/tests/features/test_superplane_deploy_scope.py'
       - 'modules/gateway/tests/e2e/test_superplane_route_gated.py'
   workflow_dispatch:
 
@@ -123,11 +124,13 @@ jobs:
             src/features/routes.py \
             tests/features/test_superplane_flag.py \
             tests/features/test_superplane_registration.py \
+            tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py
           ruff format --check \
             src/features/routes.py \
             tests/features/test_superplane_flag.py \
             tests/features/test_superplane_registration.py \
+            tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py
 
       - name: Run domain module tests
@@ -145,12 +148,20 @@ jobs:
         working-directory: modules/gateway
         # Pinned BY NAME, not by directory glob. A PR that deleted one of these files
         # would pass a directory-wide invocation, because "no tests" and "all tests
-        # passed" are the same exit code to a glob — and these three suites are the only
+        # passed" are the same exit code to a glob — and these four suites are the only
         # checks that the gate defaults off and that all five central lists are paired.
+        #
+        # test_superplane_deploy_scope.py EXECUTES deploy-all.sh against stubbed tooling
+        # (#5198 review): it asserts which phases actually run and which are skipped
+        # under each scope flag, which a text assertion cannot do. It belongs in this
+        # lane and not a credentialed one precisely because it must never reach AWS —
+        # the harness asserts `aws` resolves to its own stub and strips every AWS_* var
+        # from the child environment, so it is offline by construction.
         run: |
           python3 -m pytest \
             tests/features/test_superplane_flag.py \
             tests/features/test_superplane_registration.py \
+            tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py \
             -v --tb=short
 
