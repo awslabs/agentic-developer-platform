@@ -110,6 +110,31 @@ Deploy: `modules/agent-factory/scripts/deploy-gateway.sh`
 | SQS consumer | ScaledJob | `kubectl get scaledjobs -n adp-gateway-agents` | ScaledJob listed |
 | Consumer image | ECR | `aws ecr describe-images --repository-name adp-agent-gateway --query 'imageDetails[0].imageTags'` | Image tagged |
 
+## Superplane Domain App
+
+Module: `modules/domain-apps/superplane/`
+Deploy: `platform/scripts/deploy-all.sh` — Step 12/12, gated by `SUPERPLANE_ENABLED=true` (default **false**) or `--superplane-only`
+Undeploy: `platform/scripts/undeploy.sh` — **first** phase in `PHASE_ORDER` (`phase_superplane` in `undeploy-phases.sh`); `.github/workflows/undeploy.yml` Phase 1/6
+
+Deploys **last** and is destroyed **first**: a domain app sits on top of the platform, the
+gateway and the agent runtime, so teardown must remove it before its dependencies go.
+
+Registered in both the deploy and undeploy paths deliberately. `modules/domain-apps/cyber/`
+is absent from `deploy-all.sh` entirely, which is why its resources survive teardown —
+that is the failure mode this registration exists not to repeat.
+
+| Resource | AWS Service | Validation Command | Expected |
+|----------|------------|-------------------|----------|
+| Feature gate (off by default) | Gateway API | `curl -s https://<cf-domain>/api/features -H "Authorization: Bearer <token>" \| python3 -c 'import json,sys; print(json.load(sys.stdin)["features"]["superplane"])'` | `False` unless `FEATURE_SUPERPLANE_ENABLED=true` |
+| Undeploy phase registered | Shell | `bash -c 'source platform/scripts/undeploy-phases.sh && declare -F phase_superplane'` | `phase_superplane` listed |
+| Undeploy phase ordering | Shell | `grep -n 'PHASE_ORDER=' platform/scripts/undeploy.sh` | `superplane` first, before `agent_context` |
+| Terraform state (once U3 lands infra) | S3 | `aws s3api head-object --bucket adp-terraform-state-<account> --key <env>/modules/superplane/terraform.tfstate` | Object exists only after a gated deploy |
+
+**While the gate is off** there are no AWS resources to validate — the module is a skeleton
+plus a default-off flag, so an operator running these checks on a default deployment should
+expect `False`, a registered phase and **no** Terraform state. Terraform, the domain
+workload rollout and pinned images arrive with later units.
+
 ## Deployment State File
 
 Location: `s3://<state-bucket>/deploy/<environment>/state.json`

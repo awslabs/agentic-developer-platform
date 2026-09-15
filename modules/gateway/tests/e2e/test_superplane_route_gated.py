@@ -71,8 +71,7 @@ class TestRouteIsGated:
         """
         gate = (_GATEWAY_ROOT / "frontend" / "src" / "components" / "FeatureGate.tsx").read_text()
         assert "Navigate" in gate and "!features[feature]" in gate, (
-            "FeatureGate no longer redirects on a disabled flag; /superplane would become "
-            "reachable by direct URL entry."
+            "FeatureGate no longer redirects on a disabled flag; /superplane would become reachable by direct URL entry."
         )
 
 
