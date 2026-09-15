@@ -1,8 +1,16 @@
 # Protected-worker boundary validation
 
-This infrastructure change is a draft dependent on the credential-runtime PR,
-#5176 prerequisites and #5195 migration. Do not merge it into the webhook
-workflow's automatic broad apply. No live IAM or activation flags changed.
+The credential runtime is merged in #5196. The IAM definitions can merge while
+the checked-in `.github/deployment-holds/webhook-infra.md` hold prevents the
+webhook workflow from applying infrastructure. #5176 prerequisites and #5195
+migration remain open. No live IAM or activation flags changed.
+
+The hold covers this merge, later infrastructure changes, mixed code/infra
+releases and manual webhook workflow dispatches before packaging or state
+mutation. Code-only pushes can continue deploying Lambda code. The workflow
+summary reports held releases explicitly. Remove the hold only in a reviewed
+rollout change after the documented prerequisites are satisfied; it is not a
+substitute for a fresh scoped plan or live acceptance.
 
 The policy is rendered from the actual Terraform locals by
 `modules/agent-factory/webhook-ingress/tests/render_worker_boundary.py`, replacing
@@ -16,6 +24,9 @@ Validation completed:
   existing provider deprecation warnings.
 - 42 boundary/control/ScaledJob manifest tests: passed, including evaluation of
   actual Terraform expressions without AWS or Kubernetes state.
+- Deployment eligibility tests exercise real Git histories, held infrastructure
+  and mixed releases, manual dispatch, code-only releases, and failure handling.
+  The worker safety CI job runs these alongside the boundary/manifest tests.
 - Read-only AWS `SimulateCustomPolicy`, account `879318057152`: 16 expected
   decisions with an Allow-all identity policy intersected by the new boundary.
   Denied self IAM mutation, tenant/marker secret reads, direct STS, Bedrock,
