@@ -1542,6 +1542,38 @@ describe('envelope enforcement boundaries', () => {
     }
   });
 
+  it('refuses a supported verb presented with no envelope at all — the human-path gap (#3961)', async () => {
+    // THE BLOCKER, made executable. Before this story `requiresEnvelope` returned
+    // false for every verb because none was supported, so this state was
+    // unreachable and untested. Enabling pause makes it the state the gateway's
+    // *human* control path is actually in: `control_service._request_pod` sends
+    // only `Authorization: Bearer <control token>` and
+    // `X-Adp-Control-Generation` — it mints no envelope, because minting one
+    // needs a `grant_id` and a `revocation_epoch` that a logged-in dashboard user
+    // has no source for.
+    //
+    // The refusal below is CORRECT, and that is the point: a bearer token proves
+    // the caller knows a secret the worker itself minted into its own DynamoDB
+    // row, and the worker role can write any run's row. Weakening this gate to
+    // let the dashboard through — e.g. enforcing only when the header happens to
+    // be present — would admit any holder of a stolen token, since an attacker
+    // simply omits the header. So the fix belongs on the gateway side, and until
+    // it exists an end-to-end pause cannot work.
+    const store = makeStore({ supported: supportedSet });
+    const { listener, port } = await startListener(store);
+    try {
+      const reply = await request(port, 'POST', '/agent/pause', { body: JSON.stringify({ command_id: UUID_A }) });
+
+      expect(reply.status).toBe(403);
+      expect(reply.body).toEqual({ error: 'not_authorized' });
+      // Nothing journaled, so a refused command cannot consume the pending cap
+      // and deny control to the legitimate operator.
+      expect(store.snapshot().commands).toEqual([]);
+    } finally {
+      await listener.stop();
+    }
+  });
+
   it('still refuses an unauthenticated request before reaching the envelope check', async () => {
     // Ordering: the token check runs first, so an anonymous caller gets 401 and
     // never reaches the parser or the verifier — the FR-1.5 property is unchanged.
