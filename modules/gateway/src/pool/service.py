@@ -74,7 +74,7 @@ class PoolService(IPoolService):
 
         logger.info(f"PoolService initialized with {len(self._accounts)} accounts")
 
-    async def get_client(self, credentials: Any | None = None) -> Any:
+    async def get_client(self, credentials: Any | None = None, *, single_attempt: bool = False) -> Any:
         """Get a Bedrock client from the pool using round-robin distribution.
 
         Args:
@@ -98,6 +98,8 @@ class PoolService(IPoolService):
             NoAccountsConfiguredError: When no accounts are configured
             PoolExhaustedError: When all accounts fail to serve the request
         """
+        if single_attempt:
+            raise NotImplementedError("PoolService does not support bounded policy requests; use SimplePoolService")
         if credentials is not None:
             raise NotImplementedError("PoolService does not support per-principal Bedrock routing; SimplePoolService does (#4744)")
 

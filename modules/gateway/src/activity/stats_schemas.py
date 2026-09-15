@@ -14,6 +14,12 @@ class TodayCounts(BaseModel):
     completed: int = Field(default=0, description="Runs with status=complete today.")
     failed: int = Field(default=0, description="Runs with status=failed today.")
     active: int = Field(default=0, description="Runs currently in-progress today.")
+    # Issue #3964. Its own counter rather than a share of `failed`: an operator
+    # stopped this run on purpose, so counting it as a failure would inflate the
+    # failure rate with deliberate stops and send someone debugging a run that
+    # behaved exactly as asked. Defaults to 0 so a client reading a response from
+    # a build before this field existed sees the same shape.
+    aborted: int = Field(default=0, description="Runs deliberately aborted today (status=aborted).")
 
 
 class DailyEntry(BaseModel):
@@ -23,6 +29,8 @@ class DailyEntry(BaseModel):
     total: int = Field(default=0, description="Total runs on this day.")
     completed: int = Field(default=0, description="Completed runs on this day.")
     failed: int = Field(default=0, description="Failed runs on this day.")
+    # Issue #3964: see TodayCounts.aborted for why this is not folded into `failed`.
+    aborted: int = Field(default=0, description="Deliberately aborted runs on this day.")
 
 
 class PersonaStats(BaseModel):
@@ -32,6 +40,8 @@ class PersonaStats(BaseModel):
     total: int = Field(default=0, description="Total runs by this persona in the window.")
     completed: int = Field(default=0, description="Completed runs by this persona.")
     failed: int = Field(default=0, description="Failed runs by this persona.")
+    # Issue #3964: see TodayCounts.aborted for why this is not folded into `failed`.
+    aborted: int = Field(default=0, description="Deliberately aborted runs by this persona.")
 
 
 class RecentFailure(BaseModel):

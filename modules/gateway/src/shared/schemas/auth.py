@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, PrivateAttr, model_validator
@@ -8,6 +9,7 @@ if TYPE_CHECKING:
     # src.budget.reservations -> src.budget.__init__ -> src.budget.middleware ->
     # src.shared.schemas.auth.
     from src.budget.reservations import ReservationTarget
+    from src.budget.run_binding import RunBinding
 
 
 class AuthExchangeRequest(BaseModel):
@@ -114,6 +116,12 @@ class TokenContext(BaseModel):
     # degraded registry lookup all reserve no run/chain target and so release
     # none, reconciling exactly as they did before this issue.
     _run_scope_reservations: "list[ReservationTarget]" = PrivateAttr(default_factory=list)
+    # Set only after protected credential, pod, grant and ownership verification.
+    # Neither model parsing nor headers can supply a pydantic private attribute.
+    _protected_run_binding: "RunBinding | None" = PrivateAttr(default=None)
+    _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
+    _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)
+    _policy_request_id: str | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _default_attributed_org_id(self) -> "TokenContext":

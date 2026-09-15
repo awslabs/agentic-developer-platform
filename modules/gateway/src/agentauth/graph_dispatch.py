@@ -20,9 +20,46 @@ from src.agentauth.engine import validate_engine_authority
 from src.agentauth.policy import PolicyError
 from src.agentauth.waves import load_issue_wave, successor_ready, validate_wave_coordinator, wave_key
 from src.orchestration.dispatch import dispatch_node, graph_address
+from src.orchestration.execution_policy import Action
 from src.orchestration.genesis import resolve_engine_genesis
 from src.orchestration.models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from src.orchestration.state import ActorKind, NodeState
+
+
+async def _authorize_dispatch_policy(*, session, service, command, grant, node, body, continuing, coordinates):
+    from src.orchestration.policy_admission import authorize_node_dispatch, load_in_force_policy
+    from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
+
+    inputs = await load_in_force_policy(session, org_id=grant.tenant_id, flow_id=grant.flow_id)
+    if inputs.refusal is not None:
+        raise PolicyError(409, f"execution policy refused: {inputs.refusal.reason.value}")
+    if inputs.policy is None:
+        return
+    if coordinates:
+        raise PolicyError(409, "execution policy refused: unsupported autonomous coordinator capability")
+    execution = await run_in_threadpool(service.store._read, f"TENANT#{grant.tenant_id}", f"EXEC#{command['invocation_id']['S']}")
+    if not execution:
+        raise BootstrapRefusedError("policy dispatch binding unavailable")
+    invocation = execution.get("work_claim_deferred_from", {}).get("S") or execution["invocation_id"]["S"]
+    repository = execution.get("provider_repository_id", {}).get("N", "")
+    try:
+        principal = await resolve_root_user_entity_id(session, grant.tenant_id, grant.authority.human_id)
+    except UnresolvableUserEntityError:
+        raise PolicyError(409, "execution policy refused: membership_revoked") from None
+    action = Action.REVIEW if body.persona == "reviewer" else Action.EVALUATE if body.persona == "operations" else None
+    decision = await authorize_node_dispatch(
+        session,
+        node=node,
+        principal_user_id=principal,
+        target_repository=body.target.repo,
+        installation_resolved=int(execution.get("installation_id", {}).get("N", "0")) > 0,
+        provider_repository_id=int(repository) if repository.isdigit() else None,
+        expected_invocation_id=invocation,
+        action_override=action,
+        continuing_node=continuing,
+    )
+    if not decision.permitted:
+        raise PolicyError(409, f"execution policy refused: {decision.reason.value}")
 
 
 async def _lock_assignment(session, *, grant, issue):
@@ -138,6 +175,30 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
         command, grant, caller = await run_in_threadpool(
             service.prepare, body=body, credential_token=credential_token, workload_binding=workload_binding, graph=graph
         )
+        from src.orchestration.work_admission import admit_pending, enabled
+        from src.orchestration.work_claims import WorkClaimError
+
+        if enabled() and not receipt:
+            try:
+                await admit_pending(service.store, command["invocation_id"]["S"], session=session, allow_defer=True)
+            except WorkClaimError as exc:
+                await run_in_threadpool(service._refuse_unpublished, command, caller)
+                raise PolicyError(409, f"work ownership refused: {exc.code}") from None
+        try:
+            await _authorize_dispatch_policy(
+                session=session,
+                service=service,
+                command=command,
+                grant=grant,
+                node=node,
+                body=body,
+                continuing=bool(receipt) or body.persona == "reviewer",
+                coordinates=coordinates,
+            )
+        except PolicyError:
+            if not receipt:
+                await run_in_threadpool(service._refuse_unpublished, command, caller)
+            raise
         if not receipt:
             if not coordinates and body.persona != "reviewer":
                 genesis = await resolve_engine_genesis(session, org_id=grant.tenant_id, decision_id=grant.authority.reference_id)
@@ -182,5 +243,15 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
         await validate_engine_authority(session=session, execution=execution, grant=grant, store=service.store)
         command, grant, caller = await run_in_threadpool(
             service.prepare, body=body, credential_token=credential_token, workload_binding=workload_binding, graph=graph
+        )
+        await _authorize_dispatch_policy(
+            session=session,
+            service=service,
+            command=command,
+            grant=grant,
+            node=node,
+            body=body,
+            continuing=True,
+            coordinates=coordinates,
         )
         return await run_in_threadpool(service._publish, command, grant, caller)

@@ -110,6 +110,13 @@ ALLOWED_STATUSES: frozenset[str] = frozenset(
         "failed",
         "skipped",
         "budget_stopped",
+        # Issue #3964: the terminal status a confirmed abort finalization writes.
+        # Present here as well as in the worker's own allowlist because this is the
+        # delegated-authority write path (#5028): with authority enabled the worker
+        # reports its status THROUGH the gateway, so an allowlist that knew every
+        # status except this one would silently drop the abort's own terminal write
+        # and leave the run looking live.
+        "aborted",
     }
 )
 
@@ -330,8 +337,8 @@ class AgentRegistrationService:
                 raise RegistrationRefusedError("terminal report conflicts with recorded outcome")
             return
         execution_update = self._execution_check(record)["ConditionCheck"]
-        execution_update["UpdateExpression"] = "SET #st = :complete, terminal_report_digest = :digest"
-        execution_update["ExpressionAttributeValues"].update({":complete": {"S": "completed"}, ":digest": {"S": digest}})
+        execution_update["UpdateExpression"] = "SET #st = :complete, terminal_report_digest = :digest, terminal_outcome = :outcome"
+        execution_update["ExpressionAttributeValues"].update({":complete": {"S": "completed"}, ":digest": {"S": digest}, ":outcome": {"S": status}})
         transaction = [
             {
                 "Update": {

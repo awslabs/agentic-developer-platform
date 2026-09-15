@@ -139,7 +139,16 @@ export interface PolicyLimits {
  * addresses that §7.2 makes non-renderable. The machine-acceptance *count* is the
  * fact a reader needs.
  */
+export interface UserCredentialAuthority {
+  permission_mode: 'user_configured';
+  lifetime: 'provider_managed';
+  vault_credential_ids: string[];
+  aws_role_arns: string[];
+  actions: PolicyAction[];
+}
+
 export interface PolicySummary {
+  user_credentials?: UserCredentialAuthority | null;
   repository_ids: string[];
   environment_connection_ids: string[];
   team_ids: string[];

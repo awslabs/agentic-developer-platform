@@ -138,10 +138,10 @@ class TestVaultClient:
             "SecretString": '{"app_id": "123", "private_key": "fake-key"}'
         }
 
-        client = VaultClient(region="us-east-1")
+        client = VaultClient(region="us-east-1", env="dev")
         result = client.get_secret("tenants/acme-corp/github-app")
 
-        mock_sm.get_secret_value.assert_called_once_with(SecretId="tenants/acme-corp/github-app")
+        mock_sm.get_secret_value.assert_called_once_with(SecretId="adp/dev/tenants/acme-corp/github-app")
         assert result == {"app_id": "123", "private_key": "fake-key"}
 
 
@@ -313,7 +313,11 @@ class TestEntrypointMain:
         """Test the full 12-step sequence with a successful agent run."""
         from entrypoint import main
 
-        monkeypatch.setenv("SQS_MESSAGE_BODY", json.dumps(SAMPLE_ENVELOPE))
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setattr("entrypoint._receive_one_message", lambda *_: (json.dumps(SAMPLE_ENVELOPE), "receipt"))
+        monkeypatch.setattr("entrypoint._delete_message", MagicMock())
+        monkeypatch.setattr("entrypoint.create_check_run", MagicMock(return_value={"id": 111}))
+        monkeypatch.setattr("entrypoint.update_check_run", MagicMock())
         monkeypatch.setenv("AWS_REGION", "us-east-1")
 
         # Mock vault
@@ -342,14 +346,14 @@ class TestEntrypointMain:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        main()
+        assert main() == 0
 
         # Vault was called for github-app creds
         mock_vault.get_secret.assert_called_with("tenants/acme-corp/github-app")
         # Token was minted
         mock_mint.assert_called_once_with("123", "fake-key", 99887766)
         # Agent was executed
-        mock_subprocess_run.assert_called_once()
+        assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
 
     def test_missing_sqs_message(self, monkeypatch):
         """Should return 1 when SQS_MESSAGE_BODY is not set."""
@@ -1828,6 +1832,9 @@ class TestBedrockViaFlag:
         # Customer creds serve shell AWS; IRSA stripped from the SCOPED env only.
         assert "AWS_ROLE_ARN" not in agent_env
         assert agent_env["AWS_ACCESS_KEY_ID"] == "AKUSER"
+        assert agent_env["ADP_WORKER_IRSA_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
+        assert agent_env["ADP_WORKER_IRSA_TOKEN_FILE"] == "/var/run/secrets/token"
+        assert agent_env["ADP_WORKER_AWS_REGION"] == "us-east-1"
         # os.environ MUST still have IRSA (for the post-agent SQS delete).
         assert os.environ.get("AWS_ROLE_ARN") == "arn:aws:iam::123456789012:role/irsa-role"
         assert os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE") == "/var/run/secrets/token"
@@ -2125,6 +2132,7 @@ class TestSanitizeForStsTag:
 class TestBedrockViaGateway:
     """Tests for the ADP_BEDROCK_VIA=gateway path (sigv4-proxy subprocess)."""
 
+    @pytest.mark.parametrize("protected", [False, True])
     @patch("entrypoint._stop_sigv4_proxy")
     @patch("entrypoint._start_sigv4_proxy")
     @patch("entrypoint._receive_one_message")
@@ -2151,6 +2159,7 @@ class TestBedrockViaGateway:
         mock_stop_proxy,
         monkeypatch,
         tmp_path,
+        protected,
     ):
         """With ADP_BEDROCK_VIA=gateway + proxy healthy, sets ANTHROPIC_BEDROCK_BASE_URL."""
         from entrypoint import main
@@ -2163,6 +2172,11 @@ class TestBedrockViaGateway:
             "SIGV4_PROXY_TARGET", "https://abc.execute-api.us-east-1.amazonaws.com/dev/agent"
         )
         monkeypatch.setenv("SIGV4_PROXY_PORT", "9090")
+        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", str(protected).lower())
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/projected/worker-token")
+        monkeypatch.setattr(entrypoint, "_setup_agent_control", lambda *_: False)
+        monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", lambda *_: None)
 
         mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-gw1")
         mock_vault = MagicMock()
@@ -2191,6 +2205,14 @@ class TestBedrockViaGateway:
         assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9090"
         # Must NOT have ANTHROPIC_BASE_URL (that routes to the broken translator)
         assert "ANTHROPIC_BASE_URL" not in agent_env
+        if protected:
+            assert agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
+            assert "AWS_ROLE_ARN" not in agent_env
+            assert agent_env["ADP_WORKER_IRSA_ROLE_ARN"].endswith(":role/authority-worker")
+            assert agent_env["ADP_WORKER_AWS_REGION"] == "us-east-1"
+            assert not Path(agent_env["AWS_CONFIG_FILE"]).exists()
+        # Parent lifecycle operations continue to use platform IRSA.
+        assert os.environ["AWS_ROLE_ARN"].endswith(":role/authority-worker")
 
         # Proxy was started and stopped
         mock_start_proxy.assert_called_once()

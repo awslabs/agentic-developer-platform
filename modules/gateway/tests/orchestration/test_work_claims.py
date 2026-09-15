@@ -55,6 +55,28 @@ OTHER_REPO_ID = 123_456_789
 ISSUE = 5127
 
 
+@pytest.mark.parametrize("operation", ["bind", "heartbeat", "release", "handover"])
+async def test_claim_id_never_grants_cross_tenant_access(session, operation):
+    receipt = await claim_work(
+        session, binding=ClaimBinding(ORG_A, REPO_ID, ISSUE), owner=ClaimOwner(OwnerKind.ENGINE_FLOW, "flow-a"), event_id="owner-event"
+    )
+    kwargs = {"org_id": ORG_B, "claim_id": receipt.claim_id, "generation": receipt.generation}
+    with pytest.raises(WorkClaimError, match="does not exist"):
+        if operation == "bind":
+            await bind_run(session, **kwargs, run_id="attacker")
+        elif operation == "heartbeat":
+            await heartbeat(session, **kwargs)
+        elif operation == "release":
+            await release_work(session, **kwargs, reason=ReleaseReason.COMPLETED, terminal_evidence="forged")
+        else:
+            kwargs.pop("generation")
+            await force_handover(session, **kwargs, decision_id="forged", resolver=None, effects_reconciled=True, credentials_reconciled=True)
+    row = await session.get(OrchestrationWorkClaim, receipt.claim_id)
+    assert row.state == ClaimState.HELD.value
+    assert row.generation == 1
+    assert row.active_run_id is None
+
+
 # ---------------------------------------------------------------------------
 # Fixtures — same SQLite-in-memory shape as test_dispatch_pass.py
 # ---------------------------------------------------------------------------
@@ -230,6 +252,7 @@ class TestSingleAdmission:
         first = await claim_work(session, binding=_binding(), owner=_engine_owner(), event_id="evt-1")
         await release_work(
             session,
+            org_id=ORG_A,
             claim_id=first.claim_id,
             generation=first.generation,
             reason=ReleaseReason.COMPLETED,
@@ -399,7 +422,7 @@ class TestForcedHandover:
 
     async def _held_claim_with_run(self, session, run_id="run-1"):
         receipt = await claim_work(session, binding=_binding(), owner=_engine_owner(), event_id="evt-1")
-        await bind_run(session, claim_id=receipt.claim_id, generation=receipt.generation, run_id=run_id)
+        await bind_run(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, run_id=run_id)
         return receipt
 
     async def test_live_run_blocks_handover(self, session):
@@ -408,6 +431,7 @@ class TestForcedHandover:
 
         result = await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -425,6 +449,7 @@ class TestForcedHandover:
 
         result = await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -443,6 +468,7 @@ class TestForcedHandover:
 
         result = await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -461,6 +487,7 @@ class TestForcedHandover:
 
         result = await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -477,6 +504,7 @@ class TestForcedHandover:
 
         result = await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -496,6 +524,7 @@ class TestForcedHandover:
 
         result = await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -514,6 +543,7 @@ class TestForcedHandover:
         with pytest.raises(WorkClaimError) as exc:
             await force_handover(
                 session,
+                org_id=ORG_A,
                 claim_id=receipt.claim_id,
                 decision_id="",
                 resolver=resolver,
@@ -529,6 +559,7 @@ class TestForcedHandover:
 
         result = await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -552,6 +583,7 @@ class TestForcedHandover:
         resolver = FakeLivenessResolver({"run-1": _exited_row()})
         await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -571,6 +603,7 @@ class TestForcedHandover:
         resolver = FakeLivenessResolver({"run-1": _exited_row()})
         await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -591,6 +624,7 @@ class TestForcedHandover:
 
         result = await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -613,10 +647,11 @@ class TestStaleGeneration:
     async def _handed_over(self, session):
         """A claim whose generation has advanced past what the old run holds."""
         receipt = await claim_work(session, binding=_binding(), owner=_engine_owner(), event_id="evt-1")
-        await bind_run(session, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-old")
+        await bind_run(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-old")
         resolver = FakeLivenessResolver({"run-old": _exited_row("run-old")})
         await force_handover(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             decision_id="decision-1",
             resolver=resolver,
@@ -629,7 +664,7 @@ class TestStaleGeneration:
         """The check that stops the old worker running beside its replacement."""
         stale = await self._handed_over(session)
 
-        result = await bind_run(session, claim_id=stale.claim_id, generation=stale.generation, run_id="run-old-retry")
+        result = await bind_run(session, org_id=ORG_A, claim_id=stale.claim_id, generation=stale.generation, run_id="run-old-retry")
 
         assert result.disposition is Disposition.BLOCKED
         assert result.reason == "stale_generation"
@@ -639,7 +674,7 @@ class TestStaleGeneration:
         the replacement."""
         stale = await self._handed_over(session)
 
-        result = await heartbeat(session, claim_id=stale.claim_id, generation=stale.generation)
+        result = await heartbeat(session, org_id=ORG_A, claim_id=stale.claim_id, generation=stale.generation)
 
         assert result.disposition is Disposition.BLOCKED
         assert result.reason == "stale_generation"
@@ -652,6 +687,7 @@ class TestStaleGeneration:
 
         result = await release_work(
             session,
+            org_id=ORG_A,
             claim_id=stale.claim_id,
             generation=stale.generation,
             reason=ReleaseReason.COMPLETED,
@@ -669,8 +705,8 @@ class TestStaleGeneration:
     async def test_second_run_cannot_bind_a_current_generation_already_in_use(self, session):
         """One mutating run at a time, even when the generation is current."""
         receipt = await claim_work(session, binding=_binding(), owner=_engine_owner(), event_id="evt-1")
-        first = await bind_run(session, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-1")
-        second = await bind_run(session, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-2")
+        first = await bind_run(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-1")
+        second = await bind_run(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-2")
 
         assert first.disposition is Disposition.ADMITTED
         assert second.disposition is Disposition.BLOCKED
@@ -680,14 +716,14 @@ class TestStaleGeneration:
     async def test_rebinding_the_same_run_is_idempotent(self, session):
         """A worker retrying its own startup must not lock itself out."""
         receipt = await claim_work(session, binding=_binding(), owner=_engine_owner(), event_id="evt-1")
-        await bind_run(session, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-1")
-        again = await bind_run(session, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-1")
+        await bind_run(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-1")
+        again = await bind_run(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, run_id="run-1")
 
         assert again.disposition is Disposition.ADMITTED
 
     async def test_unknown_claim_raises_rather_than_reading_as_free(self, session):
         with pytest.raises(WorkClaimError) as exc:
-            await bind_run(session, claim_id="no-such-claim", generation=1, run_id="run-1")
+            await bind_run(session, org_id=ORG_A, claim_id="no-such-claim", generation=1, run_id="run-1")
         assert exc.value.code == "unknown_claim"
 
     async def test_unrecognised_claim_state_blocks_admission(self, session):
@@ -730,11 +766,12 @@ class TestSequentialPersonaRuns:
             )
             assert receipt.disposition is Disposition.ADMITTED, f"{persona} was refused"
 
-            bound = await bind_run(session, claim_id=receipt.claim_id, generation=receipt.generation, run_id=f"run-{persona}")
+            bound = await bind_run(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, run_id=f"run-{persona}")
             assert bound.disposition is Disposition.ADMITTED
 
             released = await release_work(
                 session,
+                org_id=ORG_A,
                 claim_id=receipt.claim_id,
                 generation=receipt.generation,
                 reason=ReleaseReason.COMPLETED,
@@ -754,6 +791,7 @@ class TestSequentialPersonaRuns:
         first = await claim_work(session, binding=_binding(), owner=_direct_owner("lane:developer"), event_id="evt-1")
         await release_work(
             session,
+            org_id=ORG_A,
             claim_id=first.claim_id,
             generation=first.generation,
             reason=ReleaseReason.COMPLETED,
@@ -770,6 +808,7 @@ class TestSequentialPersonaRuns:
         receipt = await claim_work(session, binding=_binding(), owner=_engine_owner(), event_id="evt-1")
         await release_work(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             generation=receipt.generation,
             reason=ReleaseReason.FAILED,
@@ -792,6 +831,7 @@ class TestSequentialPersonaRuns:
         with pytest.raises(WorkClaimError) as exc:
             await release_work(
                 session,
+                org_id=ORG_A,
                 claim_id=receipt.claim_id,
                 generation=receipt.generation,
                 reason=ReleaseReason.COMPLETED,
@@ -804,8 +844,8 @@ class TestSequentialPersonaRuns:
         receipt = await claim_work(session, binding=_binding(), owner=_engine_owner(), event_id="evt-1")
         args = dict(claim_id=receipt.claim_id, generation=receipt.generation, reason=ReleaseReason.COMPLETED, terminal_evidence="done")
 
-        first = await release_work(session, **args)
-        second = await release_work(session, **args)
+        first = await release_work(session, org_id=ORG_A, **args)
+        second = await release_work(session, org_id=ORG_A, **args)
 
         assert first.disposition is Disposition.ADMITTED
         assert second.disposition is Disposition.DUPLICATE
@@ -820,7 +860,7 @@ class TestHeartbeat:
         claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
         before = claim.lease_expires_at
 
-        result = await heartbeat(session, claim_id=receipt.claim_id, generation=receipt.generation, lease_seconds=7_200)
+        result = await heartbeat(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, lease_seconds=7_200)
 
         assert result.disposition is Disposition.ADMITTED
         await session.refresh(claim)
@@ -830,13 +870,14 @@ class TestHeartbeat:
         receipt = await claim_work(session, binding=_binding(), owner=_engine_owner(), event_id="evt-1")
         await release_work(
             session,
+            org_id=ORG_A,
             claim_id=receipt.claim_id,
             generation=receipt.generation,
             reason=ReleaseReason.COMPLETED,
             terminal_evidence="done",
         )
 
-        result = await heartbeat(session, claim_id=receipt.claim_id, generation=receipt.generation)
+        result = await heartbeat(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation)
 
         assert result.disposition is Disposition.BLOCKED
         assert result.reason == "claim_not_held"

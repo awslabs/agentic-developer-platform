@@ -18,6 +18,8 @@
  * Do not change buildProvenanceBody without updating that fixture.
  */
 
+import { workerAwsCredentialProvider, gatewaySigningRegion } from './runIdentity';
+
 export interface ProvenancePayload {
   actorUserId: string;
   triggeredBy: string | null;
@@ -74,11 +76,10 @@ async function sigv4Headers(
 ): Promise<Record<string, string>> {
   const { SignatureV4 } = await import('@smithy/signature-v4');
   const { Hash } = await import('@smithy/hash-node');
-  const { defaultProvider } = await import('@aws-sdk/credential-provider-node');
 
   const url = new URL(endpoint);
   const signer = new SignatureV4({
-    credentials: defaultProvider(),
+    credentials: await workerAwsCredentialProvider(),
     region,
     service: 'execute-api',
     sha256: Hash.bind(null, 'sha256'),
@@ -113,7 +114,6 @@ export async function postProvenance(payload: ProvenancePayload): Promise<string
   const gatewayEndpoint = (process.env.ADP_GATEWAY_ENDPOINT || '').replace(/\/+$/, '');
   const gatewayUrl = (process.env.VAULT_GATEWAY_URL || '').replace(/\/+$/, '');
   const apiKey = process.env.VAULT_INTERNAL_API_KEY || '';
-  const region = process.env.AWS_REGION || 'us-east-1';
 
   const useSigv4 = Boolean(gatewayEndpoint);
 
@@ -131,7 +131,7 @@ export async function postProvenance(payload: ProvenancePayload): Promise<string
 
   try {
     const headers: Record<string, string> = useSigv4
-      ? await sigv4Headers(endpoint, body, region)
+      ? await sigv4Headers(endpoint, body, gatewaySigningRegion(endpoint))
       : { 'X-Internal-Api-Key': apiKey, 'Content-Type': 'application/json' };
 
     const resp = await fetch(endpoint, {

@@ -19,6 +19,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fetchBrokeredToken, isBrokerEnabled } from './githubTokenBroker';
+import * as identity from './runIdentity';
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -93,6 +94,9 @@ describe('githubTokenBroker', () => {
 
   it('signs both current worker proofs on initial mint and refresh, without redirects', async () => {
     withFakeCredentials();
+    jest.spyOn(identity, 'workerAwsCredentialProvider').mockResolvedValue(async () => ({
+      accessKeyId: 'LOCAL_PLATFORM_KEY', secretAccessKey: 'LOCAL_PLATFORM_SECRET',
+    }));
     const dir = mkdtempSync(join(tmpdir(), 'adp-broker-identity-'));
     process.env.ADP_AGENT_AUTHORITY_ENABLED = 'true';
     process.env.ADP_GATEWAY_ENDPOINT = 'https://api.example.test/dev';
@@ -108,6 +112,7 @@ describe('githubTokenBroker', () => {
         expect(init.headers['X-Adp-Run-Credential']).toBe(`run-credential-${epoch}`);
         expect(init.headers['X-Adp-Workload-Token']).toBe('pod-proof');
         expect(init.headers.authorization).toContain('x-adp-run-credential;x-adp-workload-token');
+        expect(init.headers.authorization).toContain('Credential=LOCAL_PLATFORM_KEY/');
         expect(init.redirect).toBe('error');
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }

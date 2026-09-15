@@ -143,6 +143,9 @@ def provision_service_dispatch(
             "chain_depth": {"N": "0"},
         }
         child_personas = authority.get("child_personas", {}).get("SS", [])
+        repository_id = final["source_ref"].get("provider_repository_id")
+        if type(repository_id) is int and repository_id > 0:
+            execution["provider_repository_id"] = {"N": str(repository_id)}
         actions = ["monitor", "dispatch"] if child_personas else ["monitor"]
         grant = {
             **_key(pk, f"GRANT#{invocation}#1"),

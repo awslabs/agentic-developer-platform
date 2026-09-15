@@ -257,6 +257,67 @@ async def _state_of(session: AsyncSession, node_id: str) -> str:
     return (await session.execute(select(OrchestrationNode.state).where(OrchestrationNode.id == node_id))).scalar_one()
 
 
+@pytest.fixture
+def work_claims_enabled(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=12345))
+
+
+async def test_ownership_enabled_admits_one_of_two_ready_nodes_on_same_issue(session, work_claims_enabled):
+    from src.orchestration.models import OrchestrationWorkClaim
+
+    flow, _, _ = await _ready_story(session)
+    await _make_node(session, flow, node_ref="another-node")
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    assert len(report.pending) == 1
+    row = (await session.scalars(select(OrchestrationWorkClaim))).one()
+    assert row.active_run_id == report.pending[0].envelope["message_id"]
+    assert row.owner_ref == flow.id
+    assert report.pending[0].envelope["source_ref"]["provider_repository_id"] == 12345
+    assert report.pending[0].envelope["work_claim_required"] is True
+
+
+async def test_webhook_claim_prevents_engine_attempt_consumption(session, work_claims_enabled):
+    from src.orchestration.work_admission import admit
+    from src.orchestration.work_claims import ClaimOwner, OwnerKind
+
+    _, node, _ = await _ready_story(session)
+    node_id = node.id
+    await admit(
+        session,
+        org_id=ORG_A,
+        repository_id=12345,
+        issue=4196,
+        owner=ClaimOwner(OwnerKind.DIRECT_DISPATCH, "human-event"),
+        invocation_id="webhook-run",
+    )
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 0
+    assert report.pending == []
+    assert await _state_of(session, node_id) == NodeState.READY.value
+    assert (await session.get(OrchestrationNode, node_id)).attempts == 0
+
+
+async def test_policy_refusal_does_not_leak_an_ownership_claim(session, work_claims_enabled, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.orchestration.execution_policy import Decision, DenyReason
+    from src.orchestration.models import OrchestrationWorkClaim
+
+    await _ready_story(session)
+    monkeypatch.setattr(
+        dispatch_pass_module, "authorize_node_dispatch", AsyncMock(return_value=Decision.block(DenyReason.ACTION_NOT_PERMITTED, "test denial"))
+    )
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 0
+    assert report.policy_blocked == 1
+    assert list((await session.scalars(select(OrchestrationWorkClaim))).all()) == []
+
+
 # ---------------------------------------------------------------------------
 # AC 7 (negative) — dedup key must not collapse two nodes on one issue
 # ---------------------------------------------------------------------------

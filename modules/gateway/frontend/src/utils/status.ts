@@ -67,6 +67,8 @@ interface StatusEntry {
  *   this reads as "needs a budget decision", not "something is broken" — and
  *   with the budget drill-down (#4400) it is now the status an operator is most
  *   likely to click through from.
+ * * `aborted` is amber for the same reason (#3964): a human stopped the run on
+ *   purpose. Red would report an operator's own intervention as a fault.
  */
 const STATUS_CONFIG: Record<InvocationStatus, StatusEntry> = {
   webhook_received: {
@@ -86,6 +88,13 @@ const STATUS_CONFIG: Record<InvocationStatus, StatusEntry> = {
   blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
   skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
   budget_stopped: { glyph: '⊘', label: 'Budget stopped', colorClass: 'text-amber-600 dark:text-amber-400' },
+  // Issue #3964: amber like `budget_stopped`, not red. Someone deliberately
+  // stopped this run, so it reads as "a decision was taken here", not "something
+  // broke" — styling it as an error would send operators to investigate their own
+  // intervention. Distinct glyph from `budget_stopped` (■ = stopped by hand, ⊘ =
+  // refused by a cap) because the two are different answers to "why did this end?"
+  // and the colour alone cannot separate them.
+  aborted: { glyph: '■', label: 'Aborted', colorClass: 'text-amber-600 dark:text-amber-400' },
 };
 
 /**

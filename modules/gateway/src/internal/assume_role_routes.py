@@ -16,11 +16,12 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agentauth.broker_identity import user_credential_audit, verify_selected_user_credential, worker_tenant
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding import resolve_credential_binding
 from src.internal.sts_assume_service import STSAssumeError, assume_role
@@ -155,6 +156,7 @@ async def _write_audit(
 )
 async def credential_assume_role(
     body: AssumeRoleRequestBody,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
@@ -173,6 +175,8 @@ async def credential_assume_role(
     effective_user_id = binding.resolved_user_id
 
     user = await _get_user(effective_user_id, db)
+    if worker_tenant(request) is not None and user.org_id != worker_tenant(request):
+        raise HTTPException(404, "not found")
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
@@ -182,6 +186,7 @@ async def credential_assume_role(
         user_id=user.id,
         team_id=user.team_id,
     )
+    await verify_selected_user_credential(request, cred)
 
     # Validate credential type.
     if cred.credential_type != "aws_role":
@@ -222,6 +227,8 @@ async def credential_assume_role(
     default_region = role_config.get("default_region", settings.aws_region)
     label_for_profile = body.label or cred.label or "default"
 
+    await verify_selected_user_credential(request, cred, revalidate=True)
+
     # Perform the STS AssumeRole call (blocking — run in thread).
     # Issue #3175 §Q6: session tags use authorized_user_id (from registry), not body.
     try:
@@ -253,6 +260,7 @@ async def credential_assume_role(
                 "service": body.service,
                 "label": body.label,
                 "credential_id": cred.id,
+                **user_credential_audit(request),
                 "purpose": body.purpose,
                 "invocation_id": body.invocation_id,
                 "binding_from_registry": binding.from_registry,
@@ -270,6 +278,8 @@ async def credential_assume_role(
                 "provenance_id": provenance_id,
             },
         ) from exc
+
+    await verify_selected_user_credential(request, cred, revalidate=True)
 
     # Update last_used_at.
     stmt = update(UserCredential).where(UserCredential.id == cred.id).values(last_used_at=datetime.now(UTC))
@@ -290,6 +300,7 @@ async def credential_assume_role(
             "service": body.service,
             "label": body.label,
             "credential_id": cred.id,
+            **user_credential_audit(request),
             "purpose": body.purpose,
             "invocation_id": body.invocation_id,
             "binding_from_registry": binding.from_registry,
@@ -308,6 +319,7 @@ async def credential_assume_role(
         body.label,
     )
 
+    await verify_selected_user_credential(request, cred, revalidate=True)
     return AssumeRoleResponse(
         profile_name=result.profile_name,
         access_key_id=result.access_key_id,

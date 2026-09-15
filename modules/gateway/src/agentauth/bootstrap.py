@@ -48,6 +48,32 @@ class BootstrapStore:
     def _put(self, item: dict) -> dict:
         return {"Put": {"TableName": self.table, "Item": item, "ConditionExpression": "attribute_not_exists(pk)"}}
 
+    def claim_policy_budget_initialization(self, *, tenant_id: str, flow_id: str, allow_create: bool) -> bool:
+        """Persist the one-time accumulator initialization before writing Redis.
+
+        This marker has no TTL. Redis loss must never authorize a fresh allowance
+        for a flow that has already spent. A crash after claiming initialization
+        leaves the flow unavailable until its usage is explicitly reconciled.
+        """
+        pk, sk = f"TENANT#{tenant_id}", f"POLICY_BUDGET#{flow_id}"
+        if allow_create:
+            try:
+                self.client.put_item(
+                    TableName=self.table,
+                    Item={**_key(pk, sk), "flow_id": {"S": flow_id}, "kind": {"S": "policy_budget_initializer"}},
+                    ConditionExpression="attribute_not_exists(pk)",
+                )
+                return True
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise AuthorityStoreError("policy budget initialization unavailable") from None
+            except BotoCoreError:
+                raise AuthorityStoreError("policy budget initialization unavailable") from None
+        marker = self._read(pk, sk)
+        if not marker or marker.get("flow_id") != {"S": flow_id} or marker.get("kind") != {"S": "policy_budget_initializer"}:
+            raise AuthorityStoreError("policy budget requires explicit reconciliation")
+        return False
+
     def provision_pending(
         self,
         *,
@@ -102,7 +128,14 @@ class BootstrapStore:
         grant_item = self._grant_item(grant)
         execution_metadata = execution_metadata or {}
         grant_metadata = grant_metadata or {}
-        if set(execution_metadata) - {"issue_number", "installation_id", "chain_depth", "orchestration_node_id", "orchestration_node_attempt"}:
+        if set(execution_metadata) - {
+            "issue_number",
+            "installation_id",
+            "chain_depth",
+            "orchestration_node_id",
+            "orchestration_node_attempt",
+            "provider_repository_id",
+        }:
             raise BootstrapRefusedError("invalid dispatch metadata")
         if set(grant_metadata) - {"dispatch_personas", "max_total_dispatches", "work_item_issue"}:
             raise BootstrapRefusedError("invalid grant metadata")

@@ -23,7 +23,7 @@
  */
 
 /** The gateway's GithubInstallationTokenResponse. */
-import { workerIdentityHeaders, workerAwsCredentialProvider } from './runIdentity';
+import { workerIdentityHeaders, workerAwsCredentialProvider, gatewaySigningRegion } from './runIdentity';
 
 interface GithubInstallationTokenResponse {
   token?: string;
@@ -115,7 +115,6 @@ export async function fetchBrokeredToken(req: BrokerRequest): Promise<BrokeredTo
   const gatewayEndpoint = (process.env.ADP_GATEWAY_ENDPOINT || '').replace(/\/+$/, '');
   const gatewayUrl = (process.env.VAULT_GATEWAY_URL || '').replace(/\/+$/, '');
   const apiKey = process.env.VAULT_INTERNAL_API_KEY || '';
-  const region = process.env.AWS_REGION || 'us-east-1';
 
   const useSigv4 = Boolean(gatewayEndpoint);
 
@@ -135,6 +134,7 @@ export async function fetchBrokeredToken(req: BrokerRequest): Promise<BrokeredTo
   }
 
   const endpoint = `${baseUrl}/internal/v1/github-installation-token`;
+  const region = gatewaySigningRegion(endpoint);
   const authority = process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true';
   if (authority) {
     const url = new URL(endpoint);
