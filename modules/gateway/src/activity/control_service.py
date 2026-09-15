@@ -77,11 +77,38 @@ from src.activity.liveness import OBSERVED_TERMINAL_STATUSES
 
 logger = logging.getLogger("bedrockgateway.activity.control")
 
-# Verbs this deployment can actually perform. Empty in S1 by design: the routing,
-# authorization and transport foundation ships first, and each later story adds
-# its verb here once its behaviour is proven. An authorized request for a verb
-# absent from this set is a 501, and `capabilities` reports it false — so the
-# dashboard never renders a control whose handler cannot honour it.
+# Verbs this deployment can actually perform. Started empty in S1 by design: the
+# routing, authorization and transport foundation ships first, and each later
+# story adds its verb here once its behaviour is proven. An authorized request for
+# a verb absent from this set is a 501, and `capabilities` reports it false — so
+# the dashboard never renders a control whose handler cannot honour it.
+#
+# Still EMPTY after S2 (#3961), deliberately. S2 built the worker-side pause
+# barrier and it meets its contract, but a verb enters this set only when the
+# *human dashboard path* can actually perform it end to end, and today it cannot:
+# enabling a verb makes the worker listener demand a gateway-signed authorization
+# envelope (#5028's `requiresEnvelope` coupling), and this path mints none — a
+# logged-in operator has no grant to derive one from. Three further gaps sit
+# behind that one (the pre-delivery revalidation refuses pause via
+# `SUPPORTED_AGENT_ACTIONS`; envelope keys are unprovisioned unless
+# `agent_authority_enabled`; and no verb-enabling evaluation artifact exists).
+#
+# Flipping this flag anyway would report `capabilities.pause=true` to the browser
+# while `command_invocation_agent` still answers 501 — precisely what
+# `ControlCapabilities` forbids: "a capability that defaulted true would advertise
+# a button whose handler returns 501, and an operator who believes a run is
+# pausing stops watching it."
+#
+# See `docs/design-notes/3961-control-authorization-intersection.md` for the
+# evidence and the proposed `human_session` authority kind that would unblock it.
+#
+# This list and the worker's `IMPLEMENTED_CONTROL_VERBS` are deliberately
+# independent, and each story owns BOTH. Widening only one side is a shipped bug
+# in one of two directions: a verb the dashboard offers and the worker rejects, or
+# a working worker verb the gateway answers 501 for. `agent-control-ci.yml` asserts
+# the two sets agree, so the pair cannot drift silently.
+#
+# `steer`/`abort` stay out until S6/S4 land their own runtime proofs.
 SUPPORTED_ACTIONS: frozenset[str] = frozenset()
 
 # Feature flag. Read strictly (explicit "true" only) and read *independently* of

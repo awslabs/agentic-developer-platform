@@ -66,12 +66,28 @@ export const CONTROL_PROTOCOL_VERSION = 1;
 /**
  * Control verbs implemented by ADP *at this stage of delivery*.
  *
- * `pause`/`resume` as of S2 (#3961), which added the pre-tool admission barrier
- * that makes a "Paused" claim mean something: admission closes, admitted work is
- * waited out, and anything unprovable reports `requested`/`unavailable` with a
- * reason instead. Membership here is a claim about ADP having *implemented* a verb,
- * not about any particular run being able to perform it — an adapter with no
- * barrier installed still vetoes it through {@link intersectCapabilities}.
+ * Still EMPTY after S2 (#3961), deliberately. S2 built the pre-tool admission
+ * barrier that would make a "Paused" claim mean something — admission closes,
+ * admitted work is waited out, anything unprovable reports
+ * `requested`/`unavailable` with a reason — and the barrier meets that contract
+ * in unit tests. The verb still does not join this set, for two reasons.
+ *
+ * First, the sentence below is the governing one: adding a verb here because an
+ * adapter *could* perform it would offer a control whose end-to-end behaviour
+ * nobody has demonstrated. Enabling pause makes this listener demand a
+ * gateway-signed envelope (#5028's deliberate `requiresEnvelope` coupling), and
+ * the gateway's human control path mints none, so an operator's pause is refused
+ * 403. Three further gaps sit behind that one. See
+ * `docs/design-notes/3961-control-authorization-intersection.md`.
+ *
+ * Second, S2's own stop condition requires leaving pause *capability* disabled
+ * until it is proven end to end, and the verb-enabling evaluation (W2-03/04/05,
+ * issue #3968) has not been produced. Unit tests are not that evidence.
+ *
+ * Membership here is a claim about ADP having *implemented* a verb, not about any
+ * particular run being able to perform it — an adapter with no barrier installed
+ * still vetoes it through {@link intersectCapabilities}. That veto is why the
+ * barrier can ship, tested, ahead of the capability.
  *
  * `steer`/`abort` stay out until S6/S4 land their own runtime proofs. Adding a verb
  * here because an adapter *could* perform it would make the dashboard offer a
@@ -82,10 +98,7 @@ export const CONTROL_PROTOCOL_VERSION = 1;
  * verb the gateway offers and the worker rejects, or a working verb the gateway
  * answers 501 for.
  */
-export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>([
-  'pause',
-  'resume',
-]);
+export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>();
 
 /** Per-verb support, with a bounded reason when support is absent. */
 export interface VerbSupport {

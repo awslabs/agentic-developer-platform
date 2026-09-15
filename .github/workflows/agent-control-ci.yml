@@ -311,8 +311,14 @@ jobs:
           # Verbs with a proven runtime boundary as of this stage. S3 delivers the
           # adapter contract and the Claude transport, NOT a verb: pause without
           # proven tool quiescence would let the dashboard claim "Paused" while a
-          # Bash call is still writing to the repository. S2/S4/S6 each add their
-          # verb to this set in the same change that proves it.
+          # Bash call is still writing to the repository.
+          #
+          # Still empty after S2 (#3961). S2 built and unit-proved the pause
+          # barrier, but end-to-end pause on the dashboard path is blocked on the
+          # control-authorization intersection — see
+          # docs/design-notes/3961-control-authorization-intersection.md. A verb
+          # joins this set only in the change that demonstrates it end to end, so
+          # this gate is what keeps "built" from being read as "shippable".
           EXPECTED_SUPPORTED: set[str] = set()
 
           # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
@@ -466,7 +472,11 @@ jobs:
           } from './src/control-runtime';
 
           const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
-          // Verbs with a proven runtime boundary at this stage. Empty in S3.
+          // Verbs with a proven runtime boundary at this stage. Empty in S3, and
+          // still empty after S2 (#3961): the barrier is built and unit-proven but
+          // the dashboard path is blocked on the control-authorization
+          // intersection (docs/design-notes/3961-control-authorization-intersection.md).
+          // Must stay in lockstep with the Python gate's EXPECTED_SUPPORTED above.
           const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>();
 
           const fail = (msg: string): never => {

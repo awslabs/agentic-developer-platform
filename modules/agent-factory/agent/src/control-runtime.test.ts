@@ -40,6 +40,18 @@ import {
 const ALL_VERBS: ControlAction[] = ['pause', 'resume', 'steer', 'abort'];
 
 /**
+ * The verb set S2's barrier implements, injected into both adapters under test.
+ *
+ * Deliberately a local constant and not `IMPLEMENTED_CONTROL_VERBS`, which stays
+ * empty until pause is proven end to end (see its doc comment and
+ * `docs/design-notes/3961-control-authorization-intersection.md`). The barrier is
+ * built and its behaviour is what this file asserts; the global is a
+ * delivery-stage claim. Keeping them separate is what lets the mechanism ship
+ * fully tested while the capability stays honestly disabled.
+ */
+const PAUSE_AND_RESUME: ReadonlySet<ControlAction> = new Set<ControlAction>(['pause', 'resume']);
+
+/**
  * Each Claude adapter under test, mapped to the gate whose barrier it translates.
  *
  * The gate is deliberately NOT reachable from the neutral interface — a consumer
@@ -228,7 +240,16 @@ const CLAUDE_CASE: AdapterCase = {
       scheduler: defaultScheduler(options),
       settleTimeoutMs: TEST_SETTLE_TIMEOUT_MS,
     });
-    const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+    // `implementedVerbs` is injected rather than inherited from
+    // `IMPLEMENTED_CONTROL_VERBS`, which is empty: the delivery-stage flag is a
+    // statement about what ADP has proven end to end, and everything below is a
+    // statement about the barrier's *behaviour*. Reading the global here would
+    // make every pause assertion in this file collapse to "unavailable" the
+    // moment the flag moves, testing the flag instead of the mechanism.
+    const adapter = new ClaudeControlAdapter({
+      pauseGate: gate,
+      implementedVerbs: PAUSE_AND_RESUME,
+    });
     CLAUDE_GATES.set(adapter, gate);
     return adapter;
   },
@@ -292,6 +313,9 @@ const ECHO_CASE: AdapterCase = {
       deadlineAt: options?.deadlineAt,
       finalizationMarginMs: options?.finalizationMarginMs,
       scheduler: defaultScheduler(options),
+      // Injected for the same reason as the Claude case above: this file tests
+      // the barrier contract, not the delivery-stage flag.
+      implementedVerbs: PAUSE_AND_RESUME,
     }),
   startAttempt: async (adapter) => (adapter as EchoControlAdapter).startAttempt(),
   holdWork: async (adapter) => {
@@ -769,10 +793,21 @@ describe('capability intersection', () => {
 
   it('defaults to the ADP-implemented set rather than to everything the adapter claims', () => {
     // The default is the veto that matters most: a caller who omits `implemented`
-    // gets ADP's set, not a free pass. `steer`/`abort` are false here even though
-    // this adapter claims both, which is the whole reason the default is not "all".
-    expect([...IMPLEMENTED_CONTROL_VERBS].sort()).toEqual(['pause', 'resume']);
+    // gets ADP's set, not a free pass. That set is empty until a verb is proven
+    // end to end, so an adapter claiming pause and resume is currently vetoed on
+    // every verb — the strongest form of the property, and the reason the barrier
+    // can ship tested while the capability stays disabled.
+    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual([]);
     expect(intersectCapabilities({ adapter: bothSupported })).toEqual({
+      pause: false,
+      resume: false,
+      steer: false,
+      abort: false,
+    });
+    // The veto is the *default*, not a hardcoded answer: the same adapter with an
+    // explicit implemented set still yields its claimed verbs, so this test
+    // cannot pass merely because intersection returns false for everything.
+    expect(intersectCapabilities({ implemented: PAUSE_AND_RESUME, adapter: bothSupported })).toEqual({
       pause: true,
       resume: true,
       steer: false,
@@ -800,12 +835,14 @@ describe('capability intersection', () => {
 /**
  * The verb set the worker's listener advertises, derived rather than declared.
  *
- * These tests are about a seam, not a feature. Before this story the listener
- * held its own empty `SUPPORTED_ACTIONS` and the runtime held its own empty
- * `IMPLEMENTED_CONTROL_VERBS`, and they agreed only because both were empty —
- * the kind of agreement that ends the first time someone edits one of them.
- * Everything below is a statement about which of the two failure directions is
- * now unreachable.
+ * These tests are about a seam, not a feature. The listener held its own empty
+ * `SUPPORTED_ACTIONS` and the runtime its own empty `IMPLEMENTED_CONTROL_VERBS`,
+ * and they agree only because both are empty — the kind of agreement that ends
+ * the first time someone edits one of them. They are both *still* empty after
+ * this story (see `IMPLEMENTED_CONTROL_VERBS`), so the seam is closed before it
+ * first matters rather than after. Everything below is a statement about which
+ * of the two failure directions is now unreachable; the sets are passed
+ * explicitly so these tests keep proving that once a verb is enabled.
  */
 describe('listener verb derivation', () => {
   const allSupported = {
@@ -824,10 +861,32 @@ describe('listener verb derivation', () => {
   });
 
   it('advertises pause and resume, and nothing else, for both real adapters', () => {
-    const claude = new ClaudeControlAdapter({ pauseGate: new PauseGate() });
+    // `PAUSE_AND_RESUME` is passed explicitly because the ADP-wide set is empty
+    // until pause is proven end to end. What this asserts is that *both* adapters
+    // derive the same two verbs from their own capability tables — the
+    // harness-neutrality property — not what stage of delivery ADP is at.
+    const claude = new ClaudeControlAdapter({ pauseGate: new PauseGate(), implementedVerbs: PAUSE_AND_RESUME });
 
-    expect([...listenerActionsFor(claude)].sort()).toEqual(['pause', 'resume']);
-    expect([...listenerActionsFor(new EchoControlAdapter())].sort()).toEqual(['pause', 'resume']);
+    expect([...listenerActionsFor(claude, PAUSE_AND_RESUME)].sort()).toEqual(['pause', 'resume']);
+    expect(
+      [...listenerActionsFor(new EchoControlAdapter({ implementedVerbs: PAUSE_AND_RESUME }), PAUSE_AND_RESUME)].sort(),
+    ).toEqual(['pause', 'resume']);
+  });
+
+  it('advertises nothing at all while ADP has implemented no verb', () => {
+    // The current shipping state, asserted rather than assumed: both adapters can
+    // perform pause, and the listener still advertises nothing, so no operator is
+    // offered a control whose end-to-end path is unproven. This is the veto that
+    // lets the barrier ship ahead of the capability.
+    const claude = new ClaudeControlAdapter({ pauseGate: new PauseGate(), implementedVerbs: PAUSE_AND_RESUME });
+
+    // The adapter genuinely can pause — its own table says so, which is what
+    // makes the empty result below a veto rather than an absence of capability.
+    // (`capabilities()` is not the witness here: it additionally requires a live
+    // attempt, and no attempt is started in this test.)
+    expect(claude.describe().capabilities.pause.supported).toBe(true);
+    expect([...listenerActionsFor(claude)]).toEqual([]);
+    expect([...listenerActionsFor(new EchoControlAdapter())]).toEqual([]);
   });
 
   it('refuses to advertise a verb the adapter supports but ADP has not implemented', () => {
@@ -837,7 +896,7 @@ describe('listener verb derivation', () => {
     // claimed by the adapter, not implemented by ADP.
     const claiming = adapterClaiming(allSupported);
 
-    expect([...listenerActionsFor(claiming)].sort()).toEqual(['pause', 'resume']);
+    expect([...listenerActionsFor(claiming, PAUSE_AND_RESUME)].sort()).toEqual(['pause', 'resume']);
     expect(claiming.describe().capabilities.steer.supported).toBe(true);
   });
 
@@ -899,8 +958,13 @@ describe('listener verb derivation', () => {
 
   it('defaults to the ADP-implemented set, so a caller cannot widen it by omission', () => {
     // Omitting the second argument must not mean "trust the adapter". This adapter
-    // claims all four; the default admits only the two ADP has implemented.
-    expect([...listenerActionsFor(adapterClaiming(allSupported))].sort()).toEqual(['pause', 'resume']);
+    // claims all four; the default admits only what ADP has implemented, which is
+    // currently nothing.
+    expect([...listenerActionsFor(adapterClaiming(allSupported))]).toEqual([]);
+    // ...and the default is genuinely the ADP set rather than a hardcoded empty
+    // answer: the same adapter with an explicit set still derives those verbs.
+    expect([...listenerActionsFor(adapterClaiming(allSupported), PAUSE_AND_RESUME)].sort())
+      .toEqual(['pause', 'resume']);
   });
 
   it('is the same set the listener module exports, not a parallel one', () => {

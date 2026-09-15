@@ -36,6 +36,17 @@ import { PauseGate, type PauseGateScheduler } from '../pause-gate';
 const ALL_VERBS: ControlAction[] = ['pause', 'resume', 'steer', 'abort'];
 
 /**
+ * The verbs S2's barrier implements, injected where this suite tests the adapter's
+ * own behaviour.
+ *
+ * `IMPLEMENTED_CONTROL_VERBS` stays empty until pause is proven end to end (see
+ * `docs/design-notes/3961-control-authorization-intersection.md`), so reading it
+ * here would turn every capability assertion below into a restatement of the
+ * delivery-stage flag instead of a test of the adapter.
+ */
+const PAUSE_AND_RESUME: ReadonlySet<ControlAction> = new Set<ControlAction>(['pause', 'resume']);
+
+/**
  * A stand-in for the SDK's query handle, counting closes.
  *
  * `defineProperty` rather than `Object.assign` for the counter: assign copies a
@@ -217,7 +228,7 @@ describe('adapter identity and capabilities', () => {
   });
 
   it('advertises pause and resume once a barrier is installed, and nothing more', async () => {
-    const adapter = new ClaudeControlAdapter({ pauseGate: new PauseGate() });
+    const adapter = new ClaudeControlAdapter({ pauseGate: new PauseGate(), implementedVerbs: PAUSE_AND_RESUME });
     await startAttempt(adapter);
 
     expect(adapter.capabilities()).toEqual({ pause: true, resume: true, steer: false, abort: false });
@@ -246,11 +257,18 @@ describe('adapter identity and capabilities', () => {
     await adapter.dispose();
   });
 
-  it('ships with pause and resume in the ADP verb set, and nothing else', () => {
-    expect([...IMPLEMENTED_CONTROL_VERBS].sort()).toEqual(['pause', 'resume']);
-    // Membership is a claim that ADP implemented the verb, not that any given run
-    // can perform it — a gateless adapter still advertises nothing.
+  it('ships with no verb in the ADP set, so nothing is advertised end to end', () => {
+    // S2 built the barrier but does not enable the verb: the human control path
+    // cannot yet authorize a pause to the worker, and an unproven capability must
+    // not be advertised. See the design note referenced on PAUSE_AND_RESUME.
+    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual([]);
+    // Two independent reasons a run advertises nothing, so neither alone is load
+    // bearing: the empty ADP set above, and — even with the verb injected — a
+    // gateless adapter that has no barrier to hold a tool at.
     expect(Object.values(new ClaudeControlAdapter().capabilities())).toEqual([false, false, false, false]);
+    expect(
+      Object.values(new ClaudeControlAdapter({ implementedVerbs: PAUSE_AND_RESUME }).capabilities()),
+    ).toEqual([false, false, false, false]);
   });
 
   it('refuses to confirm a pause with no barrier, and treats the release as a no-op', async () => {
@@ -276,7 +294,7 @@ describe('adapter identity and capabilities', () => {
 
   it('reports the barrier own count once one is installed, so 0 is a claim not a guess', async () => {
     const gate = new PauseGate();
-    const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: PAUSE_AND_RESUME });
     await startAttempt(adapter);
 
     expect(adapter.activeWorkCount()).toBe(0);
@@ -870,7 +888,7 @@ describe('pause expiry annotation', () => {
   it('records an expired pause as an annotation, never as a new instruction', async () => {
     const scheduler = manualScheduler();
     const gate = new PauseGate({ scheduler, defaultTimeoutMs: 60_000 });
-    const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: PAUSE_AND_RESUME });
     const attempt = await startAttempt(adapter);
     const messages: Array<{ message: { content: string }; shouldQuery?: boolean }> = [];
     void (async () => {
@@ -896,7 +914,11 @@ describe('pause expiry annotation', () => {
     const scheduler = manualScheduler();
     const gate = new PauseGate({ scheduler, defaultTimeoutMs: 60_000 });
     const logged: string[] = [];
-    const adapter = new ClaudeControlAdapter({ pauseGate: gate, log: (m) => logged.push(m) });
+    const adapter = new ClaudeControlAdapter({
+      pauseGate: gate,
+      implementedVerbs: PAUSE_AND_RESUME,
+      log: (m) => logged.push(m),
+    });
     // An attempt with no reader parked: the channel refuses the push. Routine —
     // the attempt may have been retried away or finished while paused — and an
     // undeliverable courtesy note must not turn an auto-resume into a failed one.
@@ -914,7 +936,7 @@ describe('pause expiry annotation', () => {
 
   it('emits the release exactly once whether the operator resumes or the budget runs out', async () => {
     const gate = new PauseGate({ scheduler: manualScheduler() });
-    const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: PAUSE_AND_RESUME });
     await startAttempt(adapter);
     const events: Array<{ type: string }> = [];
     adapter.subscribe((event) => events.push(event as never));
