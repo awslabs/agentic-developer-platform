@@ -827,9 +827,12 @@ class TestEntryPointFailsClosed:
         assert report["required"] == 10
         assert report["wave"] == 2
         assert _mod.report_is_passing(report) is False
-        # The six unowned checks are NOT RUN and say so — never skipped, which some
-        # gates tolerate, and never passed.
-        for check_id in ("W2-01", "W2-03", "W2-04", "W2-05", "W2-10"):
+        # The remaining unowned checks are NOT RUN and say so — never skipped, which
+        # some gates tolerate, and never passed. W2-03..W2-05 dropped off this list
+        # when S2 (#3961) implemented them; W2-01 (wave preflight) and W2-10 (#3968's
+        # cleanup and security recheck) are still nobody's delivered work, and they
+        # are what keeps `--wave 2` unable to exit 0 on a partially implemented wave.
+        for check_id in ("W2-01", "W2-10"):
             entry = report["checks"][check_id]
             assert entry["status"] == _mod.STATUS_NOT_RUN, check_id
             assert "not implemented in this revision" in entry["message"], check_id
@@ -1072,6 +1075,12 @@ def gateway_stub(**overrides):
         "commands": [],
     }
     state_body.update(overrides.get("state_extra", {}))
+    # `state_extra` can add or change a key but not remove one, and "the key is
+    # absent" is a distinct failure from "the key is wrong" for any check that
+    # requires a field to be present (W2-02's capability map, W2-03's
+    # `active_tool_count`). Hence an explicit drop list.
+    for key in overrides.get("state_omit", ()):
+        state_body.pop(key, None)
 
     # Every (url, status) the stub answered, in call order. Lets a test assert the
     # ladder a specific verb actually observed, which is the difference between
@@ -1306,8 +1315,21 @@ class TestCheckIdsMatchTheEvaluationFile:
 
         Asserted in both directions. An extra predicate here would mean S3 is
         claiming evidence for a property it did not build.
+
+        Updated when S2 (#3961) landed W2-03..W2-05: the point of this assertion is
+        that W2-02 maps to AC-T7 and that every registered predicate resolves to a
+        real method, not that S3 is the only story to have delivered one.
         """
-        assert set(_mod.WAVE2_PREDICATES) == {"W2-02", "W2-06", "W2-07", "W2-08", "W2-09"}
+        assert set(_mod.WAVE2_PREDICATES) == {
+            "W2-02",  # S3 #3962 — AC-T7, this story's own
+            "W2-03",  # S2 #3961
+            "W2-04",  # S2 #3961
+            "W2-05",  # S2 #3961
+            "W2-06",
+            "W2-07",
+            "W2-08",
+            "W2-09",
+        }
         assert _mod.CHECK_ACCEPTANCE_IDS["W2-02"] == ("AC-T7",)
         for method_name in _mod.WAVE2_PREDICATES.values():
             assert hasattr(_mod.Driver, method_name)
@@ -1415,8 +1437,24 @@ class TestCheckIdsMatchTheEvaluationFile:
         Both directions matter. A predicate for a check S5 does not own would be
         this story asserting another story's work; a missing one would be a check
         reported NOT RUN when it could actually have been answered.
+
+        S2 (#3961) has since added W2-03..W2-05 for AC-P1/P2/P3/P5/P6, so the
+        implemented set is asserted as S3's + S2's + S5's rather than S5's alone.
+        The two IDs that remain unimplemented are named explicitly below, because
+        "everything is implemented" and "everything is implemented except the two
+        the wave preflight and #3968 own" are different states and only the second
+        one is true.
         """
-        assert set(_mod.WAVE2_PREDICATES) == {"W2-02", "W2-06", "W2-07", "W2-08", "W2-09"}
+        assert set(_mod.WAVE2_PREDICATES) == {
+            "W2-02",  # S3 #3962 — AC-T7
+            "W2-03",  # S2 #3961 — AC-P1
+            "W2-04",  # S2 #3961 — AC-P2
+            "W2-05",  # S2 #3961 — AC-P3/P5/P6
+            "W2-06",
+            "W2-07",
+            "W2-08",
+            "W2-09",
+        }
         for check_id, method_name in _mod.WAVE2_PREDICATES.items():
             assert hasattr(_mod.Driver, method_name), check_id
 
@@ -3164,11 +3202,128 @@ def wave2_artifact_payloads() -> dict:
     }
 
 
+def pause_artifact_payloads() -> dict:
+    """A complete, passing artifact set for the three checks S2 (#3961) owns.
+
+    Kept in its own helper for the same reason `wave2_artifact_payloads` is kept
+    apart from `artifact_payloads`: a pause field must not be able to perturb S5's
+    aborted-run tests, and each `test_a_*_fails` below bends exactly one key of
+    this baseline so a failure names one defect.
+
+    These describe a *correct deployment*, not a transcript of the recorded
+    experiment. `data/experiments/3961-pause-live-sdk-run{1,2}.json` is narrower
+    than the predicate contract — it carries no `spill_hooks_composed`,
+    `tool_coverage` or `degraded`, records `task_output_bytes: 811` where AC-P1
+    requires 0, and leaves `held_tools_admitted_after_resume` null. That gap is
+    real and belongs to the live evaluation (#3968), which is what has to produce
+    an artifact meeting every key; it is not something this fixture can close.
+
+    Also overrides `neutral_contract` so the wave-2 fixture is self-consistent.
+    W2-02 cross-checks the tested build's `implemented_verbs` against the deployed
+    capability map and rejects a disagreement — it already allows `[]` (S3) or
+    `['pause', 'resume']` (S2). Since this fixture advertises pause on `/state` for
+    W2-03, the contract artifact has to say so too; leaving it at S3's `[]` makes
+    W2-02 fail with "deployed capabilities disagree with the tested build's
+    implemented_verbs", which is the cross-check working, not a fixture nuisance.
+    """
+    return {
+        "neutral_contract": neutral_contract_payload(
+            implemented_verbs=["pause", "resume"]
+        ),
+        "pause_boundary": {
+            "adapter_id": _mod.CLAUDE_ADAPTER_ID,
+            "sdk_version": _mod.EXPECTED_CLAUDE_SDK_VERSION,
+            "permission_mode": "bypassPermissions",
+            "spill_hooks_composed": True,
+            "requested": {"admission_closed": True},
+            # The four zero-counters are the whole of AC-P1, measured from outside
+            # the agent over a nonzero interval.
+            "held_interval": {
+                "duration_ms": 5000,
+                "new_admissions": 0,
+                "fixture_writes": 0,
+                "fixture_service_calls": 0,
+                "task_output_bytes": 0,
+                "observed_by": "fixture",
+            },
+            "tool_coverage": {
+                "long_running_bash": True,
+                "delegated_task": True,
+                "background_task": True,
+            },
+            "confirmed": {"state": "paused", "active_tool_count": 0},
+            # Both degradation paths exercised, neither reporting `paused`.
+            "degraded": {
+                "untracked_activity": {
+                    "state": "pause_requested",
+                    "reason": "background task still tracked as in flight",
+                },
+                "hook_timeout": {
+                    "state": "running",
+                    "reason": "pre-tool barrier timed out; admission reopened",
+                },
+            },
+        },
+        "pause_resume": {
+            "released_count": 1,
+            "session_id_before": "2e9595a7-5a81-46aa-9f3a-3fac9d88e93e",
+            "session_id_after": "2e9595a7-5a81-46aa-9f3a-3fac9d88e93e",
+            "attempt_id_before": "attempt-1",
+            "attempt_id_after": "attempt-1",
+            "interrupt_called": False,
+            "initial_prompt_replayed": False,
+            "prior_history_preserved": True,
+            "task_completed": True,
+            "held_tools_admitted_after_resume": 1,
+            "races": {
+                "resume_before_pause": {"serialized": True, "errored": False},
+                "repeated_resume": {"serialized": True, "errored": False},
+            },
+        },
+        "pause_expiry": {
+            "auto_resumed": True,
+            "annotation_count": 1,
+            "extra_assistant_turn": False,
+            "neutral_annotation": True,
+            # The defect found in review of this story: released without ever
+            # reporting a confirmation or a failure.
+            "resolved_before_release": True,
+            "pod_killed": False,
+            "idle_retry_fired": False,
+            "exit_watchdog_fired": False,
+            "heartbeats_during_pause": 3,
+            "paused_distinguishable_from_stalled": True,
+            "spill_output_preserved": True,
+            "held_hook_timeout": {
+                "exercised": True,
+                "state": "running",
+                "reason": "hook bound lapsed before resume; admission reopened",
+                # The bound must exceed the budget it is holding, taken from the
+                # shipped adapter's own `preToolUseTimeoutSeconds`.
+                "hook_timeout_seconds": 1860,
+                "pause_budget_seconds": 1800,
+            },
+            "deadline_clamp": {
+                "granted_ms": 1_800_000,
+                "remaining_ms": 2_100_000,
+                "finalization_margin_ms": 120_000,
+                "nonpositive_budget_rejected": True,
+            },
+            "cancellation": {
+                "held_work_admitted": False,
+                "held_work_denied": True,
+                "annotation_emitted": False,
+            },
+        },
+    }
+
+
 def wave2_config(tmp_path: Path, **overrides) -> dict:
     """`live_config` plus the wave-2 artifacts and the seeded aborted run."""
     payloads = overrides.pop("artifact_payloads", None) or {
         **artifact_payloads(),
         **wave2_artifact_payloads(),
+        **pause_artifact_payloads(),
     }
     config = live_config(tmp_path, artifact_payloads=payloads)
     config["aborted_run_id"] = ABORTED_RUN_ID
@@ -3231,12 +3386,32 @@ def wave2_gateway_stub(**overrides):
 
     Only the three endpoints the wave-2 checks read. Overrides bend one response so
     a test can prove the harness notices, in the same style as `gateway_stub`.
+
+    `state_capabilities` / `state_extra` are forwarded to the inner `gateway_stub`
+    for W2-03, which does not stop at the artifact: it also reads `/state` to
+    confirm the deployment advertises the pause capability and reports
+    `active_tool_count`. The default here advertises pause, because this stub
+    models a *correct* deployment — note that this is deliberately NOT the state of
+    the tree, where the verb is disabled pending the authorization intersection
+    (`docs/design-notes/3961-control-authorization-intersection.md`). Proving the
+    check notices that mismatch is what
+    `test_a_deployment_that_disables_pause_fails_w2_03` is for.
     """
     detail = overrides.get("detail_body", aborted_detail_body())
     stats = overrides.get("stats", stats_body())
     listed = overrides.get(
         "list_items", [{"invocation_id": ABORTED_RUN_ID, "status": "aborted"}]
     )
+    inner_kwargs = {
+        "capabilities": overrides.get(
+            "state_capabilities",
+            {verb: verb in {"pause", "resume"} for verb in _mod.CONTROL_VERBS},
+        )
+    }
+    for passthrough in ("state_extra", "state_omit"):
+        if passthrough in overrides:
+            inner_kwargs[passthrough] = overrides[passthrough]
+    inner = gateway_stub(**inner_kwargs)
 
     def handler(method, url, headers=None, content=None, json=None, timeout=None):
         response = MagicMock()
@@ -3247,7 +3422,7 @@ def wave2_gateway_stub(**overrides):
             return response
 
         if "/activity/invocations/" in url or "/orchestration/runs/" in url:
-            return gateway_stub().request(method, url, headers=headers, content=content, json=json, timeout=timeout)
+            return inner.request(method, url, headers=headers, content=content, json=json, timeout=timeout)
         if "agent-run-stats" in url:
             return reply(overrides.get("stats_status", 200), stats)
         # The filtered list. Asserted on the query string because "does the filter
@@ -3294,11 +3469,16 @@ class TestWave2AbortedChecks:
                 results[check_id].message,
             )
 
-    def test_the_five_unowned_checks_are_not_run_not_passed(self, tmp_path: Path):
-        """The honesty property, at the driver level."""
+    def test_the_unowned_checks_are_not_run_not_passed(self, tmp_path: Path):
+        """The honesty property, at the driver level.
+
+        Narrowed from five IDs to two when S2 (#3961) implemented W2-03..W2-05: a
+        check with a predicate must no longer report `not_run` on a complete
+        fixture, and the two that remain have no predicate in this revision.
+        """
         results = run_wave2(tmp_path)
 
-        for check_id in ("W2-01", "W2-03", "W2-04", "W2-05", "W2-10"):
+        for check_id in ("W2-01", "W2-10"):
             assert results[check_id].status == _mod.STATUS_NOT_RUN, check_id
             assert "delivered by" in results[check_id].message, check_id
 
@@ -3666,6 +3846,557 @@ class TestWave2AbortedChecks:
             assert token not in rendered
 
 
+def run_wave2_with_pause(tmp_path: Path, artifact: str, patch_: dict, **kwargs) -> dict:
+    """Drive wave 2 with exactly one pause artifact field bent.
+
+    Shallow-merges into the named artifact so a test names only the field under
+    test, in the same style as `wave2_gateway_stub`'s overrides. `None` as a value
+    deletes the key, which is how the "a missing field must not read as a pass"
+    cases are written.
+    """
+    payloads = {
+        **artifact_payloads(),
+        **wave2_artifact_payloads(),
+        **pause_artifact_payloads(),
+    }
+    for key, value in patch_.items():
+        if value is None:
+            payloads[artifact].pop(key, None)
+        else:
+            payloads[artifact][key] = value
+    config = wave2_config(tmp_path, artifact_payloads=payloads)
+    return run_wave2(tmp_path, config=config, **kwargs)
+
+
+class TestWave2PauseChecks:
+    """The three wave-2 checks S2 (#3961) owns: W2-03, W2-04, W2-05.
+
+    Same posture as `TestWave2AbortedChecks`: the harness never runs in CI, so what
+    CI proves is that each check would NOTICE a deployment that pauses badly. Every
+    test starts from the passing fixture and bends exactly one thing.
+
+    The bar these enforce is the one the story states first — a pause that reports
+    `paused` while the run is still acting is worse than no pause at all — so most
+    of these are written as "this defect must FAIL the check", not as happy paths.
+    """
+
+    def test_a_correct_deployment_passes_all_three(self, tmp_path: Path):
+        results = run_wave2(tmp_path)
+
+        for check_id in ("W2-03", "W2-04", "W2-05"):
+            assert results[check_id].status == _mod.STATUS_PASSED, (
+                check_id,
+                results[check_id].message,
+            )
+
+    # ---- W2-03: the tool boundary (AC-P1) -------------------------------
+
+    @pytest.mark.parametrize(
+        "counter",
+        ["new_admissions", "fixture_writes", "fixture_service_calls", "task_output_bytes"],
+    )
+    def test_any_nonzero_side_effect_during_the_hold_fails(
+        self, tmp_path: Path, counter: str
+    ):
+        """The whole claim of AC-P1, one counter at a time.
+
+        A single nonzero counter means `paused` was displayed over a run that was
+        still writing files, calling services or producing output.
+        """
+        held = {**pause_artifact_payloads()["pause_boundary"]["held_interval"], counter: 1}
+
+        results = run_wave2_with_pause(tmp_path, "pause_boundary", {"held_interval": held})
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert counter in results["W2-03"].message
+
+    def test_a_zero_length_hold_fails(self, tmp_path: Path):
+        """A pause held for no measurable time cannot show side effects ceased."""
+        held = {**pause_artifact_payloads()["pause_boundary"]["held_interval"], "duration_ms": 0}
+
+        results = run_wave2_with_pause(tmp_path, "pause_boundary", {"held_interval": held})
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "duration_ms" in results["W2-03"].message
+
+    def test_counters_reported_by_the_agent_itself_fail(self, tmp_path: Path):
+        """A paused agent reporting its own inactivity is the claim, not evidence."""
+        held = {
+            **pause_artifact_payloads()["pause_boundary"]["held_interval"],
+            "observed_by": "agent",
+        }
+
+        results = run_wave2_with_pause(tmp_path, "pause_boundary", {"held_interval": held})
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "observed_by" in results["W2-03"].message
+
+    def test_confirming_paused_with_unsettled_work_fails(self, tmp_path: Path):
+        """`paused` with a nonzero active tool count is the forbidden false claim."""
+        results = run_wave2_with_pause(
+            tmp_path,
+            "pause_boundary",
+            {"confirmed": {"state": "paused", "active_tool_count": 2}},
+        )
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "active_tool_count" in results["W2-03"].message
+
+    def test_admission_left_open_at_pause_requested_fails(self, tmp_path: Path):
+        results = run_wave2_with_pause(
+            tmp_path, "pause_boundary", {"requested": {"admission_closed": False}}
+        )
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "admission" in results["W2-03"].message
+
+    @pytest.mark.parametrize("kind", ["long_running_bash", "delegated_task", "background_task"])
+    def test_a_barrier_never_tested_on_the_hard_tools_fails(self, tmp_path: Path, kind: str):
+        """The hard cases are the tool that outlives the settle wait and the work
+        that continues behind a completed parent."""
+        coverage = {**pause_artifact_payloads()["pause_boundary"]["tool_coverage"], kind: False}
+
+        results = run_wave2_with_pause(tmp_path, "pause_boundary", {"tool_coverage": coverage})
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert kind in results["W2-03"].message
+
+    @pytest.mark.parametrize("case", ["untracked_activity", "hook_timeout"])
+    def test_a_degradation_that_reported_paused_fails(self, tmp_path: Path, case: str):
+        """Untracked activity and a timed-out hook must never yield `paused`."""
+        degraded = dict(pause_artifact_payloads()["pause_boundary"]["degraded"])
+        degraded[case] = {"state": "paused", "reason": "looked quiet"}
+
+        results = run_wave2_with_pause(tmp_path, "pause_boundary", {"degraded": degraded})
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert case in results["W2-03"].message
+
+    @pytest.mark.parametrize("case", ["untracked_activity", "hook_timeout"])
+    def test_a_degradation_without_a_reason_fails(self, tmp_path: Path, case: str):
+        """An operator told only that the pause did not take cannot act."""
+        degraded = dict(pause_artifact_payloads()["pause_boundary"]["degraded"])
+        degraded[case] = {"state": "running", "reason": "   "}
+
+        results = run_wave2_with_pause(tmp_path, "pause_boundary", {"degraded": degraded})
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "reason" in results["W2-03"].message
+
+    def test_evidence_from_another_adapter_fails(self, tmp_path: Path):
+        results = run_wave2_with_pause(tmp_path, "pause_boundary", {"adapter_id": "echo"})
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "echo" in results["W2-03"].message
+
+    def test_evidence_from_another_sdk_version_fails(self, tmp_path: Path):
+        """The barrier rests on observed SDK behaviour, so a version is not fungible."""
+        results = run_wave2_with_pause(tmp_path, "pause_boundary", {"sdk_version": "0.3.219"})
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "0.3.219" in results["W2-03"].message
+
+    def test_a_run_that_asked_permission_per_tool_fails(self, tmp_path: Path):
+        """Such a run appears contained whether or not the barrier works."""
+        results = run_wave2_with_pause(
+            tmp_path, "pause_boundary", {"permission_mode": "default"}
+        )
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "permission_mode" in results["W2-03"].message
+
+    def test_a_barrier_proven_without_the_spill_hooks_fails(self, tmp_path: Path):
+        """Composition is where a PreToolUse addition could displace another hook."""
+        results = run_wave2_with_pause(
+            tmp_path, "pause_boundary", {"spill_hooks_composed": False}
+        )
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "spill_hooks_composed" in results["W2-03"].message
+
+    def test_a_deployment_that_disables_pause_fails_w2_03(self, tmp_path: Path):
+        """A green experiment beside a build that disables the verb is a mismatch.
+
+        This is the state of the tree today, and the check must not call it a pass:
+        the barrier is proven while the capability stays off pending the
+        authorization intersection. W2-02's own cross-check is bent in step, so this
+        test isolates W2-03's live-surface read rather than tripping both.
+        """
+        payloads = {
+            **artifact_payloads(),
+            **wave2_artifact_payloads(),
+            **pause_artifact_payloads(),
+        }
+        payloads["neutral_contract"] = neutral_contract_payload(implemented_verbs=[])
+        client = wave2_gateway_stub(
+            state_capabilities={verb: False for verb in _mod.CONTROL_VERBS}
+        )
+
+        results = run_wave2(
+            tmp_path,
+            config=wave2_config(tmp_path, artifact_payloads=payloads),
+            client=client,
+        )
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "pause capability" in results["W2-03"].message
+
+    def test_a_state_read_omitting_active_tool_count_fails(self, tmp_path: Path):
+        """The gateway must report runtime truth from the barrier.
+
+        Without this field a reader infers containment from invocation status, which
+        is the inference AC-P1 exists to replace.
+        """
+        client = wave2_gateway_stub(state_omit=("active_tool_count",))
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-03"].status == _mod.STATUS_FAILED
+        assert "active_tool_count" in results["W2-03"].message
+
+    # ---- W2-04: same-execution resume (AC-P2) ---------------------------
+
+    def test_a_changed_session_fails(self, tmp_path: Path):
+        """A new session is a restart, not a resume."""
+        results = run_wave2_with_pause(
+            tmp_path, "pause_resume", {"session_id_after": "a-different-session"}
+        )
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+        assert "session" in results["W2-04"].message
+
+    def test_a_changed_attempt_fails(self, tmp_path: Path):
+        """Interrupt-and-new-turn is explicitly not a successful pause/resume."""
+        results = run_wave2_with_pause(
+            tmp_path, "pause_resume", {"attempt_id_after": "attempt-2"}
+        )
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+        assert "attempt" in results["W2-04"].message
+
+    def test_an_interrupt_call_fails(self, tmp_path: Path):
+        results = run_wave2_with_pause(tmp_path, "pause_resume", {"interrupt_called": True})
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+        assert "interrupt" in results["W2-04"].message
+
+    def test_a_replayed_prompt_fails(self, tmp_path: Path):
+        """A replayed prompt duplicates every side effect already performed."""
+        results = run_wave2_with_pause(
+            tmp_path, "pause_resume", {"initial_prompt_replayed": True}
+        )
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+        assert "replayed" in results["W2-04"].message
+
+    def test_a_double_release_fails(self, tmp_path: Path):
+        results = run_wave2_with_pause(tmp_path, "pause_resume", {"released_count": 2})
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+        assert "released" in results["W2-04"].message
+
+    def test_dropping_the_parked_tools_fails(self, tmp_path: Path):
+        """A pause that discards the model's held work is not a pause.
+
+        Zero admitted-after-resume is the failure the first live experiment's own
+        assertion got wrong: the barrier parks tools, it does not deny them.
+        """
+        results = run_wave2_with_pause(
+            tmp_path, "pause_resume", {"held_tools_admitted_after_resume": 0}
+        )
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+        assert "held_tools_admitted_after_resume" in results["W2-04"].message
+
+    def test_a_run_that_cannot_finish_after_resume_fails(self, tmp_path: Path):
+        """A pause that leaves the run unable to finish is an abort."""
+        results = run_wave2_with_pause(tmp_path, "pause_resume", {"task_completed": False})
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+
+    def test_lost_history_fails(self, tmp_path: Path):
+        results = run_wave2_with_pause(
+            tmp_path, "pause_resume", {"prior_history_preserved": False}
+        )
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+
+    @pytest.mark.parametrize("case", ["resume_before_pause", "repeated_resume"])
+    def test_an_unserialized_race_fails(self, tmp_path: Path, case: str):
+        """Two transitions each observing the pre-state is how a pause is released
+        twice or confirmed after cancellation."""
+        races = dict(pause_artifact_payloads()["pause_resume"]["races"])
+        races[case] = {"serialized": False, "errored": False}
+
+        results = run_wave2_with_pause(tmp_path, "pause_resume", {"races": races})
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+        assert case in results["W2-04"].message
+
+    @pytest.mark.parametrize("case", ["resume_before_pause", "repeated_resume"])
+    def test_a_race_that_errored_fails(self, tmp_path: Path, case: str):
+        """An operator double-clicking resume is ordinary and must not fail the run."""
+        races = dict(pause_artifact_payloads()["pause_resume"]["races"])
+        races[case] = {"serialized": True, "errored": True}
+
+        results = run_wave2_with_pause(tmp_path, "pause_resume", {"races": races})
+
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+        assert case in results["W2-04"].message
+
+    # ---- W2-05: expiry, visibility, clamp (AC-P3/P5/P6) -----------------
+
+    def test_a_pause_released_without_ever_resolving_fails(self, tmp_path: Path):
+        """The B4 defect found in review of this story.
+
+        "pausing…" for the whole budget, then a silent resume, with the operator
+        never told the pause did not take.
+        """
+        results = run_wave2_with_pause(
+            tmp_path, "pause_expiry", {"resolved_before_release": False}
+        )
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+        assert "without first reporting" in results["W2-05"].message
+
+    def test_an_unbounded_pause_fails(self, tmp_path: Path):
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {"auto_resumed": False})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    @pytest.mark.parametrize("count", [0, 2])
+    def test_the_wrong_number_of_expiry_annotations_fails(self, tmp_path: Path, count: int):
+        """Zero leaves the model on a stale belief; more than one is transcript noise."""
+        results = run_wave2_with_pause(
+            tmp_path, "pause_expiry", {"annotation_count": count}
+        )
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+        assert "annotation" in results["W2-05"].message
+
+    def test_an_extra_assistant_turn_on_expiry_fails(self, tmp_path: Path):
+        results = run_wave2_with_pause(
+            tmp_path, "pause_expiry", {"extra_assistant_turn": True}
+        )
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    def test_a_provider_shaped_expiry_annotation_fails(self, tmp_path: Path):
+        """Only the Claude adapter may translate it into `shouldQuery:false`."""
+        results = run_wave2_with_pause(
+            tmp_path, "pause_expiry", {"neutral_annotation": False}
+        )
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    @pytest.mark.parametrize(
+        "watchdog", ["pod_killed", "idle_retry_fired", "exit_watchdog_fired"]
+    )
+    def test_a_watchdog_firing_during_a_valid_pause_fails(
+        self, tmp_path: Path, watchdog: str
+    ):
+        """Pausing a run must not become a way to lose it."""
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {watchdog: True})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    def test_a_silent_pause_fails(self, tmp_path: Path):
+        """Going silent is the one thing a pause must not do — silence is what a
+        hung run looks like."""
+        results = run_wave2_with_pause(
+            tmp_path, "pause_expiry", {"heartbeats_during_pause": 0}
+        )
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+        assert "heartbeats_during_pause" in results["W2-05"].message
+
+    def test_a_pause_indistinguishable_from_a_stall_fails(self, tmp_path: Path):
+        results = run_wave2_with_pause(
+            tmp_path, "pause_expiry", {"paused_distinguishable_from_stalled": False}
+        )
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    def test_lost_spill_output_fails(self, tmp_path: Path):
+        results = run_wave2_with_pause(
+            tmp_path, "pause_expiry", {"spill_output_preserved": False}
+        )
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    def test_a_pause_that_consumes_the_finalization_margin_fails(self, tmp_path: Path):
+        """A pause leaving no room to write a terminal state ends the run
+        indistinguishably from a pod that vanished."""
+        clamp = {
+            **pause_artifact_payloads()["pause_expiry"]["deadline_clamp"],
+            "granted_ms": 2_050_000,
+        }
+
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {"deadline_clamp": clamp})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+        assert "finalization margin" in results["W2-05"].message
+
+    def test_accepting_a_nonpositive_budget_fails(self, tmp_path: Path):
+        """A pause that expires the instant it begins looks like no pause at all."""
+        clamp = {
+            **pause_artifact_payloads()["pause_expiry"]["deadline_clamp"],
+            "nonpositive_budget_rejected": False,
+        }
+
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {"deadline_clamp": clamp})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    def test_an_unexercised_hook_bound_fails(self, tmp_path: Path):
+        """It is the one bound the adapter does not enforce itself."""
+        hook = {
+            **pause_artifact_payloads()["pause_expiry"]["held_hook_timeout"],
+            "exercised": False,
+        }
+
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {"held_hook_timeout": hook})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    def test_a_hook_bound_shorter_than_the_pause_budget_fails(self, tmp_path: Path):
+        """Otherwise the budget is decorative and every long pause ends as an
+        aborted tool."""
+        hook = {
+            **pause_artifact_payloads()["pause_expiry"]["held_hook_timeout"],
+            "hook_timeout_seconds": 60,
+        }
+
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {"held_hook_timeout": hook})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+        assert "does not exceed" in results["W2-05"].message
+
+    def test_a_timed_out_hook_still_reporting_paused_fails(self, tmp_path: Path):
+        """The parked tool was released by the CLI, so containment has lapsed."""
+        hook = {
+            **pause_artifact_payloads()["pause_expiry"]["held_hook_timeout"],
+            "state": "paused",
+        }
+
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {"held_hook_timeout": hook})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    def test_an_abort_that_flushes_held_work_fails(self, tmp_path: Path):
+        """An abort that admits its parked tools on the way out runs exactly the
+        side effects the operator aborted to prevent."""
+        cancel = {
+            **pause_artifact_payloads()["pause_expiry"]["cancellation"],
+            "held_work_admitted": True,
+        }
+
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {"cancellation": cancel})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+        assert "admitted work" in results["W2-05"].message
+
+    def test_cancellation_emitting_a_resume_annotation_fails(self, tmp_path: Path):
+        """An aborted run is not a resumed one."""
+        cancel = {
+            **pause_artifact_payloads()["pause_expiry"]["cancellation"],
+            "annotation_emitted": True,
+        }
+
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {"cancellation": cancel})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    def test_held_work_left_unresolved_on_cancellation_fails(self, tmp_path: Path):
+        """Neither admitted nor denied leaves those calls hanging."""
+        cancel = {
+            **pause_artifact_payloads()["pause_expiry"]["cancellation"],
+            "held_work_denied": False,
+        }
+
+        results = run_wave2_with_pause(tmp_path, "pause_expiry", {"cancellation": cancel})
+
+        assert results["W2-05"].status == _mod.STATUS_FAILED
+
+    # ---- shape and absence ---------------------------------------------
+
+    @pytest.mark.parametrize(
+        "artifact,field,check",
+        [
+            ("pause_boundary", "held_interval", "W2-03"),
+            ("pause_boundary", "requested", "W2-03"),
+            ("pause_boundary", "tool_coverage", "W2-03"),
+            ("pause_boundary", "confirmed", "W2-03"),
+            ("pause_boundary", "degraded", "W2-03"),
+            ("pause_resume", "races", "W2-04"),
+            ("pause_expiry", "deadline_clamp", "W2-05"),
+            ("pause_expiry", "held_hook_timeout", "W2-05"),
+            ("pause_expiry", "cancellation", "W2-05"),
+        ],
+    )
+    def test_a_scalar_where_an_object_belongs_fails(
+        self, tmp_path: Path, artifact: str, field: str, check: str
+    ):
+        """`REQUIRED_ARTIFACT_KEYS` guarantees presence, not shape.
+
+        A predicate that let a string through here would raise AttributeError from
+        deep inside itself, which tells an operator far less than a named field.
+        """
+        results = run_wave2_with_pause(tmp_path, artifact, {field: "true"})
+
+        assert results[check].status == _mod.STATUS_FAILED
+        assert field in results[check].message
+
+    @pytest.mark.parametrize(
+        "artifact,field,check",
+        [
+            ("pause_boundary", "tool_coverage", "W2-03"),
+            ("pause_boundary", "degraded", "W2-03"),
+            ("pause_expiry", "deadline_clamp", "W2-05"),
+            ("pause_expiry", "held_hook_timeout", "W2-05"),
+            ("pause_expiry", "cancellation", "W2-05"),
+        ],
+    )
+    def test_an_absent_optional_object_fails_rather_than_passing(
+        self, tmp_path: Path, artifact: str, field: str, check: str
+    ):
+        """These are read with `.get()`, so absence must not read as satisfied."""
+        results = run_wave2_with_pause(tmp_path, artifact, {field: None})
+
+        assert results[check].status == _mod.STATUS_FAILED
+
+    @pytest.mark.parametrize("artifact,check", [
+        ("pause_boundary", "W2-03"),
+        ("pause_resume", "W2-04"),
+        ("pause_expiry", "W2-05"),
+    ])
+    def test_an_undeclared_pause_artifact_is_not_run_not_passed(
+        self, tmp_path: Path, artifact: str, check: str
+    ):
+        """The honesty property for the operator who has not recorded the evidence.
+
+        This is the state the harness was in before the runbook declared these
+        three: a missing artifact must say so, never pass.
+        """
+        config = wave2_config(tmp_path)
+        del config["artifacts"][artifact]
+
+        results = run_wave2(tmp_path, config=config)
+
+        assert results[check].status == _mod.STATUS_NOT_RUN
+        assert artifact in results[check].message
+
+    def test_no_pause_check_leaks_a_token_into_its_evidence(self, tmp_path: Path):
+        results = run_wave2(tmp_path)
+
+        rendered = json.dumps(
+            {cid: results[cid].to_evidence() for cid in ("W2-03", "W2-04", "W2-05")}
+        )
+        assert OWNER_TOKEN not in rendered
+        for token in IDENTITY_ENV.values():
+            assert token not in rendered
+
+
 @pytest.mark.parametrize("artifact,field,value,check", [
     ("harness_neutrality", "adapter_a", {}, "W2-06"),
     ("aborted_counters", "seeded_aborted", 0, "W2-07"),
@@ -3676,7 +4407,11 @@ class TestWave2AbortedChecks:
     ("stats_schema_keys", "levels", {"today": []}, "W2-09"),
 ])
 def test_wave2_rejects_empty_or_vacuous_evidence(tmp_path, artifact, field, value, check):
-    payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+    payloads = {
+        **artifact_payloads(),
+        **wave2_artifact_payloads(),
+        **pause_artifact_payloads(),
+    }
     payloads[artifact][field] = value
     results = run_wave2(tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads))
     assert results[check].status == _mod.STATUS_FAILED
@@ -3687,11 +4422,25 @@ def test_combined_wave2_runs_both_stories_and_keeps_the_full_gate(tmp_path):
     config = wave2_config(tmp_path)
     results = run_wave2(tmp_path, config=config)
     passed = {key for key, value in results.items() if value.status == _mod.STATUS_PASSED}
-    assert passed == {"W2-02", "W2-06", "W2-07", "W2-08", "W2-09"}
+    # S3's W2-02, S2's W2-03..W2-05 and S5's W2-06..W2-09 — eight of the ten.
+    assert passed == {
+        "W2-02",
+        "W2-03",
+        "W2-04",
+        "W2-05",
+        "W2-06",
+        "W2-07",
+        "W2-08",
+        "W2-09",
+    }
     assert {key for key, value in results.items() if value.status == _mod.STATUS_NOT_RUN} == set(_mod.PENDING_CHECK_OWNERS)
     report = _mod.build_report(config, list(results.values()), cleanup_ok=True, wave=2,
                               expected_ids=tuple(spec.check_id for spec in _mod.WAVE2_CHECKS))
     assert report["required"] == 10
-    assert report["passed"] == report["not_run"] == 5
+    # The arithmetic that matters is that it still does not add up to ten: the
+    # wave cannot report success while W2-01 and W2-10 have no predicate, however
+    # many of the other eight pass.
+    assert report["passed"] == 8
+    assert report["not_run"] == 2
     assert report["failed"] == 0
     assert not _mod.report_is_passing(report)
