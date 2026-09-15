@@ -109,7 +109,8 @@ const CLAUDE_CASE: AdapterCase = {
     const claude = adapter as ClaudeControlAdapter;
     // Drive the two resilientQuery hooks in the order the wrapper drives them:
     // build the attempt's input, then publish the handle.
-    claude.attemptInputFactory()({ attemptNumber: 1, isResume: false, promptText: 'task' });
+    const input = claude.attemptInputFactory()({ attemptNumber: 1, isResume: false, promptText: '' });
+    void (async () => { for await (const message of input.input) { void message; } })();
     claude.onAttemptHandle()({ attemptNumber: 1, session: { close: () => {} } });
     // attach() is async inside a sync callback. Counting microtasks here was
     // wrong AND brittle: attach internally awaits detach -> dispose, so the tick
@@ -794,5 +795,53 @@ describe('shared surface is provider-free', () => {
     for (const file of ['control-state.ts', 'control-listener.ts', 'control-envelope.ts']) {
       expect(read(file)).not.toMatch(/@anthropic-ai/);
     }
+  });
+});
+
+
+describe('attempt setup races', () => {
+  it.each(['cancel', 'dispose'] as const)('cannot attach after %s races predecessor disposal', async (stop) => {
+    const registry = new CurrentAttemptRegistry();
+    let release!: () => void;
+    let closing!: () => void;
+    const started = new Promise<void>(r => { closing = r; });
+    const closed = new Promise<void>(r => { release = r; });
+    const first = fakeEndpoint({ dispose: async () => { closing(); await closed; } });
+    const second = fakeEndpoint();
+    await registry.attach(first);
+    const attach = registry.attach(second);
+    const refused = expect(attach).rejects.toBeInstanceOf(ControlCancelledError);
+    await started;
+    const stopped = registry[stop]();
+    release();
+    await refused;
+    await stopped;
+    expect(registry.currentAttemptId()).toBeNull();
+    expect(second.disposeCount).toBe(1);
+    const later = fakeEndpoint();
+    await expect(registry.attach(later)).rejects.toBeInstanceOf(ControlCancelledError);
+    expect(later.disposeCount).toBe(1);
+  });
+
+  it('serializes competing attaches and disposes each endpoint exactly once', async () => {
+    const registry = new CurrentAttemptRegistry();
+    const endpoints = [fakeEndpoint(), fakeEndpoint(), fakeEndpoint()];
+    await Promise.all(endpoints.map(e => registry.attach(e)));
+    expect(registry.currentAttemptId()).toBe(endpoints[2].attemptId);
+    await registry.dispose();
+    expect(endpoints.map(e => e.disposeCount)).toEqual([1, 1, 1]);
+  });
+
+  it('ignores late events immediately on cancellation', async () => {
+    const registry = new CurrentAttemptRegistry();
+    const endpoint = fakeEndpoint();
+    await registry.attach(endpoint);
+    const observer = jest.fn();
+    registry.subscribe(observer);
+    registry.cancel();
+    registry.emit({ type: 'input_handoff', attemptId: endpoint.attemptId, result: 'delivered' });
+    expect(registry.isCurrent(endpoint.attemptId)).toBe(false);
+    expect(observer).not.toHaveBeenCalled();
+    await registry.dispose();
   });
 });

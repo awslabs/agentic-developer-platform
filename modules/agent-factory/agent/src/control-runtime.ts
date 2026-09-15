@@ -387,7 +387,10 @@ export class CurrentAttemptRegistry {
   private current: AttemptEndpoint | null = null;
   private readonly listeners = new Set<ControlRuntimeListener>();
   /** Endpoints already disposed — the "dispose exactly once" ledger. */
-  private readonly disposed = new Set<AttemptId>();
+  private readonly disposed = new WeakSet<AttemptEndpoint>();
+  private attachTail: Promise<void> = Promise.resolve();
+  private readonly cancellationController = new AbortController();
+  readonly cancellationSignal: AbortSignal = this.cancellationController.signal;
   private cancelled = false;
   private cancellationReason: string | undefined;
   private teardown = false;
@@ -413,7 +416,7 @@ export class CurrentAttemptRegistry {
    * intent must be observable before any await resolves.
    */
   currentAttemptId(): AttemptId | null {
-    if (this.cancelled) return null;
+    if (this.cancelled || this.teardown) return null;
     return this.current?.attemptId ?? null;
   }
 
@@ -428,7 +431,7 @@ export class CurrentAttemptRegistry {
    * current state." Adapters call it before acting on a captured handle.
    */
   isCurrent(attemptId: AttemptId): boolean {
-    return this.current !== null && this.current.attemptId === attemptId;
+    return !this.cancelled && !this.teardown && this.current !== null && this.current.attemptId === attemptId;
   }
 
   /**
@@ -444,20 +447,25 @@ export class CurrentAttemptRegistry {
    * without this, cancelling during backoff would be followed by the retry loop
    * cheerfully attaching attempt N+1.
    */
-  async attach(endpoint: AttemptEndpoint): Promise<void> {
-    if (this.cancelled) {
-      await this.disposeOnce(endpoint);
-      throw new ControlCancelledError(this.cancellationReason ?? 'control runtime cancelled');
-    }
-    await this.detachCurrent();
-    this.current = endpoint;
-    this.emit({ type: 'attempt_attached', attemptId: endpoint.attemptId });
+  attach(endpoint: AttemptEndpoint): Promise<void> {
+    const attach = this.attachTail.then(async () => {
+      await this.detachCurrent();
+      // Cancellation/disposal may have arrived while the predecessor closed.
+      if (this.cancelled || this.teardown || this.disposed.has(endpoint)) {
+        await this.disposeOnce(endpoint);
+        throw this.cancellationError();
+      }
+      this.current = endpoint;
+      this.emit({ type: 'attempt_attached', attemptId: endpoint.attemptId });
+    });
+    this.attachTail = attach.catch(() => {});
+    return attach;
   }
 
   /** Invalidate and dispose the current attempt, if any. */
-  async detachCurrent(): Promise<void> {
+  async detachCurrent(expected?: AttemptId): Promise<void> {
     const previous = this.current;
-    if (!previous) return;
+    if (!previous || (expected !== undefined && previous.attemptId !== expected)) return;
     // Invalidate first: from here on `isCurrent(previous)` is false, so a
     // concurrent delivery attempt is refused rather than racing disposal.
     this.current = null;
@@ -475,7 +483,7 @@ export class CurrentAttemptRegistry {
    */
   async deliver(input: ControlInput): Promise<InputHandoffResult> {
     const endpoint = this.current;
-    if (!endpoint || this.cancelled) return 'rejected';
+    if (!endpoint || this.cancelled || this.teardown) return 'rejected';
     let result: InputHandoffResult;
     try {
       result = await endpoint.deliver(input);
@@ -497,7 +505,7 @@ export class CurrentAttemptRegistry {
   /** Tracked work for the current attempt. `null` when unobservable. */
   activeWorkCount(): number | null {
     const endpoint = this.current;
-    if (!endpoint || !endpoint.activeWorkCount) return null;
+    if (!endpoint || !this.isCurrent(endpoint.attemptId) || !endpoint.activeWorkCount) return null;
     return endpoint.activeWorkCount();
   }
 
@@ -534,6 +542,7 @@ export class CurrentAttemptRegistry {
     if (this.cancelled) return;
     this.cancelled = true;
     this.cancellationReason = reason;
+    this.cancellationController.abort();
   }
 
   /** The cancellation to throw, so every path reports one typed error. */
@@ -545,7 +554,9 @@ export class CurrentAttemptRegistry {
   async dispose(): Promise<void> {
     if (this.teardown) return;
     this.teardown = true;
+    this.cancel('control runtime disposed');
     await this.detachCurrent();
+    await this.attachTail;
     this.listeners.clear();
   }
 
@@ -558,8 +569,8 @@ export class CurrentAttemptRegistry {
    * depending on call ordering.
    */
   private async disposeOnce(endpoint: AttemptEndpoint): Promise<void> {
-    if (this.disposed.has(endpoint.attemptId)) return;
-    this.disposed.add(endpoint.attemptId);
+    if (this.disposed.has(endpoint)) return;
+    this.disposed.add(endpoint);
     try {
       await endpoint.dispose();
     } catch {

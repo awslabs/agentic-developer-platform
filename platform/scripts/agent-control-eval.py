@@ -1589,7 +1589,7 @@ class Driver:
             # A suite that ran zero tests passes. Both adapters must have been
             # driven through real assertions for "both passed" to mean anything.
             count = outcome.get("test_count")
-            if not isinstance(count, int) or count <= 0:
+            if type(count) is not int or count <= 0:
                 raise AssertionError(
                     f"adapter {name!r} records {count!r} tests; a suite that ran nothing reports "
                     "success, so a positive count is what makes 'passed' evidence"
@@ -1599,6 +1599,8 @@ class Driver:
         # must not imitate the provider. Both are what force the contract to be
         # exercised rather than merely satisfied by a look-alike.
         second = contract["second_adapter"]
+        if not isinstance(second, dict):
+            raise AssertionError("second_adapter must be an object")
         if second.get("name") not in others:
             raise AssertionError(
                 f"second_adapter names {second.get('name')!r}, which is not among the non-Claude "
@@ -1631,6 +1633,12 @@ class Driver:
                 )
 
         # --- the deployed surface must agree ----------------------------------
+        # S3 has no implemented verbs; S2 adds pause/resume later in this wave.
+        # Record the source build's expectations rather than freezing the final
+        # Wave 2 gate at S3's temporary capability surface.
+        implemented = contract.get("implemented_verbs", [])
+        if not isinstance(implemented, list) or implemented not in ([], ["pause", "resume"]):
+            raise AssertionError("implemented_verbs must be [] (S3) or ['pause', 'resume'] (S2)")
         live = self._require("live_run_id")
         owner = self._token("owner")
         for adapter, paths in ADAPTERS.items():
@@ -1652,14 +1660,16 @@ class Driver:
                     "produce an explicit answer for every verb, because an absent key and a false one "
                     "are indistinguishable to the dashboard but not to the contract"
                 )
+            invalid = [verb for verb, value in capabilities.items() if type(value) is not bool]
+            if invalid:
+                raise AssertionError(f"{adapter}: capabilities must be booleans: {invalid}")
             enabled = sorted(verb for verb, value in capabilities.items() if value)
-            if enabled:
+            if enabled != sorted(implemented):
                 raise AssertionError(
-                    f"{adapter}: the deployed build advertises {enabled} as available. S3 keeps all four "
-                    "verbs unsupported: the adapter can carry input, but carrying input is not a "
-                    "delivered control, and a true capability puts a button on the dashboard whose "
-                    "handler returns 501."
+                    f"{adapter}: deployed capabilities {enabled} disagree with the tested build's "
+                    f"implemented_verbs {implemented}"
                 )
+
 
 
 # Predicate lookup. Explicit rather than derived from ``dir()`` so a renamed

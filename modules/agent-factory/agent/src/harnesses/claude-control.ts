@@ -29,8 +29,8 @@
  *
  * **An open iterable per attempt.** The SDK accepts `string | AsyncIterable`,
  * and only the iterable form can receive a second turn after the query starts.
- * So each attempt gets a fresh {@link AttemptInputChannel}: a queue plus a
- * promise the iterable awaits when empty. It must be *fresh* per attempt because
+ * So each attempt gets a fresh {@link AttemptInputChannel}: one bootstrap message and a
+ * direct handoff to a waiting SDK reader. It must be *fresh* per attempt because
  * an iterable a previous query already consumed is exhausted — reusing it would
  * produce an attempt that looks live and can never receive input.
  *
@@ -89,66 +89,54 @@ export const CLAUDE_SDK_VERSION = '0.3.220';
 const S3_UNSUPPORTED_REASON =
   'control plumbing only in this stage: no verb has a proven runtime boundary yet';
 
-/**
- * One attempt's input channel: a fresh open async iterable plus a disposer.
- *
- * A hand-rolled queue rather than a generator with an internal `while(true)`
- * because the iterable must be resolvable from *outside* — input arrives from
- * the control listener, not from the loop's own control flow.
+/** One bootstrap message, then direct handoff to a waiting SDK reader.
+ * Operator commands remain in the shared authorized queue until a reader exists.
  */
 export class AttemptInputChannel {
-  private readonly queue: SDKUserMessage[] = [];
-  /** Resolver for an iterable currently parked on an empty queue. */
-  private wake: (() => void) | null = null;
+  readonly attemptId = newAttemptId();
+  private reader: ((value: IteratorResult<SDKUserMessage>) => void) | null = null;
   private closed = false;
 
-  /**
-   * Push a message toward the harness.
-   *
-   * Returns false once closed, so a delivery into a torn-down attempt is a
-   * refusal rather than a silent enqueue into a queue nobody will ever read.
-   */
+  constructor(private initial?: SDKUserMessage) {}
+
   push(message: SDKUserMessage): boolean {
-    if (this.closed) return false;
-    this.queue.push(message);
-    // Wake a parked iterable. Cleared first so a throw in the consumer cannot
-    // leave a stale resolver that swallows the next wake-up.
-    const wake = this.wake;
-    this.wake = null;
-    wake?.();
+    if (this.closed || !this.reader) return false;
+    const reader = this.reader;
+    this.reader = null;
+    reader({ value: message, done: false });
     return true;
   }
 
-  /** Close the channel: ends the iterable and refuses further input. */
   close(): void {
-    if (this.closed) return;
     this.closed = true;
-    const wake = this.wake;
-    this.wake = null;
-    wake?.();
+    this.initial = undefined;
+    const reader = this.reader;
+    this.reader = null;
+    reader?.({ value: undefined, done: true });
   }
 
   isClosed(): boolean {
     return this.closed;
   }
 
-  /**
-   * The iterable handed to `query()`.
-   *
-   * Stays open while the attempt can accept commands, and ends when closed —
-   * it does not wait forever after the run completes, which would hold the
-   * query process open past its useful life.
-   */
-  async *iterable(): AsyncGenerator<SDKUserMessage> {
-    while (true) {
-      while (this.queue.length > 0) {
-        yield this.queue.shift() as SDKUserMessage;
-      }
-      if (this.closed) return;
-      await new Promise<void>((resolve) => {
-        this.wake = resolve;
-      });
-    }
+  iterable(): AsyncIterableIterator<SDKUserMessage> {
+    return {
+      [Symbol.asyncIterator]() { return this; },
+      next: () => {
+        if (this.closed) return Promise.resolve({ value: undefined, done: true });
+        if (this.initial) {
+          const value = this.initial;
+          this.initial = undefined;
+          return Promise.resolve({ value, done: false });
+        }
+        if (this.reader) return Promise.reject(new Error('concurrent input reads are unsupported'));
+        return new Promise<IteratorResult<SDKUserMessage>>((resolve) => { this.reader = resolve; });
+      },
+      return: async () => {
+        this.close();
+        return { value: undefined, done: true };
+      },
+    };
   }
 }
 
@@ -280,19 +268,16 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
   private readonly log: (msg: string) => void;
   /** The channel for the attempt currently being built, before its handle exists. */
   private pendingChannel: AttemptInputChannel | null = null;
-  /**
-   * The in-flight attach started by the most recent `onAttemptHandle` call.
-   *
-   * `resilientQuery` invokes that callback synchronously and swallows throws, so
-   * without this the attach outcome would be unobservable — a cancellation that
-   * refused the attach would look indistinguishable from a successful one. Tests
-   * and the coordinator await this to learn what actually happened.
-   */
+  private activeChannel: AttemptInputChannel | null = null;
+  /** Attachment completion for the wrapper and direct adapter callers. */
   private pendingAttach: Promise<void> = Promise.resolve();
 
   constructor(options: ClaudeControlAdapterOptions = {}) {
     this.implementedVerbs = options.implementedVerbs ?? IMPLEMENTED_CONTROL_VERBS;
     this.log = options.log ?? (() => {});
+    this.registry.cancellationSignal.addEventListener('abort', () => {
+      this.activeChannel?.close();
+    }, { once: true });
   }
 
   /** Adapter-declared support, before ADP/runtime intersection. */
@@ -368,20 +353,18 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
   /**
    * The `attemptInputFactory` to hand to `resilientQuery`.
    *
-   * Runs before every query — attempt 1, true resume and fallback — and mints a
-   * fresh channel each time. On a resumed attempt the SDK reloads history, so
-   * the prompt text is a continuation nudge and is NOT re-sent as input; on a
-   * fallback/initial attempt the prompt already carries the task via
-   * `queryParams.prompt`, so re-sending it here would duplicate it. Either way
-   * the channel starts empty and pending operator input is reconnected by the
-   * caller — S6 owns proving that reconnection after a forced retry.
+   * Seeds the effective task or continuation prompt exactly once because the
+   * iterable replaces queryParams.prompt. Later operator input is never buffered.
    */
   attemptInputFactory(): (context: { attemptNumber: number; isResume: boolean; promptText: string }) => {
     input: AsyncIterable<unknown>;
-    dispose: () => void;
+    dispose: () => Promise<void>;
   } {
     return (context) => {
-      const channel = new AttemptInputChannel();
+      this.pendingChannel?.close();
+      const channel = new AttemptInputChannel(
+        context.promptText ? toSdkUserMessage({ kind: 'steering', text: context.promptText }) : undefined,
+      );
       this.pendingChannel = channel;
       this.log(
         `claude adapter: fresh input channel for attempt ${context.attemptNumber}` +
@@ -389,9 +372,11 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
       );
       return {
         input: channel.iterable(),
-        dispose: () => {
+        dispose: async () => {
           channel.close();
           if (this.pendingChannel === channel) this.pendingChannel = null;
+          await this.pendingAttach;
+          await this.registry.detachCurrent(channel.attemptId);
         },
       };
     };
@@ -406,8 +391,8 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
    * input before the new one becomes reachable, and there is never a window
    * where two attempts both look live.
    */
-  onAttemptHandle(): (handle: { attemptNumber: number; session: unknown }) => void {
-    return (handle) => {
+  onAttemptHandle(): (handle: { attemptNumber: number; session: unknown }) => Promise<void> {
+    return async (handle) => {
       const channel = this.pendingChannel;
       if (!channel) {
         // No factory ran for this attempt: nothing can receive input, so
@@ -416,17 +401,14 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
         return;
       }
       this.pendingChannel = null;
+      this.activeChannel = channel;
       const endpoint = new ClaudeAttemptEndpoint({
-        attemptId: newAttemptId(),
+        attemptId: channel.attemptId,
         channel,
         session: (handle.session as ClaudeSessionHandle | null) ?? null,
         log: this.log,
       });
-      // resilientQuery calls this synchronously and swallows throws, so the
-      // async attach cannot propagate from here. It is recorded on
-      // `pendingAttach` instead of being truly fire-and-forget, so the outcome
-      // stays observable via `whenAttached()` — a cancellation racing attach is
-      // expected, not an error to surface, but it must not be invisible.
+      // The wrapper awaits attachment before consuming output.
       this.pendingAttach = this.registry.attach(endpoint).then(
         () => {},
         (err: unknown) => {
@@ -437,26 +419,20 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
           this.log(`claude adapter: attach failed: ${(err as Error)?.message ?? err}`);
         },
       );
+      await this.pendingAttach;
     };
   }
 
-  /**
-   * Resolves once the attach started by the latest attempt handle has settled.
-   *
-   * Exists because `onAttemptHandle` must stay synchronous to match
-   * `resilientQuery`'s callback contract, which would otherwise make "is the new
-   * attempt reachable yet?" an unanswerable question for anything downstream.
-   * Never rejects: a refused attach is a legitimate outcome, so callers read
-   * `currentAttempt()` to learn the result rather than catching.
-   */
+  /** Await the latest attach; currentAttempt() distinguishes refusal. */
   async whenAttached(): Promise<void> {
     await this.pendingAttach;
   }
 
   /** The `cancellation` object to hand to `resilientQuery`. */
-  cancellationSource(): { isCancelled: () => boolean; error: () => Error } {
+  cancellationSource(): { isCancelled: () => boolean; error: () => Error; signal: AbortSignal } {
     return {
       isCancelled: () => this.registry.isCancelled(),
+      signal: this.registry.cancellationSignal,
       error: () => this.registry.cancellationError(),
     };
   }

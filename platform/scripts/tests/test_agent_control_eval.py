@@ -2903,3 +2903,26 @@ class TestTheDocumentedFixtureConfig:
         index = (self.DOC.parent / "README.md").read_text(encoding="utf-8")
 
         assert "agent-control-evaluation.md" in index
+
+
+@pytest.mark.parametrize("implemented", [[], ["pause", "resume"]])
+def test_w2_02_accepts_each_wave2_stage(tmp_path, implemented):
+    caps = {verb: verb in implemented for verb in _mod.CONTROL_VERBS}
+    result = run_w2_02(
+        tmp_path,
+        contract=neutral_contract_payload(implemented_verbs=implemented),
+        client=gateway_stub(capabilities=caps),
+    )
+    assert result.status == _mod.STATUS_PASSED
+
+
+@pytest.mark.parametrize("implemented", [["abort"], ["steer"], "pause", None])
+def test_w2_02_rejects_invalid_stage_declaration(tmp_path, implemented):
+    result = run_w2_02(tmp_path, contract=neutral_contract_payload(implemented_verbs=implemented))
+    assert result.status == _mod.STATUS_FAILED
+
+
+@pytest.mark.parametrize("second", [None, [], "echo"])
+def test_w2_02_rejects_non_object_second_adapter(tmp_path, second):
+    result = run_w2_02(tmp_path, contract=neutral_contract_payload(second_adapter=second))
+    assert result.status == _mod.STATUS_FAILED

@@ -251,6 +251,14 @@ Two the harness is strict about, because the evaluation names them:
 
 ### `neutral_contract` (W2-02, wave 2)
 
+Record `implemented_verbs: []` for an S3-only build, or
+`implemented_verbs: ["pause", "resume"]` once S2 is implemented and proven.
+W2-02 compares both live route surfaces with this recorded build contract;
+it does not require completed Wave 2 to keep S3's temporary all-false map.
+Omitting the field retains the S3 expectation. Abort and steering remain outside
+Wave 2. The remaining W2 checks still determine whether the wave is accepted.
+
+
 The one artifact whose evidence comes from a test run rather than from the
 cluster. The neutral contract suite lives where the code does, and the story is
 explicit that development and PR tests need no AWS credential — so record its

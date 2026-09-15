@@ -60,7 +60,7 @@ async function startAttempt(
   const factoryResult = adapter.attemptInputFactory()({
     attemptNumber,
     isResume: opts.isResume ?? false,
-    promptText: opts.promptText ?? 'task',
+    promptText: opts.promptText ?? '',
   });
   adapter.onAttemptHandle()({ attemptNumber, session: opts.session ?? fakeSession() });
   await adapter.whenAttached();
@@ -119,8 +119,7 @@ describe('attempt input channel', () => {
   });
 
   it('preserves submission order across a park/wake cycle', async () => {
-    const channel = new AttemptInputChannel();
-    channel.push(toSdkUserMessage({ kind: 'steering', text: 'first' }));
+    const channel = new AttemptInputChannel(toSdkUserMessage({ kind: 'steering', text: 'first' }));
     const collected = drain(channel.iterable());
     await Promise.resolve();
     channel.push(toSdkUserMessage({ kind: 'steering', text: 'second' }));
@@ -154,14 +153,22 @@ describe('attempt input channel', () => {
     await expect(collected).resolves.toEqual([]);
   });
 
-  it('drains messages queued before close, rather than discarding them', async () => {
-    const channel = new AttemptInputChannel();
-    channel.push(toSdkUserMessage({ kind: 'steering', text: 'queued' }));
+  it('refuses input without a waiting reader and discards unread bootstrap on close', async () => {
+    const channel = new AttemptInputChannel(toSdkUserMessage({ kind: 'steering', text: 'task' }));
+    expect(channel.push(toSdkUserMessage({ kind: 'steering', text: 'revocable' }))).toBe(false);
     channel.close();
+    expect(await drain(channel.iterable())).toEqual([]);
+  });
 
-    // Accepted-then-dropped is the outcome the issue calls "losing accepted
-    // instructions": the operator was told it landed, so it must still be read.
-    expect(await drain(channel.iterable())).toHaveLength(1);
+  it('does not buffer another command after the reader accepts one', async () => {
+    const channel = new AttemptInputChannel();
+    const iterator = channel.iterable();
+    const read = iterator.next();
+    expect(channel.push(toSdkUserMessage({ kind: 'steering', text: 'first' }))).toBe(true);
+    expect(channel.push(toSdkUserMessage({ kind: 'steering', text: 'second' }))).toBe(false);
+    expect((await read).value.message.content).toBe('first');
+    await iterator.return?.();
+    expect(await iterator.next()).toMatchObject({ done: true });
   });
 
   it('is idempotent on repeated close', () => {
@@ -272,19 +279,13 @@ describe('per-attempt input lifecycle', () => {
     expect(await firstMessages).toEqual([]);
   });
 
-  it('does not resend the prompt as input, on either a resume or a fallback attempt', async () => {
+  it.each([false, true])('sends the effective prompt once (resume=%s)', async (isResume) => {
     const adapter = new ClaudeControlAdapter();
-    // On a resume the SDK reloads history; on a fallback the prompt already
-    // carries the task. Echoing promptText into the channel either way would
-    // make the agent repeat completed work.
-    const resumed = await startAttempt(adapter, { attemptNumber: 2, isResume: true, promptText: 'CONTINUE-NUDGE' });
-    const fallback = await startAttempt(adapter, { attemptNumber: 3, isResume: false, promptText: 'ORIGINAL-TASK' });
-    const resumedMessages = drain(resumed.input as AsyncIterable<unknown>);
-    const fallbackMessages = drain(fallback.input as AsyncIterable<unknown>);
+    const prompt = isResume ? 'CONTINUE-NUDGE' : 'ORIGINAL-TASK';
+    const attempt = await startAttempt(adapter, { isResume, promptText: prompt });
+    const messages = drain(attempt.input as AsyncIterable<{ message: { content: string } }>);
     await adapter.dispose();
-
-    expect(await resumedMessages).toEqual([]);
-    expect(await fallbackMessages).toEqual([]);
+    expect((await messages).map(m => m.message.content)).toEqual([prompt]);
   });
 
   it('closes the attempt channel when the factory disposer runs', async () => {
@@ -435,7 +436,7 @@ describe('cancellation', () => {
     const adapter = new ClaudeControlAdapter();
     // Cancel between the factory and the handle — the window resilientQuery
     // re-checks before committing to a query.
-    const attempt = adapter.attemptInputFactory()({ attemptNumber: 1, isResume: false, promptText: 'task' });
+    const attempt = adapter.attemptInputFactory()({ attemptNumber: 1, isResume: false, promptText: '' });
     const messages = drain(attempt.input as AsyncIterable<unknown>);
 
     adapter.cancel('operator aborted');
@@ -529,11 +530,11 @@ describe('input handoff reporting', () => {
     adapter.onAttemptHandle()({ attemptNumber: 2, session: fakeSession() });
     await adapter.whenAttached();
     expect(adapter.currentAttempt()).not.toBeNull();
-    expect(await adapter.submitInput({ kind: 'steering', text: 'to second' })).toBe('delivered');
-
     const drained = drain(second.input as AsyncIterable<{ message: { content: string } }>);
+    await Promise.resolve();
+    expect(await adapter.submitInput({ kind: 'steering', text: 'to second' })).toBe('delivered');
     await adapter.dispose();
-    expect((await drained).map((m) => m.message.content)).toEqual(['to second']);
+    expect((await drained).map((m) => m.message.content)).toEqual(['b', 'to second']);
   });
 
   it('logs a non-cancellation attach failure without taking the run down', async () => {
@@ -559,7 +560,8 @@ describe('input handoff reporting', () => {
     const adapter = new ClaudeControlAdapter();
     const events: Array<{ type: string; command_id?: string; result?: string }> = [];
     adapter.subscribe((event) => events.push(event as never));
-    await startAttempt(adapter);
+    const attempt = await startAttempt(adapter);
+    const messages = drain(attempt.input);
 
     const input: ControlInput = { kind: 'steering', text: 'do it', command_id: 'cmd-42' };
     expect(await adapter.submitInput(input)).toBe('delivered');
@@ -567,5 +569,6 @@ describe('input handoff reporting', () => {
     const handoff = events.find((e) => e.type === 'input_handoff');
     expect(handoff).toMatchObject({ command_id: 'cmd-42', result: 'delivered' });
     await adapter.dispose();
+    await messages;
   });
 });

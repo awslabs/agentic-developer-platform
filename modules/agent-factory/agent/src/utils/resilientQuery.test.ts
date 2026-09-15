@@ -1796,7 +1796,7 @@ describe('resilientQuery', () => {
           queryParams: { prompt: 'task', options: {} } as any,
           maxRetries: 2,
           baseDelayMs: 1,
-          onAttemptHandle: (h) => events.push(`handle-${h.attemptNumber}`),
+          onAttemptHandle: (h) => { events.push(`handle-${h.attemptNumber}`); },
           log: jest.fn(),
         }),
       );
@@ -2017,12 +2017,16 @@ describe('resilientQuery', () => {
       });
       // Each attempt's input iterable, captured from the params the wrapper built.
       const prompts: AsyncIterable<any>[] = [];
+      const received: any[][] = [];
       let handoff: string | undefined;
 
       mockQuery.mockImplementation((params: any) => {
         callCount++;
         const label = `attempt-${callCount}`;
         prompts.push(params.prompt);
+        const messages: any[] = [];
+        received.push(messages);
+        void (async () => { for await (const m of params.prompt) messages.push(m); })();
         if (callCount === 1) {
           async function* inner(): AsyncGenerator<any> {
             yield { type: 'system', subtype: 'init', session_id: 'sess-live' };
@@ -2074,13 +2078,8 @@ describe('resilientQuery', () => {
 
       // And it landed in attempt 2's actual input channel — the one handed to
       // query() — not merely in some queue the adapter kept to itself.
-      const secondAttemptMessages: any[] = [];
-      for await (const message of prompts[1]) secondAttemptMessages.push(message);
-      expect(secondAttemptMessages.map((m) => m.message.content)).toEqual(['after retry']);
-      // Attempt 1's channel stayed empty and is closed.
-      const firstAttemptMessages: any[] = [];
-      for await (const message of prompts[0]) firstAttemptMessages.push(message);
-      expect(firstAttemptMessages).toEqual([]);
+      expect(received[1].map(m => m.message.content)).toEqual(['nudge', 'after retry']);
+      expect(received[0].map(m => m.message.content)).toEqual(['ORIGINAL TASK']);
 
       // Each session was closed exactly once, by the wrapper that created it.
       expect(closes).toEqual(['attempt-1', 'attempt-2']);
@@ -2119,4 +2118,45 @@ describe('resilientQuery', () => {
       jest.useFakeTimers();
     }, 10000);
   });
+});
+
+describe('prompt cancellation at runtime waits', () => {
+  beforeEach(() => { jest.clearAllMocks(); jest.useFakeTimers(); });
+  afterEach(() => { jest.useRealTimers(); });
+
+  it.each(['idle', 'backoff', 'setup', 'legacy-poll'] as const)(
+    'cancels during %s without waiting for the timeout or starting a retry', async (phase) => {
+      const { ClaudeControlAdapter } = require('../harnesses/claude-control');
+      const adapter = new ClaudeControlAdapter();
+      const close = jest.fn(() => { expect(adapter.currentAttempt()).toBeNull(); });
+      const next = jest.fn(() => phase === 'backoff'
+        ? Promise.reject(new Error('fetch failed'))
+        : new Promise<IteratorResult<any>>(() => {}));
+      mockQuery.mockReturnValue({ [Symbol.asyncIterator]: () => ({ next }), close } as any);
+      const source = adapter.cancellationSource();
+      if (phase === 'legacy-poll') delete source.signal;
+      const stream = resilientQuery({
+        queryParams: { prompt: 'task' },
+        baseDelayMs: 120_000,
+        maxDelayMs: 120_000,
+        idleTimeoutMs: 600_000,
+        attemptInputFactory: adapter.attemptInputFactory(),
+        onAttemptHandle: phase === 'setup' ? () => new Promise<void>(() => {}) : adapter.onAttemptHandle(),
+        cancellation: source,
+        log: jest.fn(),
+      });
+      let outcome: unknown;
+      const pending = stream.next().catch(error => { outcome = error; });
+      await jest.advanceTimersByTimeAsync(0);
+      if (phase === 'backoff') expect(close).toHaveBeenCalledTimes(1);
+      adapter.cancel('operator aborted');
+      await jest.advanceTimersByTimeAsync(30);
+      expect(outcome).toMatchObject({ name: 'ControlCancelledError' });
+      await pending;
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+      await adapter.dispose();
+    },
+  );
 });

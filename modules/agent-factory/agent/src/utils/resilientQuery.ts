@@ -32,15 +32,15 @@
  * anything about control semantics — `attemptInputFactory` (fresh open input
  * per attempt), `onAttemptHandle` (access to the live query handle) and
  * `cancellation` (typed intentional stop). All three are absent for the 17
- * existing callers, and when absent every code path below is byte-identical to
- * the pre-#3962 behaviour: same query params, same prompt construction, same
+ * existing callers. Ordinary callers preserve the pre-#3962 contract: the same
+ * query params, prompt construction, and
  * one-time fail-soft `onSessionId`, same `session.close()`. That is a hard
  * requirement, not a nicety — this wrapper is on the critical path of every
  * agent run in the platform, and a control feature that is disabled everywhere
  * must not be able to change how ordinary runs behave.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { isControlCancellation } from '../control-runtime';
+import { ControlCancelledError, isControlCancellation } from '../control-runtime';
 
 /** The shape of a single message yielded by query(). */
 export type SDKStreamMessage = Awaited<ReturnType<typeof query>> extends AsyncIterable<infer T> ? T : never;
@@ -134,14 +134,14 @@ export interface ResilientQueryOptions {
    * than inferring it later. Fail-soft: a throw is logged and swallowed, since
    * an observability or control sink must never take a run down.
    */
-  onAttemptHandle?: (handle: { attemptNumber: number; session: unknown }) => void;
+  onAttemptHandle?: (handle: { attemptNumber: number; session: unknown }) => void | Promise<void>;
   /**
    * Optional typed cancellation source (issue #3962).
    *
    * Checked at every point where this loop would otherwise commit to more work:
    * before constructing a query, after backoff, and when classifying an error.
-   * `isCancelled()` is polled rather than awaited so a cancel issued during
-   * backoff is observed the instant the sleep resolves.
+   * `signal` wakes waits immediately. Sources without a signal are polled at
+   * 25ms while waiting; no cancellation timers exist for ordinary callers.
    *
    * The critical rule: a cancellation NEVER enters retryable-error-text
    * classification. Cancellations carry words like "aborted" that the pattern
@@ -150,6 +150,8 @@ export interface ResilientQueryOptions {
    */
   cancellation?: {
     isCancelled: () => boolean;
+    /** Wakes idle/setup/backoff waits immediately; polling supports older sources. */
+    signal?: AbortSignal;
     /** The typed error to throw. Defaults to the caller's cancellation error. */
     error?: () => Error;
   };
@@ -222,7 +224,27 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
 
   /** Typed cancellation error, never routed through error-text classification. */
   const cancellationError = (): Error =>
-    cancellation?.error?.() ?? new Error('resilient query cancelled by control runtime');
+    cancellation?.error?.() ?? new ControlCancelledError('resilient query cancelled by control runtime');
+
+  const wait = async <T>(work: Promise<T>): Promise<T> => {
+    if (!cancellation) return work;
+    let poll: ReturnType<typeof setInterval> | undefined;
+    let onCancel: () => void = () => {};
+    const cancelled = new Promise<never>((_, reject) => {
+      onCancel = () => reject(cancellationError());
+      cancellation.signal?.addEventListener('abort', onCancel, { once: true });
+      if (cancellation.isCancelled() || cancellation.signal?.aborted) onCancel();
+      else if (!cancellation.signal) {
+        poll = setInterval(() => { if (cancellation.isCancelled()) onCancel(); }, 25);
+      }
+    });
+    try {
+      return await Promise.race([work, cancelled]);
+    } finally {
+      clearInterval(poll);
+      cancellation.signal?.removeEventListener('abort', onCancel);
+    }
+  };
 
   let attempt = 0;
   // Total messages yielded across ALL attempts (cross-attempt progress).
@@ -250,6 +272,14 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
     let messagesThisAttempt = 0;
     // This attempt's input disposer, if a factory supplied one.
     let disposeAttemptInput: (() => void | Promise<void>) | undefined;
+    const disposeInput = async (): Promise<void> => {
+      const dispose = disposeAttemptInput;
+      disposeAttemptInput = undefined;
+      if (dispose) {
+        try { await dispose(); }
+        catch (err) { log(`   ⚠️  attempt input disposal threw (ignored): ${(err as Error)?.message ?? err}`); }
+      }
+    };
     try {
       // On retry (attempt > 1), continue the prior conversation rather than
       // re-running the task from scratch.
@@ -313,17 +343,17 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
       }
 
       const session = query(effectiveParams);
-      // Publish the handle before consuming the stream, so the adapter swaps its
-      // current attempt endpoint at the moment the swap happens.
-      if (onAttemptHandle) {
-        try {
-          onAttemptHandle({ attemptNumber: attempt, session });
-        } catch (err) {
-          log(`   ⚠️  onAttemptHandle callback threw (ignored): ${(err as Error)?.message ?? err}`);
-        }
-      }
-      const iterator = (session as AsyncIterable<SDKStreamMessage>)[Symbol.asyncIterator]();
       try {
+        // Await attachment before reading output. Cancellation wakes stalled setup.
+        if (onAttemptHandle) {
+          try {
+            await wait(Promise.resolve(onAttemptHandle({ attemptNumber: attempt, session })));
+          } catch (err) {
+            if (isControlCancellation(err) || cancellation?.isCancelled()) throw err;
+            log(`   ⚠️  onAttemptHandle callback threw (ignored): ${(err as Error)?.message ?? err}`);
+          }
+        }
+        const iterator = (session as AsyncIterable<SDKStreamMessage>)[Symbol.asyncIterator]();
         while (true) {
           let idleTimer: ReturnType<typeof setTimeout> | undefined;
           const idle = new Promise<never>((_, reject) => {
@@ -334,7 +364,8 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           });
           let result: IteratorResult<SDKStreamMessage>;
           try {
-            result = await Promise.race([iterator.next(), idle]);
+            if (cancellation?.isCancelled()) throw cancellationError();
+            result = await wait(Promise.race([iterator.next(), idle]));
           } finally {
             clearTimeout(idleTimer);
           }
@@ -363,19 +394,15 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           yield result.value;
         }
       } finally {
-        // Close the query to terminate the underlying Claude Code process.
-        // Without this, background processes (sky, tail, etc.) keep the
-        // async generator alive and the agent hangs after completion.
-        // Also resolves/rejects the abandoned iterator.next() on idle timeout.
-        //
-        // Issue #3962 preserves this on every path, including idle timeout. The
-        // attempt's input is disposed AFTER the session closes: disposing first
-        // would end the iterable underneath a still-live query.
+        // Invalidate input before closing the transport. Ordinary callers keep
+        // synchronous teardown when no input factory is installed.
+        if (disposeAttemptInput) await disposeInput();
         session.close();
       }
       // Stream completed successfully — we're done.
       return;
     } catch (err) {
+      if (disposeAttemptInput) await disposeInput();
       const error = err as Error;
 
       // Issue #3962: a typed cancellation exits before ANY error-text
@@ -435,24 +462,17 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
       log(`   Total messages yielded: ${totalMessagesYielded}, high-water mark: ${highWaterMark}`);
       log(`   Retrying in ${(delay / 1000).toFixed(1)}s...`);
 
-      await new Promise(resolve => setTimeout(resolve, delay));
+      let backoffTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await wait(new Promise<void>(resolve => { backoffTimer = setTimeout(resolve, delay); }));
+      } finally {
+        clearTimeout(backoffTimer);
+      }
 
       const mode = capturedSessionId ? 'resuming' : 'restarting';
       log(`🔄 ${mode} query (attempt ${attempt + 1}/${maxRetries + 1})...`);
     } finally {
-      // Issue #3962: dispose this attempt's input on EVERY exit from the attempt
-      // — success, retry, throw, or generator abandonment by the consumer. Once
-      // per attempt: the local is cleared so a second pass through this block
-      // (e.g. a throw during disposal) cannot double-dispose.
-      const dispose = disposeAttemptInput;
-      disposeAttemptInput = undefined;
-      if (dispose) {
-        try {
-          await dispose();
-        } catch (err) {
-          log(`   ⚠️  attempt input disposal threw (ignored): ${(err as Error)?.message ?? err}`);
-        }
-      }
+      if (disposeAttemptInput) await disposeInput();
     }
   }
 }
