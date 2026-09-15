@@ -2,9 +2,9 @@
 #
 # install.sh — install the `adp` CLI (Issue #4852, Phase 1).
 #
-# Installs `adp` and its helpers — `bg-cognito-auth.sh` (the auth core),
-# `bg-gateway-proxy.py` (the Codex proxy), and `adp-bedrock.py` — SIDE BY SIDE into
-# ~/.adp/bin, because `adp` resolves its helpers as siblings of itself rather than via
+# Installs `adp` plus the two files it wraps — `bg-cognito-auth.sh` (the auth
+# core) and `bg-gateway-proxy.py` (the Codex auth proxy) — SIDE BY SIDE into
+# ~/.adp/bin, because `adp` resolves both as siblings of itself rather than via
 # PATH. ~/.adp/bin is what goes on PATH. ~/bin is deliberately never touched, so
 # an existing hand-installed bg-cognito-auth.sh keeps working untouched.
 #
@@ -35,14 +35,14 @@
 
 set -eu
 
-VERSION="2.1.0"
+VERSION="2.0.0"
 DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
 
-# The four files that must land side by side.
+# The three files that must land side by side.
 ADP_SCRIPT="adp"
 CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
-BEDROCK_SCRIPT="adp-bedrock.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py"
 
 CONFIG_DIR="${HOME}/.bedrock-gateway"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
@@ -260,22 +260,16 @@ do_install() {
 
     mkdir -p "${INSTALL_DIR}"
 
-    # Stage-then-commit: fetch and validate all four files first, and only move
+    # Stage-then-commit: fetch and validate all three files first, and only move
     # them into place once every one has succeeded. A mid-way failure trips the
     # trap, cleanup_staged wipes the temps, and the previous install (if any) is
     # left untouched — no half-finished state where `adp` exists but its core
     # script does not.
     trap cleanup_staged EXIT INT TERM
 
-    stage_file "${ADP_SCRIPT}"
-    stage_file "${CORE_SCRIPT}"
-    stage_file "${PROXY_SCRIPT}"
-    stage_file "${BEDROCK_SCRIPT}"
+    for name in ${CLI_FILES}; do stage_file "${name}"; done
 
-    commit_file "${ADP_SCRIPT}"
-    commit_file "${CORE_SCRIPT}"
-    commit_file "${PROXY_SCRIPT}"
-    commit_file "${BEDROCK_SCRIPT}"
+    for name in ${CLI_FILES}; do commit_file "${name}"; done
 
     trap - EXIT INT TERM
     STAGED_TMPS=""
@@ -286,7 +280,7 @@ do_install() {
 
 do_uninstall() {
     removed=0
-    for name in "${ADP_SCRIPT}" "${CORE_SCRIPT}" "${PROXY_SCRIPT}" "${BEDROCK_SCRIPT}"; do
+    for name in ${CLI_FILES}; do
         if [ -f "${INSTALL_DIR}/${name}" ]; then
             rm -f "${INSTALL_DIR}/${name}" "${INSTALL_DIR}/${name}.prev"
             removed=1
@@ -349,10 +343,13 @@ print_next_steps() {
 
   adp is installed. Next:
 
-    adp login          # approve once in the browser
+    "${INSTALL_DIR}/adp" login    # works immediately, before reloading PATH
     adp status         # confirm you are signed in
     adp codex setup    # or: adp claude setup
     codex              # or: claude
+
+  First-time platform administrator (before GitHub is configured):
+    "${INSTALL_DIR}/adp" admin setup
 
   One login is shared by every tool — adding a second tool is just its setup verb.
 
