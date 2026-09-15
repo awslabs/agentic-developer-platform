@@ -378,11 +378,18 @@ class TestCheckManifest:
             _mod.assert_check_manifest([])
 
     def test_every_check_id_has_a_description(self):
-        """An evidence row without a description is not evidence to a reviewer."""
-        assert set(_mod.CHECK_DESCRIPTIONS) == set(_mod.EXPECTED_CHECK_IDS)
-        assert all(
-            _mod.CHECK_DESCRIPTIONS[cid].strip() for cid in _mod.EXPECTED_CHECK_IDS
-        )
+        """An evidence row without a description is not evidence to a reviewer.
+
+        Compared against every registered spec rather than against wave 1 alone:
+        the description map is the per-ID fallback used when a report is built, so
+        a wave-2 ID missing from it produces an evidence row with an empty
+        subject.
+        """
+        registered = {spec.check_id for spec in _mod.ALL_CHECK_SPECS}
+
+        assert set(_mod.CHECK_DESCRIPTIONS) == registered
+        assert all(_mod.CHECK_DESCRIPTIONS[cid].strip() for cid in registered)
+        assert set(_mod.EXPECTED_CHECK_IDS) <= registered
 
 
 class TestEvidenceRedaction:
@@ -872,7 +879,36 @@ def artifact_payloads() -> dict:
                 "failed_cleanup",
             )
         },
+        "neutral_contract": neutral_contract_payload(),
     }
+
+
+def neutral_contract_payload(**overrides) -> dict:
+    """A complete, passing W2-02 artifact.
+
+    Built from the harness's own key list rather than a literal, so a property
+    added to `REQUIRED_ARTIFACT_KEYS["neutral_contract"]` without a passing value
+    here fails loudly instead of this fixture quietly going out of date. The
+    non-boolean keys are supplied explicitly; everything else defaults to True.
+    """
+    payload: dict = {
+        "protocol_version": _mod.CONTROL_PROTOCOL_VERSION,
+        "adapter_id": _mod.CLAUDE_ADAPTER_ID,
+        "sdk_version": _mod.EXPECTED_CLAUDE_SDK_VERSION,
+        "adapters": {
+            "claude": {"passed": True, "test_count": 61},
+            "echo": {"passed": True, "test_count": 61},
+        },
+        "second_adapter": {
+            "name": "echo",
+            "declares_missing_capability": True,
+            "imports_provider_sdk": False,
+        },
+    }
+    for key in _mod.REQUIRED_ARTIFACT_KEYS["neutral_contract"]:
+        payload.setdefault(key, True)
+    payload.update(overrides)
+    return payload
 
 
 def live_config(tmp_path: Path, **overrides) -> dict:
@@ -1042,14 +1078,41 @@ def ddb_stub(item: dict | None = None) -> MagicMock:
     return client
 
 
-def run_driver(tmp_path: Path, *, config: dict, client, dynamodb=None) -> dict:
-    """Drive all ten checks and return ``{check_id: CheckResult}``."""
+def run_driver(tmp_path: Path, *, config: dict, client, dynamodb=None, specs=None) -> dict:
+    """Drive a wave's checks and return ``{check_id: CheckResult}``.
+
+    Defaults to wave 1 so every existing caller keeps its meaning; `specs` selects
+    another wave.
+    """
     probe = _mod.Probe(config["gateway_url"], client)
     artifacts = _mod.ArtifactStore(tmp_path, config.get("artifacts") or {})
     driver = _mod.Driver(config, probe, artifacts, dynamodb=dynamodb or ddb_stub())
     with patch.dict("os.environ", IDENTITY_ENV, clear=False):
-        results = _mod.run_checks(driver)
+        results = _mod.run_checks(
+            driver, _mod.WAVE1_CHECKS if specs is None else specs
+        )
     return {result.check_id: result for result in results}
+
+
+def run_w2_02(tmp_path: Path, *, contract=None, client=None, config=None) -> object:
+    """Drive W2-02 alone and return its CheckResult.
+
+    `contract` replaces the neutral_contract artifact payload; pass `False` to
+    omit the artifact entirely (the not_run path).
+    """
+    payloads = artifact_payloads()
+    if contract is False:
+        payloads.pop("neutral_contract")
+    elif contract is not None:
+        payloads["neutral_contract"] = contract
+    cfg = config or live_config(tmp_path, artifact_payloads=payloads)
+    # Looked up by ID rather than indexed: a reordered manifest would silently
+    # make this drive a different check.
+    spec = next(s for s in _mod.WAVE2_CHECKS if s.check_id == "W2-02")
+    results = run_driver(
+        tmp_path, config=cfg, client=client or gateway_stub(), specs=(spec,)
+    )
+    return results["W2-02"]
 
 
 class TestCheckIdsMatchTheEvaluationFile:
@@ -1138,9 +1201,531 @@ class TestCheckIdsMatchTheEvaluationFile:
         for check_id, method_name in _mod.WAVE1_PREDICATES.items():
             assert hasattr(_mod.Driver, method_name), check_id
 
-    def test_only_wave_one_is_delivered_by_this_story(self):
-        """S2/S5 extend wave 2, S4/S6 wave 3, S7 wave 4 (§7)."""
-        assert _mod.SUPPORTED_WAVES == (1,)
+    def test_waves_one_and_two_are_carried_by_this_revision(self):
+        """S1 delivered wave 1; S3 #3962 adds wave 2's manifest with W2-02.
+
+        Was `== (1,)` when S1 was the only landed story. Updated rather than
+        deleted, because the property it protects is unchanged: a wave reachable
+        from the CLI must have a real manifest behind it, so `--wave 3` is still
+        a refusal rather than an empty pass.
+        """
+        assert _mod.SUPPORTED_WAVES == (1, 2)
+        assert 3 not in _mod.WAVE_CHECKS
+
+    def test_wave_two_carries_the_whole_evaluation_manifest(self):
+        """All ten of #3968's IDs, not just the one this story implements.
+
+        The manifest is what `report_is_passing` divides by. Registering wave 2
+        with only its finished check would make it a 1/1 wave that exits 0 — a
+        green report for a wave whose pause proof does not exist. Pinned as an
+        exact tuple so it cannot quietly shrink to match whatever is implemented.
+        """
+        assert tuple(spec.check_id for spec in _mod.WAVE2_CHECKS) == (
+            "W2-01",
+            "W2-02",
+            "W2-03",
+            "W2-04",
+            "W2-05",
+            "W2-06",
+            "W2-07",
+            "W2-08",
+            "W2-09",
+            "W2-10",
+        )
+
+    def test_s3_implements_exactly_w2_02(self):
+        """AC-T7 is this story's owned acceptance ID; the rest are other stories'.
+
+        Asserted in both directions. An extra predicate here would mean S3 is
+        claiming evidence for a property it did not build.
+        """
+        assert set(_mod.WAVE2_PREDICATES) == {"W2-02"}
+        assert _mod.CHECK_ACCEPTANCE_IDS["W2-02"] == ("AC-T7",)
+        for method_name in _mod.WAVE2_PREDICATES.values():
+            assert hasattr(_mod.Driver, method_name)
+
+    def test_every_unimplemented_manifest_entry_names_an_owner(self):
+        """A not_run must say who delivers it.
+
+        Both directions. An unowned entry becomes nobody's job; an owner recorded
+        for a check that IS implemented is a stale note that will read as
+        outstanding work after the story lands.
+        """
+        registered = {spec.check_id for spec in _mod.ALL_CHECK_SPECS}
+        implemented = set(_mod.CHECK_PREDICATES)
+
+        assert set(_mod.PENDING_CHECK_OWNERS) == registered - implemented
+        for check_id, owner in _mod.PENDING_CHECK_OWNERS.items():
+            assert owner.strip(), check_id
+
+    def test_check_ids_are_unique_across_waves(self):
+        """CHECK_DESCRIPTIONS is keyed by ID alone and spans every wave.
+
+        Two waves sharing an ID would make one check's evidence silently describe
+        the other's — and the report is keyed by ID too, so nothing downstream
+        could tell.
+        """
+        ids = [spec.check_id for spec in _mod.ALL_CHECK_SPECS]
+
+        assert len(ids) == len(set(ids))
+
+    def test_the_wave_one_manifest_default_did_not_grow(self):
+        """`EXPECTED_CHECK_IDS` is `assert_check_manifest`'s default.
+
+        If it had grown to span every wave, a wave-1 report would satisfy the
+        manifest guard while missing nine checks — the guard would still run, and
+        would still pass.
+        """
+        assert _mod.EXPECTED_CHECK_IDS == tuple(
+            spec.check_id for spec in _mod.WAVE1_CHECKS
+        )
+        assert not any(cid.startswith("W2-") for cid in _mod.EXPECTED_CHECK_IDS)
+
+    def test_each_wave_reports_its_own_evaluation_issue(self):
+        """#3967 accepted wave 1 and is closed; #3968 owns wave 2.
+
+        A wave-2 report labelled 3967 would attach evidence to a finished
+        evaluation.
+        """
+        assert _mod.WAVE_EVALUATIONS[1] == "3967"
+        assert _mod.WAVE_EVALUATIONS[2] == "3968"
+        assert set(_mod.WAVE_EVALUATIONS) == set(_mod.WAVE_CHECKS)
+        assert set(_mod.WAVE_REVISIONS) == set(_mod.WAVE_CHECKS)
+
+
+class TestTheMirroredControlRuntimeConstants:
+    """The harness mirrors three values from TypeScript. This is the seam.
+
+    `CONTROL_PROTOCOL_VERSION`, `CLAUDE_ADAPTER_ID` and
+    `EXPECTED_CLAUDE_SDK_VERSION` are copied rather than imported, deliberately:
+    this script runs standalone against a URL and must not acquire the agent
+    module's dependency tree. The cost of copying is drift, and drift here is
+    silent in the worst way — the harness would keep accepting evidence recorded
+    against a contract version the deployment no longer speaks, and report it as a
+    pass. So the copies are pinned against the sources in CI, where a bump becomes
+    a failing test to update rather than a stale live evaluation.
+    """
+
+    AGENT_SRC = REPO_ROOT / "modules" / "agent-factory" / "agent" / "src"
+    RUNTIME = AGENT_SRC / "control-runtime.ts"
+    ADAPTER = AGENT_SRC / "harnesses" / "claude-control.ts"
+    PACKAGE_JSON = REPO_ROOT / "modules" / "agent-factory" / "agent" / "package.json"
+
+    def test_the_typescript_sources_exist(self):
+        """Named deliverables of #3962. A rename must fail here, not silently pass."""
+        assert self.RUNTIME.is_file()
+        assert self.ADAPTER.is_file()
+
+    def test_the_protocol_version_matches_the_neutral_contract(self):
+        source = self.RUNTIME.read_text(encoding="utf-8")
+        match = re.search(
+            r"export const CONTROL_PROTOCOL_VERSION\s*=\s*(\d+)", source
+        )
+
+        assert match, "CONTROL_PROTOCOL_VERSION not found in control-runtime.ts"
+        assert int(match.group(1)) == _mod.CONTROL_PROTOCOL_VERSION
+
+    def test_the_adapter_id_matches_the_claude_adapter(self):
+        source = self.ADAPTER.read_text(encoding="utf-8")
+        match = re.search(
+            r"export const CLAUDE_ADAPTER_ID\s*=\s*'([^']+)'", source
+        )
+
+        assert match, "CLAUDE_ADAPTER_ID not found in claude-control.ts"
+        assert match.group(1) == _mod.CLAUDE_ADAPTER_ID
+
+    def test_the_sdk_pin_matches_the_adapter_and_the_dependency(self):
+        """Three places, and all three must agree.
+
+        The adapter records the version it was proven against; package.json is what
+        a bump actually edits. If those two disagree, the adapter's evidence is
+        stale — and this harness would accept it either way without this test.
+        """
+        adapter_match = re.search(
+            r"export const CLAUDE_SDK_VERSION\s*=\s*'([^']+)'",
+            self.ADAPTER.read_text(encoding="utf-8"),
+        )
+        assert adapter_match, "CLAUDE_SDK_VERSION not found in claude-control.ts"
+
+        declared = json.loads(self.PACKAGE_JSON.read_text(encoding="utf-8"))[
+            "dependencies"
+        ]["@anthropic-ai/claude-agent-sdk"]
+
+        assert adapter_match.group(1) == _mod.EXPECTED_CLAUDE_SDK_VERSION
+        assert declared.lstrip("^~") == _mod.EXPECTED_CLAUDE_SDK_VERSION
+
+    def test_the_four_verbs_match_the_neutral_contract(self):
+        """The verb universe, on both sides of the language boundary."""
+        source = self.RUNTIME.read_text(encoding="utf-8")
+        match = re.search(
+            r"const verbs: ControlAction\[\] = \[([^\]]+)\]", source
+        )
+
+        assert match, "the verb list was not found in intersectCapabilities"
+        verbs = tuple(re.findall(r"'([a-z]+)'", match.group(1)))
+        assert verbs == _mod.CONTROL_VERBS
+
+
+class TestWave2NeutralContract:
+    """W2-02 / AC-T7 — the check S3 #3962 delivers.
+
+    Two halves, tested separately because they fail for different reasons: the
+    operator-recorded contract artifact (validated, not trusted) and the deployed
+    capability surface the harness reads itself. The second exists because the
+    artifact describes a source tree while the evaluation is about a deployment,
+    and the failure worth catching is a green suite paired with a build that
+    advertises a verb.
+    """
+
+    def test_a_complete_artifact_and_correct_deployment_passes(self, tmp_path: Path):
+        result = run_w2_02(tmp_path)
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+    def test_the_check_records_evidence(self, tmp_path: Path):
+        """§7's `check()` requires nonempty evidence; a status alone is not enough."""
+        result = run_w2_02(tmp_path)
+        evidence = result.to_evidence()
+
+        assert evidence["acceptance_ids"] == ["AC-T7"]
+        assert evidence["evidence"]
+        # Both kinds: the artifact path and the state reads it made itself.
+        assert any("artifact" in item for item in evidence["evidence"])
+        assert any("command" in item for item in evidence["evidence"])
+
+    def test_a_missing_artifact_is_not_run_not_a_pass(self, tmp_path: Path):
+        result = run_w2_02(tmp_path, contract=False)
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert "neutral_contract" in result.message
+
+    @pytest.mark.parametrize(
+        "dropped_key", _mod.REQUIRED_ARTIFACT_KEYS["neutral_contract"]
+    )
+    def test_an_incomplete_artifact_fails_rather_than_skipping(
+        self, tmp_path: Path, dropped_key: str
+    ):
+        """Parametrized over every key: a claim without its evidence is a failure.
+
+        `not_run` for a half-filled artifact would let an operator satisfy this
+        check by leaving out whichever property is awkward to prove.
+        """
+        payload = neutral_contract_payload()
+        del payload[dropped_key]
+
+        result = run_w2_02(tmp_path, contract=payload)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert dropped_key in result.message
+
+    @pytest.mark.parametrize(
+        "prop",
+        [
+            key
+            for key in _mod.REQUIRED_ARTIFACT_KEYS["neutral_contract"]
+            if key not in _mod._NEUTRAL_CONTRACT_NON_BOOLEAN_KEYS
+        ],
+    )
+    def test_each_named_property_fails_on_its_own(self, tmp_path: Path, prop: str):
+        """Thirteen properties, thirteen distinguishable failures.
+
+        The point of one key per property is that the report says WHICH one is
+        unproven. An `all(...)` over the group would collapse them into a single
+        boolean and this test would be impossible to write.
+        """
+        result = run_w2_02(tmp_path, contract=neutral_contract_payload(**{prop: False}))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert prop in result.message
+        # The message must also say why anyone cared — this evidence is read by
+        # people who did not write the story.
+        assert len(result.message) > len(prop) + 40
+
+    def test_a_property_recorded_as_a_truthy_non_true_fails(self, tmp_path: Path):
+        """`is not True`, not falsiness. "probably" is not a proof."""
+        result = run_w2_02(
+            tmp_path, contract=neutral_contract_payload(disposed_once="yes")
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "disposed_once" in result.message
+
+    def test_a_protocol_version_mismatch_fails(self, tmp_path: Path):
+        result = run_w2_02(
+            tmp_path,
+            contract=neutral_contract_payload(
+                protocol_version=_mod.CONTROL_PROTOCOL_VERSION + 1
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "protocol version" in result.message
+
+    def test_a_non_claude_production_adapter_fails(self, tmp_path: Path):
+        """Claude is the first production adapter; the second is test-only.
+
+        Substitutability in a test suite is not accepted live second-harness
+        support, and this is the assertion that keeps those apart.
+        """
+        result = run_w2_02(tmp_path, contract=neutral_contract_payload(adapter_id="echo"))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "second-harness" in result.message
+
+    def test_an_sdk_version_other_than_the_pin_fails(self, tmp_path: Path):
+        """Streaming input and shouldQuery are observed behaviour, not a guarantee."""
+        result = run_w2_02(
+            tmp_path, contract=neutral_contract_payload(sdk_version="0.3.999")
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "lockfile" in result.message
+
+    def test_only_the_claude_adapter_fails(self, tmp_path: Path):
+        """One adapter passing a neutral suite proves the suite runs, not neutrality."""
+        result = run_w2_02(
+            tmp_path,
+            contract=neutral_contract_payload(
+                adapters={"claude": {"passed": True, "test_count": 61}}
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "BOTH" in result.message or "independently shaped" in result.message
+
+    def test_a_second_adapter_that_did_not_pass_fails(self, tmp_path: Path):
+        result = run_w2_02(
+            tmp_path,
+            contract=neutral_contract_payload(
+                adapters={
+                    "claude": {"passed": True, "test_count": 61},
+                    "echo": {"passed": False, "test_count": 61},
+                }
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "echo" in result.message
+
+    def test_an_adapter_that_ran_zero_tests_fails(self, tmp_path: Path):
+        """The specific way "passed" lies.
+
+        A jest run over a deleted file exits 0. Without a positive test count,
+        `passed: true` is satisfied by a suite that asserted nothing — which is the
+        same hazard the CI job avoids by pinning test files by name.
+        """
+        result = run_w2_02(
+            tmp_path,
+            contract=neutral_contract_payload(
+                adapters={
+                    "claude": {"passed": True, "test_count": 61},
+                    "echo": {"passed": True, "test_count": 0},
+                }
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "ran nothing" in result.message
+
+    def test_a_second_adapter_without_a_missing_capability_fails(self, tmp_path: Path):
+        """Without a capability gap the intersection is never observed working."""
+        second = {
+            "name": "echo",
+            "declares_missing_capability": False,
+            "imports_provider_sdk": False,
+        }
+
+        result = run_w2_02(tmp_path, contract=neutral_contract_payload(second_adapter=second))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "missing capability" in result.message
+
+    def test_a_second_adapter_importing_the_provider_sdk_fails(self, tmp_path: Path):
+        """A look-alike proves the contract accepts Claude's shape — the opposite."""
+        second = {
+            "name": "echo",
+            "declares_missing_capability": True,
+            "imports_provider_sdk": True,
+        }
+
+        result = run_w2_02(tmp_path, contract=neutral_contract_payload(second_adapter=second))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "provider SDK" in result.message
+
+    def test_a_second_adapter_naming_an_unreported_adapter_fails(self, tmp_path: Path):
+        """The named second adapter must be one that actually ran."""
+        second = {
+            "name": "codex",
+            "declares_missing_capability": True,
+            "imports_provider_sdk": False,
+        }
+
+        result = run_w2_02(tmp_path, contract=neutral_contract_payload(second_adapter=second))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "codex" in result.message
+
+    @pytest.mark.parametrize("verb", _mod.CONTROL_VERBS)
+    def test_a_deployed_build_advertising_any_verb_fails(self, tmp_path: Path, verb: str):
+        """The half the harness observes itself, per verb.
+
+        S3 keeps all four unsupported. A true capability puts a button on the
+        dashboard whose handler returns 501 — and a perfect artifact cannot see
+        this, because it describes the source tree rather than the deployment.
+        """
+        caps = {v: v == verb for v in _mod.CONTROL_VERBS}
+
+        result = run_w2_02(tmp_path, client=gateway_stub(capabilities=caps))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert verb in result.message
+
+    def test_a_deployed_build_omitting_a_verb_key_fails(self, tmp_path: Path):
+        """Absent and false are indistinguishable to the dashboard, not to the contract."""
+        caps = {v: False for v in _mod.CONTROL_VERBS if v != "abort"}
+
+        result = run_w2_02(tmp_path, client=gateway_stub(capabilities=caps))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "abort" in result.message
+
+    def test_both_adapters_state_endpoints_are_read(self, tmp_path: Path):
+        """Not just one edge. Two HTTP surfaces share one control service.
+
+        Reading only the activity adapter would leave the orchestration edge's
+        capability rendering unobserved, which is the drift W1-02 exists to catch
+        on the authorization side.
+        """
+        client = gateway_stub()
+        run_w2_02(tmp_path, client=client)
+
+        urls = [url for url, _ in client.answered]
+        assert any("/activity/invocations/" in url and url.endswith("/state") for url in urls)
+        assert any("/orchestration/runs/" in url and url.endswith("/state") for url in urls)
+
+    def test_the_check_sends_no_command(self, tmp_path: Path):
+        """AC-T7 is a contract check, not a control probe.
+
+        W2-02 must not POST a verb: this wave's live steer completion is W3-11's,
+        and a command sent here would be a side effect on a fixture in the name of
+        reading a capability map.
+        """
+        client = gateway_stub()
+        run_w2_02(tmp_path, client=client)
+
+        assert client.answered, "the check made no request at all"
+        assert all(url.endswith("/state") for url, _ in client.answered), client.answered
+
+    def test_a_missing_live_run_id_is_not_run(self, tmp_path: Path):
+        """The deployed half needs a fixture run; absent is "could not look"."""
+        payloads = artifact_payloads()
+        config = live_config(tmp_path, artifact_payloads=payloads)
+        del config["live_run_id"]
+
+        result = run_w2_02(tmp_path, config=config)
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert "live_run_id" in result.message
+
+
+class TestWave2Composition:
+    """What `--wave 2` reports today, and why it must not exit 0."""
+
+    def test_the_delivered_check_passes_and_the_rest_are_not_run(self, tmp_path: Path):
+        results = run_driver(
+            tmp_path,
+            config=live_config(tmp_path),
+            client=gateway_stub(),
+            specs=_mod.WAVE2_CHECKS,
+        )
+
+        assert results["W2-02"].status == _mod.STATUS_PASSED, results["W2-02"].message
+        outstanding = {
+            cid: r.status for cid, r in results.items() if cid != "W2-02"
+        }
+        assert set(outstanding.values()) == {_mod.STATUS_NOT_RUN}, outstanding
+
+    def test_every_not_run_names_its_owning_story(self, tmp_path: Path):
+        """"Not implemented" without an owner is how a check stops being a job."""
+        results = run_driver(
+            tmp_path,
+            config=live_config(tmp_path),
+            client=gateway_stub(),
+            specs=_mod.WAVE2_CHECKS,
+        )
+
+        for check_id, result in results.items():
+            if check_id == "W2-02":
+                continue
+            assert result.message, check_id
+            assert "#" in result.message, (check_id, result.message)
+
+    def test_an_incomplete_wave_cannot_report_passing(self, tmp_path: Path):
+        """The reason the whole manifest is registered rather than just W2-02.
+
+        `report_is_passing` asks `passed == required`. A wave holding only its one
+        finished check would be 1/1 and exit 0 — a green report for a wave whose
+        pause proof does not exist yet.
+        """
+        results = run_driver(
+            tmp_path,
+            config=live_config(tmp_path),
+            client=gateway_stub(),
+            specs=_mod.WAVE2_CHECKS,
+        )
+        report = _mod.build_report(
+            live_config(tmp_path),
+            list(results.values()),
+            cleanup_ok=True,
+            wave=2,
+            expected_ids=tuple(spec.check_id for spec in _mod.WAVE2_CHECKS),
+        )
+
+        assert report["required"] == 10
+        assert report["passed"] == 1
+        assert report["not_run"] == 9
+        assert _mod.report_is_passing(report) is False
+
+    def test_the_wave_two_report_names_its_own_evaluation_and_revision(
+        self, tmp_path: Path
+    ):
+        report = _mod.build_report(
+            live_config(tmp_path), [], cleanup_ok=True, wave=2, expected_ids=()
+        )
+
+        assert report["evaluation"] == "3968"
+        assert report["revision"] == "harness-neutral-2026-09-15"
+
+    def test_a_manifest_entry_with_neither_predicate_nor_owner_fails(
+        self, tmp_path: Path
+    ):
+        """Unowned and unimplemented is a harness bug, not a wave in progress.
+
+        `not_run` for this would be indistinguishable from a check someone is
+        working on, so it is a FAILURE — that is the difference between "not yet"
+        and "nobody's job".
+        """
+        orphan = _mod.CheckSpec("W2-99", ("AC-X",), "an unowned check")
+
+        results = run_driver(
+            tmp_path,
+            config=live_config(tmp_path),
+            client=gateway_stub(),
+            specs=(orphan,),
+        )
+
+        assert results["W2-99"].status == _mod.STATUS_FAILED
+        assert "PENDING_CHECK_OWNERS" in results["W2-99"].message
+
+    def test_wave_one_is_unchanged_by_the_wave_two_addition(self, tmp_path: Path):
+        """The regression that matters: #3967 is accepted, so wave 1 must still be 10/10."""
+        results = run_driver(
+            tmp_path, config=live_config(tmp_path), client=gateway_stub()
+        )
+
+        assert list(results) == list(_mod.EXPECTED_CHECK_IDS)
+        assert [r.status for r in results.values()] == [_mod.STATUS_PASSED] * 10
 
 
 class TestDriverOutcomes:
@@ -1881,7 +2466,8 @@ class TestThePublishedCommandAndGate:
     """
 
     @staticmethod
-    def _run(tmp_path: Path, client=None, **config_overrides) -> tuple[int, dict]:
+    def _run(tmp_path: Path, client=None, wave: int = 1, **config_overrides) -> tuple[int, dict]:
+        """Drive the real CLI. `wave` defaults to 1 so existing callers keep meaning."""
         config = live_config(tmp_path, **config_overrides)
         path = write_config(tmp_path, config)
         session = MagicMock()
@@ -1899,7 +2485,7 @@ class TestThePublishedCommandAndGate:
             code = _mod.main(
                 [
                     "--wave",
-                    "1",
+                    str(wave),
                     "--config",
                     str(path),
                     "--evidence-dir",
@@ -1995,6 +2581,133 @@ class TestThePublishedCommandAndGate:
         assert report["supported_verbs"] == []
 
 
+class TestThePublishedWaveTwoCommand:
+    """`--wave 2` as the issue publishes it, driven through the real `main`.
+
+    This is the loop-closure the unit tests cannot make. Before this revision
+    `SUPPORTED_WAVES` was `(1,)`, so the smoke command this story ships —
+
+        python3 platform/scripts/agent-control-eval.py --wave 2 \\
+            --config "$CONTROL_EVAL_CONFIG" --evidence-dir "$CONTROL_EVIDENCE_DIR"
+
+    — reached the wave guard and returned EXIT_CONFIG *before loading a config*,
+    writing no evidence at all. An operator running the documented command got a
+    refusal that named the wave, which is honest but proves nothing about W2-02.
+
+    What must be true now is narrower than "wave 2 works": the refusal has to be
+    replaced by a *run* that reports the delivered check as passed, the nine
+    outstanding ones as not_run, and still exits nonzero. All three at once. Any
+    two of them is a familiar failure — exit 0 on an incomplete wave, or a
+    nonzero with no evidence to read.
+    """
+
+    _run = staticmethod(TestThePublishedCommandAndGate._run)
+
+    def test_the_wave_two_command_runs_instead_of_refusing(self, tmp_path: Path):
+        """It reaches the checks: evidence exists, and the code is not EXIT_CONFIG."""
+        code, report = self._run(tmp_path, wave=2)
+
+        assert code != _mod.EXIT_CONFIG
+        assert (tmp_path / "evidence" / "result.json").is_file()
+        assert report["wave"] == 2
+
+    def test_the_wave_two_command_exits_four_not_zero(self, tmp_path: Path):
+        """Nonzero because nine checks are outstanding — not because it broke.
+
+        `failed == 0` is the half that distinguishes "this wave is unfinished"
+        from "this wave regressed", and it is why the exit code alone is not
+        enough of an assertion here.
+        """
+        code, report = self._run(tmp_path, wave=2)
+
+        assert code == _mod.EXIT_CHECKS_FAILED
+        assert report["cleanup_ok"] is True
+        assert report["failed"] == 0
+        assert report["passed"] == 1
+        assert report["not_run"] == 9
+        assert report["required"] == 10
+        assert _mod.report_is_passing(report) is False
+
+    def test_the_delivered_check_is_readable_as_passed_with_evidence(
+        self, tmp_path: Path
+    ):
+        """What the operator actually looks at after the nonzero exit."""
+        _, report = self._run(tmp_path, wave=2)
+        entry = report["checks"]["W2-02"]
+
+        assert entry["status"] == _mod.STATUS_PASSED, entry
+        assert entry["acceptance_ids"] == ["AC-T7"]
+        assert len(entry["evidence"]) > 0
+
+    def test_every_outstanding_check_names_its_owning_story_in_the_report(
+        self, tmp_path: Path
+    ):
+        """The report has to be actionable, not just correct.
+
+        Redaction runs over the messages on the way out, so "the owner survives
+        into the written evidence" is a separate claim from the in-process one.
+        """
+        _, report = self._run(tmp_path, wave=2)
+
+        outstanding = {
+            cid: entry
+            for cid, entry in report["checks"].items()
+            if cid != "W2-02"
+        }
+        assert len(outstanding) == 9
+        for check_id, entry in outstanding.items():
+            assert entry["status"] == _mod.STATUS_NOT_RUN, check_id
+            assert "#" in entry["message"], (check_id, entry["message"])
+
+    def test_a_broken_contract_artifact_fails_the_delivered_check_end_to_end(
+        self, tmp_path: Path
+    ):
+        """Sensitivity: W2-02 must be capable of failing through the CLI.
+
+        Both an unfinished wave and a broken one exit 4, so the exit code cannot
+        tell them apart — the report must, and this is the test that proves the
+        distinction is real rather than a story about the code.
+        """
+        payloads = artifact_payloads()
+        payloads["neutral_contract"] = neutral_contract_payload(
+            stale_events_rejected=False
+        )
+
+        code, report = self._run(tmp_path, wave=2, artifact_payloads=payloads)
+
+        assert code == _mod.EXIT_CHECKS_FAILED
+        assert report["checks"]["W2-02"]["status"] == _mod.STATUS_FAILED
+        assert report["failed"] == 1
+        assert report["passed"] == 0
+        assert "stale_events_rejected" in report["checks"]["W2-02"]["message"]
+
+    def test_wave_one_is_unchanged_by_wave_two_existing(self, tmp_path: Path):
+        """The regression this revision could plausibly cause, asserted directly."""
+        code, report = self._run(tmp_path, wave=1)
+
+        assert code == _mod.EXIT_OK
+        assert report["wave"] == 1
+        assert report["evaluation"] == "3967"
+        assert report["required"] == report["passed"]
+
+    def test_an_undelivered_wave_is_still_refused(self, tmp_path: Path):
+        """The guard was narrowed, not removed.
+
+        Wave 3 has no manifest, so it must still refuse *before* loading a config
+        and must write no evidence — an empty report for an unwritten wave would
+        read as "nothing to prove here".
+        """
+        config = write_config(tmp_path, live_config(tmp_path))
+        evidence = tmp_path / "evidence"
+
+        code = _mod.main(
+            ["--wave", "3", "--config", str(config), "--evidence-dir", str(evidence)]
+        )
+
+        assert code == _mod.EXIT_CONFIG
+        assert not (evidence / "result.json").exists()
+
+
 class TestTheHarnessesRuntimeDependencies:
     """The dependencies `main` needs, asserted by name.
 
@@ -2058,6 +2771,24 @@ class TestTheDocumentedFixtureConfig:
 
     def test_the_runbook_exists(self):
         assert self.DOC.is_file()
+
+    def test_the_runbook_documents_the_neutral_contract_artifact(self):
+        """W2-02's artifact is the one whose evidence comes from a test run.
+
+        Its shape is not guessable, so an operator who cannot see it documented
+        will omit it and get `not_run` on the only wave-2 check that works.
+        """
+        text = self.DOC.read_text(encoding="utf-8")
+
+        assert "neutral_contract" in text
+        for key in _mod.REQUIRED_ARTIFACT_KEYS["neutral_contract"]:
+            assert key in text, key
+
+    def test_the_runbook_warns_that_wave_two_is_incomplete(self):
+        """`--wave 2` runs and exits nonzero. An operator must not read that as broken."""
+        text = self.DOC.read_text(encoding="utf-8")
+
+        assert "Wave 2 is incomplete on purpose" in text
 
     def test_the_example_is_valid_json_and_passes_every_config_guard(
         self, tmp_path: Path
@@ -2172,3 +2903,26 @@ class TestTheDocumentedFixtureConfig:
         index = (self.DOC.parent / "README.md").read_text(encoding="utf-8")
 
         assert "agent-control-evaluation.md" in index
+
+
+@pytest.mark.parametrize("implemented", [[], ["pause", "resume"]])
+def test_w2_02_accepts_each_wave2_stage(tmp_path, implemented):
+    caps = {verb: verb in implemented for verb in _mod.CONTROL_VERBS}
+    result = run_w2_02(
+        tmp_path,
+        contract=neutral_contract_payload(implemented_verbs=implemented),
+        client=gateway_stub(capabilities=caps),
+    )
+    assert result.status == _mod.STATUS_PASSED
+
+
+@pytest.mark.parametrize("implemented", [["abort"], ["steer"], "pause", None])
+def test_w2_02_rejects_invalid_stage_declaration(tmp_path, implemented):
+    result = run_w2_02(tmp_path, contract=neutral_contract_payload(implemented_verbs=implemented))
+    assert result.status == _mod.STATUS_FAILED
+
+
+@pytest.mark.parametrize("second", [None, [], "echo"])
+def test_w2_02_rejects_non_object_second_adapter(tmp_path, second):
+    result = run_w2_02(tmp_path, contract=neutral_contract_payload(second_adapter=second))
+    assert result.status == _mod.STATUS_FAILED
