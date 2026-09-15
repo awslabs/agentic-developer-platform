@@ -19,6 +19,7 @@
  */
 
 import { execSync } from 'child_process';
+import { workerAwsEnvironment, workerAwsRegion } from './lib/runIdentity';
 
 // ============================================================================
 // Configuration
@@ -44,7 +45,7 @@ export interface BeadsConfig {
 const DEFAULT_CONFIG: BeadsConfig = {
   enabled: true,
   s3Bucket: '',
-  s3Region: process.env.AWS_REGION || 'us-east-1',
+  s3Region: workerAwsRegion(),
   s3Path: 'beads/adp',
   syncOnStart: true,
   syncOnComplete: true,
@@ -139,7 +140,7 @@ async function bd(
       cwd,
       encoding: 'utf-8',
       env: {
-        ...process.env,
+        ...workerAwsEnvironment(),
         AWS_REGION: config.s3Region,
       },
       maxBuffer: 10 * 1024 * 1024,

@@ -43,22 +43,13 @@ release.
    The amount comes from the accepted policy, the settled total from `usage_logs`,
    and the key from the flow id.
 
-## Degrade, never approximate
+## Unavailable reservations block policy-governed admissions
 
-A Redis fault returns `None` from `ReservationStore.reserve`, and this module
-propagates that as a **permit** with the fault recorded — the same choice
-`reservations.py` documents for the proxy hot path, for the same reason: a cache
-blip must not halt an entire platform's delivery. This is a real and deliberate
-reduction in enforcement during an outage, and it is bounded by the settled-ledger
-check in `policy_admission`, which is unaffected by Redis and still denies once the
-lagged total reaches the cap. It is stated here rather than left to be discovered
-because "the cap silently stopped applying" is exactly the failure #4337's gate was
-written about.
-
-Note what is NOT degraded: *unknown* spend. That is a different condition — it is
-the settled side being unreadable rather than the live side, `policy_admission`
-resolves it to `None`, and `authorize_action` blocks on it before this module is ever
-reached. An outage relaxes contention; it never relaxes reconciliation.
+A Redis fault returns `None` from `ReservationStore.reserve`. An accepted bounded
+policy cannot permit new work without its concurrent holds, so this module
+refuses that admission. Disabling reservations or omitting the backend has the
+same result. Policy-less plans retain their existing admission path. Unknown
+settled spend is independently refused by `policy_admission`.
 
 ## Why `src.budget` is imported inside functions, not at module scope
 
@@ -150,13 +141,12 @@ def admission_cost_usd(policy: ExecutionPolicy) -> Decimal:
     might strictly afford; the cost of the optimistic one is that the cap does not
     hold, which is the whole point of the feature.
 
-    Clamped to the policy's own total, because a reservation larger than the entire
-    allowance could never be admitted — the flow's first action would deny with the
-    cap untouched, which reads as an outage rather than as a limit.
+    Never clamp to the policy total: a smaller hold does not lower the actual run
+    cap. If this worst case cannot fit, admission must be refused.
     """
     from src.budget.config import budget_config
 
-    return min(budget_config.budget_run_cap_usd, policy.limits.max_spend_usd)
+    return budget_config.budget_run_cap_usd
 
 
 def flow_reservation_target(
@@ -214,10 +204,8 @@ def flow_reservation_target(
 class FlowReservation:
     """The outcome of trying to reserve headroom for one admission.
 
-    `admitted` False is the only refusal. `degraded` True means the live counter was
-    unreachable and the admission proceeded on the settled ledger alone — permitted,
-    but with less contention protection than usual, which the caller records rather
-    than hides.
+    `degraded` True identifies unavailable enforcement and always accompanies a
+    refusal. It lets the caller distinguish an outage from an exhausted limit.
 
     `target` is carried back for logging and assertion, not as the input to the
     release. `enforcement_service` has to stash its run/chain targets (#4323) because
@@ -284,10 +272,7 @@ async def reserve_flow_admission(
     allowance in holds without a single action having run — a flow that stops
     dispatching while its ledger reads near zero.
 
-    Returns a permit when reservations are switched off entirely
-    (`budget_reservation_enabled` False, the documented rollback lever) or when no
-    backend is configured, so an environment without Redis keeps the pre-#5128
-    settled-ledger behaviour rather than refusing all work.
+    Disabled, missing or unavailable reservations refuse new policy-governed work.
     """
     from src.budget.config import budget_config
 
@@ -295,23 +280,21 @@ async def reserve_flow_admission(
     request_id = admission_request_id(node_id)
 
     if not budget_config.budget_reservation_enabled:
-        return FlowReservation(admitted=True, degraded=True, target=target)
+        return FlowReservation(admitted=False, degraded=True, target=target)
 
     resolved = store if store is not None else get_flow_reservations()
     if not resolved.enabled:
-        return FlowReservation(admitted=True, degraded=True, target=target)
+        return FlowReservation(admitted=False, degraded=True, target=target)
 
     outcome = await resolved.reserve(request_id, admission_cost_usd(policy), [target])
 
     if outcome is None:
-        # Redis unreachable. Permit, and say so — see the module docstring on why a
-        # fault must not halt delivery, and on what still bounds spend meanwhile.
         logger.warning(
-            "orchestration flow budget: reservation unavailable for flow %s (org %s) — admitting on the settled ledger alone",
+            "orchestration flow budget: reservation unavailable for flow %s (org %s) — refusing new admission",
             flow_id,
             org_id,
         )
-        return FlowReservation(admitted=True, degraded=True, target=target)
+        return FlowReservation(admitted=False, degraded=True, target=target)
 
     if outcome.admitted:
         return FlowReservation(admitted=True, target=target)

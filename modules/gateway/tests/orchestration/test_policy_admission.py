@@ -78,6 +78,36 @@ DEPT_A = "dept-test"
 EXPIRY = datetime.now(UTC) + timedelta(days=30)
 
 
+@pytest.fixture(autouse=True)
+def policy_budget_initializers(monkeypatch):
+    initialized = set()
+
+    async def claim(*, org_id, flow_id, allow_create):
+        key = (org_id, flow_id)
+        if key in initialized:
+            return False
+        if not allow_create:
+            raise RuntimeError("existing work requires reconciliation")
+        initialized.add(key)
+        return True
+
+    monkeypatch.setattr("src.orchestration.flow_meter._claim_initialization", claim)
+
+
+@pytest.fixture(autouse=True)
+async def healthy_policy_reservations(monkeypatch):
+    """Permitting-policy cases require real atomic holds, not an absent backend."""
+    import fakeredis.aioredis
+
+    from src.budget.reservations import ReservationStore
+    from src.orchestration import flow_budget
+
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(flow_budget, "_reservations", ReservationStore(redis_url=None, ttl_seconds=120, client=client))
+    yield
+    await client.aclose()
+
+
 @pytest.fixture
 async def engine():
     eng = create_async_engine(
@@ -157,7 +187,7 @@ def _policy(**overrides: Any) -> ExecutionPolicy:
     base: dict[str, Any] = {
         "org_id": ORG_A,
         "repository_ids": [REPO],
-        "allowed_actions": [Action.DEVELOP, Action.EVALUATE],
+        "allowed_actions": [Action.DEVELOP, Action.REPAIR, Action.MERGE, Action.EVALUATE],
         "expires_at": EXPIRY,
         "limits": _limits(),
     }
@@ -312,6 +342,12 @@ async def _fixture(
     await _make_member(session)
     flow = await _make_flow(session)
     await _accept_policy(session, flow, policy)
+    if policy is not None:
+        from src.orchestration.flow_meter import prepare_flow_meter
+
+        # Fixtures with historical work model a flow whose first admission already
+        # initialized its meter. Fault tests may deliberately make this unavailable.
+        await prepare_flow_meter(org_id=flow.org_id, flow_id=flow.id, policy=policy, nodes=[])
     await _make_approval(session, flow)
     node = await _make_node(session, flow, **(node_kwargs or {}))
     return flow, node
@@ -468,16 +504,20 @@ class TestMembershipIsVerifiedLive:
         await session.flush()
         assert (await _authorize(session, node)).permitted
 
-    async def test_legacy_member_without_a_membership_row_is_permitted(self, session: AsyncSession) -> None:
-        """A native user predating `tenant_memberships` is still a real member.
-
-        `workspaces.py` makes the same fallback deliberately. Treating the missing
-        row as revocation would lock out exactly the oldest accounts.
-        """
+    async def test_native_membership_does_not_prove_current_approval_role(self, session: AsyncSession) -> None:
+        """The native user remains a member but has no current approval role."""
         _, node = await _fixture(session, policy=_policy())
         await session.execute(delete(TenantMembership).where(TenantMembership.user_id == APPROVER))
         await session.flush()
+        assert (await _authorize(session, node)).reason is DenyReason.ROLE_REVOKED
+
+    async def test_role_demotion_blocks_the_next_admission(self, session: AsyncSession) -> None:
+        _, node = await _fixture(session, policy=_policy())
         assert (await _authorize(session, node)).permitted
+        membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER))
+        membership.role = "member"
+        await session.flush()
+        assert (await _authorize(session, node)).reason is DenyReason.ROLE_REVOKED
 
     async def test_team_scoped_policy_admits_a_team_member(self, session: AsyncSession) -> None:
         _, node = await _fixture(session, policy=_policy(team_ids=[TEAM_A]))
@@ -583,10 +623,15 @@ class TestLimitsAreObservedFromEngineState:
         assert decision.reason is DenyReason.SPEND_LIMIT_EXCEEDED
 
     async def test_spend_below_the_cap_permits(self, session: AsyncSession) -> None:
-        flow, node = await _fixture(session, policy=_policy(limits=_limits(max_spend_usd=Decimal("10.00"))))
+        flow, node = await _fixture(session, policy=_policy(limits=_limits(max_spend_usd=Decimal("50.00"))))
         spent = await _make_node(session, flow, node_ref="s12", state=NodeState.PASSED)
         await _make_usage(session, spent, cost_usd="1.50")
         assert (await _authorize(session, node)).permitted
+
+    async def test_unspent_policy_cannot_admit_a_run_larger_than_its_allowance(self, session: AsyncSession) -> None:
+        _, node = await _fixture(session, policy=_policy(limits=_limits(max_spend_usd=Decimal("4.00"))))
+        decision = await _authorize(session, node)
+        assert decision.reason is DenyReason.SPEND_LIMIT_EXCEEDED
 
     async def test_expired_policy_blocks(self, session: AsyncSession) -> None:
         _, node = await _fixture(session, policy=_policy(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
@@ -653,6 +698,13 @@ class TestScopeIsEnforced:
 
 
 class TestHumanGatesAreNeverAdmitted:
+    async def test_action_override_cannot_admit_a_human_gate_node(self, session: AsyncSession) -> None:
+        _, node = await _fixture(session, policy=_policy(), node_kwargs={"kind": NodeKind.GATE.value})
+        decision = await authorize_node_dispatch(
+            session, node=node, principal_user_id=APPROVER, target_repository=REPO, installation_resolved=True, action_override=Action.DEVELOP
+        )
+        assert decision.reason is DenyReason.ACTION_NOT_PERMITTED
+
     async def test_a_gate_node_has_no_autonomous_action(self) -> None:
         """No `Action` exists for a gate, so none can be permitted for one.
 
@@ -723,14 +775,11 @@ class TestTenantIsolation:
         assert (await _authorize(session, node)).permitted
 
 
-class TestUnparseablePolicyDegradesLoudly:
+class TestUnparseablePolicyRefuses:
     async def test_a_malformed_stored_policy_does_not_crash_the_pass(self, session: AsyncSession) -> None:
         """One flow's bad document must not stop every other flow's dispatch.
 
-        The tradeoff is explicit and logged: that flow reverts to legacy semantics
-        rather than taking the pass down. A policy that *parses* but declares an
-        unsupported schema version still denies — that path is the rule's, not this
-        function's.
+        The affected flow refuses admission; other flows retain their behavior.
         """
         flow, node = await _fixture(session, policy=None)
         plan = (await session.execute(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id))).scalar_one()
@@ -739,4 +788,33 @@ class TestUnparseablePolicyDegradesLoudly:
 
         inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
         assert inputs.policy is None
-        assert (await _authorize(session, node)).permitted
+        assert inputs.refusal.reason is DenyReason.SCHEMA_UNSUPPORTED
+        assert (await _authorize(session, node)).reason is DenyReason.SCHEMA_UNSUPPORTED
+
+
+@pytest.mark.parametrize("mismatch", [None, "owner", "repository", "invocation", "released", "missing_identity"])
+async def test_enforced_policy_checks_actual_issue_claim(session, monkeypatch, mismatch):
+    from src.orchestration.work_admission import admit, maintain_worker_claim
+    from src.orchestration.work_claims import ClaimOwner, OwnerKind
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    flow, node = await _fixture(session, policy=_policy())
+    await admit(
+        session,
+        org_id=ORG_A,
+        repository_id=123,
+        issue=int(str(node.issue_ref).lstrip("#")),
+        owner=ClaimOwner(OwnerKind.ENGINE_FLOW, "different-flow" if mismatch == "owner" else flow.id),
+        invocation_id="reserved-run",
+    )
+    if mismatch == "released":
+        await maintain_worker_claim(session, org_id=ORG_A, invocation_id="reserved-run", terminal=True)
+    decision = await _authorize(
+        session,
+        node,
+        provider_repository_id=None if mismatch == "missing_identity" else (321 if mismatch == "repository" else 123),
+        expected_invocation_id="another-run" if mismatch == "invocation" else "reserved-run",
+    )
+    assert decision.permitted is (mismatch is None)
+    if mismatch:
+        assert decision.reason is DenyReason.WORK_NOT_OWNED

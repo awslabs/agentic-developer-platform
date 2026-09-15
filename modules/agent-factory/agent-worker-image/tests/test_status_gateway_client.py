@@ -14,6 +14,7 @@ Two things are asserted, and they are different claims:
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -45,17 +46,23 @@ def enabled(credential_file, monkeypatch):
     monkeypatch.setenv("ADP_RUN_CREDENTIAL_FILE", str(credential_file))
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setattr(status_gateway_client, "read_workload_token", lambda: WORKLOAD_TOKEN)
-    frozen = MagicMock(access_key="AKIA", secret_key="secret", token="session")
-    credentials = MagicMock()
-    credentials.get_frozen_credentials.return_value = frozen
+    # Exercise the real web-identity provider and signing without using a CI
+    # runner's IRSA token or network. Task credentials must not sign control calls.
+    monkeypatch.setenv("ADP_WORKER_IRSA_ROLE_ARN", "arn:aws:iam::123456789012:role/worker")
+    monkeypatch.setenv("ADP_WORKER_IRSA_TOKEN_FILE", str(credential_file))
+    monkeypatch.setenv("ADP_WORKER_AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "customer-key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "customer-secret")
     session = MagicMock()
-    session.get_credentials.return_value = credentials
+    session.create_client.return_value.assume_role_with_web_identity.return_value = {
+        "Credentials": {
+            "AccessKeyId": "platform-key",
+            "SecretAccessKey": "platform-secret",
+            "SessionToken": "platform-token",
+            "Expiration": datetime.now(timezone.utc) + timedelta(hours=1),
+        }
+    }
     monkeypatch.setattr(status_gateway_client.botocore.session, "get_session", lambda: session)
-    # SigV4 over a MagicMock credential would fail on attribute types; the signing
-    # itself is botocore's concern, not this module's.
-    monkeypatch.setattr(
-        status_gateway_client.botocore.auth.SigV4Auth, "add_auth", lambda self, request: None
-    )
     # Process-local, so it survives between tests and would otherwise let one
     # test's registration satisfy another's teardown.
     invocation_status._registered_generation = None
@@ -114,6 +121,8 @@ class TestTheRequestCarriesBothProofs:
         headers = calls[0]["headers"]
         assert headers["X-Adp-Run-Credential"] == CREDENTIAL
         assert headers["X-Adp-Workload-Token"] == WORKLOAD_TOKEN
+        assert "Credential=platform-key/" in headers["Authorization"]
+        assert "customer-key" not in headers["Authorization"]
 
     def test_the_credential_is_read_fresh_on_every_call(self, enabled, http, credential_file):
         # The refresh thread replaces this file via os.replace as the credential
@@ -551,3 +560,10 @@ class TestNothingSensitiveIsLogged:
 
         logged = "\n".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
         assert CREDENTIAL not in logged
+
+
+def test_customer_region_does_not_change_platform_status_signature(enabled, http, monkeypatch):
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    status_gateway_client.record_status("in_progress", {})
+    calls, _ = http
+    assert "/us-east-1/execute-api/aws4_request" in calls[0]["headers"]["Authorization"]

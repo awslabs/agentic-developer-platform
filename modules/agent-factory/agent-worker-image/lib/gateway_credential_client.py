@@ -62,7 +62,7 @@ def _sigv4_sign_request(method: str, url: str, headers: dict, data: bytes | None
     import botocore.session
 
     session = botocore.session.get_session()
-    from adp_trigger.transport_identity import worker_credentials
+    from adp_trigger.transport_identity import gateway_signing_region, worker_credentials
 
     credentials = worker_credentials(session)
     if credentials is None:
@@ -76,7 +76,7 @@ def _sigv4_sign_request(method: str, url: str, headers: dict, data: bytes | None
         data=data,
     )
 
-    region = os.environ.get("AWS_REGION", "us-east-1")
+    region = gateway_signing_region(url)
     signer = botocore.auth.SigV4Auth(credentials, "execute-api", region)
     signer.add_auth(aws_request)
 

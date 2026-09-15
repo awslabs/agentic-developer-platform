@@ -1,5 +1,5 @@
 /** Online, uncached authorization immediately before a queued SDK handoff. */
-import { readIdentityToken as readToken, workerAwsCredentialProvider } from './lib/runIdentity';
+import { readIdentityToken as readToken, workerAwsCredentialProvider, gatewaySigningRegion } from './lib/runIdentity';
 import { performance } from 'node:perf_hooks';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { Hash } from '@smithy/hash-node';
@@ -23,7 +23,7 @@ async function postRevalidation(request: { body: string; started: number }): Pro
   }
   const url = new URL(base.replace(/\/$/, '') + '/revalidate');
   const { body, started } = request;
-  const signer = new SignatureV4({ credentials: await workerAwsCredentialProvider(), region: process.env.AWS_REGION || 'us-east-1',
+  const signer = new SignatureV4({ credentials: await workerAwsCredentialProvider(), region: gatewaySigningRegion(url.href),
     service: 'execute-api', sha256: Hash.bind(null, 'sha256') });
   const signed = await signer.sign({ method: 'POST', protocol: url.protocol, hostname: url.hostname, path: url.pathname,
     headers: { host: url.host, 'content-type': 'application/json',

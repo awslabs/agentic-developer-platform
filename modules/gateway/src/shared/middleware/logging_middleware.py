@@ -61,7 +61,9 @@ class LoggingMiddleware:
 
         # Extract or generate request ID from headers
         headers_list = scope.get("headers", [])
-        request_id = _extract_request_id(headers_list) or str(uuid.uuid4())
+        token_context = scope.get("state", {}).get("token_context")
+        policy_request_id = getattr(token_context, "_policy_request_id", None)
+        request_id = policy_request_id or _extract_request_id(headers_list) or str(uuid.uuid4())
 
         # Set logging context
         set_request_context(request_id=request_id)

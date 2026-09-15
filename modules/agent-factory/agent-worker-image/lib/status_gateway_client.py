@@ -153,7 +153,7 @@ def _post(path: str, body: dict) -> dict:
         raise StatusGatewayError("workload identity is unavailable") from None
 
     session = botocore.session.get_session()
-    from adp_trigger.transport_identity import worker_credentials
+    from adp_trigger.transport_identity import gateway_signing_region, worker_credentials
 
     credentials = worker_credentials(session)
     if credentials is None:
@@ -168,7 +168,7 @@ def _post(path: str, body: dict) -> dict:
     botocore.auth.SigV4Auth(
         credentials.get_frozen_credentials(),
         "execute-api",
-        os.environ.get("AWS_REGION", "us-east-1"),
+        gateway_signing_region(url),
     ).add_auth(signed)
 
     try:

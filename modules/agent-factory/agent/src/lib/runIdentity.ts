@@ -24,10 +24,61 @@ export function workerIdentityHeaders(): Record<string, string> {
 
 /** Platform calls must not switch to credentials loaded for an Operations task. */
 export async function workerAwsCredentialProvider() {
-  if (process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true' && process.env.AWS_ROLE_ARN) {
+  const preserved = 'ADP_WORKER_IRSA_ROLE_ARN' in process.env || 'ADP_WORKER_IRSA_TOKEN_FILE' in process.env;
+  if (preserved || process.env.ADP_AGENT_AUTHORITY_ENABLED?.toLowerCase() === 'true') {
+    const roleArn = process.env[preserved ? 'ADP_WORKER_IRSA_ROLE_ARN' : 'AWS_ROLE_ARN'];
+    const webIdentityTokenFile = process.env[preserved ? 'ADP_WORKER_IRSA_TOKEN_FILE' : 'AWS_WEB_IDENTITY_TOKEN_FILE'];
+    if (!roleArn || !webIdentityTokenFile) throw new Error('Platform worker IRSA identity unavailable');
     const { fromTokenFile } = await import('@aws-sdk/credential-provider-web-identity');
-    return fromTokenFile();
+    return fromTokenFile({
+      roleArn,
+      webIdentityTokenFile,
+      roleSessionName: process.env[preserved ? 'ADP_WORKER_IRSA_SESSION_NAME' : 'AWS_ROLE_SESSION_NAME'],
+      clientConfig: { region: workerAwsRegion() },
+    });
   }
   const { defaultProvider } = await import('@aws-sdk/credential-provider-node');
   return defaultProvider();
+}
+
+export function workerAwsRegion(): string {
+  return process.env.ADP_WORKER_AWS_REGION || process.env.AWS_REGION || 'us-east-1';
+}
+
+/** Lazy SDK provider for platform clients constructed before the run starts. */
+export function workerAwsCredentials() {
+  let provider: Awaited<ReturnType<typeof workerAwsCredentialProvider>> | undefined;
+  return async () => {
+    provider ??= await workerAwsCredentialProvider();
+    return provider();
+  };
+}
+
+/** Customer deployment regions must not change the gateway's signing scope. */
+export function gatewaySigningRegion(endpoint: string): string {
+  const match = new URL(endpoint).hostname.match(/^[a-z0-9-]+\.execute-api(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$/);
+  return match?.[1] || workerAwsRegion();
+}
+
+
+/** Restore platform IRSA only for platform subprocesses such as beads S3 sync. */
+export function workerAwsEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const preserved = 'ADP_WORKER_IRSA_ROLE_ARN' in env || 'ADP_WORKER_IRSA_TOKEN_FILE' in env;
+  if (!preserved && env.ADP_AGENT_AUTHORITY_ENABLED?.toLowerCase() !== 'true') return env;
+  const role = env[preserved ? 'ADP_WORKER_IRSA_ROLE_ARN' : 'AWS_ROLE_ARN'];
+  const token = env[preserved ? 'ADP_WORKER_IRSA_TOKEN_FILE' : 'AWS_WEB_IDENTITY_TOKEN_FILE'];
+  const session = env[preserved ? 'ADP_WORKER_IRSA_SESSION_NAME' : 'AWS_ROLE_SESSION_NAME'];
+  if (!role || !token) throw new Error('Platform worker IRSA identity unavailable');
+  for (const key of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN',
+    'AWS_PROFILE', 'AWS_DEFAULT_PROFILE', 'AWS_ROLE_SESSION_NAME', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+    'AWS_CONTAINER_CREDENTIALS_FULL_URI']) delete env[key];
+  env.AWS_ROLE_ARN = role;
+  env.AWS_WEB_IDENTITY_TOKEN_FILE = token;
+  if (session) env.AWS_ROLE_SESSION_NAME = session;
+  env.AWS_CONFIG_FILE = '/dev/null';
+  env.AWS_SHARED_CREDENTIALS_FILE = '/dev/null';
+  env.AWS_REGION = workerAwsRegion();
+  env.AWS_DEFAULT_REGION = env.AWS_REGION;
+  return env;
 }

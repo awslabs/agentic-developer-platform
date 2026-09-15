@@ -4,10 +4,13 @@ from typing import Any
 
 class IPoolService(ABC):
     @abstractmethod
-    async def get_client(self, credentials: Any | None = None) -> Any:
+    async def get_client(self, credentials: Any | None = None, *, single_attempt: bool = False) -> Any:
         """Returns a Bedrock client wrapper for the next healthy account.
 
         Args:
+            single_attempt: Disable implicit provider retries. A policy budget
+                reserves one provider attempt; an ambiguous failure cannot cause
+                another charge without a fresh admission.
             credentials: Issue #4744 (#4692 · R3) — explicit credentials for a
                 cross-account routed call, or ``None`` for the ambient (platform
                 account) client. Duck-typed rather than imported so this interface

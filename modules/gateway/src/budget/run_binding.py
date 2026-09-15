@@ -293,6 +293,9 @@ class RunBinding:
     # ``verify_row_matches_caller``'s admissibility checks reads it — a row does
     # not become bindable or unbindable by claiming a principal kind.
     is_human_rooted: bool | None = None
+    # Only the protected worker middleware supplies an accepted engine flow.
+    # Legacy capability lookups must never infer this from an asserted header.
+    flow_id: str | None = None
 
     @property
     def root_principal_type(self) -> str:

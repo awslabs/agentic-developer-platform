@@ -701,6 +701,8 @@ async def _dispatch_one_unclaimed(
         principal_user_id=user_id,
         target_repository=config.repo,
         installation_resolved=True,
+        provider_repository_id=repository_id,
+        expected_invocation_id=attempt_run_id(node.id, node.attempts + 1),
     )
     if not admission.permitted:
         # `reason` is a typed `DenyReason` (#5122 renders these), so it is logged as
