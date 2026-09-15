@@ -216,14 +216,8 @@ locals {
         # names a group nobody writes to is the exact defect that was fixed
         # here, and it fails without any error surfacing anywhere.
         #
-        # CreateLogGroup and DescribeLogGroups were granted here historically
-        # but are called by nothing: the Node entrypoints only ever call
-        # CreateLogStream (agent/src/lib/logGroup.ts consumers), and
-        # CreateLogGroup is exercised solely by bootstrap_logger.py against the
-        # *bootstrap* group, which is granted separately below. Dropping them
-        # makes it structurally impossible for this group to hit the #4051
-        # ResourceAlreadyExistsException wedge, where a worker-created group
-        # collides with the TF resource and blocks every subsequent apply.
+        # Neither Node nor Python workers create log groups. Terraform owns
+        # the groups; workers create streams and append events only.
         #
         # PutRetentionPolicy is deliberately absent for the same reason as the
         # bootstrap grant: TF owns retention (14 days, this module's
@@ -248,42 +242,27 @@ locals {
         ]
       },
       {
-        # Durable bootstrap logging (issue #4028). The worker writes step-level
-        # Setup logs to /adp/<env>/agent-factory/bootstrap so bootstrap failures
-        # stay diagnosable after KEDA GCs the pod — the CloudWatchLogGroups grant
-        # above covers only the primary agent group, so every bootstrap write
-        # was denied and the logs existed on pod stdout only.
-        #
-        # An identical grant exists at agent-factory/infra/gateway-main.tf
-        # (#1690) but is attached to aws_iam_role.gateway_agent (SA "adp-agent"
-        # in the gateway namespace) — a different worker path. It has no effect
-        # on agent-scaledjob-sa, which is why this drifted unnoticed.
-        #
-        # CreateLogGroup is required even though the group is TF-managed
-        # (aws_cloudwatch_log_group.agent_bootstrap in cloudwatch.tf):
-        # bootstrap_logger.py:62-66 calls it unconditionally and re-raises
-        # anything other than ResourceAlreadyExistsException, which trips the
-        # outer handler at :85-88 and disables CloudWatch logging for the whole
-        # run. With the group present the call returns AlreadyExists, which the
-        # code swallows correctly.
-        #
-        # PutRetentionPolicy is deliberately NOT granted: the worker would force
-        # retentionInDays=7 on every run while TF declares 14 (this module's
-        # convention), producing permanent drift on retention_in_days. The
-        # worker's put_retention_policy call is individually wrapped in
-        # try/except ClientError: pass (bootstrap_logger.py:68-71), so denying
-        # it is a genuine no-op. TF owns retention.
+        # Terraform provisions this exact group. The worker only creates streams
+        # and appends events; bootstrap_logger.py never creates infrastructure.
         Sid    = "BootstrapLogging"
         Effect = "Allow"
         Action = [
-          "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
         Resource = [
-          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/adp/*/agent-factory/bootstrap",
-          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/adp/*/agent-factory/bootstrap:*"
+          aws_cloudwatch_log_group.agent_bootstrap.arn,
+          "${aws_cloudwatch_log_group.agent_bootstrap.arn}:*"
         ]
+      },
+      {
+        Sid      = "ProvenanceMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = { "cloudwatch:namespace" = "ADP/Provenance" }
+        }
       },
       {
         Sid    = "Multiple"

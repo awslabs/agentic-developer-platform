@@ -21,6 +21,7 @@ vi.mock('@/services/activity', () => ({
   getAllInvocations: vi.fn(),
   getMyInvocationChain: vi.fn(),
   getAdminInvocationChain: vi.fn(),
+  getMyInvocationDetail: vi.fn(),
 }));
 
 // Mock the permissions hook
@@ -28,7 +29,7 @@ vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: vi.fn(),
 }));
 
-import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationChain } from '@/services/activity';
+import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationChain, getMyInvocationDetail } from '@/services/activity';
 import { usePermissions } from '@/hooks/usePermissions';
 
 const mockGetMine = getMyInvocations as ReturnType<typeof vi.fn>;
@@ -229,6 +230,27 @@ describe('AgentActivity Page', () => {
     expect(screen.getByText('Implement Agent Activity page')).toBeInTheDocument();
     expect(screen.getByText('Fix CORS headers')).toBeInTheDocument();
     expect(screen.getByText('Refactor auth')).toBeInTheDocument();
+  });
+
+  it('opens a story review through its chain and highlights the reviewer without requiring direct run ownership', async () => {
+    mockGetMyChain.mockResolvedValue({
+      correlation_id: 'orch:attempt-1', root_human_id: 'user-001', is_human_rooted: true,
+      total_count: 2, depth_capped: false,
+      items: [{
+        invocation_id: 'orch:attempt-1', persona: 'developer', status: 'complete',
+        invoked_at: '2026-09-15T14:18:00Z', topic: 'Develop story',
+        children: [{
+          invocation_id: 'review:1', persona: 'reviewer', status: 'in_progress',
+          invoked_at: '2026-09-15T14:54:00Z', topic: 'Review story', children: [],
+        }],
+      }],
+    });
+    renderAgentActivity('/activity?chain=orch%3Aattempt-1&highlight=review%3A1');
+    const reviewer = await screen.findByTestId('chain-node-review:1');
+    expect(within(reviewer).getByRole('button')).toHaveClass('bg-blue-50');
+    expect(screen.getByTestId('chain-node-orch:attempt-1')).toBeVisible();
+    expect(mockGetMyChain.mock.calls[0][0]).toBe('orch:attempt-1');
+    expect(getMyInvocationDetail).not.toHaveBeenCalled();
   });
 
   it('"next" follows last_key; empty page with non-null last_key still shows working "next"', async () => {

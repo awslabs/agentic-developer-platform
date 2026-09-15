@@ -47,7 +47,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-github.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-github.py adp-github-admin.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -881,6 +881,7 @@ Self-management:
     admin login           Sign in with a Cognito administrator account
     admin setup           Check and resume first-time setup
     admin bedrock         Connect AWS destinations and manage model routing
+    admin github          Configure this deployment's GitHub App and check it
     bedrock status        Show your effective Bedrock destination
     update [--rollback]   Re-pull this CLI from your gateway
     version               Print the version

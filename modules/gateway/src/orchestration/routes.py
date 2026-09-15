@@ -74,6 +74,7 @@ from src.orchestration.dispatch_pass import resolve_installation_id
 from src.orchestration.display_state import FlowStatus
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.models import DecisionKind
+from src.orchestration.node_activity import NodeActivity, load_story_activity
 from src.orchestration.policy_admission import load_in_force_policy
 from src.orchestration.proposal import LoopProposal, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
@@ -882,6 +883,7 @@ class GraphNodeResponse(BaseModel):
     issue_ref: str | None
     attempts: int
     run_id: str | None = None
+    activity: NodeActivity | None = None
     issue_url: str | None = None
     result_summary: str | None = None
     configuration_problem: str | None = None
@@ -1079,6 +1081,14 @@ async def get_flow_graph(
                 updated_at=node.updated_at.isoformat() if node.updated_at else None,
             )
         )
+
+    activity = await load_story_activity(
+        org_id=current_user.org_id,
+        run_ids=[node.run_id for node in graph_nodes if node.kind == "story" and node.state in ("running", "awaiting_merge") and node.run_id],
+    )
+    for node in graph_nodes:
+        if node.kind == "story" and node.state in ("running", "awaiting_merge"):
+            node.activity = activity.get(node.run_id)
 
     return FlowGraphResponse(
         flow_id=flow.id,

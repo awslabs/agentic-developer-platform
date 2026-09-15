@@ -110,7 +110,16 @@ def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
     """
     bin_dir = tmp_path / "adp-bin"
     bin_dir.mkdir()
-    for name in ("adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py", "adp-bedrock.py", "adp-github.py"):
+    for name in (
+        "adp",
+        "bg-cognito-auth.sh",
+        "bg-gateway-proxy.py",
+        "adp_common.py",
+        "adp-admin.py",
+        "adp-bedrock.py",
+        "adp-github.py",
+        "adp-github-admin.py",
+    ):
         target = bin_dir / name
         target.write_bytes((cli_dir / name).read_bytes())
         target.chmod(0o755)

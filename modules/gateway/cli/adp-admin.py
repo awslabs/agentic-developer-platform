@@ -43,6 +43,8 @@ def parser():
     setup.add_argument("--json", action="store_true")
     if Path(__file__).with_name("adp-bedrock.py").is_file():
         commands.add_parser("bedrock", help="Connect and verify Bedrock destinations; inspect routing")
+    if Path(__file__).with_name("adp-github-admin.py").is_file():
+        commands.add_parser("github", help="Configure this deployment's GitHub App; check sign-in and repository access")
     return root
 
 
@@ -145,10 +147,12 @@ def main(argv=None):
     as_json = "--json" in argv
     try:
         # Area registration is explicit and only exposed when its helper ships.
-        if argv and argv[0] == "bedrock":
-            module = common.load_provider("adp-bedrock.py")
+        areas = {"bedrock": ("adp-bedrock.py", "Model access setup"), "github": ("adp-github-admin.py", "GitHub App setup")}
+        if argv and argv[0] in areas:
+            filename, title = areas[argv[0]]
+            module = common.load_provider(filename)
             if not module:
-                raise common.CliError("Model access setup is not installed. Run adp update.", "provider_unavailable", 4)
+                raise common.CliError(f"{title} is not installed. Run adp update.", "provider_unavailable", 4)
             return module.main(argv[1:])
         args = parser().parse_args(argv)
         client = common.Api()
