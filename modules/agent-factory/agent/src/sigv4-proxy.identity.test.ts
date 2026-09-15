@@ -13,16 +13,26 @@ test('protected model requests use refreshed supervisor proof and preserve bytes
   const cert = path.join(dir, 'cert.pem');
   const credential = path.join(dir, 'credential');
   const workload = path.join(dir, 'workload');
+  const irsa = path.join(dir, 'irsa');
   let proxy: ChildProcess | undefined;
+  let proxyErrors = '';
   let receiver: https.Server | undefined;
   const captures: { headers: http.IncomingHttpHeaders; body: Buffer }[] = [];
+  const assumptions: URLSearchParams[] = [];
   try {
     execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=IP:127.0.0.1'], { stdio: 'ignore' });
     fs.writeFileSync(credential, 'current-credential\n');
     fs.writeFileSync(workload, 'current-pod\n');
+    fs.writeFileSync(irsa, 'platform-irsa-token');
     receiver = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, async (req, res) => {
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk);
+      if (req.url === '/sts' || req.url === '/sts/') {
+        assumptions.push(new URLSearchParams(Buffer.concat(chunks).toString()));
+        res.setHeader('Content-Type', 'text/xml');
+        res.end(`<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleWithWebIdentityResult><Credentials><AccessKeyId>LOCAL_PLATFORM_KEY</AccessKeyId><SecretAccessKey>LOCAL_PLATFORM_SECRET</SecretAccessKey><SessionToken>LOCAL_PLATFORM_SESSION</SessionToken><Expiration>${new Date(Date.now() + 3600000).toISOString()}</Expiration></Credentials><AssumedRoleUser><Arn>arn:aws:sts::123456789012:assumed-role/worker/test</Arn><AssumedRoleId>LOCAL:test</AssumedRoleId></AssumedRoleUser></AssumeRoleWithWebIdentityResult><ResponseMetadata><RequestId>local-request</RequestId></ResponseMetadata></AssumeRoleWithWebIdentityResponse>`);
+        return;
+      }
       captures.push({ headers: req.headers, body: Buffer.concat(chunks) });
       res.end('ok');
     });
@@ -36,13 +46,17 @@ test('protected model requests use refreshed supervisor proof and preserve bytes
       cwd: path.join(__dirname, '..'),
       env: {
         ...process.env,
-        AWS_ACCESS_KEY_ID: 'LOCAL_TEST_ONLY', AWS_SECRET_ACCESS_KEY: 'LOCAL_TEST_ONLY', AWS_SESSION_TOKEN: '',
+        AWS_ACCESS_KEY_ID: 'LOCAL_CUSTOMER_KEY', AWS_SECRET_ACCESS_KEY: 'LOCAL_CUSTOMER_SECRET', AWS_SESSION_TOKEN: 'LOCAL_CUSTOMER_SESSION',
+        AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', ADP_WORKER_AWS_REGION: 'us-east-1',
+        AWS_ENDPOINT_URL_STS: `https://127.0.0.1:${receiverPort}/sts`,
+        ADP_WORKER_IRSA_ROLE_ARN: 'arn:aws:iam::123456789012:role/worker', ADP_WORKER_IRSA_TOKEN_FILE: irsa,
         AWS_ROLE_ARN: '', AWS_PROFILE: '', AWS_EC2_METADATA_DISABLED: 'true',
         ADP_AGENT_AUTHORITY_ENABLED: 'true', ADP_RUN_CREDENTIAL_FILE: credential, ADP_WORKLOAD_TOKEN_FILE: workload,
         ADP_MESSAGE_ID: 'protected-run', TENANT_ID: 'protected-tenant', NODE_EXTRA_CA_CERTS: cert, NODE_TLS_REJECT_UNAUTHORIZED: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    proxy.stderr!.on('data', data => { proxyErrors += String(data); });
     // Readiness comes from the actual listener, without fixed startup sleeps.
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('proxy did not start')), 10000);
@@ -60,15 +74,23 @@ test('protected model requests use refreshed supervisor proof and preserve bytes
       req.on('error', reject);
       req.end(bytes);
     });
-    expect(await request()).toBe(200);
+    const firstStatus = await request();
+    if (firstStatus !== 200) throw new Error(`Proxy returned ${firstStatus}: ${proxyErrors}`);
     fs.writeFileSync(credential, 'refreshed-credential\n');
     expect(await request()).toBe(200);
     expect(captures.map(c => c.headers['x-adp-run-credential'])).toEqual(['current-credential', 'refreshed-credential']);
     for (const capture of captures) {
       expect(capture.headers['x-adp-workload-token']).toBe('current-pod');
       expect(capture.headers['x-agent-runid']).toBe('protected-run');
-      expect(capture.headers.authorization).toContain('Credential=LOCAL_TEST_ONLY/');
+      expect(capture.headers.authorization).toContain('Credential=LOCAL_PLATFORM_KEY/');
+      expect(capture.headers.authorization).toContain('/us-east-1/execute-api/');
       expect(capture.body.equals(bytes)).toBe(true);
+    }
+    expect(assumptions.length).toBeGreaterThan(0);
+    for (const assumption of assumptions) {
+      expect(assumption.get('Action')).toBe('AssumeRoleWithWebIdentity');
+      expect(assumption.get('RoleArn')).toBe('arn:aws:iam::123456789012:role/worker');
+      expect(assumption.get('WebIdentityToken')).toBe('platform-irsa-token');
     }
     fs.unlinkSync(credential);
     expect(await request()).toBe(502);

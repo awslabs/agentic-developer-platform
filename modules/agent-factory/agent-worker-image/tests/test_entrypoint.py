@@ -1821,6 +1821,9 @@ class TestBedrockViaFlag:
         # Customer creds serve shell AWS; IRSA stripped from the SCOPED env only.
         assert "AWS_ROLE_ARN" not in agent_env
         assert agent_env["AWS_ACCESS_KEY_ID"] == "AKUSER"
+        assert agent_env["ADP_WORKER_IRSA_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
+        assert agent_env["ADP_WORKER_IRSA_TOKEN_FILE"] == "/var/run/secrets/token"
+        assert agent_env["ADP_WORKER_AWS_REGION"] == "us-east-1"
         # os.environ MUST still have IRSA (for the post-agent SQS delete).
         assert os.environ.get("AWS_ROLE_ARN") == "arn:aws:iam::123456789012:role/irsa-role"
         assert os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE") == "/var/run/secrets/token"

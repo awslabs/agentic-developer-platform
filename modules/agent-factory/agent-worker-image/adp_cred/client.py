@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 import sys
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import Request, build_opener, urlopen
 from urllib.error import HTTPError, URLError
 
 
@@ -98,13 +99,23 @@ def _sigv4_request(method: str, url: str, body: dict | None = None) -> dict | li
         sys.exit(1)
 
     session = botocore.session.get_session()
-    credentials = session.get_credentials()
+    from adp_trigger.transport_identity import gateway_signing_region, worker_credentials
+    from lib.gateway_credential_client import _NoRedirect, _worker_identity_headers
+
+    authority = os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+    if authority:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            raise RuntimeError("Worker credential broker requires HTTPS and SigV4")
+    headers = {"Content-Type": "application/json"}
+    if authority:
+        headers.update(_worker_identity_headers())
+    credentials = worker_credentials(session)
     if credentials is None:
         print("error: no AWS credentials available for SigV4 signing", file=sys.stderr)
         sys.exit(1)
     credentials = credentials.get_frozen_credentials()
 
-    headers = {"Content-Type": "application/json"}
     data = json.dumps(body).encode() if body else None
 
     aws_request = botocore.awsrequest.AWSRequest(
@@ -114,7 +125,7 @@ def _sigv4_request(method: str, url: str, body: dict | None = None) -> dict | li
         data=data,
     )
 
-    region = os.environ.get("AWS_REGION", "us-east-1")
+    region = gateway_signing_region(url)
     signer = botocore.auth.SigV4Auth(credentials, "execute-api", region)
     signer.add_auth(aws_request)
 
@@ -122,7 +133,8 @@ def _sigv4_request(method: str, url: str, body: dict | None = None) -> dict | li
     signed_headers = dict(aws_request.headers)
     req = Request(url, data=data, headers=signed_headers, method=method)
     try:
-        with urlopen(req, timeout=30) as resp:
+        opener = build_opener(_NoRedirect()).open if authority else urlopen
+        with opener(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except HTTPError as exc:
         error_body = exc.read().decode() if exc.fp else ""
@@ -157,6 +169,8 @@ def _do_request(
     method: str, url: str, api_key: str | None, use_sigv4: bool, body: dict | None = None
 ) -> dict | list:
     """Dispatch to SigV4 or shared-secret request based on config."""
+    if not use_sigv4 and os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+        raise RuntimeError("Worker credential broker requires HTTPS and SigV4")
     if use_sigv4:
         return _sigv4_request(method, url, body)
     return _request(method, url, api_key, body)  # type: ignore[arg-type]

@@ -1637,6 +1637,9 @@ def main() -> int:
     # mutate os.environ — the entrypoint's post-agent SQS delete needs
     # os.environ to retain IRSA for platform-account access.
     agent_env = os.environ.copy()
+    from adp_trigger.transport_identity import preserve_worker_identity
+
+    preserve_worker_identity(agent_env)
     bedrock_via_raw = os.environ.get("ADP_BEDROCK_VIA")
     bedrock_via = (bedrock_via_raw or "gateway").strip().lower()
 

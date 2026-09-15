@@ -56,6 +56,7 @@ on:
       - 'modules/agent-factory/agent/src/control-state.ts'
       - 'modules/agent-factory/agent/src/control-authorization.ts'
       - 'modules/agent-factory/agent/src/lib/runIdentity*'
+      - 'modules/agent-factory/agent/src/sigv4-proxy*'
       - 'modules/agent-factory/agent/src/lib/githubTokenBroker*'
       - 'modules/agent-factory/agent-worker-image/adp_trigger/transport_identity.py'
       - 'modules/agent-factory/agent-worker-image/lib/gateway_credential_client.py'
@@ -304,7 +305,7 @@ jobs:
         # the other side, so leaving it out meant a divergence between the two
         # verifiers could merge green.
         run: |
-          npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
+          npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts src/sigv4-proxy.identity.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \

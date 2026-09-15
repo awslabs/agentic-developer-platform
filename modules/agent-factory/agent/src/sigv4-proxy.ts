@@ -20,7 +20,7 @@ import * as https from 'https';
 import { URL } from 'url';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { Hash } from '@smithy/hash-node';
-import { workerAwsCredentialProvider, workerIdentityHeaders } from './lib/runIdentity';
+import { workerAwsCredentialProvider, workerIdentityHeaders, gatewaySigningRegion } from './lib/runIdentity';
 
 const args = process.argv.slice(2);
 const get = (flag: string, def: string) => {
@@ -30,7 +30,6 @@ const get = (flag: string, def: string) => {
 
 const TARGET    = get('--target', process.env.SIGV4_PROXY_TARGET || '');
 const PORT      = parseInt(get('--port', process.env.SIGV4_PROXY_PORT || '8080'), 10);
-const REGION    = get('--region', process.env.AWS_REGION || 'us-east-1');
 const TENANT_ID = process.env.TENANT_ID || '';
 const AGENT_RUN_ID = process.env.ADP_MESSAGE_ID || '';
 const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';
@@ -38,6 +37,7 @@ const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';
 if (!TARGET) { console.error('ERROR: --target is required'); process.exit(1); }
 
 const targetUrl = new URL(TARGET);
+const REGION = get('--region', gatewaySigningRegion(TARGET));
 
 const STRIP = new Set([
   'authorization', 'x-amz-security-token', 'x-amz-date',
