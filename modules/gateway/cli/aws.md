@@ -108,23 +108,24 @@ repeat and interrupted runs, disconnect semantics, no secrets in arguments) and
 `tests/auth/test_aws_connect.py` (setup re-read, import, fresh verification and
 owner scoping).
 
-Live provisioning is validated on the existing #5173/#5179 EC2 harness using the
-named environment bindings on #5180 — the same pattern
-[`bedrock.md`](bedrock.md) documents, and never on an operator's own machine:
+Live personal-AWS provisioning has **not yet been validated**. The repeatable
+EC2 adapter is tracked in [#5199](https://github.com/aws-e/adp/issues/5199),
+cases E04/E05, using the named environment bindings on #5180.
 
-```sh
-python modules/gateway/scripts/test-cli-routing.py \
-  --harness-root /path/to/adp-routing-harness \
-  --config /private/environment.json --state-dir /private/cli-aws-direct --provision direct
-python modules/gateway/scripts/test-cli-routing.py \
-  --harness-root /path/to/adp-routing-harness \
-  --config /private/environment.json --state-dir /private/cli-aws-handoff --provision handoff
-```
+The existing `test-cli-routing.py --provision direct|handoff` harness invokes
+`adp admin bedrock connect`. It tests shared Bedrock destinations, so running it
+cannot validate `adp aws connect` or the personal credential record. Reuse its
+EC2 fixture, evidence and cleanup infrastructure when adding the personal-AWS
+adapter; do not substitute a Bedrock run for personal-AWS acceptance.
 
-Direct mode checks account mismatch and dry-run safety, creates and verifies the
-connection, then repeats the command to prove reuse. Handoff mode downloads with
-AWS access disabled in the ADP process, applies the files in a separate AWS-admin
-process, and resumes without AWS access. Use a fresh `--state-dir` per mode and
-run `--cleanup-only` afterwards. A personal connection is expected to be **not**
-routing-capable: the role is pinned to one ADP user, and that is what keeps
-personal access and shared inference routing separate.
+The personal-AWS adapter must execute `adp aws connect` on EC2 for direct
+provisioning, existing-role import and download/apply/resume. It must check
+account mismatch, fresh verification, owner isolation, interrupted-run reuse,
+and the canonical credential through the live API. For handoff, disable AWS
+access in the ADP process and apply the downloaded template from a separate
+AWS-admin process. Verify that disconnect removes the ADP credential while
+preserving the role, then clean up only run-owned AWS resources.
+
+A personal connection is expected to be **not** routing-capable: its role is
+pinned to one ADP user. Shared inference routing requires its own destination
+and routing rule.
