@@ -110,6 +110,13 @@ ALLOWED_STATUSES: frozenset[str] = frozenset(
         "failed",
         "skipped",
         "budget_stopped",
+        # Issue #3964: the terminal status a confirmed abort finalization writes.
+        # Present here as well as in the worker's own allowlist because this is the
+        # delegated-authority write path (#5028): with authority enabled the worker
+        # reports its status THROUGH the gateway, so an allowlist that knew every
+        # status except this one would silently drop the abort's own terminal write
+        # and leave the run looking live.
+        "aborted",
     }
 )
 
