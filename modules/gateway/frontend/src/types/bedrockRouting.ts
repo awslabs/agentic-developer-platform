@@ -178,6 +178,15 @@ export interface VerifyDestinationResponse {
   reason: string | null;
 }
 
+export interface DestinationSetupResponse {
+  account_id: string;
+  role_arn: string;
+  region: string;
+  launch_url: string;
+  download_filename: string;
+  download_base64: string;
+}
+
 /**
  * One of the caller's own AWS connections, as the §6.4 self-service selector renders it
  * — Issue #4746 (#4692 · R5).

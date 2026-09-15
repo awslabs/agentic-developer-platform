@@ -109,6 +109,21 @@ def build_template_url(credential_id: str, template_version: str = "v1") -> str:
     )
 
 
+def read_routing_template() -> str:
+    """Download the exact configured object used by routing Quick Create.
+
+    Honor the deployed template and its key override, rather than distributing a
+    different policy from the copy packaged in the gateway image.
+    """
+    bucket = _template_bucket()
+    if not bucket:
+        raise RuntimeError("ADP_CFN_TEMPLATE_BUCKET is not set")
+    s3 = boto3.client("s3", region_name=_region(), config=Config(signature_version="s3v4"))
+    response = s3.get_object(Bucket=bucket, Key=_template_key(ROUTING_TEMPLATE_VERSION))
+    with response["Body"] as body:
+        return body.read().decode("utf-8")
+
+
 def build_launch_url(
     *,
     credential_id: str,

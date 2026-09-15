@@ -10,7 +10,7 @@ no separate platform or organization activation step. The old
 Existing mappings become active when the updated gateway is deployed; no database
 backfill is required.
 
-Configure shared destinations as a platform admin under **Budgets → Bedrock
+Configure shared destinations as a platform admin under **Model Access → Bedrock
 account routing**, register and verify the destination, then add an organization,
 team, or person rule. Personal selections remain under **Settings → Credentials →
 Bedrock model calls**. Rules take effect within the existing routing-cache window
@@ -40,6 +40,43 @@ against the platform account. To change the payer, change or remove the routing
 rule in the UI; an old rollout flag cannot override it. Budget attribution and
 rate limits continue to apply through ADP.
 
+## Add a destination when the AWS administrator is someone else
+
+In **Model Access → Bedrock account routing → Add rule**, choose the organization
+and, for a team rule, its team. **Add destination** is available next to the
+destination picker even when that organization has no verified destinations.
+The setup form carries the selected organization forward.
+
+Enter a nickname and the 12-digit AWS account ID. Choose one of two options:
+
+- **Create role in AWS:** sign in to the target AWS account, open CloudFormation,
+  create the stack, and return to ADP.
+- **Download CloudFormation package:** give the ZIP to an AWS administrator. It
+  contains `template.yaml`, `parameters.json`, and instructions for AWS Console
+  and CLI. The administrator needs permissions to create the stack and IAM role;
+  the person downloading and verifying in ADP does not need AWS credentials.
+  Keep the supplied parameters unchanged. The package includes the destination's
+  ExternalId, so share it with the administrator privately.
+
+The pending destination is saved before either handoff. If provisioning happens
+later, return to **Bedrock account routing → Continue setup** on that destination.
+The account ID and expected role ARN are shown there. Console links are refreshed
+when requested; downloaded files do not expire. Resuming reuses the destination
+and ExternalId instead of creating another connection.
+
+After the AWS stack finishes, choose **I've created the stack — Verify & Save**.
+ADP assumes the saved role and checks Bedrock invocation authorization. Failure
+keeps the destination unavailable and shows the reason. Success returns to the
+original rule with the destination selected; **Save rule** is still required to
+change routing. Organization, team and person rule priority is unchanged.
+
+The `/admin/bedrock-routing/destinations/{id}/setup` response is restricted to
+platform administrators and marked `Cache-Control: no-store`. It returns setup
+material only for an organization-owned ADP role, never a replacement template for
+a personal connection or an existing-connection grant. Deploy the gateway and
+frontend together, including the v2 template uploaded by `deploy-frontend.sh`.
+No database migration is required.
+
 ## Use an AWS connection owned by someone else
 
 The platform admin does not need administrator access to the team's AWS account.
@@ -53,7 +90,7 @@ organization and team can use it for Bedrock.
    those roles before they can serve a team. The
    [routing role template](../modules/gateway/src/auth/cfn_templates/aws_role_v2.yaml)
    documents the required trust and invocation permissions.
-2. **Platform admin:** Open **Budgets → Bedrock account routing → Use existing AWS
+2. **Platform admin:** Open **Model Access → Bedrock account routing → Use existing AWS
    connection**. Select the connection (shown with its account, owner, and source
    organization), select the target organization, and choose **Verify & link**.
    The target may differ from the connection owner's organization. ADP uses its
