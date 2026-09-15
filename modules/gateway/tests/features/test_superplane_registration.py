@@ -25,6 +25,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 # tests/features/<file> -> tests -> gateway -> modules -> repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _DEPLOY_ALL = _REPO_ROOT / "platform" / "scripts" / "deploy-all.sh"
@@ -205,13 +207,62 @@ class TestOfflineCiLane:
     def test_lane_declares_no_aws_credentials(self):
         """An offline lane that acquires credentials is no longer offline.
 
-        Checked as an absence of the credential mechanisms this repo actually uses:
-        `configure-aws-credentials`, an OIDC `id-token` permission, or a role-to-assume.
-        The lane is lint + tests over a source directory; a credential here would widen
-        its blast radius well past what it verifies.
+        Parsed structurally rather than grepped as text. A substring search over the whole
+        file cannot tell a credential *step* from a comment *explaining why there is no
+        credential step*, and the difference matters here: the header has to describe the
+        ARC-runner IRSA behaviour by name to stop somebody "fixing" the runner back
+        (#5198 review). An absence assertion that forbids naming the thing being avoided
+        makes the file undocumentable.
+
+        So this checks the executable surface — job steps and permissions — and leaves
+        comments alone.
         """
-        body = _CI_LANE.read_text()
-        for forbidden in ("configure-aws-credentials", "role-to-assume", "id-token:", "aws-actions/"):
-            assert forbidden not in body, (
-                f"superplane-domain-ci.yml references {forbidden!r}; the lane must not acquire AWS credentials — it runs lint and unit tests only."
+        lane = yaml.safe_load(_CI_LANE.read_text())
+        job = lane["jobs"]["superplane-domain-tests"]
+
+        # No OIDC token can be minted: without id-token there is nothing to exchange for
+        # a role, whatever a step asks for.
+        permissions = lane.get("permissions") or {}
+        assert "id-token" not in permissions, (
+            "superplane-domain-ci.yml grants id-token permission; the lane must not be able "
+            "to assume an AWS role via OIDC. It runs lint and unit tests only."
+        )
+
+        for step in job["steps"]:
+            uses = step.get("uses", "")
+            assert "configure-aws-credentials" not in uses, (
+                f"superplane-domain-ci.yml step {step.get('name', uses)!r} configures AWS "
+                "credentials; the lane must not acquire them — it runs lint and unit tests only."
             )
+            assert "role-to-assume" not in str(step.get("with") or {}), (
+                f"superplane-domain-ci.yml step {step.get('name', uses)!r} names a role to assume."
+            )
+
+    def test_lane_runs_on_a_runner_without_ambient_credentials(self):
+        """The credential guard is only enforceable on a runner that has no identity.
+
+        This is the blocker-1 regression pin (#5198 review). `arc-runner-org` pods have an
+        IRSA service account, so the pod-identity webhook injects AWS_ROLE_ARN and
+        AWS_WEB_IDENTITY_TOKEN_FILE into every container and the lane's own guard step can
+        never pass — the job failed on 100% of runs while lint and every test passed.
+        Moving to a GitHub-hosted runner is what makes the "no AWS account" claim true
+        rather than aspirational, so the runner is part of the contract, not a preference.
+        """
+        lane = yaml.safe_load(_CI_LANE.read_text())
+        runs_on = lane["jobs"]["superplane-domain-tests"]["runs-on"]
+        assert "arc-runner" not in str(runs_on), (
+            f"superplane-domain-ci.yml runs on {runs_on!r}. ARC runner pods carry ambient "
+            "IRSA credentials (AWS_ROLE_ARN, AWS_WEB_IDENTITY_TOKEN_FILE are injected into "
+            "every container), which contradicts this lane's offline premise and makes its "
+            "credential guard step fail on every run. Use a GitHub-hosted runner."
+        )
+
+    def test_lane_is_pinned_to_main(self):
+        """All sibling `pull_request` lanes pin `branches: [main]`; this one must too."""
+        lane = yaml.safe_load(_CI_LANE.read_text())
+        # `on:` parses as the boolean True in YAML 1.1, so accept either key.
+        triggers = lane.get("on") or lane.get(True)
+        assert triggers["pull_request"].get("branches") == ["main"], (
+            "superplane-domain-ci.yml's pull_request trigger must pin branches: [main], "
+            "matching every other pull_request lane in the repo."
+        )

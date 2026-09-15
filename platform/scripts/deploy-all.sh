@@ -89,7 +89,9 @@ for arg in "$@"; do
       echo "  --gateway-only         Platform + gateway only"
       echo "  --agent-factory-only   Platform + agent-factory only"
       echo "  --agent-context-only   Platform + agent-context only"
-      echo "  --superplane-only      Platform + superplane domain app only"
+      echo "  --superplane-only      Platform + superplane domain app only (skips gateway,"
+      echo "                         broker, admin bootstrap, webhook-ingress, agent-factory,"
+      echo "                         agent-context; implies SUPERPLANE_ENABLED=true)"
       echo ""
       echo "Skip:"
       echo "  --skip-frontend        Skip frontend build and deploy"
@@ -660,10 +662,10 @@ if [ "$CI_MODE" = true ]; then
   }
 
   ci_check_module "platform"      "${ENVIRONMENT}/platform/terraform.tfstate"             "platform-infra-apply.yml"
-  if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+  if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
     ci_check_module "gateway"       "${ENVIRONMENT}/modules/gateway/terraform.tfstate"      "gateway-infra-apply.yml"
   fi
-  if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+  if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
     ci_check_module "agent-factory" "${ENVIRONMENT}/modules/agent-factory/terraform.tfstate" "agent-factory-infra-apply.yml"
   fi
   if [ "$AGENT_CONTEXT_ENABLED" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
@@ -770,8 +772,8 @@ refresh_credentials
 # =============================================================================
 step "Step 3/12: Deploy gateway infrastructure"
 
-if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
-  echo "Skipping gateway infra (--agent-factory-only or --agent-context-only)"
+if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ] || [ "$SUPERPLANE_ONLY" = true ]; then
+  echo "Skipping gateway infra (--agent-factory-only, --agent-context-only or --superplane-only)"
   ok "Skipped"
 else
   # Ensure the GitHub OAuth secret exists when the auth broker is enabled.
@@ -843,8 +845,8 @@ refresh_credentials
 # =============================================================================
 step "Step 4/12: Build and deploy gateway"
 
-if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
-  echo "Skipping gateway deploy (--agent-factory-only or --agent-context-only)"
+if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ] || [ "$SUPERPLANE_ONLY" = true ]; then
+  echo "Skipping gateway deploy (--agent-factory-only, --agent-context-only or --superplane-only)"
   ok "Skipped"
 else
   # Migrations run after rollout on Ready replicas of this exact release.
@@ -1074,7 +1076,7 @@ refresh_credentials
 # =============================================================================
 # Step 5/12: Discover internal ALB and wire to API Gateway + CloudFront
 # =============================================================================
-if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
   step "Step 5/12: Wire internal ALB to API Gateway and CloudFront"
 
   # Discover ALB, cache to SSM, export ALB_ARN / ALB_DNS / ALB_SG_IDS.
@@ -1155,7 +1157,7 @@ refresh_credentials
 # =============================================================================
 # Step 5: Frontend
 # =============================================================================
-if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
   step "Step 6/12: Deploy frontend"
 
   # Frontend build runs directly (npm + aws s3 sync) — no CodeBuild needed.
@@ -1204,8 +1206,8 @@ refresh_credentials
 # =============================================================================
 # deploy-broker.sh packages the real github-auth-broker Lambda code and updates
 # the live Lambda (terraform ships a 503 placeholder). Required for GitHub login.
-# Gateway-scope: runs unless --agent-factory-only or --agent-context-only.
-if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_BROKER" = false ]; then
+# Gateway-scope: runs unless --agent-factory-only, --agent-context-only or --superplane-only.
+if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ] && [ "$SKIP_BROKER" = false ]; then
   step "Step 7/12: Deploy broker Lambda code"
   bash "$ROOT_DIR/modules/gateway/scripts/deploy-broker.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
   ok "Broker Lambda deployed"
@@ -1226,7 +1228,7 @@ refresh_credentials
 if [ "$UPDATE_MODE" = true ]; then
   step "Step 8/12: Admin bootstrap (skipped — update mode)"
   ok "Admin already exists on live platform"
-elif [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
+elif [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
   step "Step 8/12: Bootstrap first admin"
   # Strict rollout gate: bootstrap-admin.sh does kubectl exec into the gateway
   # pod, so the deployment must be fully healthy. Wait up to 300s (retries).
@@ -1251,7 +1253,7 @@ refresh_credentials
 # SQS → KEDA → agent-worker). Runs BEFORE agent-factory because agent-factory's
 # gateway-main.tf references the KEDA CRD and keda-operator-role that this step
 # creates (Issue #1052).
-if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_WEBHOOK_INGRESS" = false ]; then
+if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ] && [ "$SKIP_WEBHOOK_INGRESS" = false ]; then
   step "Step 9/12: Deploy webhook-ingress stack"
   bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
     --env "$ENVIRONMENT" --region "$AWS_REGION"
@@ -1269,7 +1271,7 @@ refresh_credentials
 # Runs after webhook-ingress which installs KEDA (CRD + operator role).
 # GitHub App secrets (ARC runner) are optional — enable_github_apps=false on
 # fresh deploys where Apps haven't been registered yet.
-if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
   step "Step 10/12: Deploy agent-factory"
 
   # Agent factory infra runs directly — no CodeBuild needed.
@@ -1322,7 +1324,7 @@ EOF
   fi
 
   # --- Agent Gateway build + deploy (part of agent-factory) ---
-  step "Step 10b/11: Build and deploy agent gateway"
+  step "Step 10b/12: Build and deploy agent gateway"
 
   # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
   LOCAL_IMAGE_TAG="${IMAGE_TAG:-latest}"
@@ -1381,7 +1383,10 @@ refresh_credentials
 DEPLOY_AGENT_CONTEXT=false
 if [ "$AGENT_CONTEXT_ONLY" = true ]; then
   DEPLOY_AGENT_CONTEXT=true
-elif [ "$GATEWAY_ONLY" = true ] || [ "$AGENT_FACTORY_ONLY" = true ] || [ "$SKIP_AGENT_CONTEXT" = true ]; then
+elif [ "$GATEWAY_ONLY" = true ] || [ "$AGENT_FACTORY_ONLY" = true ] || [ "$SUPERPLANE_ONLY" = true ] || [ "$SKIP_AGENT_CONTEXT" = true ]; then
+  # --superplane-only excludes agent-context even when AGENT_CONTEXT_ENABLED=true is
+  # exported in the environment: a scope flag names what to deploy, so an unrelated
+  # module's env gate must not re-admit it (#5198 review).
   DEPLOY_AGENT_CONTEXT=false
 elif [ "$AGENT_CONTEXT_ENABLED" = true ]; then
   DEPLOY_AGENT_CONTEXT=true
@@ -1481,9 +1486,12 @@ echo "Gateway:   kubectl get pods -n adp-gateway (configure kubectl: aws eks upd
 
 CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query "Parameter.Value" --output text 2>/dev/null) || true
 [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ] && echo "Frontend:  https://${CF_DOMAIN}" && echo "API:       https://${CF_DOMAIN}/api/health"
-[ "$GATEWAY_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
+[ "$GATEWAY_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
 [ "$DEPLOY_AGENT_CONTEXT" = true ] && echo "Context:   kubectl get pods -n agent-context"
-GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
+GW_WS=""
+if [ "$SUPERPLANE_ONLY" = false ]; then
+  GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
+fi
 [ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "AgentGW:   $GW_WS"
 
 if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
@@ -1494,7 +1502,7 @@ if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
 fi
 
 # --- Next steps (manual — GitHub App wiring; skipped in update mode) ---
-if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
   echo ""
   echo "━━━ Next steps (manual) ━━━"
   echo "To complete the agent path, wire a GitHub App:"
