@@ -50,6 +50,25 @@ import { LiveStatusComment, createWorkerStages } from './github-comments';
 // activity (tool calls) without needing the comment passed through every layer.
 let activeLiveComment: LiveStatusComment | null = null;
 
+/**
+ * Issue #3961: this run's live-control runtime, or null when it has none.
+ *
+ * Published module-scope for the same reason as the live comment above: it is
+ * built in main() alongside the control listener it serves and consumed in
+ * runAgent()'s query options and heartbeat, with several layers in between that
+ * have no business knowing about live control.
+ *
+ * `null` is the ordinary case — no control listener, no barrier — and every read
+ * site treats it as "this run cannot pause". That is a correct answer rather than
+ * a degraded one, and it is what keeps a run without an operator watching on
+ * byte-identical code paths to the ones it took before this story.
+ */
+let activeControlRuntime: {
+  adapter: ClaudeControlAdapter;
+  gate: PauseGate;
+  hooks: ClaudePauseHooks;
+} | null = null;
+
 // Correlation propagation — Phase 2-d (EPIC #779)
 import { prependCorrelationMarker } from './lib/correlationMarker';
 import { writePointer } from './lib/correlationStore';
@@ -66,11 +85,17 @@ import { CodexEventWatcher } from './components/codexEventWatcher';
 import { ControlListener } from './control-listener';
 import { revalidateQueuedCommand } from './control-revalidation';
 import { parseVerificationKeys } from './control-envelope';
-import { ControlStateStore } from './control-state';
+import { ControlStateStore, type ControlAction } from './control-state';
 // Issue #3962: the harness-neutral control contract and its first adapter. The
 // worker composes them; it does not reach past the interface into the SDK.
 import { listenerActionsFor } from './control-runtime';
-import { ClaudeControlAdapter } from './harnesses/claude-control';
+import {
+  ClaudeControlAdapter,
+  createClaudePauseHooks,
+  ClaudeBackgroundWorkObserver,
+  type ClaudePauseHooks,
+} from './harnesses/claude-control';
+import { PauseGate } from './pause-gate';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -1424,9 +1449,25 @@ Now, complete the assigned task.`;
     // hasn't closed, force-exit after POST_COMPLETION_TIMEOUT_MS.
     const heartbeat = setInterval(() => {
       const silentSec = Math.round((Date.now() - lastActivityTime) / 1000);
+      // Issue #3961: a paused run is silent *on purpose*. Every read below is of
+      // the live gate rather than a captured boolean, because a pause can begin
+      // and end between two ticks of this interval.
+      const gate = activeControlRuntime?.gate;
+      const paused = gate?.isPauseActive() === true;
 
-      // Safety net: force exit if stream hangs after query completion
-      if (queryCompleted && queryCompletedTime) {
+      // Safety net: force exit if stream hangs after query completion.
+      //
+      // Skipped while paused. This watchdog exists to catch a stream that never
+      // closed, and it cannot distinguish that from a run whose last tool is
+      // parked at the admission barrier — so left unguarded it would kill a
+      // healthy paused run within POST_COMPLETION_TIMEOUT_MS, i.e. an operator
+      // pausing to look at something would come back to a dead pod. The pause has
+      // its own bound (the gate's expiry timer, clamped to the pod deadline), so
+      // skipping here defers to a bound rather than removing one. Note the
+      // condition is only about *starting* the exit: once the pause is released,
+      // the elapsed comparison uses the original completion time, so a stream
+      // that really is hung is still caught on the next tick.
+      if (queryCompleted && queryCompletedTime && !paused) {
         const elapsed = Date.now() - queryCompletedTime;
         if (elapsed >= POST_COMPLETION_TIMEOUT_MS) {
           const msg = `⚠️  Force exit — stream did not close ${Math.round(elapsed / 1000)}s after query completed`;
@@ -1436,33 +1477,49 @@ Now, complete the assigned task.`;
         }
       }
 
+      // Visibility is preserved through a pause, not suppressed: the heartbeat
+      // keeps logging, and says *why* it is quiet. An operator watching the log
+      // of a paused run must be able to tell "paused, holding N tools" apart from
+      // "stalled", and a silent log is the one thing that makes those identical.
       if (silentSec >= 60) {
-        const msg = `💓 Heartbeat — no SDK messages for ${silentSec}s (turn ${turnCount})`;
+        const msg = paused
+          ? `💓 Heartbeat — paused by operator, no SDK messages for ${silentSec}s (turn ${turnCount})`
+          : `💓 Heartbeat — no SDK messages for ${silentSec}s (turn ${turnCount})`;
         console.log(msg);
-        log('INFO', msg, { phase: 'heartbeat', silentSeconds: silentSec, turn: turnCount });
+        log('INFO', msg, {
+          phase: 'heartbeat',
+          silentSeconds: silentSec,
+          turn: turnCount,
+          ...(paused
+            ? {
+                controlPhase: gate?.currentPhase(),
+                heldTools: gate?.heldCount(),
+                activeTools: gate?.activeToolCount(),
+              }
+            : {}),
+        });
       }
     }, 30_000);
 
     try {
-      // Issue #3962: the adapter's three transport hooks (`attemptInputFactory`,
-      // `onAttemptHandle`, `cancellation`) are deliberately NOT passed here yet.
+      // Issue #3962 left the adapter's three transport hooks (`attemptInputFactory`,
+      // `onAttemptHandle`, `cancellation`) proven-but-unused here, because passing
+      // them switches the prompt from a string to a streaming iterable — a
+      // different SDK code path — and S3 had no verb that needed it.
       //
-      // They are what let an adapter own an attempt's transport, and passing them
-      // changes this call for every run in the platform: `attemptInputFactory`
-      // switches the prompt from a string to a streaming iterable, which is a
-      // different SDK code path taken by all 17 existing callers of this wrapper
-      // and by every ordinary agent run — including the ones with no control
-      // listener and no operator watching. That is a real behaviour change with no
-      // verb to justify it, since S3 implements none: nothing would be steered
-      // into the channel it opens.
+      // Issue #3961 is the story that needs it, so they go in now, behind
+      // `activeControlRuntime`. Two of the three are load-bearing for pause:
+      // `onAttemptHandle` is what publishes a live attempt, and without an attempt
+      // `requestPause` correctly reports `unavailable` however good the barrier is;
+      // and the input channel it opens is how an *expired* pause delivers its
+      // neutral annotation back into the same session.
       //
-      // So the hooks stay proven-but-unused at this seam. They are exercised
-      // end-to-end against the real wrapper in `resilientQuery.test.ts` (that is
-      // where the borrowed-handle double-close was caught), which means the story
-      // that first needs them inherits tested plumbing rather than untested
-      // plumbing — and it makes that switch behind its own verb's flag, where the
-      // blast radius is the runs that asked for control instead of all of them.
-      //
+      // The gate is exactly as #3962 described: the switch happens for runs that
+      // asked for control, and nothing changes for the ordinary runs — including
+      // the other 17 callers of this wrapper — because a run with no started
+      // listener passes `undefined` for all three and takes the string-prompt path
+      // byte-for-byte.
+      const control = activeControlRuntime;
       // Labeled loop so we can break out of the `for await` from inside the
       // switch statement.  Without the label, `break` only exits the switch.
       queryLoop:                          // eslint-disable-line no-labels
@@ -1496,10 +1553,16 @@ Now, complete the assigned task.`;
             // otherwise be re-sent on every remaining turn and force an early
             // (lossy) compaction. The hook fails open — a storage error leaves
             // the original output in place.
+            // Issue #3961: the pause barrier joins the same composed hook set.
+            // `pauseHooks` is undefined for a run with no control listener, in
+            // which case the composed object is byte-identical to what it was
+            // before this story — an ordinary run gains no PreToolUse hook and
+            // therefore no new failure mode on the path every agent takes.
             hooks: createWorkerToolHooks({
               agentType: AGENT_TYPE,
               store: buildWorkerSpillStore(),
               log: (msg) => log('INFO', msg),
+              pauseHooks: control?.hooks,
             }),
           }
         },
@@ -1507,6 +1570,16 @@ Now, complete the assigned task.`;
         baseDelayMs: 10_000,
         maxDelayMs: 120_000,
         idleTimeoutMs: 600_000, // 10 min — detect silent upstream stalls (issue #1223)
+        // Issue #3962's transport hooks, now consumed (#3961). All three are
+        // undefined without a started control listener.
+        attemptInputFactory: control?.adapter.attemptInputFactory(),
+        onAttemptHandle: control?.adapter.onAttemptHandle(),
+        cancellation: control?.adapter.cancellationSource(),
+        // Issue #3961: a paused stream is quiet on purpose. Without this the idle
+        // guard would retry the attempt a pause is deliberately holding, and a
+        // retry replaces the live attempt — destroying the same-execution resume
+        // that is the entire point of pausing rather than stopping.
+        idleSuspended: control ? () => control.gate.isPauseActive() : undefined,
         // Issue #2079: On retry, resilientQuery resumes the persisted session
         // (full conversation history reloaded), so this nudge is just a short
         // continuation instruction — the agent already remembers what it read,
@@ -1860,6 +1933,111 @@ async function uploadGitChangesToS3(): Promise<void> {
   }
 }
 
+/**
+ * The instant a pause must be over by — Issue #3961.
+ *
+ * The control credential's own expiry, not a separately-computed pod deadline.
+ * The entrypoint derives that expiry from `ADP_POD_DEADLINE_SECONDS` — the very
+ * variable rendered into `activeDeadlineSeconds` — so it already tracks the
+ * wall-clock limit Kubernetes enforces, and reading it here means the two cannot
+ * drift apart through a second calculation. It is also the tighter and more
+ * honest bound: past that instant nobody can send a resume, so a pause held
+ * beyond it could only ever end by expiry.
+ *
+ * `null` when unset or unparseable, which the gate reads as "unbounded" and
+ * therefore allows the default 30-minute pause. That is the right failure
+ * direction: the alternative — treating an absent deadline as zero remaining —
+ * would refuse every pause on any run whose entrypoint did not export it.
+ */
+function controlDeadlineAt(): number | null {
+  const raw = (process.env.ADP_CONTROL_TOKEN_EXPIRES_AT || '').trim();
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * Apply an accepted control command to the running agent — Issue #3961.
+ *
+ * The missing half of the control channel until now: S1 built the journal and
+ * S3 built the adapter, but nothing drained one into the other, so an enabled
+ * verb would have answered 202 and then done nothing at all.
+ *
+ * Exported and parameterised rather than closed over module state so the mapping
+ * from outcome to journal status is testable without a running agent — that
+ * mapping is the entire operator-visible contract of a pause, and it is the part
+ * that must not be able to say `applied` for a pause that did not take effect.
+ *
+ * The three pause outcomes map to three different journal statuses on purpose:
+ *
+ * - `confirmed` → `applied` + phase `paused`. The barrier is closed and admitted
+ *   work has drained, so "Paused" is a claim about the world.
+ * - `requested` → the command stays **pending** and the phase becomes
+ *   `pause_requested`. Not `applied`, because nothing has settled yet; not
+ *   `rejected`, because admission *is* closed and the pause may still confirm.
+ *   Leaving it pending is what lets the dashboard show "pausing…" honestly, and a
+ *   later resume settles it as `cancelled`.
+ * - `unavailable` → `rejected` with the gate's reason. The one thing that must
+ *   never happen is this outcome rendering as a pause.
+ */
+export async function applyControlCommand(args: {
+  action: ControlAction;
+  commandId: string;
+  adapter: Pick<ClaudeControlAdapter, 'requestPause' | 'resumeFromPause'>;
+  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'pending'>;
+  log?: (level: string, message: string, context?: Record<string, unknown>) => void;
+}): Promise<void> {
+  const { action, commandId, adapter, store } = args;
+  const log = args.log ?? (() => {});
+
+  if (action === 'resume') {
+    await adapter.resumeFromPause();
+    // Settle any pause still awaiting confirmation as `cancelled`, not
+    // `applied`: an operator who paused and changed their mind before the barrier
+    // settled did not get a pause, and the journal is the record they will read
+    // back. `cancelled` also distinguishes this from a pause the gate refused.
+    for (const pending of store.pending()) {
+      if (pending.action === 'pause' && pending.command_id !== commandId) {
+        store.settle(pending.command_id, 'cancelled', 'resumed before the pause was confirmed');
+      }
+    }
+    store.setPhase('running');
+    store.settle(commandId, 'applied', 'run resumed');
+    log('INFO', 'control: run resumed', { command_id: commandId });
+    return;
+  }
+
+  if (action !== 'pause') {
+    // Unreachable through the listener, which refuses an unsupported verb with a
+    // 501 before it ever reaches an executor. Handled anyway, and as a rejection
+    // rather than a throw, so that widening `SUPPORTED_ACTIONS` without teaching
+    // this function the new verb produces a clear rejected command instead of an
+    // accepted one that silently does nothing.
+    store.settle(commandId, 'rejected', `no executor implements ${action}`);
+    return;
+  }
+
+  const result = await adapter.requestPause();
+  if (result.outcome === 'confirmed') {
+    store.setPhase('paused');
+    store.settle(commandId, 'applied', 'no new tool action can start');
+    log('INFO', 'control: pause confirmed', { command_id: commandId });
+    return;
+  }
+  if (result.outcome === 'requested') {
+    // Phase only — the command stays pending. See the doc comment above.
+    store.setPhase('pause_requested');
+    log('INFO', 'control: pause requested, awaiting quiescence', { command_id: commandId });
+    return;
+  }
+  // `unavailable`. The phase goes back to `running` because that is the truth:
+  // admission was reopened (or never closed), so the run is not paused and must
+  // not be displayed as pausing.
+  store.setPhase('running');
+  store.settle(commandId, 'rejected', result.reason);
+  log('WARN', 'control: pause unavailable', { command_id: commandId, detail: result.reason });
+}
+
 async function main(): Promise<void> {
   console.log('');
   console.log('═'.repeat(60));
@@ -2007,8 +2185,29 @@ async function main(): Promise<void> {
   // deliberate: the adapter is the object the retry-safety rules live in, and
   // making it conditional on a control listener would tie the correctness of a
   // retry to whether an operator had enabled an intervention channel.
+  //
+  // Issue #3961: the adapter now carries the pause barrier. The gate is the
+  // object the `PreToolUse` hook consults, so it must exist before the query
+  // options are built — which is why it is constructed here and not inside the
+  // query setup. Its deadline comes from the pod's own remaining budget, so a
+  // pause can never outlive the run it is pausing.
+  //
+  // The observer is passed to BOTH the gate (as its background-work probe) and
+  // the hooks (which feed it) so there is exactly one answer to "is anything
+  // still running behind the tools that finished?". Two instances would let the
+  // gate consult a probe nobody was updating, and an un-updated probe answers `0`
+  // — a fabricated quiescence claim, which is the single failure this whole story
+  // exists to prevent.
+  const backgroundWork = new ClaudeBackgroundWorkObserver();
+  const pauseGate = new PauseGate({
+    deadlineAt: controlDeadlineAt,
+    backgroundWorkProbe: () => backgroundWork.count(),
+    log: (msg) => log('DEBUG', msg),
+  });
+  const pauseHooks = createClaudePauseHooks(pauseGate, backgroundWork);
   const controlAdapter = new ClaudeControlAdapter({
     log: (msg) => log('DEBUG', msg),
+    pauseGate,
   });
   try {
     // Started here, after config resolution and before the SDK query, so a
@@ -2018,16 +2217,23 @@ async function main(): Promise<void> {
     // unregistered listener cannot exist.
     const controlStore = new ControlStateStore({
       generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
-      // Issue #3962: derived from the adapter rather than declared here. Still
-      // empty — S3 ships the contract, not the verbs, so every capability reports
-      // false and every verb answers 501 exactly as in S1. What changed is that
-      // the emptiness is now a consequence of the adapter's own capability table
-      // instead of a second, independently-maintained claim about it: when S2
-      // implements pause, it cannot enable the wire without enabling the
-      // transport, because there is only one place left to say yes.
+      // Issue #3962: derived from the adapter rather than declared here, so the
+      // wire cannot be enabled without the transport behind it — there is only one
+      // place left to say yes. Issue #3961 is what that buys: `pause`/`resume` are
+      // now in the ADP set and this adapter carries a barrier, so the intersection
+      // yields them and the listener answers 202 instead of 501. `steer`/`abort`
+      // stay out on both sides.
       supportedActions: listenerActionsFor(controlAdapter),
       revalidate: revalidateQueuedCommand,
     });
+    // Issue #3961: report the barrier's own count, and only the barrier's. This
+    // replaces S1's permanent `null` — but only for a run that actually has a
+    // gate, because `0` here is a quiescence claim and the gate is the only thing
+    // entitled to make it.
+    pauseGate.subscribe((event) => {
+      if (event.type === 'active_work') controlStore.setActiveToolCount(event.count);
+    });
+    controlStore.setActiveToolCount(pauseGate.activeToolCount());
     const listener = new ControlListener({
       bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
       port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),
@@ -2036,6 +2242,10 @@ async function main(): Promise<void> {
       credentialFile: process.env.ADP_CONTROL_CREDENTIAL_FILE,
       generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
       store: controlStore,
+      // Issue #3961: the seam that makes an accepted command actually happen.
+      // Without it every 202 was a promise nothing kept.
+      executor: (action, commandId) =>
+        applyControlCommand({ action, commandId, adapter: controlAdapter, store: controlStore, log }),
       // Issue #5028: this run's own identity and the gateway's public verification
       // keys. Both are placed here by the entrypoint. An absent key map means
       // live-control commands are refused — the read paths still work, and no verb
@@ -2048,6 +2258,15 @@ async function main(): Promise<void> {
     const outcome = await listener.start();
     if (outcome.started) {
       controlListener = listener;
+      // Issue #3961: publishing the runtime here — and only here — is what
+      // installs the admission barrier into the query options below. Gating it on
+      // a *started* listener rather than on the gate merely existing keeps two
+      // properties. A run nobody can send a command to gets the pre-#3961 hook set
+      // exactly, so the barrier cannot introduce a `PreToolUse` failure mode on
+      // the path every ordinary agent takes. And the capability claim stays
+      // truthful in the only direction that matters: pause is advertised where the
+      // mechanism is actually in place.
+      activeControlRuntime = { adapter: controlAdapter, gate: pauseGate, hooks: pauseHooks };
       log('INFO', `Control listener started on port ${outcome.port}`);
     } else if (outcome.reason !== 'disabled') {
       // A failure to start is logged at WARN and the run continues: control is an

@@ -61,6 +61,28 @@ export interface ResilientQueryOptions {
    */
   idleTimeoutMs?: number;
   /**
+   * Optional probe answering "is this stream idle on purpose right now?" —
+   * issue #3961.
+   *
+   * Consulted only at the instant the idle timeout fires. `true` re-arms the
+   * window instead of failing the attempt; `false` (and the default absence)
+   * leaves the pre-#3961 behaviour exactly as it was.
+   *
+   * This exists because the idle guard and a pause barrier read the same
+   * evidence — no SDK messages — and draw opposite conclusions from it. An
+   * operator-paused run produces no messages *because a tool is parked at the
+   * barrier*, and treating that as a stall would retry the query: a retry
+   * abandons the live attempt for a resumed one, which is precisely the
+   * "same-execution resume" property pause is built to provide. So the pause
+   * would destroy the thing it promises.
+   *
+   * Re-arming rather than disabling is deliberate — the window keeps running
+   * throughout, so the moment the pause ends an actually-hung stream is caught by
+   * the next window. The pause itself is separately bounded by the gate's expiry
+   * timer, clamped to the pod deadline, so this cannot become an unbounded wait.
+   */
+  idleSuspended?: () => boolean;
+  /**
    * Optional callback that generates the retry prompt on attempts 2+.
    * Called with the attempt number (2+) and the total number of messages
    * yielded across all prior attempts.
@@ -270,6 +292,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
     attemptInputFactory,
     onAttemptHandle,
     cancellation,
+    idleSuspended,
   } = opts;
 
   /** Typed cancellation error, never routed through error-text classification. */
@@ -405,21 +428,46 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           }
         }
         const iterator = (session as AsyncIterable<SDKStreamMessage>)[Symbol.asyncIterator]();
+        // Hoisted out of the loop body: one `iterator.next()` must survive across
+        // idle re-arms (#3961). Racing a *fresh* `next()` against each new window
+        // would leave the previous one pending on the same iterator, and the SDK's
+        // async iterator is single-consumer — two overlapping reads is how a
+        // message gets delivered to a promise nobody is awaiting any more.
+        let nextMessage: Promise<IteratorResult<SDKStreamMessage>> | null = null;
         while (true) {
           let idleTimer: ReturnType<typeof setTimeout> | undefined;
-          const idle = new Promise<never>((_, reject) => {
+          // Issue #3961: `idleSuspended` turns the timeout into a re-arm rather
+          // than a rejection. Evaluated when the timer fires — not when it is set —
+          // because a pause typically begins long after the window opened.
+          const idle = new Promise<never | 'rearm'>((resolve, reject) => {
             idleTimer = setTimeout(
-              () => reject(new Error(`stream idle timeout: no SDK message for ${Math.round(idleTimeoutMs / 1000)}s`)),
+              () => {
+                if (idleSuspended?.()) {
+                  resolve('rearm');
+                  return;
+                }
+                reject(new Error(`stream idle timeout: no SDK message for ${Math.round(idleTimeoutMs / 1000)}s`));
+              },
               idleTimeoutMs,
             );
           });
-          let result: IteratorResult<SDKStreamMessage>;
+          let result: IteratorResult<SDKStreamMessage> | 'rearm';
           try {
             if (cancellation?.isCancelled()) throw cancellationError();
-            result = await wait(Promise.race([iterator.next(), idle]));
+            nextMessage ??= iterator.next();
+            result = await wait(Promise.race([nextMessage, idle]));
           } finally {
             clearTimeout(idleTimer);
           }
+          if (result === 'rearm') {
+            // Deliberately idle, so open a fresh window and keep waiting on the
+            // SAME pending read. Logged because an operator reading a long quiet
+            // stretch in the log needs to see that it was a decision.
+            log(`   ⏸️  Stream idle for ${Math.round(idleTimeoutMs / 1000)}s while intentionally suspended — not retrying`);
+            continue;
+          }
+          // The read resolved, so the next window starts a new one.
+          nextMessage = null;
           if (result.done) break;
           // Capture the session id the first time the SDK surfaces it, so a
           // later retry can resume this exact conversation.
