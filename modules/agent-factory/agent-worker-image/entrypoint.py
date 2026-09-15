@@ -38,6 +38,11 @@ from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
 from lib.engine_registration import draft_registration_note
+from lib.invocation_completion import (
+    InvocationCompletionError,
+    is_delivery_completed,
+    record_delivery_completed,
+)
 from lib.invocation_status import (
     clear_control_endpoint,
     register_control_endpoint,
@@ -46,6 +51,7 @@ from lib.invocation_status import update_status as update_invocation_status
 from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
 from lib.provenance_client import post_provenance
+from lib.status_gateway_client import authority_enabled
 from lib.vault_client import VaultClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -984,6 +990,31 @@ def main() -> int:
             logger.error("Failed to delete poison message: %s", exc)
         return 1
 
+    # AIDLC can merge an intermediate gate and continue on the same branch.
+    # Legacy workers therefore deduplicate this exact delivery, not the branch.
+    # Do this before credentials, repository work or any in_progress write that
+    # could overwrite an older worker's completed status. Protected dispatch
+    # already binds/retires attempts and must not fall back to direct table I/O.
+    use_completion_receipt = persona in PERSONAS_EXTENDING_BRANCH and not authority_enabled()
+    if use_completion_receipt:
+        try:
+            already_completed = is_delivery_completed(envelope)
+        except InvocationCompletionError as exc:
+            logger.error("AIDLC delivery deferred: %s", exc)
+            bootstrap_log.close()
+            return AGENT_EXIT_RETRYABLE
+        if already_completed:
+            logger.info("AIDLC delivery %s was already completed; acknowledging redelivery", message_id)
+            bootstrap_log.close()
+            # Keep the existing outcome intact: a redelivery is not a new
+            # invocation and must not overwrite complete with skipped.
+            try:
+                _delete_message(queue_url, region, receipt_handle)
+            except Exception:
+                logger.warning("Could not acknowledge completed AIDLC delivery; leaving it for retry")
+                return AGENT_EXIT_RETRYABLE
+            return 0
+
     # Bind this pod to its protected invocation before any repository code,
     # hooks, SDK tools or repository-selected dependencies can execute (#5028).
     from lib.run_identity import bootstrap_run_identity
@@ -1890,6 +1921,13 @@ def main() -> int:
             result.returncode,
         )
         return exit_code
+
+    if use_completion_receipt:
+        try:
+            record_delivery_completed(envelope)
+        except InvocationCompletionError as exc:
+            logger.error("AIDLC acknowledgement deferred: %s", exc)
+            return AGENT_EXIT_RETRYABLE
 
     try:
         _delete_message(queue_url, region, receipt_handle)

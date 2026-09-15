@@ -52,6 +52,10 @@ def ready_gateway_proxy(monkeypatch):
     monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint._stop_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint.BootstrapLogger", MagicMock())
+    # Real durable-receipt behavior is covered in test_invocation_completion.py.
+    monkeypatch.setattr("entrypoint.is_delivery_completed", MagicMock(return_value=False))
+    monkeypatch.setattr("entrypoint.record_delivery_completed", MagicMock())
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
     monkeypatch.setenv("ADP_GH_TOKEN_BROKER_ENABLED", "0")
 
 
@@ -3180,7 +3184,11 @@ class TestIdempotencyGuard:
         assert result == 0
 
         # Run proceeded despite the merged PR — no idempotency skip.
-        mock_subprocess_run.assert_called()
+        assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
+        mock_is_completed.assert_not_called()
+        entrypoint.is_delivery_completed.assert_called_once_with(aidlc_envelope)
+        entrypoint.record_delivery_completed.assert_called_once_with(aidlc_envelope)
+        mock_delete_msg.assert_called_once()
 
 
 # --- Test: VisibilityHeartbeat ---
