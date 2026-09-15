@@ -95,6 +95,10 @@ class TestCliScriptDownload:
             "adp_common.py",
             "adp-admin.py",
             "adp-bedrock.py",
+            "adp-aws.py",
+            # Issue #5184: added in the same PR that ships the helper, so the
+            # command is never advertised before its file is downloadable.
+            "adp-github.py",
             "adp-github-admin.py",
         }
 

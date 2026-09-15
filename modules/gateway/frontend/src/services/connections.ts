@@ -33,6 +33,13 @@ export interface ConnectionVerification {
   identity_index_row?: boolean | null;
   /** Whether the reverse tenant → installation row exists. false = adp-trigger fails. */
   reverse_identity_row?: boolean | null;
+  /**
+   * Issue #5184: provenance of the sibling `repositories` list. true = read live
+   * from GitHub (within the 60s cache); false = GitHub was unreachable and the
+   * stored snapshot was served, so the list is configuration and not proof of
+   * current access; null = no read was attempted. Same tri-state rule as above.
+   */
+  repositories_live?: boolean | null;
 }
 
 /**

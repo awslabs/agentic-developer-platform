@@ -47,7 +47,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-github-admin.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -858,6 +858,12 @@ Sign in (one login is shared by every tool):
     import                Headless fallback: paste a refresh token
     token                 Print a valid access token (auto-refreshing)
 
+Connect your own AWS account:
+    aws connect           Connect an AWS account (create the role, or reuse one)
+    aws list              Show your AWS connections
+    aws verify            Check a connection still works
+    aws disconnect        Remove an ADP connection (leaves the AWS role)
+
 Wire up a tool (config only — sign in once, then set up as many as you like):
     codex setup           Point Codex at the local auth proxy
     claude setup          Set Claude Code's apiKeyHelper (merges settings.json)
@@ -866,6 +872,12 @@ Run a tool:
     codex [args...]       Launch Codex: starts the auth proxy if needed, then execs
     claude [args...]      Launch Claude Code (optional — bare 'claude' also works)
     serve                 Run the localhost auth proxy in the FOREGROUND
+
+Connect a repository (uses the platform's GitHub App — you supply no secrets):
+    github connect --repo owner/name
+                          Authorize a repository you have access to on GitHub
+    github status [--repo owner/name]
+                          Sign-in, repository access and agent integration state
 
 Self-management:
     daemon install        Opt in to an always-on proxy, so bare 'codex' works (macOS)
@@ -904,8 +916,10 @@ main() {
     shift || true
 
     case "${command}" in
+        aws)     exec_python_helper "adp-aws.py" "$@" ;;
         bedrock) exec_python_helper "adp-bedrock.py" "$@" ;;
         admin)   exec_python_helper "adp-admin.py" "$@" ;;
+        github)  exec_python_helper "adp-github.py" "$@" ;;
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.
