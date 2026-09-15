@@ -96,11 +96,15 @@ supervisor isolation or a claim that all worker data is isolated per run.
 
 ## Rollout and remaining release conditions
 
-Runtime and infrastructure are separate PRs. Runtime can be reviewed independently.
-The infrastructure PR must remain draft: `.github/workflows/webhook-ingress-deploy.yml`
-automatically runs a broad Terraform apply for merged infrastructure changes.
+Runtime and infrastructure are separate PRs. Runtime merged in #5196. The IAM
+definitions can merge with the checked-in
+`.github/deployment-holds/webhook-infra.md` hold: the webhook deployment workflow
+then skips infrastructure and mixed releases, including manual dispatches,
+before any artifacts, state or infrastructure are changed. Code-only Lambda
+pushes remain eligible. The hold persists for later commits and must only be
+removed in a reviewed rollout change after the conditions below are satisfied.
 Follow the canonical deployment guide and the scoped prerequisite proposal #5176;
-this document does not authorize that broad apply.
+merging the definitions does not authorize a broad apply or worker activation.
 
 Before activation:
 
