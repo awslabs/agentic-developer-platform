@@ -128,3 +128,49 @@ describe('checkpoint planning and worker integration', () => {
     expect(phase).toContain('An earlier draft checkpoint does not trigger Steps 7–8.');
   });
 });
+
+describe('pause barrier hook registration', () => {
+  // Regression for the review's B6. The barrier is a `PreToolUse` hook whose job is
+  // to block for as long as an operator holds the pause — up to the full pause
+  // budget. The CLI enforces hook timeouts in its own subprocess and applies a
+  // default when a matcher omits one, so leaving `timeout` unset lets an
+  // undocumented default decide whether pause works: if it is shorter than the
+  // budget, the parked call is aborted, the gate reads that as a breached barrier,
+  // and every long pause degrades to `unavailable` instead of pausing.
+
+  const pauseHooks = (timeoutSeconds: number) => ({
+    preToolUseTimeoutSeconds: timeoutSeconds,
+    preToolUse: jest.fn(async () => ({})),
+    postToolUse: jest.fn(async () => ({})),
+    onStop: jest.fn(async () => ({})),
+  });
+
+  it('registers the barrier with the timeout the adapter asks for', () => {
+    const hooks = createWorkerToolHooks({
+      agentType: 'developer', store: { spill: jest.fn() }, thresholdBytes: 100, log: jest.fn(),
+      pauseHooks: pauseHooks(1_860),
+    });
+    expect(hooks.PreToolUse?.[0].timeout).toBe(1_860);
+  });
+
+  it('allows the barrier to outlast the default pause budget', () => {
+    // The number that actually matters: whatever the adapter derives must exceed the
+    // 30-minute default budget, or the timeout fires first and the pause is lost.
+    const { createClaudePauseHooks } = require('./harnesses/claude-control');
+    const { PauseGate, DEFAULT_PAUSE_TIMEOUT_MS } = require('./pause-gate');
+    const hooks = createWorkerToolHooks({
+      agentType: 'developer', store: { spill: jest.fn() }, thresholdBytes: 100, log: jest.fn(),
+      pauseHooks: createClaudePauseHooks(new PauseGate()),
+    });
+    const timeoutMs = (hooks.PreToolUse?.[0].timeout ?? 0) * 1000;
+    expect(timeoutMs).toBeGreaterThan(DEFAULT_PAUSE_TIMEOUT_MS);
+  });
+
+  it('registers no PreToolUse matcher for a run without a control gate', () => {
+    // A run with no control listener must not acquire a barrier as a side effect.
+    const hooks = createWorkerToolHooks({
+      agentType: 'developer', store: { spill: jest.fn() }, thresholdBytes: 100, log: jest.fn(),
+    });
+    expect(hooks.PreToolUse).toBeUndefined();
+  });
+});

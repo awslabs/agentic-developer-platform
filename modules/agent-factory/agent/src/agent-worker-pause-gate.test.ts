@@ -684,3 +684,130 @@ describe('pause gate: defaults', () => {
     expect(gate.currentPhase()).toBe('running');
   });
 });
+
+describe('pause gate: a pause that goes quiet after its settle wait', () => {
+  // Regression for the review's B4. The bug was that confirmation was a one-shot:
+  // `awaitQuiescence` resolved once, and if its bounded timer fired first, nothing
+  // ever re-drove the decision. A tool outliving the settle wait therefore left the
+  // pause in `pause_requested` for its whole budget even after the run went
+  // completely quiet — and then the expiry timer resumed it having never reported
+  // that the pause did not take. The operator's view was "pausing…" for 30 minutes
+  // followed by a silent resume.
+
+  it('confirms once a late tool finishes, without needing another command', async () => {
+    const h = harness({ settleTimeoutMs: 1_000 });
+    const admitted = await h.gate.admit('Bash');
+
+    const pausing = h.gate.requestPause();
+    await flush();
+    // The straggler outlives the bounded wait, so this request answers `requested`.
+    h.scheduler.fireByDuration(1_000);
+    await expect(pausing).resolves.toEqual({
+      outcome: 'requested',
+      reason: 'still waiting for 1 admitted tool(s) to finish',
+    });
+    expect(h.gate.currentPhase()).toBe('pause_requested');
+
+    // The tool now reaches its safe boundary. That edge alone must confirm.
+    h.gate.settle(admitted.ticket);
+    await flush();
+
+    expect(h.gate.currentPhase()).toBe('paused');
+    expect(h.gate.activeToolCount()).toBe(0);
+    expect(h.events.map((event) => event.type)).toContain('pause_confirmed');
+  });
+
+  it('still refuses to confirm when the late settle leaves background work behind', async () => {
+    // The late edge must apply the *same* rules as the request path, or the
+    // re-drive becomes a second, laxer definition of `paused`.
+    const h = harness({ settleTimeoutMs: 1_000 });
+    const admitted = await h.gate.admit('Bash');
+    const pausing = h.gate.requestPause();
+    await flush();
+    h.scheduler.fireByDuration(1_000);
+    await pausing;
+
+    h.setBackground(2);
+    h.gate.settle(admitted.ticket);
+    await flush();
+
+    expect(h.gate.currentPhase()).toBe('pause_requested');
+    expect(h.events.map((event) => event.type)).not.toContain('pause_confirmed');
+  });
+
+  it('does not confirm a pause that was resumed while its straggler was still running', async () => {
+    const h = harness({ settleTimeoutMs: 1_000 });
+    const admitted = await h.gate.admit('Bash');
+    const pausing = h.gate.requestPause();
+    await flush();
+    h.scheduler.fireByDuration(1_000);
+    await pausing;
+
+    await h.gate.resume();
+    expect(h.gate.currentPhase()).toBe('running');
+
+    // The tool finishes *after* the resume. The settle edge must not resurrect a
+    // pause the operator already stood down.
+    h.gate.settle(admitted.ticket);
+    await flush();
+
+    expect(h.gate.currentPhase()).toBe('running');
+    expect(h.events.map((event) => event.type)).not.toContain('pause_confirmed');
+  });
+});
+
+describe('pause gate: no pause is released without first resolving', () => {
+  // The structural invariant whose absence let B4 hide. Every pause must reach the
+  // operator as either a confirmation or a failure with a reason; `pause_released`
+  // is the end of a pause that happened, not a substitute for either.
+
+  it('reports unavailable when a budget expires before admitted work settles', async () => {
+    const h = harness({ settleTimeoutMs: 1_000, defaultTimeoutMs: 10_000 });
+    await h.gate.admit('Bash'); // never settles
+    const pausing = h.gate.requestPause();
+    await flush();
+    h.scheduler.fireByDuration(1_000);
+    await expect(pausing).resolves.toMatchObject({ outcome: 'requested' });
+
+    h.scheduler.fireByDuration(10_000); // the budget expires
+    await flush();
+
+    const types = h.events.map((event) => event.type);
+    const unavailable = types.indexOf('pause_unavailable');
+    const released = types.indexOf('pause_released');
+    expect(unavailable).toBeGreaterThanOrEqual(0);
+    expect(released).toBeGreaterThan(unavailable);
+    expect(h.gate.currentPhase()).toBe('running');
+  });
+
+  it('does not report unavailable when an expiry ends a pause that did confirm', async () => {
+    // A confirmed pause reaching its budget is the designed auto-resume, not a
+    // failure, so it must not be reported as one.
+    const h = harness({ defaultTimeoutMs: 10_000 });
+    await expect(h.gate.requestPause()).resolves.toEqual({ outcome: 'confirmed' });
+
+    h.scheduler.fireByDuration(10_000);
+    await flush();
+
+    const types = h.events.map((event) => event.type);
+    expect(types).toContain('pause_released');
+    expect(types).not.toContain('pause_unavailable');
+  });
+
+  it('records an operator resume of a pending pause as released, not as a failure', async () => {
+    // The operator changed their mind. Blaming the mechanism would misreport their
+    // own decision back to them.
+    const h = harness({ settleTimeoutMs: 1_000 });
+    const admitted = await h.gate.admit('Bash');
+    const pausing = h.gate.requestPause();
+    await flush();
+    h.scheduler.fireByDuration(1_000);
+    await pausing;
+
+    await h.gate.resume();
+    h.gate.settle(admitted.ticket);
+    await flush();
+
+    expect(h.events.map((event) => event.type)).not.toContain('pause_unavailable');
+  });
+});

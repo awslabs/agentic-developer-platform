@@ -258,6 +258,22 @@ export class PauseGate {
     return this.parked.size;
   }
 
+  /**
+   * The longest a single admission can ever be parked here.
+   *
+   * Published because the harness — not this gate — enforces how long a hook may
+   * block, and it needs a number to configure that with. A harness bound *below*
+   * this value silently converts every long pause into a barrier breach, so the
+   * adapter derives its hook timeout from this rather than from a constant that
+   * could drift away from the budget. Neutral: milliseconds, no hook vocabulary.
+   *
+   * The deadline clamp only ever shortens an individual pause, so the configured
+   * default is the true upper bound.
+   */
+  maxParkDurationMs(): number {
+    return this.defaultTimeoutMs;
+  }
+
   /** Whether a parked admission was abandoned by its harness mid-park. */
   barrierBreached(): boolean {
     return this.breached;
@@ -335,7 +351,54 @@ export class PauseGate {
       const waiters = [...this.quiescenceWaiters];
       this.quiescenceWaiters.clear();
       for (const waiter of waiters) waiter();
+      // Quiescence is an *edge the gate observes*, not only the resolution of one
+      // bounded wait. A tool that outlives `settleTimeoutMs` used to leave the
+      // pause stuck in `pause_requested` for the rest of its budget even after the
+      // run went completely quiet, because the only thing that could confirm was a
+      // waiter that had already been discarded when its timer fired. The operator
+      // saw "pausing…" until expiry silently resumed the run. Re-evaluating here
+      // means a late-settling tool confirms the pause it delayed.
+      if (this.phase === 'pause_requested') void this.reconfirm();
     }
+  }
+
+  /**
+   * Re-drive confirmation for a pause that is still pending.
+   *
+   * Serialized like every other transition, and epoch-guarded, so a resume, an
+   * abort or a breach that lands between the settle edge and this running owns the
+   * outcome instead of being overwritten by a stale confirmation.
+   */
+  private async reconfirm(): Promise<void> {
+    const epoch = this.pauseEpoch;
+    await this.serialize(async () => {
+      if (this.pauseEpoch !== epoch) return;
+      if (this.phase !== 'pause_requested') return;
+      if (this.inFlight.size !== 0) return;
+      this.confirmIfClear();
+    });
+  }
+
+  /**
+   * The confirmation decision itself: quiescent *and* background work clear.
+   *
+   * Shared by the request path and the late settle edge so both answer the
+   * question with identical rules — a second copy of this predicate is how the two
+   * paths would drift into disagreeing about what `paused` means.
+   *
+   * Returns the reason confirmation was withheld, or `null` once confirmed.
+   */
+  private confirmIfClear(): string | null {
+    const background = this.backgroundWorkProbe();
+    if (background === null) {
+      return 'background work behind completed tools is not observable';
+    }
+    if (background > 0) {
+      return `${background} background task(s) still running`;
+    }
+    this.phase = 'paused';
+    this.onEvent({ type: 'pause_confirmed' });
+    return null;
   }
 
   /**
@@ -413,25 +476,18 @@ export class PauseGate {
       return this.unavailable('cancelled', 'pause superseded before confirmation');
     }
     if (!settled) {
+      // Bounded wait elapsed with work still admitted. Reported as `requested`
+      // rather than failed: admission *is* closed, so this is a true "pausing" —
+      // and `settle` re-drives confirmation once the straggler finishes, so this
+      // state resolves itself rather than waiting for another command.
       return {
         outcome: 'requested',
         reason: `still waiting for ${this.inFlight.size} admitted tool(s) to finish`,
       };
     }
 
-    const background = this.backgroundWorkProbe();
-    if (background === null) {
-      return {
-        outcome: 'requested',
-        reason: 'background work behind completed tools is not observable',
-      };
-    }
-    if (background > 0) {
-      return { outcome: 'requested', reason: `${background} background task(s) still running` };
-    }
-
-    this.phase = 'paused';
-    this.onEvent({ type: 'pause_confirmed' });
+    const withheld = this.confirmIfClear();
+    if (withheld !== null) return { outcome: 'requested', reason: withheld };
     return { outcome: 'confirmed' };
   }
 
@@ -489,6 +545,23 @@ export class PauseGate {
 
   /** Release a pause, optionally because its budget expired. */
   private releasePause(expired: boolean): void {
+    // A pause that expires *without ever having confirmed* has to say so before it
+    // says it was released. Otherwise the only events an operator's dashboard ever
+    // sees are `pause_requested` then `pause_released`: they pressed Pause, watched
+    // "pausing…" for the full budget, and the run resumed without anything ever
+    // reporting that the pause did not take. `pause_released` is the end of a pause
+    // that happened; this is the end of one that did not.
+    //
+    // Scoped to expiry on purpose. An operator resume of a still-pending pause is
+    // *their own* decision, and the journal records that as `cancelled` — calling
+    // it `unavailable` would blame the mechanism for a choice the operator made.
+    if (expired && this.phase === 'pause_requested') {
+      this.onEvent({
+        type: 'pause_unavailable',
+        failure: 'settle_timeout',
+        reason: 'the pause budget expired before admitted work reached a safe boundary',
+      });
+    }
     this.phase = 'running';
     this.pauseEpoch += 1;
     this.clearExpiry();

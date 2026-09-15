@@ -95,7 +95,16 @@ export function createWorkerToolHooks(
       ? {
           // The admission barrier. Nothing else claims PreToolUse, so this is a
           // straight addition rather than a merge.
-          PreToolUse: [{ hooks: [pause.preToolUse] }],
+          //
+          // `timeout` is not optional in practice, even though the type allows it.
+          // The CLI enforces hook timeouts on its side and applies its own default
+          // when a matcher omits one; this hook is *designed* to block for as long
+          // as an operator holds the pause. Leaving the bound implicit means an
+          // undocumented default decides whether pause works at all, and if it is
+          // shorter than the budget every long pause aborts its parked tool, breaches
+          // the barrier and degrades to `unavailable`. The adapter derives the value
+          // from the gate's own budget so the two cannot drift.
+          PreToolUse: [{ hooks: [pause.preToolUse], timeout: pause.preToolUseTimeoutSeconds }],
           // Both edges settle the admission: a tool that failed has stopped
           // running just as surely as one that succeeded, and treating only
           // success as an ending would leave a failed tool's admission

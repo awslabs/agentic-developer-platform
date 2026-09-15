@@ -102,6 +102,17 @@ export const CLAUDE_SDK_VERSION = '0.3.220';
 const NO_PAUSE_GATE_REASON =
   'pause needs the admission barrier installed in this run: no tool-boundary gate is present';
 
+/**
+ * Slack added to the barrier's hook timeout above the pause budget itself.
+ *
+ * A hook timeout equal to the budget races the expiry timer, and the CLI winning
+ * that race aborts the parked call — which the gate must read as a breach, because
+ * an abandoned park means the tool may run. Sixty seconds is cheap here: the
+ * timeout is an upper bound on waiting, not a delay anything pays when a pause ends
+ * normally.
+ */
+const PAUSE_HOOK_TIMEOUT_MARGIN_SECONDS = 60;
+
 /** Reason steer/abort remain unsupported after S2. Their proofs are S4/S6's. */
 const NOT_YET_PROVEN_REASON =
   'no proven runtime boundary for this verb yet: steering and abort are later stories';
@@ -266,6 +277,17 @@ export class ClaudeBackgroundWorkObserver {
  * payload's locator — is what would quietly go missing.
  */
 export interface ClaudePauseHooks {
+  /**
+   * Seconds the `PreToolUse` matcher must be allowed to block — Issue #3961.
+   *
+   * The CLI enforces hook timeouts in its own subprocess and applies a default
+   * when a matcher does not set one. The barrier's whole job is to park a tool for
+   * as long as the operator holds the pause, so any default shorter than the pause
+   * budget would abort the park, breach the barrier and collapse *every* long pause
+   * to `unavailable`. Publishing the required bound here, derived from the gate's
+   * own budget, keeps the two from drifting apart.
+   */
+  readonly preToolUseTimeoutSeconds: number;
   /** `PreToolUse`: the admission barrier. Denies a tool the operator paused. */
   preToolUse(input: HookInput, toolUseId?: string, options?: { signal: AbortSignal }): Promise<Record<string, unknown>>;
   /** `PostToolUse` / `PostToolUseFailure`: settle the admission for one tool. */
@@ -298,6 +320,12 @@ export function createClaudePauseHooks(
     input as unknown as { tool_name?: string; tool_input?: unknown; tool_use_id?: string };
 
   return {
+    // Ceiling plus a margin, converted to the seconds the matcher expects. The
+    // margin matters: equal values race, and losing that race is indistinguishable
+    // from a genuine barrier breach — the failure it would cause is the one this
+    // number exists to prevent.
+    preToolUseTimeoutSeconds: Math.ceil(gate.maxParkDurationMs() / 1000) + PAUSE_HOOK_TIMEOUT_MARGIN_SECONDS,
+
     async preToolUse(input, toolUseId, options) {
       const fields = toolFields(input);
       const toolName = fields.tool_name ?? 'tool';

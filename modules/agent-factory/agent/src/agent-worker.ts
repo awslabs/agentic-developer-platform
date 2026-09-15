@@ -96,6 +96,10 @@ import {
   type ClaudePauseHooks,
 } from './harnesses/claude-control';
 import { PauseGate } from './pause-gate';
+// Issue #3961: the outcome→journal mapping and the gate/store mirror live in their
+// own module so they can be unit-tested; importing this file from a test pulls the
+// SDK's ESM entry point into Jest and the suite cannot parse.
+import { applyControlCommand, bindGateTransitionsToStore } from './control-command-apply';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -1980,63 +1984,6 @@ function controlDeadlineAt(): number | null {
  * - `unavailable` → `rejected` with the gate's reason. The one thing that must
  *   never happen is this outcome rendering as a pause.
  */
-export async function applyControlCommand(args: {
-  action: ControlAction;
-  commandId: string;
-  adapter: Pick<ClaudeControlAdapter, 'requestPause' | 'resumeFromPause'>;
-  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'pending'>;
-  log?: (level: string, message: string, context?: Record<string, unknown>) => void;
-}): Promise<void> {
-  const { action, commandId, adapter, store } = args;
-  const log = args.log ?? (() => {});
-
-  if (action === 'resume') {
-    await adapter.resumeFromPause();
-    // Settle any pause still awaiting confirmation as `cancelled`, not
-    // `applied`: an operator who paused and changed their mind before the barrier
-    // settled did not get a pause, and the journal is the record they will read
-    // back. `cancelled` also distinguishes this from a pause the gate refused.
-    for (const pending of store.pending()) {
-      if (pending.action === 'pause' && pending.command_id !== commandId) {
-        store.settle(pending.command_id, 'cancelled', 'resumed before the pause was confirmed');
-      }
-    }
-    store.setPhase('running');
-    store.settle(commandId, 'applied', 'run resumed');
-    log('INFO', 'control: run resumed', { command_id: commandId });
-    return;
-  }
-
-  if (action !== 'pause') {
-    // Unreachable through the listener, which refuses an unsupported verb with a
-    // 501 before it ever reaches an executor. Handled anyway, and as a rejection
-    // rather than a throw, so that widening `SUPPORTED_ACTIONS` without teaching
-    // this function the new verb produces a clear rejected command instead of an
-    // accepted one that silently does nothing.
-    store.settle(commandId, 'rejected', `no executor implements ${action}`);
-    return;
-  }
-
-  const result = await adapter.requestPause();
-  if (result.outcome === 'confirmed') {
-    store.setPhase('paused');
-    store.settle(commandId, 'applied', 'no new tool action can start');
-    log('INFO', 'control: pause confirmed', { command_id: commandId });
-    return;
-  }
-  if (result.outcome === 'requested') {
-    // Phase only — the command stays pending. See the doc comment above.
-    store.setPhase('pause_requested');
-    log('INFO', 'control: pause requested, awaiting quiescence', { command_id: commandId });
-    return;
-  }
-  // `unavailable`. The phase goes back to `running` because that is the truth:
-  // admission was reopened (or never closed), so the run is not paused and must
-  // not be displayed as pausing.
-  store.setPhase('running');
-  store.settle(commandId, 'rejected', result.reason);
-  log('WARN', 'control: pause unavailable', { command_id: commandId, detail: result.reason });
-}
 
 async function main(): Promise<void> {
   console.log('');
@@ -2226,14 +2173,12 @@ async function main(): Promise<void> {
       supportedActions: listenerActionsFor(controlAdapter),
       revalidate: revalidateQueuedCommand,
     });
-    // Issue #3961: report the barrier's own count, and only the barrier's. This
-    // replaces S1's permanent `null` — but only for a run that actually has a
-    // gate, because `0` here is a quiescence claim and the gate is the only thing
-    // entitled to make it.
-    pauseGate.subscribe((event) => {
-      if (event.type === 'active_work') controlStore.setActiveToolCount(event.count);
-    });
-    controlStore.setActiveToolCount(pauseGate.activeToolCount());
+    // Issue #3961: mirror every gate-initiated transition — the admitted-tool
+    // count (replacing S1's permanent `null`, and only for a run that actually has
+    // a gate, because `0` is a quiescence claim only the gate may make), plus the
+    // confirm/unavailable/expiry edges that change admission with no command behind
+    // them. Without the latter the store can report `paused` while tools run.
+    bindGateTransitionsToStore({ gate: pauseGate, store: controlStore, log });
     const listener = new ControlListener({
       bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
       port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),
