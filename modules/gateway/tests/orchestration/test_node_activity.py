@@ -6,7 +6,7 @@ import pytest
 from botocore.exceptions import EndpointConnectionError
 
 from src.activity.schemas import InvocationChainItem, InvocationChainResponse
-from src.orchestration.node_activity import current_activity, load_story_activity
+from src.orchestration.node_activity import current_activity, load_story_activity, story_execution
 
 
 def run(invocation_id, persona, timestamp, *, status="in_progress", liveness="live", children=None):
@@ -63,6 +63,37 @@ def test_lost_contact_is_not_presented_as_live_or_finished():
 
 def test_capped_history_cannot_establish_the_current_stage():
     assert current_activity(chain(run("old-review", "reviewer", "2026-09-15T14:54:00Z"), depth_capped=True)) is None
+
+
+def test_history_preserves_finished_runs_in_chronological_order_without_approval():
+    development = run("attempt-1", "developer", "2026-09-15T15:00:00+01:00", status="complete", liveness="exited")
+    review = run("review", "reviewer", "2026-09-15T14:10:00Z", status="complete", liveness="exited")
+    repair = run("repair", "developer", "2026-09-15T14:20:00Z", status="complete", liveness="exited")
+    rereview = run("review-again", "reviewer", "2026-09-15T14:30:00Z", status="complete", liveness="exited")
+    development.children = [review]
+    review.children = [repair]
+    repair.children = [rereview]
+    execution = story_execution(chain(development, repair))
+    assert execution.run_id == "attempt-1"
+    assert execution.history_complete is True
+    assert [item.invocation_id for item in execution.runs] == ["attempt-1", "review", "repair", "review-again"]
+    assert execution.activity is None
+    assert "approved" not in execution.model_dump_json()
+
+
+def test_capped_history_retains_observations_without_current_activity():
+    execution = story_execution(chain(run("review", "reviewer", "2026-09-15T14:54:00Z"), depth_capped=True))
+    assert len(execution.runs) == 1
+    assert execution.history_complete is False
+    assert execution.activity is None
+
+
+@pytest.mark.parametrize("timestamp", ["invalid", "2026-09-15T15:00:00"])
+def test_invalid_ordering_cannot_resurrect_stale_runs(timestamp):
+    execution = story_execution(chain(run("old", "reviewer", "2026-09-15T14:54:00Z"), run("new", "developer", timestamp)))
+    assert execution.runs == []
+    assert execution.history_complete is False
+    assert execution.activity is None
 
 
 @pytest.mark.asyncio

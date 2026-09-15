@@ -14,7 +14,7 @@ from typing import Literal
 import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from src.activity.liveness import OBSERVED_TERMINAL_STATUSES, LivenessVerdict
@@ -31,41 +31,67 @@ class NodeActivity(BaseModel):
     liveness: LivenessVerdict
 
 
-def current_activity(chain: InvocationChainResponse) -> NodeActivity | None:
-    # A truncated chain contains the oldest runs, so it cannot establish the
-    # current stage. In particular, never resurrect an earlier reviewer.
-    if chain.depth_capped:
-        return None
-    candidates = []
+class StoryRun(NodeActivity):
+    invoked_at: str
+
+
+class StoryExecution(BaseModel):
+    """Current-attempt observations, never review verdicts or engine transitions."""
+
+    run_id: str | None = None
+    activity: NodeActivity | None = None
+    runs: list[StoryRun] = Field(default_factory=list)
+    history_complete: bool = False
+
+
+def story_execution(chain: InvocationChainResponse) -> StoryExecution:
     pending = list(chain.items)
     seen = set()
+    runs = []
     while pending:
         item = pending.pop()
         if item.invocation_id in seen:
             continue
         seen.add(item.invocation_id)
         pending.extend(item.children)
-        if item.persona in ("developer", "reviewer"):
-            try:
-                timestamp = datetime.fromisoformat(item.invoked_at.replace("Z", "+00:00"))
-                if timestamp.tzinfo is None:
-                    return None
-            except ValueError:
-                return None
-            candidates.append((timestamp, item.invocation_id, item))
-    if not candidates:
-        return None
-    latest = max(candidates, key=lambda candidate: candidate[:2])[2]
-    # Choose the latest run BEFORE checking status: an older unfinalized run
-    # must not appear active after a newer review or repair has finished.
-    if latest.status in OBSERVED_TERMINAL_STATUSES:
-        return None
-    return NodeActivity(
-        invocation_id=latest.invocation_id,
-        persona=latest.persona,
-        status=latest.status or "unknown",
-        liveness=latest.liveness or "unverifiable",
+        if item.persona not in ("developer", "reviewer"):
+            continue
+        try:
+            timestamp = datetime.fromisoformat(item.invoked_at.replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                return StoryExecution(run_id=chain.correlation_id)
+        except ValueError:
+            return StoryExecution(run_id=chain.correlation_id)
+        runs.append(
+            (
+                timestamp,
+                StoryRun(
+                    invocation_id=item.invocation_id,
+                    persona=item.persona,
+                    status=item.status or "unknown",
+                    liveness=item.liveness or "unverifiable",
+                    invoked_at=item.invoked_at,
+                ),
+            )
+        )
+    runs.sort(key=lambda entry: (entry[0], entry[1].invocation_id))
+    execution = StoryExecution(
+        run_id=chain.correlation_id,
+        runs=[entry[1] for entry in runs],
+        history_complete=not chain.depth_capped and bool(runs),
     )
+    # Truncated history can preserve observed work but cannot establish what is
+    # happening now. Choose the latest run BEFORE checking status, so an older
+    # unfinalized run never resurfaces after a newer review or repair finishes.
+    if execution.history_complete:
+        latest = execution.runs[-1]
+        if latest.status not in OBSERVED_TERMINAL_STATUSES:
+            execution.activity = NodeActivity(**latest.model_dump(include=set(NodeActivity.model_fields)))
+    return execution
+
+
+def current_activity(chain: InvocationChainResponse) -> NodeActivity | None:
+    return story_execution(chain).activity
 
 
 def _activity_service() -> ActivityService:
@@ -79,25 +105,30 @@ def _activity_service() -> ActivityService:
     return ActivityService(dynamodb_resource=resource)
 
 
-def _read_activity(org_id: str, run_id: str) -> NodeActivity | None:
+def _read_execution(org_id: str, run_id: str) -> StoryExecution:
     try:
         # Dispatch sets correlation_id = run_id. The caller supplies only the
         # committed current-attempt dispatch, never a browser-provided chain ID.
         # Each thread owns its boto3 resource; resources are not thread-safe.
         chain = _activity_service().get_chain(correlation_id=run_id, tenant_id=org_id)
-        return current_activity(chain)
+        return story_execution(chain)
     except (BotoCoreError, ClientError):
         logger.warning("Story activity unavailable", extra={"org_id": org_id, "run_id": run_id}, exc_info=True)
-        return None
+        return StoryExecution()
 
 
-async def load_story_activity(*, org_id: str, run_ids: list[str]) -> dict[str, NodeActivity | None]:
-    # Avoid blocking the async graph route on DynamoDB. Only executing stories
+async def load_story_execution(*, org_id: str, run_ids: list[str]) -> dict[str, StoryExecution]:
+    # Avoid blocking the async graph route on DynamoDB. Only dispatched stories
     # are enriched, with bounded concurrency and one query per distinct attempt.
     semaphore = asyncio.Semaphore(4)
 
     async def read(run_id: str):
         async with semaphore:
-            return run_id, await run_in_threadpool(_read_activity, org_id, run_id)
+            return run_id, await run_in_threadpool(_read_execution, org_id, run_id)
 
     return dict(await asyncio.gather(*(read(run_id) for run_id in dict.fromkeys(run_ids))))
+
+
+async def load_story_activity(*, org_id: str, run_ids: list[str]) -> dict[str, NodeActivity | None]:
+    executions = await load_story_execution(org_id=org_id, run_ids=run_ids)
+    return {run_id: execution.activity for run_id, execution in executions.items()}

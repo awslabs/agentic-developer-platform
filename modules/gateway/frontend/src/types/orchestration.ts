@@ -60,6 +60,26 @@ export interface AggregateCostFigure extends CostFigure {
   partial?: boolean;
 }
 
+/** A persisted worker observation; successful exit is not review approval. */
+export interface StoryActivity {
+  invocation_id: string;
+  persona: 'developer' | 'reviewer';
+  status: string;
+  liveness: 'live' | 'unverifiable' | 'exited';
+}
+
+export interface StoryRun extends StoryActivity {
+  invoked_at: string;
+}
+
+export interface StoryExecution {
+  /** The committed dispatch this history belongs to. */
+  run_id: string | null;
+  activity: StoryActivity | null;
+  runs: StoryRun[];
+  history_complete: boolean;
+}
+
 export interface GraphNode {
   id: string;
   epic_ref: string;
@@ -79,12 +99,8 @@ export interface GraphNode {
   attempts: number;
   run_id?: string | null;
   /** Current developer/reviewer in this attempt's chain; not a merge verdict. */
-  activity?: {
-    invocation_id: string;
-    persona: 'developer' | 'reviewer';
-    status: string;
-    liveness: 'live' | 'unverifiable' | 'exited';
-  } | null;
+  activity?: StoryActivity | null;
+  execution_history?: StoryExecution | null;
   issue_url?: string | null;
   result_summary?: string | null;
   configuration_problem?: string | null;
