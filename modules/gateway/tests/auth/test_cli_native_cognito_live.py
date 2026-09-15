@@ -33,7 +33,7 @@ import adp_common as common  # noqa: E402
 
 
 @pytest.mark.skipif(not os.environ.get("ADP_NATIVE_LIVE_CONFIG"), reason="requires explicit #5173 live config and private fixture state")
-def test_real_cognito_admin_login_refresh_and_nonadmin_refusal(tmp_path, monkeypatch, db_session):
+def test_real_cognito_admin_login_refresh_and_nonadmin_refusal(tmp_path, monkeypatch, db_session, request):
     config = common.read_private_json(os.environ["ADP_NATIVE_LIVE_CONFIG"])
     state = common.read_private_json(os.environ["ADP_NATIVE_LIVE_STATE"])
     assert re.fullmatch(r"adp-e2e-\d{8}-\d{6}-[a-f0-9]{6}", state["prefix"])
@@ -78,6 +78,7 @@ def test_real_cognito_admin_login_refresh_and_nonadmin_refusal(tmp_path, monkeyp
             return response.json()
 
     monkeypatch.setenv("HOME", str(tmp_path))
+    request.addfinalizer(lambda: (tmp_path / ".bedrock-gateway/tokens.json").unlink(missing_ok=True))
     common.write_json(common.config_path(), {"gateway_url": config["gateway_url"]})
     spec = importlib.util.spec_from_file_location("live_adp_admin", CLI / "adp-admin.py")
     admin = importlib.util.module_from_spec(spec)
