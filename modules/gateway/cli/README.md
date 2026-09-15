@@ -464,3 +464,65 @@ custom hostname, and the default `*.cloudfront.net` name may be retired.
 - `bg-cognito-auth.sh token` outputs only the JWT to stdout (logs go to stderr)
 - No credentials are logged or stored in plaintext
 - M2M client secrets live in AWS Secrets Manager, not in code
+
+
+## Administrator onboarding
+
+Install from the command on the deployment's sign-in page; downloads require no
+login. The installer prints an absolute path you can run before reloading PATH.
+
+```sh
+adp admin login          # Cognito username/password, password change and MFA
+adp admin setup          # check existing setup and resume missing providers
+adp admin setup --dry-run --json
+```
+
+On a fresh deployment, `adp admin setup` offers Cognito login before GitHub is
+configured. Ordinary developers continue using `adp login` and their existing
+`adp codex` / `adp claude` commands. Admin login requires no local AWS credentials.
+
+Automation can supply a private mode-0600 JSON file via `--credentials-file`, or
+JSON from a secret manager via `--credentials-stdin`; never put passwords or MFA
+codes in arguments. Keys: `username`, `password`, and challenge inputs
+`new_password`, `sms_mfa_code`, `software_token_mfa_code` when required. Unsupported
+MFA enrollment remains pending and must be completed in the browser.
+
+Setup reports each provider as verified, configured, pending, failed or
+unavailable. Providers not yet shipped remain unavailable. `--json` produces one
+object; exit codes are 0 success, 1 usage, 2 authentication, 3 authorization,
+4 external action pending, and 5 failure. Domain commands ship separately.
+
+### Bootstrap release smoke test
+
+`modules/gateway/scripts/test-cli-bootstrap.py` compares a fresh public download
+with the expected checkout before accepting credentials. It checks an explicit
+Cognito pool/client binding, installs into a temporary home, signs in through
+`adp admin login`, refreshes the saved session, and checks administrator setup.
+Use an existing test administrator and a private 0600 credentials JSON file with
+`username`, `password`, and challenge inputs when required. No AWS credentials
+are needed by this test.
+
+```sh
+python modules/gateway/scripts/test-cli-bootstrap.py \
+  --gateway-url https://DEPLOYMENT/api \
+  --expected-pool POOL_ID --expected-client CLI_CLIENT_ID \
+  --expected-cli-dir modules/gateway/cli \
+  --credentials-file /private/test-admin.json \
+  --report /private/bootstrap-report.json
+```
+
+Use `--artifacts-only` instead of `--credentials-file` to check deployment before
+signing in. A mismatch fails without sending credentials. Reports contain only
+binding metadata, artifact hashes and step outcomes. This deployed check remains
+separate from mocked authentication tests and must pass after the gateway and its
+pool-scoped Cognito IAM policy are released.
+
+Before deployment, the opt-in component check
+`tests/auth/test_cli_native_cognito_live.py` can reuse the running #5173 fixture
+identities with actual Cognito and deployed refresh. Set `ADP_NATIVE_LIVE_CONFIG`
+to the private environment config, `ADP_NATIVE_LIVE_STATE` to its `state.json`,
+and `ADP_NATIVE_LIVE_CLIENT` to the **CLI** app client ID (not the discovery
+`client_id`, which belongs to the browser). Run with `pytest -q --tb=no` to keep
+raw SDK failures out of output. It creates no users or grants and changes no
+passwords. Its native routes/database run locally; deployment, gateway IAM and
+PostgreSQL rate-limit concurrency still require release verification.
