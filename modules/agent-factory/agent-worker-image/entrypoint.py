@@ -794,6 +794,14 @@ def _load_door_api_key(region: str) -> None:
     cost of this choice is that a misconfiguration shows up as "the agent had no
     context" rather than a hard error, so both failure paths log at WARNING.
     """
+    if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED") == "true":
+        # These shared credentials bypass run-bound authorization. Protected
+        # workers need a mediated Door integration before enabling that feature.
+        for key in ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY"):
+            os.environ.pop(key, None)
+        logger.info("Protected worker uses no shared Door or gateway credentials")
+        return
+
     if os.environ.get("DOOR_API_KEY"):
         logger.debug("DOOR_API_KEY already set in environment; not reading Secrets Manager")
         return

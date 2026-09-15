@@ -465,3 +465,25 @@ def test_bootstrap_refuses_unknown_or_expired_provider_token(expires_at):
     client.github_installation_token.return_value = {"token": "fixture", "app_id": "1", "expires_at": expires_at}
     with pytest.raises(RuntimeError, match="unusable token or expiry"):
         _broker_installation_token(installation_id=1, repo_owner="acme", repo_name="repo", cred_client=client)
+
+
+@patch("entrypoint.boto3.client")
+def test_protected_bootstrap_removes_shared_gateway_and_door_credentials(client, monkeypatch):
+    import os
+    from entrypoint import _load_door_api_key
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+    for key in ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY"):
+        monkeypatch.setenv(key, "must-not-reach-agent")
+    _load_door_api_key("us-east-1")
+    assert all(key not in os.environ for key in ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY"))
+    client.assert_not_called()
+
+
+@patch("lib.marker_signing.boto3.client")
+def test_protected_worker_never_loads_or_reuses_a_shared_signing_key(client, monkeypatch):
+    from lib import marker_signing
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setattr(marker_signing, "_signing_key", b"cached-legacy-key")
+    monkeypatch.setattr(marker_signing, "_key_loaded", True)
+    assert marker_signing.compute_signature("correlation", "victim", "true", "other-run", "1") is None
+    client.assert_not_called()

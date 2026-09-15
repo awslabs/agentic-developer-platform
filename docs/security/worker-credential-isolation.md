@@ -50,6 +50,9 @@ token. Tokens already delivered retain their provider lifetime/revocation rules.
 
 Protected App runs always use the broker. Bootstrap carries the provider's actual
 expiry to the Node runtime and removes both private-key environment aliases.
+Protected bootstrap also removes inherited shared gateway/Door keys and does not
+load the shared marker HMAC key. Door and signed-marker compatibility require
+mediation before activation, as recorded below.
 Concurrent timer, posting-helper and forced refresh calls share one renewal.
 Transient network/429/502/503/504 failures receive at most three attempts; access
 refusals are not retried and provider response bodies are not included in errors.
