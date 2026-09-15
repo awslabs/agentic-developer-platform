@@ -464,3 +464,30 @@ custom hostname, and the default `*.cloudfront.net` name may be retired.
 - `bg-cognito-auth.sh token` outputs only the JWT to stdout (logs go to stderr)
 - No credentials are logged or stored in plaintext
 - M2M client secrets live in AWS Secrets Manager, not in code
+
+
+## Administrator onboarding
+
+Install from the command on the deployment's sign-in page; downloads require no
+login. The installer prints an absolute path you can run before reloading PATH.
+
+```sh
+adp admin login          # Cognito username/password, password change and MFA
+adp admin setup          # check existing setup and resume missing providers
+adp admin setup --dry-run --json
+```
+
+On a fresh deployment, `adp admin setup` offers Cognito login before GitHub is
+configured. Ordinary developers continue using `adp login` and their existing
+`adp codex` / `adp claude` commands. Admin login requires no local AWS credentials.
+
+Automation can supply a private mode-0600 JSON file via `--credentials-file`, or
+JSON from a secret manager via `--credentials-stdin`; never put passwords or MFA
+codes in arguments. Keys: `username`, `password`, and challenge inputs
+`new_password`, `sms_mfa_code`, `software_token_mfa_code` when required. Unsupported
+MFA enrollment remains pending and must be completed in the browser.
+
+Setup reports each provider as verified, configured, pending, failed or
+unavailable. Providers not yet shipped remain unavailable. `--json` produces one
+object; exit codes are 0 success, 1 usage, 2 authentication, 3 authorization,
+4 external action pending, and 5 failure. Domain commands ship separately.

@@ -60,6 +60,8 @@ _CLI_DIR = _GATEWAY_ROOT / "cli"
 #   bg-auth.ps1  — never existed in the repo; PowerShell parity is a non-goal
 ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp": (_CLI_DIR / "adp").resolve(),
+    "adp_common.py": (_CLI_DIR / "adp_common.py").resolve(),
+    "adp-admin.py": (_CLI_DIR / "adp-admin.py").resolve(),
     "install.sh": (_CLI_DIR / "install.sh").resolve(),
     "bg-cognito-auth.sh": (_CLI_DIR / "bg-cognito-auth.sh").resolve(),
     "bg-gateway-proxy.py": (_CLI_DIR / "bg-gateway-proxy.py").resolve(),
@@ -72,6 +74,8 @@ PYTHON_SCRIPT_MEDIA_TYPE = "text/x-python"
 # above without one falls back to the shell type rather than 500-ing.
 SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp": SHELL_SCRIPT_MEDIA_TYPE,
+    "adp_common.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "install.sh": SHELL_SCRIPT_MEDIA_TYPE,
     "bg-cognito-auth.sh": SHELL_SCRIPT_MEDIA_TYPE,
     "bg-gateway-proxy.py": PYTHON_SCRIPT_MEDIA_TYPE,

@@ -42,6 +42,7 @@ DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
 ADP_SCRIPT="adp"
 CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py"
 
 CONFIG_DIR="${HOME}/.bedrock-gateway"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
@@ -266,13 +267,9 @@ do_install() {
     # script does not.
     trap cleanup_staged EXIT INT TERM
 
-    stage_file "${ADP_SCRIPT}"
-    stage_file "${CORE_SCRIPT}"
-    stage_file "${PROXY_SCRIPT}"
+    for name in ${CLI_FILES}; do stage_file "${name}"; done
 
-    commit_file "${ADP_SCRIPT}"
-    commit_file "${CORE_SCRIPT}"
-    commit_file "${PROXY_SCRIPT}"
+    for name in ${CLI_FILES}; do commit_file "${name}"; done
 
     trap - EXIT INT TERM
     STAGED_TMPS=""
@@ -283,7 +280,7 @@ do_install() {
 
 do_uninstall() {
     removed=0
-    for name in "${ADP_SCRIPT}" "${CORE_SCRIPT}" "${PROXY_SCRIPT}"; do
+    for name in ${CLI_FILES}; do
         if [ -f "${INSTALL_DIR}/${name}" ]; then
             rm -f "${INSTALL_DIR}/${name}" "${INSTALL_DIR}/${name}.prev"
             removed=1
@@ -346,10 +343,13 @@ print_next_steps() {
 
   adp is installed. Next:
 
-    adp login          # approve once in the browser
+    "${INSTALL_DIR}/adp" login    # works immediately, before reloading PATH
     adp status         # confirm you are signed in
     adp codex setup    # or: adp claude setup
     codex              # or: claude
+
+  First-time platform administrator (before GitHub is configured):
+    "${INSTALL_DIR}/adp" admin setup
 
   One login is shared by every tool — adding a second tool is just its setup verb.
 

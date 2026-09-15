@@ -47,6 +47,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -772,6 +773,19 @@ cmd_daemon_uninstall() {
     print_success "Done. 'adp codex' still works — it starts the proxy on demand."
 }
 
+# Python area commands resolve installed siblings, just like the auth helper.
+exec_python_helper() {
+    local helper="$(adp_dir)/$1"
+    shift
+    if ! command -v python3 >/dev/null 2>&1; then
+        print_error "Python 3 is required for this command."; exit 1
+    fi
+    if [ ! -f "${helper}" ]; then
+        print_error "CLI helper missing. Run adp update."; exit 1
+    fi
+    exec python3 "${helper}" "$@"
+}
+
 # --- update -----------------------------------------------------------------
 # Re-pull install.sh from the gateway that installed us and re-run it against
 # the same prefix. The previous copies are kept as *.prev for --rollback, which
@@ -791,7 +805,7 @@ cmd_update() {
     if [ "${rollback}" -eq 1 ]; then
         local restored=0
         local name
-        for name in adp "${CORE_SCRIPT_NAME}" "${PROXY_SCRIPT_NAME}"; do
+        for name in ${CLI_FILES}; do
             if [ -f "${dir}/${name}.prev" ]; then
                 mv -f "${dir}/${name}.prev" "${dir}/${name}"
                 restored=1
@@ -856,6 +870,10 @@ Run a tool:
 Self-management:
     daemon install        Opt in to an always-on proxy, so bare 'codex' works (macOS)
     daemon uninstall      Remove it
+
+  Administration:
+    admin login           Sign in with a Cognito administrator account
+    admin setup           Check and resume first-time setup
     update [--rollback]   Re-pull this CLI from your gateway
     version               Print the version
     help                  Show this message
@@ -883,6 +901,7 @@ main() {
     shift || true
 
     case "${command}" in
+        admin)   exec_python_helper "adp-admin.py" "$@" ;;
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.

@@ -1,6 +1,6 @@
 # CLI command contract — ADP CLI uplift (#5180 / #5185)
 
-**Status:** committed contract. Binding on #5181, #5182, #5183, #5184.
+**Status:** foundation implementation in PR #5188; domain integration in PR #5179. Release/live acceptance is recorded separately.
 **Foundation story:** #5185 · **Epic:** #5180 · **Coordinate shared files with:** #5039, #5179
 
 This document is the interface between the shared CLI foundation and the four
@@ -28,7 +28,8 @@ existing shortcut is added.
 | `adp daemon install\|uninstall`, `adp update [--rollback]`, `version`, `help` | #5185 | shipped, unchanged |
 | `adp admin login` | #5185 | **new** — native Cognito bootstrap (§4) |
 | `adp admin setup` | #5185 | **new** — resumable guided setup (§5) |
-| `adp bedrock <action>` | #5181 | reconcile with #5179 |
+| `adp admin bedrock connect\|list\|verify\|status` | #5181 | canonical administrative surface |
+| `adp bedrock status` | #5181 | caller’s effective route; legacy forms remain compatible |
 | `adp aws <action>` | #5182 | |
 | `adp admin github <action>` | #5183 | |
 | `adp github <action>` | #5184 | |
@@ -40,7 +41,7 @@ at all — is a launch with full argument forwarding, and `adp codex -- setup` i
 escape hatch for launching with a literal `setup` argument. Any change to that
 dispatch is a regression, not a feature. The same rule applies to `adp claude`.
 
-Feature stories add a **new top-level word** and dispatch it to their own file.
+Feature stories add their command under the agreed area and dispatch it to their own file.
 They do not add flags to, reorder, or reinterpret existing verbs.
 
 ---
@@ -61,7 +62,8 @@ All CLI files install side by side in one directory (`~/.adp/bin` by default), a
   adp-admin.py         # admin login + guided setup (#5185)
   adp-bedrock.py       # #5181
   adp-aws.py           # #5182
-  adp-github.py        # #5184 (and #5183's admin actions)
+  adp-github.py        # #5184
+  adp-github-admin.py  # #5183
 ```
 
 Python helpers are **standard library only**. A CLI that needs `pip install` on a
@@ -151,7 +153,7 @@ is surfaced, if present.
 | 404 | unknown target, or gateway too old | check the target; consider upgrading the gateway |
 | 409 | already exists / already decided | the existing state and how to reuse it |
 | 429 | rate limited | wait and retry |
-| 5xx, timeout, DNS | retryable | nothing was changed; retry the same command |
+| 5xx, timeout, DNS | outcome uncertain | check current state before retrying; a mutation may have completed |
 
 A failed mutation must state whether anything changed. "Retry the same command to
 resume" is only correct for operations that are genuinely idempotent (§3.6).
@@ -240,7 +242,7 @@ CLI  ── POST /api/auth/cli/challenge {continuation, responses{…}}
      ◄─ tokens, or the next challenge
 ```
 
-- The gateway calls `ADMIN_USER_PASSWORD_AUTH` on the **CLI app client** and
+- The routes live in `src/auth/cli_native_login.py`; existing browser login/refresh remain in `cli_login.py`. The gateway calls `ADMIN_USER_PASSWORD_AUTH` on the **CLI app client** and
   `AdminRespondToAuthChallenge` for continuations. It **never** calls
   `AdminSetUserPassword` — a native user's password is changed only inside the
   `NEW_PASSWORD_REQUIRED` challenge they were actually asked to complete.
@@ -259,7 +261,7 @@ id, with a short expiry and a single-use marker. The gateway verifies the
 signature and that the presented responses match the challenge the envelope was
 issued for. A tampered, replayed, expired or cross-flow envelope is rejected —
 the client cannot substitute a different user, a different challenge or a
-different pool. Failures are rate-limited per IP and per username, and every
+different pool. Failures are rate-limited per IP and per username through expiring database records (serialized per key with PostgreSQL transaction locks), and every
 failure returns the same generic message so the endpoint does not disclose
 whether an account exists.
 
@@ -324,7 +326,8 @@ never reported as done.
 4. A `pending` provider does not block the others. The wizard continues and prints
    the pending items and their next actions at the end.
 5. The wizard exits 0 when everything is `verified`/`configured`, 4 when anything
-   is `pending`, 5 when anything is `failed`.
+   is `pending`/`unavailable`, 5 when anything is `failed`. A successful read-only
+   `--dry-run` exits 0 even when setup remains pending.
 6. The wizard never writes another provider's state file.
 
 ### 5.3 Registration
@@ -383,3 +386,14 @@ Feature stories touch shared files only for the three registrations in §2.2. Th
 integration owner reviews and merges those sequentially. Only the integration
 owner edits the central CLI overview (`modules/gateway/cli/README.md`); feature
 docs live in separate per-area files.
+
+## Scripted administrator login
+
+Use `adp admin login --credentials-file /private/path/login.json --json` (file mode
+0600), or `--credentials-stdin` with a JSON object from a secret manager. Keys are
+`username`, `password`, and when challenged `new_password`, `sms_mfa_code` or
+`software_token_mfa_code`. Required new-user attributes use `userAttributes.name`
+keys named by the server. No secret values belong in command arguments. A failed
+MFA attempt consumes its continuation; restart login with a fresh code. Native
+login verifies `/auth/cli/admin-session` before saving tokens, using the same
+refresh lock and session format as the established CLI.
