@@ -320,7 +320,7 @@ never reported as done.
    offers `adp admin login` (native) or `adp login` (browser) and resumes after.
 2. `status()` on every provider, in `ORDER`, before any mutation. The user sees the
    whole board before answering a single question.
-3. `configure()` only on providers that are not `verified`, asking only for what
+3. `configure()` only on providers that are `pending`, asking only for what
    is missing, and offering reuse of existing configuration where the provider
    reports it.
 4. A `pending` provider does not block the others. The wizard continues and prints

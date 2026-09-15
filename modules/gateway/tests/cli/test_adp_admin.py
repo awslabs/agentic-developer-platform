@@ -184,3 +184,33 @@ def test_installed_admin_help_preserves_existing_dispatch(run_adp):
     result = run_adp(["admin", "--help"])
     assert result.returncode == 0
     assert "login" in result.stdout and "setup" in result.stdout
+
+
+@pytest.mark.parametrize("failure", [common.CliError("Check the provider"), RuntimeError("secret-sdk-payload")])
+def test_failed_provider_does_not_stop_later_setup_steps(home, monkeypatch, failure):
+    calls = []
+
+    def broken(ctx):
+        raise failure
+
+    def configure(ctx):
+        calls.append("github")
+        return common.envelope("configured", "github")
+
+    providers = {
+        "adp-bedrock.py": SimpleNamespace(status=broken),
+        "adp-github-admin.py": SimpleNamespace(status=lambda ctx: common.envelope("pending", "github"), configure=configure),
+    }
+    monkeypatch.setattr(common, "load_provider", lambda filename: providers[filename])
+    api = SimpleNamespace(base="https://adp.example/api", request=lambda *args: {"org_id": "org"})
+    result = admin.setup(admin.parser().parse_args(["setup", "--json"]), api)
+    assert result["status"] == "failed"
+    assert calls == ["github"]
+    assert result["detail"]["steps"][1]["status"] == "configured"
+    assert "secret-sdk-payload" not in json.dumps(result)
+
+
+def test_unimportable_provider_is_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "__file__", str(tmp_path / "adp_common.py"))
+    (tmp_path / "provider.py").write_text("raise ImportError('missing dependency')\n")
+    assert common.load_provider("provider.py") is None

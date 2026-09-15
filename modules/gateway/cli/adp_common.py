@@ -216,7 +216,10 @@ def load_provider(filename):
         return None
     spec = importlib.util.spec_from_file_location(path.stem.replace("-", "_"), path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except ImportError:
+        return None
     return module
 
 
