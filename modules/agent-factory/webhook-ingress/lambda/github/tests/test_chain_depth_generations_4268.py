@@ -270,15 +270,14 @@ class TestDiscardedEventsDoNotAdvanceDepth:
             "a discarded event advanced the recursion counter"
         )
 
-    def test_event_type_unhandled_does_not_increment(self):
+    def test_bot_comment_edit_does_not_increment(self):
         """The 679-row case, via the evidence table's representative row.
 
         ``issue_comment``/``edited``, ``no_op``, ``skip_reason:
         event_type_unhandled``, ``chain_depth: 277`` — an edited comment with no
-        handler that advanced the recursion counter by one. Only
-        ``issue_comment``/``created`` has a branch, so an edit falls through to the
-        unhandled tail while still carrying full correlation context (which is why
-        it has a real inherited depth to preserve, unlike a channel-less event).
+        handler that advanced the recursion counter by one. Bot comment edits
+        now have their own skip reason, but still carry full correlation context
+        and must preserve their inherited depth without starting another run.
         """
         result, mock_capture = _run_handler(
             "issue_comment", _status_comment_payload(action="edited"), chain_depth=7
@@ -286,7 +285,7 @@ class TestDiscardedEventsDoNotAdvanceDepth:
 
         assert result["statusCode"] == 200
         kwargs = mock_capture.call_args.kwargs
-        assert kwargs["skip_reason"] == "event_type_unhandled"
+        assert kwargs["skip_reason"] == "bot_comment_action_unhandled"
         assert kwargs["chain_depth"] == 7
 
     def test_suppressed_bot_event_does_not_increment(self):

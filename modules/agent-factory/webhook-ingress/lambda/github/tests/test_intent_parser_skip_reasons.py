@@ -127,6 +127,36 @@ class TestCommentReasons:
         assert intent is None
         assert reason == skip_reasons.BOT_DISPATCH_NO_CORRELATION
 
+    def test_bot_edited_own_comment_is_bot_comment_action_unhandled(self):
+        """The agent editing its own status comment in place (not a new comment).
+
+        Must be distinguishable from EVENT_TYPE_UNHANDLED — otherwise this looks
+        like an unexplained gap in coverage every time it shows up in webhook
+        delivery logs, when it's actually routine self-authored activity.
+        """
+        payload = {
+            "action": "edited",
+            "comment": {"body": "**Status**: In Progress"},
+            "issue": {"number": 12},
+            "sender": _bot_sender(),
+        }
+        intent, reason = extract_intent_with_reason("issue_comment", payload)
+        assert intent is None
+        assert reason == skip_reasons.BOT_COMMENT_ACTION_UNHANDLED
+
+    def test_human_edited_comment_is_still_event_type_unhandled(self):
+        """A human editing their comment has no bot-specific reason to claim —
+        it stays on the generic catch-all, not BOT_COMMENT_ACTION_UNHANDLED."""
+        payload = {
+            "action": "edited",
+            "comment": {"body": "typo fix"},
+            "issue": {"number": 13},
+            "sender": _human_sender(),
+        }
+        intent, reason = extract_intent_with_reason("issue_comment", payload)
+        assert intent is None
+        assert reason == skip_reasons.EVENT_TYPE_UNHANDLED
+
 
 class TestIssueReasons:
     def test_issue_opened_without_aidlc_label(self):
