@@ -2,9 +2,9 @@
 #
 # install.sh — install the `adp` CLI (Issue #4852, Phase 1).
 #
-# Installs `adp` plus the two files it wraps — `bg-cognito-auth.sh` (the auth
-# core) and `bg-gateway-proxy.py` (the Codex auth proxy) — SIDE BY SIDE into
-# ~/.adp/bin, because `adp` resolves both as siblings of itself rather than via
+# Installs `adp` and its helpers — `bg-cognito-auth.sh` (the auth core),
+# `bg-gateway-proxy.py` (the Codex proxy), and `adp-bedrock.py` — SIDE BY SIDE into
+# ~/.adp/bin, because `adp` resolves its helpers as siblings of itself rather than via
 # PATH. ~/.adp/bin is what goes on PATH. ~/bin is deliberately never touched, so
 # an existing hand-installed bg-cognito-auth.sh keeps working untouched.
 #
@@ -35,13 +35,14 @@
 
 set -eu
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
 
-# The three files that must land side by side.
+# The four files that must land side by side.
 ADP_SCRIPT="adp"
 CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
+BEDROCK_SCRIPT="adp-bedrock.py"
 
 CONFIG_DIR="${HOME}/.bedrock-gateway"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
@@ -259,7 +260,7 @@ do_install() {
 
     mkdir -p "${INSTALL_DIR}"
 
-    # Stage-then-commit: fetch and validate all three files first, and only move
+    # Stage-then-commit: fetch and validate all four files first, and only move
     # them into place once every one has succeeded. A mid-way failure trips the
     # trap, cleanup_staged wipes the temps, and the previous install (if any) is
     # left untouched — no half-finished state where `adp` exists but its core
@@ -269,10 +270,12 @@ do_install() {
     stage_file "${ADP_SCRIPT}"
     stage_file "${CORE_SCRIPT}"
     stage_file "${PROXY_SCRIPT}"
+    stage_file "${BEDROCK_SCRIPT}"
 
     commit_file "${ADP_SCRIPT}"
     commit_file "${CORE_SCRIPT}"
     commit_file "${PROXY_SCRIPT}"
+    commit_file "${BEDROCK_SCRIPT}"
 
     trap - EXIT INT TERM
     STAGED_TMPS=""
@@ -283,7 +286,7 @@ do_install() {
 
 do_uninstall() {
     removed=0
-    for name in "${ADP_SCRIPT}" "${CORE_SCRIPT}" "${PROXY_SCRIPT}"; do
+    for name in "${ADP_SCRIPT}" "${CORE_SCRIPT}" "${PROXY_SCRIPT}" "${BEDROCK_SCRIPT}"; do
         if [ -f "${INSTALL_DIR}/${name}" ]; then
             rm -f "${INSTALL_DIR}/${name}" "${INSTALL_DIR}/${name}.prev"
             removed=1

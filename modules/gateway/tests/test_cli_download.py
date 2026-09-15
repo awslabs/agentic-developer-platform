@@ -46,6 +46,7 @@ SERVEABLE = [
     (INSTALL_SCRIPT, "text/x-shellscript"),
     (HELPER_SCRIPT, "text/x-shellscript"),
     (PROXY_SCRIPT, "text/x-python"),
+    ("adp-bedrock.py", "text/x-python"),
 ]
 SCRIPT_NAMES = [name for name, _ in SERVEABLE]
 
@@ -87,7 +88,7 @@ class TestCliScriptDownload:
         """Legacy bg-auth.sh (deprecated) and bg-auth.ps1 (no source file) stay
         out. Pinned as a set so adding a file to cli/ never makes it publicly
         downloadable by accident — this route is unauthenticated."""
-        assert set(ALLOWED_SCRIPTS) == {ADP_SCRIPT, INSTALL_SCRIPT, HELPER_SCRIPT, PROXY_SCRIPT}
+        assert set(ALLOWED_SCRIPTS) == {ADP_SCRIPT, INSTALL_SCRIPT, HELPER_SCRIPT, PROXY_SCRIPT, "adp-bedrock.py"}
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):
         """The documented install line is `curl … | sh`, so this must come back

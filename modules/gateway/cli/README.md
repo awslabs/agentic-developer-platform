@@ -11,6 +11,7 @@ or Codex.
 | `install.sh` | Installer for `adp` — one line, run via `curl … \| sh` from your gateway |
 | `bg-cognito-auth.sh` | Cognito authentication core (login, import, refresh, token, serve). `adp` delegates every auth verb to it |
 | `bg-gateway-proxy.py` | Localhost auth proxy started by `serve` — zero-touch auth for Codex (stdlib python3, no pip installs) |
+| `adp-bedrock.py` | Bedrock account connection and routing, used by `adp bedrock connect` (stdlib Python 3) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
 | `examples/claude-settings-cognito.json` | Claude Code settings (Anthropic format via gateway) |
@@ -37,7 +38,7 @@ adp claude setup   # or: adp codex setup
 claude             # or: adp codex
 ```
 
-The installer puts `adp`, `bg-cognito-auth.sh` and `bg-gateway-proxy.py` side by
+The installer puts `adp`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py` and `adp-bedrock.py` side by
 side in `~/.adp/bin` (override with `--prefix`), adds that directory to your PATH,
 and remembers the gateway URL in `~/.bedrock-gateway/config.json` — which is why
 no later command needs a flag. `adp update` re-pulls from the same gateway;
@@ -55,11 +56,65 @@ providers survive — and re-running them changes nothing.
 > Prefer to read what you run? `curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh -o install.sh`,
 > read it, then `sh install.sh --gateway-url https://<CLOUDFRONT_DOMAIN>/api`.
 
+## Connect an AWS account for Bedrock
+
+After `adp update` and `adp login`, one command creates the role, verifies it and
+assigns the organization's routing rule:
+
+```bash
+adp bedrock connect --account 123456789012 --org SOPHOS-IT --profile sophos
+```
+
+The role name is generated automatically. Add `--team Engineering` to route one
+team, or `--user developer@example.com` to route one person. Organization and team
+names are resolved through ADP; ambiguous names require an exact ID. User rules
+take priority over team rules, then organization rules. The command asks once
+before provisioning and assigning, including when it replaces an existing rule.
+
+If an AWS administrator needs to create the role, download the same template and
+parameters used by the UI:
+
+```bash
+adp bedrock connect --account 123456789012 --org SOPHOS-IT --download ./sophos-role
+```
+
+Give `template.yaml`, `parameters.json` and `README.md` to the AWS administrator.
+Keep the directory, including `destination.json`. Once the role is created:
+
+```bash
+adp bedrock connect --resume ./sophos-role
+```
+
+Resume verifies the saved account and role and applies the saved organization,
+team or user rule. Download and resume require no local AWS credentials.
+The directory is private (0700), with files readable only by their owner (0600).
+The parameters include the destination's ExternalId; share them privately with
+the AWS administrator. ADP tokens and AWS credentials are never included.
+
+For scripts, append `--yes --json`. Use `--dry-run` first to inspect the resolved
+account and scope without creating a destination, role or rule. `adp bedrock list`
+shows existing destinations. All diagnostics go to stderr; `--json` keeps stdout
+machine-readable.
+
+The command uses the existing ADP login and platform-admin API checks. Direct
+provisioning additionally requires AWS CLI v2 and local AWS credentials with
+CloudFormation/IAM role-creation permissions. `--profile` is optional if the
+current AWS credential chain already points at the account. STS checks the actual
+account before provisioning; a mismatch stops the command. Neither the AWS profile
+nor its credentials are sent to ADP. CloudFormation parameters are passed through
+temporary private files, never command-line arguments or logs.
+
+Rerunning the same command reuses the pending destination and existing stack.
+It never replaces a failed stack automatically. Verification must pass before a
+rule is assigned; failed setup leaves the destination available for a retry.
+Downloaded setup uses the same gateway when resumed. This feature requires the
+gateway's destination-setup API and the updated CLI download endpoint.
+
+## Using the scripts directly (no `adp`)
+
 The rest of this document covers the underlying scripts directly. Everything below
 still works — `adp` wraps it rather than replacing it — and is what to read if you
 want the details, are debugging, or maintain a hand-installed setup.
-
-## Using the scripts directly (no `adp`)
 
 ### Step 1: Install the auth script
 
