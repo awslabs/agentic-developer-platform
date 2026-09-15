@@ -130,6 +130,7 @@ EXPECTED_CLAUDE_SDK_VERSION = "0.3.220"
 # a schema change on the gateway side surfaces as a harness test to update rather
 # than as a silent 400 in a live evaluation.
 STEER_VERB = "steer"
+ABORTED_STATUS = "aborted"
 
 # Short and deliberately inert. Every command in wave 1 is refused — by
 # authorization, by the terminal-row gate, or by the 501 that follows both — so
@@ -275,16 +276,8 @@ WAVE1_CHECKS: tuple[CheckSpec, ...] = (
 # harness-neutral-2026-09-15), on the same rule §7 states for wave 1: the
 # evaluation file's check IDs are authoritative.
 #
-# The WHOLE table is transcribed here even though S3 delivers only W2-02, and the
-# reason is a safety property rather than tidiness. `assert_check_manifest`
-# compares the emitted IDs against this manifest for equality and
-# `report_is_passing` asks `passed == required`. A wave 2 registered with just its
-# one delivered check would therefore be a 1/1 wave that exits 0 — handing the
-# operator who runs this story's own post-deploy smoke command a passing report
-# for a wave whose pause proof (W2-03), abort vocabulary (W2-06..W2-09) and
-# cleanup recheck (W2-10) do not exist yet. The full manifest makes the honest
-# state observable instead: W2-02 passes, the rest report not_run naming their
-# owning story, and the run exits nonzero until the wave is really complete.
+# Keep all ten checks even while only S3 and S5 have landed: shrinking the
+# manifest to implemented checks would turn incomplete Wave 2 into a false pass.
 WAVE2_CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec(
         "W2-01",
@@ -397,15 +390,11 @@ WAVE_REVISIONS: dict[int, str] = {
 # no predicate is deliberate — see WAVE2_CHECKS above — but it must never be
 # indistinguishable from a check the harness forgot.
 PENDING_CHECK_OWNERS: dict[str, str] = {
-    "W2-01": "S7 #3966 — wave 2 preflight/provenance record",
-    "W2-03": "S2 #3961 — proven pause (AC-P1)",
-    "W2-04": "S2 #3961 — resume identity and history (AC-P2)",
-    "W2-05": "S5 #3965 — auto-resume, heartbeats and deadline clamp (AC-P3/P5/P6)",
-    "W2-06": "S4 #3963 — aborted outcome vocabulary (AC-A3/A9)",
-    "W2-07": "S4 #3963 — aborted run accounting (AC-A10)",
-    "W2-08": "S4 #3963 — terminal/renderer parity and writer guard (AC-A11/A12)",
-    "W2-09": "S4 #3963 — live agent-run-stats field parity (AC-A10)",
-    "W2-10": "S7 #3966 — wave 2 cleanup and security recheck",
+    "W2-01": "S2 #3961 — consolidated Wave 2 preflight after S3/S2/S5 merge",
+    "W2-03": "S2 #3961 — pause admission and quiescence (AC-P1)",
+    "W2-04": "S2 #3961 — same-execution resume (AC-P2)",
+    "W2-05": "S2 #3961 — auto-resume, heartbeats and deadline clamp (AC-P3/P5/P6)",
+    "W2-10": "evaluation #3968 — Wave 2 cleanup and security recheck",
 }
 
 # Retained for the manifest guard and for callers that only need wave 1's ID set.
@@ -467,6 +456,37 @@ REQUIRED_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
     "flag_parity": ("flag_off_events_digest", "flag_on_events_digest", "differing_fields", "ordinary_flags_off"),
     "journal_tests": ("replay_same_id", "content_conflict", "bounds_enforced", "expiry_is_unknown", "assistant_turns"),
     "negative_tests": ("wrong_account", "missing_isolation", "wrong_key", "absent_required_check", "unknown_check_id", "failed_cleanup"),
+    # Wave 2 / S5 (#3964). Each of these is an observation the harness cannot make
+    # over HTTP: two adapter fixtures normalized side by side, before/after counter
+    # snapshots around a controlled seed, and the deployed digests of two separate
+    # images. Declaring the required keys here means a partially filled artifact is
+    # an immediate named failure rather than a KeyError mid-check.
+    "harness_neutrality": (
+        "adapter_a",
+        "adapter_b",
+        "native_interrupt_status",
+        "shared_code_imports_sdk",
+    ),
+    "aborted_counters": (
+        "today_before",
+        "today_after",
+        "seeded_aborted",
+        "four_category_dataset",
+        "mixed_dataset",
+        "mixed_expected",
+        "daily_deltas",
+        "persona_deltas",
+    ),
+    "vocabulary_parity": (
+        "writer_digest_deployed",
+        "gateway_digest_deployed",
+        "writer_allowed_statuses",
+        "gateway_terminal_statuses",
+        "unknown_status_rejected",
+        "unknown_status_reached_table",
+        "suites",
+    ),
+    "stats_schema_keys": ("levels",),
     # W2-02 / AC-T7. One key per property the acceptance table names, rather than
     # a single "contract_suite_passed": a green suite is not the claim, the named
     # properties are, and a collapsed boolean cannot say which one is unproven.
@@ -1672,6 +1692,332 @@ class Driver:
 
 
 
+    def check_w2_06(self) -> None:
+        """Aborted is terminal end-to-end, and native interruption alone is not.
+
+        The seeded row is read back through the live API rather than asserted from
+        the write: the whole point of AC-A3 is what the READERS do with the status,
+        and a writer test cannot see a reader that still treats the row as active.
+        """
+        run_id = self._require("aborted_run_id")
+        owner = self._token("owner")
+
+        detail = self.probe.request(
+            "GET", f"/me/agent-invocations/{run_id}", role="owner", token=owner
+        )
+        if detail.status != 200:
+            raise AssertionError(
+                f"the seeded aborted invocation returned {detail.status}, expected 200"
+            )
+        body = self._body_of(detail)
+        if body.get("status") != ABORTED_STATUS:
+            raise AssertionError(
+                f"the seeded row reports status {body.get('status')!r}, expected {ABORTED_STATUS!r} — "
+                "if the writer normalized it to something else, every reader below is testing the "
+                "wrong row"
+            )
+        # AC-A3. `completed_at` null on a terminal row is the defect this check
+        # exists for: the run is over, and a null here is what makes the dashboard
+        # keep it in the active set forever.
+        if not body.get("completed_at"):
+            raise AssertionError(
+                f"the aborted run has completed_at={body.get('completed_at')!r}; a terminal row with no "
+                "completion timestamp reads as still running (AC-A3)"
+            )
+        if body.get("liveness") != "exited":
+            raise AssertionError(
+                f"the aborted run reports liveness {body.get('liveness')!r}, expected 'exited' — a "
+                "deliberately stopped run was positively observed to end, which is exactly the "
+                "evidence 'exited' requires"
+            )
+
+        # AC-A9: the row must be reachable BY the aborted filter, not merely
+        # present in an unfiltered list. A filter that silently returns everything
+        # would satisfy a presence-only assertion.
+        listed = self.probe.request(
+            "GET",
+            f"/me/agent-invocations?status={ABORTED_STATUS}&page_size=50",
+            role="owner",
+            token=owner,
+        )
+        if listed.status != 200:
+            raise AssertionError(f"the aborted filter returned {listed.status}, expected 200")
+        items = self._body_of(listed).get("items") or []
+        if not any(item.get("invocation_id") == run_id for item in items):
+            raise AssertionError(
+                f"the seeded aborted run {run_id!r} is not returned by status={ABORTED_STATUS}; the "
+                "filter option exists but does not select the rows it names (AC-A9)"
+            )
+        foreign = sorted(
+            {item.get("status") for item in items if item.get("status") != ABORTED_STATUS}
+        )
+        if foreign:
+            raise AssertionError(
+                f"the aborted filter also returned {foreign}; a filter that ignores its argument would "
+                "have passed the presence check above"
+            )
+
+        # Harness neutrality: two differently named adapter fixtures whose native
+        # outcomes normalize to the same thing must produce identical accounting,
+        # and a native interruption with no confirmed ADP abort finalization must
+        # NOT have become an aborted run.
+        neutrality = self._artifact("harness_neutrality")
+        first, second = neutrality["adapter_a"], neutrality["adapter_b"]
+        if not isinstance(first, dict) or not first or not isinstance(second, dict) or not second:
+            raise AssertionError("both adapters must record nonempty normalized outcome accounting")
+        if first != second:
+            raise AssertionError(
+                f"two adapters' normalized outcome accounting differs: {first!r} vs {second!r}. The "
+                "shared writers and readers must not be able to tell which harness produced a run"
+            )
+        if neutrality["native_interrupt_status"] == ABORTED_STATUS:
+            raise AssertionError(
+                "a native interrupted turn with no confirmed ADP abort finalization was recorded as "
+                f"{ABORTED_STATUS!r}. Only a confirmed abort finalization may carry this status; "
+                "pattern-matching a provider's interrupt string is the specific error forbidden here"
+            )
+        if neutrality["shared_code_imports_sdk"] is not False:
+            raise AssertionError(
+                "the shared writer/reader path was recorded as importing a provider SDK; the shared "
+                "contract must not depend on any one harness"
+            )
+
+    # ---- W2-07 (S5 / #3964) --------------------------------------------
+
+    def check_w2_07(self) -> None:
+        """Additive counting: once each, and nothing else reclassified.
+
+        Deltas, never absolute totals. §7 forbids asserting against shared
+        production numbers, and an equality on a live tenant's totals would be
+        flaky for reasons that have nothing to do with this story.
+        """
+        counters = self._artifact("aborted_counters")
+
+        before, after = counters["today_before"], counters["today_after"]
+        seeded = counters["seeded_aborted"]
+
+        if type(seeded) is not int or seeded <= 0:
+            raise AssertionError("seeded_aborted must be a positive row count")
+
+        delta_total = after["total"] - before["total"]
+        delta_aborted = after[ABORTED_STATUS] - before[ABORTED_STATUS]
+        if delta_total != seeded or delta_aborted != seeded:
+            raise AssertionError(
+                f"seeding {seeded} aborted row(s) moved total by {delta_total} and aborted by "
+                f"{delta_aborted}; each aborted row must contribute exactly once to each (AC-A10)"
+            )
+        # The other three buckets must not move at all. This is the "counted once"
+        # half that a total-only assertion cannot see: a row counted into both
+        # `aborted` and `failed` keeps `total` correct while doubling the failure
+        # rate an operator is judged on.
+        for bucket in ("completed", "failed", "active"):
+            moved = after[bucket] - before[bucket]
+            if moved != 0:
+                raise AssertionError(
+                    f"seeding aborted rows moved {bucket!r} by {moved}; an aborted run must never also "
+                    f"count as {bucket} (AC-A10)"
+                )
+
+        # The four-way equality, asserted ONLY on the dedicated four-category
+        # dataset. It does not hold in general — blocked/skipped/no_op rows are
+        # counted in `total` and in none of the four buckets — so asserting it on a
+        # mixed dataset would be a false claim that someone would later "fix" by
+        # breaking the counters.
+        four = counters["four_category_dataset"]
+        bucket_sum = four["completed"] + four["failed"] + four["active"] + four[ABORTED_STATUS]
+        if four["total"] != bucket_sum:
+            raise AssertionError(
+                f"on the controlled four-category dataset total={four['total']} but the buckets sum to "
+                f"{bucket_sum}; with exactly these four outcomes present they must agree"
+            )
+
+        # Mixed dataset: existing outcomes preserved, and the four-way equality
+        # explicitly NOT claimed.
+        mixed = counters["mixed_dataset"]
+        mixed_sum = mixed["completed"] + mixed["failed"] + mixed["active"] + mixed[ABORTED_STATUS]
+        if mixed["total"] <= mixed_sum:
+            raise AssertionError(
+                f"the mixed dataset's total ({mixed['total']}) does not exceed its four buckets "
+                f"({mixed_sum}); it is supposed to contain blocked/skipped/budget_stopped rows that "
+                "count toward total only. If it no longer does, it is not testing preservation"
+            )
+        for bucket, expected in (counters["mixed_expected"] or {}).items():
+            if mixed[bucket] != expected:
+                raise AssertionError(
+                    f"mixed dataset bucket {bucket!r} is {mixed[bucket]}, expected {expected}: adding "
+                    "aborted reclassified a pre-existing outcome"
+                )
+
+        for scope in ("daily", "persona"):
+            entry = counters[f"{scope}_deltas"]
+            if entry.get(ABORTED_STATUS) != seeded:
+                raise AssertionError(
+                    f"the {scope} breakdown moved aborted by {entry.get(ABORTED_STATUS)}, expected "
+                    f"{seeded}; the per-{scope} counter is a separate accumulator and can drift from "
+                    "today's independently"
+                )
+            for bucket in ("completed", "failed"):
+                if entry.get(bucket, 0) != 0:
+                    raise AssertionError(
+                        f"the {scope} breakdown moved {bucket!r} by {entry.get(bucket)}, expected 0"
+                    )
+
+    # ---- W2-08 (S5 / #3964) --------------------------------------------
+
+    def check_w2_08(self) -> None:
+        """Parity across the split: the deployed writer and the deployed readers.
+
+        The two live in different images and ship through different workflows
+        (`agent-worker-image.yml` and `gateway-deploy.yml`), so "merged" does not
+        imply "both deployed" — a gateway that understands aborted in front of a
+        worker that cannot write it is a silent half-deployment.
+        """
+        parity = self._artifact("vocabulary_parity")
+
+        for name in ("writer_digest_deployed", "gateway_digest_deployed"):
+            if parity[name] is not True:
+                raise AssertionError(
+                    f"{name} is {parity[name]!r}: the aborted vocabulary spans the worker image and the "
+                    "gateway, and both must be the reviewed revision before abort is enabled"
+                )
+        if ABORTED_STATUS not in (parity["writer_allowed_statuses"] or []):
+            raise AssertionError(
+                f"the deployed writer's allowlist does not contain {ABORTED_STATUS!r}; the abort's own "
+                "terminal write would be refused and the run would read as live forever (AC-A12)"
+            )
+        if ABORTED_STATUS not in (parity["gateway_terminal_statuses"] or []):
+            raise AssertionError(
+                f"the deployed gateway's terminal set does not contain {ABORTED_STATUS!r} (AC-A11)"
+            )
+        # The reject path, which is the load-bearing half: an allowlist that
+        # accepts everything is indistinguishable from no allowlist at all until
+        # something unknown arrives.
+        if parity["unknown_status_rejected"] is not True:
+            raise AssertionError(
+                "the deployed writer did not reject an unknown status; an allowlist whose reject path "
+                "never fires is not a validation (AC-A12)"
+            )
+        if parity["unknown_status_reached_table"] is not False:
+            raise AssertionError(
+                "an unknown status reached the invocation table despite being rejected; validation must "
+                "happen BEFORE the write, not be corrected after it"
+            )
+        suites = parity["suites"]
+        required_suites = {
+            "tests/activity/test_status_aborted.py",
+            "tests/test_status_vocabulary.py",
+            "src/__tests__/utils/status.test.ts",
+            "src/__tests__/components/InvocationChain.test.tsx",
+        }
+        if not isinstance(suites, dict) or not required_suites.issubset(suites):
+            raise AssertionError("vocabulary parity must include every required writer/reader/renderer suite")
+        failed_suites = [name for name, status in suites.items() if status != "passed"]
+        if failed_suites:
+            raise AssertionError(
+                f"shared vocabulary/renderer parity suites did not pass on merged head: "
+                f"{sorted(failed_suites)}"
+            )
+
+    # ---- W2-09 (S5 / #3964) --------------------------------------------
+
+    def check_w2_09(self) -> None:
+        """The live stats contract, key by key, at every level.
+
+        Presence, not values: this check is about whether the response the SPA
+        destructures actually carries the fields it reads. A missing key is an
+        `undefined` in a dashboard, which renders as a blank rather than an error.
+        """
+        fixture = self._artifact("stats_schema_keys")
+        owner = self._token("owner")
+        observation = self.probe.request(
+            "GET", "/me/agent-run-stats?days=7", role="owner", token=owner
+        )
+        if observation.status != 200:
+            raise AssertionError(f"agent-run-stats returned {observation.status}, expected 200")
+        body = self._body_of(observation)
+
+        top_level = (
+            "window_days",
+            "active_runs",
+            "today",
+            "daily",
+            "by_persona",
+            "recent_failures",
+            "top_repos",
+            "spend",
+        )
+        missing = [name for name in top_level if name not in body]
+        if missing:
+            raise AssertionError(f"the stats response is missing top-level keys {missing}")
+
+        today_keys = ("total", "completed", "failed", "active", ABORTED_STATUS)
+        missing = [name for name in today_keys if name not in (body.get("today") or {})]
+        if missing:
+            raise AssertionError(
+                f"`today` is missing {missing}; the aborted counter is the field this story adds and an "
+                "absent key is indistinguishable from zero to every client"
+            )
+
+        # Arrays must be NONEMPTY before their keys mean anything: an empty list
+        # trivially satisfies "every element has the required keys".
+        for name, required in (
+            ("daily", ("date", "total", "completed", "failed", ABORTED_STATUS)),
+            ("by_persona", ("persona", "total", "completed", "failed", ABORTED_STATUS)),
+            ("active_runs", ("invocation_id", "invoked_at", "persona", "repo", "topic")),
+            (
+                "recent_failures",
+                ("invocation_id", "invoked_at", "persona", "repo", "topic", "error_message"),
+            ),
+            ("top_repos", ("repo", "total")),
+        ):
+            rows = body.get(name) or []
+            if not rows:
+                raise PrerequisiteMissingError(
+                    f"`{name}` is empty, so its keys cannot be verified. §7 requires seeded nonempty "
+                    "arrays: an empty list satisfies any per-element assertion vacuously"
+                )
+            for index, row in enumerate(rows):
+                absent = [key for key in required if key not in row]
+                if absent:
+                    raise AssertionError(f"`{name}[{index}]` is missing {absent}")
+
+        spend = body.get("spend")
+        if not isinstance(spend, dict):
+            raise PrerequisiteMissingError(
+                f"`spend` is {spend!r}, so its keys cannot be verified; §7 requires a nonnull spend "
+                "aggregate, which means the fixture runs must have recorded cost"
+            )
+        absent = [
+            key for key in ("total_cost_usd", "total_tokens", "total_calls") if key not in spend
+        ]
+        if absent:
+            raise AssertionError(f"`spend` is missing {absent}")
+
+        # The comparison the issue asks for in the other direction: every key the
+        # backend schema declares, checked against the live response. Presence
+        # checks above are a fixed list in this file and would not notice a field
+        # ADDED to the schema and omitted by the deployment.
+        levels = fixture["levels"]
+        required_levels = {"response", "today", "daily", "by_persona", "active_runs", "recent_failures", "top_repos", "spend"}
+        if not isinstance(levels, dict) or not required_levels.issubset(levels):
+            raise AssertionError("schema-derived keys must cover every stats response level")
+        for level, expected_keys in levels.items():
+            if not isinstance(expected_keys, list) or not expected_keys or not all(isinstance(key, str) and key for key in expected_keys):
+                raise AssertionError(f"schema-derived keys for {level!r} must be a nonempty string list")
+            actual = body if level == "response" else body.get(level)
+            actual_keys = set(
+                actual.keys()
+                if isinstance(actual, dict)
+                else (actual[0].keys() if isinstance(actual, list) and actual else ())
+            )
+            absent = sorted(set(expected_keys) - actual_keys)
+            if absent:
+                raise AssertionError(
+                    f"schema-derived keys missing from the live `{level}`: {absent}. The fixture is "
+                    "exported from the backend models, so this catches a field the deployment predates"
+                )
+
+
 # Predicate lookup. Explicit rather than derived from ``dir()`` so a renamed
 # method is an immediate KeyError instead of a silently shorter report.
 WAVE1_PREDICATES: dict[str, str] = {
@@ -1687,12 +2033,15 @@ WAVE1_PREDICATES: dict[str, str] = {
     "W1-10": "check_w1_10",
 }
 
-# Wave 2. Only W2-02 (AC-T7) has a predicate: it is the check S3 owns. The other
-# nine are registered in WAVE2_CHECKS without an entry here, which is what makes
-# them report not_run naming their owning story instead of vanishing from the
-# manifest.
+# S3 provides W2-02 and S5 provides W2-06..09. The other five checks retain
+# named NOT RUN results until their implementation and live evidence land.
 WAVE2_PREDICATES: dict[str, str] = {
     "W2-02": "check_w2_02",
+    "W2-06": "check_w2_06",
+    "W2-07": "check_w2_07",
+    "W2-08": "check_w2_08",
+    "W2-09": "check_w2_09",
+
 }
 
 CHECK_PREDICATES: dict[str, str] = {**WAVE1_PREDICATES, **WAVE2_PREDICATES}

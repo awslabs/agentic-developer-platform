@@ -41,6 +41,21 @@ on:
       - 'modules/gateway/tests/activity/test_agent_control_flag_parity.py'
       - 'modules/gateway/tests/orchestration/test_controls.py'
       - 'modules/gateway/tests/features/test_routes.py'
+      # Shared terminal vocabulary (#3964). `liveness.py` is the single frozenset
+      # every backend terminal reader derives from, including control_service's
+      # own terminality — a status added there changes whether a control is
+      # advertised as available on a run, so a PR touching it has to be able to
+      # trigger the control gates above. The two local-literal readers are listed
+      # for the same reason: they do NOT inherit the set, so drift between them
+      # and liveness.py is invisible to a runtime test on either one alone.
+      # (`src/agentauth/composition.py`, the other local-literal reader, is
+      # already covered by the `src/agentauth/**` glob below.)
+      - 'modules/gateway/src/activity/liveness.py'
+      - 'modules/gateway/src/activity/stats_service.py'
+      - 'modules/gateway/src/activity/stats_schemas.py'
+      - 'modules/gateway/tests/activity/test_status_aborted.py'
+      - 'modules/gateway/tests/activity/test_liveness.py'
+      - 'modules/gateway/tests/activity/test_stats_service.py'
       # Read as text by test_agent_control_flag_parity.py, which is the only check
       # that the flag exists in all four places at once. Editing one of these
       # without the others is exactly the drift that suite exists to catch — so a
@@ -118,6 +133,11 @@ on:
       - 'modules/agent-factory/agent-worker-image/entrypoint.py'
       - 'modules/agent-factory/agent-worker-image/lib/invocation_status.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_control_token.py'
+      # The writer's own status allowlist (#3964). Its parity suite reads
+      # entrypoint.py as text to find every call site, so it is the only check
+      # that a NEW write site was added without its status being permitted — no
+      # runtime test sees a call that this PR did not execute.
+      - 'modules/agent-factory/agent-worker-image/tests/test_status_vocabulary.py'
       # Pod security surface: ingress policy, bind address, flag/port propagation
       - 'modules/agent-factory/webhook-ingress/infra/scaledjob-netpol.tf'
       - 'modules/agent-factory/webhook-ingress/infra/scaledjob.tf'
@@ -188,6 +208,26 @@ jobs:
             tests/activity/test_agent_control_flag_parity.py \
             tests/orchestration/test_controls.py \
             tests/features/test_routes.py \
+            -v --tb=short --timeout=120
+
+      - name: Run shared terminal-vocabulary tests
+        working-directory: modules/gateway
+        # Issue #3964. Pinned by name like every other suite here: the terminal set
+        # in `activity/liveness.py` decides whether control_service reports a run as
+        # controllable at all, so a status added there without its readers updated
+        # changes the behaviour the proxy tests above assert — and it changes it in
+        # the direction of advertising a control on a run that has already ended.
+        #
+        # test_status_aborted.py specifically holds the cross-module identity
+        # assertions (that the budget, orchestration-draft and stats readers are all
+        # looking at the SAME frozenset object, not a copy of it). Nothing else fails
+        # when one reader is forked into a local literal, because a fork behaves
+        # identically until the sets diverge.
+        run: |
+          pytest \
+            tests/activity/test_status_aborted.py \
+            tests/activity/test_liveness.py \
+            tests/activity/test_stats_service.py \
             -v --tb=short --timeout=120
 
       - name: Run delegated authorization tests
@@ -631,8 +671,16 @@ jobs:
         # safe live there: the flag read, the pod-IP hard stop, the TTL bound and
         # the teardown backstops. Measuring only the DDB writer left all four
         # ungated.
+        #
+        # test_status_vocabulary.py joins this step rather than getting its own,
+        # because it covers the same module (#3964's allowlist lives in
+        # `lib/invocation_status.py`) and the coverage gate below is scoped to that
+        # module's functions. Run separately, the guard branch it adds to
+        # `update_status` would be measured as uncovered by the very step that
+        # enforces the threshold.
         run: |
           pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py \
+            tests/test_status_vocabulary.py \
             --cov=lib.invocation_status \
             --cov=entrypoint \
             --cov-branch \

@@ -33,6 +33,9 @@ const OBSERVED_TERMINAL: InvocationStatus[] = [
   'blocked',
   'skipped',
   'budget_stopped',
+  // Issue #3964: a confirmed abort finalization ends the run, so the mock derives
+  // `exited` for it like any other terminal status.
+  'aborted',
 ];
 
 const STALENESS_HOURS = 24;
@@ -60,6 +63,11 @@ const statuses: InvocationStatus[] = [
   // Issue #4187: a run a spend cap stopped, so the board exercises the amber
   // badge and the stop-reason row.
   'budget_stopped',
+  // Issue #3964: a deliberately stopped run, so the board exercises the aborted
+  // badge and the aborted filter option against real-shaped rows. It carries
+  // neither a skip_reason nor a stop_reason (see the two maps below) — no guard
+  // declined it and no cap stopped it; a person did.
+  'aborted',
 ];
 
 /**
@@ -120,6 +128,10 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       'blocked',
       'skipped',
       'budget_stopped',
+      // Issue #3964: without this, every mock aborted row would carry a null
+      // `completed_at` — the exact defect AC-A3 names, reproduced in the fixtures
+      // used to review the fix.
+      'aborted',
     ].includes(status);
     const correlationId = correlationIds[Math.floor(Math.random() * correlationIds.length)];
 

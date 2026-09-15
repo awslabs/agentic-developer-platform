@@ -127,6 +127,7 @@ generation and digests with your fixture's actual ones.
   "terminal_run_id": "msg-0000000000000002",
   "terminal_arrived_at": "2026-09-12T10:05:00Z",
   "unknown_run_id": "msg-does-not-exist-0001",
+  "aborted_run_id": "msg-0000000000000003",
 
   "command_id": "3f2b9c14-7d51-4e8a-9b02-5c6d7e8f9a0b",
   "oversize_bytes": 32768,
@@ -153,12 +154,17 @@ generation and digests with your fixture's actual ones.
     "flag_parity": "artifacts/flag_parity.json",
     "journal_tests": "artifacts/journal_tests.json",
     "negative_tests": "artifacts/negative_tests.json",
+    "harness_neutrality": "artifacts/harness_neutrality.json",
+    "aborted_counters": "artifacts/aborted_counters.json",
+    "vocabulary_parity": "artifacts/vocabulary_parity.json",
+    "stats_schema_keys": "artifacts/stats_schema_keys.json",
     "neutral_contract": "artifacts/neutral_contract.json"
   },
 
   "cleanup_items": [
     {"event_id": "msg-0000000000000001", "arrived_at": "2026-09-12T10:00:00Z"},
-    {"event_id": "msg-0000000000000002", "arrived_at": "2026-09-12T10:05:00Z"}
+    {"event_id": "msg-0000000000000002", "arrived_at": "2026-09-12T10:05:00Z"},
+    {"event_id": "msg-0000000000000003", "arrived_at": "2026-09-12T10:10:00Z"}
   ]
 }
 ```
@@ -325,16 +331,12 @@ carry over — a bump is a prompt to rerun this suite.
 
 ## Wave 2 is incomplete on purpose
 
-`--wave 2` runs today and does **not** exit 0. Its full ten-check manifest is
-transcribed from evaluation #3968, but only `W2-02` has a predicate: it is the
-check S3 delivers. The other nine report `not_run` naming the story that owns
-them.
-
-That is deliberate. `report_is_passing` asks `passed == required`, so a wave
-registered with only its one finished check would be a 1/1 wave that exits 0 —
-handing you a green report for a wave whose pause proof and abort vocabulary do
-not exist yet. Run `--wave 2` to see `W2-02` pass and exactly which stories are
-outstanding; expect exit 4 until they land.
+`--wave 2` registers all ten checks from evaluation #3968. S3 provides W2-02
+and S5 provides W2-06 through W2-09. With complete passing fixture evidence,
+these five pass and the five pending checks report `not_run` with their owner.
+The command exits nonzero until the full wave is implemented and accepted.
+Missing artifacts also report `not_run`; implemented checks can fail when the
+observed deployment disagrees with the contract.
 
 ## Cleanup
 
@@ -414,9 +416,31 @@ the evaluation requires, and nothing downstream flags it.
 | W1-09 | Gate/regression | Live ping/state matches `control_schemas.py` field for field; zero assistant turns; journal replay, conflict, bounds, expiry-as-unknown |
 | W1-10 | Gate/regression | The harness's own negative tests: wrong account, missing isolation, wrong key, absent and unknown required check, failed cleanup |
 
-Wave 1 is all S1 delivers. `--wave 2` is refused rather than emitting an empty
-pass: waves 2–4 are extended by S2/S5, S4/S6 and S7 respectively, and a report
-claiming a wave whose checks do not exist yet is worse than no report.
+### Wave 2 (evaluation #3968)
+
+Wave 2's manifest is registered in full — all ten IDs, from #3968's acceptance
+table. S3 (#3962) implements W2-02 and S5 (#3964) implements W2-06 through
+W2-09; five checks remain pending.
+
+| ID | Acceptance IDs | Subject | Owner |
+|---|---|---|---|
+| W2-01 | Gate/regression | Wave-2 preflight consolidation | S2 #3961 |
+| W2-02 | AC-T7 | Neutral adapter contract suite | **S3 #3962** |
+| W2-03 | AC-P1 | Pause admission control | S2 #3961 |
+| W2-04 | AC-P2 | Resume semantics | S2 #3961 |
+| W2-05 | AC-P3, AC-P5, AC-P6 | Auto-resume and watchdog behaviour | S2 #3961 |
+| W2-06 | AC-A3, AC-A9 | Aborted row is terminal with a completion time, filterable, and reached that state via ADP finalization rather than a native interrupt | **S5** |
+| W2-07 | AC-A10 | Each aborted row counted exactly once; no other outcome reclassified | **S5** |
+| W2-08 | AC-A11, AC-A12 | Writer allowlist and reader vocabulary in parity across both deployed images; unknown statuses rejected before the write | **S5** |
+| W2-09 | AC-A10 | The live run-stats response carries the aborted counter at every level | **S5** |
+| W2-10 | Gate/regression | Wave-2 cleanup and security recheck | evaluation #3968 |
+
+The five pending checks report **NOT RUN**. The full manifest keeps `required`
+at 10, so partial implementation cannot satisfy `passed == required` and
+`not_run == 0`. Evidence for S3 and S5 alone therefore cannot accept Wave 2.
+
+So `--wave 2` exiting nonzero today is the correct result, not a defect to work
+around. Waves 3 and 4 are still unregistered and still refused outright.
 
 ## Troubleshooting
 
@@ -439,3 +463,12 @@ claiming a wave whose checks do not exist yet is worse than no report.
 * `platform/scripts/tests/test_agent_control_eval.py` — its guard tests (run in CI)
 * `.github/workflows/agent-control-ci.yml` — the CI job
 * `modules/gateway/src/activity/control_schemas.py` — the response contract W1-09 checks against
+
+
+For W2-08, `vocabulary_parity.suites` must include passing results for
+`tests/activity/test_status_aborted.py`, `tests/test_status_vocabulary.py`,
+`src/__tests__/utils/status.test.ts`, and
+`src/__tests__/components/InvocationChain.test.tsx`.
+For W2-09, export nonempty backend schema key lists for `response` (the root),
+`today`, `daily`, `by_persona`, `active_runs`, `recent_failures`, `top_repos`, and
+`spend` into `stats_schema_keys.levels`. Empty evidence cannot establish parity.
