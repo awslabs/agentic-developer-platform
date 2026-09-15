@@ -66,17 +66,26 @@ export const CONTROL_PROTOCOL_VERSION = 1;
 /**
  * Control verbs implemented by ADP *at this stage of delivery*.
  *
- * Deliberately empty in S3. This story delivers the contract and the first
- * adapter — the plumbing a control travels through — and plumbing is not a
- * control. Advertising `pause` here because an adapter *could* pause would make
- * the dashboard offer a button whose end-to-end behaviour nobody has proven.
+ * `pause`/`resume` as of S2 (#3961), which added the pre-tool admission barrier
+ * that makes a "Paused" claim mean something: admission closes, admitted work is
+ * waited out, and anything unprovable reports `requested`/`unavailable` with a
+ * reason instead. Membership here is a claim about ADP having *implemented* a verb,
+ * not about any particular run being able to perform it — an adapter with no
+ * barrier installed still vetoes it through {@link intersectCapabilities}.
  *
- * S2 (#3961) adds `pause`/`resume` after its real-SDK tool-boundary proof, and
- * S4/S6 add `abort`/`steer` after theirs. Each of those stories owns both this
- * set and the gateway's independent allowlist; widening only one side produces a
- * verb the gateway offers and the worker rejects.
+ * `steer`/`abort` stay out until S6/S4 land their own runtime proofs. Adding a verb
+ * here because an adapter *could* perform it would make the dashboard offer a
+ * button whose end-to-end behaviour nobody has demonstrated.
+ *
+ * Each story owns both this set and the gateway's independent allowlist
+ * (`control_service.SUPPORTED_ACTIONS`); widening only one side produces either a
+ * verb the gateway offers and the worker rejects, or a working verb the gateway
+ * answers 501 for.
  */
-export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>();
+export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>([
+  'pause',
+  'resume',
+]);
 
 /** Per-verb support, with a bounded reason when support is absent. */
 export interface VerbSupport {

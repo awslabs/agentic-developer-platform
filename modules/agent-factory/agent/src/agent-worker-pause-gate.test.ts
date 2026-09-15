@@ -605,6 +605,63 @@ describe('pause gate: watchdog visibility', () => {
   });
 });
 
+describe('pause gate: late observers', () => {
+  it('reports transitions to a subscriber attached after construction', async () => {
+    // The adapter cannot subscribe at construction time: the gate has to exist
+    // before the query is built, because it *is* the query's PreToolUse hook, and
+    // the thing the adapter does on expiry needs a session that only exists after.
+    const { gate, scheduler } = harness({ defaultTimeoutMs: 60_000 });
+    const seen: PauseGateEvent[] = [];
+    gate.subscribe((event) => seen.push(event));
+
+    await gate.requestPause();
+    scheduler.fireByDuration(60_000);
+    await flush();
+
+    // The request is published before the barrier settles, so a late subscriber
+    // still sees the full arc rather than only the outcome.
+    expect(seen.map((e) => e.type)).toEqual(['pause_requested', 'pause_confirmed', 'pause_released']);
+    // The expiry flag is the whole reason the adapter listens: a deliberate resume
+    // and an expiry both release, but only one of them owes the model an
+    // explanation for continuing on its own.
+    expect(seen.filter((e) => e.type === 'pause_released')).toEqual([
+      { type: 'pause_released', expired: true },
+    ]);
+  });
+
+  it('stops reporting to an unsubscribed observer', async () => {
+    const { gate } = harness();
+    const seen: PauseGateEvent[] = [];
+    const unsubscribe = gate.subscribe((event) => seen.push(event));
+
+    await gate.requestPause();
+    unsubscribe();
+    await gate.resume();
+
+    // Unsubscribing has to actually detach: the adapter unsubscribes when its
+    // attempt is torn down, and an observer that kept firing would annotate a
+    // session that no longer exists.
+    expect(seen.map((e) => e.type)).toEqual(['pause_requested', 'pause_confirmed']);
+  });
+
+  it('completes the transition even when an observer throws', async () => {
+    const { gate } = harness();
+    gate.subscribe(() => {
+      throw new Error('observer exploded');
+    });
+    const seen: PauseGateEvent[] = [];
+    gate.subscribe((event) => seen.push(event));
+
+    // A listener must not be able to fail a pause. By the time observers run the
+    // transition is already decided, so propagating would report failure for a
+    // pause that did take effect — the operator's UI and the run would disagree.
+    await expect(gate.requestPause()).resolves.toEqual({ outcome: 'confirmed' });
+    expect(gate.currentPhase()).toBe('paused');
+    // And a broken observer must not silence the ones after it.
+    expect(seen.map((e) => e.type)).toEqual(['pause_requested', 'pause_confirmed']);
+  });
+});
+
 describe('pause gate: defaults', () => {
   it('defaults to a 30 minute pause with a real clock and timers', () => {
     // Constructed with no injected primitives, as the worker will build it.

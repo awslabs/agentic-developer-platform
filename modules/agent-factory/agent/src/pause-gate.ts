@@ -167,8 +167,10 @@ export class PauseGate {
   private readonly settleTimeoutMs: number;
   private readonly deadlineAt: () => number | null;
   private readonly backgroundWorkProbe: () => number | null;
-  private readonly onEvent: (event: PauseGateEvent) => void;
+  private readonly onEventOption: (event: PauseGateEvent) => void;
   private readonly log: (msg: string) => void;
+  /** Late-attached observers, e.g. the adapter that renders expiry into its harness. */
+  private readonly listeners = new Set<(event: PauseGateEvent) => void>();
 
   /** Admitted, not yet settled. Parked admissions are deliberately excluded. */
   private readonly inFlight = new Map<number, AdmissionTicket>();
@@ -197,8 +199,37 @@ export class PauseGate {
     this.settleTimeoutMs = options.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS;
     this.deadlineAt = options.deadlineAt ?? (() => null);
     this.backgroundWorkProbe = options.backgroundWorkProbe ?? (() => 0);
-    this.onEvent = options.onEvent ?? (() => {});
+    this.onEventOption = options.onEvent ?? (() => {});
     this.log = options.log ?? (() => {});
+  }
+
+  /**
+   * Observe gate transitions after construction.
+   *
+   * Needed because one of the consumers cannot exist at construction time: the
+   * harness adapter has to translate an *expired* pause into a message on a
+   * session that only exists once the query has started, and the gate has to be
+   * installed as a hook before that. A broken observer is swallowed rather than
+   * propagated — an event listener must not be able to fail a pause transition,
+   * and by the time these fire the transition has already been decided.
+   */
+  subscribe(listener: (event: PauseGateEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** Fan one event out to the constructor callback and every subscriber. */
+  private onEvent(event: PauseGateEvent): void {
+    const observers = [this.onEventOption, ...this.listeners];
+    for (const observer of observers) {
+      try {
+        observer(event);
+      } catch {
+        // See `subscribe`: an observer must not take a transition down with it.
+      }
+    }
   }
 
   /** Current gate phase. */

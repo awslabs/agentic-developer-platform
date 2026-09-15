@@ -34,20 +34,30 @@
  * an iterable a previous query already consumed is exhausted — reusing it would
  * produce an attempt that looks live and can never receive input.
  *
- * ## What this story deliberately does not do
+ * ## The third Claude-specific translation: the pause barrier (#3961)
  *
- * All four verbs report unsupported. The adapter can carry input, but carrying
- * input is not a delivered control: a pause that closed admission without
- * proving tool quiescence would let the dashboard claim "Paused" while a `Bash`
- * call is still writing to the repository. That proof is S2's, with real tool
- * boundaries and hook timeouts. `pause`/`resume` therefore return
- * `unavailable` with a reason rather than a fabricated success, and no
- * `Query.interrupt()` is called anywhere — an interrupted turn followed by a new
- * one is a different product behaviour than pause, and adopting it silently
- * would break the "same live execution and context" guarantee.
+ * S2 added `pause`/`resume`, and the shape of the addition is the point. The
+ * *decision* — may this run claim to be paused? — lives in the harness-neutral
+ * {@link PauseGate}. What lives here is only the translation: `PreToolUse` becomes
+ * the admission barrier, a denied admission becomes `permissionDecision: 'deny'`
+ * with an operator-facing reason, `PostToolUse` settles the admission, and
+ * `Stop`/`SubagentStop`'s `background_tasks` answers "is anything still running
+ * behind a finished tool?". An expired pause becomes an annotation
+ * (`shouldQuery: false`) — a fact recorded without starting a turn — because the
+ * operator gave no new instruction and their silence must not read as one.
+ *
+ * No `Query.interrupt()` is called anywhere, still: an interrupted turn followed
+ * by a new one is a different product behaviour than pause, and adopting it
+ * silently would break the "same live execution and context" guarantee. Pause here
+ * stops *admission*, not the turn.
+ *
+ * `steer` and `abort` remain unsupported. The adapter can carry input, but
+ * carrying input is not a delivered control, and their runtime proofs are S4's and
+ * S6's.
  */
-import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { HookInput, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { ControlAction } from '../control-state';
+import type { AdmissionTicket, PauseGate } from '../pause-gate';
 import {
   CONTROL_PROTOCOL_VERSION,
   ControlCancelledError,
@@ -81,13 +91,34 @@ export const CLAUDE_ADAPTER_ID = 'claude';
 export const CLAUDE_SDK_VERSION = '0.3.220';
 
 /**
- * Reason attached to every unsupported verb in this story.
+ * Reason `pause`/`resume` report unsupported when no gate is installed (#3961).
  *
- * Phrased as the *missing proof* rather than "not implemented", because the
- * distinction is the point: the transport exists, the evidence does not.
+ * The gate is optional and its absence is the honest "no" rather than an error:
+ * the barrier *is* the `PreToolUse` hook, so a run whose query options never
+ * received {@link claudeControlToolHooks} has nothing standing between the model
+ * and a `Bash` call. Answering `unavailable` there keeps the promise proportional
+ * to the mechanism actually in place.
  */
-const S3_UNSUPPORTED_REASON =
-  'control plumbing only in this stage: no verb has a proven runtime boundary yet';
+const NO_PAUSE_GATE_REASON =
+  'pause needs the admission barrier installed in this run: no tool-boundary gate is present';
+
+/** Reason steer/abort remain unsupported after S2. Their proofs are S4/S6's. */
+const NOT_YET_PROVEN_REASON =
+  'no proven runtime boundary for this verb yet: steering and abort are later stories';
+
+/**
+ * What the model is told when a pause expires and the run continues by itself.
+ *
+ * Sent as an **annotation** (`shouldQuery: false`), which is the whole reason this
+ * mapping belongs in the adapter: the gate publishes a neutral "the pause ended
+ * because its budget ran out" fact, and only Claude's transport knows that
+ * recording a fact without starting a turn is spelled `shouldQuery: false`. Were
+ * it sent as steering, an expiring pause would inject a new instruction into a run
+ * that never asked for one — the operator's silence would read as a command.
+ */
+export const PAUSE_EXPIRY_ANNOTATION =
+  'Operator pause expired after its time budget and the run resumed automatically. ' +
+  'No new instruction was given; continue the work you were already doing.';
 
 /** One bootstrap message, then direct handoff to a waiting SDK reader.
  * Operator commands remain in the shared authorized queue until a reader exists.
@@ -161,10 +192,184 @@ export interface ClaudeSessionHandle {
   close(): void;
 }
 
+/**
+ * Tool inputs that ask Claude to leave work running behind the tool call.
+ *
+ * Read from `tool_input`, which the SDK types as `unknown`. Only two shapes
+ * matter and both are checked defensively: a shell told to background itself, and
+ * a delegating tool whose child keeps working after the parent returns.
+ */
+function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
+  if (toolName === 'Task') return true;
+  if (toolInput === null || typeof toolInput !== 'object') return false;
+  const input = toolInput as { run_in_background?: unknown };
+  return input.run_in_background === true;
+}
+
+/**
+ * Claude's answer to "is anything still running behind a finished tool?" (#3961).
+ *
+ * The gate refuses to confirm a pause on an unobservable answer, so the useful
+ * question is when this observer is *entitled* to say zero. Three states, and the
+ * ordering between them is the entire content of this class:
+ *
+ * - Nothing in this session ever asked for background work → `0`. Not an
+ *   assumption: a tool that never requested backgrounding has nothing behind it,
+ *   and `PreToolUse` sees every tool call before it runs.
+ * - Something did, and a `Stop`/`SubagentStop` has reported `background_tasks`
+ *   *since* then → that reported count.
+ * - Something did, and no report has arrived since → `null`.
+ *
+ * The third case is the one worth being pedantic about. A backgrounded `Bash`
+ * returns to the model immediately while its process keeps writing; a `Task`
+ * returns a summary while its subagent may still hold a file handle. Reporting `0`
+ * there would tell an operator that nothing is touching their repository at the
+ * exact moment something is. Sequence numbers rather than booleans because the
+ * interesting case is a *second* spawn after an all-clear: the old report must not
+ * keep vouching for work started after it was written.
+ */
+export class ClaudeBackgroundWorkObserver {
+  private seq = 0;
+  private lastSpawnSeq = 0;
+  private lastReportSeq = 0;
+  private lastReportedCount = 0;
+
+  /** Note a tool call that may leave work running behind it. */
+  noteToolStart(toolName: string, toolInput: unknown): void {
+    this.seq += 1;
+    if (requestsBackgroundWork(toolName, toolInput)) this.lastSpawnSeq = this.seq;
+  }
+
+  /** Record a `Stop`/`SubagentStop` report of in-flight background work. */
+  noteBackgroundReport(tasks: unknown): void {
+    this.seq += 1;
+    this.lastReportSeq = this.seq;
+    this.lastReportedCount = Array.isArray(tasks) ? tasks.length : 0;
+  }
+
+  /** The gate's `backgroundWorkProbe`: a count, or `null` for "cannot tell". */
+  count(): number | null {
+    if (this.lastSpawnSeq === 0) return 0;
+    if (this.lastReportSeq > this.lastSpawnSeq) return this.lastReportedCount;
+    return null;
+  }
+}
+
+/**
+ * The Claude-shaped hook callbacks that make a {@link PauseGate} real.
+ *
+ * Deliberately returned as three named callbacks rather than as an SDK `hooks`
+ * object: `PostToolUse` is already occupied by spill and the developer checkpoint
+ * reminder, and those compose by merging `hookSpecificOutput` inside a single
+ * callback. Handing back a second array entry for the same event would put the
+ * merge semantics in the CLI's hands, where `updatedToolOutput` — the spilled
+ * payload's locator — is what would quietly go missing.
+ */
+export interface ClaudePauseHooks {
+  /** `PreToolUse`: the admission barrier. Denies a tool the operator paused. */
+  preToolUse(input: HookInput, toolUseId?: string, options?: { signal: AbortSignal }): Promise<Record<string, unknown>>;
+  /** `PostToolUse` / `PostToolUseFailure`: settle the admission for one tool. */
+  postToolUse(input: HookInput): Promise<Record<string, unknown>>;
+  /** `Stop` / `SubagentStop`: observe background work behind finished tools. */
+  onStop(input: HookInput): Promise<Record<string, unknown>>;
+}
+
+/**
+ * Translate one pause gate into Claude hook callbacks (#3961).
+ *
+ * This function is the entire Claude-specific half of pause. The gate decides
+ * whether a tool may start; this decides how Claude is told — `permissionDecision:
+ * 'deny'` with a reason, which the model surfaces as a tool result rather than as
+ * a crash, so a paused run reads as "that was not allowed right now" instead of
+ * as a failure the model tries to route around.
+ *
+ * Note what is *not* here: no `Query.interrupt()`, no session restart, no replay.
+ * The turn stays exactly where it was, which is what makes resume a continuation
+ * of the same execution and the same context.
+ */
+export function createClaudePauseHooks(
+  gate: PauseGate,
+  observer: ClaudeBackgroundWorkObserver = new ClaudeBackgroundWorkObserver(),
+): ClaudePauseHooks {
+  /** tool_use_id → the admission it holds, so completion settles the right one. */
+  const outstanding = new Map<string, AdmissionTicket>();
+
+  const toolFields = (input: HookInput) =>
+    input as unknown as { tool_name?: string; tool_input?: unknown; tool_use_id?: string };
+
+  return {
+    async preToolUse(input, toolUseId, options) {
+      const fields = toolFields(input);
+      const toolName = fields.tool_name ?? 'tool';
+      observer.noteToolStart(toolName, fields.tool_input);
+
+      // `options.signal` is the CLI subprocess's abandonment signal for this
+      // callback. It is the only way a hook timeout reaches JS — the timeout is
+      // enforced on the CLI side and surfaces here purely as an abort — which is
+      // why the gate treats an aborted park as a breached barrier rather than as
+      // a tool that politely declined to run.
+      const result = await gate.admit(toolName, options?.signal);
+      const id = fields.tool_use_id ?? toolUseId;
+      if (result.decision === 'admit') {
+        if (id && result.ticket) outstanding.set(id, result.ticket);
+        // `{}` rather than an explicit allow: an allow decision would override a
+        // deny from another PreToolUse hook or a permission rule, turning a pause
+        // barrier into an escalation of privilege.
+        return {};
+      }
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: result.reason ?? 'the run is paused by an operator',
+        },
+      };
+    },
+
+    async postToolUse(input) {
+      const fields = toolFields(input);
+      const id = fields.tool_use_id;
+      if (!id) return {};
+      const ticket = outstanding.get(id);
+      outstanding.delete(id);
+      // The gate ignores an unknown or repeated ticket, so a harness that emits
+      // both a completion and a failure edge for one tool cannot drive the
+      // in-flight count below the truth.
+      gate.settle(ticket);
+      return {};
+    },
+
+    async onStop(input) {
+      const stop = input as unknown as { background_tasks?: unknown };
+      observer.noteBackgroundReport(stop.background_tasks);
+      // Settle whatever the harness never reported a completion for. The turn has
+      // ended, so nothing is still executing *inside* it; a ticket surviving to
+      // here is a missing edge (an interrupted tool, a crashed hook), and leaving
+      // it outstanding would make every later pause wait for a tool that finished
+      // long ago. Background work is not covered by this and deliberately stays
+      // the observer's business — that is the claim we must not fabricate.
+      for (const ticket of [...outstanding.values()]) gate.settle(ticket);
+      outstanding.clear();
+      return {};
+    },
+  };
+}
+
 export interface ClaudeControlAdapterOptions {
   /** Verbs ADP has implemented. Defaults to the (empty) S3 set. */
   implementedVerbs?: ReadonlySet<ControlAction>;
   log?: (msg: string) => void;
+  /**
+   * The neutral pause coordinator backing this adapter's pause verbs (#3961).
+   *
+   * Optional, and its absence is what keeps pause unsupported: with no gate
+   * there is no admission barrier, so `requestPause` reports `unavailable` for
+   * the same reason S3 did. A run that wants pause constructs the gate, installs
+   * {@link createClaudePauseHooks} in its query options, and passes the same gate
+   * here. Nothing about the gate is Claude-shaped — this adapter supplies the
+   * `PreToolUse`/`PostToolUse` translation.
+   */
+  pauseGate?: PauseGate;
 }
 
 /**
@@ -179,17 +384,20 @@ class ClaudeAttemptEndpoint implements AttemptEndpoint {
   private readonly channel: AttemptInputChannel;
   private readonly session: ClaudeSessionHandle | null;
   private readonly log: (msg: string) => void;
+  private readonly pauseGate?: PauseGate;
 
   constructor(args: {
     attemptId: AttemptId;
     channel: AttemptInputChannel;
     session: ClaudeSessionHandle | null;
     log: (msg: string) => void;
+    pauseGate?: PauseGate;
   }) {
     this.attemptId = args.attemptId;
     this.channel = args.channel;
     this.session = args.session;
     this.log = args.log;
+    this.pauseGate = args.pauseGate;
   }
 
   /**
@@ -207,21 +415,44 @@ class ClaudeAttemptEndpoint implements AttemptEndpoint {
   }
 
   /**
-   * Pause is unavailable in this story — never a fabricated success.
+   * Establish the pause barrier for this attempt (#3961).
    *
-   * Claude's mechanism (pre-tool admission plus output gating) is S2's work and
-   * requires real tool-boundary evidence before any run may report "Paused".
+   * Delegates the decision to the neutral gate: the barrier is the `PreToolUse`
+   * hook this adapter installs, and the gate owns whether holding it amounts to a
+   * confirmed pause. Without a gate the answer is `unavailable`, exactly as in
+   * S3 — the transport can carry input, but carrying input is not a pause.
+   *
+   * No `Query.interrupt()` is called here or anywhere in this adapter. The turn
+   * keeps running; only new tool admission stops, which is what makes resume a
+   * continuation of the same execution rather than a fresh turn.
    */
-  async requestPause(): Promise<PauseResult> {
-    return { outcome: 'unavailable', reason: boundReason(S3_UNSUPPORTED_REASON) };
+  async requestPause(signal?: AbortSignal): Promise<PauseResult> {
+    if (!this.pauseGate) {
+      return { outcome: 'unavailable', reason: boundReason(NO_PAUSE_GATE_REASON) };
+    }
+    if (signal?.aborted) {
+      return { outcome: 'unavailable', reason: boundReason('pause request was cancelled before it began') };
+    }
+    const result = await this.pauseGate.requestPause();
+    if (result.outcome === 'confirmed') return { outcome: 'confirmed' };
+    if (result.outcome === 'requested') return { outcome: 'requested' };
+    return { outcome: 'unavailable', reason: boundReason(result.reason) };
+  }
+
+  /** Release a confirmed pause or cancel a pending one. Idempotent. */
+  async releasePause(): Promise<void> {
+    await this.pauseGate?.resume();
   }
 
   /**
-   * Tracked in-flight work is not observable yet, so `null` — "cannot see",
-   * which the coordinator must not render as the quiescence claim `0`.
+   * Tool invocations admitted and not yet finished.
+   *
+   * `null` without a gate — "cannot see", which the coordinator must not render
+   * as the quiescence claim `0`. With a gate the count is genuinely observed at
+   * the admission boundary, so `0` is a fact rather than an assumption.
    */
   activeWorkCount(): number | null {
-    return null;
+    return this.pauseGate ? this.pauseGate.activeToolCount() : null;
   }
 
   /**
@@ -266,6 +497,7 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
   private readonly registry = new CurrentAttemptRegistry();
   private readonly implementedVerbs: ReadonlySet<ControlAction>;
   private readonly log: (msg: string) => void;
+  private readonly pauseGate?: PauseGate;
   /** The channel for the attempt currently being built, before its handle exists. */
   private pendingChannel: AttemptInputChannel | null = null;
   private activeChannel: AttemptInputChannel | null = null;
@@ -275,14 +507,49 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
   constructor(options: ClaudeControlAdapterOptions = {}) {
     this.implementedVerbs = options.implementedVerbs ?? IMPLEMENTED_CONTROL_VERBS;
     this.log = options.log ?? (() => {});
+    this.pauseGate = options.pauseGate;
     this.registry.cancellationSignal.addEventListener('abort', () => {
       this.activeChannel?.close();
+      // Deny anything held at the barrier. An abort that flushed its parked tools
+      // on the way out would run exactly the side effects the operator aborted to
+      // prevent — the one case where "let the queued work finish" is wrong.
+      this.pauseGate?.cancel('run cancelled');
     }, { once: true });
+    // Release is observed rather than reported by whoever called `resume()`, and
+    // that is what makes "released exactly once" structural: the gate releases a
+    // pause once, so exactly one event follows, whether the release came from an
+    // operator resume, a double-clicked resume, or the expiry timer. Emitting from
+    // the resume path instead would need every caller to agree not to double-emit.
+    this.pauseGate?.subscribe((event) => {
+      if (event.type !== 'pause_released') return;
+      const attemptId = this.registry.currentAttemptId();
+      if (attemptId) this.registry.emit({ type: 'pause_released', attemptId });
+      // An expired pause is the only transition the operator did not ask for, so
+      // it is the only one the run has to explain to the model. The gate publishes
+      // the neutral fact; this is where it becomes a Claude annotation.
+      if (event.expired) void this.annotateExpiry();
+    });
   }
 
-  /** Adapter-declared support, before ADP/runtime intersection. */
+  /**
+   * Adapter-declared support, before ADP/runtime intersection.
+   *
+   * `pause`/`resume` are claimed only with a gate installed, because the claim is
+   * about a mechanism rather than about a build: two runs of the same binary, one
+   * with the barrier hooked up and one without, honestly differ here. `steer` and
+   * `abort` stay false — their runtime proofs are S4's and S6's, and this story
+   * widening them would be the "advertised but unproven" failure it exists to
+   * avoid.
+   */
   adapterCapabilities(): Record<ControlAction, VerbSupport> {
-    return noVerbsSupported(S3_UNSUPPORTED_REASON);
+    if (!this.pauseGate) return noVerbsSupported(NO_PAUSE_GATE_REASON);
+    const unproven = boundReason(NOT_YET_PROVEN_REASON);
+    return {
+      pause: { supported: true },
+      resume: { supported: true },
+      steer: { supported: false, reason: unproven },
+      abort: { supported: false, reason: unproven },
+    };
   }
 
   describe(): HarnessDescriptor {
@@ -318,13 +585,75 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
     return this.registry.deliver(input);
   }
 
-  async requestPause(): Promise<PauseResult> {
-    return { outcome: 'unavailable', reason: boundReason(S3_UNSUPPORTED_REASON) };
+  /**
+   * Pause the live attempt, reporting only what the barrier can prove (#3961).
+   *
+   * Consults the **intersection** rather than this adapter's own table. That is
+   * not defensive coding: the gate below can genuinely hold tools, so calling it
+   * directly would confirm a pause for a verb ADP had not enabled — the exact
+   * failure the three-way intersection exists to prevent. The adapter does not get
+   * the deciding vote on its own capability.
+   *
+   * Events mirror the outcome so the run's state store and the dashboard converge
+   * on the same three-state answer instead of inferring `paused` from silence.
+   */
+  async requestPause(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<PauseResult> {
+    const attemptId = this.registry.currentAttemptId();
+    if (!attemptId) return { outcome: 'unavailable', reason: boundReason('no live attempt to pause') };
+    if (!this.capabilities().pause) {
+      const reason = this.adapterCapabilities().pause.reason ?? NO_PAUSE_GATE_REASON;
+      return { outcome: 'unavailable', reason: boundReason(reason) };
+    }
+    if (!this.pauseGate) {
+      return { outcome: 'unavailable', reason: boundReason(NO_PAUSE_GATE_REASON) };
+    }
+    if (options?.signal?.aborted) {
+      return { outcome: 'unavailable', reason: boundReason('pause request was cancelled before it began') };
+    }
+
+    const gateResult = await this.pauseGate.requestPause({ timeoutMs: options?.timeoutMs });
+    if (gateResult.outcome === 'requested') {
+      this.registry.emit({ type: 'pause_requested', attemptId });
+      return { outcome: 'requested' };
+    }
+    if (gateResult.outcome === 'confirmed') {
+      this.registry.emit({ type: 'pause_confirmed', attemptId });
+      return { outcome: 'confirmed' };
+    }
+    const reason = boundReason(gateResult.reason);
+    this.registry.emit({ type: 'pause_unavailable', attemptId, reason });
+    return { outcome: 'unavailable', reason };
   }
 
-  /** No pause can exist in this story, so releasing one is a no-op, not an error. */
+  /**
+   * Release a confirmed pause, or cancel one still pending.
+   *
+   * Idempotent and never an error: an operator double-clicking resume, or a resume
+   * that arrives before its pause has confirmed, is ordinary. The `pause_released`
+   * event comes from the gate's own transition (see the constructor), not from
+   * here, so a second resume that released nothing emits nothing.
+   */
   async resumeFromPause(): Promise<void> {
-    return;
+    await this.pauseGate?.resume();
+  }
+
+  /**
+   * Tell the model, without instructing it, that an expired pause has ended.
+   *
+   * Best-effort by design. Delivery can fail for entirely normal reasons — the
+   * attempt may have been retried away or finished while paused — and an
+   * undeliverable courtesy note must not turn an auto-resume into a failed one.
+   * The run continuing is the contract; the annotation is context.
+   */
+  private async annotateExpiry(): Promise<void> {
+    try {
+      const result = await this.registry.deliver({ kind: 'annotation', text: PAUSE_EXPIRY_ANNOTATION });
+      if (result !== 'delivered') {
+        this.log(`claude adapter: pause-expiry annotation not delivered (${result})`);
+      }
+    } catch (err) {
+      this.log(`claude adapter: pause-expiry annotation failed: ${(err as Error)?.message ?? err}`);
+    }
   }
 
   cancel(reason?: string): void {
@@ -407,6 +736,7 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
         channel,
         session: (handle.session as ClaudeSessionHandle | null) ?? null,
         log: this.log,
+        pauseGate: this.pauseGate,
       });
       // The wrapper awaits attachment before consuming output.
       this.pendingAttach = this.registry.attach(endpoint).then(

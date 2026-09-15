@@ -23,10 +23,13 @@
  * this file stops compiling — which is a far better failure than a runtime
  * surprise on the day a second harness lands.
  *
- * The pause support is deliberate and load-bearing in the opposite direction:
- * because this adapter supports pause while ADP has not implemented it, it
- * proves the capability *intersection* actually gates. An adapter saying "yes"
- * must not be enough to turn a verb on.
+ * The pause support is deliberate and load-bearing in two directions at once. It
+ * proves the capability *intersection* gates — an adapter saying "yes" is not
+ * enough to turn a verb on — and, since S2 (#3961) enabled `pause`/`resume`, it is
+ * the second **independent implementation** of the pause contract. Its barrier is a
+ * counter and its expiry is a bare timer handle; it shares no code with the
+ * neutral {@link PauseGate} the Claude adapter uses. A contract property that holds
+ * for both is a property of the contract rather than of one implementation.
  */
 import type { ControlAction } from '../../control-state';
 import {
@@ -126,6 +129,20 @@ class EchoAttemptEndpoint implements AttemptEndpoint {
     this.tracked = 0;
   }
 
+  /**
+   * Test hook: start one more unit of tracked work.
+   *
+   * Exists so the shared contract suite can create outstanding work *after* an
+   * attempt is live, in whatever way each harness expresses it — Claude parks a
+   * real admission at its barrier, this one increments a counter. Without a
+   * per-harness way to do that, the "requested, not paused, while work is
+   * outstanding" property could only be asserted against one adapter, and it is
+   * precisely the property whose neutrality matters most.
+   */
+  holdWork(): void {
+    this.tracked += 1;
+  }
+
   isPaused(): boolean {
     return this.paused;
   }
@@ -136,10 +153,20 @@ class EchoAttemptEndpoint implements AttemptEndpoint {
   }
 }
 
+/** Text this harness records when a pause ends because its budget ran out. */
+export const ECHO_PAUSE_EXPIRY_NOTE = 'echo harness: operator pause expired, run continued';
+
 export interface EchoControlAdapterOptions {
   implementedVerbs?: ReadonlySet<ControlAction>;
   /** Tracked work each new attempt starts with. Non-zero keeps pause unconfirmed. */
   trackedWorkPerAttempt?: number;
+  /** Absolute run deadline in this harness's clock, or `null` when unbounded. */
+  deadlineAt?: () => number | null;
+  now?: () => number;
+  /** Injected timer so expiry is deterministic without real waiting. */
+  scheduler?: { setTimer: (fn: () => void, ms: number) => unknown; clearTimer: (handle: unknown) => void };
+  defaultTimeoutMs?: number;
+  finalizationMarginMs?: number;
 }
 
 /**
@@ -155,16 +182,32 @@ export class EchoControlAdapter implements ControlRuntimeAdapter {
   private readonly registry = new CurrentAttemptRegistry();
   private readonly implementedVerbs: ReadonlySet<ControlAction>;
   private readonly trackedWorkPerAttempt: number;
+  private readonly now: () => number;
+  private readonly deadlineAt: () => number | null;
+  private readonly scheduler: NonNullable<EchoControlAdapterOptions['scheduler']>;
+  private readonly defaultTimeoutMs: number;
+  private readonly finalizationMarginMs: number;
   /** Every delivery ever recorded, across attempts — the substitutability evidence. */
   readonly requests: EchoRequestEvent[] = [];
   /** Shared disposal ledger, so "disposed exactly once" is checkable. */
   readonly disposals = { count: 0 };
   private generation = 0;
   private attemptSeq = 0;
+  /** Its own tiny expiry mechanism — deliberately not the shared coordinator's. */
+  private expiryTimer: unknown = null;
+  private pauseSeq = 0;
 
   constructor(options: EchoControlAdapterOptions = {}) {
     this.implementedVerbs = options.implementedVerbs ?? IMPLEMENTED_CONTROL_VERBS;
     this.trackedWorkPerAttempt = options.trackedWorkPerAttempt ?? 0;
+    this.now = options.now ?? (() => Date.now());
+    this.deadlineAt = options.deadlineAt ?? (() => null);
+    this.scheduler = options.scheduler ?? {
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    };
+    this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30 * 60 * 1000;
+    this.finalizationMarginMs = options.finalizationMarginMs ?? 60 * 1000;
   }
 
   /** Supports pause/resume, not steer/abort — an intentionally mixed table. */
@@ -228,7 +271,7 @@ export class EchoControlAdapter implements ControlRuntimeAdapter {
     return attemptId;
   }
 
-  async requestPause(options?: { signal?: AbortSignal }): Promise<PauseResult> {
+  async requestPause(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<PauseResult> {
     const attemptId = this.registry.currentAttemptId();
     if (!attemptId) return { outcome: 'unavailable', reason: 'no live attempt' };
     // Consult the INTERSECTION, not this adapter's own capability table. The
@@ -244,6 +287,18 @@ export class EchoControlAdapter implements ControlRuntimeAdapter {
     }
     const endpoint = this.currentEndpoint();
     if (!endpoint?.requestPause) return { outcome: 'unavailable', reason: 'attempt cannot pause' };
+
+    // Its own clamp arithmetic, written independently of the shared coordinator's.
+    // A budget that has already run out is rejected rather than shortened to zero:
+    // a pause expiring the instant it begins is indistinguishable to an operator
+    // from a pause that never happened.
+    const budget = this.safeBudget(options?.timeoutMs);
+    if (budget === null) {
+      const reason = 'no safe time remains before the run deadline';
+      this.registry.emit({ type: 'pause_unavailable', attemptId, reason });
+      return { outcome: 'unavailable', reason };
+    }
+
     const signal = options?.signal ?? new AbortController().signal;
     const result = await endpoint.requestPause(signal);
     if (result.outcome === 'requested') this.registry.emit({ type: 'pause_requested', attemptId });
@@ -251,14 +306,59 @@ export class EchoControlAdapter implements ControlRuntimeAdapter {
     if (result.outcome === 'unavailable') {
       this.registry.emit({ type: 'pause_unavailable', attemptId, reason: result.reason });
     }
+    if (result.outcome !== 'unavailable') this.armExpiry(budget);
     return result;
   }
 
+  /** Duration this harness will actually hold a pause for, or `null` if none. */
+  safeBudget(requestedMs?: number): number | null {
+    const requested = requestedMs !== undefined && requestedMs > 0 ? requestedMs : this.defaultTimeoutMs;
+    const deadline = this.deadlineAt();
+    if (deadline === null) return requested;
+    const remaining = deadline - this.now() - this.finalizationMarginMs;
+    if (remaining <= 0) return null;
+    return Math.min(requested, remaining);
+  }
+
   async resumeFromPause(): Promise<void> {
+    await this.release(false);
+  }
+
+  /**
+   * Release a pause exactly once, whether by operator command or by expiry.
+   *
+   * The sequence check is what makes "exactly once" true rather than likely: a
+   * resume and an expiry can both be in flight, and each must see whether the
+   * other already ended the pause it was about to end.
+   */
+  private async release(expired: boolean): Promise<void> {
+    const endpoint = this.currentEndpoint() as EchoAttemptEndpoint | null;
+    if (!endpoint?.isPaused()) return;
+    this.pauseSeq += 1;
+    this.clearExpiry();
     const attemptId = this.registry.currentAttemptId();
-    const endpoint = this.currentEndpoint();
-    await endpoint?.releasePause?.();
+    await endpoint.releasePause();
     if (attemptId) this.registry.emit({ type: 'pause_released', attemptId });
+    // An expired pause is recorded, not obeyed: the run continues with a note
+    // rather than a new instruction, because the operator issued none.
+    if (expired) await this.registry.deliver({ kind: 'annotation', text: ECHO_PAUSE_EXPIRY_NOTE });
+  }
+
+  private armExpiry(budgetMs: number): void {
+    this.clearExpiry();
+    const seq = this.pauseSeq;
+    this.expiryTimer = this.scheduler.setTimer(() => {
+      this.expiryTimer = null;
+      if (seq !== this.pauseSeq) return;
+      void this.release(true);
+    }, budgetMs);
+  }
+
+  private clearExpiry(): void {
+    if (this.expiryTimer !== null) {
+      this.scheduler.clearTimer(this.expiryTimer);
+      this.expiryTimer = null;
+    }
   }
 
   /** Test hook: settle the current attempt's tracked work. */
@@ -266,11 +366,20 @@ export class EchoControlAdapter implements ControlRuntimeAdapter {
     (this.currentEndpoint() as EchoAttemptEndpoint | null)?.settleWork();
   }
 
+  /** Test hook: add outstanding work to the current attempt. */
+  holdCurrentWork(): void {
+    (this.currentEndpoint() as EchoAttemptEndpoint | null)?.holdWork();
+  }
+
   activeWorkCount(): number | null {
     return this.registry.activeWorkCount();
   }
 
   cancel(reason?: string): void {
+    // Invalidate any pending expiry before cancelling, so an abort cannot be
+    // followed by a stale timer resuming the run it just stopped.
+    this.pauseSeq += 1;
+    this.clearExpiry();
     this.registry.cancel(reason ?? 'echo adapter cancelled');
   }
 
@@ -279,6 +388,8 @@ export class EchoControlAdapter implements ControlRuntimeAdapter {
   }
 
   async dispose(): Promise<void> {
+    this.pauseSeq += 1;
+    this.clearExpiry();
     await this.registry.dispose();
   }
 
