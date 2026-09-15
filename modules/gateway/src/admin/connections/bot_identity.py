@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.identity.identity_index_writer import IdentityIndexWriter
 from src.admin.memberships import upsert_tenant_membership
+from src.shared.identity import format_person_anchor
 from src.shared.models.base import new_uuid
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Department, Organization, Team, User
@@ -103,7 +104,7 @@ async def _ensure_bot_user(db: AsyncSession, *, org_id: str, app_slug: str, bot_
     if identity_user_ids and user is None:
         raise ValueError("Bot identity refers to a missing user")
     if user is None:
-        legacy_id = str(uuid.uuid5(_BOT_NAMESPACE, f"github:{bot_id}"))
+        legacy_id = str(uuid.uuid5(_BOT_NAMESPACE, format_person_anchor(str(bot_id))))
         user = await db.get(User, legacy_id)
     if user is None:
         # Adopt an earlier install-time seed with a random UUID without changing
@@ -143,7 +144,7 @@ async def _ensure_bot_user(db: AsyncSession, *, org_id: str, app_slug: str, bot_
             db.add(team)
             await db.flush()
         user = User(
-            id=str(uuid.uuid5(_BOT_NAMESPACE, f"github:{bot_id}")),
+            id=str(uuid.uuid5(_BOT_NAMESPACE, format_person_anchor(str(bot_id)))),
             org_id=org_id,
             team_id=team.id,
             email=f"{app_slug}@bot.adp.local",
