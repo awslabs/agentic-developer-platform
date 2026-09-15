@@ -130,6 +130,7 @@ class AdmissionInputs:
 
     policy: ExecutionPolicy | None
     plan_version: int
+    refusal: Decision | None = None
 
 
 async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: str) -> AdmissionInputs:
@@ -138,13 +139,9 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
     Both `org_id` and `flow_id` are filtered in SQL, so a flow id belonging to
     another tenant resolves to nothing rather than to that tenant's policy.
 
-    A plan document that cannot be parsed as a policy is treated as **no policy**
-    rather than raising, and says so loudly in the log. The alternative — letting a
-    parse error propagate — would take down the whole dispatch pass for every flow
-    because one flow's document was written by a newer schema. The consequence is
-    explicit and bounded: that flow runs with legacy semantics, and the log names it.
-    Note the rule itself still refuses an unsupported `schema_version`, so a policy
-    that parses but is too new denies rather than degrades.
+    A malformed stored policy refuses this flow without crashing other flows.
+    Only actual absence preserves legacy semantics; unreadable authority cannot
+    remove the restrictions that a human accepted.
     """
     stmt = select(OrchestrationAcceptedPlan).where(
         OrchestrationAcceptedPlan.org_id == org_id,
@@ -163,12 +160,16 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
         return AdmissionInputs(policy=ExecutionPolicy.model_validate(raw), plan_version=plan.version)
     except ValueError:
         logger.exception(
-            "orchestration admission: flow %s (org %s) plan v%s has an unparseable execution_policy — treating the flow as unpolicied",
+            "orchestration admission: flow %s (org %s) plan v%s has an unparseable execution_policy — refusing admission",
             flow_id,
             org_id,
             plan.version,
         )
-        return AdmissionInputs(policy=None, plan_version=plan.version)
+        return AdmissionInputs(
+            policy=None,
+            plan_version=plan.version,
+            refusal=Decision.block(DenyReason.SCHEMA_UNSUPPORTED, "accepted execution policy cannot be validated"),
+        )
 
 
 async def _member_facts(session: AsyncSession, *, org_id: str, user_id: str) -> tuple[str | None, frozenset[str]]:
@@ -432,8 +433,16 @@ async def authorize_node_dispatch(
     legible operator error rather than a silent widening.
     """
     inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
+    if inputs.refusal is not None:
+        return inputs.refusal
     if inputs.policy is None:
         return Decision.permit("no execution policy in force; legacy semantics apply")
+
+    from .runtime_policy import flow_started_at
+
+    started = await flow_started_at(session, org_id=node.org_id, flow_id=node.flow_id)
+    if started is not None and (utcnow() - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
+        return Decision.block(DenyReason.WALL_CLOCK_LIMIT_EXCEEDED, "flow execution deadline is exhausted")
 
     flow_slug = (
         await session.execute(

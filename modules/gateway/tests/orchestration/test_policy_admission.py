@@ -742,14 +742,11 @@ class TestTenantIsolation:
         assert (await _authorize(session, node)).permitted
 
 
-class TestUnparseablePolicyDegradesLoudly:
+class TestUnparseablePolicyRefuses:
     async def test_a_malformed_stored_policy_does_not_crash_the_pass(self, session: AsyncSession) -> None:
         """One flow's bad document must not stop every other flow's dispatch.
 
-        The tradeoff is explicit and logged: that flow reverts to legacy semantics
-        rather than taking the pass down. A policy that *parses* but declares an
-        unsupported schema version still denies — that path is the rule's, not this
-        function's.
+        The affected flow refuses admission; other flows retain their behavior.
         """
         flow, node = await _fixture(session, policy=None)
         plan = (await session.execute(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id))).scalar_one()
@@ -758,7 +755,8 @@ class TestUnparseablePolicyDegradesLoudly:
 
         inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
         assert inputs.policy is None
-        assert (await _authorize(session, node)).permitted
+        assert inputs.refusal.reason is DenyReason.SCHEMA_UNSUPPORTED
+        assert (await _authorize(session, node)).reason is DenyReason.SCHEMA_UNSUPPORTED
 
 
 @pytest.mark.parametrize("mismatch", [None, "owner", "repository", "invocation", "released", "missing_identity"])

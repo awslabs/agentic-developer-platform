@@ -50,6 +50,17 @@ async def verify_broker_worker(request: Request) -> None:
         execution = await run_in_threadpool(runtime.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
         if not execution:
             raise BootstrapRefusedError("broker execution unavailable")
+        from src.orchestration.runtime_policy import authorize_worker_credential
+        from src.shared.database import get_session_factory
+
+        async with get_session_factory()() as session:
+            decision = await authorize_worker_credential(session, execution=execution, grant=context[3], broker_path=request.url.path)
+        if not decision.permitted:
+            logger.info(
+                "Worker credential policy refused",
+                extra={"principal": caller.principal, "reason": decision.reason.value, "action": request.url.path},
+            )
+            raise BootstrapRefusedError("worker credential policy refused")
         if request.url.path == "/internal/v1/github-installation-token":
             repo = f"{body.get('repo_owner', '')}/{body.get('repo_name', '')}"
             if execution.get("repo") != {"S": repo} or execution.get("installation_id", {}).get("N") != str(body.get("installation_id")):

@@ -261,6 +261,7 @@ class DenyReason(StrEnum):
     SCHEMA_UNSUPPORTED = "schema_unsupported"
     STALE_POLICY_VERSION = "stale_policy_version"
     POLICY_EXPIRED = "policy_expired"
+    WALL_CLOCK_LIMIT_EXCEEDED = "wall_clock_limit_exceeded"
     GRANT_REVOKED = "grant_revoked"
     MEMBERSHIP_REVOKED = "membership_revoked"
     ORG_MISMATCH = "org_mismatch"
