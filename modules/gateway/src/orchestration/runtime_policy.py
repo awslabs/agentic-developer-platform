@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from src.agentauth.grants import DelegatedGrant
 from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
@@ -113,13 +113,16 @@ async def authorize_worker_credential(
         )
     )
     accepted_version = None
-    if approval is not None:
+    if approval is not None and approval.actor_kind == "human" and approval.actor_id == grant.authority.human_id:
         accepted_version = await session.scalar(
             select(OrchestrationAcceptedPlan.version)
             .where(
                 OrchestrationAcceptedPlan.org_id == grant.tenant_id,
                 OrchestrationAcceptedPlan.flow_id == grant.flow_id,
-                OrchestrationAcceptedPlan.created_at <= approval.created_at,
+                or_(
+                    OrchestrationAcceptedPlan.accepted_by_decision_id == approval.id,
+                    OrchestrationAcceptedPlan.created_at <= approval.created_at,
+                ),
             )
             .order_by(OrchestrationAcceptedPlan.version.desc())
             .limit(1)
@@ -148,7 +151,9 @@ async def authorize_worker_credential(
     repository_id = execution.get("provider_repository_id", {}).get("N", "")
     scope = CredentialScope.UNSCOPABLE
     permissions = policy_github_permissions(policy, action)
-    not_after = min(policy.expires_at, grant.expires_at) if grant.expires_at is not None else policy.expires_at
+    not_after = min(policy.expires_at, started + timedelta(seconds=policy.limits.max_wall_clock_seconds))
+    if grant.expires_at is not None:
+        not_after = min(not_after, grant.expires_at)
     if broker_path == "/internal/v1/github-installation-token" and repo in policy.repository_ids and repo in grant.repo_scope:
         # GitHub installation tokens last one hour. We cannot issue one whose
         # lifetime would exceed this grant, even when issuance itself is allowed.

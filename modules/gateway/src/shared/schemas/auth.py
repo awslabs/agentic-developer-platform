@@ -121,6 +121,7 @@ class TokenContext(BaseModel):
     _protected_run_binding: "RunBinding | None" = PrivateAttr(default=None)
     _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
     _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)
+    _policy_request_id: str | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _default_attributed_org_id(self) -> "TokenContext":

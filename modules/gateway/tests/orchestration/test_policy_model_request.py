@@ -15,6 +15,7 @@ from src.budget.enforcement_service import BudgetEnforcementService
 from src.orchestration.flow_budget import get_flow_reservations
 from src.orchestration.flow_meter import meter_target, read_flow_meter
 from src.orchestration.policy_admission import load_in_force_policy
+from src.shared.middleware.logging_middleware import LoggingMiddleware
 from src.shared.schemas.auth import TokenContext
 from tests.orchestration.test_runtime_policy import (
     assignment as assignment_fixture,
@@ -55,7 +56,7 @@ async def model_path(session, assignment, monkeypatch):
     monkeypatch.setattr(service, "_get_session", sessions)
     monkeypatch.setattr(service, "_note_check_succeeded", AsyncMock())
     inputs = await load_in_force_policy(session, org_id=assignment.grant.tenant_id, flow_id=assignment.flow.id)
-    return SimpleNamespace(service=service, policy=inputs.policy, calls=0, bodies=[], runtime=runtime)
+    return SimpleNamespace(service=service, policy=inputs.policy, calls=0, bodies=[], runtime=runtime, request_ids=[])
 
 
 async def invoke(model_path, assignment, *, request_id="call", usage_known=True, during_upload=None):
@@ -72,9 +73,12 @@ async def invoke(model_path, assignment, *, request_id="call", usage_known=True,
     scope = {
         "type": "http",
         "method": "POST",
+        "scheme": "https",
+        "server": ("gateway.test", 443),
+        "query_string": b"",
         "path": "/v1/messages",
         "state": {"token_context": context, "request_id": request_id},
-        "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+        "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()), (b"x-request-id", request_id.encode())],
     }
     frames = [{"type": "http.request", "body": body[:13], "more_body": True}, {"type": "http.request", "body": body[13:], "more_body": False}]
     sent = []
@@ -89,15 +93,17 @@ async def invoke(model_path, assignment, *, request_id="call", usage_known=True,
 
     async def provider(scope, receive, send):
         model_path.calls += 1
+        actual_request_id = scope["state"]["request_id"]
+        model_path.request_ids.append(actual_request_id)
         model_path.bodies.append(await Request(scope, receive).body())
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"first", "more_body": True})
         await model_path.service.reconcile_reservation(
-            context, request_id, "anthropic.claude-sonnet-4-6", 5, 1, actual_cost_usd=Decimal("0.01"), usage_known=usage_known
+            context, actual_request_id, "anthropic.claude-sonnet-4-6", 5, 1, actual_cost_usd=Decimal("0.01"), usage_known=usage_known
         )
         await send({"type": "http.response.body", "body": b"second", "more_body": False})
 
-    await AgentModelIdentityMiddleware(BudgetEnforcementMiddleware(provider, model_path.service))(scope, receive, send)
+    await AgentModelIdentityMiddleware(BudgetEnforcementMiddleware(LoggingMiddleware(provider), model_path.service))(scope, receive, send)
     return sent, body
 
 
@@ -116,6 +122,16 @@ async def test_exhausted_shared_budget_never_reaches_provider(model_path, assign
     sent, _ = await invoke(model_path, assignment)
     assert sent[0]["status"] == 402
     assert model_path.calls == 0
+
+
+async def test_reusing_a_client_request_id_cannot_replace_a_previous_charge(model_path, assignment):
+    for _ in range(2):
+        sent, _ = await invoke(model_path, assignment, request_id="same-client-id")
+        assert sent[0]["status"] == 200
+    assert len(set(model_path.request_ids)) == 2
+    assert "same-client-id" not in model_path.request_ids
+    meter = await read_flow_meter(org_id=assignment.grant.tenant_id, flow_id=assignment.flow.id, policy=model_path.policy)
+    assert meter.total_usd == Decimal("0.02")
 
 
 async def test_missing_usage_blocks_next_model_call_until_receipt(model_path, assignment):

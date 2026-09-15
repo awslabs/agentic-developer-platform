@@ -125,15 +125,18 @@ async def test_budget_service_enforces_flow_when_legacy_run_caps_are_disabled(me
     context._policy_estimated_cost = Decimal(20)
     await meter.store.reserve("earlier-worker", Decimal(20), [meter.target])
     await meter.store.reconcile("earlier-worker", Decimal(20), [meter.target])
-    first = await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="one")
+    context._policy_request_id = "one"
+    first = await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="untrusted")
     assert first.allowed
-    second = await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="two")
+    context._policy_request_id = "two"
+    second = await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="untrusted")
     assert not second.allowed and second.scope == "flow"
     await service.reconcile_reservation(context, "one", "unknown-model", 0, 0, actual_cost_usd=Decimal(0), usage_known=False)
     assert await meter.store.snapshot(meter.target) is None
     await service.reconcile_reservation(context, "one", "unknown-model", 1, 1, actual_cost_usd=Decimal(5))
     assert (await meter.store.snapshot(meter.target)).total_usd == 25
-    assert (await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="three")).allowed
+    context._policy_request_id = "three"
+    assert (await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="untrusted")).allowed
 
 
 @pytest.mark.parametrize("failure", ["disabled", "backend", "missing_id", "missing_anchor"])
@@ -155,9 +158,14 @@ async def test_policy_budget_service_never_degrades_open(meter, monkeypatch, fai
 
 def test_quote_prices_requested_output_and_refuses_unbounded_provider_features():
     body = {"model": "anthropic.claude-sonnet-4-6", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 16}
+
     def quote(document):
         return flow_meter.estimate_policy_model_cost(json.dumps(document).encode(), "/v1/messages")
+
     assert quote(dict(body, max_tokens=10000)) > quote(body) > 0
+    # Hidden provider framing cannot be estimated from bytes. Both requests
+    # reserve the entire published input context and the same output maximum.
+    assert quote(dict(body, messages=[{"role": "user", "content": "long text " * 1000}])) == quote(body)
     for changes in ({"max_tokens": None}, {"model": "unknown"}, {"mcp_servers": ["remote"]}, {"messages": [{"content": [{"type": "image"}]}]}):
         with pytest.raises(ValueError):
             quote(dict(body, **changes))

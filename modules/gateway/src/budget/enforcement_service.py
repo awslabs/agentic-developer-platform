@@ -776,8 +776,9 @@ class BudgetEnforcementService:
         """
         policy_target = context._policy_flow_target
         if policy_target is not None:
-            if context._policy_estimated_cost is None:
+            if context._policy_estimated_cost is None or context._policy_request_id is None:
                 return self._policy_budget_unavailable()
+            request_id = context._policy_request_id
             estimated_cost = max(estimated_cost, context._policy_estimated_cost)
         if not budget_config.budget_check_enabled:
             if policy_target is not None:

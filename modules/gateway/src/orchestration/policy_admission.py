@@ -45,7 +45,7 @@ delegated to the service that owns it, so this module cannot drift from them.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -346,6 +346,20 @@ async def resolve_authorization_context(
     come from two different reads of a moving ledger.
     """
     member_org_id, member_team_ids = await _member_facts(session, org_id=node.org_id, user_id=principal_user_id)
+    from src.admin.access_control import AccessControl
+    from src.admin.config import Permission, membership_role_to_admin_role
+    from src.shared.identity.workspaces import memberships_for_login
+
+    # Use the existing membership resolver and permission map, requiring an
+    # actual current role. The legacy RBAC rollback flag must not turn a missing
+    # membership into approval authority for an accepted bounded policy.
+    principal_can_authorize = False
+    if member_org_id is not None:
+        _, memberships = await memberships_for_login(session, principal_user_id)
+        pair = memberships.get(node.org_id)
+        if pair is not None and pair[1] is not None:
+            role = membership_role_to_admin_role(pair[1].role)
+            principal_can_authorize = Permission.PLAN_APPROVE in AccessControl(session).get_role_permissions(role)
     from .work_admission import enabled as work_claims_enabled
 
     work_owned = True
@@ -387,6 +401,7 @@ async def resolve_authorization_context(
         principal_id=principal_user_id,
         member_org_id=member_org_id,
         member_team_ids=member_team_ids,
+        principal_can_authorize=principal_can_authorize,
         # Grant revocation lives in the agentauth plane, which is keyed by run rather
         # than by flow and has no row until a run exists. There is nothing to consult
         # before the first dispatch, so this is False here and the membership and
@@ -411,6 +426,8 @@ async def authorize_node_dispatch(
     installation_resolved: bool,
     provider_repository_id: int | None = None,
     expected_invocation_id: str | None = None,
+    action_override: Action | None = None,
+    continuing_node: bool = False,
 ) -> Decision:
     """Admit or refuse dispatching one node under its flow's accepted policy.
 
@@ -475,8 +492,10 @@ async def authorize_node_dispatch(
         .all()
     )
 
-    action = action_for_node_kind(node.kind)
-    if action is None:
+    action = action_override or action_for_node_kind(node.kind)
+    if action_override is None and node.kind == NodeKind.STORY.value and node.attempts > int(continuing_node):
+        action = Action.REPAIR
+    if action_for_node_kind(node.kind) is None or action is None:
         # A gate is never dispatched, and an unclassifiable kind must not be guessed.
         return Decision.block(
             DenyReason.ACTION_NOT_PERMITTED,
@@ -495,8 +514,18 @@ async def authorize_node_dispatch(
     if installation_resolved and target_repository in inputs.policy.repository_ids:
         scope = CredentialScope.SCOPED if policy_github_permissions(inputs.policy, action) is not None else CredentialScope.UNSCOPABLE
 
-    # One ledger read, used for the rule's total and for the releases below.
-    spend = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes)
+    # A continuation uses its initialized provider accumulator even before the
+    # first asynchronous usage row arrives. Fresh admissions also reconcile the
+    # settled ledger's completed-node holds.
+    if continuing_node:
+        from .flow_meter import read_flow_meter
+
+        if node.state != NodeState.RUNNING.value:
+            return Decision.block(DenyReason.WORK_NOT_OWNED, "continuation no longer belongs to a running node")
+        meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+        spend = SpendObservation(total_usd=meter.total_usd if meter is not None else None)
+    else:
+        spend = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes)
 
     context = await resolve_authorization_context(
         session,
@@ -509,6 +538,8 @@ async def authorize_node_dispatch(
         provider_repository_id=provider_repository_id,
         expected_invocation_id=expected_invocation_id,
     )
+    if continuing_node:
+        context = replace(context, observed_attempts=max(0, node.attempts - 1), observed_concurrency=max(0, context.observed_concurrency - 1))
 
     resource = ResourceRef(
         repository_id=target_repository,

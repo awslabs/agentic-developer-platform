@@ -141,19 +141,25 @@ def estimate_policy_model_cost(body: bytes, path: str) -> Decimal:
         raise ValueError("explicit input required")
     for message in messages:
         text_content(message["content"])
-    rows = model_rate_candidates(load_snapshot().rates + cached_rate_state().rows, canonical_billing_model_id(model))
+    snapshot = load_snapshot()
+    billing_model = canonical_billing_model_id(model)
+    context_limit = snapshot.models.get(billing_model, {}).get("context_max_input_tokens")
+    if isinstance(context_limit, bool) or not isinstance(context_limit, int) or context_limit <= 0:
+        raise ValueError("published model context bound unavailable")
+    rows = model_rate_candidates(snapshot.rates + cached_rate_state().rows, billing_model)
     if not rows:
         raise ValueError("published model pricing unavailable")
     # Price every possible input token at the most expensive published input or
-    # cache-write rate, across context/geography variants. Full UTF-8 bytes plus
-    # protocol framing reserve substantially more than the ordinary chars/4
-    # heuristic; output uses the actual requested maximum, including thinking.
+    # cache-write rate, across context/geography variants. Reserve the model's
+    # entire published context capacity: byte estimates cannot bound hidden
+    # provider framing. This is deliberately pessimistic until provider token
+    # counts are available. Output uses the requested maximum, including thinking.
     input_rate = max(
         max(row.input_price_per_1k_tokens, row.cache_write_price_per_1k_tokens or Decimal(0), row.cache_write_1h_price_per_1k_tokens or Decimal(0))
         for row in rows
     )
     output_rate = max(row.output_price_per_1k_tokens for row in rows)
-    cost = (Decimal(len(body) + 8192) * input_rate + Decimal(output) * output_rate) / 1000
+    cost = (Decimal(context_limit) * input_rate + Decimal(output) * output_rate) / 1000
     if not cost.is_finite() or cost <= 0:
         raise ValueError("model price unavailable")
     return cost.quantize(Decimal("0.000001"), rounding=ROUND_UP)

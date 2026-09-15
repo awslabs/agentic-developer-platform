@@ -1,13 +1,14 @@
 """Bind model traffic to the current protected pod before budget resolution.
 
-This middleware never consumes the body or changes response streaming. The
-registry's protected worker identity requires individual run authentication even
-when the legacy budget binding is disabled or in shadow mode.
+Policy requests buffer and replay the original body frames for quoting; response
+streaming is unchanged. The registry's protected worker identity requires run
+authentication even when legacy budget binding is disabled or in shadow mode.
 """
 
 from __future__ import annotations
 
 import os
+from uuid import uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
@@ -125,6 +126,9 @@ class AgentModelIdentityMiddleware:
                     decision = await authorize_worker_credential(session, execution=execution or {}, grant=grant, broker_path="model")
                     if not decision.permitted:
                         raise ModelPolicyRefusedError(decision)
+                # Client IDs are trace hints, not spend idempotency keys.
+                context._policy_request_id = str(uuid4())
+                scope.setdefault("state", {})["request_id"] = context._policy_request_id
             # Authenticated registry org remains __platform__. Only attribution
             # and budget binding use the protected run's tenant and principal.
             context.attributed_org_id = caller.tenant_id

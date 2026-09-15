@@ -187,7 +187,7 @@ def _policy(**overrides: Any) -> ExecutionPolicy:
     base: dict[str, Any] = {
         "org_id": ORG_A,
         "repository_ids": [REPO],
-        "allowed_actions": [Action.DEVELOP, Action.MERGE, Action.EVALUATE],
+        "allowed_actions": [Action.DEVELOP, Action.REPAIR, Action.MERGE, Action.EVALUATE],
         "expires_at": EXPIRY,
         "limits": _limits(),
     }
@@ -504,16 +504,20 @@ class TestMembershipIsVerifiedLive:
         await session.flush()
         assert (await _authorize(session, node)).permitted
 
-    async def test_legacy_member_without_a_membership_row_is_permitted(self, session: AsyncSession) -> None:
-        """A native user predating `tenant_memberships` is still a real member.
-
-        `workspaces.py` makes the same fallback deliberately. Treating the missing
-        row as revocation would lock out exactly the oldest accounts.
-        """
+    async def test_native_membership_does_not_prove_current_approval_role(self, session: AsyncSession) -> None:
+        """The native user remains a member but has no current approval role."""
         _, node = await _fixture(session, policy=_policy())
         await session.execute(delete(TenantMembership).where(TenantMembership.user_id == APPROVER))
         await session.flush()
+        assert (await _authorize(session, node)).reason is DenyReason.ROLE_REVOKED
+
+    async def test_role_demotion_blocks_the_next_admission(self, session: AsyncSession) -> None:
+        _, node = await _fixture(session, policy=_policy())
         assert (await _authorize(session, node)).permitted
+        membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER))
+        membership.role = "member"
+        await session.flush()
+        assert (await _authorize(session, node)).reason is DenyReason.ROLE_REVOKED
 
     async def test_team_scoped_policy_admits_a_team_member(self, session: AsyncSession) -> None:
         _, node = await _fixture(session, policy=_policy(team_ids=[TEAM_A]))
@@ -694,6 +698,13 @@ class TestScopeIsEnforced:
 
 
 class TestHumanGatesAreNeverAdmitted:
+    async def test_action_override_cannot_admit_a_human_gate_node(self, session: AsyncSession) -> None:
+        _, node = await _fixture(session, policy=_policy(), node_kwargs={"kind": NodeKind.GATE.value})
+        decision = await authorize_node_dispatch(
+            session, node=node, principal_user_id=APPROVER, target_repository=REPO, installation_resolved=True, action_override=Action.DEVELOP
+        )
+        assert decision.reason is DenyReason.ACTION_NOT_PERMITTED
+
     async def test_a_gate_node_has_no_autonomous_action(self) -> None:
         """No `Action` exists for a gate, so none can be permitted for one.
 

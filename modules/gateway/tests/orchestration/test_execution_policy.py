@@ -105,6 +105,7 @@ def _context(policy: ExecutionPolicy | None = None, **overrides: object) -> Auth
         "principal_id": PRINCIPAL,
         "member_org_id": ORG_A,
         "member_team_ids": frozenset({TEAM_A}),
+        "principal_can_authorize": True,
         "now": NOW,
         "credential_scope": CredentialScope.SCOPED,
         "observed_spend_usd": Decimal("1.00"),

@@ -637,10 +637,10 @@ async def github_installation_token(
         )
         not_after = getattr(request.state, "agent_github_not_after", None)
         if not_after is not None:
-            from datetime import datetime
+            from datetime import UTC, datetime
 
             expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            if expiry.tzinfo is None or expiry > not_after:
+            if expiry.tzinfo is None or expiry <= datetime.now(UTC) or expiry > not_after:
                 raise ValueError("provider token lifetime exceeds accepted grant")
     except Exception as exc:
         await _write_audit(

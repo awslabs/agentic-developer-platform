@@ -264,6 +264,7 @@ class DenyReason(StrEnum):
     WALL_CLOCK_LIMIT_EXCEEDED = "wall_clock_limit_exceeded"
     GRANT_REVOKED = "grant_revoked"
     MEMBERSHIP_REVOKED = "membership_revoked"
+    ROLE_REVOKED = "role_revoked"
     ORG_MISMATCH = "org_mismatch"
     TEAM_NOT_PERMITTED = "team_not_permitted"
     ACTION_NOT_PERMITTED = "action_not_permitted"
@@ -309,7 +310,7 @@ class PolicyLimits(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # Wall-clock ceiling for one action's execution.
+    # Shared wall-clock ceiling from the flow's first committed dispatch.
     max_wall_clock_seconds: int = Field(gt=0, le=86_400)
     # Total spend this policy authorizes, reserved plus settled, across every
     # descendant. NOT per run and NOT per child — see `flow_budget_binding` for why
@@ -704,6 +705,7 @@ class AuthorizationContext:
     # deny even though the policy still names them.
     member_org_id: str | None
     member_team_ids: frozenset[str] = frozenset()
+    principal_can_authorize: bool = False
 
     # Whether the delegated grant itself has been revoked, independent of
     # membership. Revocation blocks new admissions immediately; already-running
@@ -905,6 +907,9 @@ def authorize_action(
             DenyReason.TEAM_NOT_PERMITTED,
             f"principal {context.principal_id!r} is not a member of any team this policy binds",
         )
+
+    if not context.principal_can_authorize:
+        return Decision.block(DenyReason.ROLE_REVOKED, "the policy principal no longer has permission to authorize execution in this tenant")
 
     if not context.work_owned_by_policy_flow:
         return Decision.block(
