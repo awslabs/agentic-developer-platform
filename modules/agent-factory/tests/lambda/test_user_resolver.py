@@ -54,6 +54,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "")
     monkeypatch.setenv("SLACK_BOT_USER_ID", "")
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", "adp-dev-webhook-events")
 
 
 @pytest.fixture
@@ -85,6 +86,12 @@ def mocked_aws_services(mock_env):
             BillingMode="PAY_PER_REQUEST",
         )
 
+        ddb.create_table(
+            TableName="adp-dev-webhook-events",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
         sqs_client = boto3.client("sqs", region_name="us-east-1")
         sqs_client.create_queue(QueueName="adp-dev-agent-gateway-tasks")
         sqs_client.create_queue(
@@ -100,7 +107,7 @@ def _import_fresh(mock_bedrock=None):
     for mod_name in list(sys.modules.keys()):
         if mod_name in ("handler", "classifier", "channels", "channels.base",
                         "channels.webchat", "channels.slack", "github_dispatch",
-                        "user_resolver"):
+                        "user_resolver", "invocation_logger"):
             del sys.modules[mod_name]
 
     import handler
@@ -421,6 +428,10 @@ class TestHandlerResolverIntegration:
         assert task["user_id"] == "internal-user-42"
         assert task["org_id"] == "org-resolved"
         assert task["team_id"] == "team-resolved"
+        assert task["tenant_id"] == "org-resolved"
+        row = mocked_aws_services["ddb"].Table("adp-dev-webhook-events").scan()["Items"][0]
+        assert row["root_human_id"] == "internal-user-42"
+        assert row["tenant_id"] == task["tenant_id"]
 
     def test_unresolved_user_returns_magic_link_no_enqueue(self, mocked_aws_services, mock_env_with_resolver):
         """Unresolved user gets magic-link response, message is NOT enqueued."""
@@ -510,7 +521,7 @@ class TestHandlerResolverIntegration:
         mock_urlopen.assert_not_called()
 
     def test_feature_flag_off_skips_resolver(self, mocked_aws_services, mock_env):
-        """When ENABLE_USER_IDENTITIES is off, Slack messages proceed without resolver."""
+        """Skipping resolution cannot dispatch a run without a verified owner and tenant."""
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.return_value = _make_bedrock_response({
             "path": "long_running",
@@ -546,8 +557,9 @@ class TestHandlerResolverIntegration:
             handler.ADAPTERS["slack"].verify_request = lambda *a, **kw: True
             result = handler.lambda_handler(event, None)
 
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["status"] == "processing"
+        assert result["statusCode"] == 503
+        sqs = mocked_aws_services["sqs"]
+        queued = sqs.receive_message(QueueUrl="https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks")
+        assert not queued.get("Messages")
         # Resolver was NOT called
         mock_urlopen.assert_not_called()

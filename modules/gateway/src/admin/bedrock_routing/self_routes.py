@@ -24,7 +24,7 @@ path."*
 
 There is no target parameter at any position on any route here. No ``user_id``, no
 ``scope``, no ``destination_id``. The anchor is
-the selected workspace's org-local user, derived from the validated token, so a
+the person's persisted user record, derived from the validated token, so a
 request naming somebody else cannot be *formed* — nothing has to notice and refuse it.
 This is the argument ``person_cap_routes`` makes for ``/me/budget/person-cap`` and the
 reason ``personCap.ts`` carries the same note on the client.
@@ -128,10 +128,10 @@ async def _caller_id(db: AsyncSession, current_user: TokenContext) -> str:
     FK, so an unprovisioned caller has no connections to select and every write refuses
     before it can store anything.
     """
-    from src.shared.identity.workspaces import workspace_user
+    from src.proxy.bedrock_principal import routing_user
 
-    user = await workspace_user(db, current_user.user_id, current_user.org_id, username=current_user.cognito_username)
-    return user.id if user and user.org_id == current_user.org_id else current_user.user_id
+    user = await routing_user(db, current_user.user_id)
+    return user.id if user else current_user.user_id
 
 
 async def _own_connections(db: AsyncSession, user_id: str) -> list[UserCredential]:

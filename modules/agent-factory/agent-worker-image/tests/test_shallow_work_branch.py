@@ -132,7 +132,7 @@ def bootstrap(monkeypatch, tmp_path, request):
         {
             "QUEUE_URL": "https://example.invalid/queue",
             "AWS_REGION": "us-east-1",
-            "ADP_BEDROCK_VIA": "direct",
+            "ADP_BEDROCK_VIA": "gateway",
         },
     )
     envelope = {
@@ -153,6 +153,8 @@ def bootstrap(monkeypatch, tmp_path, request):
         entrypoint, "_receive_one_message", Mock(return_value=(json.dumps(envelope), "receipt"))
     )
     monkeypatch.setattr(entrypoint, "_load_door_api_key", Mock())
+    monkeypatch.setattr(entrypoint, "_start_sigv4_proxy", Mock())
+    monkeypatch.setattr(entrypoint, "_stop_sigv4_proxy", Mock())
     monkeypatch.setattr(
         entrypoint,
         "_resolve_execution_token",

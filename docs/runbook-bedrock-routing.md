@@ -14,8 +14,25 @@ Configure shared destinations as a platform admin under **Budgets → Bedrock
 account routing**, register and verify the destination, then add an organization,
 team, or person rule. Personal selections remain under **Settings → Credentials →
 Bedrock model calls**. Rules take effect within the existing routing-cache window
-(about one minute). Person rules take priority, followed by the authenticated
-primary team, organization, and platform account.
+(about one minute). Both personal Claude/OpenAI requests and human-rooted cloud
+agent requests use the person's rule, then their registered primary team, then
+their organization, then the platform account. A repository/workspace switch does
+not replace the person's routing hierarchy with the shared worker's hierarchy.
+
+Cloud requests must include `X-Agent-RunId`. The gateway reads the current run
+record, verifies its tenant and lifecycle, and resolves its recorded human owner.
+Missing, unknown, finished or unverifiable runs return a routing error before
+inference; budget shadow/degraded mode never bypasses this check. Explicitly
+service-rooted runs retain service routing because no person's rule applies.
+Producers must persist the run and its human-root metadata before dispatch and
+forward the envelope's run ID, not the SQS message ID. GitHub, orchestration-engine
+and chat dispatch register owner metadata before publishing. Chat Claude calls and context summarization share a run-scoped proxy.
+Deploy the ingest Lambda and worker images together with the gateway update;
+older messages without verified owner metadata are rejected.
+
+OpenAI requests use the destination's credentials and region for both response
+modes. Usage records retain the decision used to sign each request; historical
+observation-only account labels are not backfilled or certified by this change.
 
 An unmapped principal uses the platform account. Once a usable destination is
 selected, an invocation failure is returned to the caller rather than retried
@@ -101,8 +118,7 @@ Agent Worker Pod
 | Value | Behavior |
 |-------|----------|
 | `gateway` (default) | Bedrock via the local sigv4-proxy → API GW → gateway. Metered, budgeted, attributed. |
-| `direct` | Bedrock directly on pod IRSA. **Kill switch** — bypasses gateway budget/audit/metering. |
-| `platform` | Legacy alias for `direct`. |
+| `direct` / `platform` | Retired. Startup error; these modes bypass the user routing rule. |
 | `user` | **RETIRED (#4747).** Setting it is now a startup error. |
 
 **Why `user` was retired.** It served Bedrock with the customer's own assumed
@@ -116,40 +132,12 @@ Setting `=user` raises at startup rather than falling back. That is deliberate:
 a silent fallback would run the pod on platform-billed IRSA, switching the payer
 without telling anyone.
 
-## Rollback: Switch to Direct Bedrock
+## Handling routing failures
 
-**Time to revert: ~30 seconds.**
-
-### Option A: Quick revert via kubectl (no Terraform)
-
-```bash
-# Edit the configmap directly
-kubectl edit configmap agent-gateway-config -n adp-gateway-agents
-# Change: ADP_BEDROCK_VIA: "direct"
-
-# Force new pods to pick up the change (KEDA spawns fresh pods from template)
-kubectl delete jobs -n adp-gateway-agents -l app.kubernetes.io/name=agent-gateway-worker
-```
-
-### Option B: Durable revert via Terraform
-
-In `modules/agent-factory/infra/gateway-main.tf`, change:
-```hcl
-ADP_BEDROCK_VIA = "direct"
-```
-
-Then apply:
-```bash
-cd modules/agent-factory/infra
-terraform apply -var-file=terraform.tfvars -auto-approve
-```
-
-### Effect of rollback
-
-- In-flight pods continue using whatever path they started with (gateway or direct)
-- New pods spawned by KEDA use the direct path (pod IRSA → Bedrock)
-- No restart of running pods needed — they finish their current task naturally
-- Gateway audit/budget/rate-limit no longer applies to new agent calls
+Keep `ADP_BEDROCK_VIA=gateway`. Proxy startup failure stops the worker before
+inference; there is no automatic or environment-variable bypass. Fix the gateway
+connection or selected destination. To intentionally use the platform account,
+remove the applicable routing mapping through the routing UI.
 
 ## Monitoring
 
@@ -168,7 +156,7 @@ terraform apply -var-file=terraform.tfvars -auto-approve
    - Any sustained 5xx → investigate gateway logs
 
 4. **sigv4-proxy health check failures** (agent pod logs)
-   - Look for: `sigv4-proxy failed to start; falling back to ADP_BEDROCK_VIA=direct`
+   - Look for: `Bedrock gateway proxy failed to start`
    - Single occurrences are normal (race condition on pod startup)
    - Sustained failures → SIGV4_PROXY_TARGET may be wrong or proxy script missing
 

@@ -284,6 +284,13 @@ def unmapped_routing(monkeypatch):
 
 
 @pytest.fixture
+def unmapped_mantle_routing(monkeypatch):
+    """Transport/pricing unit tests explicitly use the platform route."""
+    decision = RoutingDecision(target=BedrockTarget(account_id=None, rung="platform"))
+    monkeypatch.setattr("src.proxy.mantle_service.resolve_routing_decision", AsyncMock(return_value=decision))
+
+
+@pytest.fixture
 def proxy_service(mock_pool_service: MockPoolService, unmapped_routing) -> ProxyService:
     """Create a proxy service with mocked dependencies."""
     return ProxyService(pool_service=mock_pool_service)

@@ -45,6 +45,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "")
     monkeypatch.setenv("SLACK_BOT_USER_ID", "")
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", "adp-dev-webhook-events")
 
 
 @pytest.fixture
@@ -55,6 +56,12 @@ def mocked_aws_services(mock_env):
             TableName="adp-dev-agent-gateway-sessions",
             KeySchema=[{"AttributeName": "session_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "session_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        ddb.create_table(
+            TableName="adp-dev-webhook-events",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         sqs_client = boto3.client("sqs", region_name="us-east-1")
@@ -69,7 +76,7 @@ def mocked_aws_services(mock_env):
 def _import_handler(mock_bedrock=None):
     for mod_name in list(sys.modules.keys()):
         if mod_name in ("handler", "classifier", "channels", "channels.base",
-                        "channels.webchat", "channels.slack", "github_dispatch"):
+                        "channels.webchat", "channels.slack", "github_dispatch", "invocation_logger"):
             del sys.modules[mod_name]
     import handler
     if mock_bedrock is not None:
@@ -218,7 +225,7 @@ class TestLongRunningNoDoubleAck:
             route_key="$default",
             body={"action": "message", "text": "Analyze the codebase", "session_id": "sess-esc"},
             connection_id="conn-esc",
-            authorizer_claims={"sub": "user-esc", "email": "esc@example.com"},
+            authorizer_claims={"sub": "user-esc", "email": "esc@example.com", "custom:tenant_id": "test-tenant"},
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
