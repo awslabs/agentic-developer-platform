@@ -138,7 +138,7 @@ class TestUpdate:
 
         assert _run_adp(bin_dir, home, ["update"]).returncode == 0
 
-        for name in ("install.sh", "adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py", "adp-bedrock.py", "adp-aws.py"):
+        for name in CLI_FILES:
             assert f"/api/cli/{name}" in upstream.requested, f"{name} was not fetched"
 
     def test_updates_in_place_without_moving_the_prefix(self, installed) -> None:
