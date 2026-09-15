@@ -4,10 +4,19 @@
  * This is the only file in the control path allowed to know that the harness is
  * Claude. Everything provider-shaped is deliberately concentrated here: the
  * `SDKUserMessage` construction, the `shouldQuery` flag, the open async iterable
- * a streaming query needs, `options.resume`, the native `Query` handle and
- * `session.close()`. Consumers above talk to {@link ControlRuntimeAdapter} and
- * cannot tell which harness is underneath — which is the property that lets a
- * second harness arrive later without touching pause, abort or steering code.
+ * a streaming query needs, `options.resume` and the native `Query` handle.
+ * Consumers above talk to {@link ControlRuntimeAdapter} and cannot tell which
+ * harness is underneath — which is the property that lets a second harness
+ * arrive later without touching pause, abort or steering code.
+ *
+ * ## Handle ownership
+ *
+ * `resilientQuery` owns the SDK session handle: it creates it and closes it in
+ * the `finally` ending every attempt. This adapter *borrows* that handle and
+ * closes only the input channel it created itself. Both sides had a correct
+ * dispose-once guard and a double close still happened, because each guard fires
+ * once per owner and there were two owners — see
+ * {@link ClaudeAttemptEndpoint.dispose}.
  *
  * ## The two Claude-specific translations
  *
@@ -182,7 +191,6 @@ class ClaudeAttemptEndpoint implements AttemptEndpoint {
   private readonly channel: AttemptInputChannel;
   private readonly session: ClaudeSessionHandle | null;
   private readonly log: (msg: string) => void;
-  private sessionClosed = false;
 
   constructor(args: {
     attemptId: AttemptId;
@@ -229,23 +237,32 @@ class ClaudeAttemptEndpoint implements AttemptEndpoint {
   }
 
   /**
-   * Tear down: close input, then close the SDK session.
+   * Tear down this attempt's transport.
    *
-   * Input first so nothing can be enqueued into a session being destroyed.
-   * `session.close()` is preserved on every path including idle timeout (FR-5.6),
-   * and guarded by a flag because a double close on a native handle is not
-   * reliably harmless.
+   * Closes the input channel only. The SDK session handle is **borrowed, not
+   * owned**: `resilientQuery` creates it and closes it unconditionally in the
+   * `finally` that ends every attempt, on every path including idle timeout and
+   * consumer abandonment (FR-5.6).
+   *
+   * Closing it here as well was a real double-close, caught by the integrated
+   * test in `resilientQuery.test.ts` that drives this adapter through the real
+   * wrapper. The sequence on any retry was: the wrapper's `finally` closes
+   * attempt N's session, then attaching attempt N+1 disposes the replaced
+   * endpoint, which closed the same handle a second time. Neither side's
+   * internal guard could see the other — the endpoint's own flag and the
+   * registry's dispose-once ledger both correctly fire once *per owner*, and the
+   * bug was that there were two owners.
+   *
+   * A single owner is the fix rather than a shared flag, because the wrapper's
+   * close cannot move: 17 existing callers depend on that `finally` being
+   * byte-identical. So the rule is one line long and checkable — whoever creates
+   * the handle closes it.
    */
   async dispose(): Promise<void> {
     this.channel.close();
-    if (this.session && !this.sessionClosed) {
-      this.sessionClosed = true;
-      try {
-        this.session.close();
-      } catch (err) {
-        this.log(`claude adapter: session.close() threw (ignored): ${(err as Error)?.message ?? err}`);
-      }
-    }
+    // `session` is retained for diagnostics and to keep the borrowed-handle
+    // relationship explicit at the type level; it is deliberately never closed.
+    void this.session;
   }
 }
 

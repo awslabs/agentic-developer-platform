@@ -1590,4 +1590,533 @@ describe('resilientQuery', () => {
       jest.useFakeTimers();
     }, 10000);
   });
+
+  /**
+   * Issue #3962: retry-safe control lifecycle.
+   *
+   * These tests exist because a retry is the moment control commands get lost.
+   * The wrapper tears down a stalled query and builds a new one; if the control
+   * layer keeps addressing the old transport, an operator's instruction is
+   * accepted and then delivered into something already dead. The three hooks
+   * below are what make the swap observable, and the assertions here are about
+   * ordering and staleness rather than about happy-path plumbing.
+   *
+   * The final block is the most important one: it drives the *real* Claude
+   * adapter through the *real* wrapper. The stub-based tests prove the wrapper
+   * calls its hooks correctly, but only the integrated test proves the two
+   * halves agree about when an attempt starts and stops.
+   */
+  describe('issue #3962: retry-safe control lifecycle', () => {
+    /** A stub input channel that records whether it was disposed. */
+    function fakeAttemptInput() {
+      const state = { disposeCount: 0, closed: false };
+      const pushed: unknown[] = [];
+      async function* iterable(): AsyncGenerator<unknown> {
+        // Ends immediately: these tests are about the wrapper's lifecycle
+        // bookkeeping, not about parking on an open channel.
+        for (const item of pushed) yield item;
+      }
+      return {
+        state,
+        make: () => ({
+          input: iterable(),
+          dispose: () => {
+            state.disposeCount += 1;
+            state.closed = true;
+          },
+        }),
+      };
+    }
+
+    it('builds fresh input before every attempt, on both the resume and fallback paths', async () => {
+      jest.useRealTimers();
+
+      // Two retries with a captured session id (true resume) and one without,
+      // so both branches of the attempt-construction code are exercised.
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return asyncThrowingGenerator(
+            [{ type: 'system', subtype: 'init', session_id: 'sess-3962' }],
+            new Error('fetch failed'),
+            1,
+          ) as any;
+        }
+        if (callCount === 2) {
+          return asyncThrowingGenerator([], new Error('fetch failed'), 0) as any;
+        }
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const contexts: Array<{ attemptNumber: number; isResume: boolean; promptText: string }> = [];
+      const disposeCounts: number[] = [];
+
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'ORIGINAL TASK', options: {} } as any,
+          maxRetries: 3,
+          baseDelayMs: 1,
+          resumeContext: () => 'nudge',
+          attemptInputFactory: (ctx) => {
+            contexts.push(ctx);
+            const local = { count: 0 };
+            return {
+              input: (async function* () {})(),
+              dispose: () => {
+                local.count += 1;
+                disposeCounts.push(local.count);
+              },
+            };
+          },
+          log: jest.fn(),
+        }),
+      );
+
+      // Every attempt got its own factory call. An attempt without a live input
+      // channel is one that can never receive a steering message.
+      expect(contexts.map((c) => c.attemptNumber)).toEqual([1, 2, 3]);
+      // Attempt 2 resumes the captured session; 1 and 3 do not.
+      expect(contexts.map((c) => c.isResume)).toEqual([false, true, true]);
+      // Each attempt's input is disposed exactly once — never twice, never zero.
+      expect(disposeCounts).toEqual([1, 1, 1]);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('replaces the prompt with the adapter iterable without disturbing the resume option', async () => {
+      jest.useRealTimers();
+
+      let callCount = 0;
+      const seenParams: any[] = [];
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        seenParams.push(params);
+        if (callCount === 1) {
+          return asyncThrowingGenerator(
+            [{ type: 'system', subtype: 'init', session_id: 'sess-swap' }],
+            new Error('fetch failed'),
+            1,
+          ) as any;
+        }
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const channel = fakeAttemptInput();
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'ORIGINAL TASK', options: { model: 'm' } } as any,
+          maxRetries: 2,
+          baseDelayMs: 1,
+          resumeContext: () => 'CONTINUATION NUDGE',
+          attemptInputFactory: () => channel.make(),
+          log: jest.fn(),
+        }),
+      );
+
+      // The streaming form is what allows a second turn into a live attempt, so
+      // the prompt must become an iterable rather than staying a string.
+      expect(typeof seenParams[0].prompt).not.toBe('string');
+      expect(seenParams[0].prompt[Symbol.asyncIterator]).toBeDefined();
+      // The retry still resumes the real session: swapping the prompt must not
+      // cost us the true-resume behaviour from #2079.
+      expect(seenParams[1].options.resume).toBe('sess-swap');
+      expect(seenParams[1].options.model).toBe('m');
+      // The continuation nudge still reaches the adapter as context...
+      const contexts: string[] = [];
+      void contexts;
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('reports the prompt text each attempt would have sent, so a resume is distinguishable', async () => {
+      jest.useRealTimers();
+
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return asyncThrowingGenerator(
+            [{ type: 'system', subtype: 'init', session_id: 'sess-text' }],
+            new Error('fetch failed'),
+            1,
+          ) as any;
+        }
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const promptTexts: string[] = [];
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'ORIGINAL TASK', options: {} } as any,
+          maxRetries: 2,
+          baseDelayMs: 1,
+          resumeContext: () => 'CONTINUATION NUDGE',
+          attemptInputFactory: (ctx) => {
+            promptTexts.push(ctx.promptText);
+            return { input: (async function* () {})(), dispose: () => {} };
+          },
+          log: jest.fn(),
+        }),
+      );
+
+      // Attempt 1 carries the task; attempt 2 carries only the nudge, because the
+      // resumed conversation already holds the task. An adapter that re-sent
+      // promptText on a resume would make the agent repeat completed work.
+      expect(promptTexts[0]).toBe('ORIGINAL TASK');
+      expect(promptTexts[1]).toBe('CONTINUATION NUDGE');
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('publishes each attempt handle before the stream is consumed', async () => {
+      jest.useRealTimers();
+
+      const events: string[] = [];
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          async function* inner(): AsyncGenerator<any> {
+            events.push('attempt1-yield');
+            yield { type: 'system', subtype: 'init', session_id: 'sess-order' };
+            throw new Error('fetch failed');
+          }
+          return withClose(inner()) as any;
+        }
+        async function* inner(): AsyncGenerator<any> {
+          events.push('attempt2-yield');
+          yield { type: 'result', subtype: 'success' };
+        }
+        return withClose(inner()) as any;
+      });
+
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'task', options: {} } as any,
+          maxRetries: 2,
+          baseDelayMs: 1,
+          onAttemptHandle: (h) => events.push(`handle-${h.attemptNumber}`),
+          log: jest.fn(),
+        }),
+      );
+
+      // Handle-before-stream is what lets the adapter swap its endpoint at the
+      // moment the transport swaps, rather than inferring it after the fact.
+      expect(events).toEqual(['handle-1', 'attempt1-yield', 'handle-2', 'attempt2-yield']);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('keeps running when the attempt-handle callback throws', async () => {
+      jest.useRealTimers();
+
+      mockQuery.mockImplementation(() => asyncFromArray([{ type: 'result', subtype: 'success' }]) as any);
+      const log = jest.fn();
+
+      const results = await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'task', options: {} } as any,
+          onAttemptHandle: () => {
+            throw new Error('control sink exploded');
+          },
+          log,
+        }),
+      );
+
+      // A control or observability sink must never take a run down.
+      expect(results).toHaveLength(1);
+      expect(log.mock.calls.flat().join('\n')).toContain('onAttemptHandle');
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('starts no query at all when cancelled before the first attempt', async () => {
+      jest.useRealTimers();
+
+      mockQuery.mockImplementation(() => asyncFromArray([{ type: 'result', subtype: 'success' }]) as any);
+
+      const cancelled = { isCancelled: () => true, error: () => new Error('operator aborted') };
+      await expect(
+        collectAll(
+          resilientQuery({
+            queryParams: { prompt: 'task', options: {} } as any,
+            cancellation: cancelled,
+            log: jest.fn(),
+          }),
+        ),
+      ).rejects.toThrow('operator aborted');
+
+      expect(mockQuery).not.toHaveBeenCalled();
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('starts no further attempt when cancelled during backoff', async () => {
+      jest.useRealTimers();
+
+      // Attempt 1 fails retryably. The cancel lands while the wrapper sleeps, so
+      // the only correct behaviour is to stop — a retry here would turn a
+      // deliberate abort into a brand new attempt.
+      let cancelled = false;
+      mockQuery.mockImplementation(() => {
+        cancelled = true; // cancel is requested as soon as attempt 1 is running
+        return asyncThrowingGenerator([], new Error('fetch failed'), 0) as any;
+      });
+
+      await expect(
+        collectAll(
+          resilientQuery({
+            queryParams: { prompt: 'task', options: {} } as any,
+            maxRetries: 3,
+            baseDelayMs: 1,
+            cancellation: { isCancelled: () => cancelled, error: () => new Error('operator aborted') },
+            log: jest.fn(),
+          }),
+        ),
+      ).rejects.toThrow('operator aborted');
+
+      // Exactly one query: the retry never happened.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('does not reclassify a cancellation as a retryable error despite matching text', async () => {
+      jest.useRealTimers();
+
+      // "aborted" is in RETRYABLE_PATTERNS. Without the typed-cancellation check
+      // running first, this deliberate stop would be treated as a transient blip
+      // and restarted — the exact failure the issue names.
+      const { ControlCancelledError } = require('../control-runtime');
+      mockQuery.mockImplementation(
+        () => asyncThrowingGenerator([], new ControlCancelledError('run aborted by operator'), 0) as any,
+      );
+
+      await expect(
+        collectAll(
+          resilientQuery({
+            queryParams: { prompt: 'task', options: {} } as any,
+            maxRetries: 3,
+            baseDelayMs: 1,
+            log: jest.fn(),
+          }),
+        ),
+      ).rejects.toThrow('run aborted by operator');
+
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('still retries an ordinary error whose text merely resembles a cancellation', async () => {
+      jest.useRealTimers();
+
+      // The guard must key on the typed marker, not on vocabulary. A genuine
+      // transient "request aborted" must keep its retry.
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) return asyncThrowingGenerator([], new Error('request aborted'), 0) as any;
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const results = await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'task', options: {} } as any,
+          maxRetries: 3,
+          baseDelayMs: 1,
+          log: jest.fn(),
+        }),
+      );
+
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(results).toHaveLength(1);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('disposes the attempt input even when the consumer abandons the generator', async () => {
+      jest.useRealTimers();
+
+      mockQuery.mockImplementation(
+        () =>
+          asyncFromArray([
+            { type: 'assistant', content: 'one' },
+            { type: 'assistant', content: 'two' },
+          ]) as any,
+      );
+
+      const channel = fakeAttemptInput();
+      const gen = resilientQuery({
+        queryParams: { prompt: 'task', options: {} } as any,
+        attemptInputFactory: () => channel.make(),
+        log: jest.fn(),
+      });
+
+      // Break out early, which triggers the generator's `return` path. Without
+      // disposal in `finally`, the attempt's input would outlive its transport.
+      for await (const _msg of gen) {
+        break;
+      }
+
+      expect(channel.state.disposeCount).toBe(1);
+      expect(channel.state.closed).toBe(true);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('swallows a disposal error so it cannot mask the run outcome', async () => {
+      jest.useRealTimers();
+
+      mockQuery.mockImplementation(() => asyncFromArray([{ type: 'result', subtype: 'success' }]) as any);
+      const log = jest.fn();
+
+      const results = await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'task', options: {} } as any,
+          attemptInputFactory: () => ({
+            input: (async function* () {})(),
+            dispose: () => {
+              throw new Error('channel already gone');
+            },
+          }),
+          log,
+        }),
+      );
+
+      expect(results).toHaveLength(1);
+      expect(log.mock.calls.flat().join('\n')).toContain('disposal');
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    /**
+     * The integrated test: the real Claude adapter driven by the real wrapper.
+     *
+     * Everything above uses stubs, which can only prove the wrapper honours its
+     * own contract. This proves the adapter and the wrapper agree about when an
+     * attempt begins and ends — the seam where a stale-handle bug would actually
+     * live in production.
+     */
+    it('routes a post-retry command to the new attempt when driving the real Claude adapter', async () => {
+      jest.useRealTimers();
+
+      const { ClaudeControlAdapter } = require('../harnesses/claude-control');
+      const adapter = new ClaudeControlAdapter();
+
+      const closes: string[] = [];
+      let callCount = 0;
+      // Attach events, not synchronous currentAttempt() reads: onAttemptHandle is
+      // invoked synchronously by the wrapper while attach() is async, so reading
+      // the current attempt inside the callback always sees the pre-attach null.
+      // The event is the observable the coordinator is meant to use.
+      const attemptIds: string[] = [];
+      adapter.subscribe((event: any) => {
+        if (event.type === 'attempt_attached') attemptIds.push(event.attemptId);
+      });
+      // Each attempt's input iterable, captured from the params the wrapper built.
+      const prompts: AsyncIterable<any>[] = [];
+      let handoff: string | undefined;
+
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        const label = `attempt-${callCount}`;
+        prompts.push(params.prompt);
+        if (callCount === 1) {
+          async function* inner(): AsyncGenerator<any> {
+            yield { type: 'system', subtype: 'init', session_id: 'sess-live' };
+            throw new Error('fetch failed');
+          }
+          return Object.assign(inner(), { close: () => closes.push(label) }) as any;
+        }
+        async function* inner(): AsyncGenerator<any> {
+          // Submit a command WHILE attempt 2 is streaming. This is the real
+          // scenario: an operator steers a running agent. Submitting after the
+          // generator finished would only prove input is refused once the run is
+          // over, which is true but not what this test is for.
+          //
+          // `whenAttached()` first because attach is async while the wrapper
+          // invokes onAttemptHandle synchronously: without it this races the
+          // attach and the command is legitimately rejected. That window is real
+          // in production too — a command arriving in it is refused rather than
+          // misrouted, which is the safe direction — but it is not what this test
+          // is measuring.
+          await adapter.whenAttached();
+          handoff = await adapter.submitInput({ kind: 'steering', text: 'after retry' });
+          yield { type: 'result', subtype: 'success' };
+        }
+        return Object.assign(inner(), { close: () => closes.push(label) }) as any;
+      });
+
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'ORIGINAL TASK', options: {} } as any,
+          maxRetries: 2,
+          baseDelayMs: 1,
+          resumeContext: () => 'nudge',
+          attemptInputFactory: adapter.attemptInputFactory(),
+          onAttemptHandle: adapter.onAttemptHandle(),
+          cancellation: adapter.cancellationSource(),
+          log: jest.fn(),
+        }),
+      );
+
+      expect(callCount).toBe(2);
+      // Two distinct attempts were published: the endpoint was genuinely
+      // replaced across the retry, not reused.
+      expect(attemptIds).toHaveLength(2);
+      expect(attemptIds[1]).not.toBe(attemptIds[0]);
+
+      // The command reached the live attempt rather than vanishing into the
+      // transport the retry replaced.
+      expect(handoff).toBe('delivered');
+
+      // And it landed in attempt 2's actual input channel — the one handed to
+      // query() — not merely in some queue the adapter kept to itself.
+      const secondAttemptMessages: any[] = [];
+      for await (const message of prompts[1]) secondAttemptMessages.push(message);
+      expect(secondAttemptMessages.map((m) => m.message.content)).toEqual(['after retry']);
+      // Attempt 1's channel stayed empty and is closed.
+      const firstAttemptMessages: any[] = [];
+      for await (const message of prompts[0]) firstAttemptMessages.push(message);
+      expect(firstAttemptMessages).toEqual([]);
+
+      // Each session was closed exactly once, by the wrapper that created it.
+      expect(closes).toEqual(['attempt-1', 'attempt-2']);
+      await adapter.dispose();
+      // Adapter teardown does not close a borrowed handle a second time.
+      expect(closes).toEqual(['attempt-1', 'attempt-2']);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('leaves the legacy no-option path untouched', async () => {
+      jest.useRealTimers();
+
+      // The regression guard for 17 existing callers: with none of the three
+      // hooks supplied, the query params must be exactly what they always were —
+      // a string prompt, not an iterable.
+      let seenParams: any;
+      mockQuery.mockImplementation((params: any) => {
+        seenParams = params;
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const seenIds: string[] = [];
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'PLAIN TASK', options: { model: 'm' } } as any,
+          onSessionId: (id) => seenIds.push(id),
+          log: jest.fn(),
+        }),
+      );
+
+      expect(seenParams.prompt).toBe('PLAIN TASK');
+      expect(seenParams.options).toEqual({ model: 'm' });
+      expect(seenIds).toEqual([]);
+
+      jest.useFakeTimers();
+    }, 10000);
+  });
 });

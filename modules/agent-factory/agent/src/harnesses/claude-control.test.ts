@@ -314,7 +314,17 @@ describe('per-attempt input lifecycle', () => {
 });
 
 describe('session teardown', () => {
-  it('closes the SDK session exactly once on teardown', async () => {
+  /**
+   * The handle is borrowed, not owned.
+   *
+   * `resilientQuery` creates the session and closes it in the `finally` ending
+   * every attempt, so this adapter must NOT close it too. That is not a
+   * stylistic split: the integrated test in `resilientQuery.test.ts` caught a
+   * real double close on every retry, because the wrapper's `finally` and the
+   * adapter's endpoint-replacement each closed the same handle. Both had a
+   * correct dispose-once guard; each simply fired once per owner.
+   */
+  it('does not close the borrowed session, leaving that to the wrapper that created it', async () => {
     const adapter = new ClaudeControlAdapter();
     const session = fakeSession();
     await startAttempt(adapter, { session });
@@ -322,58 +332,35 @@ describe('session teardown', () => {
     await adapter.dispose();
     await adapter.dispose();
 
-    // A double close on a native handle is not reliably harmless, and this must
-    // hold on every exit path including idle timeout.
-    expect(session.closeCount).toBe(1);
+    expect(session.closeCount).toBe(0);
   });
 
-  it('closes the session once across the full teardown sequence resilientQuery drives', async () => {
-    const adapter = new ClaudeControlAdapter();
-    const session = fakeSession();
-    const attempt = await startAttempt(adapter, { session });
-
-    // The real order on every exit path: the wrapper's per-attempt `finally`
-    // runs the input disposer, then the run tears the adapter down. Both reach
-    // the same attempt, which is precisely when a double close becomes possible.
-    await attempt.dispose();
-    await adapter.dispose();
-    await adapter.dispose();
-
-    expect(session.closeCount).toBe(1);
-  });
-
-  it('closes the replaced attempt session exactly once per retry', async () => {
+  it('does not close a replaced attempt session when a retry supersedes it', async () => {
     const adapter = new ClaudeControlAdapter();
     const first = fakeSession();
     const second = fakeSession();
 
     await startAttempt(adapter, { attemptNumber: 1, session: first });
     await startAttempt(adapter, { attemptNumber: 2, isResume: true, session: second });
-
-    // Replacement disposes the predecessor: no leaked query process per retry.
-    expect(first.closeCount).toBe(1);
-    expect(second.closeCount).toBe(0);
-
     await adapter.dispose();
-    expect(first.closeCount).toBe(1);
-    expect(second.closeCount).toBe(1);
+
+    // The wrapper already closed attempt 1's handle in its own `finally` before
+    // building attempt 2. A close here would be the second one.
+    expect(first.closeCount).toBe(0);
+    expect(second.closeCount).toBe(0);
   });
 
-  it('survives a session that throws on close, and still refuses later input', async () => {
+  it('closes the attempt input channel on teardown and refuses later input', async () => {
     const adapter = new ClaudeControlAdapter();
     const logged: string[] = [];
-    const throwing = {
-      close: () => {
-        throw new Error('EPIPE: sdk transport already gone');
-      },
-    };
     const adapterWithLog = new ClaudeControlAdapter({ log: (m) => logged.push(m) });
-    await startAttempt(adapterWithLog, { session: throwing });
+    const attempt = await startAttempt(adapterWithLog, { session: fakeSession() });
+    const messages = drain(attempt.input as AsyncIterable<unknown>);
 
-    // A teardown error must not mask the outcome that caused teardown — the run
-    // may already be reporting a failure the operator needs to see.
+    // What the adapter *does* own: the channel it created. It must be closed so
+    // the iterable ends and no push can land in a queue nobody will read.
     await expect(adapterWithLog.dispose()).resolves.toBeUndefined();
-    expect(logged.some((m) => m.includes('session.close()'))).toBe(true);
+    await expect(messages).resolves.toEqual([]);
     expect(await adapterWithLog.submitInput({ kind: 'steering', text: 'post-teardown' })).toBe('rejected');
     void adapter;
   });
@@ -437,8 +424,11 @@ describe('cancellation', () => {
     // Without this, cancelling during backoff would be followed by the retry
     // loop cheerfully attaching attempt N+1 — cancel becomes restart.
     expect(adapter.currentAttempt()).toBeNull();
-    // The refused attempt's own session is still closed, so it leaks nothing.
-    expect(session.closeCount).toBe(1);
+    // The refused attempt's session is the wrapper's to close, not the
+    // adapter's, so the refusal path must not close it either.
+    expect(session.closeCount).toBe(0);
+    // The refused attempt still leaks nothing the adapter owns: its channel is shut.
+    expect(await adapter.submitInput({ kind: 'steering', text: 'refused' })).toBe('rejected');
   });
 
   it('closes an in-flight channel when cancelled during query construction', async () => {
