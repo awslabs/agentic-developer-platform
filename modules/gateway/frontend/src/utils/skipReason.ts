@@ -47,6 +47,8 @@ const SKIP_REASON_TEXT: Record<string, string> = {
   installation_event:
     'This was a GitHub App installation event — bookkeeping only, no agent work implied.',
   event_type_unhandled: 'This webhook event type has no agent behaviour attached to it.',
+  bot_comment_action_unhandled:
+    'The agent edited or removed its own comment — ignored, no agent behaviour attached to this action.',
 
   // --- spawn_persona guards (block_reason strings, reused verbatim) ----------
   invalid_installation_id:
