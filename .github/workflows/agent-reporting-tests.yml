@@ -8,6 +8,7 @@ on:
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/agent-factory/skills/codex-bridge/**'
+      - 'modules/agent-factory/skills/aidlc-emit-issues/**'
       - 'modules/agent-factory/gateway/app/personas/**'
       - '.github/workflows/agent-reporting-tests.yml'
 
@@ -43,6 +44,11 @@ jobs:
           src/components/checkRunStreamer.token-rotation.test.ts
           src/github-comments.test.ts
           src/human-communication.test.ts
+          src/operations-prompt.test.ts
+          src/aidlc-presentation.test.ts
+          src/aidlc-communication.test.ts
+          src/aidlc-gate-enforcer.test.ts
+          src/agent-worker-aidlc-gating.test.ts
           src/agent-worker-prompt-order.test.ts
       - name: Verify memory reads and writes from shallow clones
         run: npm test -- --runInBand --runTestsByPath src/memory.test.ts

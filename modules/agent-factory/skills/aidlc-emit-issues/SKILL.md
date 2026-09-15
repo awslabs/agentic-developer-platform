@@ -645,7 +645,12 @@ GraphQL mutation as Step 6).
 ### Step 9: Post completion summary
 
 After all issues are created and linked (stories + delivery loop), post a
-summary comment on the originating AIDLC issue:
+summary comment on the originating AIDLC issue using the layout below. Preserve
+the EPIC link, verified counts and wave-to-story mapping when keeping prose
+concise; general presentation guidance does not remove these fields. Count
+actual issues, including existing issues adopted on a re-run. If emission is
+partial, show created versus planned counts and the missing work. Keep issue
+creation, accepted dispatch and observed worker startup as distinct states.
 
 ```markdown
 ## Delivery plan prepared: <capability>
@@ -653,12 +658,27 @@ summary comment on the originating AIDLC issue:
 <What this plan will enable. State whether issues were created, execution was
 submitted, or a worker was observed running. Put blockers beside that status.>
 
+**EPIC**: [#<number> — <title>](<issue URL>)
+**Story issues**: <verified count> · **Orchestrators**: <verified count> · **Evaluations**: <verified count>
+**Artifact revision**: [<SHA>](<published artifact URL>)
+
 **Next**: <owner and action, with a link. If dispatch was accepted but worker
 startup was not observed, say so. Do not infer execution from issue creation.>
 
-| Wave and capability | Orchestrator | Evaluation | Current state |
-|---------------------|--------------|------------|---------------|
-| <meaningful name> | <link> | <link> | <observed state> |
+| Wave and capability | Story issues | Orchestrator | Evaluation | Current state |
+|---------------------|--------------|--------------|------------|---------------|
+| <meaningful name> | <linked story issues> | <link> | <link> | <observed state> |
+
+### Validation and remaining holds
+
+| Check | Result | Evidence / remaining action |
+|-------|--------|-----------------------------|
+| Five-section story format and native links | <actual result> | <evidence or missing work> |
+| Emission lint — <rule number and name; one row per Step 7d rule> | <PASS/FAIL/NOT RUN/N/A> | <evidence or applicability reason> |
+| Machine proposal validation | <actual result> | <validator result and revision> |
+
+<Remaining holds and what each blocks. Lint verifies the plan; planned live
+evaluation checks have not passed merely because their definitions pass lint.>
 
 **Evidence**: <artifact revision link, created issue links, actual lint results
 and dispatch response/run link. Name incomplete or failed checks.>

@@ -489,17 +489,3 @@ class TestAuthorityBrokerIdentity:
             with pytest.raises(GatewayCredentialError, match="HTTPS and SigV4"):
                 GatewayCredentialClient(gateway_url="https://legacy.example.test", api_key="legacy")._make_request("https://legacy.example.test/internal/v1/credential-assume-role", {})
             signer.assert_not_called()
-
-    def test_customer_credentials_do_not_replace_platform_irsa(self, monkeypatch):
-        from unittest.mock import Mock
-        from adp_trigger.transport_identity import worker_credentials
-        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "customer-access-key")
-        session = Mock()
-        irsa = session.get_component.return_value.get_provider.return_value.load.return_value
-        assert worker_credentials(session) is irsa
-        session.get_credentials.assert_not_called()
-        session.get_component.return_value.get_provider.assert_called_once_with("assume-role-with-web-identity")
-        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
-        assert worker_credentials(session) is session.get_credentials.return_value

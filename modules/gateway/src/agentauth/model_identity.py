@@ -1,0 +1,161 @@
+"""Bind model traffic to the current protected pod before budget resolution.
+
+Policy requests buffer and replay the original body frames for quoting; response
+streaming is unchanged. The registry's protected worker identity requires run
+authentication even when legacy budget binding is disabled or in shadow mode.
+"""
+
+from __future__ import annotations
+
+import os
+from uuid import uuid4
+
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import HTTPException
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+from src.agentauth.adapter import CREDENTIAL_HEADER
+from src.agentauth.bootstrap import BootstrapRefusedError
+from src.agentauth.execution import ExecutionStateError
+from src.agentauth.run_credential import CredentialError
+from src.agentauth.store import AuthorityStoreError
+from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
+from src.shared.enforced_paths import ENFORCED_PATHS
+from src.shared.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+class ModelPolicyRefusedError(Exception):
+    def __init__(self, decision):
+        self.decision = decision
+
+
+class AgentModelIdentityMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope.get("path", "").startswith(ENFORCED_PATHS):
+            await self.app(scope, receive, send)
+            return
+        context = scope.get("state", {}).get("token_context")
+        if context is None or context.auth_source != "iam" or context.user_id != "authority-worker":
+            await self.app(scope, receive, send)
+            return
+
+        from src.agentauth.routes import get_agent_runtime
+        from src.budget.run_binding import RunBinding
+        from src.orchestration.work_admission import worker_checkpoint
+        from src.orchestration.work_claims import WorkClaimError
+        from src.shared.database import get_session_factory
+        from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
+
+        request = Request(scope)
+        try:
+            runtime = get_agent_runtime()
+            _, caller, record, grant = await run_in_threadpool(
+                runtime.authenticate,
+                request.headers.get(CREDENTIAL_HEADER, ""),
+                request.headers.get(WORKLOAD_HEADER, ""),
+            )
+            await runtime.validate_flow(record, grant)
+            await worker_checkpoint(org_id=caller.tenant_id, invocation_id=caller.invocation_id, store=runtime.store)
+            if request.headers.get("X-Agent-RunId", caller.invocation_id) != caller.invocation_id:
+                raise BootstrapRefusedError("model run assertion mismatch")
+            if request.headers.get("X-Agent-OrgId", caller.tenant_id) != caller.tenant_id:
+                raise BootstrapRefusedError("model tenant assertion mismatch")
+            root = grant.authority.human_id
+            if grant.authority.kind != "service_policy":
+                async with get_session_factory()() as session:
+                    root = await resolve_root_user_entity_id(session, caller.tenant_id, root)
+                    if grant.authority.kind == "gate_decision":
+                        from src.orchestration.flow_meter import estimate_policy_model_cost, meter_target
+                        from src.orchestration.policy_admission import load_in_force_policy
+                        from src.orchestration.runtime_policy import authorize_worker_credential
+
+                        execution = await run_in_threadpool(runtime.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
+                        inputs = await load_in_force_policy(session, org_id=caller.tenant_id, flow_id=grant.flow_id)
+                        decision = await authorize_worker_credential(
+                            session, execution=execution or {}, grant=grant, broker_path="model", inputs=inputs
+                        )
+                        if not decision.permitted:
+                            raise ModelPolicyRefusedError(decision)
+                        if inputs.policy is not None:
+                            if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
+                                raise AuthorityStoreError("policy budget enforcement unavailable")
+                            context._policy_flow_target = meter_target(org_id=caller.tenant_id, flow_id=grant.flow_id, policy=inputs.policy)
+            if context._policy_flow_target is not None:
+                # Buffer only policy-governed requests for a bounded
+                # quote, then replay every original ASGI frame. In
+                # particular, the upstream JSON is never reserialized.
+                frames, chunks, size = [], [], 0
+                while True:
+                    frame = await receive()
+                    if frame["type"] != "http.request":
+                        return
+                    frames.append(frame)
+                    chunk = frame.get("body", b"")
+                    size += len(chunk)
+                    if size > 16 * 1024 * 1024:
+                        raise BootstrapRefusedError("policy request exceeds the bounded input size")
+                    chunks.append(chunk)
+                    if not frame.get("more_body", False):
+                        break
+                try:
+                    context._policy_estimated_cost = estimate_policy_model_cost(b"".join(chunks), scope["path"])
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    raise BootstrapRefusedError("bounded provider quote unavailable") from None
+                remaining_frames = iter(frames)
+                upstream_receive = receive
+
+                async def replay():
+                    frame = next(remaining_frames, None)
+                    return frame if frame is not None else await upstream_receive()
+
+                receive = replay
+                # Upload time cannot extend a credential, grant, or policy. Check
+                # again after the body is available, immediately before spending.
+                _, caller, record, grant = await run_in_threadpool(
+                    runtime.authenticate, request.headers.get(CREDENTIAL_HEADER, ""), request.headers.get(WORKLOAD_HEADER, "")
+                )
+                await runtime.validate_flow(record, grant)
+                async with get_session_factory()() as session:
+                    decision = await authorize_worker_credential(session, execution=execution or {}, grant=grant, broker_path="model")
+                    if not decision.permitted:
+                        raise ModelPolicyRefusedError(decision)
+                # Client IDs are trace hints, not spend idempotency keys.
+                context._policy_request_id = str(uuid4())
+                scope.setdefault("state", {})["request_id"] = context._policy_request_id
+            # Authenticated registry org remains __platform__. Only attribution
+            # and budget binding use the protected run's tenant and principal.
+            context.attributed_org_id = caller.tenant_id
+            context._protected_run_binding = RunBinding(
+                run_id=caller.invocation_id,
+                correlation_id=grant.flow_id or caller.invocation_id,
+                tenant_id=caller.tenant_id,
+                user_id=root,
+                root_human_id=root,
+                is_human_rooted=grant.authority.kind != "service_policy",
+                flow_id=grant.flow_id if grant.authority.kind == "gate_decision" else None,
+            )
+        except ModelPolicyRefusedError as exc:
+            from src.orchestration.execution_policy import DenyReason
+
+            reason = exc.decision.reason
+            status = 503 if reason in {DenyReason.SPEND_UNKNOWN, DenyReason.BUDGET_UNAVAILABLE} else 403
+            error = "execution_policy_refused"
+            if reason is DenyReason.SPEND_LIMIT_EXCEEDED:
+                status, error = 402, "budget_exceeded"
+            logger.info("Model policy refused", extra={"principal": caller.invocation_id, "flow_id": grant.flow_id, "reason": reason.value})
+            await JSONResponse({"error": error, "reason": reason.value, "scope": "flow"}, status_code=status)(scope, receive, send)
+            return
+        except (BootstrapRefusedError, ExecutionStateError, CredentialError, WorkloadRefusedError, WorkClaimError, UnresolvableUserEntityError):
+            await JSONResponse({"error": "worker_identity_refused"}, status_code=403)(scope, receive, send)
+            return
+        except (AuthorityStoreError, BotoCoreError, ClientError, HTTPException):
+            await JSONResponse({"error": "worker_identity_unavailable"}, status_code=503)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)

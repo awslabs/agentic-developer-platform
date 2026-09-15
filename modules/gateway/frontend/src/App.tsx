@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { Suspense, lazy } from 'react';
 import { MainLayout } from './layouts/MainLayout';
 import { AuthLayout } from './layouts/AuthLayout';
@@ -29,7 +29,7 @@ const LogViewer = lazy(() => import('./pages/LogViewer'));
 const ClaudeSetup = lazy(() => import('./pages/ClaudeSetup'));
 const CliAuth = lazy(() => import('./pages/CliAuth')); // Web CLI login approval (login --web)
 const AgentManagement = lazy(() => import('./pages/AgentManagement')); // Issue #119
-const BudgetManagement = lazy(() => import('./pages/BudgetManagement')); // Issue #185
+const ModelAccess = lazy(() => import('./pages/ModelAccess'));
 const RateLimitManagement = lazy(() => import('./pages/RateLimitManagement')); // Issue #185
 const MyChats = lazy(() => import('./pages/MyChats')); // Issue #179
 const AgentChat = lazy(() => import('./pages/AgentChat')); // Issue #97
@@ -111,7 +111,8 @@ function App() {
               <Route path="/setup" element={<ClaudeSetup />} />
               <Route path="/cli-auth" element={<CliAuth />} /> {/* Web CLI login approval */}
               <Route path="/agents" element={<AgentManagement />} /> {/* Issue #119 */}
-              <Route path="/budgets" element={<BudgetManagement />} /> {/* Issue #185 */}
+              <Route path="/budgets" element={<Navigate to="/budget?view=manage" replace />} />
+              <Route path="/model-access" element={<ModelAccess />} /> {/* Issue #185 */}
               <Route path="/ratelimits" element={<RateLimitManagement />} /> {/* Issue #185 */}
               <Route path="/my-chats" element={<FeatureGate feature="chat"><MyChats /></FeatureGate>} /> {/* Issue #179 */}
               <Route path="/chat" element={<FeatureGate feature="chat"><AgentChat /></FeatureGate>} /> {/* Issue #97 */}
@@ -132,7 +133,7 @@ function App() {
                   endpoints behind it are scoped to the caller server-side and accept no
                   entity parameter. Gating on a permission members lack would ship the
                   screen invisible to exactly the people it was built for (#4389). */}
-              <Route path="/budget" element={<FeatureGate feature="budget_spend"><BudgetSpend /></FeatureGate>} />
+              <Route path="/budget" element={<BudgetSpend />} />
               <Route path="/knowledge" element={<FeatureGate feature="knowledge"><Knowledge /></FeatureGate>} /> {/* Issue #1794 */}
               {/* Issue #4212. `orchestration_engine` is fail-CLOSED in
                   ALL_FEATURES_ENABLED, so a pending or failed /features fetch hides

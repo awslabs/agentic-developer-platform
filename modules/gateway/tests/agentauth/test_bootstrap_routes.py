@@ -382,7 +382,7 @@ def broker_harness(store, kubernetes, monkeypatch):
     lease = runtime.bootstrap(BootstrapRequest(invocation_id="run-a", envelope_digest=envelope_digest(envelope)), "pod-token")
     monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
     monkeypatch.setattr("src.shared.config.get_settings", lambda: SimpleNamespace(webhook_events_table="broker-events"))
-    identity = SimpleNamespace(scope="internal", user_id="shared-worker")
+    identity = SimpleNamespace(scope="internal", user_id="shared-worker", credential_scopes=["credential:raw-read", "credential:materialize"])
     monkeypatch.setattr("src.internal.auth_deps.extract_iam_identity_from_headers", lambda request: identity)
     monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
     app = FastAPI()
@@ -395,12 +395,17 @@ def broker_harness(store, kubernetes, monkeypatch):
             effects.append("mint")
             return {"minted": True}
 
-        app.post(path)(broker)
+        if path == "/internal/v1/user-credentials":
+            app.get(path)(broker)
+        else:
+            app.post(path)(broker)
     headers = {"X-Caller-Identity": "shared-worker", "X-Adp-Run-Credential": lease["credential"], WORKLOAD_HEADER: "pod-token"}
     return TestClient(app), headers, effects, identity
 
 
-@pytest.mark.parametrize("path", ["github-installation-token", "credential-assume-role", "credential-raw-read"])
+@pytest.mark.parametrize(
+    "path", ["github-installation-token", "credential-assume-role", "credential-raw-read", "proxy-request", "credential-materialize"]
+)
 def test_broker_requires_same_verified_worker_and_permits_own_run(broker_harness, kubernetes, path):
     client, headers, effects, _ = broker_harness
     body = {"invocation_id": "run-a", "user_id": "user-a", "installation_id": 123, "repo_owner": "org", "repo_name": "repo"}
@@ -419,6 +424,30 @@ def test_broker_requires_same_verified_worker_and_permits_own_run(broker_harness
 def test_broker_cannot_select_other_users_in_legacy_shadow_mode(broker_harness, changes):
     client, headers, effects, _ = broker_harness
     assert client.post("/internal/v1/credential-assume-role", json={"invocation_id": "run-a", **changes}, headers=headers).status_code == 404
+    assert effects == []
+
+
+def test_vault_metadata_requires_bound_user_and_invocation(broker_harness):
+    client, headers, effects, _ = broker_harness
+    path = "/internal/v1/user-credentials"
+    query = {"invocation_id": "run-a", "user_id": "user-a"}
+    assert client.get(path, params=query, headers=headers).status_code == 200
+    for change in ({"user_id": "user-b"}, {"invocation_id": "run-b"}):
+        assert client.get(path, params={**query, **change}, headers=headers).status_code == 404
+    assert client.get(path, params=query, headers={"X-Internal-Api-Key": "shared-secret"}).status_code == 403
+    assert effects == ["mint"]
+
+
+@pytest.mark.parametrize("path,scope", [("credential-raw-read", "credential:raw-read"), ("credential-materialize", "credential:materialize")])
+def test_vault_scope_header_cannot_grant_missing_registry_capability(broker_harness, path, scope):
+    client, headers, effects, identity = broker_harness
+    identity.credential_scopes = []
+    assert (
+        client.post(
+            "/internal/v1/" + path, json={"invocation_id": "run-a", "user_id": "user-a"}, headers={**headers, "X-Agent-Scopes": scope}
+        ).status_code
+        == 404
+    )
     assert effects == []
 
 
@@ -471,7 +500,7 @@ def test_authority_child_github_mint_uses_protected_assignment_not_missing_legac
     ownership = AsyncMock()
     monkeypatch.setattr(internal_routes, "assert_installation_owned_by", ownership)
     monkeypatch.setattr(internal_routes, "resolve_tenant_app_credentials", AsyncMock(return_value=("app", "private-test-key")))
-    mint = AsyncMock(return_value=("repo-token", "2026-09-14T00:00:00Z"))
+    mint = AsyncMock(return_value=("repo-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()))
     monkeypatch.setattr(internal_routes, "mint_installation_token_with_expiry", mint)
     response = TestClient(app).post(
         "/internal/v1/github-installation-token",

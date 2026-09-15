@@ -10,18 +10,72 @@ no separate platform or organization activation step. The old
 Existing mappings become active when the updated gateway is deployed; no database
 backfill is required.
 
-Configure shared destinations as a platform admin under **Budgets → Bedrock
+Configure shared destinations as a platform admin under **Model Access → Bedrock
 account routing**, register and verify the destination, then add an organization,
 team, or person rule. Personal selections remain under **Settings → Credentials →
 Bedrock model calls**. Rules take effect within the existing routing-cache window
-(about one minute). Person rules take priority, followed by the authenticated
-primary team, organization, and platform account.
+(about one minute). Both personal Claude/OpenAI requests and human-rooted cloud
+agent requests use the person's rule, then their registered primary team, then
+their organization, then the platform account. A repository/workspace switch does
+not replace the person's routing hierarchy with the shared worker's hierarchy.
+
+Cloud requests must include `X-Agent-RunId`. The gateway reads the current run
+record, verifies its tenant and lifecycle, and resolves its recorded human owner.
+Missing, unknown, finished or unverifiable runs return a routing error before
+inference; budget shadow/degraded mode never bypasses this check. Explicitly
+service-rooted runs retain service routing because no person's rule applies.
+Producers must persist the run and its human-root metadata before dispatch and
+forward the envelope's run ID, not the SQS message ID. GitHub, orchestration-engine
+and chat dispatch register owner metadata before publishing. Chat Claude calls and context summarization share a run-scoped proxy.
+Deploy the ingest Lambda and worker images together with the gateway update;
+older messages without verified owner metadata are rejected.
+
+OpenAI requests use the destination's credentials and region for both response
+modes. Usage records retain the decision used to sign each request; historical
+observation-only account labels are not backfilled or certified by this change.
 
 An unmapped principal uses the platform account. Once a usable destination is
 selected, an invocation failure is returned to the caller rather than retried
 against the platform account. To change the payer, change or remove the routing
 rule in the UI; an old rollout flag cannot override it. Budget attribution and
 rate limits continue to apply through ADP.
+
+## Add a destination when the AWS administrator is someone else
+
+In **Model Access → Bedrock account routing → Add rule**, choose the organization
+and, for a team rule, its team. **Add destination** is available next to the
+destination picker even when that organization has no verified destinations.
+The setup form carries the selected organization forward.
+
+Enter a nickname and the 12-digit AWS account ID. Choose one of two options:
+
+- **Create role in AWS:** sign in to the target AWS account, open CloudFormation,
+  create the stack, and return to ADP.
+- **Download CloudFormation package:** give the ZIP to an AWS administrator. It
+  contains `template.yaml`, `parameters.json`, and instructions for AWS Console
+  and CLI. The administrator needs permissions to create the stack and IAM role;
+  the person downloading and verifying in ADP does not need AWS credentials.
+  Keep the supplied parameters unchanged. The package includes the destination's
+  ExternalId, so share it with the administrator privately.
+
+The pending destination is saved before either handoff. If provisioning happens
+later, return to **Bedrock account routing → Continue setup** on that destination.
+The account ID and expected role ARN are shown there. Console links are refreshed
+when requested; downloaded files do not expire. Resuming reuses the destination
+and ExternalId instead of creating another connection.
+
+After the AWS stack finishes, choose **I've created the stack — Verify & Save**.
+ADP assumes the saved role and checks Bedrock invocation authorization. Failure
+keeps the destination unavailable and shows the reason. Success returns to the
+original rule with the destination selected; **Save rule** is still required to
+change routing. Organization, team and person rule priority is unchanged.
+
+The `/admin/bedrock-routing/destinations/{id}/setup` response is restricted to
+platform administrators and marked `Cache-Control: no-store`. It returns setup
+material only for an organization-owned ADP role, never a replacement template for
+a personal connection or an existing-connection grant. Deploy the gateway and
+frontend together, including the v2 template uploaded by `deploy-frontend.sh`.
+No database migration is required.
 
 ## Use an AWS connection owned by someone else
 
@@ -36,7 +90,7 @@ organization and team can use it for Bedrock.
    those roles before they can serve a team. The
    [routing role template](../modules/gateway/src/auth/cfn_templates/aws_role_v2.yaml)
    documents the required trust and invocation permissions.
-2. **Platform admin:** Open **Budgets → Bedrock account routing → Use existing AWS
+2. **Platform admin:** Open **Model Access → Bedrock account routing → Use existing AWS
    connection**. Select the connection (shown with its account, owner, and source
    organization), select the target organization, and choose **Verify & link**.
    The target may differ from the connection owner's organization. ADP uses its
@@ -101,8 +155,7 @@ Agent Worker Pod
 | Value | Behavior |
 |-------|----------|
 | `gateway` (default) | Bedrock via the local sigv4-proxy → API GW → gateway. Metered, budgeted, attributed. |
-| `direct` | Bedrock directly on pod IRSA. **Kill switch** — bypasses gateway budget/audit/metering. |
-| `platform` | Legacy alias for `direct`. |
+| `direct` / `platform` | Retired. Startup error; these modes bypass the user routing rule. |
 | `user` | **RETIRED (#4747).** Setting it is now a startup error. |
 
 **Why `user` was retired.** It served Bedrock with the customer's own assumed
@@ -116,40 +169,12 @@ Setting `=user` raises at startup rather than falling back. That is deliberate:
 a silent fallback would run the pod on platform-billed IRSA, switching the payer
 without telling anyone.
 
-## Rollback: Switch to Direct Bedrock
+## Handling routing failures
 
-**Time to revert: ~30 seconds.**
-
-### Option A: Quick revert via kubectl (no Terraform)
-
-```bash
-# Edit the configmap directly
-kubectl edit configmap agent-gateway-config -n adp-gateway-agents
-# Change: ADP_BEDROCK_VIA: "direct"
-
-# Force new pods to pick up the change (KEDA spawns fresh pods from template)
-kubectl delete jobs -n adp-gateway-agents -l app.kubernetes.io/name=agent-gateway-worker
-```
-
-### Option B: Durable revert via Terraform
-
-In `modules/agent-factory/infra/gateway-main.tf`, change:
-```hcl
-ADP_BEDROCK_VIA = "direct"
-```
-
-Then apply:
-```bash
-cd modules/agent-factory/infra
-terraform apply -var-file=terraform.tfvars -auto-approve
-```
-
-### Effect of rollback
-
-- In-flight pods continue using whatever path they started with (gateway or direct)
-- New pods spawned by KEDA use the direct path (pod IRSA → Bedrock)
-- No restart of running pods needed — they finish their current task naturally
-- Gateway audit/budget/rate-limit no longer applies to new agent calls
+Keep `ADP_BEDROCK_VIA=gateway`. Proxy startup failure stops the worker before
+inference; there is no automatic or environment-variable bypass. Fix the gateway
+connection or selected destination. To intentionally use the platform account,
+remove the applicable routing mapping through the routing UI.
 
 ## Monitoring
 
@@ -168,7 +193,7 @@ terraform apply -var-file=terraform.tfvars -auto-approve
    - Any sustained 5xx → investigate gateway logs
 
 4. **sigv4-proxy health check failures** (agent pod logs)
-   - Look for: `sigv4-proxy failed to start; falling back to ADP_BEDROCK_VIA=direct`
+   - Look for: `Bedrock gateway proxy failed to start`
    - Single occurrences are normal (race condition on pod startup)
    - Sustained failures → SIGV4_PROXY_TARGET may be wrong or proxy script missing
 

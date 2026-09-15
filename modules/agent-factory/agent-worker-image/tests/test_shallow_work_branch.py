@@ -132,7 +132,7 @@ def bootstrap(monkeypatch, tmp_path, request):
         {
             "QUEUE_URL": "https://example.invalid/queue",
             "AWS_REGION": "us-east-1",
-            "ADP_BEDROCK_VIA": "direct",
+            "ADP_BEDROCK_VIA": "gateway",
         },
     )
     envelope = {
@@ -153,6 +153,8 @@ def bootstrap(monkeypatch, tmp_path, request):
         entrypoint, "_receive_one_message", Mock(return_value=(json.dumps(envelope), "receipt"))
     )
     monkeypatch.setattr(entrypoint, "_load_door_api_key", Mock())
+    monkeypatch.setattr(entrypoint, "_start_sigv4_proxy", Mock())
+    monkeypatch.setattr(entrypoint, "_stop_sigv4_proxy", Mock())
     monkeypatch.setattr(
         entrypoint,
         "_resolve_execution_token",
@@ -166,7 +168,7 @@ def bootstrap(monkeypatch, tmp_path, request):
     )
     monkeypatch.setattr(entrypoint, "_gh_token_broker_enabled", lambda: True)
     monkeypatch.setattr(
-        entrypoint, "_broker_installation_token", Mock(return_value=("test-token", "1"))
+        entrypoint, "_broker_installation_token", Mock(return_value=("test-token", "1", "2099-01-01T00:00:00Z"))
     )
     monkeypatch.setattr(entrypoint, "_is_already_completed", Mock(return_value=False))
     monkeypatch.setattr(entrypoint, "_stage_personas_and_skills", Mock())

@@ -293,6 +293,9 @@ class RunBinding:
     # ``verify_row_matches_caller``'s admissibility checks reads it — a row does
     # not become bindable or unbindable by claiming a principal kind.
     is_human_rooted: bool | None = None
+    # Only the protected worker middleware supplies an accepted engine flow.
+    # Legacy capability lookups must never infer this from an asserted header.
+    flow_id: str | None = None
 
     @property
     def root_principal_type(self) -> str:
@@ -438,7 +441,7 @@ class RunBindingResolver:
         except Exception as exc:
             logger.warning(f"Run-binding cache write failed (continuing): {exc}")
 
-    def _query_row(self, run_id: str) -> dict | None:
+    def _query_row(self, run_id: str, *, consistent: bool = False) -> dict | None:
         """Fetch the latest ``webhook-events`` row for ``run_id``.
 
         ``Query``, not ``GetItem``: the table has a COMPOSITE key (``event_id``
@@ -462,9 +465,16 @@ class RunBindingResolver:
             ExpressionAttributeNames=_PROJECTION_NAMES,
             ScanIndexForward=False,  # descending arrived_at -> latest first
             Limit=1,
+            ConsistentRead=consistent,
         )
         items = response.get("Items", [])
         return items[0] if items else None
+
+    async def read_current(self, run_id: str) -> dict | None:
+        """Read current lifecycle/owner authority without the budget cache."""
+        import asyncio
+
+        return await asyncio.to_thread(self._query_row, run_id, consistent=True)
 
     async def resolve(self, run_id: str) -> dict | None:
         """Resolve the registry row for ``run_id``, cache-first.

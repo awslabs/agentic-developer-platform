@@ -23,7 +23,7 @@
  */
 
 /** The gateway's GithubInstallationTokenResponse. */
-import { workerIdentityHeaders, workerAwsCredentialProvider } from './runIdentity';
+import { workerIdentityHeaders, workerAwsCredentialProvider, gatewaySigningRegion } from './runIdentity';
 
 interface GithubInstallationTokenResponse {
   token?: string;
@@ -43,6 +43,7 @@ export interface BrokeredToken {
  * means today's behavior (local mint from the exported key) is unchanged.
  */
 export function isBrokerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.ADP_AGENT_AUTHORITY_ENABLED === 'true') return true;
   const raw = (env.ADP_GH_TOKEN_BROKER_ENABLED || '').toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes';
 }
@@ -115,7 +116,6 @@ export async function fetchBrokeredToken(req: BrokerRequest): Promise<BrokeredTo
   const gatewayEndpoint = (process.env.ADP_GATEWAY_ENDPOINT || '').replace(/\/+$/, '');
   const gatewayUrl = (process.env.VAULT_GATEWAY_URL || '').replace(/\/+$/, '');
   const apiKey = process.env.VAULT_INTERNAL_API_KEY || '';
-  const region = process.env.AWS_REGION || 'us-east-1';
 
   const useSigv4 = Boolean(gatewayEndpoint);
 
@@ -135,6 +135,7 @@ export async function fetchBrokeredToken(req: BrokerRequest): Promise<BrokeredTo
   }
 
   const endpoint = `${baseUrl}/internal/v1/github-installation-token`;
+  const region = gatewaySigningRegion(endpoint);
   const authority = process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true';
   if (authority) {
     const url = new URL(endpoint);
@@ -154,33 +155,38 @@ export async function fetchBrokeredToken(req: BrokerRequest): Promise<BrokeredTo
   }
   const body = JSON.stringify(payload);
 
-  const headers: Record<string, string> = useSigv4
-    ? await sigv4Headers(endpoint, body, region, authority ? workerIdentityHeaders() : {})
-    : { 'X-Internal-Api-Key': apiKey, 'Content-Type': 'application/json' };
-
-  const resp = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body,
-    redirect: 'error',
-    signal: AbortSignal.timeout(15000),
-  });
-
-  if (!resp.ok) {
-    let detail = '';
+  let resp: Response | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // Re-read proof and sign each attempt: run authority may rotate during retry.
+    const headers: Record<string, string> = useSigv4
+      ? await sigv4Headers(endpoint, body, region, authority ? workerIdentityHeaders() : {})
+      : { 'X-Internal-Api-Key': apiKey, 'Content-Type': 'application/json' };
     try {
-      detail = await resp.text();
+      resp = await fetch(endpoint, {
+        method: 'POST', headers, body, redirect: 'error', signal: AbortSignal.timeout(15000),
+      });
     } catch {
-      /* body unavailable — the status alone is the signal */
+      if (attempt === 2) throw new Error('[TokenBroker] Gateway unavailable during token renewal');
+      await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
+      continue;
     }
-    throw new Error(`[TokenBroker] Gateway returned ${resp.status} minting installation token: ${detail}`);
+    if (resp.ok) break;
+    // Authorization failures are terminal. Never echo a provider response body,
+    // which may include credentials or caller-controlled content.
+    if (![429, 502, 503, 504].includes(resp.status) || attempt === 2) {
+      throw new Error(`[TokenBroker] Gateway returned ${resp.status} minting installation token`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
   }
+  if (!resp?.ok) throw new Error('[TokenBroker] Gateway unavailable during token renewal');
 
-  const result = (await resp.json()) as GithubInstallationTokenResponse;
-  if (!result.token) {
+  let result: GithubInstallationTokenResponse;
+  try { result = await resp.json() as GithubInstallationTokenResponse; }
+  catch { throw new Error('[TokenBroker] Gateway returned invalid JSON'); }
+  if (!result || typeof result.token !== 'string' || !result.token) {
     throw new Error('[TokenBroker] Gateway response missing \'token\'');
   }
-  if (!result.expires_at) {
+  if (typeof result.expires_at !== 'string' || !result.expires_at) {
     // A token we cannot schedule a refresh for is not usable — guessing the
     // expiry is what makes runs die unpredictably at the 1-hour mark.
     throw new Error('[TokenBroker] Gateway response missing \'expires_at\'');
@@ -188,8 +194,11 @@ export async function fetchBrokeredToken(req: BrokerRequest): Promise<BrokeredTo
 
   const expiresAt = new Date(result.expires_at);
   if (Number.isNaN(expiresAt.getTime())) {
-    throw new Error(`[TokenBroker] Gateway returned unparseable expires_at: ${result.expires_at}`);
+    throw new Error('[TokenBroker] Gateway returned unparseable expires_at');
   }
 
+  if (expiresAt.getTime() <= Date.now()) {
+    throw new Error('[TokenBroker] Gateway returned expired token');
+  }
   return { token: result.token, expiresAt };
 }

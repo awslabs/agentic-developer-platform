@@ -127,6 +127,7 @@ generation and digests with your fixture's actual ones.
   "terminal_run_id": "msg-0000000000000002",
   "terminal_arrived_at": "2026-09-12T10:05:00Z",
   "unknown_run_id": "msg-does-not-exist-0001",
+  "aborted_run_id": "msg-0000000000000003",
 
   "command_id": "3f2b9c14-7d51-4e8a-9b02-5c6d7e8f9a0b",
   "oversize_bytes": 32768,
@@ -152,12 +153,18 @@ generation and digests with your fixture's actual ones.
     "transport_guard": "artifacts/transport_guard.json",
     "flag_parity": "artifacts/flag_parity.json",
     "journal_tests": "artifacts/journal_tests.json",
-    "negative_tests": "artifacts/negative_tests.json"
+    "negative_tests": "artifacts/negative_tests.json",
+    "harness_neutrality": "artifacts/harness_neutrality.json",
+    "aborted_counters": "artifacts/aborted_counters.json",
+    "vocabulary_parity": "artifacts/vocabulary_parity.json",
+    "stats_schema_keys": "artifacts/stats_schema_keys.json",
+    "neutral_contract": "artifacts/neutral_contract.json"
   },
 
   "cleanup_items": [
     {"event_id": "msg-0000000000000001", "arrived_at": "2026-09-12T10:00:00Z"},
-    {"event_id": "msg-0000000000000002", "arrived_at": "2026-09-12T10:05:00Z"}
+    {"event_id": "msg-0000000000000002", "arrived_at": "2026-09-12T10:05:00Z"},
+    {"event_id": "msg-0000000000000003", "arrived_at": "2026-09-12T10:10:00Z"}
   ]
 }
 ```
@@ -229,6 +236,7 @@ Required keys per artifact:
 | `flag_parity` | W1-08 | `flag_off_events_digest`, `flag_on_events_digest`, `differing_fields`, `ordinary_flags_off` |
 | `journal_tests` | W1-09 | `replay_same_id`, `content_conflict`, `bounds_enforced`, `expiry_is_unknown`, `assistant_turns` |
 | `negative_tests` | W1-10 | `wrong_account`, `missing_isolation`, `wrong_key`, `absent_required_check`, `unknown_check_id`, `failed_cleanup` |
+| `neutral_contract` | W2-02 | `protocol_version`, `adapter_id`, `sdk_version`, `sdk_matches_lockfile`, `adapters`, `second_adapter`, `no_provider_types_in_shared_contract`, `capability_intersection_proven`, `normalized_input_kinds_proven`, `authorization_at_handoff`, `unknown_outcome_supported`, `opaque_attempt_replacement`, `stale_events_rejected`, `disposed_once`, `fresh_private_input_per_attempt`, `session_and_no_option_behavior_preserved`, `cancel_prevents_new_query`, `forced_retry_exercised` |
 
 For `token_lifecycle`, use the expiry produced by the real registration writer
 and propagated to the listener as `ADP_CONTROL_TOKEN_EXPIRES_AT`. Record an
@@ -246,6 +254,89 @@ Two the harness is strict about, because the evaluation names them:
   from "still trying".
 * **`journal_tests.assistant_turns`** must be `0`. Polling a read contract must
   cost no model tokens and must not perturb the run.
+
+### `neutral_contract` (W2-02, wave 2)
+
+Record `implemented_verbs: []` for an S3-only build, or
+`implemented_verbs: ["pause", "resume"]` once S2 is implemented and proven.
+W2-02 compares both live route surfaces with this recorded build contract;
+it does not require completed Wave 2 to keep S3's temporary all-false map.
+Omitting the field retains the S3 expectation. Abort and steering remain outside
+Wave 2. The remaining W2 checks still determine whether the wave is accepted.
+
+
+The one artifact whose evidence comes from a test run rather than from the
+cluster. The neutral contract suite lives where the code does, and the story is
+explicit that development and PR tests need no AWS credential — so record its
+result here and the harness validates it, like every other artifact.
+
+Produce it from the suite the story names:
+
+```sh
+(cd modules/agent-factory/agent && npx jest --runInBand --json --outputFile=/tmp/contract.json \
+   --runTestsByPath src/control-runtime.test.ts src/harnesses/claude-control.test.ts \
+                    src/utils/resilientQuery.test.ts)
+```
+
+Then record, per adapter, whether the neutral suite passed and how many tests
+ran. The count is not decoration: a suite that ran **zero** tests exits 0, so
+`passed: true` alone is satisfied by a deleted file.
+
+```json
+{
+  "protocol_version": 1,
+  "adapter_id": "claude",
+  "sdk_version": "0.3.220",
+  "sdk_matches_lockfile": true,
+  "adapters": {
+    "claude": {"passed": true, "test_count": 61},
+    "echo":   {"passed": true, "test_count": 61}
+  },
+  "second_adapter": {
+    "name": "echo",
+    "declares_missing_capability": true,
+    "imports_provider_sdk": false
+  },
+  "no_provider_types_in_shared_contract": true,
+  "capability_intersection_proven": true,
+  "normalized_input_kinds_proven": true,
+  "authorization_at_handoff": true,
+  "unknown_outcome_supported": true,
+  "opaque_attempt_replacement": true,
+  "stale_events_rejected": true,
+  "disposed_once": true,
+  "fresh_private_input_per_attempt": true,
+  "session_and_no_option_behavior_preserved": true,
+  "cancel_prevents_new_query": true,
+  "forced_retry_exercised": true
+}
+```
+
+Three things the harness is strict about:
+
+* **Both adapters must appear, and the second must not be Claude.** One adapter
+  passing a neutral suite proves the suite runs, not that the contract is
+  neutral.
+* **`second_adapter.declares_missing_capability` must be `true`.** Without a
+  capability gap, the intersection is never observed doing anything — an adapter
+  that ignored support entirely would pass.
+* **`second_adapter.imports_provider_sdk` must be `false`.** A second adapter
+  that mimics `Query`/`SDKUserMessage` proves the shared contract accepts
+  Claude's shape, which is the opposite of the property being evaluated.
+
+`sdk_version` is compared against the lockfile pin. The streaming-input and
+`shouldQuery` behaviours the adapter relies on are *observed* SDK behaviour, not
+a documented permanent guarantee, so evidence from another version does not
+carry over — a bump is a prompt to rerun this suite.
+
+## Wave 2 is incomplete on purpose
+
+`--wave 2` registers all ten checks from evaluation #3968. S3 provides W2-02
+and S5 provides W2-06 through W2-09. With complete passing fixture evidence,
+these five pass and the five pending checks report `not_run` with their owner.
+The command exits nonzero until the full wave is implemented and accepted.
+Missing artifacts also report `not_run`; implemented checks can fail when the
+observed deployment disagrees with the contract.
 
 ## Cleanup
 
@@ -325,9 +416,31 @@ the evaluation requires, and nothing downstream flags it.
 | W1-09 | Gate/regression | Live ping/state matches `control_schemas.py` field for field; zero assistant turns; journal replay, conflict, bounds, expiry-as-unknown |
 | W1-10 | Gate/regression | The harness's own negative tests: wrong account, missing isolation, wrong key, absent and unknown required check, failed cleanup |
 
-Wave 1 is all S1 delivers. `--wave 2` is refused rather than emitting an empty
-pass: waves 2–4 are extended by S2/S5, S4/S6 and S7 respectively, and a report
-claiming a wave whose checks do not exist yet is worse than no report.
+### Wave 2 (evaluation #3968)
+
+Wave 2's manifest is registered in full — all ten IDs, from #3968's acceptance
+table. S3 (#3962) implements W2-02 and S5 (#3964) implements W2-06 through
+W2-09; five checks remain pending.
+
+| ID | Acceptance IDs | Subject | Owner |
+|---|---|---|---|
+| W2-01 | Gate/regression | Wave-2 preflight consolidation | S2 #3961 |
+| W2-02 | AC-T7 | Neutral adapter contract suite | **S3 #3962** |
+| W2-03 | AC-P1 | Pause admission control | S2 #3961 |
+| W2-04 | AC-P2 | Resume semantics | S2 #3961 |
+| W2-05 | AC-P3, AC-P5, AC-P6 | Auto-resume and watchdog behaviour | S2 #3961 |
+| W2-06 | AC-A3, AC-A9 | Aborted row is terminal with a completion time, filterable, and reached that state via ADP finalization rather than a native interrupt | **S5** |
+| W2-07 | AC-A10 | Each aborted row counted exactly once; no other outcome reclassified | **S5** |
+| W2-08 | AC-A11, AC-A12 | Writer allowlist and reader vocabulary in parity across both deployed images; unknown statuses rejected before the write | **S5** |
+| W2-09 | AC-A10 | The live run-stats response carries the aborted counter at every level | **S5** |
+| W2-10 | Gate/regression | Wave-2 cleanup and security recheck | evaluation #3968 |
+
+The five pending checks report **NOT RUN**. The full manifest keeps `required`
+at 10, so partial implementation cannot satisfy `passed == required` and
+`not_run == 0`. Evidence for S3 and S5 alone therefore cannot accept Wave 2.
+
+So `--wave 2` exiting nonzero today is the correct result, not a defect to work
+around. Waves 3 and 4 are still unregistered and still refused outright.
 
 ## Troubleshooting
 
@@ -350,3 +463,12 @@ claiming a wave whose checks do not exist yet is worse than no report.
 * `platform/scripts/tests/test_agent_control_eval.py` — its guard tests (run in CI)
 * `.github/workflows/agent-control-ci.yml` — the CI job
 * `modules/gateway/src/activity/control_schemas.py` — the response contract W1-09 checks against
+
+
+For W2-08, `vocabulary_parity.suites` must include passing results for
+`tests/activity/test_status_aborted.py`, `tests/test_status_vocabulary.py`,
+`src/__tests__/utils/status.test.ts`, and
+`src/__tests__/components/InvocationChain.test.tsx`.
+For W2-09, export nonempty backend schema key lists for `response` (the root),
+`today`, `daily`, `by_persona`, `active_runs`, `recent_failures`, `top_repos`, and
+`spend` into `stats_schema_keys.levels`. Empty evidence cannot establish parity.

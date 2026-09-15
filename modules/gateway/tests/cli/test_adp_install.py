@@ -37,7 +37,7 @@ from .conftest import write_adp_session
 
 GATEWAY_URL = "https://gw.example.com/api"
 
-INSTALLED_FILES = ["adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py"]
+INSTALLED_FILES = ["adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py", "adp-bedrock.py", "adp-github-admin.py"]
 
 
 @pytest.fixture
@@ -263,7 +263,8 @@ class TestInstall:
         result = run_install(["--prefix", str(prefix), "--gateway-url", GATEWAY_URL])
 
         combined = result.stdout + result.stderr
-        assert "adp login" in combined
+        assert f'"{prefix}/adp" login' in combined
+        assert f'"{prefix}/adp" admin setup' in combined
         assert "adp status" in combined
 
 

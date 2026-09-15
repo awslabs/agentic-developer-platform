@@ -265,7 +265,8 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
         Effect = "Allow"
         Action = [
           "cognito-idp:AdminSetUserPassword",
-          "cognito-idp:AdminInitiateAuth"
+          "cognito-idp:AdminInitiateAuth",
+          "cognito-idp:AdminRespondToAuthChallenge"
         ]
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
       }

@@ -51,7 +51,8 @@ describe('NextNav — Issue #5080', () => {
 
     it('renders the administration journey’s entries when given it', () => {
       renderNav(journeys.admin);
-      expect(screen.getByTestId('next-nav-entry-budgets')).toHaveAttribute('href', '/budgets');
+      expect(screen.getByTestId('next-nav-entry-model-access-admin')).toHaveAttribute('href', '/model-access');
+      expect(screen.queryByTestId('next-nav-entry-budgets')).not.toBeInTheDocument();
     });
   });
 
@@ -87,7 +88,7 @@ describe('NextNav — Issue #5080', () => {
 
     it('does not label organization-scoped entries as platform-wide', () => {
       renderNav(journeys.admin);
-      expect(screen.getByTestId('next-nav-entry-budgets')).not.toHaveTextContent(
+      expect(screen.getByTestId('next-nav-entry-organizations')).not.toHaveTextContent(
         'Platform-wide',
       );
     });

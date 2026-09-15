@@ -632,3 +632,45 @@ class TestPolicyIsNotWidenedByTheStore:
         result = await amend_plan(session, compiled.flow_id, valid_proposal(execution_policy=extended), amender)
         assert result.plan_version == 2
         assert not result.already_amended
+
+
+@pytest.mark.parametrize("selection", ["accessible", "inaccessible", "missing"])
+async def test_v2_acceptance_checks_selected_vault_acl_and_preserves_idempotency(session, approval, selection):
+    from src.orchestration.execution_policy import UserCredentialAuthority
+    from src.shared.models.organization import Organization, User
+    from src.shared.models.vault import UserCredential
+
+    session.add(Organization(id=ORG_A, name="Credential approval fixture"))
+    await session.flush()
+    session.add(User(id=HUMAN, org_id=ORG_A, team_id="", email="owner@example.test"))
+    session.add(User(id="other-owner", org_id=ORG_A, team_id="", email="other@example.test"))
+    await session.flush()
+    if selection != "missing":
+        session.add(
+            UserCredential(
+                id="selected-key",
+                org_id=ORG_A,
+                user_id=HUMAN if selection == "accessible" else "other-owner",
+                service="provider",
+                label="default",
+                credential_type="api_key",
+                secret_arn="fixture-secret",
+            )
+        )
+        await session.flush()
+    authority = UserCredentialAuthority(
+        permission_mode="user_configured", lifetime="provider_managed", vault_credential_ids=["selected-key"], actions=[Action.DEVELOP]
+    )
+    proposal = valid_proposal(execution_policy=a_policy(schema_version=2, user_credentials=authority))
+    if selection != "accessible":
+        with pytest.raises(PolicyNotAcceptableError, match="unavailable"):
+            await compile_proposal(session, proposal, approval)
+        assert await count_rows(session, OrchestrationAcceptedPlan) == 0
+        assert await count_rows(session, OrchestrationNode) == 0
+        return
+    first = await compile_proposal(session, proposal, approval)
+    second = await compile_proposal(session, proposal, approval)
+    assert second.already_compiled and second.plan_hash == first.plan_hash
+    saved = await accepted_plan(session)
+    assert saved.plan_document["execution_policy"]["user_credentials"] == authority.model_dump(mode="json")
+    assert saved.plan_document["execution_policy"]["principal_id"] == HUMAN

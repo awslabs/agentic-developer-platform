@@ -524,7 +524,7 @@ def _build_envelope(
     token_source: str | None = None,
 ) -> dict:
     """Build the normalized webhook envelope for SQS."""
-    envelope = {
+    envelope: dict = {
         "version": "1.0",
         "channel": "github",
         "tenant_id": tenant_id,
@@ -584,6 +584,11 @@ def _build_envelope(
     if token_source is not None:
         envelope["token_source"] = token_source
     envelope["message_id"] = str(uuid.uuid4())
+    repository_id = payload.get("repository", {}).get("id")
+    if type(repository_id) is int and repository_id > 0:
+        envelope["source_ref"]["provider_repository_id"] = repository_id
+    if os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true":
+        envelope["work_claim_required"] = True
     return envelope
 
 

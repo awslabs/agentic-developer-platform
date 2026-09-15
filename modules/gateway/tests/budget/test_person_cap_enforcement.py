@@ -781,13 +781,8 @@ class TestPrincipalsWithNoPersonCeiling:
 
         assert harness.status == 200
 
-    async def test_caller_with_no_github_identity_is_skipped(self, session, redis_client):
-        """No linked GitHub identity → no `github:` anchor → no row can match.
-
-        C3 only ever writes `github:` anchors, so this caller provably has no cap;
-        the check returns before paying for a partition fan-out that would read zero
-        rows. Seeded with a `users:`-anchored cap row that must NOT be honoured.
-        """
+    async def test_native_individual_budget_is_enforced(self, session, redis_client):
+        """Native users' individual budgets deny requests using the same person ledger."""
         await seed_org(session, RUN_ORG, "AWS-E")
         await seed_user(session, CALLER_CANONICAL_ID, RUN_ORG, sub=CALLER_SUB)
         await seed_membership(session, CALLER_CANONICAL_ID, RUN_ORG, is_active=True)
@@ -796,7 +791,7 @@ class TestPrincipalsWithNoPersonCeiling:
 
         harness = await _drive(_service(redis_client), session, context=agent_context())
 
-        assert harness.status == 200
+        assert harness.status == 402
 
 
 # =============================================================================

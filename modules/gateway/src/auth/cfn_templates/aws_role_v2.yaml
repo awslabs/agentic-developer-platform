@@ -110,6 +110,12 @@ Resources:
                   # allocation tags are attached. Both are in scope for routing.
                   - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*"
                   - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*"
+              # Bedrock's OpenAI Responses API authorizes InvokeModel against
+              # the destination account's default project, not a model ARN.
+              - Sid: InvokeBedrockResponses
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:project/default"
       Tags:
         - Key: adp:managed
           Value: 'true'

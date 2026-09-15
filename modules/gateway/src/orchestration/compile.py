@@ -390,6 +390,16 @@ async def compile_proposal(
     # idempotency return below still recognises it as a retry.
     proposal = accept_execution_policy(proposal, decision=decision, decision_kind=decision_kind)
 
+    if proposal.execution_policy is not None and proposal.execution_policy.user_credentials is not None:
+        from src.shared.services.credential_resolver import CredentialNotFoundError
+
+        from .user_credentials import validate_user_credential_authority
+
+        try:
+            await validate_user_credential_authority(session, policy=proposal.execution_policy, user_id=decision.actor_id)
+        except CredentialNotFoundError as exc:
+            raise PolicyNotAcceptableError("selected user credential is unavailable to the plan owner") from exc
+
     repo = OrchestrationRepository(session)
     document = proposal.model_dump(mode="json")
     document_hash = plan_hash(proposal)

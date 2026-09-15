@@ -14,6 +14,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -32,6 +33,10 @@ _MAX_TOKEN_BYTES = 8192
 
 class RunIdentityError(Exception):
     """The worker cannot establish or refresh its own authority."""
+
+
+class WorkOwnershipPending(RunIdentityError):
+    """The gateway retained an authorized child behind its active parent."""
 
 
 def read_workload_token() -> str:
@@ -73,7 +78,7 @@ class RunIdentitySession:
 
     def _request(self) -> dict:
         session = botocore.session.get_session()
-        from adp_trigger.transport_identity import worker_credentials
+        from adp_trigger.transport_identity import gateway_signing_region, worker_credentials
 
         credentials = worker_credentials(session)
         if credentials is None:
@@ -90,7 +95,7 @@ class RunIdentitySession:
         botocore.auth.SigV4Auth(
             credentials.get_frozen_credentials(),
             "execute-api",
-            os.environ.get("AWS_REGION", "us-east-1"),
+            gateway_signing_region(self._url),
         ).add_auth(signed)
         try:
             with requests.Session() as http:
@@ -103,6 +108,8 @@ class RunIdentitySession:
                     allow_redirects=False,
                     stream=True,
                 ) as response:
+                    if response.status_code == 425:
+                        raise WorkOwnershipPending("waiting for exclusive work ownership")
                     if response.status_code != 200:
                         raise RunIdentityError("gateway refused run identity")
                     raw = response.raw.read(8193, decode_content=True)
@@ -142,7 +149,15 @@ class RunIdentitySession:
             self._attempt = attempt
 
     def start(self) -> None:
-        self.refresh()  # Fail before repository execution if bootstrap refused.
+        deadline = time.monotonic() + 1800
+        while True:
+            try:
+                self.refresh()
+                break
+            except WorkOwnershipPending:
+                if time.monotonic() >= deadline or self._stop.wait(10):
+                    raise RunIdentityError("work ownership startup deadline exceeded") from None
+                logger.info("Authorized child is waiting for its parent to release work ownership")
         os.environ[CREDENTIAL_FILE_ENV] = str(self.credential_path)
         self._thread = threading.Thread(
             target=self._renew, name="adp-run-identity-refresh", daemon=True
@@ -169,7 +184,13 @@ class RunIdentitySession:
 
 
 def bootstrap_run_identity(envelope: dict) -> RunIdentitySession | None:
+    claims_required = (
+        envelope.get("work_claim_required") is True
+        or os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
+    )
     if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+        if claims_required:
+            raise RunIdentityError("Work ownership requires protected worker identity")
         return None
     identity = RunIdentitySession(envelope=envelope)
     identity.start()

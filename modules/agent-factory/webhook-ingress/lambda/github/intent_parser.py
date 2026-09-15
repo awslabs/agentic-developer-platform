@@ -191,6 +191,12 @@ def extract_intent_with_reason(
     if event_type == "issue_comment" and action == "created":
         return _handle_issue_comment(payload, correlation_ctx, resolved_identity)
 
+    # issue_comment + edited/deleted from a bot: typically the agent editing its
+    # own comment in place (e.g. a status update). Named separately from the
+    # EVENT_TYPE_UNHANDLED catch-all so it doesn't look like an unexplained gap
+    # in coverage when reviewing webhook deliveries.
+    if event_type == "issue_comment" and action != "created" and _is_bot_sender(sender):
+        return None, skip_reasons.BOT_COMMENT_ACTION_UNHANDLED
 
     # installation + created → log only, no agent dispatch
     if event_type == "installation" and action == "created":

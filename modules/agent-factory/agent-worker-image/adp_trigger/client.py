@@ -391,12 +391,12 @@ def _send(
         )
         sys.exit(1)
 
-    region = os.environ.get("AWS_REGION", "us-east-1")
+    from adp_trigger.transport_identity import gateway_signing_region, worker_credentials
+
+    region = gateway_signing_region(url)
 
     # Get IRSA credentials from the pod's service account
     session = botocore.session.get_session()
-    from adp_trigger.transport_identity import worker_credentials
-
     credentials = worker_credentials(session)
     if credentials is None:
         print(

@@ -20,7 +20,7 @@ import * as https from 'https';
 import { URL } from 'url';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { Hash } from '@smithy/hash-node';
-import { defaultProvider } from '@aws-sdk/credential-provider-node';
+import { workerAwsCredentialProvider, workerIdentityHeaders, gatewaySigningRegion } from './lib/runIdentity';
 
 const args = process.argv.slice(2);
 const get = (flag: string, def: string) => {
@@ -30,7 +30,6 @@ const get = (flag: string, def: string) => {
 
 const TARGET    = get('--target', process.env.SIGV4_PROXY_TARGET || '');
 const PORT      = parseInt(get('--port', process.env.SIGV4_PROXY_PORT || '8080'), 10);
-const REGION    = get('--region', process.env.AWS_REGION || 'us-east-1');
 const TENANT_ID = process.env.TENANT_ID || '';
 const AGENT_RUN_ID = process.env.ADP_MESSAGE_ID || '';
 const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';
@@ -38,14 +37,20 @@ const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';
 if (!TARGET) { console.error('ERROR: --target is required'); process.exit(1); }
 
 const targetUrl = new URL(TARGET);
+const REGION = get('--region', gatewaySigningRegion(TARGET));
 
 const STRIP = new Set([
   'authorization', 'x-amz-security-token', 'x-amz-date',
   'x-amz-content-sha256', 'host',
+  'x-adp-run-credential', 'x-adp-workload-token',
 ]);
 
+let platformCredentials: Awaited<ReturnType<typeof workerAwsCredentialProvider>>;
 const signer = new SignatureV4({
-  credentials: defaultProvider(),
+  credentials: async () => {
+    platformCredentials ??= await workerAwsCredentialProvider();
+    return platformCredentials();
+  },
   region: REGION,
   service: 'execute-api',
   sha256: Hash.bind(null, 'sha256'),
@@ -92,6 +97,12 @@ const server = http.createServer(async (req, res) => {
   // Re-sign with execute-api
   let signed: { headers: Record<string, string> };
   try {
+    if (process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true') {
+      // Read refreshed identity per call; local clients cannot select a run.
+      for (const [name, value] of Object.entries(workerIdentityHeaders())) {
+        headers[name.toLowerCase()] = value;
+      }
+    }
     signed = await signer.sign({
       method,
       hostname: targetUrl.hostname,

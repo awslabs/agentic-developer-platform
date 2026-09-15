@@ -123,6 +123,167 @@ describe('resilientQuery', () => {
     });
   });
 
+  describe('SDK response failures', () => {
+    // Shape observed on #5185: a provider error followed by a success result
+    // with real cost/turn counts. The worker stops consuming at the result.
+    const bedrockError = 'API Error: An error occurred (internalServerException) when calling the '
+      + 'InvokeModelWithResponseStream operation: The system encountered an unexpected error '
+      + 'during processing. Try your request again.';
+    const assistant = (text: string, extra: Record<string, unknown> = {}) => ({
+      type: 'assistant', parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      ...extra,
+    });
+    const success = {
+      type: 'result', subtype: 'success', is_error: false,
+      total_cost_usd: 5.5267, num_turns: 31, result: 'Completed',
+    };
+    const options = (): ResilientQueryOptions => ({
+      queryParams: { prompt: 'Implement the issue', options: { persistSession: true } } as any,
+      maxRetries: 2, baseDelayMs: 10, maxDelayMs: 20, log: jest.fn(),
+    });
+
+    async function consumeUntilResult(opts: ResilientQueryOptions, seen: unknown[]): Promise<void> {
+      for await (const message of resilientQuery(opts)) {
+        seen.push(message);
+        if (message.type === 'result') break;
+      }
+    }
+
+    it.each([undefined, 'unknown', 'server_error'])(
+      'resumes before yielding a false success (assistant error=%s)', async (error) => {
+        const init = { type: 'system', subtype: 'init', session_id: 'bedrock-session' };
+        const progress = assistant('I have written the design document.');
+        const failed = asyncFromArray([init, progress, assistant(bedrockError, { error }), success]);
+        const completed = assistant('Implementation and tests are complete.');
+        const recovered = asyncFromArray([completed, success]);
+        mockQuery.mockReturnValueOnce(failed as any).mockReturnValueOnce(recovered as any);
+        const onSessionId = jest.fn();
+        const seen: unknown[] = [];
+        const done = consumeUntilResult({ ...options(), onSessionId }, seen);
+        await jest.advanceTimersByTimeAsync(100);
+        await done;
+
+        expect(seen).toEqual([init, progress, completed, success]);
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        expect(mockQuery.mock.calls[1][0]).toMatchObject({
+          prompt: 'Continue the task from where you left off. Do not repeat completed steps.',
+          options: { persistSession: true, resume: 'bedrock-session' },
+        });
+        expect(onSessionId).toHaveBeenCalledTimes(1);
+        expect(failed.close).toHaveBeenCalledTimes(1);
+        expect(recovered.close).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([0, 2])('throws after exhausting %i retries without yielding completion', async (maxRetries) => {
+      const attempts: ReturnType<typeof asyncFromArray>[] = [];
+      mockQuery.mockImplementation(() => {
+        const session = asyncFromArray([assistant(bedrockError), success]);
+        attempts.push(session);
+        return session as any;
+      });
+      const seen: unknown[] = [];
+      const rejected = expect(consumeUntilResult({ ...options(), maxRetries }, seen)).rejects.toThrow(bedrockError);
+      await jest.advanceTimersByTimeAsync(100);
+      await rejected;
+
+      expect(mockQuery).toHaveBeenCalledTimes(maxRetries + 1);
+      expect(seen).toEqual([]);
+      for (const attempt of attempts) expect(attempt.close).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['is_error result', [{ ...success, is_error: true, result: bedrockError }]],
+      ['success result containing API error', [{ ...success, result: bedrockError }]],
+      ['execution error result', [{ type: 'result', subtype: 'error_during_execution', is_error: true, errors: [bedrockError] }]],
+      ['structured server error', [assistant('The provider failed.', { error: 'server_error' }), success]],
+      ['structured rate limit', [assistant('Please wait.', { error: 'rate_limit' }), success]],
+      ['structured overload', [assistant('Please wait.', { error: 'overloaded' }), success]],
+      ['error followed by EOF', [assistant(bedrockError, { session_id: 'error-only-session' })]],
+    ])('retries %s through the existing wrapper', async (_name, messages) => {
+      const failed = asyncFromArray(messages as unknown[]);
+      mockQuery.mockReturnValueOnce(failed as any).mockReturnValueOnce(asyncFromArray([success]) as any);
+      const done = collectAll(resilientQuery(options()));
+      await jest.advanceTimersByTimeAsync(100);
+
+      expect(await done).toEqual([success]);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(failed.close).toHaveBeenCalledTimes(1);
+      if (_name === 'error followed by EOF') {
+        expect(mockQuery.mock.calls[1][0].options?.resume).toBe('error-only-session');
+      }
+    });
+
+    it.each([
+      ['authentication', [assistant('API Error: authentication failed; previous attempt was overloaded', { error: 'authentication_failed' }), success]],
+      ['billing', [assistant('API Error: billing error after internalServerException', { error: 'billing_error' }), success]],
+      ['invalid request', [assistant('API Error: invalid timeout parameter', { error: 'invalid_request' }), success]],
+      ['access denied', [assistant('API Error: AccessDeniedException: not authorized to perform bedrock:InvokeModel'), success]],
+      ['unclassified API error', [assistant('API Error: unexpected provider response'), success]],
+      ['execution failure', [{ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['Permission denied'] }]],
+      ['unknown failed result', [{ ...success, is_error: true, result: '' }]],
+      ['max turns', [assistant(bedrockError), { type: 'result', subtype: 'error_max_turns', errors: [bedrockError] }]],
+      ['max budget', [assistant(bedrockError), { type: 'result', subtype: 'error_max_budget_usd', errors: [bedrockError] }]],
+      ['structured output limit', [{ type: 'result', subtype: 'error_max_structured_output_retries', errors: ['timeout'] }]],
+    ])('reports %s as failure without retrying', async (_name, messages) => {
+      const session = asyncFromArray(messages as unknown[]);
+      mockQuery.mockReturnValue(session as any);
+      const seen: unknown[] = [];
+      await expect(consumeUntilResult(options(), seen)).rejects.toThrow();
+      expect(seen).toEqual([]);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(session.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows the SDK to recover internally before its final result', async () => {
+      const recovered = assistant('The request recovered and the work is complete.');
+      mockQuery.mockReturnValue(asyncFromArray([assistant(bedrockError), recovered, success]) as any);
+      expect(await collectAll(resilientQuery(options()))).toEqual([recovered, success]);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not mistake normal output, tool failures, child errors, or SDK retry notices for run failures', async () => {
+      const messages = [
+        assistant('I fixed the API Error: internalServerException handling.'),
+        assistant('```\n' + bedrockError + '\n```'),
+        assistant('Example:\n' + bedrockError),
+        { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: bedrockError }] } },
+        assistant(bedrockError, { parent_tool_use_id: 'child-task', error: 'server_error' }),
+        { type: 'system', subtype: 'api_retry', error: 'server_error', attempt: 1 },
+        success,
+      ];
+      mockQuery.mockReturnValue(asyncFromArray(messages) as any);
+      expect(await collectAll(resilientQuery(options()))).toEqual(messages);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not let a child response clear a pending top-level error', async () => {
+      const child = assistant('Child task finished.', { parent_tool_use_id: 'child-task' });
+      mockQuery.mockReturnValue(asyncFromArray([assistant(bedrockError), child, success]) as any);
+      const seen: unknown[] = [];
+      await expect(consumeUntilResult({ ...options(), maxRetries: 0 }, seen)).rejects.toThrow(bedrockError);
+      expect(seen).toEqual([child]);
+    });
+
+    it('honours cancellation during provider-error backoff', async () => {
+      const controller = new AbortController();
+      const session = asyncFromArray([assistant(bedrockError), success]);
+      mockQuery.mockReturnValue(session as any);
+      const seen: unknown[] = [];
+      const rejected = expect(consumeUntilResult({
+        ...options(), baseDelayMs: 1000, maxDelayMs: 1000,
+        cancellation: { isCancelled: () => controller.signal.aborted, signal: controller.signal },
+      }, seen)).rejects.toThrow('cancelled');
+      await jest.advanceTimersByTimeAsync(1);
+      controller.abort();
+      await rejected;
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(session.close).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual([]);
+    });
+  });
+
   describe('retry behavior on retryable errors', () => {
     it('should retry on "fetch failed" error', async () => {
       const messages = [{ type: 'result', subtype: 'success' }];
@@ -412,43 +573,37 @@ describe('resilientQuery', () => {
   });
 
   describe('exponential backoff timing', () => {
-    it('should apply exponential backoff with increasing delays', async () => {
-      let callCount = 0;
-      const callTimes: number[] = [];
+    it.each([0, 0.5, 0.999])('applies exponential backoff with jitter %s', async (jitter) => {
+      const random = jest.spyOn(Math, 'random').mockReturnValue(jitter);
+      try {
+        const callTimes: number[] = [];
+        mockQuery.mockImplementation(() => {
+          callTimes.push(Date.now());
+          if (callTimes.length < 4) {
+            return asyncThrowingGenerator([], new Error('fetch failed')) as any;
+          }
+          return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+        });
 
-      mockQuery.mockImplementation(() => {
-        callCount++;
-        callTimes.push(Date.now());
-        if (callCount < 4) {
-          return asyncThrowingGenerator([], new Error('fetch failed')) as any;
-        }
-        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
-      });
+        const log = jest.fn();
+        const resultsPromise = collectAll(resilientQuery({
+          queryParams: { prompt: 'test', options: {} } as any,
+          maxRetries: 5,
+          baseDelayMs: 1000,
+          maxDelayMs: 120000,
+          log,
+        }));
 
-      const log = jest.fn();
-      const opts: ResilientQueryOptions = {
-        queryParams: { prompt: 'test', options: {} } as any,
-        maxRetries: 5,
-        baseDelayMs: 1000,
-        maxDelayMs: 120000,
-        log,
-      };
-
-      const generator = resilientQuery(opts);
-      const resultsPromise = collectAll(generator);
-
-      // Advance timers to allow retries
-      await jest.advanceTimersByTimeAsync(1500);  // First retry after ~1000ms
-      await jest.advanceTimersByTimeAsync(3000);  // Second retry after ~2000ms
-      await jest.advanceTimersByTimeAsync(5000);  // Third retry after ~4000ms
-
-      await resultsPromise;
-
-      // Check that log was called with retry messages showing increasing delays
-      const retryCalls = log.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('Retrying in')
-      );
-      expect(retryCalls.length).toBe(3);
+        // Three delays total up to 1+2+4 seconds plus three seconds of jitter.
+        // The former 9.5-second advance could leave the final retry pending.
+        await jest.advanceTimersByTimeAsync(10000);
+        expect(await resultsPromise).toEqual([{ type: 'result', subtype: 'success' }]);
+        expect(callTimes.slice(1).map((time, index) => time - callTimes[index]))
+          .toEqual([1000, 2000, 4000].map(delay => delay + jitter * 1000));
+        expect(log.mock.calls.filter(call => call[0].includes('Retrying in'))).toHaveLength(3);
+      } finally {
+        random.mockRestore();
+      }
     });
 
     it('should cap delay at maxDelayMs', async () => {
@@ -891,6 +1046,7 @@ describe('resilientQuery', () => {
       'overloaded',
       'capacity exceeded',
       'internal server error',
+      'internalServerException',
       'bad gateway',
       'gateway timeout',
     ];
@@ -1590,4 +1746,573 @@ describe('resilientQuery', () => {
       jest.useFakeTimers();
     }, 10000);
   });
+
+  /**
+   * Issue #3962: retry-safe control lifecycle.
+   *
+   * These tests exist because a retry is the moment control commands get lost.
+   * The wrapper tears down a stalled query and builds a new one; if the control
+   * layer keeps addressing the old transport, an operator's instruction is
+   * accepted and then delivered into something already dead. The three hooks
+   * below are what make the swap observable, and the assertions here are about
+   * ordering and staleness rather than about happy-path plumbing.
+   *
+   * The final block is the most important one: it drives the *real* Claude
+   * adapter through the *real* wrapper. The stub-based tests prove the wrapper
+   * calls its hooks correctly, but only the integrated test proves the two
+   * halves agree about when an attempt starts and stops.
+   */
+  describe('issue #3962: retry-safe control lifecycle', () => {
+    /** A stub input channel that records whether it was disposed. */
+    function fakeAttemptInput() {
+      const state = { disposeCount: 0, closed: false };
+      const pushed: unknown[] = [];
+      async function* iterable(): AsyncGenerator<unknown> {
+        // Ends immediately: these tests are about the wrapper's lifecycle
+        // bookkeeping, not about parking on an open channel.
+        for (const item of pushed) yield item;
+      }
+      return {
+        state,
+        make: () => ({
+          input: iterable(),
+          dispose: () => {
+            state.disposeCount += 1;
+            state.closed = true;
+          },
+        }),
+      };
+    }
+
+    it('builds fresh input before every attempt, on both the resume and fallback paths', async () => {
+      jest.useRealTimers();
+
+      // Two retries with a captured session id (true resume) and one without,
+      // so both branches of the attempt-construction code are exercised.
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return asyncThrowingGenerator(
+            [{ type: 'system', subtype: 'init', session_id: 'sess-3962' }],
+            new Error('fetch failed'),
+            1,
+          ) as any;
+        }
+        if (callCount === 2) {
+          return asyncThrowingGenerator([], new Error('fetch failed'), 0) as any;
+        }
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const contexts: Array<{ attemptNumber: number; isResume: boolean; promptText: string }> = [];
+      const disposeCounts: number[] = [];
+
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'ORIGINAL TASK', options: {} } as any,
+          maxRetries: 3,
+          baseDelayMs: 1,
+          resumeContext: () => 'nudge',
+          attemptInputFactory: (ctx) => {
+            contexts.push(ctx);
+            const local = { count: 0 };
+            return {
+              input: (async function* () {})(),
+              dispose: () => {
+                local.count += 1;
+                disposeCounts.push(local.count);
+              },
+            };
+          },
+          log: jest.fn(),
+        }),
+      );
+
+      // Every attempt got its own factory call. An attempt without a live input
+      // channel is one that can never receive a steering message.
+      expect(contexts.map((c) => c.attemptNumber)).toEqual([1, 2, 3]);
+      // Attempt 2 resumes the captured session; 1 and 3 do not.
+      expect(contexts.map((c) => c.isResume)).toEqual([false, true, true]);
+      // Each attempt's input is disposed exactly once — never twice, never zero.
+      expect(disposeCounts).toEqual([1, 1, 1]);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('replaces the prompt with the adapter iterable without disturbing the resume option', async () => {
+      jest.useRealTimers();
+
+      let callCount = 0;
+      const seenParams: any[] = [];
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        seenParams.push(params);
+        if (callCount === 1) {
+          return asyncThrowingGenerator(
+            [{ type: 'system', subtype: 'init', session_id: 'sess-swap' }],
+            new Error('fetch failed'),
+            1,
+          ) as any;
+        }
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const channel = fakeAttemptInput();
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'ORIGINAL TASK', options: { model: 'm' } } as any,
+          maxRetries: 2,
+          baseDelayMs: 1,
+          resumeContext: () => 'CONTINUATION NUDGE',
+          attemptInputFactory: () => channel.make(),
+          log: jest.fn(),
+        }),
+      );
+
+      // The streaming form is what allows a second turn into a live attempt, so
+      // the prompt must become an iterable rather than staying a string.
+      expect(typeof seenParams[0].prompt).not.toBe('string');
+      expect(seenParams[0].prompt[Symbol.asyncIterator]).toBeDefined();
+      // The retry still resumes the real session: swapping the prompt must not
+      // cost us the true-resume behaviour from #2079.
+      expect(seenParams[1].options.resume).toBe('sess-swap');
+      expect(seenParams[1].options.model).toBe('m');
+      // The continuation nudge still reaches the adapter as context...
+      const contexts: string[] = [];
+      void contexts;
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('reports the prompt text each attempt would have sent, so a resume is distinguishable', async () => {
+      jest.useRealTimers();
+
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return asyncThrowingGenerator(
+            [{ type: 'system', subtype: 'init', session_id: 'sess-text' }],
+            new Error('fetch failed'),
+            1,
+          ) as any;
+        }
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const promptTexts: string[] = [];
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'ORIGINAL TASK', options: {} } as any,
+          maxRetries: 2,
+          baseDelayMs: 1,
+          resumeContext: () => 'CONTINUATION NUDGE',
+          attemptInputFactory: (ctx) => {
+            promptTexts.push(ctx.promptText);
+            return { input: (async function* () {})(), dispose: () => {} };
+          },
+          log: jest.fn(),
+        }),
+      );
+
+      // Attempt 1 carries the task; attempt 2 carries only the nudge, because the
+      // resumed conversation already holds the task. An adapter that re-sent
+      // promptText on a resume would make the agent repeat completed work.
+      expect(promptTexts[0]).toBe('ORIGINAL TASK');
+      expect(promptTexts[1]).toBe('CONTINUATION NUDGE');
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('publishes each attempt handle before the stream is consumed', async () => {
+      jest.useRealTimers();
+
+      const events: string[] = [];
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          async function* inner(): AsyncGenerator<any> {
+            events.push('attempt1-yield');
+            yield { type: 'system', subtype: 'init', session_id: 'sess-order' };
+            throw new Error('fetch failed');
+          }
+          return withClose(inner()) as any;
+        }
+        async function* inner(): AsyncGenerator<any> {
+          events.push('attempt2-yield');
+          yield { type: 'result', subtype: 'success' };
+        }
+        return withClose(inner()) as any;
+      });
+
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'task', options: {} } as any,
+          maxRetries: 2,
+          baseDelayMs: 1,
+          onAttemptHandle: (h) => { events.push(`handle-${h.attemptNumber}`); },
+          log: jest.fn(),
+        }),
+      );
+
+      // Handle-before-stream is what lets the adapter swap its endpoint at the
+      // moment the transport swaps, rather than inferring it after the fact.
+      expect(events).toEqual(['handle-1', 'attempt1-yield', 'handle-2', 'attempt2-yield']);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('keeps running when the attempt-handle callback throws', async () => {
+      jest.useRealTimers();
+
+      mockQuery.mockImplementation(() => asyncFromArray([{ type: 'result', subtype: 'success' }]) as any);
+      const log = jest.fn();
+
+      const results = await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'task', options: {} } as any,
+          onAttemptHandle: () => {
+            throw new Error('control sink exploded');
+          },
+          log,
+        }),
+      );
+
+      // A control or observability sink must never take a run down.
+      expect(results).toHaveLength(1);
+      expect(log.mock.calls.flat().join('\n')).toContain('onAttemptHandle');
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('starts no query at all when cancelled before the first attempt', async () => {
+      jest.useRealTimers();
+
+      mockQuery.mockImplementation(() => asyncFromArray([{ type: 'result', subtype: 'success' }]) as any);
+
+      const cancelled = { isCancelled: () => true, error: () => new Error('operator aborted') };
+      await expect(
+        collectAll(
+          resilientQuery({
+            queryParams: { prompt: 'task', options: {} } as any,
+            cancellation: cancelled,
+            log: jest.fn(),
+          }),
+        ),
+      ).rejects.toThrow('operator aborted');
+
+      expect(mockQuery).not.toHaveBeenCalled();
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('starts no further attempt when cancelled during backoff', async () => {
+      jest.useRealTimers();
+
+      // Attempt 1 fails retryably. The cancel lands while the wrapper sleeps, so
+      // the only correct behaviour is to stop — a retry here would turn a
+      // deliberate abort into a brand new attempt.
+      let cancelled = false;
+      mockQuery.mockImplementation(() => {
+        cancelled = true; // cancel is requested as soon as attempt 1 is running
+        return asyncThrowingGenerator([], new Error('fetch failed'), 0) as any;
+      });
+
+      await expect(
+        collectAll(
+          resilientQuery({
+            queryParams: { prompt: 'task', options: {} } as any,
+            maxRetries: 3,
+            baseDelayMs: 1,
+            cancellation: { isCancelled: () => cancelled, error: () => new Error('operator aborted') },
+            log: jest.fn(),
+          }),
+        ),
+      ).rejects.toThrow('operator aborted');
+
+      // Exactly one query: the retry never happened.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('does not reclassify a cancellation as a retryable error despite matching text', async () => {
+      jest.useRealTimers();
+
+      // "aborted" is in RETRYABLE_PATTERNS. Without the typed-cancellation check
+      // running first, this deliberate stop would be treated as a transient blip
+      // and restarted — the exact failure the issue names.
+      const { ControlCancelledError } = require('../control-runtime');
+      mockQuery.mockImplementation(
+        () => asyncThrowingGenerator([], new ControlCancelledError('run aborted by operator'), 0) as any,
+      );
+
+      await expect(
+        collectAll(
+          resilientQuery({
+            queryParams: { prompt: 'task', options: {} } as any,
+            maxRetries: 3,
+            baseDelayMs: 1,
+            log: jest.fn(),
+          }),
+        ),
+      ).rejects.toThrow('run aborted by operator');
+
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('still retries an ordinary error whose text merely resembles a cancellation', async () => {
+      jest.useRealTimers();
+
+      // The guard must key on the typed marker, not on vocabulary. A genuine
+      // transient "request aborted" must keep its retry.
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) return asyncThrowingGenerator([], new Error('request aborted'), 0) as any;
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const results = await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'task', options: {} } as any,
+          maxRetries: 3,
+          baseDelayMs: 1,
+          log: jest.fn(),
+        }),
+      );
+
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(results).toHaveLength(1);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('disposes the attempt input even when the consumer abandons the generator', async () => {
+      jest.useRealTimers();
+
+      mockQuery.mockImplementation(
+        () =>
+          asyncFromArray([
+            { type: 'assistant', content: 'one' },
+            { type: 'assistant', content: 'two' },
+          ]) as any,
+      );
+
+      const channel = fakeAttemptInput();
+      const gen = resilientQuery({
+        queryParams: { prompt: 'task', options: {} } as any,
+        attemptInputFactory: () => channel.make(),
+        log: jest.fn(),
+      });
+
+      // Break out early, which triggers the generator's `return` path. Without
+      // disposal in `finally`, the attempt's input would outlive its transport.
+      for await (const _msg of gen) {
+        break;
+      }
+
+      expect(channel.state.disposeCount).toBe(1);
+      expect(channel.state.closed).toBe(true);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('swallows a disposal error so it cannot mask the run outcome', async () => {
+      jest.useRealTimers();
+
+      mockQuery.mockImplementation(() => asyncFromArray([{ type: 'result', subtype: 'success' }]) as any);
+      const log = jest.fn();
+
+      const results = await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'task', options: {} } as any,
+          attemptInputFactory: () => ({
+            input: (async function* () {})(),
+            dispose: () => {
+              throw new Error('channel already gone');
+            },
+          }),
+          log,
+        }),
+      );
+
+      expect(results).toHaveLength(1);
+      expect(log.mock.calls.flat().join('\n')).toContain('disposal');
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    /**
+     * The integrated test: the real Claude adapter driven by the real wrapper.
+     *
+     * Everything above uses stubs, which can only prove the wrapper honours its
+     * own contract. This proves the adapter and the wrapper agree about when an
+     * attempt begins and ends — the seam where a stale-handle bug would actually
+     * live in production.
+     */
+    it('routes a post-retry command to the new attempt when driving the real Claude adapter', async () => {
+      jest.useRealTimers();
+
+      const { ClaudeControlAdapter } = require('../harnesses/claude-control');
+      const adapter = new ClaudeControlAdapter();
+
+      const closes: string[] = [];
+      let callCount = 0;
+      // Attach events, not synchronous currentAttempt() reads: onAttemptHandle is
+      // invoked synchronously by the wrapper while attach() is async, so reading
+      // the current attempt inside the callback always sees the pre-attach null.
+      // The event is the observable the coordinator is meant to use.
+      const attemptIds: string[] = [];
+      adapter.subscribe((event: any) => {
+        if (event.type === 'attempt_attached') attemptIds.push(event.attemptId);
+      });
+      // Each attempt's input iterable, captured from the params the wrapper built.
+      const prompts: AsyncIterable<any>[] = [];
+      const received: any[][] = [];
+      let handoff: string | undefined;
+
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        const label = `attempt-${callCount}`;
+        prompts.push(params.prompt);
+        const messages: any[] = [];
+        received.push(messages);
+        void (async () => { for await (const m of params.prompt) messages.push(m); })();
+        if (callCount === 1) {
+          async function* inner(): AsyncGenerator<any> {
+            yield { type: 'system', subtype: 'init', session_id: 'sess-live' };
+            throw new Error('fetch failed');
+          }
+          return Object.assign(inner(), { close: () => closes.push(label) }) as any;
+        }
+        async function* inner(): AsyncGenerator<any> {
+          // Submit a command WHILE attempt 2 is streaming. This is the real
+          // scenario: an operator steers a running agent. Submitting after the
+          // generator finished would only prove input is refused once the run is
+          // over, which is true but not what this test is for.
+          //
+          // `whenAttached()` first because attach is async while the wrapper
+          // invokes onAttemptHandle synchronously: without it this races the
+          // attach and the command is legitimately rejected. That window is real
+          // in production too — a command arriving in it is refused rather than
+          // misrouted, which is the safe direction — but it is not what this test
+          // is measuring.
+          await adapter.whenAttached();
+          handoff = await adapter.submitInput({ kind: 'steering', text: 'after retry' });
+          yield { type: 'result', subtype: 'success' };
+        }
+        return Object.assign(inner(), { close: () => closes.push(label) }) as any;
+      });
+
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'ORIGINAL TASK', options: {} } as any,
+          maxRetries: 2,
+          baseDelayMs: 1,
+          resumeContext: () => 'nudge',
+          attemptInputFactory: adapter.attemptInputFactory(),
+          onAttemptHandle: adapter.onAttemptHandle(),
+          cancellation: adapter.cancellationSource(),
+          log: jest.fn(),
+        }),
+      );
+
+      expect(callCount).toBe(2);
+      // Two distinct attempts were published: the endpoint was genuinely
+      // replaced across the retry, not reused.
+      expect(attemptIds).toHaveLength(2);
+      expect(attemptIds[1]).not.toBe(attemptIds[0]);
+
+      // The command reached the live attempt rather than vanishing into the
+      // transport the retry replaced.
+      expect(handoff).toBe('delivered');
+
+      // And it landed in attempt 2's actual input channel — the one handed to
+      // query() — not merely in some queue the adapter kept to itself.
+      expect(received[1].map(m => m.message.content)).toEqual(['nudge', 'after retry']);
+      expect(received[0].map(m => m.message.content)).toEqual(['ORIGINAL TASK']);
+
+      // Each session was closed exactly once, by the wrapper that created it.
+      expect(closes).toEqual(['attempt-1', 'attempt-2']);
+      await adapter.dispose();
+      // Adapter teardown does not close a borrowed handle a second time.
+      expect(closes).toEqual(['attempt-1', 'attempt-2']);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('leaves the legacy no-option path untouched', async () => {
+      jest.useRealTimers();
+
+      // The regression guard for 17 existing callers: with none of the three
+      // hooks supplied, the query params must be exactly what they always were —
+      // a string prompt, not an iterable.
+      let seenParams: any;
+      mockQuery.mockImplementation((params: any) => {
+        seenParams = params;
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const seenIds: string[] = [];
+      await collectAll(
+        resilientQuery({
+          queryParams: { prompt: 'PLAIN TASK', options: { model: 'm' } } as any,
+          onSessionId: (id) => seenIds.push(id),
+          log: jest.fn(),
+        }),
+      );
+
+      expect(seenParams.prompt).toBe('PLAIN TASK');
+      expect(seenParams.options).toEqual({ model: 'm' });
+      expect(seenIds).toEqual([]);
+
+      jest.useFakeTimers();
+    }, 10000);
+  });
+});
+
+describe('prompt cancellation at runtime waits', () => {
+  beforeEach(() => { jest.clearAllMocks(); jest.useFakeTimers(); });
+  afterEach(() => { jest.useRealTimers(); });
+
+  it.each(['idle', 'backoff', 'setup', 'legacy-poll'] as const)(
+    'cancels during %s without waiting for the timeout or starting a retry', async (phase) => {
+      const { ClaudeControlAdapter } = require('../harnesses/claude-control');
+      const adapter = new ClaudeControlAdapter();
+      const close = jest.fn(() => { expect(adapter.currentAttempt()).toBeNull(); });
+      const next = jest.fn(() => phase === 'backoff'
+        ? Promise.reject(new Error('fetch failed'))
+        : new Promise<IteratorResult<any>>(() => {}));
+      mockQuery.mockReturnValue({ [Symbol.asyncIterator]: () => ({ next }), close } as any);
+      const source = adapter.cancellationSource();
+      if (phase === 'legacy-poll') delete source.signal;
+      const stream = resilientQuery({
+        queryParams: { prompt: 'task' },
+        baseDelayMs: 120_000,
+        maxDelayMs: 120_000,
+        idleTimeoutMs: 600_000,
+        attemptInputFactory: adapter.attemptInputFactory(),
+        onAttemptHandle: phase === 'setup' ? () => new Promise<void>(() => {}) : adapter.onAttemptHandle(),
+        cancellation: source,
+        log: jest.fn(),
+      });
+      let outcome: unknown;
+      const pending = stream.next().catch(error => { outcome = error; });
+      await jest.advanceTimersByTimeAsync(0);
+      if (phase === 'backoff') expect(close).toHaveBeenCalledTimes(1);
+      adapter.cancel('operator aborted');
+      await jest.advanceTimersByTimeAsync(30);
+      expect(outcome).toMatchObject({ name: 'ControlCancelledError' });
+      await pending;
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+      await adapter.dispose();
+    },
+  );
 });

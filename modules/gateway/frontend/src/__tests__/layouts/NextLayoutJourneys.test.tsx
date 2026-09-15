@@ -142,11 +142,17 @@ describe('NextLayout journeys — Issue #5080', () => {
       expect(screen.getByTestId('next-journey-admin')).toBeInTheDocument();
     });
 
+    it('retains admin budget management when personal spend is disabled', () => {
+      renderLayout({ perms: PLATFORM_ADMIN, flags: { budget_spend: false } });
+      expect(screen.getByTestId('next-nav-entry-my-spend')).toHaveAttribute('href', '/budget');
+      expect(screen.queryByTestId('next-nav-entry-budgets')).not.toBeInTheDocument();
+    });
+
     it('shows a member and an admin the identical Use ADP journey', () => {
       // "Administration is a scope, not a competing menu tree": an administrator
       // starts in the same Use ADP experience a member gets, and Administration is
       // additive rather than a different set of user pages.
-      const asMember = renderLayout({ perms: MEMBER });
+      const asMember = renderLayout({ perms: MEMBER, flags: { budget_spend: true } });
       const memberEntries = screen
         .getAllByTestId(/^next-nav-entry-/)
         .map((el) => el.getAttribute('data-testid'));
@@ -154,7 +160,7 @@ describe('NextLayout journeys — Issue #5080', () => {
       asMember.unmount();
 
       vi.clearAllMocks();
-      renderLayout({ perms: PLATFORM_ADMIN });
+      renderLayout({ perms: PLATFORM_ADMIN, flags: { budget_spend: true } });
       const adminEntries = screen
         .getAllByTestId(/^next-nav-entry-/)
         .map((el) => el.getAttribute('data-testid'));

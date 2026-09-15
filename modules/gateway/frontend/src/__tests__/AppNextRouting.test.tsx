@@ -28,7 +28,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import App from '@/App';
 import { ALL_FEATURES_ENABLED, type FeatureFlags } from '@/services/features';
 
@@ -79,7 +79,13 @@ const page = (testId: string) => ({
 vi.mock('@/pages/Login', () => page('page-login'));
 vi.mock('@/pages/AgentRunDashboard', () => page('page-runs'));
 vi.mock('@/pages/AgentActivity', () => page('page-activity'));
-vi.mock('@/pages/BudgetManagement', () => page('page-budgets'));
+vi.mock('@/pages/BudgetSpend', () => ({
+  default: () => {
+    const location = useLocation();
+    return <div data-testid="page-budget-spend">{location.pathname}{location.search}</div>;
+  },
+}));
+vi.mock('@/pages/ModelAccess', () => page('page-model-access'));
 vi.mock('@/pages/settings/Connections', () => page('page-connections'));
 vi.mock('@/pages/NotFound', () => page('page-not-found'));
 vi.mock('@/components/RoleBasedRedirect', () => ({
@@ -216,7 +222,8 @@ describe('App.tsx production routing for /next — Issue #5079', () => {
     it.each([
       ['/runs', 'page-runs'],
       ['/activity', 'page-activity'],
-      ['/budgets', 'page-budgets'],
+      ['/budgets', 'page-budget-spend'],
+      ['/model-access', 'page-model-access'],
       ['/settings/connections', 'page-connections'],
       ['/', 'page-home'],
     ])('%s still resolves to its current-UI page with the flag ON', async (path, testId) => {
@@ -228,11 +235,17 @@ describe('App.tsx production routing for /next — Issue #5079', () => {
     it.each([
       ['/runs', 'page-runs'],
       ['/activity', 'page-activity'],
-      ['/budgets', 'page-budgets'],
+      ['/budgets', 'page-budget-spend'],
+      ['/model-access', 'page-model-access'],
       ['/settings/connections', 'page-connections'],
     ])('%s still resolves to its current-UI page with the flag OFF', async (path, testId) => {
       renderApp(path, { newUi: false });
       expect(await screen.findByTestId(testId)).toBeInTheDocument();
+    });
+
+    it.each([true, false])('redirects the legacy budget URL to consolidated management (preview flag %s)', async (newUi) => {
+      renderApp('/budgets', { newUi });
+      expect(await screen.findByTestId('page-budget-spend')).toHaveTextContent('/budget?view=manage');
     });
 
     it('an unknown non-preview path still reaches the app-level 404', async () => {

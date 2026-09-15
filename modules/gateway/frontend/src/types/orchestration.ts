@@ -78,6 +78,13 @@ export interface GraphNode {
   issue_ref: string | null;
   attempts: number;
   run_id?: string | null;
+  /** Current developer/reviewer in this attempt's chain; not a merge verdict. */
+  activity?: {
+    invocation_id: string;
+    persona: 'developer' | 'reviewer';
+    status: string;
+    liveness: 'live' | 'unverifiable' | 'exited';
+  } | null;
   issue_url?: string | null;
   result_summary?: string | null;
   configuration_problem?: string | null;
@@ -139,7 +146,16 @@ export interface PolicyLimits {
  * addresses that §7.2 makes non-renderable. The machine-acceptance *count* is the
  * fact a reader needs.
  */
+export interface UserCredentialAuthority {
+  permission_mode: 'user_configured';
+  lifetime: 'provider_managed';
+  vault_credential_ids: string[];
+  aws_role_arns: string[];
+  actions: PolicyAction[];
+}
+
 export interface PolicySummary {
+  user_credentials?: UserCredentialAuthority | null;
   repository_ids: string[];
   environment_connection_ids: string[];
   team_ids: string[];

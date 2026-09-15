@@ -43,7 +43,7 @@ function getUtilizationBadgeVariant(pct: number): 'success' | 'warning' | 'dange
   return 'danger';
 }
 
-export function BudgetManagement() {
+export function BudgetManagement({ additionalOnly = false }: { additionalOnly?: boolean }) {
   const { user } = useAuthContext();
   const { isPlatformAdmin } = usePermissions();
   const toast = useToast();
@@ -248,7 +248,7 @@ export function BudgetManagement() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            Budget Management
+            {additionalOnly ? 'Additional restrictions' : 'Budget Management'}
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
             Manage budget configurations for your organization
@@ -321,7 +321,7 @@ export function BudgetManagement() {
           panel calls enforces `require_platform_admin` server-side. Widening this gate
           would not widen the authority — it would only produce 403s an org admin has no
           way to interpret. */}
-      {callerIsPlatformAdmin && <DefaultPersonLimits />}
+      {!additionalOnly && callerIsPlatformAdmin && <DefaultPersonLimits />}
 
       {/* Bedrock account routing (#4745, #4692 · R4 §6.3): mounted here because it
           answers the question adjacent to every other control on this page. Budgets say
@@ -330,7 +330,7 @@ export function BudgetManagement() {
 
           Same platform-admin gate, same reasoning: `require_platform_admin` on every
           routing route is the boundary, and this only keeps org admins out of a 403. */}
-      {callerIsPlatformAdmin && <BedrockAccountRouting />}
+      {!additionalOnly && callerIsPlatformAdmin && <BedrockAccountRouting />}
 
       <Card>
         <CardHeader>

@@ -240,15 +240,10 @@ class TestPrecedence:
         assert anchor == format_person_anchor(DIR_DIRECTORY_ID, IdentityProvider.directory.value)
         assert canonical_id == DIR_USER_ID
 
-    async def test_person_with_no_external_identity_is_refused(self, db):
-        """No identity in any registered provider → 422, not a fabricated key.
-
-        The module's existing stance, retained: a cap for somebody with no cross-org
-        key could only ever be inert, so refusing is more honest than storing one.
-        """
-        with pytest.raises(UnresolvablePersonAnchorError) as exc:
-            await resolve_caller_person_anchor(db, BARE_SUB)
-        assert exc.value.status_code == 422
+    async def test_person_without_external_identity_uses_native_anchor(self, db):
+        anchor, user_id = await resolve_caller_person_anchor(db, BARE_SUB)
+        assert anchor == format_person_anchor(BARE_USER_ID, PERSON_ANCHOR_INTERNAL_NAMESPACE)
+        assert user_id == BARE_USER_ID
 
 
 # ===========================================================================
@@ -333,16 +328,16 @@ class TestParseAndFormat:
 
 
 class TestAuthorableNamespaces:
-    def test_provider_namespaces_are_authorable_and_internal_is_not(self):
-        assert PERSON_ANCHOR_AUTHORABLE_NAMESPACES == {p.value for p in PERSON_ANCHOR_PROVIDER_PRECEDENCE}
-        assert PERSON_ANCHOR_INTERNAL_NAMESPACE not in PERSON_ANCHOR_AUTHORABLE_NAMESPACES
+    def test_provider_and_native_namespaces_are_authorable(self):
+        assert PERSON_ANCHOR_AUTHORABLE_NAMESPACES == {*(p.value for p in PERSON_ANCHOR_PROVIDER_PRECEDENCE), PERSON_ANCHOR_INTERNAL_NAMESPACE}
+        assert PERSON_ANCHOR_INTERNAL_NAMESPACE in PERSON_ANCHOR_AUTHORABLE_NAMESPACES
 
     @pytest.mark.parametrize(
         ("anchor", "expected"),
         [
             ("github:12345", True),
             ("directory:aad-1", True),
-            ("users:user-abc", False),  # parses, but nothing enforces it
+            ("users:user-abc", True),  # native caps share read/write/enforcement resolution
             ("gitlab:12345", False),  # unregistered
             ("12345", False),  # unparseable
             ("github:", False),  # parseable namespace, unusable identifier
@@ -356,21 +351,14 @@ class TestAuthorableNamespaces:
         """
         assert is_authorable_person_anchor(anchor) is expected
 
-    async def test_write_guard_refuses_an_internal_anchor(self, db):
-        """`resolve_person_anchor` 422s a syntactically valid `users:` anchor.
-
-        The write side of the one-sided rule: the parser MUST accept this string
-        (the read surface emits it), and the write guard MUST refuse it, because no
-        cap keyed on the internal fallback is ever enforced. Storing one would be
-        the inert row the parser fix exists to make visible.
-        """
+    async def test_write_guard_accepts_current_native_anchor(self, db):
         anchor = format_person_anchor(BARE_USER_ID, PERSON_ANCHOR_INTERNAL_NAMESPACE)
+        assert await resolve_person_anchor(db, anchor) == anchor
 
-        assert parse_person_anchor(anchor) == (PERSON_ANCHOR_INTERNAL_NAMESPACE, BARE_USER_ID)
-        with pytest.raises(UnresolvablePersonAnchorError) as exc:
-            await resolve_person_anchor(db, anchor)
-        assert exc.value.status_code == 422
-        assert "internal fallback" in str(exc.value)
+    async def test_write_guard_refuses_missing_or_stale_native_anchor(self, db):
+        for identifier in ["missing-user", BOTH_USER_ID]:
+            with pytest.raises(UnresolvablePersonAnchorError):
+                await resolve_person_anchor(db, format_person_anchor(identifier, PERSON_ANCHOR_INTERNAL_NAMESPACE))
 
     async def test_write_guard_resolves_a_directory_anchor(self, db):
         """A linked directory identity is storable — the new capability."""

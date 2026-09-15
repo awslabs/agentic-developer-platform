@@ -57,6 +57,12 @@ INSTALLATION_EVENT = "installation_event"
 #: The event type / action pair has no handler at all (e.g. ``check_run``).
 EVENT_TYPE_UNHANDLED = "event_type_unhandled"
 
+#: ``issue_comment`` action other than ``created`` (e.g. ``edited``) from a bot
+#: sender — most commonly the agent editing its own status comment in place.
+#: Distinguished from EVENT_TYPE_UNHANDLED so webhook-delivery logs read as
+#: "the agent's own comment activity, ignored" rather than an unexplained no-op.
+BOT_COMMENT_ACTION_UNHANDLED = "bot_comment_action_unhandled"
+
 #: ``@agent-engine <command>`` comment (#4527). Addressed to the orchestration
 #: engine, not to a persona, so this Lambda spawns NO pod and enqueues nothing:
 #: it marks the event row and the engine tick consumes it on its next wake.

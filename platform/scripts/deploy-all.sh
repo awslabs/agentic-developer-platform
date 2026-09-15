@@ -1421,6 +1421,13 @@ CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-d
 GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
 [ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "AgentGW:   $GW_WS"
 
+if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
+  echo "CLI installation (no sign-in required):"
+  echo "  curl -fsSL https://${CF_DOMAIN}/api/cli/install.sh | sh -s -- --gateway-url https://${CF_DOMAIN}/api"
+  echo '  "$HOME/.adp/bin/adp" admin setup'
+  echo "Sign in with the bootstrap Cognito administrator account; GitHub is not needed for CLI admin login."
+fi
+
 # --- Next steps (manual — GitHub App wiring; skipped in update mode) ---
 if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   echo ""

@@ -26,6 +26,8 @@ from src.proxy.model_resolver import ModelResolver
 from src.proxy.routes import get_mantle_service, get_token_context, router, set_mantle_service, set_model_resolver
 from src.shared.schemas.auth import TokenContext
 
+pytestmark = pytest.mark.usefixtures("unmapped_mantle_routing")
+
 # A recognizable secret-key value the tests assert never leaks into logs.
 SIGV4_SECRET_KEY = "wJalrXUtnFEMI-TEST-SIGV4-DO-NOT-LOG-KEY"
 
@@ -246,7 +248,7 @@ class TestMantlePassthrough:
         ]
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured["usage"] = dict(usage)
             captured["model"] = model
             captured["status"] = status_code
