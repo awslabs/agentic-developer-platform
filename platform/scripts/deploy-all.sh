@@ -991,17 +991,27 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__AGENT_TASK_SOURCE_ROLE_ARN__|${AGENT_TASK_SOURCE_ROLE_ARN}|g" \
       -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \
       -e "s|__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__|${AGENT_TASK_SOURCE_ISOLATION_CONFIRMED}|g" \
-      -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
       k8s/configmap.yaml | kubectl apply -f -
   # Render serviceaccount with the correct IRSA role ARN (Issue #1008)
   sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
       k8s/serviceaccount.yaml | kubectl apply -f -
   for f in k8s/*.yaml; do
     case "$(basename "$f")" in
-      configmap.yaml|serviceaccount.yaml|targetgroupbinding.yaml) continue ;;
+      configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
       *) kubectl apply -f "$f" -n adp-gateway ;;
     esac
   done
+
+  # Render deployment settings as well as the ConfigMap. Applying the raw
+  # manifest leaves feature flags and the image as literal placeholders.
+  FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "false")
+  FEATURE_AGENT_CONTROL_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
+  FEATURE_NEW_UI_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-new-ui" "false")
+  sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+      -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
+      -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
+      -e "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${IMAGE_TAG}|g" \
+      k8s/deployment.yaml | kubectl apply -f - -n adp-gateway
 
   if [ "$UPDATE_MODE" = true ]; then
     # Update mode: SHA-tagged image + mandatory rollout + health check (§2, §8)
