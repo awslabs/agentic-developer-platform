@@ -17,6 +17,14 @@ from lib.run_identity import (
 )
 
 
+@pytest.mark.parametrize("source", ["envelope", "configuration"])
+def test_claimed_work_cannot_run_on_legacy_worker(monkeypatch, source):
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true" if source == "configuration" else "false")
+    with pytest.raises(RunIdentityError, match="Work ownership requires"):
+        bootstrap_run_identity({"work_claim_required": source == "envelope"})
+
+
 @pytest.fixture
 def identity(tmp_path, monkeypatch):
     monkeypatch.setenv(
@@ -174,3 +182,34 @@ def test_refresh_failure_keeps_existing_expiry_and_does_not_log_credentials(
     session._renew()
     assert session.credential_path.read_bytes() == before
     assert "sensitive-token" not in caplog.text
+
+
+def test_authorized_child_waits_without_credential_before_start(identity, monkeypatch):
+    from lib.run_identity import WorkOwnershipPending
+
+    session, _ = identity
+    requests = iter([WorkOwnershipPending("waiting"), reply()])
+
+    def request():
+        response = next(requests)
+        if isinstance(response, Exception):
+            assert not session.credential_path.exists()
+            raise response
+        return response
+
+    monkeypatch.setattr(session, "_request", request)
+    monkeypatch.setattr(session._stop, "wait", lambda _: False)
+    monkeypatch.setattr("lib.run_identity.threading.Thread", MagicMock())
+    session.start()
+    assert session.credential_path.read_text().strip() == "adpr1.first.signature"
+
+
+def test_pending_child_startup_has_bounded_wait(identity, monkeypatch):
+    from lib.run_identity import WorkOwnershipPending
+
+    session, _ = identity
+    monkeypatch.setattr(session, "_request", MagicMock(side_effect=WorkOwnershipPending("waiting")))
+    monkeypatch.setattr("lib.run_identity.time.monotonic", MagicMock(side_effect=[0, 1801]))
+    with pytest.raises(RunIdentityError, match="startup deadline exceeded"):
+        session.start()
+    assert not session.credential_path.exists()

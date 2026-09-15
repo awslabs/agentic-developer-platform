@@ -138,6 +138,15 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
         command, grant, caller = await run_in_threadpool(
             service.prepare, body=body, credential_token=credential_token, workload_binding=workload_binding, graph=graph
         )
+        from src.orchestration.work_admission import admit_pending, enabled
+        from src.orchestration.work_claims import WorkClaimError
+
+        if enabled() and not receipt:
+            try:
+                await admit_pending(service.store, command["invocation_id"]["S"], session=session, allow_defer=True)
+            except WorkClaimError as exc:
+                await run_in_threadpool(service._refuse_unpublished, command, caller)
+                raise PolicyError(409, f"work ownership refused: {exc.code}") from None
         if not receipt:
             if not coordinates and body.persona != "reviewer":
                 genesis = await resolve_engine_genesis(session, org_id=grant.tenant_id, decision_id=grant.authority.reference_id)

@@ -35,6 +35,7 @@ UNIT_MODULES = [
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
     "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
+    "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
     # derives the row key from the protected execution record.
@@ -211,12 +212,18 @@ async def lifespan(app: FastAPI):
     # The shared refresh boundary caps reads at five seconds and records failure.
     await refresh_pricing_cache()
     pricing_task = asyncio.create_task(maintain_pricing_cache(), name="pricing_cache_refresh")
+    from src.orchestration.work_admission import maintain_work_claims
+
+    claims_task = asyncio.create_task(maintain_work_claims(), name="work_claim_cleanup")
     try:
         yield
     finally:
         pricing_task.cancel()
         with suppress(asyncio.CancelledError):
             await pricing_task
+        claims_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await claims_task
 
     # Issue #144: Shutdown tracing on app shutdown
     shutdown_tracing()

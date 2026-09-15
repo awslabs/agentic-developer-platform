@@ -337,8 +337,8 @@ class AgentRegistrationService:
                 raise RegistrationRefusedError("terminal report conflicts with recorded outcome")
             return
         execution_update = self._execution_check(record)["ConditionCheck"]
-        execution_update["UpdateExpression"] = "SET #st = :complete, terminal_report_digest = :digest"
-        execution_update["ExpressionAttributeValues"].update({":complete": {"S": "completed"}, ":digest": {"S": digest}})
+        execution_update["UpdateExpression"] = "SET #st = :complete, terminal_report_digest = :digest, terminal_outcome = :outcome"
+        execution_update["ExpressionAttributeValues"].update({":complete": {"S": "completed"}, ":digest": {"S": digest}, ":outcome": {"S": status}})
         transaction = [
             {
                 "Update": {

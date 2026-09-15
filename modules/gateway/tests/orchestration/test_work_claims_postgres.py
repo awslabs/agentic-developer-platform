@@ -63,6 +63,35 @@ REPO_ID = 987_654_321
 ISSUE = 5127
 
 
+async def test_lost_insert_race_preserves_callers_transaction(pg_session_factory, monkeypatch):
+    from src.orchestration import work_claims
+
+    async with pg_session_factory() as session:
+        await claim_work(session, binding=_binding(), owner=ClaimOwner(OwnerKind.ENGINE_FLOW, "winner"), event_id="winner")
+        await session.commit()
+
+    async with pg_session_factory() as session:
+        unrelated = await claim_work(
+            session, binding=_binding(issue=ISSUE + 1), owner=ClaimOwner(OwnerKind.ENGINE_FLOW, "unrelated"), event_id="unrelated"
+        )
+        original = work_claims._locked_claim
+
+        async def observed_before_winner(session, binding):
+            if binding.issue_number == ISSUE:
+                return None
+            return await original(session, binding)
+
+        monkeypatch.setattr(work_claims, "_locked_claim", observed_before_winner)
+        with pytest.raises(WorkClaimError, match="concurrently"):
+            await claim_work(session, binding=_binding(), owner=ClaimOwner(OwnerKind.DIRECT_DISPATCH, "loser"), event_id="loser")
+        # No rollback from this caller. Both its pending work and session remain
+        # usable after the real PostgreSQL unique violation inside admission.
+        assert await session.get(OrchestrationWorkClaim, unrelated.claim_id) is not None
+        await session.commit()
+    async with pg_session_factory() as session:
+        assert await session.get(OrchestrationWorkClaim, unrelated.claim_id) is not None
+
+
 @pytest.fixture
 async def pg_engine(pg_url):  # noqa: F811 - pg_url is a fixture, not a shadowed import
     """An async engine on a fresh PostgreSQL database with the claims table.
@@ -258,6 +287,7 @@ class TestUniqueIndexIsTheBackstop:
         async with pg_session_factory() as session:
             await release_work(
                 session,
+                org_id=ORG_A,
                 claim_id=first.claim_id,
                 generation=first.generation,
                 reason=ReleaseReason.COMPLETED,
@@ -303,7 +333,7 @@ class TestConcurrentRunBinding:
 
         async def _bind(run_id: str):
             async with pg_session_factory() as session:
-                result = await bind_run(session, claim_id=receipt.claim_id, generation=receipt.generation, run_id=run_id)
+                result = await bind_run(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, run_id=run_id)
                 await session.commit()
                 return result
 

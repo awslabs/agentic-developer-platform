@@ -326,9 +326,13 @@ async def claim_work(
             heartbeat_at=now,
             lease_expires_at=now + timedelta(seconds=lease_seconds),
         )
-        session.add(claim)
         try:
-            await session.flush()
+            # Isolate the insert race from the caller's transaction. Rolling
+            # back the whole session here would discard other nodes admitted by
+            # the same tick; leaving it failed would poison the rest of the pass.
+            async with session.begin_nested():
+                session.add(claim)
+                await session.flush()
         except IntegrityError:
             # Lost the insert race. The winner is committed (or committing), so the
             # honest answer is a conflict — NOT a retry that could admit us behind
@@ -448,6 +452,7 @@ async def claim_work(
 async def bind_run(
     session: AsyncSession,
     *,
+    org_id: str,
     claim_id: str,
     generation: int,
     run_id: str,
@@ -473,7 +478,12 @@ async def bind_run(
         raise WorkClaimError("missing_run_id", "Binding a run requires the run id.")
     run_id = str(run_id).strip()
 
-    stmt = select(OrchestrationWorkClaim).where(OrchestrationWorkClaim.id == claim_id).with_for_update().execution_options(populate_existing=True)
+    stmt = (
+        select(OrchestrationWorkClaim)
+        .where(OrchestrationWorkClaim.id == claim_id, OrchestrationWorkClaim.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     claim = (await session.execute(stmt)).scalar_one_or_none()
 
     if claim is None:
@@ -530,6 +540,7 @@ async def bind_run(
 async def heartbeat(
     session: AsyncSession,
     *,
+    org_id: str,
     claim_id: str,
     generation: int,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
@@ -540,7 +551,12 @@ async def heartbeat(
     worker keep the row looking alive and starve the replacement it was handed
     over from.
     """
-    stmt = select(OrchestrationWorkClaim).where(OrchestrationWorkClaim.id == claim_id).with_for_update().execution_options(populate_existing=True)
+    stmt = (
+        select(OrchestrationWorkClaim)
+        .where(OrchestrationWorkClaim.id == claim_id, OrchestrationWorkClaim.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     claim = (await session.execute(stmt)).scalar_one_or_none()
     if claim is None:
         raise WorkClaimError("unknown_claim", f"Claim {claim_id} does not exist.")
@@ -563,6 +579,7 @@ async def heartbeat(
 async def release_work(
     session: AsyncSession,
     *,
+    org_id: str,
     claim_id: str,
     generation: int,
     reason: ReleaseReason,
@@ -592,7 +609,12 @@ async def release_work(
             "Releasing a claim requires evidence that the work is over; an unevidenced release is a lease lapse by another name.",
         )
 
-    stmt = select(OrchestrationWorkClaim).where(OrchestrationWorkClaim.id == claim_id).with_for_update().execution_options(populate_existing=True)
+    stmt = (
+        select(OrchestrationWorkClaim)
+        .where(OrchestrationWorkClaim.id == claim_id, OrchestrationWorkClaim.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     claim = (await session.execute(stmt)).scalar_one_or_none()
     if claim is None:
         raise WorkClaimError("unknown_claim", f"Claim {claim_id} does not exist; nothing to release.")
@@ -644,6 +666,7 @@ async def release_work(
 async def force_handover(
     session: AsyncSession,
     *,
+    org_id: str,
     claim_id: str,
     decision_id: str,
     resolver: RunLivenessResolver,
@@ -679,7 +702,12 @@ async def force_handover(
     if not str(decision_id or "").strip():
         raise WorkClaimError("missing_decision", "A forced handover requires the id of the decision that authorized it.")
 
-    stmt = select(OrchestrationWorkClaim).where(OrchestrationWorkClaim.id == claim_id).with_for_update().execution_options(populate_existing=True)
+    stmt = (
+        select(OrchestrationWorkClaim)
+        .where(OrchestrationWorkClaim.id == claim_id, OrchestrationWorkClaim.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     claim = (await session.execute(stmt)).scalar_one_or_none()
     if claim is None:
         raise WorkClaimError("unknown_claim", f"Claim {claim_id} does not exist.")

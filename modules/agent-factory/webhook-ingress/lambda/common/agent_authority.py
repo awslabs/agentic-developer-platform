@@ -178,10 +178,15 @@ def provision_human_dispatch(
             "chain_depth": {"N": "0"},
         }
         dispatch_personas = {
+            # The immutable ID is included below in the protected execution,
+            # alongside the HMAC-verified event's repository and tenant.
             "developer": ["reviewer"],
             "operations": ["developer", "reviewer", "operations"],
             "aidlc": ["developer", "reviewer", "operations"],
         }.get(persona, [])
+        repository_id = final["source_ref"].get("provider_repository_id")
+        if type(repository_id) is int and repository_id > 0:
+            execution["provider_repository_id"] = {"N": str(repository_id)}
         actions = ["monitor", "dispatch"] if dispatch_personas else ["monitor"]
         grant = {
             **_key(pk, f"GRANT#{invocation}#1"),
