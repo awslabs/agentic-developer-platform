@@ -44,6 +44,7 @@ INSTALLED_FILES = [
     "adp_common.py",
     "adp-admin.py",
     "adp-bedrock.py",
+    "adp-aws.py",
     "adp-github.py",
     "adp-github-admin.py",
 ]

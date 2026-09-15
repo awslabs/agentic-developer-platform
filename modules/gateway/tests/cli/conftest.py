@@ -117,6 +117,7 @@ def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
         "adp_common.py",
         "adp-admin.py",
         "adp-bedrock.py",
+        "adp-aws.py",
         "adp-github.py",
         "adp-github-admin.py",
     ):
