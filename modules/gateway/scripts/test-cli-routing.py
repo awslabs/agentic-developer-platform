@@ -86,6 +86,11 @@ def main():
     parser.add_argument("--hosted", action="store_true", help="Also exercise real cloud-agent dispatch at each hierarchy step")
     parser.add_argument("--maintenance-kubeconfig")
     args = parser.parse_args()
+    if args.hosted and not args.cleanup_only:
+        try:
+            import websockets  # noqa: F401
+        except ImportError:
+            parser.error("--hosted requires websockets in the harness Python environment; install it before creating fixtures")
     harness_root = args.harness_root.resolve()
     if not (harness_root / "tests/e2e/tenant_validation/regression.py").is_file():
         parser.error("--harness-root must contain the reusable routing harness from PR #5173")
