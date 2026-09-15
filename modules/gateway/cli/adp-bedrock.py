@@ -7,7 +7,6 @@ CloudFormation parameters travel in private files, never process arguments.
 
 from __future__ import annotations
 
-import argparse
 import base64
 import hashlib
 import io
@@ -24,71 +23,16 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import adp_common as common  # noqa: E402
+
 ROUTING = "/admin/bedrock-routing"
 PACKAGE_FILES = {"template.yaml", "parameters.json", "README.md"}
 
 
-class CliError(Exception):
-    """A diagnostic safe to print without credentials or setup parameters."""
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise CliError("ADP redirected the request. Check the gateway URL before sending credentials.")
-
-
-class Api:
-    def __init__(self):
-        try:
-            config = json.loads((Path.home() / ".bedrock-gateway/config.json").read_text())
-            self.base = config["gateway_url"].rstrip("/")
-        except (OSError, ValueError, KeyError, AttributeError) as exc:
-            raise CliError("No gateway configured. Run adp login first.") from exc
-        parsed = urllib.parse.urlsplit(self.base)
-        local = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-        if (parsed.scheme != "https" and not (parsed.scheme == "http" and local)) or not parsed.hostname:
-            raise CliError("The configured gateway must use HTTPS (HTTP is allowed only on loopback).")
-        if parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise CliError("The configured gateway URL must not contain credentials, a query or a fragment.")
-        self.opener = urllib.request.build_opener(NoRedirect())
-
-    def request(self, method, path, body=None):
-        # Reuse the existing refresh lock and login implementation on every call.
-        helper = Path(__file__).resolve().with_name("bg-cognito-auth.sh")
-        try:
-            token = subprocess.run(["bash", str(helper), "token"], capture_output=True, text=True, timeout=120, check=True).stdout.strip()
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise CliError("ADP authentication failed. Run adp login.") from exc
-        if not token or any(char.isspace() for char in token):
-            raise CliError("ADP authentication returned no valid token. Run adp login.")
-        request = urllib.request.Request(
-            self.base + path,
-            data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
-            method=method,
-        )
-        try:
-            with self.opener.open(request, timeout=120) as response:
-                return json.load(response)
-        except urllib.error.HTTPError as exc:
-            hints = {
-                401: "Run adp login.",
-                403: "This operation requires an ADP platform administrator.",
-                404: "Check the destination and upgrade the gateway if it does not support Bedrock setup.",
-            }
-            reason = ""
-            try:
-                detail = json.load(exc).get("detail", {})
-                code = detail.get("reason", "") if isinstance(detail, dict) else ""
-                if re.fullmatch(r"[a-z_]{1,80}", code):
-                    reason = f" ({code})"
-            except (ValueError, AttributeError):
-                pass
-            raise CliError(
-                f"ADP returned HTTP {exc.code}{reason}. {hints.get(exc.code, 'No further changes were made; check the scope and retry.')}"
-            ) from exc
-        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-            raise CliError("ADP could not be reached or returned an invalid response. Check the connection and retry.") from exc
+# Shared auth, refresh, URL validation and error handling belong to CLI-00.
+Api = common.Api
+CliError = common.CliError
 
 
 class Aws:
@@ -343,13 +287,14 @@ def assign(api, destination, scope, previous):
 
 
 def parser():
-    root = argparse.ArgumentParser(prog="adp bedrock", description="Connect an AWS account and route Bedrock usage to it.")
+    root = common.Parser(prog="adp admin bedrock", description="Connect an AWS account and route Bedrock usage to it.")
     commands = root.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list", help="Show available destinations")
     listing.add_argument("--org", help="Organization ID or exact name")
     listing.add_argument("--json", action="store_true")
     connect = commands.add_parser("connect", help="Create the role, verify it and assign routing")
     connect.add_argument("--account", dest="account_id", help="12-digit AWS account ID")
+    connect.add_argument("--destination", help="Reuse an existing destination ID; verify and assign without provisioning")
     connect.add_argument("--org", help="Organization ID or exact name")
     scope = connect.add_mutually_exclusive_group()
     scope.add_argument("--team", help="Route a team within --org instead of the whole organization")
@@ -362,13 +307,19 @@ def parser():
     connect.add_argument("--yes", action="store_true", help="Approve changes without a prompt, for scripts")
     connect.add_argument("--dry-run", action="store_true", help="Show the plan without creating or changing anything")
     connect.add_argument("--json", action="store_true", help="Print machine-readable output")
+    verification = commands.add_parser("verify", help="Verify an existing destination through ADP")
+    verification.add_argument("destination", help="Destination ID")
+    verification.add_argument("--json", action="store_true")
+    selection = commands.add_parser("status", help="Show the effective routing rule and its source")
+    selection.add_argument("--user", help="Inspect another user (requires administrator authority)")
+    selection.add_argument("--json", action="store_true")
     return root
 
 
 def resume_details(api, args):
-    if any((args.account_id, args.org, args.team, args.user, args.name, args.aws_profile, args.output_dir)):
+    if any((args.account_id, args.org, args.team, args.user, args.name, args.aws_profile, args.output_dir, args.destination)):
         raise CliError("--resume uses the account and routing scope saved in the download directory. No other setup options are needed.")
-    metadata = json.loads((Path(args.resume) / "destination.json").read_text())
+    metadata = common.read_private_json(Path(args.resume) / "destination.json")
     if metadata["gateway_url"] != api.base:
         raise CliError("This setup belongs to a different ADP gateway. Sign in to that gateway before resuming.")
     destination = destination_by_id(api, metadata["destination_id"])
@@ -395,7 +346,29 @@ def run(args, api):
     if args.command == "list":
         org = organization(api, args.org) if args.org else None
         return {"destinations": [row for row in destinations(api) if org is None or row["owner_org_id"] in {None, org["id"]}]}
+    if args.command == "status":
+        if args.user:
+            user = resolve(pages(api, "/admin/users"), args.user, ["email", "github_username"], "User")
+            effective = api.request("GET", ROUTING + "/effective/" + segment(user["id"]))
+        else:
+            effective = api.request("GET", "/me/bedrock-routing/selection")["effective"]
+        return {"effective": effective, "verification": "configured_route_only", "applies_to": "personal and user-owned cloud calls"}
+    if args.command == "verify":
+        destination = destination_by_id(api, args.destination)
+        verified = verify(api, destination["id"])
+        return {"destination_id": verified["id"], "account_id": verified["account_id"], "verified": True, "assigned": False}
     destination = resume_details(api, args) if args.resume else None
+    if args.destination:
+        if args.output_dir or args.aws_profile or args.name:
+            raise CliError("--destination reuses a role; do not combine it with --download, --profile or --name.")
+        destination = destination_by_id(api, args.destination)
+        if args.account_id and args.account_id != destination["account_id"]:
+            raise CliError("The destination belongs to a different AWS account. Nothing was changed.")
+        args.account_id = destination["account_id"]
+        args.region = destination["region"]
+        args.name = destination["label"]
+    args.org = args.org or common.organization_context(None, api)
+
     if not args.account_id or not args.org:
         raise CliError("Use --account and --org, or --resume with a downloaded setup directory.")
     if not re.fullmatch(r"[0-9]{12}", args.account_id):
@@ -407,7 +380,7 @@ def run(args, api):
         slug = re.sub(r"[^a-z0-9]+", "-", org["name"].lower()).strip("-")[:30]
         suffix = hashlib.sha256(org["id"].encode()).hexdigest()[:8]
         args.name = f"bedrock-{slug}-{suffix}"
-    if not re.fullmatch(r"[A-Za-z0-9-]{1,54}", args.name):
+    if not args.destination and not re.fullmatch(r"[A-Za-z0-9-]{1,54}", args.name):
         raise CliError("--name must contain 1–54 letters, numbers or hyphens.")
     destination = destination or find_prepared(api, org, args)
     args.scope = "user" if args.user else "team" if args.team else "org"
@@ -416,7 +389,7 @@ def run(args, api):
         raise CliError("The saved routing scope no longer matches ADP. Download the setup again.")
     previous = current_mapping(api, scope)
     aws = None
-    if not args.output_dir and not args.resume:
+    if not args.output_dir and not args.resume and not args.destination:
         aws = Aws(args.aws_profile, args.region)
         aws.check_account(args.account_id)
     applies_to = f"organization {org['name']}"
@@ -438,8 +411,7 @@ def run(args, api):
     }
     if args.dry_run:
         return plan
-    if not args.output_dir:
-        confirm(args, plan)
+    confirm(args, plan)
     directory = private_directory(args.output_dir) if args.output_dir else None
     if directory and (directory / "destination.json").exists():
         saved = json.loads((directory / "destination.json").read_text())
@@ -465,15 +437,35 @@ def run(args, api):
     return {**plan, "destination_id": destination["id"], "verified": True, "assigned": True, "mapping": mapping}
 
 
-def display(result, as_json):
+def result_envelope(result, command):
+    status = "verified" if result.get("verified") else "pending" if result.get("output_dir") else "configured"
+    next_action = None
+    if result.get("output_dir"):
+        import shlex
+
+        next_action = (
+            "Ask your AWS administrator to apply the downloaded template, then run "
+            f"adp admin bedrock connect --resume {shlex.quote(result['output_dir'])} --yes."
+        )
+    return common.envelope(status, "admin bedrock " + command, result, next_action)
+
+
+def display(result, as_json, command="connect"):
     if as_json:
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result_envelope(result, command)))
+    elif "effective" in result:
+        route = result["effective"]
+        print(f"Bedrock account: {route.get('account_id') or 'platform default (account not reported)'}")
+        print(f"Rule: {route['rung']} | Destination: {route.get('destination_label') or 'platform default'}")
+        print("Applies to personal and user-owned cloud calls. This is the configured route; no inference was run.")
+    elif command == "verify":
+        print(f"Verified destination {result['destination_id']} in AWS account {result['account_id']}. No routing rule was assigned.")
     elif "destinations" in result:
         for row in result["destinations"]:
             status = "verified" if row["usable_for_routing"] else "pending verification"
             print(f"{row['label']}  {row['account_id']}  {status}  ({row['id']})")
         if not result["destinations"]:
-            print("No destinations yet. Use adp bedrock connect to add one.")
+            print("No destinations yet. Use adp admin bedrock connect to add one.")
     elif result["dry_run"]:
         print(f"Would {result['action'].replace('_', ' ')} AWS account {result['account_id']} for {result['applies_to']}.")
         print(f"Role: {result['role_name']} ({result['region']}). No changes made.")
@@ -484,29 +476,111 @@ def display(result, as_json):
 
         print(f"Setup downloaded to {result['output_dir']}. Give template.yaml, parameters.json and README.md to your AWS administrator.")
         print("Once the role is created, run:")
-        print(f"  adp bedrock connect --resume {shlex.quote(result['output_dir'])}")
+        print(f"  adp admin bedrock connect --resume {shlex.quote(result['output_dir'])}")
     else:
         print(f"Connected AWS account {result['account_id']} to {result['applies_to']}.")
         print("Routing applies within about a minute. User rules take priority over team and organization rules.")
 
 
-def main():
-    args = parser().parse_args()
+NAME = "bedrock"
+TITLE = "Model access"
+ORDER = 10
+
+
+def status(ctx):
+    """Read the canonical organization mapping; never mistake saved state for proof."""
+    api = ctx["api"]
+    if not ctx.get("org"):
+        return common.envelope("pending", "admin bedrock", next_action="Select an ADP organization with adp admin setup --org NAME.")
+    org = organization(api, ctx["org"])
+    args = parser().parse_args(["connect", "--org", org["id"]])
+    args.scope = "org"
+    scope = scope_for(api, args, org)
+    selected = current_mapping(api, scope)
+    if selected:
+        destination = destination_by_id(api, selected)
+        if destination["usable_for_routing"]:
+            return common.envelope(
+                "configured",
+                "admin bedrock",
+                {
+                    "account_id": destination["account_id"],
+                    "destination_id": selected,
+                    "scope": scope,
+                    "verification": "stored_destination_verification",
+                },
+            )
+    return common.envelope(
+        "pending",
+        "admin bedrock",
+        {"organization_id": org["id"]},
+        "Run adp admin bedrock connect --org " + org["id"] + " --account ACCOUNT, or select an existing --destination ID.",
+    )
+
+
+def configure(ctx):
+    """The provider owns prompts and handoff state; the wizard only orchestrates."""
+    current = status(ctx)
+    if current["status"] != "pending" or not ctx.get("interactive") or not ctx.get("org"):
+        return current
+    api = ctx["api"]
+    org = organization(api, ctx["org"])
+    saved = common.read_state(NAME)
+    if saved.get("gateway_url") == api.base and saved.get("org_id") == org["id"] and saved.get("download_dir"):
+        print("A downloaded setup is pending. Has the AWS administrator applied it? [y/N] ", end="", file=sys.stderr)
+        if input().strip().lower() == "y":
+            args = parser().parse_args(["connect", "--resume", saved["download_dir"], "--yes"])
+            return result_envelope(run(args, api), "connect")
+        return common.envelope("pending", "admin bedrock", next_action="Complete the saved AWS handoff, then rerun adp admin setup.")
+    available = [row for row in destinations(api) if row["owner_org_id"] in {None, org["id"]}]
+    if available:
+        print("Existing destinations:", file=sys.stderr)
+        for row in available:
+            print(f"  {row['id']}  {row['label']}  {row['account_id']}", file=sys.stderr)
+        print("Destination ID to reuse (Enter to connect a new account): ", end="", file=sys.stderr)
+        chosen = input().strip()
+        if chosen:
+            args = parser().parse_args(["connect", "--destination", chosen, "--org", org["id"]])
+            return result_envelope(run(args, api), "connect")
+    print("AWS account ID (or press Enter to skip): ", end="", file=sys.stderr)
+    account = input().strip()
+    if not account:
+        return current
+    print("Create the role here, or download for an AWS administrator? [create/download]: ", end="", file=sys.stderr)
+    mode = input().strip().lower()
+    argv = ["connect", "--account", account, "--org", org["id"]]
+    if mode == "download":
+        print("Private download directory: ", end="", file=sys.stderr)
+        directory = str(Path(input().strip()).expanduser().absolute())
+        argv += ["--download", directory]
+    elif mode == "create":
+        print("AWS profile (Enter for current credentials): ", end="", file=sys.stderr)
+        profile = input().strip()
+        if profile:
+            argv += ["--profile", profile]
+    else:
+        raise CliError("Choose create or download, then retry setup.")
+    args = parser().parse_args(argv)
+    result = run(args, api)
+    if result.get("output_dir"):
+        common.write_state(NAME, {"gateway_url": api.base, "org_id": org["id"], "download_dir": result["output_dir"]})
+    return result_envelope(result, "connect")
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    as_json = "--json" in argv
     try:
+        args = parser().parse_args(argv)
         result = run(args, Api())
-        display(result, args.json)
-        return 0
+        display(result, args.json, args.command)
+        return 4 if result.get("output_dir") else 0
     except (CliError, OSError, ValueError, KeyError, TypeError) as exc:
-        message = (
-            str(exc)
-            if isinstance(exc, CliError)
-            else "Invalid response or local file error. No further actions were taken; check the saved destination before retrying."
-        )
-        print(json.dumps({"error": message}) if args.json else message, file=sys.stderr)
-        return 1
+        return common.report_error(exc, "admin bedrock", as_json)
     except KeyboardInterrupt:
-        print("Interrupted. A stack may still be running; rerun the same command to resume.", file=sys.stderr)
-        return 130
+        return common.report_error(
+            CliError("Interrupted. A stack may still be running; rerun the same command to resume.", "interrupted", 130), "admin bedrock", as_json
+        )
 
 
 if __name__ == "__main__":

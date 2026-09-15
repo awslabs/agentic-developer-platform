@@ -11,7 +11,7 @@ or Codex.
 | `install.sh` | Installer for `adp` — one line, run via `curl … \| sh` from your gateway |
 | `bg-cognito-auth.sh` | Cognito authentication core (login, import, refresh, token, serve). `adp` delegates every auth verb to it |
 | `bg-gateway-proxy.py` | Localhost auth proxy started by `serve` — zero-touch auth for Codex (stdlib python3, no pip installs) |
-| `adp-bedrock.py` | Bedrock account connection and routing, used by `adp bedrock connect` (stdlib Python 3) |
+| `adp-bedrock.py` | Bedrock account connection and routing, used by `adp admin bedrock connect` (stdlib Python 3) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
 | `examples/claude-settings-cognito.json` | Claude Code settings (Anthropic format via gateway) |
@@ -38,7 +38,7 @@ adp claude setup   # or: adp codex setup
 claude             # or: adp codex
 ```
 
-The installer puts `adp`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py` and `adp-bedrock.py` side by
+The installer puts `adp`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py`, `adp_common.py`, `adp-admin.py` and `adp-bedrock.py` side by
 side in `~/.adp/bin` (override with `--prefix`), adds that directory to your PATH,
 and remembers the gateway URL in `~/.bedrock-gateway/config.json` — which is why
 no later command needs a flag. `adp update` re-pulls from the same gateway;
@@ -62,7 +62,7 @@ After `adp update` and `adp login`, one command creates the role, verifies it an
 assigns the organization's routing rule:
 
 ```bash
-adp bedrock connect --account 123456789012 --org SOPHOS-IT --profile sophos
+adp admin bedrock connect --account 123456789012 --org SOPHOS-IT --profile sophos
 ```
 
 The role name is generated automatically. Add `--team Engineering` to route one
@@ -75,14 +75,14 @@ If an AWS administrator needs to create the role, download the same template and
 parameters used by the UI:
 
 ```bash
-adp bedrock connect --account 123456789012 --org SOPHOS-IT --download ./sophos-role
+adp admin bedrock connect --account 123456789012 --org SOPHOS-IT --download ./sophos-role
 ```
 
 Give `template.yaml`, `parameters.json` and `README.md` to the AWS administrator.
 Keep the directory, including `destination.json`. Once the role is created:
 
 ```bash
-adp bedrock connect --resume ./sophos-role
+adp admin bedrock connect --resume ./sophos-role
 ```
 
 Resume verifies the saved account and role and applies the saved organization,
@@ -92,7 +92,7 @@ The parameters include the destination's ExternalId; share them privately with
 the AWS administrator. ADP tokens and AWS credentials are never included.
 
 For scripts, append `--yes --json`. Use `--dry-run` first to inspect the resolved
-account and scope without creating a destination, role or rule. `adp bedrock list`
+account and scope without creating a destination, role or rule. `adp admin bedrock list`
 shows existing destinations. All diagnostics go to stderr; `--json` keeps stdout
 machine-readable.
 
@@ -109,6 +109,10 @@ It never replaces a failed stack automatically. Verification must pass before a
 rule is assigned; failed setup leaves the destination available for a retry.
 Downloaded setup uses the same gateway when resumed. This feature requires the
 gateway's destination-setup API and the updated CLI download endpoint.
+
+For effective routing, run `adp bedrock status`. Administrators can use
+`adp admin bedrock verify DESTINATION_ID` or `status --user USER`. See the
+[model access guide](bedrock.md) for scope, handoff, scripting and regression checks.
 
 ## Using the scripts directly (no `adp`)
 

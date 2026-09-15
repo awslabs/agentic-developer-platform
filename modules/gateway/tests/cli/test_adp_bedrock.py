@@ -45,6 +45,10 @@ class FakeApi:
             return {"items": [ORG], "total": 1, "has_more": False}
         if path.startswith("/admin/users?"):
             return {"items": [USER], "total": 1, "has_more": False}
+        if path == "/me/bedrock-routing/selection":
+            return {"effective": {"rung": "team", "account_id": ACCOUNT, "destination_id": "destination-fixture", "source": "platform_admin"}}
+        if path == cli.ROUTING + "/effective/" + USER["id"]:
+            return {"rung": "user", "account_id": ACCOUNT, "destination_id": "destination-fixture", "source": "platform_admin"}
         if path == cli.ROUTING + "/destinations":
             if method == "GET":
                 return self.rows
@@ -437,3 +441,92 @@ def test_authentication_refusal_precedes_any_aws_call(environment, monkeypatch):
     with pytest.raises(cli.CliError, match="platform administrator"):
         cli.run(arguments(), api)
     assert not aws.calls
+
+
+def test_existing_destination_is_verified_and_assigned_without_aws(environment, monkeypatch):
+    api, _ = environment
+    api.rows = [
+        {
+            "id": "existing",
+            "label": "connection_existing",
+            "account_id": ACCOUNT,
+            "owner_org_id": ORG["id"],
+            "region": "us-east-1",
+            "connection_id": "connection",
+            "usable_for_routing": False,
+        }
+    ]
+    monkeypatch.setattr(cli, "Aws", lambda *args: pytest.fail("Reusing a destination must not invoke AWS CLI"))
+    result = cli.run(cli.parser().parse_args(["connect", "--destination", "existing", "--org", ORG["id"], "--yes"]), api)
+    assert result["assigned"]
+    assert result["mapping"]["destination_id"] == "existing"
+    assert [item[1] for item in mutations(api)] == [cli.ROUTING + "/destinations/existing/verify", cli.ROUTING + "/mappings/org:" + ORG["id"]]
+
+
+def test_reused_destination_account_mismatch_is_read_only(environment):
+    api, _ = environment
+    cli.run(arguments(), api)
+    api.calls.clear()
+    with pytest.raises(cli.CliError, match="different AWS account"):
+        cli.run(
+            cli.parser().parse_args(["connect", "--destination", api.rows[0]["id"], "--account", "999999999999", "--org", ORG["id"], "--yes"]), api
+        )
+    assert not mutations(api)
+
+
+@pytest.mark.parametrize("options,rung", [([], "team"), (["--user", "developer@example.test"], "user")])
+def test_status_uses_canonical_effective_route_without_aws(environment, options, rung):
+    api, aws = environment
+    result = cli.run(cli.parser().parse_args(["status", *options]), api)
+    assert result["effective"]["rung"] == rung
+    assert result["verification"] == "configured_route_only"
+    assert not mutations(api) and not aws.calls
+
+
+def test_verify_does_not_assign_or_provision(environment):
+    api, aws = environment
+    cli.run(arguments(), api)
+    api.calls.clear()
+    aws.calls.clear()
+    result = cli.run(cli.parser().parse_args(["verify", api.rows[0]["id"]]), api)
+    assert result["verified"] and not result["assigned"]
+    assert len(mutations(api)) == 1 and not aws.calls
+
+
+def test_json_handoff_is_pending_and_excludes_setup_secrets(environment, tmp_path, capsys):
+    api, _ = environment
+    result = cli.run(arguments("--download", str(tmp_path / "private")), api)
+    cli.display(result, True)
+    output = capsys.readouterr()
+    envelope = json.loads(output.out)
+    assert envelope["status"] == "pending"
+    assert envelope["command"] == "admin bedrock connect"
+    assert "--resume" in envelope["next_action"]
+    assert EXTERNAL not in output.out
+
+
+def test_setup_provider_marks_existing_org_rule_configured_without_claiming_inference(environment):
+    api, aws = environment
+    result = cli.run(arguments(), api)
+    api.mappings = [{"scope_type": "org", "scope_id_org": ORG["id"], "destination_id": result["destination_id"]}]
+    api.calls.clear()
+    aws.calls.clear()
+    outcome = cli.status({"api": api, "org": ORG["id"]})
+    assert outcome["status"] == "configured"
+    assert outcome["detail"]["verification"] == "stored_destination_verification"
+    assert not mutations(api) and not aws.calls
+
+
+def test_setup_provider_noninteractive_missing_rule_stays_pending(environment):
+    api, aws = environment
+    outcome = cli.configure({"api": api, "org": ORG["id"], "interactive": False})
+    assert outcome["status"] == "pending"
+    assert not mutations(api) and not aws.calls
+
+
+def test_admin_command_group_help_is_available_without_login(run_adp):
+    result = run_adp(["admin", "bedrock", "connect", "--help"])
+    assert result.returncode == 0
+    assert "--destination" in result.stdout and "--download" in result.stdout
+    result = run_adp(["admin", "--help"])
+    assert "bedrock" in result.stdout
