@@ -97,7 +97,16 @@ async def test_current_assignment_can_obtain_repository_scoped_credential(sessio
     assert (await check(session, assignment)).permitted
 
 
-@pytest.mark.parametrize("path", ["/internal/v1/credential-assume-role", "/internal/v1/credential-raw-read"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/internal/v1/credential-assume-role",
+        "/internal/v1/credential-raw-read",
+        "/internal/v1/proxy-request",
+        "/internal/v1/credential-materialize",
+        "/internal/v1/worker-task-credentials",
+    ],
+)
 async def test_unscopable_brokers_refuse_policy_flow(session, assignment, path):
     assert (await check(session, assignment, path)).reason is DenyReason.CREDENTIAL_SCOPE_UNAVAILABLE
 

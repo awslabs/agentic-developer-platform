@@ -24,9 +24,18 @@ BROKER_PATHS = frozenset(
         "/internal/v1/github-installation-token",
         "/internal/v1/credential-assume-role",
         "/internal/v1/credential-raw-read",
+        "/internal/v1/proxy-request",
+        "/internal/v1/credential-materialize",
+        "/internal/v1/user-credentials",
+        "/internal/v1/worker-task-credentials",
     }
 )
 logger = logging.getLogger(__name__)
+
+
+def worker_tenant(request: Request) -> str | None:
+    grant = getattr(request.state, "agent_broker_grant", None)
+    return grant.tenant_id if grant is not None else None
 
 
 async def verify_broker_worker(request: Request) -> None:
@@ -36,7 +45,10 @@ async def verify_broker_worker(request: Request) -> None:
 
     context = None
     try:
-        body = await request.json()
+        if request.url.path == "/internal/v1/user-credentials" and request.method == "GET":
+            body = dict(request.query_params)
+        else:
+            body = await request.json()
         runtime = get_agent_runtime()
         context = await run_in_threadpool(
             runtime.authenticate,
@@ -47,6 +59,16 @@ async def verify_broker_worker(request: Request) -> None:
         caller = context[1]
         if not isinstance(body, dict) or body.get("invocation_id") != caller.invocation_id:
             raise BootstrapRefusedError("broker invocation mismatch")
+        required_scope = {
+            "/internal/v1/credential-raw-read": "credential:raw-read",
+            "/internal/v1/credential-materialize": "credential:materialize",
+        }.get(request.url.path)
+        if required_scope:
+            # Header scopes remain the client's requested operation. Only the
+            # registered IAM identity can grant that capability to a worker.
+            identity = getattr(request.state, "token_context", None)
+            if required_scope not in (getattr(identity, "credential_scopes", None) or []):
+                raise BootstrapRefusedError("worker credential capability unavailable")
         execution = await run_in_threadpool(runtime.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
         if not execution:
             raise BootstrapRefusedError("broker execution unavailable")
@@ -86,6 +108,7 @@ async def verify_broker_worker(request: Request) -> None:
             user_id = reply.get("Item", {}).get("authorized_user_id", {}).get("S")
             if not user_id or body.get("user_id") != user_id:
                 raise BootstrapRefusedError("broker user mismatch")
+        request.state.agent_broker_grant = context[3]
     except (BootstrapRefusedError, WorkloadRefusedError, CredentialError, ExecutionStateError, ValueError, KeyError):
         logger.info("Worker broker refused", extra={"principal": context[1].principal if context else "unverified", "action": request.url.path})
         raise HTTPException(404, "not found") from None

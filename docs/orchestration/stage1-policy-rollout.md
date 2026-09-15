@@ -12,15 +12,29 @@ direct `aws sts assume-role`/SDK calls are in scope. Existing role ARNs, trusted
 source principals, external IDs, permissions, session tags, duration, refresh,
 role chaining and deployment region must remain usable without customer IAM edits.
 
-The current activation design is **not compatible** and must not be rolled out:
+The compatibility implementation is present in the draft, but activation is
+still blocked by accepted-policy authorization and live rollout prerequisites:
 
 - Accepted-policy AWS credential delivery is refused; connection IDs have no
   implemented mapping to the resolved vault credential, and no deployment action
   currently represents Operations work. #5174's AWS work is a Stage 1 release
   prerequisite, not a capability that can silently disappear after activation.
-- The protected worker boundary denies direct `sts:AssumeRole`. Switching the
-  worker role also changes the principal trusted by existing customer roles.
-  Adding an STS Allow alone does not preserve that trust or enforce accepted scope.
+- The protected platform role still denies direct STS. Task SDKs now use
+  `adp-cred worker-session` as a refreshable default source provider. The gateway
+  mints a restricted session of the original worker role, preserving the principal
+  named in customer role trusts. The source session permits cross-account
+  AssumeRole, session tags/source identity and GetCallerIdentity; it explicitly
+  denies other AWS operations and assumption of platform-account roles. The
+  customer's ordinary SDK controls the destination ExternalId, session options
+  and chaining; ADP does not inject a destination session policy.
+- Issuance remains disabled until the source principal's platform Kubernetes
+  access is removed in an approved rollout. IAM session policies do not restrict
+  Kubernetes authentication. Each issuance checks the configured cluster's EKS
+  access entry and, where applicable, aws-auth role/user/account mappings. The
+  rollout must inventory all platform clusters/regions and implicit creator
+  access before setting `AGENT_TASK_SOURCE_ISOLATION_CONFIRMED=true`. That
+  acknowledgment is not an automated account-wide inventory. Never restore
+  Kubernetes access while any issued source session remains live.
 - The authority switch changes the shared ScaledJob/service account and gateway
   authentication. Keeping a flag off on one worker is not proof of a compatible
   separate deployment cohort; that routing and authentication path needs design
@@ -39,6 +53,17 @@ model, broker, trigger and provenance signatures use platform identity and the
 gateway region. Nested `--exec` preserves the original platform identity.
 Protected CLI requests carry current signed run/pod proof and reject redirects;
 missing platform identity refuses the call without selecting customer credentials.
+
+Source credentials are bounded by the live grant and the STS 15-minute minimum;
+refresh rechecks isolation and authority. Cancellation or a shortened grant
+blocks delivery after provider lookup. Auditing persists user/run/grant and
+expiry without keys. Already-issued source or destination sessions remain usable
+until AWS expiry/revocation; the source session policy does not constrain the
+destination role session. Customer environment/shared keys and named/default
+profiles keep normal SDK precedence. Generated config files are private and
+cleaned up after worker execution. Platform SDK clients and beads subprocesses
+restore platform credentials and region. The loopback model hop skips local AWS
+auth; the proxy still signs upstream using protected identity and run/pod proof.
 
 Regression coverage exercises real SDK refresh and signing with disposable STS
 responses, nested CLI environments and a real TLS proxy receiver. Gateway tests
@@ -59,12 +84,22 @@ to SDKs/tools, and file materialization where configured. Existing scope flags,
 destination restrictions, audit records and credential rotation remain effective;
 this requirement does not enable vault capabilities that were previously disabled.
 
-The draft is not ready for these workloads: accepted-policy raw-secret delivery
-is refused, the protected broker only covers GitHub/assume-role/raw-read paths,
-and the worker IAM route allowlist omits the direct vault proxy and materialize
-endpoints. Adding those routes alone would not establish accepted-policy
-authorization. #5174 must resolve credential selection and permitted provider
-effects while preserving existing vault workflows before they can be migrated.
+Protected broker binding now covers proxy, materialize and metadata as well as
+saved roles and raw keys. User/invocation/pod proof and the canonical tenant must
+match before vault access. Raw/file delivery requires registry-granted capability
+plus the existing caller scope; a header alone cannot grant it. CLI scope headers
+and the proposed IAM route allowlist are wired. Endpoint tests exercise API-key
+rotation, proxy destination restrictions, file URLs and sanitized auditing.
+These paths support human-authorized and legacy policy-less runs.
+
+Accepted-policy credential delivery remains refused, including task source
+sessions. The pending product decision is whether explicitly accepting a named
+credential grants its existing provider permissions, or whether every external
+action must remain constrained by ADP's plan. Copied API keys cannot be immediately
+revoked or narrowed by ADP. No approval for changing that contract has been
+recorded; existing `CredentialScope` semantics and human gates stay strict.
+#5174 must resolve that contract, implement accepted credential selection and
+provider effects, and pass live acceptance before migrating these flows.
 
 Live release acceptance must exercise an authorized API call through vault proxy
 injection and a tool/SDK consuming an enabled raw API key, plus file delivery
@@ -156,8 +191,10 @@ deployment guide. Account `879318057152`, profile `embark1`, region `us-east-1`;
 use the existing registered connection and ARC runner. No broad Terraform apply
 or EKS allowlist change is part of this work.
 
-The expanded 17-create prerequisite proposal is unapplied and needs the #5161
-“No IAM change” scope amended after the compatibility design above is resolved.
+The earlier 17-create proposal is historical. Task-source IAM/RBAC/configuration,
+a source-role trust update and removal of existing Kubernetes access change its
+scope; a fresh reviewed plan is required. #5161's “No IAM change” scope remains
+unamended.
 It is not a complete activation plan. Before opting in, also
 provision the missing exact webhook admission, gateway dispatch and tick
 authority permissions; register the protected worker identity; deploy compatible
@@ -179,3 +216,23 @@ the ownership rollout. #4539 and #4898 require live proof before adoption.
 
 Rollback stops new admissions and reconciles in-flight effects while retaining
 claims, accepted versions, authority receipts and the shared spend record.
+
+
+## Compatibility revision validation (2026-09-15)
+
+The gateway internal/agentauth/runtime-policy regression passes with 958 tests
+and four skipped. The worker CI compatibility selection passes with 242 tests;
+the additional focused control-token/credential/entrypoint selection passed 191
+tests (overlapping coverage, not additive). Node control/identity/beads suites
+pass 267 tests at 97.64% line and 92.50% branch coverage; the 85% gate is unchanged.
+TypeScript build, scoped gateway Ruff and YAML checks pass. Terraform validation
+and 38 manifest tests pass in #5176. Read-only AWS IAM custom-policy simulation
+passed nine source-policy action/resource cases, including customer STS allows
+and platform-role/non-STS explicit denials. Simulation does not exercise customer
+trust policies or an actual assumed session.
+
+The latest pushed CI must be checked independently; these local results do not
+assert full CI success. The preceding revision had failing worker/security checks
+and an unresolved full-gateway-suite workspace assertion. No gate was bypassed.
+No AWS resources, EKS access, active worker flags or accepted-policy credential
+semantics were changed by this implementation work. Live acceptance remains open.

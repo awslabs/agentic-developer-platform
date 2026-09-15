@@ -32,6 +32,7 @@ UNIT_MODULES = [
     "src.internal.routes",  # Issue #446: internal service-to-service endpoints
     "src.internal.credential_routes",  # Issue #136: credential delivery paths
     "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path
+    "src.internal.task_credentials",  # Existing customer trust principal, restricted task session
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E

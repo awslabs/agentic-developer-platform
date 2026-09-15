@@ -2124,6 +2124,7 @@ class TestSanitizeForStsTag:
 class TestBedrockViaGateway:
     """Tests for the ADP_BEDROCK_VIA=gateway path (sigv4-proxy subprocess)."""
 
+    @pytest.mark.parametrize("protected", [False, True])
     @patch("entrypoint._stop_sigv4_proxy")
     @patch("entrypoint._start_sigv4_proxy")
     @patch("entrypoint._receive_one_message")
@@ -2150,6 +2151,7 @@ class TestBedrockViaGateway:
         mock_stop_proxy,
         monkeypatch,
         tmp_path,
+        protected,
     ):
         """With ADP_BEDROCK_VIA=gateway + proxy healthy, sets ANTHROPIC_BEDROCK_BASE_URL."""
         from entrypoint import main
@@ -2162,6 +2164,11 @@ class TestBedrockViaGateway:
             "SIGV4_PROXY_TARGET", "https://abc.execute-api.us-east-1.amazonaws.com/dev/agent"
         )
         monkeypatch.setenv("SIGV4_PROXY_PORT", "9090")
+        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", str(protected).lower())
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/projected/worker-token")
+        monkeypatch.setattr(entrypoint, "_setup_agent_control", lambda *_: False)
+        monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", lambda *_: None)
 
         mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-gw1")
         mock_vault = MagicMock()
@@ -2190,6 +2197,14 @@ class TestBedrockViaGateway:
         assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9090"
         # Must NOT have ANTHROPIC_BASE_URL (that routes to the broken translator)
         assert "ANTHROPIC_BASE_URL" not in agent_env
+        if protected:
+            assert agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
+            assert "AWS_ROLE_ARN" not in agent_env
+            assert agent_env["ADP_WORKER_IRSA_ROLE_ARN"].endswith(":role/authority-worker")
+            assert agent_env["ADP_WORKER_AWS_REGION"] == "us-east-1"
+            assert not Path(agent_env["AWS_CONFIG_FILE"]).exists()
+        # Parent lifecycle operations continue to use platform IRSA.
+        assert os.environ["AWS_ROLE_ARN"].endswith(":role/authority-worker")
 
         # Proxy was started and stopped
         mock_start_proxy.assert_called_once()

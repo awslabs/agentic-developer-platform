@@ -110,3 +110,30 @@ describe('no hardcoded us-west-2 or foreign bucket remains on this path', () => 
     }
   });
 });
+
+
+test('beads sync restores platform identity while a customer deployment is active', async () => {
+  const childProcess = require('child_process');
+  const command = jest.spyOn(childProcess, 'execSync').mockReturnValue('pushed');
+  const saved = { ...process.env };
+  try {
+    process.env.ADP_AGENT_AUTHORITY_ENABLED = 'true';
+    process.env.ADP_WORKER_IRSA_ROLE_ARN = 'platform-worker';
+    process.env.ADP_WORKER_IRSA_TOKEN_FILE = '/projected/worker';
+    process.env.ADP_WORKER_AWS_REGION = 'us-east-1';
+    process.env.AWS_ACCESS_KEY_ID = 'customer-key';
+    process.env.AWS_PROFILE = 'customer';
+    process.env.AWS_CONFIG_FILE = '/task/config';
+    const beads = require('./beads');
+    beads.configureBeads({ s3Bucket: 'platform-beads', s3Region: 'us-east-1' });
+    await beads.syncPush('/workspace');
+    expect(command).toHaveBeenCalledWith('bd dolt push', expect.objectContaining({
+      env: expect.objectContaining({ AWS_ROLE_ARN: 'platform-worker', AWS_WEB_IDENTITY_TOKEN_FILE: '/projected/worker', AWS_CONFIG_FILE: '/dev/null', AWS_REGION: 'us-east-1' }),
+    }));
+    expect((command.mock.calls[0][1] as { env: NodeJS.ProcessEnv }).env.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(process.env.AWS_ACCESS_KEY_ID).toBe('customer-key');
+  } finally {
+    command.mockRestore();
+    process.env = saved;
+  }
+});

@@ -32,11 +32,12 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agentauth.broker_identity import worker_tenant
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding import resolve_credential_binding
 from src.internal.credential_egress import allowed_hosts_for, host_matches, is_binding_enforced
@@ -155,13 +156,15 @@ class RawReadResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _get_user_context(user_id: str, db: AsyncSession, *, calling_endpoint: str = "unknown") -> User:
+async def _get_user_context(user_id: str, db: AsyncSession, *, calling_endpoint: str = "unknown", expected_org: str | None = None) -> User:
     """Fetch the canonical User row or raise 404.
 
     Issue #700: uses canonical user resolution to ensure credential queries
     use the correct user_id and org_id even when the inbound row has drifted.
     """
     user = await resolve_canonical_user(db, user_id, calling_endpoint=calling_endpoint)
+    if user is not None and expected_org is not None and user.org_id != expected_org:
+        raise HTTPException(404, "not found")
     if user is None:
         raise HTTPException(
             status_code=404,
@@ -398,6 +401,7 @@ def _validate_credential_host_binding(cred_service: str, url: str, settings: Set
     ),
 )
 async def list_user_credentials(
+    request: Request,
     user_id: str = Query(..., description="Internal user UUID (cognito sub or shadow user id)"),
     service: str | None = Query(None, description="Service name filter (optional). When omitted, returns all services."),
     invocation_id: str | None = Query(None, description="Run invocation ID for credential-authorization binding"),
@@ -417,7 +421,7 @@ async def list_user_credentials(
     effective_user_id = binding.resolved_user_id
 
     # Validate user exists and resolve canonical user (Issue #700).
-    user = await _get_user_context(effective_user_id, db, calling_endpoint="user-credentials")
+    user = await _get_user_context(effective_user_id, db, calling_endpoint="user-credentials", expected_org=worker_tenant(request))
 
     # Build query — filter by service only when provided (backwards compat).
     # Issue #700: use canonical user's id and org_id, not the inbound values.
@@ -458,6 +462,7 @@ async def list_user_credentials(
 )
 async def proxy_request(
     body: ProxyRequestBody,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
@@ -491,7 +496,7 @@ async def proxy_request(
             reason,
         )
         try:
-            resolved = user or await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request")
+            resolved = user or await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request", expected_org=worker_tenant(request))
             await _write_audit(
                 db,
                 event_type="vault_proxy_request_denied",
@@ -521,7 +526,7 @@ async def proxy_request(
         await _audit_denial(exc)
         raise
 
-    user = await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request")
+    user = await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request", expected_org=worker_tenant(request))
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
@@ -635,6 +640,7 @@ async def proxy_request(
 )
 async def credential_materialize(
     body: MaterializeBody,
+    request: Request,
     x_agent_scopes: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
@@ -656,7 +662,7 @@ async def credential_materialize(
     # Scope gate.
     _check_agent_scope(x_agent_scopes, "credential:materialize")
 
-    user = await _get_user_context(effective_user_id, db, calling_endpoint="credential-materialize")
+    user = await _get_user_context(effective_user_id, db, calling_endpoint="credential-materialize", expected_org=worker_tenant(request))
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
@@ -769,6 +775,7 @@ async def credential_materialize(
 )
 async def credential_raw_read(
     body: RawReadBody,
+    request: Request,
     x_agent_scopes: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
@@ -801,7 +808,7 @@ async def credential_raw_read(
     )
     effective_user_id = binding.resolved_user_id
 
-    user = await _get_user_context(effective_user_id, db, calling_endpoint="credential-raw-read")
+    user = await _get_user_context(effective_user_id, db, calling_endpoint="credential-raw-read", expected_org=worker_tenant(request))
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,

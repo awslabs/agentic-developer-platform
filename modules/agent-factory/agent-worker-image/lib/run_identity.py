@@ -78,7 +78,7 @@ class RunIdentitySession:
 
     def _request(self) -> dict:
         session = botocore.session.get_session()
-        from adp_trigger.transport_identity import worker_credentials
+        from adp_trigger.transport_identity import gateway_signing_region, worker_credentials
 
         credentials = worker_credentials(session)
         if credentials is None:
@@ -95,7 +95,7 @@ class RunIdentitySession:
         botocore.auth.SigV4Auth(
             credentials.get_frozen_credentials(),
             "execute-api",
-            os.environ.get("AWS_REGION", "us-east-1"),
+            gateway_signing_region(self._url),
         ).add_auth(signed)
         try:
             with requests.Session() as http:

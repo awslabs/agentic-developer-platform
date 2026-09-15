@@ -16,11 +16,12 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agentauth.broker_identity import worker_tenant
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding import resolve_credential_binding
 from src.internal.sts_assume_service import STSAssumeError, assume_role
@@ -155,6 +156,7 @@ async def _write_audit(
 )
 async def credential_assume_role(
     body: AssumeRoleRequestBody,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
@@ -173,6 +175,8 @@ async def credential_assume_role(
     effective_user_id = binding.resolved_user_id
 
     user = await _get_user(effective_user_id, db)
+    if worker_tenant(request) is not None and user.org_id != worker_tenant(request):
+        raise HTTPException(404, "not found")
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,

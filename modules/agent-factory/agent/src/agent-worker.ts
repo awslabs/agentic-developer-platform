@@ -1,3 +1,4 @@
+import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './lib/runIdentity';
 /**
  * Generic Agent Worker
  *
@@ -117,7 +118,7 @@ const GH_APP_TOKEN = process.env.GH_APP_TOKEN || '';
 const CWD = process.env.WORK_DIR || process.cwd();
 const MODEL = process.env.ANTHROPIC_MODEL || 'global.anthropic.claude-opus-5';
 const AGENT_TYPE = process.env.AGENT_TYPE || 'developer';
-const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
+const AWS_REGION = workerAwsRegion();
 
 // Beads configuration - distributed state management (shared with PM)
 const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false';
@@ -160,7 +161,7 @@ const EXIT_RETRYABLE = 75;
 
 const LOG_GROUP = resolveAgentLogGroup();
 const LOG_STREAM = `agent-${AGENT_TYPE}-issue-${ISSUE_NUMBER}-${Date.now()}`;
-const cwClient = new CloudWatchLogsClient({ region: AWS_REGION });
+const cwClient = new CloudWatchLogsClient({ region: AWS_REGION, credentials: workerAwsCredentials() });
 let cwBuffer: { timestamp: number; message: string }[] = [];
 let cwInitialized = false;
 
@@ -564,7 +565,7 @@ async function postToMainIssue(mainIssueNumber: number | null, body: string): Pr
     if (bucket) {
       try {
         const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-        const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+        const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
         const key = buildFallbackKey(targetIssue, 'comment');
         await s3.send(new PutObjectCommand({
           Bucket: bucket,
@@ -645,7 +646,7 @@ async function postComment(body: string): Promise<void> {
     if (bucket) {
       try {
         const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-        const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+        const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
         const key = buildFallbackKey(ISSUE_NUMBER, 'comment');
         await s3.send(new PutObjectCommand({
           Bucket: bucket,
@@ -675,7 +676,7 @@ async function getBeadsPrimeContext(cwd: string): Promise<string> {
       cwd,
       encoding: 'utf-8',
       timeout: 10000,
-      env: { ...process.env },
+      env: workerAwsEnvironment(),
     }).trim();
 
     if (output) {
@@ -1727,7 +1728,7 @@ function buildWorkerSpillStore(): TmpSpillStore {
   const uploadToS3 = bucket
     ? async (key: string, body: string): Promise<void> => {
         const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-        const s3 = new S3Client({ region: AWS_REGION });
+        const s3 = new S3Client({ region: AWS_REGION, credentials: workerAwsCredentials() });
         // Same run-scoped prefix shape as the transcript upload in
         // agent-worker-image/entrypoint.py — keeps spills beside the run they
         // came from, and inherits that prefix's scoping rather than inventing
@@ -1805,7 +1806,7 @@ async function uploadGitChangesToS3(): Promise<void> {
       try { fs.unlinkSync(tarFile); } catch {}
       return;
     }
-    const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+    const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
     const key = buildFallbackKey(ISSUE_NUMBER, 'git-changes', 'tar.gz');
 
     const fileContent = fs.readFileSync(tarFile);

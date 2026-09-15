@@ -85,7 +85,7 @@ def _check_enabled() -> None:
         sys.exit(1)
 
 
-def _sigv4_request(method: str, url: str, body: dict | None = None) -> dict | list:
+def _sigv4_request(method: str, url: str, body: dict | None = None, extra_headers: dict | None = None) -> dict | list:
     """Make a SigV4-signed HTTP request to API Gateway.
 
     Uses the pod's IRSA credentials (available via boto3's credential chain).
@@ -108,6 +108,8 @@ def _sigv4_request(method: str, url: str, body: dict | None = None) -> dict | li
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
             raise RuntimeError("Worker credential broker requires HTTPS and SigV4")
     headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     if authority:
         headers.update(_worker_identity_headers())
     credentials = worker_credentials(session)
@@ -145,12 +147,14 @@ def _sigv4_request(method: str, url: str, body: dict | None = None) -> dict | li
         sys.exit(1)
 
 
-def _request(method: str, url: str, api_key: str, body: dict | None = None) -> dict | list:
+def _request(method: str, url: str, api_key: str, body: dict | None = None, extra_headers: dict | None = None) -> dict | list:
     """Make an HTTP request to the gateway using shared-secret auth (legacy)."""
     headers = {
         "X-Internal-Api-Key": api_key,
         "Content-Type": "application/json",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     data = json.dumps(body).encode() if body else None
     req = Request(url, data=data, headers=headers, method=method)
     try:
@@ -166,14 +170,16 @@ def _request(method: str, url: str, api_key: str, body: dict | None = None) -> d
 
 
 def _do_request(
-    method: str, url: str, api_key: str | None, use_sigv4: bool, body: dict | None = None
+    method: str, url: str, api_key: str | None, use_sigv4: bool, body: dict | None = None,
+    extra_headers: dict | None = None,
 ) -> dict | list:
     """Dispatch to SigV4 or shared-secret request based on config."""
     if not use_sigv4 and os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
         raise RuntimeError("Worker credential broker requires HTTPS and SigV4")
+    kwargs = {"extra_headers": extra_headers} if extra_headers else {}
     if use_sigv4:
-        return _sigv4_request(method, url, body)
-    return _request(method, url, api_key, body)  # type: ignore[arg-type]
+        return _sigv4_request(method, url, body, **kwargs)
+    return _request(method, url, api_key, body, **kwargs)  # type: ignore[arg-type]
 
 
 def list_credentials() -> list:
@@ -231,7 +237,7 @@ def materialize(service: str, label: str | None = None) -> dict:
     if invocation_id:
         payload["invocation_id"] = invocation_id
     endpoint = f"{base_url}/internal/v1/credential-materialize"
-    return _do_request("POST", endpoint, api_key, use_sigv4, payload)  # type: ignore[return-value]
+    return _do_request("POST", endpoint, api_key, use_sigv4, payload, extra_headers={"X-Agent-Scopes": "credential:materialize"})  # type: ignore[return-value]
 
 
 def raw_read(service: str, label: str | None = None, purpose: str | None = None) -> dict:
@@ -250,4 +256,4 @@ def raw_read(service: str, label: str | None = None, purpose: str | None = None)
     if invocation_id:
         payload["invocation_id"] = invocation_id
     endpoint = f"{base_url}/internal/v1/credential-raw-read"
-    return _do_request("POST", endpoint, api_key, use_sigv4, payload)  # type: ignore[return-value]
+    return _do_request("POST", endpoint, api_key, use_sigv4, payload, extra_headers={"X-Agent-Scopes": "credential:raw-read"})  # type: ignore[return-value]
