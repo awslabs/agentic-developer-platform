@@ -313,11 +313,32 @@ export function createClaudePauseHooks(
   gate: PauseGate,
   observer: ClaudeBackgroundWorkObserver = new ClaudeBackgroundWorkObserver(),
 ): ClaudePauseHooks {
-  /** tool_use_id → the admission it holds, so completion settles the right one. */
-  const outstanding = new Map<string, AdmissionTicket>();
+  /**
+   * tool_use_id → the admission it holds, plus the thread that opened it.
+   *
+   * The scope is not bookkeeping. `onStop` settles outstanding admissions on the
+   * reasoning that nothing still executes inside a turn that has ended — true, but
+   * only of *that* turn. A flat session-global ledger let one subagent finishing
+   * settle the main thread's still-running tools, and a pause then confirmed with
+   * `active_tool_count: 0` while a long `Bash` was mid-execution. That is a false
+   * `Paused`, which is the one claim this whole mechanism exists to never make.
+   */
+  const outstanding = new Map<string, { ticket: AdmissionTicket; scope: string | null }>();
 
   const toolFields = (input: HookInput) =>
     input as unknown as { tool_name?: string; tool_input?: unknown; tool_use_id?: string };
+
+  /**
+   * Which thread a hook fired on: an agent id, or `null` for the main thread.
+   *
+   * One rule covers both stop events because the SDK made them agree. `agent_id` is
+   * documented as *the* field distinguishing a subagent call from a main-thread one,
+   * and it is absent on the main thread even in `--agent` sessions; `SubagentStop`
+   * types it as required. So reading the same optional field on `PreToolUse`, `Stop`
+   * and `SubagentStop` scopes all three consistently, with no branch on event name.
+   */
+  const scopeOf = (input: HookInput): string | null =>
+    (input as unknown as { agent_id?: string }).agent_id ?? null;
 
   return {
     // Ceiling plus a margin, converted to the seconds the matcher expects. The
@@ -339,7 +360,7 @@ export function createClaudePauseHooks(
       const result = await gate.admit(toolName, options?.signal);
       const id = fields.tool_use_id ?? toolUseId;
       if (result.decision === 'admit') {
-        if (id && result.ticket) outstanding.set(id, result.ticket);
+        if (id && result.ticket) outstanding.set(id, { ticket: result.ticket, scope: scopeOf(input) });
         // `{}` rather than an explicit allow: an allow decision would override a
         // deny from another PreToolUse hook or a permission rule, turning a pause
         // barrier into an escalation of privilege.
@@ -358,26 +379,36 @@ export function createClaudePauseHooks(
       const fields = toolFields(input);
       const id = fields.tool_use_id;
       if (!id) return {};
-      const ticket = outstanding.get(id);
+      const entry = outstanding.get(id);
       outstanding.delete(id);
       // The gate ignores an unknown or repeated ticket, so a harness that emits
       // both a completion and a failure edge for one tool cannot drive the
       // in-flight count below the truth.
-      gate.settle(ticket);
+      gate.settle(entry?.ticket);
       return {};
     },
 
     async onStop(input) {
       const stop = input as unknown as { background_tasks?: unknown };
       observer.noteBackgroundReport(stop.background_tasks);
-      // Settle whatever the harness never reported a completion for. The turn has
-      // ended, so nothing is still executing *inside* it; a ticket surviving to
-      // here is a missing edge (an interrupted tool, a crashed hook), and leaving
-      // it outstanding would make every later pause wait for a tool that finished
-      // long ago. Background work is not covered by this and deliberately stays
-      // the observer's business — that is the claim we must not fabricate.
-      for (const ticket of [...outstanding.values()]) gate.settle(ticket);
-      outstanding.clear();
+      // A background report is a quiescence edge in its own right: a pause held back
+      // *because* this probe was unobservable can become confirmable the moment a
+      // report clears it, with no tool completion and no new command involved. The
+      // gate re-drives its own decision; this only tells it something changed.
+      gate.noteBackgroundWorkChanged();
+      // Settle what this turn never reported a completion for — and only what
+      // *this* turn owns. A ticket surviving to here is a missing edge (an
+      // interrupted tool, a crashed hook) and holding it would make every later
+      // pause wait on a tool that finished long ago. But `SubagentStop` carries a
+      // required `agent_id` and fires per subagent, not at turn end, so settling
+      // the whole ledger let one finishing subagent vouch for the main thread's
+      // still-running tools. Each scope may only speak for itself.
+      const scope = scopeOf(input);
+      for (const [id, entry] of [...outstanding.entries()]) {
+        if (entry.scope !== scope) continue;
+        outstanding.delete(id);
+        gate.settle(entry.ticket);
+      }
       return {};
     },
   };

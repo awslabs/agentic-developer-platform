@@ -265,6 +265,98 @@ describe('pause gate: background work blocks confirmation', () => {
 
     await expect(gate.requestPause()).resolves.toEqual({ outcome: 'confirmed' });
   });
+
+  /**
+   * The edge, not the second request.
+   *
+   * The test above drains background work and then calls `requestPause()` again,
+   * which confirms — and that second call is precisely what hid the defect these
+   * cover. In production nothing issues a second pause command: the operator pressed
+   * Pause once. Confirmation has two independent blockers, in-flight tools and
+   * background work, and only the first had an edge that re-drove the decision. So a
+   * pause withheld on an unobservable probe sat in `pause_requested` for its whole
+   * budget after the probe cleared, then auto-resumed — thirty minutes of "pausing…"
+   * for a reason that stopped being true in the first second.
+   */
+  it('confirms a pending pause when the background probe clears, with no second command', async () => {
+    const { gate, setBackground, events } = harness();
+    setBackground(null);
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+
+    // The observer sees a report clearing the probe and says so. One notification,
+    // no new pause request — this is the only thing production does.
+    setBackground(0);
+    gate.noteBackgroundWorkChanged();
+    await flush();
+
+    expect(gate.currentPhase()).toBe('paused');
+    expect(events.map((e) => e.type)).toContain('pause_confirmed');
+  });
+
+  it('keeps a pause pending when the probe changes but has not cleared', async () => {
+    const { gate, setBackground, events } = harness();
+    setBackground(null);
+    await gate.requestPause();
+
+    // A report arrived and named work still running. The edge fired, but the
+    // blocker holds, so nothing may confirm.
+    setBackground(3);
+    gate.noteBackgroundWorkChanged();
+    await flush();
+
+    expect(gate.currentPhase()).toBe('pause_requested');
+    expect(events.map((e) => e.type)).not.toContain('pause_confirmed');
+  });
+
+  it('will not confirm on a background edge while a tool is still admitted', async () => {
+    const { gate, setBackground } = harness();
+    await gate.admit('Bash');
+    setBackground(null);
+    // Not awaited: with work in flight this request only resolves once the settle
+    // wait ends, and the manual scheduler never fires a timer by itself.
+    const pending = gate.requestPause();
+    await flush();
+    expect(gate.currentPhase()).toBe('pause_requested');
+
+    setBackground(0);
+    gate.noteBackgroundWorkChanged();
+    await flush();
+
+    // Both blockers must be clear. Background work draining says nothing about the
+    // tool still holding an admission.
+    expect(gate.currentPhase()).toBe('pause_requested');
+    expect(gate.activeToolCount()).toBe(1);
+    void pending;
+  });
+
+  it('ignores a background edge outside a pending pause', async () => {
+    const { gate, events } = harness();
+
+    // No pause in flight: nothing to re-drive, and confirming here would be a
+    // `paused` claim nobody asked for.
+    gate.noteBackgroundWorkChanged();
+    await flush();
+
+    expect(gate.currentPhase()).toBe('running');
+    expect(events).toEqual([]);
+  });
+
+  it('blames the blocker that actually held the pause when the budget expires', async () => {
+    const { gate, scheduler, setBackground, events } = harness();
+    setBackground(null);
+    await gate.requestPause();
+
+    scheduler.fireAll();
+    await flush();
+
+    // In-flight work is zero, so `settle_timeout` would name a blocker that was
+    // never the problem. An operator reads this string to decide whether a retry is
+    // worth anything, and a retry against an unobservable probe does the same thing
+    // again.
+    const unavailable = events.find((e) => e.type === 'pause_unavailable');
+    expect(unavailable).toMatchObject({ failure: 'background_work' });
+    expect((unavailable as { reason: string }).reason).toContain('background');
+  });
 });
 
 describe('pause gate: hook timeout / abandoned barrier', () => {

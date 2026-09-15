@@ -742,6 +742,32 @@ describe('pause hook translation', () => {
     return { hook_event_name: 'Stop', background_tasks: backgroundTasks } as never;
   }
 
+  /**
+   * A `SubagentStop`, in the shape the SDK types it: `agent_id` is **required**.
+   *
+   * That requirement is the whole of the review's B8. This event fires once per
+   * finishing subagent rather than at turn end, so a callback that settles every
+   * outstanding admission lets one subagent vouch for the main thread.
+   */
+  function subagentStop(agentId: string, backgroundTasks?: unknown) {
+    return {
+      hook_event_name: 'SubagentStop',
+      agent_id: agentId,
+      agent_type: 'general-purpose',
+      agent_transcript_path: '/tmp/transcript.jsonl',
+      stop_hook_active: false,
+      background_tasks: backgroundTasks,
+    } as never;
+  }
+
+  /** A PreToolUse from inside a subagent: `agent_id` present, per BaseHookInput. */
+  function subagentPreToolUse(toolName: string, toolInput: unknown, toolUseId: string, agentId: string) {
+    return {
+      hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput,
+      tool_use_id: toolUseId, agent_id: agentId, agent_type: 'general-purpose',
+    } as never;
+  }
+
   it('admits a tool without an explicit allow, so it cannot override another hook deny', async () => {
     const hooks = createClaudePauseHooks(new PauseGate());
 
@@ -838,6 +864,86 @@ describe('pause hook translation', () => {
     // hook. Nothing is still executing inside a turn that has ended, so holding the
     // tickets would make every later pause wait on a tool that finished long ago.
     expect(gate.activeToolCount()).toBe(0);
+  });
+
+  it('will not let a finishing subagent settle the main thread\'s running tools', async () => {
+    // The review's B8, and the reason it is a blocker rather than a wart: the
+    // observable end state was a pause reporting `paused` with `active_tool_count: 0`
+    // while `sleep 600 && rm -rf src` was mid-execution. An operator reads `Paused`
+    // as "nothing is touching my repository" and starts editing files underneath it.
+    const gate = new PauseGate({ settleTimeoutMs: 20, scheduler: unreffedScheduler() });
+    const hooks = createClaudePauseHooks(gate);
+
+    // Main thread: no `agent_id`, per BaseHookInput — absent even in --agent sessions.
+    await hooks.preToolUse(preToolUse('Bash', { command: 'sleep 600 && rm -rf src' }, 'tu-main'));
+    await hooks.preToolUse(subagentPreToolUse('Read', { file_path: '/x' }, 'tu-sub', 'agent-1'), 'tu-sub');
+    expect(gate.activeToolCount()).toBe(2);
+
+    // One subagent finishes. Its own admission is a genuine missing edge to clean
+    // up; the main thread's is none of its business.
+    await hooks.onStop(subagentStop('agent-1', []));
+
+    expect(gate.activeToolCount()).toBe(1);
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+    expect(gate.currentPhase()).not.toBe('paused');
+  });
+
+  it('settles only the scope whose turn ended, for each of several subagents', async () => {
+    const gate = new PauseGate();
+    const hooks = createClaudePauseHooks(gate);
+
+    await hooks.preToolUse(subagentPreToolUse('Read', { file_path: '/a' }, 'tu-a', 'agent-1'), 'tu-a');
+    await hooks.preToolUse(subagentPreToolUse('Grep', { pattern: 'x' }, 'tu-b', 'agent-2'), 'tu-b');
+    expect(gate.activeToolCount()).toBe(2);
+
+    await hooks.onStop(subagentStop('agent-1', []));
+    // Sibling subagents are as separate from each other as from the main thread.
+    expect(gate.activeToolCount()).toBe(1);
+
+    await hooks.onStop(subagentStop('agent-2', []));
+    expect(gate.activeToolCount()).toBe(0);
+  });
+
+  it('still settles a main-thread missing edge when the main turn ends', async () => {
+    // The scoping must not cost the cleanup it was added around. A ticket surviving
+    // to `Stop` is an interrupted tool or a crashed hook, and holding it would make
+    // every later pause wait on a tool that finished long ago.
+    const gate = new PauseGate();
+    const hooks = createClaudePauseHooks(gate);
+    await hooks.preToolUse(preToolUse('Bash', { command: 'x' }, 'tu-1'));
+    await hooks.preToolUse(subagentPreToolUse('Read', { file_path: '/y' }, 'tu-2', 'agent-1'), 'tu-2');
+
+    await hooks.onStop(stop([]));
+
+    // Main thread cleaned up; the live subagent's admission survives, because a
+    // subagent can outlive the main turn that spawned it.
+    expect(gate.activeToolCount()).toBe(1);
+  });
+
+  it('confirms a pause held on an unobservable probe once a stop report clears it', async () => {
+    // The review's B7, through the production path: a report only ever reaches the
+    // observer via `onStop`, and that is the edge that must re-drive confirmation.
+    // Without it the pause sat in `pause_requested` for its whole budget after the
+    // probe cleared, then auto-resumed.
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({
+      scheduler: manualScheduler(),
+      backgroundWorkProbe: () => observer.count(),
+    });
+    const hooks = createClaudePauseHooks(gate, observer);
+
+    // A delegating tool spawns work that outlives it, then completes.
+    await hooks.preToolUse(preToolUse('Task', { prompt: 'go' }, 'tu-1'));
+    await hooks.postToolUse(postToolUse('tu-1'));
+    expect(observer.count()).toBeNull();
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+
+    // The turn ends and reports nothing in flight. One notification, no second
+    // pause command — the operator pressed Pause once.
+    await hooks.onStop(stop([]));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(gate.currentPhase()).toBe('paused');
   });
 
   it('reports the CLI hook timeout as a breached barrier rather than a declined tool', async () => {

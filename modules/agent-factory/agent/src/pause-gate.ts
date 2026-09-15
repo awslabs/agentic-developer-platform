@@ -363,6 +363,28 @@ export class PauseGate {
   }
 
   /**
+   * Report that untracked background work may have changed.
+   *
+   * Confirmation has two independent blockers — admitted tools still in flight, and
+   * background work behind completed ones — and only the first used to have an edge
+   * that re-drove the decision. A pause withheld because the probe answered `null`
+   * therefore stayed `pause_requested` for its entire budget even after the probe
+   * cleared, then auto-resumed. The operator saw "pausing…" for thirty minutes and
+   * got a run that never paused, for a reason that had stopped being true almost
+   * immediately.
+   *
+   * Neutral by construction: whoever observes the change calls this, and the gate
+   * re-reads its own probe rather than being handed a count. Nothing about what
+   * background work *is*, or how it was observed, crosses this boundary — which is
+   * what keeps the shared coordinator free of harness vocabulary.
+   */
+  noteBackgroundWorkChanged(): void {
+    if (this.phase !== 'pause_requested') return;
+    if (this.inFlight.size !== 0) return;
+    void this.reconfirm();
+  }
+
+  /**
    * Re-drive confirmation for a pause that is still pending.
    *
    * Serialized like every other transition, and epoch-guarded, so a resume, an
@@ -556,10 +578,18 @@ export class PauseGate {
     // *their own* decision, and the journal records that as `cancelled` — calling
     // it `unavailable` would blame the mechanism for a choice the operator made.
     if (expired && this.phase === 'pause_requested') {
+      // Name the blocker that actually held the pause. Confirmation has two
+      // independent blockers and reporting the wrong one is not cosmetic: this
+      // string is what an operator reads to decide whether retrying is worth
+      // anything. "Waiting for admitted work" invites a retry; "cannot observe
+      // background work" tells them a retry will do exactly the same thing.
+      const stillAdmitted = this.inFlight.size > 0;
       this.onEvent({
         type: 'pause_unavailable',
-        failure: 'settle_timeout',
-        reason: 'the pause budget expired before admitted work reached a safe boundary',
+        failure: stillAdmitted ? 'settle_timeout' : 'background_work',
+        reason: stillAdmitted
+          ? `the pause budget expired with ${this.inFlight.size} admitted tool(s) still short of a safe boundary`
+          : 'the pause budget expired while background work behind completed tools stayed unobservable',
       });
     }
     this.phase = 'running';

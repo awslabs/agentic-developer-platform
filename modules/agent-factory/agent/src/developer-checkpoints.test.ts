@@ -142,7 +142,9 @@ describe('pause barrier hook registration', () => {
     preToolUseTimeoutSeconds: timeoutSeconds,
     preToolUse: jest.fn(async () => ({})),
     postToolUse: jest.fn(async () => ({})),
-    onStop: jest.fn(async () => ({})),
+    // Typed to accept its input so the registration test can assert what each stop
+    // event actually delivered; a zero-arg mock records no arguments to check.
+    onStop: jest.fn(async (_input?: unknown) => ({})),
   });
 
   it('registers the barrier with the timeout the adapter asks for', () => {
@@ -172,5 +174,41 @@ describe('pause barrier hook registration', () => {
       agentType: 'developer', store: { spill: jest.fn() }, thresholdBytes: 100, log: jest.fn(),
     });
     expect(hooks.PreToolUse).toBeUndefined();
+  });
+
+  /**
+   * Regression for the review's B8, and for how it survived: `grep -rn SubagentStop`
+   * across the test tree returned nothing, so the branch registered that hook in
+   * production and asserted nothing about it.
+   *
+   * `SubagentStop` carries a required `agent_id` and fires once per finishing
+   * subagent, not at turn end. Registering it against a callback that settled a
+   * session-global admission ledger meant one subagent finishing settled the main
+   * thread's still-running tools, and a pause then confirmed with
+   * `active_tool_count: 0` while a long `Bash` was mid-execution.
+   *
+   * Both stop events stay registered — the settle-on-missing-edge cleanup is real for
+   * each scope — so what needs pinning is that the registration exists *and* that
+   * both events reach a callback which scopes what it settles.
+   */
+  it('registers both stop events against the same scoping callback', async () => {
+    const pause = pauseHooks(1_860);
+    const hooks = createWorkerToolHooks({
+      agentType: 'developer', store: { spill: jest.fn() }, thresholdBytes: 100, log: jest.fn(),
+      pauseHooks: pause,
+    });
+
+    expect(hooks.Stop?.[0].hooks).toHaveLength(1);
+    expect(hooks.SubagentStop?.[0].hooks).toHaveLength(1);
+
+    // Each event must actually arrive with its payload intact: the scoping decision
+    // is made from `agent_id`, so a registration that dropped the input would
+    // reintroduce the session-global settle.
+    await hooks.Stop![0].hooks[0]({ hook_event_name: 'Stop' } as never);
+    await hooks.SubagentStop![0].hooks[0]({ hook_event_name: 'SubagentStop', agent_id: 'agent-1' } as never);
+
+    expect(pause.onStop).toHaveBeenCalledTimes(2);
+    expect(pause.onStop).toHaveBeenNthCalledWith(1, { hook_event_name: 'Stop' });
+    expect(pause.onStop).toHaveBeenNthCalledWith(2, { hook_event_name: 'SubagentStop', agent_id: 'agent-1' });
   });
 });
