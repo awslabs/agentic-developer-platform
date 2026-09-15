@@ -127,6 +127,7 @@ generation and digests with your fixture's actual ones.
   "terminal_run_id": "msg-0000000000000002",
   "terminal_arrived_at": "2026-09-12T10:05:00Z",
   "unknown_run_id": "msg-does-not-exist-0001",
+  "aborted_run_id": "msg-0000000000000003",
 
   "command_id": "3f2b9c14-7d51-4e8a-9b02-5c6d7e8f9a0b",
   "oversize_bytes": 32768,
@@ -152,12 +153,17 @@ generation and digests with your fixture's actual ones.
     "transport_guard": "artifacts/transport_guard.json",
     "flag_parity": "artifacts/flag_parity.json",
     "journal_tests": "artifacts/journal_tests.json",
-    "negative_tests": "artifacts/negative_tests.json"
+    "negative_tests": "artifacts/negative_tests.json",
+    "harness_neutrality": "artifacts/harness_neutrality.json",
+    "aborted_counters": "artifacts/aborted_counters.json",
+    "vocabulary_parity": "artifacts/vocabulary_parity.json",
+    "stats_schema_keys": "artifacts/stats_schema_keys.json"
   },
 
   "cleanup_items": [
     {"event_id": "msg-0000000000000001", "arrived_at": "2026-09-12T10:00:00Z"},
-    {"event_id": "msg-0000000000000002", "arrived_at": "2026-09-12T10:05:00Z"}
+    {"event_id": "msg-0000000000000002", "arrived_at": "2026-09-12T10:05:00Z"},
+    {"event_id": "msg-0000000000000003", "arrived_at": "2026-09-12T10:10:00Z"}
   ]
 }
 ```
@@ -325,9 +331,36 @@ the evaluation requires, and nothing downstream flags it.
 | W1-09 | Gate/regression | Live ping/state matches `control_schemas.py` field for field; zero assistant turns; journal replay, conflict, bounds, expiry-as-unknown |
 | W1-10 | Gate/regression | The harness's own negative tests: wrong account, missing isolation, wrong key, absent and unknown required check, failed cleanup |
 
-Wave 1 is all S1 delivers. `--wave 2` is refused rather than emitting an empty
-pass: waves 2–4 are extended by S2/S5, S4/S6 and S7 respectively, and a report
-claiming a wave whose checks do not exist yet is worse than no report.
+### Wave 2 (evaluation #3968)
+
+Wave 2's manifest is registered in full — all ten IDs, from #3968's acceptance
+table — but only four of them have predicates in this revision. S5 (#3964) owns
+W2-06 through W2-09; the other six belong to sibling stories in the same wave.
+
+| ID | Acceptance IDs | Subject | Owner |
+|---|---|---|---|
+| W2-01 | Gate/regression | Wave-2 preflight consolidation | S1/S2/S3 |
+| W2-02 | AC-T7 | Neutral adapter contract suite | S2 |
+| W2-03 | AC-P1 | Pause admission control | S3 |
+| W2-04 | AC-P2 | Resume semantics | S3 |
+| W2-05 | AC-P3, AC-P5, AC-P6 | Auto-resume and watchdog behaviour | S3 |
+| W2-06 | AC-A3, AC-A9 | Aborted row is terminal with a completion time, filterable, and reached that state via ADP finalization rather than a native interrupt | **S5** |
+| W2-07 | AC-A10 | Each aborted row counted exactly once; no other outcome reclassified | **S5** |
+| W2-08 | AC-A11, AC-A12 | Writer allowlist and reader vocabulary in parity across both deployed images; unknown statuses rejected before the write | **S5** |
+| W2-09 | AC-A10 | The live run-stats response carries the aborted counter at every level | **S5** |
+| W2-10 | Gate/regression | Wave-2 cleanup and security recheck | closing story |
+
+The six unowned checks report **NOT RUN**, not omitted. This is deliberate and
+it is the only thing keeping `--wave 2` honest: had this revision registered
+only S5's four checks, `required` would be 4, all four would pass,
+`passed == required` would hold, and `--wave 2` would exit 0 — a report
+indistinguishable from a complete wave-2 pass while six required checks had
+never existed. With the full manifest registered, `not_run` is 6, the gate's
+`not_run == 0` clause fails, and the exit code is 4 until the sibling stories
+land their predicates.
+
+So `--wave 2` exiting nonzero today is the correct result, not a defect to work
+around. Waves 3 and 4 are still unregistered and still refused outright.
 
 ## Troubleshooting
 

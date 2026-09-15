@@ -378,11 +378,18 @@ class TestCheckManifest:
             _mod.assert_check_manifest([])
 
     def test_every_check_id_has_a_description(self):
-        """An evidence row without a description is not evidence to a reviewer."""
-        assert set(_mod.CHECK_DESCRIPTIONS) == set(_mod.EXPECTED_CHECK_IDS)
-        assert all(
-            _mod.CHECK_DESCRIPTIONS[cid].strip() for cid in _mod.EXPECTED_CHECK_IDS
-        )
+        """An evidence row without a description is not evidence to a reviewer.
+
+        Spans every registered wave, not just wave 1: these maps are the fallback
+        `CheckResult.to_evidence()` reads when a result carries no description of
+        its own, and a wave-2 row falling back to `""` would be an evidence entry a
+        reviewer cannot interpret. Wave 2's NOT RUN rows are exactly the case that
+        relies on the fallback, so they are the ones that need it most (#3964).
+        """
+        every_id = {spec.check_id for wave in _mod.WAVE_CHECKS.values() for spec in wave}
+        assert set(_mod.CHECK_DESCRIPTIONS) == every_id
+        assert all(_mod.CHECK_DESCRIPTIONS[cid].strip() for cid in every_id)
+        assert set(_mod.CHECK_ACCEPTANCE_IDS) == every_id
 
 
 class TestEvidenceRedaction:
@@ -754,7 +761,7 @@ class TestEntryPointFailsClosed:
     def test_an_unsupported_wave_is_refused_rather_than_passing_empty(
         self, tmp_path: Path
     ):
-        """Waves 2-4 belong to later stories (§7).
+        """Waves 3-4 belong to later stories (§7).
 
         Asking for one must not emit a report with zero required checks, which
         would satisfy `.passed == .required` at 0 == 0 and read as a clean pass.
@@ -762,6 +769,72 @@ class TestEntryPointFailsClosed:
         path = write_config(tmp_path, valid_config())
 
         assert _mod.main(["--wave", "3", "--config", str(path)]) == _mod.EXIT_CONFIG
+
+    def test_a_partially_implemented_wave_two_cannot_exit_zero(self, tmp_path: Path):
+        """The honesty guarantee that replaces wave 2's blanket refusal (#3964).
+
+        S5 registers wave 2 so its four checks can actually run, which removes the
+        `EXIT_CONFIG` that previously made `--wave 2` safe by making it impossible.
+        What must survive that change is the property the refusal was protecting:
+        wave 2 cannot report success while six of its ten checks have no predicate.
+
+        Asserted through `main`, not through `report_is_passing` alone, so it covers
+        the exit code an operator's shell actually branches on.
+        """
+        path = write_config(tmp_path, valid_config())
+        session = MagicMock()
+        session.client.side_effect = lambda name, **_: {
+            "sts": sts_for(ACCOUNT),
+            "dynamodb": dynamodb_with_schema(CORRECT_SCHEMA),
+        }[name]
+
+        with patch("boto3.session.Session", return_value=session):
+            code = _mod.main(
+                ["--wave", "2", "--config", str(path), "--evidence-dir", str(tmp_path / "ev")]
+            )
+
+        assert code != _mod.EXIT_OK
+        report = json.loads((tmp_path / "ev" / "result.json").read_text(encoding="utf-8"))
+        # Ten, not four: the required bar is the evaluation file's whole table.
+        assert report["required"] == 10
+        assert report["wave"] == 2
+        assert _mod.report_is_passing(report) is False
+        # The six unowned checks are NOT RUN and say so — never skipped, which some
+        # gates tolerate, and never passed.
+        for check_id in ("W2-01", "W2-02", "W2-03", "W2-04", "W2-05", "W2-10"):
+            entry = report["checks"][check_id]
+            assert entry["status"] == _mod.STATUS_NOT_RUN, check_id
+            assert "no predicate in this revision" in entry["message"], check_id
+            # §7: every evidence list is nonempty, including for a check that
+            # could not run — its evidence is the reason.
+            assert entry["evidence"], check_id
+
+    def test_wave_two_reports_carry_every_wave_two_id_and_no_wave_one_id(
+        self, tmp_path: Path
+    ):
+        """A wave-2 run must not inherit wave 1's manifest.
+
+        `EXPECTED_CHECK_IDS` is still the wave-1 tuple and is the default for both
+        `build_report` and `assert_check_manifest`, so a wave-2 run that failed to
+        thread its own IDs through would emit a report labelled wave 2 while
+        claiming wave 1's requirements.
+        """
+        path = write_config(tmp_path, valid_config())
+        session = MagicMock()
+        session.client.side_effect = lambda name, **_: {
+            "sts": sts_for(ACCOUNT),
+            "dynamodb": dynamodb_with_schema(CORRECT_SCHEMA),
+        }[name]
+
+        with patch("boto3.session.Session", return_value=session):
+            _mod.main(
+                ["--wave", "2", "--config", str(path), "--evidence-dir", str(tmp_path / "ev")]
+            )
+
+        report = json.loads((tmp_path / "ev" / "result.json").read_text(encoding="utf-8"))
+        assert set(report["checks"]) == {spec.check_id for spec in _mod.WAVE2_CHECKS}
+        assert not any(cid.startswith("W1-") for cid in report["checks"])
+        assert report["expected_check_ids"] == [spec.check_id for spec in _mod.WAVE2_CHECKS]
 
     def test_a_credential_failure_is_a_precondition_error_not_a_traceback(
         self, tmp_path: Path
@@ -873,6 +946,203 @@ def artifact_payloads() -> dict:
             )
         },
     }
+
+
+def wave2_artifact_payloads() -> dict:
+    """A complete, passing artifact set for the wave-2 checks S5 owns (#3964).
+
+    Kept separate from `artifact_payloads()` so a wave-1 test cannot be perturbed
+    by a wave-2 field, and so the wave-1 driver tests keep asserting exactly ten
+    results with exactly the wave-1 artifacts they always did.
+    """
+    return {
+        "harness_neutrality": {
+            # Two differently named adapters whose normalized accounting is
+            # identical — the point of the harness-neutral contract.
+            "adapter_a": {"aborted": 1, "completed": 2, "failed": 0},
+            "adapter_b": {"aborted": 1, "completed": 2, "failed": 0},
+            # A native interrupt that never got a confirmed ADP abort finalization.
+            # It must NOT have become an aborted run.
+            "native_interrupt_status": "failed",
+            "shared_code_imports_sdk": False,
+        },
+        "aborted_counters": {
+            "today_before": {"total": 10, "completed": 6, "failed": 2, "active": 2, "aborted": 0},
+            "today_after": {"total": 12, "completed": 6, "failed": 2, "active": 2, "aborted": 2},
+            "seeded_aborted": 2,
+            # Exactly four categories present, so the equality holds.
+            "four_category_dataset": {
+                "total": 10,
+                "completed": 5,
+                "failed": 2,
+                "active": 1,
+                "aborted": 2,
+            },
+            # Contains blocked/skipped/budget_stopped rows too, so `total` exceeds
+            # the four buckets — and that inequality is the assertion.
+            "mixed_dataset": {
+                "total": 12,
+                "completed": 4,
+                "failed": 2,
+                "active": 1,
+                "aborted": 2,
+            },
+            "mixed_expected": {"completed": 4, "failed": 2, "active": 1},
+            "daily_deltas": {"aborted": 2, "completed": 0, "failed": 0},
+            "persona_deltas": {"aborted": 2, "completed": 0, "failed": 0},
+        },
+        "vocabulary_parity": {
+            "writer_digest_deployed": True,
+            "gateway_digest_deployed": True,
+            "writer_allowed_statuses": [
+                "in_progress",
+                "complete",
+                "failed",
+                "skipped",
+                "budget_stopped",
+                "aborted",
+            ],
+            "gateway_terminal_statuses": [
+                "complete",
+                "failed",
+                "rejected",
+                "rate_limited",
+                "no_op",
+                "blocked",
+                "skipped",
+                "budget_stopped",
+                "aborted",
+            ],
+            "unknown_status_rejected": True,
+            "unknown_status_reached_table": False,
+            "suites": {
+                "tests/activity/test_status_aborted.py": "passed",
+                "tests/test_status_vocabulary.py": "passed",
+            },
+        },
+        "stats_schema_keys": {
+            # Exported from the backend Pydantic models, per the issue's "export
+            # fixture JSON before comparing keys, never jq a TypeScript source file".
+            "levels": {
+                "today": ["total", "completed", "failed", "active", "aborted"],
+                "daily": ["date", "total", "completed", "failed", "aborted"],
+                "by_persona": ["persona", "total", "completed", "failed", "aborted"],
+            }
+        },
+    }
+
+
+ABORTED_RUN_ID = "msg-aborted-001"
+
+
+def wave2_config(tmp_path: Path, **overrides) -> dict:
+    """`live_config` plus the wave-2 artifacts and the seeded aborted run."""
+    payloads = overrides.pop("artifact_payloads", None) or {
+        **artifact_payloads(),
+        **wave2_artifact_payloads(),
+    }
+    config = live_config(tmp_path, artifact_payloads=payloads)
+    config["aborted_run_id"] = ABORTED_RUN_ID
+    config.update(overrides)
+    return config
+
+
+def stats_body(**overrides) -> dict:
+    """A stats response shaped like the real `StatsResponse`, with aborted present."""
+    body = {
+        "window_days": 7,
+        "active_runs": [
+            {
+                "invocation_id": "msg-active-1",
+                "invoked_at": "2026-09-15T09:00:00Z",
+                "persona": "developer",
+                "repo": "aws-e/adp",
+                "topic": "a run in flight",
+            }
+        ],
+        "today": {"total": 12, "completed": 6, "failed": 2, "active": 2, "aborted": 2},
+        "daily": [
+            {"date": "2026-09-15", "total": 12, "completed": 6, "failed": 2, "aborted": 2}
+        ],
+        "by_persona": [
+            {"persona": "developer", "total": 12, "completed": 6, "failed": 2, "aborted": 2}
+        ],
+        "recent_failures": [
+            {
+                "invocation_id": "msg-failed-1",
+                "invoked_at": "2026-09-15T08:00:00Z",
+                "persona": "developer",
+                "repo": "aws-e/adp",
+                "topic": "a run that broke",
+                "error_message": "boom",
+            }
+        ],
+        "top_repos": [{"repo": "aws-e/adp", "total": 12}],
+        "spend": {"total_cost_usd": 1.25, "total_tokens": 4096, "total_calls": 12},
+    }
+    body.update(overrides)
+    return body
+
+
+def aborted_detail_body(**overrides) -> dict:
+    """The seeded aborted invocation as the read API returns it."""
+    body = {
+        "invocation_id": ABORTED_RUN_ID,
+        "status": "aborted",
+        "completed_at": "2026-09-15T10:15:00Z",
+        "liveness": "exited",
+        "persona": "developer",
+    }
+    body.update(overrides)
+    return body
+
+
+def wave2_gateway_stub(**overrides):
+    """A fake gateway answering the way a correct S5 deployment does.
+
+    Only the three endpoints the wave-2 checks read. Overrides bend one response so
+    a test can prove the harness notices, in the same style as `gateway_stub`.
+    """
+    detail = overrides.get("detail_body", aborted_detail_body())
+    stats = overrides.get("stats", stats_body())
+    listed = overrides.get(
+        "list_items", [{"invocation_id": ABORTED_RUN_ID, "status": "aborted"}]
+    )
+
+    def handler(method, url, headers=None, content=None, json=None, timeout=None):
+        response = MagicMock()
+
+        def reply(status, body):
+            response.status_code = status
+            response.json = lambda: body
+            return response
+
+        if "agent-run-stats" in url:
+            return reply(overrides.get("stats_status", 200), stats)
+        # The filtered list. Asserted on the query string because "does the filter
+        # actually select" is the question W2-06 asks.
+        if "agent-invocations?" in url:
+            if "status=aborted" not in url:
+                return reply(400, {"detail": "unexpected query"})
+            return reply(overrides.get("list_status", 200), {"items": listed, "last_key": None})
+        if "agent-invocations/" in url:
+            return reply(overrides.get("detail_status", 200), detail)
+        return reply(404, {"detail": "not found"})
+
+    client = MagicMock()
+    client.request.side_effect = handler
+    return client
+
+
+def run_wave2(tmp_path: Path, *, config=None, client=None) -> dict:
+    """Drive the four wave-2 checks S5 owns and return ``{check_id: CheckResult}``."""
+    config = config if config is not None else wave2_config(tmp_path)
+    probe = _mod.Probe(config["gateway_url"], client or wave2_gateway_stub())
+    artifacts = _mod.ArtifactStore(tmp_path, config.get("artifacts") or {})
+    driver = _mod.Driver(config, probe, artifacts, dynamodb=ddb_stub())
+    with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+        results = _mod.run_checks(driver, _mod.WAVE2_CHECKS)
+    return {result.check_id: result for result in results}
 
 
 def live_config(tmp_path: Path, **overrides) -> dict:
@@ -1138,9 +1408,69 @@ class TestCheckIdsMatchTheEvaluationFile:
         for check_id, method_name in _mod.WAVE1_PREDICATES.items():
             assert hasattr(_mod.Driver, method_name), check_id
 
-    def test_only_wave_one_is_delivered_by_this_story(self):
-        """S2/S5 extend wave 2, S4/S6 wave 3, S7 wave 4 (§7)."""
-        assert _mod.SUPPORTED_WAVES == (1,)
+    def test_waves_three_and_four_are_still_unregistered(self):
+        """S4/S6 extend wave 3, S7 wave 4 (§7). Wave 2 is registered as of #3964."""
+        assert _mod.SUPPORTED_WAVES == (1, 2)
+        assert 3 not in _mod.WAVE_CHECKS
+        assert 4 not in _mod.WAVE_CHECKS
+
+    def test_wave_two_carries_the_full_ten_check_manifest(self):
+        """The manifest is #3968's whole table, not just the checks S5 implements.
+
+        This is the load-bearing assertion of the partial-wave design. Registering
+        only S5's four checks would make `required` 4, all four would pass,
+        `passed == required` would hold and `--wave 2` would exit 0 — a report
+        indistinguishable from a complete wave-2 pass. The count stays at ten so
+        the six unimplemented checks show up as NOT RUN against a real bar.
+        """
+        assert tuple(spec.check_id for spec in _mod.WAVE2_CHECKS) == (
+            "W2-01",
+            "W2-02",
+            "W2-03",
+            "W2-04",
+            "W2-05",
+            "W2-06",
+            "W2-07",
+            "W2-08",
+            "W2-09",
+            "W2-10",
+        )
+
+    def test_wave_two_assigns_the_acceptance_ids_the_table_assigns(self):
+        """Transcribed from evaluation #3968's acceptance table."""
+        actual = {spec.check_id: spec.acceptance_ids for spec in _mod.WAVE2_CHECKS}
+
+        assert actual == {
+            "W2-01": ("Gate/regression",),
+            "W2-02": ("AC-T7",),
+            "W2-03": ("AC-P1",),
+            "W2-04": ("AC-P2",),
+            "W2-05": ("AC-P3", "AC-P5", "AC-P6"),
+            "W2-06": ("AC-A3", "AC-A9"),
+            "W2-07": ("AC-A10",),
+            "W2-08": ("AC-A11", "AC-A12"),
+            "W2-09": ("AC-A10",),
+            "W2-10": ("Gate/regression",),
+        }
+
+    def test_s5_implements_exactly_the_checks_its_acceptance_ids_cover(self):
+        """#3964 owns AC-A3/A9/A10/A11/A12 — and therefore W2-06..W2-09.
+
+        Both directions matter. A predicate for a check S5 does not own would be
+        this story asserting another story's work; a missing one would be a check
+        reported NOT RUN when it could actually have been answered.
+        """
+        assert set(_mod.WAVE2_PREDICATES) == {"W2-06", "W2-07", "W2-08", "W2-09"}
+        for check_id, method_name in _mod.WAVE2_PREDICATES.items():
+            assert hasattr(_mod.Driver, method_name), check_id
+
+    def test_every_unimplemented_wave_two_check_names_its_owner(self):
+        """A NOT RUN with no owner is a dead end for the operator reading it."""
+        implemented = set(_mod.WAVE2_PREDICATES)
+        all_ids = {spec.check_id for spec in _mod.WAVE2_CHECKS}
+
+        assert set(_mod._UNOWNED_WAVE2_CHECKS) == all_ids - implemented
+        assert all(owner.strip() for owner in _mod._UNOWNED_WAVE2_CHECKS.values())
 
 
 class TestDriverOutcomes:
@@ -2020,6 +2350,396 @@ class TestTheHarnessesRuntimeDependencies:
 
         assert "httpx" in text
         assert "boto3" in text
+
+
+class TestWave2AbortedChecks:
+    """The four wave-2 checks S5 (#3964) owns: W2-06..W2-09.
+
+    Same posture as the wave-1 driver tests: the harness never runs in CI, so what
+    CI proves is that each check would NOTICE the deployment being wrong. Every
+    test below starts from a passing fixture and bends exactly one thing, so a
+    failure names the specific defect rather than being ambiguous.
+    """
+
+    def test_a_correct_deployment_passes_all_four(self, tmp_path: Path):
+        results = run_wave2(tmp_path)
+
+        for check_id in ("W2-06", "W2-07", "W2-08", "W2-09"):
+            assert results[check_id].status == _mod.STATUS_PASSED, (
+                check_id,
+                results[check_id].message,
+            )
+
+    def test_the_six_unowned_checks_are_not_run_not_passed(self, tmp_path: Path):
+        """The honesty property, at the driver level."""
+        results = run_wave2(tmp_path)
+
+        for check_id in ("W2-01", "W2-02", "W2-03", "W2-04", "W2-05", "W2-10"):
+            assert results[check_id].status == _mod.STATUS_NOT_RUN, check_id
+            assert "owned by" in results[check_id].message, check_id
+
+    # ---- W2-06: terminality and neutrality -----------------------------
+
+    def test_a_null_completed_at_on_an_aborted_row_fails(self, tmp_path: Path):
+        """AC-A3 exactly: the defect is a terminal row with no completion time."""
+        client = wave2_gateway_stub(detail_body=aborted_detail_body(completed_at=None))
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED
+        assert "completed_at" in results["W2-06"].message
+
+    def test_an_aborted_row_reported_as_live_fails(self, tmp_path: Path):
+        client = wave2_gateway_stub(detail_body=aborted_detail_body(liveness="live"))
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED
+        assert "exited" in results["W2-06"].message
+
+    def test_a_filter_that_omits_the_seeded_row_fails(self, tmp_path: Path):
+        """AC-A9: the option existing is not the same as the option working."""
+        client = wave2_gateway_stub(list_items=[])
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED
+        assert "not returned by status=aborted" in results["W2-06"].message
+
+    def test_a_filter_that_ignores_its_argument_fails(self, tmp_path: Path):
+        """The failure a presence-only assertion cannot see.
+
+        A filter returning the whole table contains the seeded row, so "is it
+        there?" passes. Only checking that nothing ELSE came back catches it.
+        """
+        client = wave2_gateway_stub(
+            list_items=[
+                {"invocation_id": ABORTED_RUN_ID, "status": "aborted"},
+                {"invocation_id": "msg-complete-1", "status": "complete"},
+            ]
+        )
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED
+        assert "also returned" in results["W2-06"].message
+
+    def test_a_native_interrupt_recorded_as_aborted_fails(self, tmp_path: Path):
+        """The harness-neutral contract's central prohibition."""
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["harness_neutrality"]["native_interrupt_status"] = "aborted"
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED
+        assert "confirmed abort finalization" in results["W2-06"].message
+
+    def test_two_adapters_disagreeing_on_accounting_fails(self, tmp_path: Path):
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["harness_neutrality"]["adapter_b"] = {
+            "aborted": 0,
+            "completed": 3,
+            "failed": 0,
+        }
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED
+        assert "differs" in results["W2-06"].message
+
+    def test_an_sdk_import_in_shared_code_fails(self, tmp_path: Path):
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["harness_neutrality"]["shared_code_imports_sdk"] = True
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED
+        assert "provider SDK" in results["W2-06"].message
+
+    def test_a_missing_aborted_run_id_is_not_run(self, tmp_path: Path):
+        """No seeded row means the check cannot be answered — not that it passed."""
+        config = wave2_config(tmp_path)
+        del config["aborted_run_id"]
+
+        results = run_wave2(tmp_path, config=config)
+
+        assert results["W2-06"].status == _mod.STATUS_NOT_RUN
+        assert "aborted_run_id" in results["W2-06"].message
+
+    # ---- W2-07: counted exactly once -----------------------------------
+
+    def test_an_aborted_row_counted_twice_fails(self, tmp_path: Path):
+        """`total` moving by more than the seed count."""
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["aborted_counters"]["today_after"]["total"] = 14
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-07"].status == _mod.STATUS_FAILED
+        assert "exactly once" in results["W2-07"].message
+
+    @pytest.mark.parametrize("bucket", ["completed", "failed", "active"])
+    def test_an_aborted_row_also_counted_elsewhere_fails(
+        self, tmp_path: Path, bucket: str
+    ):
+        """The half a total-only assertion misses.
+
+        A row counted into both `aborted` and `failed` leaves `total` correct while
+        doubling the failure rate — which is the number an operator is judged on,
+        and the reason aborted got its own counter in the first place.
+        """
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        # `total` deliberately left alone: double-counting a row into two buckets
+        # does not change how many rows there are, which is the whole reason the
+        # total-delta assertion above cannot see this defect.
+        payloads["aborted_counters"]["today_after"][bucket] += 2
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-07"].status == _mod.STATUS_FAILED
+        assert bucket in results["W2-07"].message
+
+    def test_a_four_category_dataset_that_does_not_balance_fails(self, tmp_path: Path):
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["aborted_counters"]["four_category_dataset"]["aborted"] = 1
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-07"].status == _mod.STATUS_FAILED
+        assert "buckets sum to" in results["W2-07"].message
+
+    def test_a_mixed_dataset_that_balances_fails_as_not_mixed(self, tmp_path: Path):
+        """The inequality is the assertion, and this is why.
+
+        If the "mixed" dataset's total equals its four buckets, it contains no
+        blocked/skipped/budget_stopped rows — so it is not testing preservation of
+        the outcomes it exists to protect, and the four-way equality would have
+        been asserted somewhere it does not generally hold.
+        """
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["aborted_counters"]["mixed_dataset"]["total"] = 9
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-07"].status == _mod.STATUS_FAILED
+        assert "not testing preservation" in results["W2-07"].message
+
+    def test_a_reclassified_pre_existing_outcome_fails(self, tmp_path: Path):
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["aborted_counters"]["mixed_dataset"]["failed"] = 4
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-07"].status == _mod.STATUS_FAILED
+        assert "reclassified" in results["W2-07"].message
+
+    @pytest.mark.parametrize("scope", ["daily", "persona"])
+    def test_a_breakdown_counter_that_did_not_move_fails(self, tmp_path: Path, scope: str):
+        """Separate accumulators in `_aggregate`, so they can drift independently."""
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["aborted_counters"][f"{scope}_deltas"]["aborted"] = 0
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-07"].status == _mod.STATUS_FAILED
+        assert scope in results["W2-07"].message
+
+    # ---- W2-08: writer/reader parity across two images ------------------
+
+    @pytest.mark.parametrize(
+        "field", ["writer_digest_deployed", "gateway_digest_deployed"]
+    )
+    def test_a_half_deployment_fails(self, tmp_path: Path, field: str):
+        """The specific risk of a story that spans two images and two workflows."""
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["vocabulary_parity"][field] = False
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-08"].status == _mod.STATUS_FAILED
+        assert field in results["W2-08"].message
+
+    def test_a_writer_allowlist_without_aborted_fails(self, tmp_path: Path):
+        """AC-A12: the abort's own terminal write would be refused."""
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["vocabulary_parity"]["writer_allowed_statuses"] = [
+            "in_progress",
+            "complete",
+            "failed",
+        ]
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-08"].status == _mod.STATUS_FAILED
+        assert "read as live forever" in results["W2-08"].message
+
+    def test_a_gateway_terminal_set_without_aborted_fails(self, tmp_path: Path):
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["vocabulary_parity"]["gateway_terminal_statuses"] = ["complete", "failed"]
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-08"].status == _mod.STATUS_FAILED
+        assert "AC-A11" in results["W2-08"].message
+
+    def test_an_allowlist_that_never_rejects_fails(self, tmp_path: Path):
+        """An allowlist whose reject path never fires is not a validation."""
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["vocabulary_parity"]["unknown_status_rejected"] = False
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-08"].status == _mod.STATUS_FAILED
+        assert "not a validation" in results["W2-08"].message
+
+    def test_validation_after_the_write_fails(self, tmp_path: Path):
+        """Rejected but persisted is not rejected. AC-A12 is about ORDER."""
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["vocabulary_parity"]["unknown_status_reached_table"] = True
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-08"].status == _mod.STATUS_FAILED
+        assert "BEFORE the write" in results["W2-08"].message
+
+    def test_a_failing_parity_suite_fails(self, tmp_path: Path):
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["vocabulary_parity"]["suites"]["tests/test_status_vocabulary.py"] = "failed"
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-08"].status == _mod.STATUS_FAILED
+        assert "test_status_vocabulary.py" in results["W2-08"].message
+
+    # ---- W2-09: the live stats contract --------------------------------
+
+    def test_a_stats_response_without_the_aborted_counter_fails(self, tmp_path: Path):
+        """The field this story adds, absent from the live deployment."""
+        today = {"total": 12, "completed": 6, "failed": 2, "active": 2}
+        client = wave2_gateway_stub(stats=stats_body(today=today))
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-09"].status == _mod.STATUS_FAILED
+        assert "aborted" in results["W2-09"].message
+
+    @pytest.mark.parametrize("level", ["daily", "by_persona"])
+    def test_a_breakdown_row_without_aborted_fails(self, tmp_path: Path, level: str):
+        rows = {
+            "daily": [{"date": "2026-09-15", "total": 12, "completed": 6, "failed": 2}],
+            "by_persona": [
+                {"persona": "developer", "total": 12, "completed": 6, "failed": 2}
+            ],
+        }
+        client = wave2_gateway_stub(stats=stats_body(**{level: rows[level]}))
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-09"].status == _mod.STATUS_FAILED
+        assert "aborted" in results["W2-09"].message
+
+    def test_a_missing_top_level_key_fails(self, tmp_path: Path):
+        body = stats_body()
+        del body["spend"]
+        client = wave2_gateway_stub(stats=body)
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-09"].status == _mod.STATUS_FAILED
+        assert "spend" in results["W2-09"].message
+
+    @pytest.mark.parametrize(
+        "level", ["daily", "by_persona", "active_runs", "recent_failures", "top_repos"]
+    )
+    def test_an_empty_array_is_not_run_rather_than_a_vacuous_pass(
+        self, tmp_path: Path, level: str
+    ):
+        """§7 requires seeded nonempty arrays.
+
+        An empty list satisfies "every element has the required keys" vacuously, so
+        treating it as a pass would let the whole check succeed against a fixture
+        that produced no data at all.
+        """
+        client = wave2_gateway_stub(stats=stats_body(**{level: []}))
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-09"].status == _mod.STATUS_NOT_RUN
+        assert level in results["W2-09"].message
+
+    def test_a_null_spend_is_not_run(self, tmp_path: Path):
+        client = wave2_gateway_stub(stats=stats_body(spend=None))
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-09"].status == _mod.STATUS_NOT_RUN
+        assert "spend" in results["W2-09"].message
+
+    def test_a_schema_field_the_deployment_predates_fails(self, tmp_path: Path):
+        """The check the hardcoded list above cannot make.
+
+        The presence lists in the harness are literals in that file, so they cannot
+        notice a field ADDED to the backend schema and missing from the deployed
+        response. The exported fixture is what catches it.
+        """
+        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
+        payloads["stats_schema_keys"]["levels"]["today"].append("budget_stopped")
+
+        results = run_wave2(
+            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        )
+
+        assert results["W2-09"].status == _mod.STATUS_FAILED
+        assert "budget_stopped" in results["W2-09"].message
+
+    def test_a_non_200_stats_response_fails(self, tmp_path: Path):
+        client = wave2_gateway_stub(stats_status=500)
+
+        results = run_wave2(tmp_path, client=client)
+
+        assert results["W2-09"].status == _mod.STATUS_FAILED
+        assert "500" in results["W2-09"].message
+
+    def test_no_wave_two_check_leaks_a_token_into_its_evidence(self, tmp_path: Path):
+        """Evidence is written to disk and pasted into issues."""
+        results = run_wave2(tmp_path)
+
+        rendered = json.dumps(
+            {cid: result.to_evidence() for cid, result in results.items()}
+        )
+        assert OWNER_TOKEN not in rendered
+        for token in IDENTITY_ENV.values():
+            assert token not in rendered
 
 
 class TestTheDocumentedFixtureConfig:
