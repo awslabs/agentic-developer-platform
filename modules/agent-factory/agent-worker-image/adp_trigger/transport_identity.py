@@ -1,8 +1,19 @@
 """Keep platform control traffic on IRSA after customer AWS credentials load."""
 
+import logging
 import os
 import re
 from urllib.parse import urlparse
+
+
+# Botocore DEBUG canonical-request logs contain signed run/pod headers and STS
+# tokens. Suppress signing debug even when an operator enables root debug logs;
+# INFO and higher SDK diagnostics remain available. Applies to all transports.
+def _omit_signing_debug(record):
+    return record.levelno >= logging.INFO
+
+
+logging.getLogger("botocore.auth").addFilter(_omit_signing_debug)
 
 
 def preserve_worker_identity(env):

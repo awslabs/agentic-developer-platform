@@ -138,10 +138,10 @@ class TestVaultClient:
             "SecretString": '{"app_id": "123", "private_key": "fake-key"}'
         }
 
-        client = VaultClient(region="us-east-1")
+        client = VaultClient(region="us-east-1", env="dev")
         result = client.get_secret("tenants/acme-corp/github-app")
 
-        mock_sm.get_secret_value.assert_called_once_with(SecretId="tenants/acme-corp/github-app")
+        mock_sm.get_secret_value.assert_called_once_with(SecretId="adp/dev/tenants/acme-corp/github-app")
         assert result == {"app_id": "123", "private_key": "fake-key"}
 
 
@@ -313,7 +313,11 @@ class TestEntrypointMain:
         """Test the full 12-step sequence with a successful agent run."""
         from entrypoint import main
 
-        monkeypatch.setenv("SQS_MESSAGE_BODY", json.dumps(SAMPLE_ENVELOPE))
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setattr("entrypoint._receive_one_message", lambda *_: (json.dumps(SAMPLE_ENVELOPE), "receipt"))
+        monkeypatch.setattr("entrypoint._delete_message", MagicMock())
+        monkeypatch.setattr("entrypoint.create_check_run", MagicMock(return_value={"id": 111}))
+        monkeypatch.setattr("entrypoint.update_check_run", MagicMock())
         monkeypatch.setenv("AWS_REGION", "us-east-1")
 
         # Mock vault
@@ -342,14 +346,14 @@ class TestEntrypointMain:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        main()
+        assert main() == 0
 
         # Vault was called for github-app creds
         mock_vault.get_secret.assert_called_with("tenants/acme-corp/github-app")
         # Token was minted
         mock_mint.assert_called_once_with("123", "fake-key", 99887766)
         # Agent was executed
-        mock_subprocess_run.assert_called_once()
+        assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
 
     def test_missing_sqs_message(self, monkeypatch):
         """Should return 1 when SQS_MESSAGE_BODY is not set."""
