@@ -147,6 +147,78 @@ story, not a line in #3961.
 - Per the story's stop condition, pause capability must not be advertised as
   accepted on the strength of unit tests alone.
 
+## Decision required from the EPIC owner (#3959)
+
+This is not a question #3961 can answer by itself, because either answer changes
+the story's acceptance set. Recorded here as an explicit either/or so the choice
+is made by the owner rather than absorbed into a green story.
+
+**What is settled, and is not up for decision.** The barrier meets its contract.
+That is measured, not asserted: two consecutive live-SDK runs against a real model
+(`data/experiments/3961-pause-live-sdk-run1.json`, `run2.json`, 3/3 experiments
+each) show a tool parked at the `PreToolUse` boundary with `new_admissions: 0`,
+`fixture_writes: 0` and `confirmed.active_tool_count: 0` sampled *during* the
+hold, the parked call completing after resume, session and attempt identity
+unchanged, `interrupt_called: false` and `initial_prompt_replayed: false`. Unit
+coverage on the new control modules is above the story's ≥85% line/branch bar.
+AC-P1/P2/P3/P5/P6 are satisfied *at the barrier*.
+
+**What is blocked.** Advertising the verb — the four surfaces in the table below —
+because a supported verb becomes envelope-gated by that fact alone and the human
+dashboard path has nothing to put in the header. Four blockers, above; two survive
+even if the gateway learns to sign.
+
+| Surface | Current state |
+|---|---|
+| `modules/gateway/src/activity/control_service.py` | `SUPPORTED_ACTIONS = frozenset()` |
+| `modules/agent-factory/agent/src/control-runtime.ts` | `IMPLEMENTED_CONTROL_VERBS = new Set()` |
+| `.github/workflows/agent-control-ci.yml` (Python gate) | `EXPECTED_SUPPORTED: set[str] = set()` |
+| `.github/workflows/agent-control-ci.yml` (TS gate) | `EXPECTED_SUPPORTED = new Set<string>()` |
+
+All four must move together or not at all — that is what the two CI gates are for.
+A one-sided widening ships a Pause button whose handler answers 501.
+
+### Option A — add `human_session` as a dependency of S2
+
+File the authority variant above as its own story, block S2 on it, and enable the
+four surfaces once it lands.
+
+- **Cost:** conditional `_REQUIRED_CLAIMS` in both verifiers (`envelope.py` and
+  `control-envelope.ts`) keyed on a signed `authority_kind`, new shared negative
+  vectors, plus a decision on `SUPPORTED_AGENT_ACTIONS` (blocker 3) and on whether
+  pause requires `agent_authority_enabled` (blocker 4).
+- **Risk:** touches a verifier #5028 hardened deliberately, across two languages
+  and a Terraform default. Getting the `authority_kind` keying wrong reintroduces
+  the grantless-envelope hole the variant exists to avoid.
+- **Consequence for S2:** stays open, no operator-visible pause until the
+  dependency ships.
+
+### Option B — re-scope S2 to the barrier, move enablement to a successor
+
+S2 lands as explicitly-partial infrastructure: the barrier, gate, adapter, worker
+runtime and evaluator predicates, with the verb off and the gap pinned by a test.
+AC-P1/P2/P3/P5/P6 are recorded as *proven at the barrier*, and "operator can pause
+a run" moves to a successor story that owns both the authority variant and the
+four-surface flip.
+
+- **Cost:** the EPIC carries a built-but-dark capability until the successor lands.
+- **Risk:** a dark capability reads as done. Mitigation is already in the tree —
+  the two CI gates fail if any surface is widened alone, and
+  `control-listener.test.ts` (`describe('envelope enforcement boundaries')`) pins
+  supported-verb + no-envelope → 403 with nothing journaled, so the gap is
+  executable rather than a comment.
+- **Consequence for S2:** mergeable now, with its acceptance set stated honestly.
+
+### What this story does *not* claim
+
+S2 is **not** declared accepted here under either option. Live acceptance for
+AC-P1/P2/P3/P5/P6 belongs to evaluation #3968, whose W2-03/04/05 predicates this
+story implements (`platform/scripts/agent-control-eval.py`) and which cannot pass
+while `capabilities.pause` is false. The recommendation from the implementation
+side is **Option B** — it makes the tree's actual state and the story's recorded
+state agree, and it does not weaken a gate to do it — but the choice is the EPIC
+owner's, and either is a legitimate answer.
+
 ## References
 
 - `docs/design/agent-delegated-authority.md` — #5028 design, Decision 2
