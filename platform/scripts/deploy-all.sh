@@ -788,7 +788,12 @@ else
   DB_HOST=$(terraform output -raw rds_endpoint 2>/dev/null | sed 's/:5432//' || echo "localhost")
   DB_NAME=$(terraform output -raw rds_database_name 2>/dev/null || echo "bedrockgateway")
   DB_USER="bgadmin"
-  REDIS_HOST=$(terraform output -raw redis_endpoint 2>/dev/null || echo "localhost")
+  # Redis is a list of endpoint objects, so -raw silently fell back to localhost.
+  REDIS_HOST=$(terraform output -json redis_endpoint | python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+print(value[0]["address"] if isinstance(value, list) and value else value or "localhost")
+') || fail "Cannot resolve Redis endpoint from Terraform outputs"
   REDIS_PORT=$(terraform output -raw redis_port 2>/dev/null || echo "6379")
   # #4342: ElastiCache IAM auth needs the provisioned user name and the
   # replication group id (the connect token is signed against the group id, not
@@ -912,6 +917,36 @@ else
     --from-literal=token-secret-key="$TOKEN_SECRET" \
     --from-literal=internal-api-key="$INTERNAL_API_KEY" \
     -n adp-gateway --dry-run=client -o yaml | kubectl apply -f -
+  COGNITO_CLI_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
+  BEDROCK_ROUTING_SHADOW_MODE=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/bedrock-routing-shadow-mode" "true")
+
+  # Issue #3960: CIDRs the gateway may dial an in-pod control listener in.
+  # This is the SSRF allowlist for the one outbound path that deliberately
+  # targets PRIVATE addresses, so it cannot be defaulted to something
+  # convenient — the default is EMPTY, which fails closed (every control
+  # request answers 409 "not configured"). An operator who forgets the SSM
+  # param gets a clear misconfiguration instead of a gateway willing to
+  # dial arbitrary private addresses.
+  #
+  # Not discovered from the cluster at deploy time on purpose: reading the
+  # live pod CIDR would silently re-widen the allowlist whenever the VPC
+  # changed, which is exactly the kind of change nobody reviews.
+  AGENT_CONTROL_CLUSTER_POD_CIDRS=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/agent-control-cluster-pod-cidrs" "")
+  # The authority configuration parameters are encrypted at rest.
+  get_authority_ssm() { aws ssm get-parameter --with-decryption --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+  AGENT_AUTHORITY_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-enabled" "false")
+  ADP_WORK_CLAIMS_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claims-enabled" "false")
+  ADP_WORK_CLAIM_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claim-producer-roles" "")
+  AGENT_AUTHORITY_TABLE=$(get_authority_ssm "/adp/${ENVIRONMENT}/webhook-ingress/agent-authority-table" "")
+  WEBHOOK_EVENTS_TABLE=$(_get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/webhook-events-table" "adp-${ENVIRONMENT}-webhook-events")
+  AGENT_DISPATCH_QUEUE_URL=$(_get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
+  BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
+  AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
+  AGENT_AUTHORITY_KEY_ID=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-key-id" "disabled")
+  AGENT_TASK_SOURCE_ROLE_ARN=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-role-arn" "")
+  AGENT_TASK_SOURCE_EKS_CLUSTER=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-eks-cluster" "")
+  AGENT_TASK_SOURCE_ISOLATION_CONFIRMED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-isolation-confirmed" "false")
+
   sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
       -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
       -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -940,6 +975,23 @@ else
       -e "s|__AGENT_RUN_LOGS_BUCKET__|${AGENT_RUN_LOGS_BUCKET}|g" \
       -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
       -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
+      -e "s|__COGNITO_CLI_CLIENT_ID__|${COGNITO_CLI_CLIENT_ID}|g" \
+      -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
+      -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
+      -e "s|__AGENT_CONTROL_CLUSTER_POD_CIDRS__|${AGENT_CONTROL_CLUSTER_POD_CIDRS}|g" \
+      -e "s|__AGENT_AUTHORITY_ENABLED__|${AGENT_AUTHORITY_ENABLED}|g" \
+      -e "s|__ADP_WORK_CLAIMS_ENABLED__|${ADP_WORK_CLAIMS_ENABLED}|g" \
+      -e "s|__ADP_WORK_CLAIM_PRODUCER_ROLES__|${ADP_WORK_CLAIM_PRODUCER_ROLES}|g" \
+      -e "s|__AGENT_AUTHORITY_TABLE__|${AGENT_AUTHORITY_TABLE}|g" \
+      -e "s|__WEBHOOK_EVENTS_TABLE__|${WEBHOOK_EVENTS_TABLE}|g" \
+      -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
+      -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
+      -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
+      -e "s|__AGENT_AUTHORITY_KEY_ID__|${AGENT_AUTHORITY_KEY_ID}|g" \
+      -e "s|__AGENT_TASK_SOURCE_ROLE_ARN__|${AGENT_TASK_SOURCE_ROLE_ARN}|g" \
+      -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \
+      -e "s|__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__|${AGENT_TASK_SOURCE_ISOLATION_CONFIRMED}|g" \
+      -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
       k8s/configmap.yaml | kubectl apply -f -
   # Render serviceaccount with the correct IRSA role ARN (Issue #1008)
   sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
