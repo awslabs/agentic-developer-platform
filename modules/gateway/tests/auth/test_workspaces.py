@@ -434,17 +434,17 @@ async def test_role_updates_do_not_overwrite_selected_workspace(db_session, seed
 
 
 @pytest.mark.asyncio
-async def test_legacy_membership_does_not_reuse_foreign_personal_routing(db_session, seeded):
+async def test_legacy_membership_keeps_personal_routing_on_the_login_user(db_session, seeded):
     from src.admin.bedrock_routing.self_routes import _caller_id
 
-    # Older installations attach the second membership directly to the home
-    # user. The membership grants workspace access, but its user-rung AWS mapping
-    # belongs to home. Target org/team routing must win until local placement.
+    # A legacy membership grants workspace access without a local user row.
+    # Workspace-scoped resolution still has no placement, while personal Bedrock
+    # routing stays anchored to the login user across workspace switches (#5170).
     db_session.add(TenantMembership(user_id=seeded.id, tenant_id="work", role="member"))
     await db_session.commit()
     other = context().model_copy(update={"org_id": "work", "attributed_org_id": "work"})
     assert await BedrockRoutingResolver.resolve_canonical_user_id(db_session, other) is None
-    assert await _caller_id(db_session, other) == "login-sub"
+    assert await _caller_id(db_session, other) == seeded.id
     assert await BedrockRoutingResolver.resolve_canonical_user_id(db_session, context()) == seeded.id
 
 

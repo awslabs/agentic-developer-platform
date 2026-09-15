@@ -53,6 +53,7 @@ ALL_ROUTES = [
     ("DELETE", f"/admin/bedrock-routing/mappings/org:{ORG_ID}", None),
     ("GET", f"/admin/bedrock-routing/effective/{MEMBER_ID}", None),
     ("GET", "/admin/bedrock-routing/destinations", None),
+    ("GET", f"/admin/bedrock-routing/destinations/{ACME_DEST}/setup", None),
     ("POST", "/admin/bedrock-routing/destinations", {"source": "connection", "credential_id": "cred-acme-org"}),
     ("POST", f"/admin/bedrock-routing/destinations/{ACME_DEST}/verify", None),
 ]
