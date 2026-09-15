@@ -336,6 +336,21 @@ variable "agent_authority_enabled" {
   default     = false
 }
 
+variable "agent_authority_prepared" {
+  description = "Provision the tick authority policy before enabling dispatch."
+  type        = bool
+  default     = false
+}
+
+variable "agent_authority_resources" {
+  description = "Preparation-only IAM resources; does not wire or activate the legacy engine-command bridge."
+  type = object({
+    webhook_events_table_name  = string
+    webhook_events_kms_key_arn = string
+  })
+  default = null
+}
+
 variable "webhook_events_kms_key_arn" {
   description = <<-EOT
     ARN of the KMS key encrypting the webhook-events table. Required for the tick

@@ -31,6 +31,10 @@ on:
         description: 'Deployment environment (dev/staging/prod).'
         required: false
         default: 'dev'
+      region:
+        description: 'AWS deployment region; empty uses deployment configuration.'
+        required: false
+        default: ''
 
 concurrency:
   group: webhook-ingress-deploy-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -43,7 +47,6 @@ env:
   # .github/actions/load-deploy-config/action.yml
   MODULE_NAME: webhook-ingress
   TF_WORKING_DIR: modules/agent-factory/webhook-ingress/infra
-  BACKEND_CONFIG: environments/dev/modules/webhook-ingress-backend.tfvars
 
 jobs:
   changes:
@@ -73,6 +76,7 @@ jobs:
         with:
           account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
+          region: ${{ inputs.region }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
@@ -116,6 +120,7 @@ jobs:
         with:
           account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
+          region: ${{ inputs.region }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
@@ -146,10 +151,7 @@ jobs:
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          terraform init \
-            -backend-config="../../../../${{ env.BACKEND_CONFIG }}" \
-            -backend-config="bucket=${STATE_BUCKET}" \
-            -input=false -reconfigure
+          bash ../scripts/terraform-webhook.sh init -input=false -reconfigure
 
       - name: Migrate stale kubernetes_manifest entries out of state
         # KEDA resources moved from `kubernetes_manifest` to `null_resource +
@@ -221,7 +223,7 @@ jobs:
           # "Resource already managed by Terraform" and exits non-zero. That is
           # the desired end-state, not a failure — swallow it. Any other failure
           # is real and must fail the step.
-          if IMPORT_OUT=$(terraform import -var-file="terraform.tfvars" "$ADDR" "$GROUP" 2>&1); then
+          if IMPORT_OUT=$(bash ../scripts/terraform-webhook.sh import "$ADDR" "$GROUP" 2>&1); then
             printf '%s\n' "$IMPORT_OUT"
           else
             printf '%s\n' "$IMPORT_OUT"
@@ -244,7 +246,7 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_VAR_lambda_artifact_bucket: ${{ env.STATE_BUCKET }}
-        run: terraform apply -var-file="terraform.tfvars" -auto-approve
+        run: bash ../scripts/terraform-webhook.sh apply -input=false -auto-approve
 
       - name: Summary
         if: always()
@@ -270,6 +272,7 @@ jobs:
         with:
           account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
+          region: ${{ inputs.region }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
@@ -337,6 +340,7 @@ jobs:
         with:
           account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
+          region: ${{ inputs.region }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}

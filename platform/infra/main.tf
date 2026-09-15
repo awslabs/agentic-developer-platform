@@ -121,7 +121,9 @@ locals {
       var.manage_ci_runner_cluster_admin && length(data.aws_iam_roles.ci_runner.arns) > 0 ? [local.ci_runner_role_arn] : [],
       var.extra_cluster_admin_principal_arns,
     )) : arn
-    if var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn
+    if(var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn) &&
+    arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-authority-worker-role" &&
+    (!var.agent_legacy_worker_admin_retired || arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-scaledjob-role")
   ]
 }
 

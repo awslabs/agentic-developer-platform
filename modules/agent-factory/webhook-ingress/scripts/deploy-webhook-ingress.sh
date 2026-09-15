@@ -130,7 +130,8 @@ else
   warn "Gateway API URL not found in SSM — resolve-installation fallback will be disabled"
 fi
 
-BACKEND="${REPO_ROOT}/environments/${ENVIRONMENT}/modules/webhook-ingress-backend.tfvars"
+TF_WEBHOOK="${SCRIPT_DIR}/terraform-webhook.sh"
+export ADP_ENV="$ENVIRONMENT" AWS_REGION STATE_BUCKET
 
 # Check if gitlab.zip exists in S3; if not, override gitlab_webhook_enabled to
 # false so terraform doesn't fail on the missing artifact (Issue #3488).
@@ -192,8 +193,7 @@ import_bootstrap_log_group() {
     return 0
   fi
   warn "Bootstrap log group exists in AWS but not in state — importing (#4051)"
-  terraform import \
-    -var="environment=${ENVIRONMENT}" \
+  bash "$TF_WEBHOOK" import \
     aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
   ok "Imported aws_cloudwatch_log_group.agent_bootstrap"
 }
@@ -201,16 +201,15 @@ import_bootstrap_log_group() {
 if [ "$SKIP_TF" = true ]; then
   warn "Skipping terraform apply (--skip-terraform)."
 elif [ "$DRY_RUN" = true ]; then
-  echo "  [dry-run] terraform init -backend-config=$BACKEND"
+  echo "  [dry-run] Terraform backend: ${STATE_BUCKET}/${ENVIRONMENT}/modules/webhook-ingress/terraform.tfstate"
   echo "  [dry-run] conditional import of aws_cloudwatch_log_group.agent_bootstrap ($BOOTSTRAP_LOG_GROUP)"
   echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT -var=gateway_api_url=$GATEWAY_API_URL${GITLAB_OVERRIDE:+ $GITLAB_OVERRIDE}"
 else
   # shellcheck disable=SC2086
   ( cd "${MODULE_ROOT}/infra" \
-    && terraform init -backend-config="$BACKEND" -input=false -reconfigure >/dev/null \
+    && bash "$TF_WEBHOOK" init -input=false -reconfigure >/dev/null \
     && import_bootstrap_log_group \
-    && terraform apply \
-         -var="environment=${ENVIRONMENT}" \
+    && bash "$TF_WEBHOOK" apply \
          -var="gateway_api_url=${GATEWAY_API_URL}" \
          $GITLAB_OVERRIDE \
          $ADVERSARIAL_OVERRIDE \

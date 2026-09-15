@@ -1246,6 +1246,16 @@ if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_
   bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
     --env "$ENVIRONMENT" --region "$AWS_REGION"
   ok "Webhook-ingress deployed"
+  # The gateway's first pass precedes the webhook-owned table/key/queue. Finish
+  # its prepared tick policy once Terraform can discover those identifiers.
+  # This is a bootstrap second pass, like the ALB wire step; ongoing full gateway
+  # plans retain ownership of the same policy. Dispatch remains separately gated.
+  (
+    cd "$ROOT_DIR/modules/gateway/infra"
+    terraform_update_apply "gateway-worker-authority" \
+      "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+      '-target=module.orchestration_tick[0].aws_iam_role_policy.agent_authority'
+  )
 elif [ "$SKIP_WEBHOOK_INGRESS" = true ]; then
   step "Step 9/11: Skipping webhook-ingress (--skip-webhook-ingress)"
 else

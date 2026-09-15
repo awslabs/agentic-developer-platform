@@ -208,7 +208,7 @@ variable "require_signed_provenance" {
 variable "eks_cluster_name" {
   description = "EKS cluster name for deploying the agent ScaledJob. The OIDC provider, issuer, and KEDA operator role are discovered from the cluster — no remote-state reads needed."
   type        = string
-  default     = "adp-dev-eks-cluster"
+  default     = null
 }
 
 # keda_operator_role_name removed — KEDA operator role is now owned by this

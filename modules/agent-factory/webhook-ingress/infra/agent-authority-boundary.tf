@@ -144,7 +144,7 @@ locals {
 }
 
 resource "aws_iam_policy" "agent_authority_boundary" {
-  count       = var.agent_authority_enabled ? 1 : 0
+  count       = local.agent_authority_provisioned ? 1 : 0
   name        = "${local.name_prefix}-agent-authority-boundary"
   description = "Maximum permissions for workers using verified delegated authority"
   policy      = jsonencode(local.agent_authority_boundary)
@@ -155,7 +155,7 @@ resource "aws_iam_policy" "agent_authority_boundary" {
 # reusing the old SA would let its projected token assume the legacy role with
 # the unsigned AssumeRoleWithWebIdentity API, bypassing the new boundary.
 resource "aws_iam_role" "agent_authority_worker" {
-  count                = var.agent_authority_enabled ? 1 : 0
+  count                = local.agent_authority_provisioned ? 1 : 0
   name                 = "${local.name_prefix}-agent-authority-worker-role"
   permissions_boundary = aws_iam_policy.agent_authority_boundary[0].arn
   assume_role_policy = jsonencode({
@@ -179,14 +179,14 @@ resource "aws_iam_role" "agent_authority_worker" {
 }
 
 resource "aws_iam_role_policy" "agent_authority_worker" {
-  count  = var.agent_authority_enabled ? 1 : 0
+  count  = local.agent_authority_provisioned ? 1 : 0
   name   = "agent-worker-scoped-permissions"
   role   = aws_iam_role.agent_authority_worker[0].id
   policy = jsonencode(local.agent_authority_boundary)
 }
 
 resource "kubernetes_service_account" "agent_authority_worker" {
-  count = var.agent_authority_enabled ? 1 : 0
+  count = local.agent_authority_provisioned ? 1 : 0
   metadata {
     name        = "agent-authority-worker-sa"
     namespace   = kubernetes_namespace.adp_agents.metadata[0].name
@@ -195,12 +195,12 @@ resource "kubernetes_service_account" "agent_authority_worker" {
 }
 
 data "aws_ssm_parameter" "agent_authority_registry" {
-  count = var.agent_authority_enabled ? 1 : 0
+  count = local.agent_authority_provisioned ? 1 : 0
   name  = "/adp/${var.environment}/gateway/agent-registry-table"
 }
 
 resource "aws_dynamodb_table_item" "agent_authority_worker" {
-  count      = var.agent_authority_enabled ? 1 : 0
+  count      = local.agent_authority_provisioned ? 1 : 0
   table_name = data.aws_ssm_parameter.agent_authority_registry[0].value
   hash_key   = "agent_id"
   item = jsonencode({

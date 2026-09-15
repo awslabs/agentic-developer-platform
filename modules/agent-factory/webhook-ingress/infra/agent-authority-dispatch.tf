@@ -1,7 +1,7 @@
 # Trusted gateway dispatch writes the Activity row atomically with authority
 # and then sends to the existing queue. No worker principal receives these grants.
 resource "aws_iam_role_policy" "gateway_authorized_dispatch" {
-  count = var.agent_authority_enabled ? 1 : 0
+  count = local.agent_authority_provisioned ? 1 : 0
   name  = "adp-${var.environment}-policy-gateway-authorized-dispatch"
   role  = "adp-${var.environment}-role-gateway-service"
   policy = jsonencode({

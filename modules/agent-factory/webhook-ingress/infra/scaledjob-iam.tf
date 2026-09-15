@@ -68,11 +68,12 @@ locals {
 }
 
 resource "aws_iam_role" "agent_scaledjob" {
-  name = "${local.name_prefix}-agent-scaledjob-role"
+  name                 = "${local.name_prefix}-agent-scaledjob-role"
+  permissions_boundary = var.agent_legacy_worker_admin_retired ? aws_iam_policy.agent_task_source_boundary[0].arn : null
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         # IRSA: agent pods in adp-agents namespace assume this role
         Effect = "Allow"
@@ -95,7 +96,12 @@ resource "aws_iam_role" "agent_scaledjob" {
         }
         Action = "sts:AssumeRole"
       }
-    ]
+      ], var.agent_authority_enabled && var.agent_task_source_isolation_confirmed ? [{
+        Sid       = "GatewayCustomerTaskSource"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${local.account_id}:role/adp-${var.environment}-role-gateway-service" }
+        Action    = "sts:AssumeRole"
+    }] : [])
   })
 
   tags = {
@@ -430,5 +436,5 @@ locals {
 resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
   name   = "agent-worker-scoped-permissions"
   role   = aws_iam_role.agent_scaledjob.id
-  policy = jsonencode(local.agent_worker_scoped_policy)
+  policy = var.agent_legacy_worker_admin_retired ? jsonencode(local.agent_task_source_scoped_policy) : jsonencode(local.agent_worker_scoped_policy)
 }

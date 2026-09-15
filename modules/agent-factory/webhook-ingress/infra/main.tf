@@ -35,11 +35,11 @@ provider "aws" {
 # =============================================================================
 
 data "aws_eks_cluster" "main" {
-  name = var.eks_cluster_name
+  name = local.eks_cluster_name
 }
 
 data "aws_eks_cluster_auth" "main" {
-  name = var.eks_cluster_name
+  name = local.eks_cluster_name
 }
 
 provider "kubernetes" {
@@ -69,6 +69,7 @@ data "aws_region" "current" {}
 
 locals {
   name_prefix            = "adp-${var.environment}"
+  eks_cluster_name       = coalesce(var.eks_cluster_name, "adp-${var.environment}-eks-cluster")
   account_id             = data.aws_caller_identity.current.account_id
   lambda_artifact_bucket = var.lambda_artifact_bucket != "" ? var.lambda_artifact_bucket : "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
   agent_image            = var.agent_image != "" ? var.agent_image : "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/adp-agent-runtime:latest"

@@ -3,32 +3,32 @@
 # read permission. Terraform state is sensitive and remains in the platform
 # backend, which is outside the worker's beads/log/evidence S3 grants.
 resource "random_password" "agent_run_credential" {
-  count   = var.agent_authority_enabled ? 1 : 0
+  count   = local.agent_authority_provisioned ? 1 : 0
   length  = 64
   special = false
 }
 
 resource "tls_private_key" "agent_control_envelope" {
-  count     = var.agent_authority_enabled ? 1 : 0
+  count     = local.agent_authority_provisioned ? 1 : 0
   algorithm = "ED25519"
 }
 
 resource "tls_private_key" "agent_control_envelope_secondary" {
-  count     = var.agent_authority_enabled ? 1 : 0
+  count     = local.agent_authority_provisioned ? 1 : 0
   algorithm = "ED25519"
 }
 
 locals {
-  agent_control_key_slots = var.agent_authority_enabled ? {
+  agent_control_key_slots = local.agent_authority_provisioned ? {
     primary   = tls_private_key.agent_control_envelope[0]
     secondary = tls_private_key.agent_control_envelope_secondary[0]
   } : {}
-  agent_control_active_key = var.agent_authority_enabled ? local.agent_control_key_slots[var.agent_control_signing_key_slot] : null
+  agent_control_active_key = local.agent_authority_provisioned ? local.agent_control_key_slots[var.agent_control_signing_key_slot] : null
   agent_control_verification_keys = {
     for slot, key in local.agent_control_key_slots : substr(sha256(key.public_key_pem), 0, 16) => key.public_key_pem
     if var.agent_control_publish_both_keys || slot == var.agent_control_signing_key_slot
   }
-  agent_authority_key_id = var.agent_authority_enabled ? substr(sha256(local.agent_control_active_key.public_key_pem), 0, 16) : ""
+  agent_authority_key_id = local.agent_authority_provisioned ? substr(sha256(local.agent_control_active_key.public_key_pem), 0, 16) : ""
   agent_authority_env_block = var.agent_authority_enabled ? join("\n", [
     "                  - name: ADP_AGENT_AUTHORITY_ENABLED",
     "                    value: \"true\"",
@@ -66,7 +66,7 @@ locals {
 }
 
 resource "kubernetes_secret" "agent_authority" {
-  count = var.agent_authority_enabled ? 1 : 0
+  count = local.agent_authority_provisioned ? 1 : 0
   metadata {
     name      = "agent-authority-signing"
     namespace = var.gateway_namespace
@@ -77,14 +77,14 @@ resource "kubernetes_secret" "agent_authority" {
   }
   lifecycle {
     precondition {
-      condition     = length(var.agent_authority_worker_image_digests) > 0
+      condition     = !var.agent_authority_enabled || length(var.agent_authority_worker_image_digests) > 0
       error_message = "Enabling agent authority requires approved worker image digests."
     }
   }
 }
 
 resource "kubernetes_config_map" "agent_control_verification_keys" {
-  count = var.agent_authority_enabled ? 1 : 0
+  count = local.agent_authority_provisioned ? 1 : 0
   metadata {
     name      = "adp-control-verification-keys"
     namespace = kubernetes_namespace.adp_agents.metadata[0].name
@@ -93,7 +93,7 @@ resource "kubernetes_config_map" "agent_control_verification_keys" {
 }
 
 resource "kubernetes_cluster_role" "gateway_agent_tokenreview" {
-  count = var.agent_authority_enabled ? 1 : 0
+  count = local.agent_authority_provisioned ? 1 : 0
   metadata { name = "adp-${var.environment}-gateway-agent-tokenreview" }
   rule {
     api_groups = ["authentication.k8s.io"]
@@ -103,7 +103,7 @@ resource "kubernetes_cluster_role" "gateway_agent_tokenreview" {
 }
 
 resource "kubernetes_cluster_role_binding" "gateway_agent_tokenreview" {
-  count = var.agent_authority_enabled ? 1 : 0
+  count = local.agent_authority_provisioned ? 1 : 0
   metadata { name = "adp-${var.environment}-gateway-agent-tokenreview" }
   role_ref {
     api_group = "rbac.authorization.k8s.io"
@@ -118,7 +118,7 @@ resource "kubernetes_cluster_role_binding" "gateway_agent_tokenreview" {
 }
 
 resource "kubernetes_role" "gateway_agent_pod_read" {
-  count = var.agent_authority_enabled ? 1 : 0
+  count = local.agent_authority_provisioned ? 1 : 0
   metadata {
     name      = "gateway-agent-pod-read"
     namespace = kubernetes_namespace.adp_agents.metadata[0].name
@@ -131,7 +131,7 @@ resource "kubernetes_role" "gateway_agent_pod_read" {
 }
 
 resource "kubernetes_role_binding" "gateway_agent_pod_read" {
-  count = var.agent_authority_enabled ? 1 : 0
+  count = local.agent_authority_provisioned ? 1 : 0
   metadata {
     name      = "gateway-agent-pod-read"
     namespace = kubernetes_namespace.adp_agents.metadata[0].name

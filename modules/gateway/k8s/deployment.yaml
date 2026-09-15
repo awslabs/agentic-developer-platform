@@ -74,6 +74,11 @@ spec:
           envFrom:
             - configMapRef:
                 name: bedrockgateway-config
+            # Applied by webhook Terraform after the gateway's first bootstrap.
+            # Later envFrom entries override the legacy rendered defaults.
+            - configMapRef:
+                name: adp-worker-authority-config
+                optional: true
           env:
             - name: AGENT_RUN_CREDENTIAL_KEY
               valueFrom:

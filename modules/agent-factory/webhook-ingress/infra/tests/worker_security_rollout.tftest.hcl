@@ -1,0 +1,285 @@
+mock_provider "aws" {}
+mock_provider "kubernetes" {}
+mock_provider "helm" {}
+mock_provider "tls" {}
+
+variables {
+  # Enabling authority requires an approved immutable worker digest; the variable
+  # validation rejects tags, so a plausible digest is supplied rather than "".
+  agent_authority_worker_image_digests = ["sha256:0000000000000000000000000000000000000000000000000000000000000000"]
+  agent_image                          = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+override_data {
+  target          = data.aws_ssm_parameter.gateway_apigw_invoke_url
+  override_during = plan
+  values          = { value = "https://example123.execute-api.us-east-1.amazonaws.com/dev" }
+}
+
+override_resource {
+  target          = aws_cloudwatch_log_group.agent_bootstrap
+  override_during = plan
+  values          = { arn = "arn:aws:logs:us-east-1:123456789012:log-group:/adp/dev/agent-factory/bootstrap" }
+}
+
+override_resource {
+  target          = aws_sqs_queue.agent_submit
+  override_during = plan
+  values          = { arn = "arn:aws:sqs:us-east-1:123456789012:adp-dev-agent-submit.fifo" }
+}
+
+override_resource {
+  target          = aws_s3_bucket.agent_run_logs
+  override_during = plan
+  values          = { arn = "arn:aws:s3:::adp-dev-agent-run-logs-123456789012" }
+}
+
+# -----------------------------------------------------------------------------
+# Overrides: why they are here and why every one is `override_during = plan`
+# -----------------------------------------------------------------------------
+# The assertions read the RENDERED policy JSON, which interpolates ARNs from
+# resources and data sources in this stack. Under a mock provider those are
+# unknown until apply, so a plan-only run cannot evaluate the condition at all.
+# Pinning them makes the policy string known during plan.
+#
+# `command = apply` would be the other way to resolve them, but it is worse here:
+# the mock provider invents non-ARN strings for every computed attribute, and
+# unrelated resources (aws_lambda_function.gitlab_webhook,
+# aws_iam_role_policy_attachment.*) validate their inputs as ARNs and fail — so an
+# apply run fails for reasons that have nothing to do with the permission under
+# test. Plan + pinned ARNs keeps the failure surface to the policy itself.
+#
+# File-level so both runs share them: the two runs differ ONLY in the flag, which
+# is the variable whose effect is being measured.
+override_data {
+  target          = data.aws_caller_identity.current
+  override_during = plan
+  values = {
+    account_id = "123456789012"
+  }
+}
+
+override_data {
+  target          = data.aws_region.current
+  override_during = plan
+  values = {
+    name = "us-east-1"
+  }
+}
+
+# KMS validates its own policy document as JSON, and the OIDC locals index into
+# the cluster's identity list — neither relates to IAM; these two just let the
+# plan get far enough to render the policies.
+override_data {
+  target          = data.aws_iam_policy_document.dynamodb_kms
+  override_during = plan
+  values = {
+    json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+  }
+}
+
+override_data {
+  target          = data.aws_iam_policy_document.cloudwatch_kms
+  override_during = plan
+  values = {
+    json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+  }
+}
+
+override_data {
+  target          = data.aws_eks_cluster.main
+  override_during = plan
+  values = {
+    identity = [{
+      oidc = [{
+        issuer = "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
+      }]
+    }]
+    certificate_authority = [{
+      data = "TFNUQVJUQ0VSVElGSUNBVEU="
+    }]
+  }
+}
+
+override_data {
+  target          = data.aws_kms_alias.secrets
+  override_during = plan
+  values = {
+    target_key_arn = "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-2222-2222-222222222222"
+  }
+}
+
+# The four ARNs the two policies under test actually interpolate.
+override_resource {
+  target          = aws_kms_key.dynamodb
+  override_during = plan
+  values = {
+    arn = "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-1111-1111-111111111111"
+  }
+}
+
+override_resource {
+  target          = aws_dynamodb_table.webhook_events
+  override_during = plan
+  values = {
+    arn = "arn:aws:dynamodb:us-east-1:123456789012:table/adp-dev-webhook-events"
+  }
+}
+
+override_resource {
+  target          = aws_cloudwatch_log_group.agent_logs
+  override_during = plan
+  values = {
+    arn = "arn:aws:logs:us-east-1:123456789012:log-group:/adp/dev/agent-factory/agent"
+  }
+}
+
+override_resource {
+  target          = aws_secretsmanager_secret.marker_signing_key
+  override_during = plan
+  values = {
+    arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/marker-signing-key"
+  }
+}
+
+override_resource {
+  target          = aws_iam_policy.agent_authority_boundary
+  override_during = plan
+  values          = { arn = "arn:aws:iam::123456789012:policy/adp-dev-agent-authority-boundary" }
+}
+
+override_resource {
+  target          = aws_iam_role.keda_operator
+  override_during = plan
+  values = {
+    arn = "arn:aws:iam::123456789012:role/adp-dev-keda-operator-role"
+  }
+}
+
+
+run "prepare_without_activating_workers" {
+  command = plan
+  variables {
+    agent_authority_enabled              = false
+    agent_authority_worker_image_digests = []
+  }
+  assert {
+    condition     = local.agent_worker_pause_annotation == "" && !contains(keys(kubernetes_config_map.worker_gateway[0].data), "AGENT_DISPATCH_QUEUE_URL")
+    error_message = "Preparation must neither pause KEDA nor enable a previously unwired dispatch queue."
+  }
+  assert {
+    condition     = length(aws_iam_role.agent_authority_worker) == 1 && length(kubernetes_secret.agent_authority) == 1
+    error_message = "Preparation must provision the bounded role and signing resources."
+  }
+  assert {
+    condition     = local.agent_worker_sa_name == "agent-scaledjob-sa" && kubernetes_config_map.worker_gateway[0].data.AGENT_AUTHORITY_ENABLED == "false"
+    error_message = "Preparation must preserve legacy launches and gateway authentication."
+  }
+  assert {
+    condition     = aws_lambda_function.github_webhook.environment[0].variables.ADP_WORK_CLAIMS_ENABLED == "false"
+    error_message = "Preparation must not enable producer admission."
+  }
+  assert {
+    condition     = length(aws_iam_role_policy_attachments_exclusive.legacy_worker) == 0 && aws_iam_role.agent_scaledjob.permissions_boundary == null
+    error_message = "Preparation must not retire permissions of existing workers."
+  }
+  assert {
+    condition     = length([for s in jsondecode(aws_iam_role.agent_scaledjob.assume_role_policy).Statement : s if try(s.Sid, "") == "GatewayCustomerTaskSource"]) == 0
+    error_message = "Preparation must not enable customer task-source assumption."
+  }
+}
+
+run "preparation_is_environment_scoped" {
+  command = plan
+  variables {
+    environment = "staging"
+    aws_region  = "eu-west-1"
+  }
+  override_data {
+    target          = data.aws_ssm_parameter.gateway_apigw_invoke_url
+    override_during = plan
+    values          = { value = "https://staging123.execute-api.eu-west-1.amazonaws.com/staging" }
+  }
+  assert {
+    condition     = aws_iam_role.agent_authority_worker[0].name == "adp-staging-agent-authority-worker-role" && local.eks_cluster_name == "adp-staging-eks-cluster"
+    error_message = "Neither the role nor the cluster may silently target dev."
+  }
+  assert {
+    condition     = nonsensitive(aws_iam_role_policy.lambda_work_claim_admission[0].policy) == jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = ["execute-api:Invoke"], Resource = ["arn:aws:execute-api:eu-west-1:123456789012:staging123/staging/POST/internal/v1/agent/work/admit"] }] })
+    error_message = "Producer IAM must target only the selected environment API, stage and region."
+  }
+}
+
+run "activation_refuses_missing_release_acceptance" {
+  command = plan
+  variables { agent_authority_enabled = true }
+  expect_failures = [terraform_data.worker_security_rollout]
+}
+
+run "activation_refuses_mutable_worker_image" {
+  command = plan
+  variables {
+    agent_authority_enabled                = true
+    agent_authority_runtime_ready          = true
+    agent_authority_legacy_workers_drained = true
+    agent_image                            = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest"
+  }
+  expect_failures = [terraform_data.worker_security_rollout]
+}
+
+run "preparation_refuses_source_activation" {
+  command = plan
+  variables { agent_task_source_isolation_confirmed = true }
+  expect_failures = [terraform_data.worker_security_rollout]
+}
+
+run "retirement_refuses_undrained_legacy_workers" {
+  command = plan
+  variables { agent_legacy_worker_admin_retired = true }
+  expect_failures = [aws_iam_role_policy_attachments_exclusive.legacy_worker]
+}
+
+run "activated_worker_uses_protected_identity" {
+  command = plan
+  variables {
+    agent_authority_enabled                = true
+    agent_authority_runtime_ready          = true
+    agent_authority_legacy_workers_drained = true
+    agent_worker_admission_paused          = true
+  }
+  assert {
+    condition     = strcontains(local.agent_worker_pause_annotation, "autoscaling.keda.sh/paused")
+    error_message = "The staged activation must keep admissions paused."
+  }
+  assert {
+    condition     = local.agent_worker_sa_name == "agent-authority-worker-sa" && kubernetes_config_map.worker_gateway[0].data.AGENT_AUTHORITY_ENABLED == "true"
+    error_message = "The verified activation must configure both worker and gateway authority."
+  }
+  assert {
+    condition     = aws_lambda_function.github_webhook.environment[0].variables.ADP_WORK_CLAIMS_ENABLED == "true"
+    error_message = "Protected producers must use work admission."
+  }
+}
+
+run "retired_source_keeps_only_customer_sts_authority" {
+  command = plan
+  variables {
+    agent_authority_enabled                = true
+    agent_authority_runtime_ready          = true
+    agent_authority_legacy_workers_drained = true
+    agent_task_source_isolation_confirmed  = true
+    agent_legacy_worker_admin_retired      = true
+  }
+  assert {
+    condition     = length(aws_iam_role_policy_attachments_exclusive.legacy_worker[0].policy_arns) == 0
+    error_message = "Terraform must remove out-of-band administrator attachments."
+  }
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.agent_scaledjob_permissions.policy).Statement[1].NotAction == ["sts:AssumeRole", "sts:TagSession", "sts:SetSourceIdentity", "sts:GetCallerIdentity"]
+    error_message = "The retired source role may not regain platform operations."
+  }
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.agent_scaledjob_permissions.policy).Statement[2].Resource == "arn:aws:iam::123456789012:role/*"
+    error_message = "The retired source must deny chaining into the platform account."
+  }
+}

@@ -166,6 +166,7 @@ locals {
     metadata:
       name: agent-scaledjob
       namespace: ${kubernetes_namespace.adp_agents.metadata[0].name}
+${local.agent_worker_pause_annotation}
       labels:
         app.kubernetes.io/name: agent-scaledjob
         app.kubernetes.io/part-of: adp-agent-factory
@@ -173,6 +174,8 @@ locals {
       pollingInterval: 5
       minReplicaCount: 0
       maxReplicaCount: 50
+      rollout:
+        strategy: gradual
       # Issue #4031: keep at most ONE Completed job visible. FIFO group
       # serialization makes KEDA spawn speculative pods that receive nothing
       # and exit 0 (entrypoint.py: "No message available after long-poll") —
@@ -401,7 +404,7 @@ resource "null_resource" "keda_trigger_auth" {
   triggers = {
     manifest_sha   = sha256(local.keda_trigger_auth_yaml)
     namespace      = kubernetes_namespace.adp_agents.metadata[0].name
-    cluster_name   = var.eks_cluster_name
+    cluster_name   = local.eks_cluster_name
     cluster_region = var.aws_region
   }
 
@@ -411,7 +414,7 @@ resource "null_resource" "keda_trigger_auth" {
     }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      aws eks update-kubeconfig --name ${local.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.keda_trigger_auth_yaml}
 EOF
@@ -440,10 +443,16 @@ EOF
 }
 
 resource "null_resource" "keda_scaledjob" {
+  # A manifest update replaces this Terraform carrier. Deleting the ScaledJob
+  # first would cascade into live Jobs. Apply the new template in place instead;
+  # full teardown removes the Terraform-owned namespace and its children.
+  lifecycle {
+    create_before_destroy = true
+  }
   triggers = {
     manifest_sha   = sha256(local.keda_scaledjob_yaml)
     namespace      = kubernetes_namespace.adp_agents.metadata[0].name
-    cluster_name   = var.eks_cluster_name
+    cluster_name   = local.eks_cluster_name
     cluster_region = var.aws_region
   }
 
@@ -453,7 +462,7 @@ resource "null_resource" "keda_scaledjob" {
     }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      aws eks update-kubeconfig --name ${local.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.keda_scaledjob_yaml}
 EOF
@@ -476,5 +485,7 @@ EOF
     kubernetes_config_map.agent_control_verification_keys,
     kubernetes_role_binding.runner_keda_manage,
     helm_release.keda,
+    terraform_data.worker_security_rollout,
+    terraform_data.worker_gateway_rollout,
   ]
 }
