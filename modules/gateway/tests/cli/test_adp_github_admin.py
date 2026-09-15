@@ -162,7 +162,12 @@ def test_configured_credentials_never_claim_a_verified_login(home):
     [
         ({"login_enabled": False}, {}, [HEALTHY_CONNECTION], "sign in"),
         ({}, {}, [], "repositories"),
-        ({}, {}, [{"installation_id": 7, "verification": {"record_present": True, "tenant_secret_seeded": False, "identity_index_row": True}}], "repositories"),
+        (
+            {},
+            {},
+            [{"installation_id": 7, "verification": {"record_present": True, "tenant_secret_seeded": False, "identity_index_row": True}}],
+            "repositories",
+        ),
         ({}, {"app_webhook_url_matches": False}, [HEALTHY_CONNECTION], "agent integration"),
         ({}, {"app_permissions_match": False}, [HEALTHY_CONNECTION], "agent integration"),
         ({}, {"webhook_secret": False}, [HEALTHY_CONNECTION], "agent integration"),
@@ -359,7 +364,14 @@ def credentials(home, **extra):
     return secret_file(
         home,
         "github-app.json",
-        {"app_id": APP_ID, "private_key_file": str(key), "client_id": "Iv1.fixture", "client_secret": OAUTH_SECRET, "webhook_secret": WEBHOOK_SECRET, **extra},
+        {
+            "app_id": APP_ID,
+            "private_key_file": str(key),
+            "client_id": "Iv1.fixture",
+            "client_secret": OAUTH_SECRET,
+            "webhook_secret": WEBHOOK_SECRET,
+            **extra,
+        },
     )
 
 
@@ -431,7 +443,13 @@ def test_world_readable_private_key_is_refused_before_anything_is_sent(home):
     api = FakeApi()
     with pytest.raises(common.CliError) as exc:
         cli.run(
-            arguments("setup", "--existing", "--credentials-file", secret_file(home, "creds.json", {"app_id": APP_ID, "private_key_file": str(key)}), "--json"),
+            arguments(
+                "setup",
+                "--existing",
+                "--credentials-file",
+                secret_file(home, "creds.json", {"app_id": APP_ID, "private_key_file": str(key)}),
+                "--json",
+            ),
             api,
             interactive=False,
         )
@@ -443,7 +461,9 @@ def test_import_without_a_private_key_is_a_usage_error(home):
     api = FakeApi()
     with pytest.raises(common.CliError) as exc:
         cli.run(
-            arguments("setup", "--existing", "--credentials-file", secret_file(home, "creds.json", {"app_id": APP_ID}), "--json"), api, interactive=False
+            arguments("setup", "--existing", "--credentials-file", secret_file(home, "creds.json", {"app_id": APP_ID}), "--json"),
+            api,
+            interactive=False,
         )
     assert exc.value.exit_code == 1
     assert api.mutations == []
