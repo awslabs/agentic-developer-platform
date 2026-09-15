@@ -263,6 +263,5 @@ class TestOfflineCiLane:
         # `on:` parses as the boolean True in YAML 1.1, so accept either key.
         triggers = lane.get("on") or lane.get(True)
         assert triggers["pull_request"].get("branches") == ["main"], (
-            "superplane-domain-ci.yml's pull_request trigger must pin branches: [main], "
-            "matching every other pull_request lane in the repo."
+            "superplane-domain-ci.yml's pull_request trigger must pin branches: [main], matching every other pull_request lane in the repo."
         )

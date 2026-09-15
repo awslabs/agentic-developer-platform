@@ -1151,6 +1151,11 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "
       bash "$ROOT_DIR/modules/gateway/scripts/apply-internal-plane-deny.sh" || \
       warn "Internal-plane deny (#4010) not applied; re-run after the API GW repoint lands."
   fi
+else
+  # Announce the skip rather than passing over silently. Every other phase reports its
+  # own exclusion, and a run that jumps from Step 4 to Step 6 with no explanation reads
+  # like the script lost a phase.
+  step "Step 5/12: Skipping ALB and API Gateway wiring (scope exclusion)"
 fi
 
 refresh_credentials
