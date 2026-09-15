@@ -295,10 +295,17 @@ class TestInternalPlaneScope:
 
 
 @pytest.mark.parametrize("enabled", ["true", "false"])
-@pytest.mark.parametrize("path", [
-    "github-installation-token", "credential-raw-read", "credential-assume-role",
-    "proxy-request", "credential-materialize", "worker-task-credentials",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "github-installation-token",
+        "credential-raw-read",
+        "credential-assume-role",
+        "proxy-request",
+        "credential-materialize",
+        "worker-task-credentials",
+    ],
+)
 def test_registry_protected_worker_cannot_downgrade_to_legacy_binding(monkeypatch, enabled, path):
     from unittest.mock import AsyncMock
 
@@ -307,10 +314,15 @@ def test_registry_protected_worker_cannot_downgrade_to_legacy_binding(monkeypatc
     from src.auth.agent_registry import agent_entry_to_token_context
 
     monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", enabled)
-    protected = agent_entry_to_token_context({
-        "agent_id": "authority-worker", "agent_name": "authority-worker", "org_id": "platform",
-        "team_id": "agents", "scope": "internal",
-    })
+    protected = agent_entry_to_token_context(
+        {
+            "agent_id": "authority-worker",
+            "agent_name": "authority-worker",
+            "org_id": "platform",
+            "team_id": "agents",
+            "scope": "internal",
+        }
+    )
     assert protected.requires_run_identity is True  # also protects pre-field registry rows
     guarded = FastAPI()
     guarded.add_api_route(f"/internal/v1/{path}", test_endpoint, methods=["POST"])
@@ -319,17 +331,25 @@ def test_registry_protected_worker_cannot_downgrade_to_legacy_binding(monkeypatc
         patch("src.internal.auth_deps.extract_iam_identity_from_headers", return_value=protected),
         patch("src.agentauth.broker_identity.verify_broker_worker", verify),
     ):
-        response = TestClient(guarded).post(f"/internal/v1/{path}", json={"user_id": "victim", "invocation_id": "victim-run"}, headers={
-            "X-Caller-Identity": "arn:aws:sts::123456789012:assumed-role/protected/session",
-            "X-Internal-Api-Key": _VALID_KEY,
-        })
+        response = TestClient(guarded).post(
+            f"/internal/v1/{path}",
+            json={"user_id": "victim", "invocation_id": "victim-run"},
+            headers={
+                "X-Caller-Identity": "arn:aws:sts::123456789012:assumed-role/protected/session",
+                "X-Internal-Api-Key": _VALID_KEY,
+            },
+        )
     assert response.status_code == 404
     verify.assert_awaited_once()
 
 
 def test_registry_requirement_is_carried_for_new_worker_names():
     from src.auth.agent_registry import AgentRegistryService, agent_entry_to_token_context
-    entry = AgentRegistryService(table_name="fixture")._parse_dynamodb_item({
-        "agent_id": {"S": "future-worker"}, "requires_run_identity": {"BOOL": True},
-    })
+
+    entry = AgentRegistryService(table_name="fixture")._parse_dynamodb_item(
+        {
+            "agent_id": {"S": "future-worker"},
+            "requires_run_identity": {"BOOL": True},
+        }
+    )
     assert agent_entry_to_token_context(entry).requires_run_identity is True

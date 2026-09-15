@@ -347,20 +347,26 @@ async def test_cancellation_during_provider_work_withholds_token(session, assign
         assignment.grant = replace(assignment.grant, expires_at=datetime.now(UTC) - timedelta(seconds=1))
 
     if during == "key_lookup":
+
         async def key_lookup(*_):
             await cancel()
             return "app-test", "test-key"
+
         monkeypatch.setattr("src.internal.routes.resolve_tenant_app_credentials", key_lookup)
     elif during == "mint":
+
         async def mint(*_, **__):
             await cancel()
             return "scoped-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+
         broker_client.mint.side_effect = mint
     else:
         from src.internal.routes import _write_audit
+
         async def audit(*args, **kwargs):
             await _write_audit(*args, **kwargs)
             await cancel()
+
         monkeypatch.setattr("src.internal.routes._write_audit", audit)
 
     response = await broker_client.client.post(GITHUB, json=broker_client.body)
