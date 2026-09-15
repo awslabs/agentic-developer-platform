@@ -215,7 +215,7 @@ class ProxyService(IProxyService):
             decision = await resolve_routing_decision(context)
 
             # Get Bedrock client from pool
-            client = await self._pool_service.get_client(decision.credentials)
+            client = await self._client_for_request(decision, context)
 
             # Invoke Bedrock
             response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target)
@@ -316,7 +316,7 @@ class ProxyService(IProxyService):
             decision = await resolve_routing_decision(context)
 
             # Get Bedrock client from pool
-            client = await self._pool_service.get_client(decision.credentials)
+            client = await self._client_for_request(decision, context)
 
             # Invoke Bedrock with streaming
             response_id = str(uuid.uuid4())
@@ -734,6 +734,14 @@ class ProxyService(IProxyService):
         else:
             return response.model_dump()
 
+    async def _client_for_request(self, decision: RoutingDecision, context: TokenContext) -> Any:
+        # SDK retries can repeat a billed invocation after an ambiguous response.
+        # A bounded request reserves exactly one attempt; retries must return to
+        # gateway admission with a new server-owned spend ID.
+        if context._policy_flow_target is not None:
+            return await self._pool_service.get_client(decision.credentials, single_attempt=True)
+        return await self._pool_service.get_client(decision.credentials)
+
     async def _invoke_bedrock(
         self,
         client: Any,
@@ -902,7 +910,7 @@ class ProxyService(IProxyService):
         decision = RoutingDecision()
         try:
             decision = await resolve_routing_decision(context)
-            client = await self._pool_service.get_client(decision.credentials)
+            client = await self._client_for_request(decision, context)
             bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
@@ -956,7 +964,7 @@ class ProxyService(IProxyService):
         decision = RoutingDecision()
         try:
             decision = await resolve_routing_decision(context)
-            client = await self._pool_service.get_client(decision.credentials)
+            client = await self._client_for_request(decision, context)
             response_id = str(uuid.uuid4())
 
             bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
@@ -1016,7 +1024,7 @@ class ProxyService(IProxyService):
         decision = RoutingDecision()
         try:
             decision = await resolve_routing_decision(context)
-            client = await self._pool_service.get_client(decision.credentials)
+            client = await self._client_for_request(decision, context)
             bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
@@ -1070,7 +1078,7 @@ class ProxyService(IProxyService):
         decision = RoutingDecision()
         try:
             decision = await resolve_routing_decision(context)
-            client = await self._pool_service.get_client(decision.credentials)
+            client = await self._client_for_request(decision, context)
             response_id = str(uuid.uuid4())
 
             bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
@@ -1127,7 +1135,7 @@ class ProxyService(IProxyService):
         decision = RoutingDecision()
         try:
             decision = await resolve_routing_decision(context)
-            client = await self._pool_service.get_client(decision.credentials)
+            client = await self._client_for_request(decision, context)
             bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
@@ -1179,7 +1187,7 @@ class ProxyService(IProxyService):
         decision = RoutingDecision()
         try:
             decision = await resolve_routing_decision(context)
-            client = await self._pool_service.get_client(decision.credentials)
+            client = await self._client_for_request(decision, context)
             response_id = str(uuid.uuid4())
 
             bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)

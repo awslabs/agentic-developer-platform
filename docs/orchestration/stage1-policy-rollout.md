@@ -71,6 +71,10 @@ byte estimates for hidden provider framing; trusted usage returns unused
 headroom. The original body frames are replayed unchanged. Upload completion
 triggers another authorization check before spend.
 
+Policy-bound Bedrock clients disable SDK retries for both streaming and ordinary
+invocations. An ambiguous provider failure retains the original hold; another
+attempt must return through admission with a fresh server-owned spend ID.
+
 Responses, non-text inputs, stateful server history/MCP/tools, missing bounds
 and unsupported models/routes are refused. Their bounded-provider prerequisite
 is [#5175](https://github.com/aws-e/adp/issues/5175).

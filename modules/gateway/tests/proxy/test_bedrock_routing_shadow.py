@@ -263,7 +263,9 @@ class TestAuditDoesNotChooseCredentials:
 
         for cls in (SimplePoolService, IPoolService):
             parameters = inspect.signature(cls.get_client).parameters
-            assert list(parameters) == ["self", "credentials"], f"{cls.__name__}.get_client takes exactly the credentials the caller resolved"
+            assert list(parameters) == ["self", "credentials", "single_attempt"], f"{cls.__name__}.get_client accepts no routing authority inputs"
+            assert parameters["single_attempt"].default is False
+            assert parameters["single_attempt"].kind is inspect.Parameter.KEYWORD_ONLY
             assert parameters["credentials"].default is None, f"{cls.__name__}.get_client must default to the ambient platform client"
 
     @pytest.mark.asyncio
