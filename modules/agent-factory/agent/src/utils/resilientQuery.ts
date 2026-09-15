@@ -189,21 +189,71 @@ const RETRYABLE_PATTERNS = [
   'overloaded',
   'capacity',
   'internal server error',
+  'internalserverexception',
   'bad gateway',
   'gateway timeout',
 ];
 
+/** SDK failures can arrive as messages instead of thrown exceptions. */
+class SDKResponseError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message);
+    this.name = 'SDKResponseError';
+  }
+}
+
 function isRetryableError(err: unknown): boolean {
+  if (err instanceof SDKResponseError) return err.retryable;
   const message = ((err as Error)?.message || String(err)).toLowerCase();
   return RETRYABLE_PATTERNS.some(p => message.includes(p));
+}
+
+function sdkResponseError(text: string, code?: string): SDKResponseError {
+  // A structured auth/billing/validation/limit error must not be retried just
+  // because its explanation happens to mention a retryable error or status.
+  const retryable = code && code !== 'unknown'
+    ? ['server_error', 'rate_limit', 'overloaded'].includes(code)
+    : isRetryableError(new Error(text));
+  return new SDKResponseError(text || `Claude SDK API error: ${code ?? 'unknown'}`, retryable);
+}
+
+function assistantResponseError(message: Extract<SDKStreamMessage, { type: 'assistant' }>): SDKResponseError | undefined {
+  const content = message.message?.content ?? [];
+  const text = content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+  if (message.error) return sdkResponseError(text, message.error);
+  // Compatibility with SDK/provider paths that omit `error`. Only recognize
+  // the SDK's leading sentinel in a text-only message, never a quoted error,
+  // a tool call, or an ordinary explanation that mentions an API failure.
+  if (content.every(block => block.type === 'text') && /^API Error:\s*/.test(text.trimStart())) {
+    return sdkResponseError(text);
+  }
+  return undefined;
+}
+
+function resultResponseError(
+  message: Extract<SDKStreamMessage, { type: 'result' }>,
+  pendingError: SDKResponseError | undefined,
+): SDKResponseError | undefined {
+  if (message.subtype !== 'success') {
+    const detail = message.errors?.join('\n') || pendingError?.message || `Claude SDK result: ${message.subtype}`;
+    // Task limits are terminal even when an earlier provider error was
+    // retryable. Resuming must not reset a max-turns or budget stop.
+    return new SDKResponseError(detail, message.subtype === 'error_during_execution'
+      && (pendingError?.retryable ?? isRetryableError(new Error(detail))));
+  }
+  if (pendingError) return pendingError;
+  if (message.is_error || /^API Error:\s*/.test(message.result?.trimStart() ?? '')) {
+    return sdkResponseError(message.result || 'Claude SDK result marked is_error');
+  }
+  return undefined;
 }
 
 /**
  * Wraps the SDK query() in a retry loop. On each attempt the full async
  * iterator is consumed and messages are yielded to the caller. If the
- * stream throws a retryable error, we wait with exponential backoff and
- * retry — optionally with a resume context prefix so the agent doesn't
- * redo completed work.
+ * stream throws or reports a retryable API failure, we wait with exponential
+ * backoff and retry — optionally with a resume context prefix so the agent
+ * doesn't redo completed work.
  *
  * Non-retryable errors are re-thrown immediately.
  */
@@ -344,6 +394,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
 
       const session = query(effectiveParams);
       try {
+        let pendingAssistantError: SDKResponseError | undefined;
         // Await attachment before reading output. Cancellation wakes stalled setup.
         if (onAttemptHandle) {
           try {
@@ -389,10 +440,25 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
               }
             }
           }
+          // The SDK can emit an API-error assistant turn followed by a
+          // success-shaped result. Validate BEFORE yielding the result: callers
+          // such as agent-worker break their loop as soon as they receive it.
+          // Hold the error until completion so SDK-internal recovery can still
+          // replace it with a successful top-level assistant response.
+          if (result.value.type === 'assistant' && result.value.parent_tool_use_id == null) {
+            pendingAssistantError = assistantResponseError(result.value);
+            if (pendingAssistantError) continue;
+          }
+          if (result.value.type === 'result') {
+            const responseError = resultResponseError(result.value, pendingAssistantError);
+            if (responseError) throw responseError;
+          }
           messagesThisAttempt++;
           totalMessagesYielded++;
           yield result.value;
         }
+        // Some SDK paths end without a result after reporting an API error.
+        if (pendingAssistantError) throw pendingAssistantError;
       } finally {
         // Invalidate input before closing the transport. Ordinary callers keep
         // synchronous teardown when no input factory is installed.
