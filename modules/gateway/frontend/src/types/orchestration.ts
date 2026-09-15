@@ -78,6 +78,13 @@ export interface GraphNode {
   issue_ref: string | null;
   attempts: number;
   run_id?: string | null;
+  /** Current developer/reviewer in this attempt's chain; not a merge verdict. */
+  activity?: {
+    invocation_id: string;
+    persona: 'developer' | 'reviewer';
+    status: string;
+    liveness: 'live' | 'unverifiable' | 'exited';
+  } | null;
   issue_url?: string | null;
   result_summary?: string | null;
   configuration_problem?: string | null;

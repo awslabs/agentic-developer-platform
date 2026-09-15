@@ -56,10 +56,27 @@ function reasonBadge(node: GraphNode): string | null {
   return null;
 }
 
+function storyStage(node: GraphNode): string | null {
+  if (node.kind !== 'story' || node.stalled || !['running', 'awaiting_merge'].includes(node.state)) return null;
+  const activity = node.activity;
+  if (activity && activity.liveness !== 'exited') {
+    const stage = activity.persona === 'reviewer' ? 'Review' : node.state === 'awaiting_merge' ? 'Fixes' : 'Development';
+    if (activity.liveness === 'unverifiable') return `${stage} status unconfirmed`;
+    if (activity.status === 'in_progress') return `${stage} in progress`;
+    if (activity.status === 'webhook_received') return `${stage} queued`;
+    return `${stage} status unconfirmed`;
+  }
+  return node.state === 'awaiting_merge' ? 'Awaiting merge' : null;
+}
+
 export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeChipProps) {
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
+  const stage = storyStage(node);
+  const resultSummary = node.kind === 'story'
+    ? node.result_summary?.replace(/^Agent finished\./, 'Development finished.')
+    : node.result_summary;
   // Decision reasons carry an audit-source prefix, including when no note was
   // entered. Show the reviewer's text while preserving the stored audit value.
   const feedback = node.last_gate_decision?.reason
@@ -117,14 +134,20 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeC
           {/* The projected state, as text. The fill is a second channel, never
               the only one. */}
           {style && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
+          {stage && <p className="mt-1 text-sm font-medium text-blue-700 dark:text-blue-300" data-testid={`node-stage-${node.node_ref}`}>{stage}</p>}
           {node.configuration_problem && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
-          {node.result_summary && <p className="mt-1 text-sm">{node.result_summary}</p>}
-          <div className="mt-1 flex gap-3 text-xs">
+          {resultSummary && <p className="mt-1 text-sm">{resultSummary}</p>}
+          <div className="mt-1 flex flex-wrap gap-3 text-xs">
             {node.issue_url && (
               <a href={node.issue_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View issue and evidence</a>
             )}
             {node.run_id && (
               <Link to={`/activity?id=${encodeURIComponent(node.run_id)}`} className="text-blue-600 underline">View run</Link>
+            )}
+            {stage && node.run_id && node.activity && node.activity.invocation_id !== node.run_id && node.activity.liveness !== 'exited' && (
+              <Link to={`/activity?chain=${encodeURIComponent(node.run_id)}&highlight=${encodeURIComponent(node.activity.invocation_id)}`} className="text-blue-600 underline">
+                {node.activity.persona === 'reviewer' ? 'View review run' : 'View fixes run'}
+              </Link>
             )}
           </div>
 
