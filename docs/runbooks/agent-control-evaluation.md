@@ -152,7 +152,8 @@ generation and digests with your fixture's actual ones.
     "transport_guard": "artifacts/transport_guard.json",
     "flag_parity": "artifacts/flag_parity.json",
     "journal_tests": "artifacts/journal_tests.json",
-    "negative_tests": "artifacts/negative_tests.json"
+    "negative_tests": "artifacts/negative_tests.json",
+    "neutral_contract": "artifacts/neutral_contract.json"
   },
 
   "cleanup_items": [
@@ -229,6 +230,7 @@ Required keys per artifact:
 | `flag_parity` | W1-08 | `flag_off_events_digest`, `flag_on_events_digest`, `differing_fields`, `ordinary_flags_off` |
 | `journal_tests` | W1-09 | `replay_same_id`, `content_conflict`, `bounds_enforced`, `expiry_is_unknown`, `assistant_turns` |
 | `negative_tests` | W1-10 | `wrong_account`, `missing_isolation`, `wrong_key`, `absent_required_check`, `unknown_check_id`, `failed_cleanup` |
+| `neutral_contract` | W2-02 | `protocol_version`, `adapter_id`, `sdk_version`, `sdk_matches_lockfile`, `adapters`, `second_adapter`, `no_provider_types_in_shared_contract`, `capability_intersection_proven`, `normalized_input_kinds_proven`, `authorization_at_handoff`, `unknown_outcome_supported`, `opaque_attempt_replacement`, `stale_events_rejected`, `disposed_once`, `fresh_private_input_per_attempt`, `session_and_no_option_behavior_preserved`, `cancel_prevents_new_query`, `forced_retry_exercised` |
 
 For `token_lifecycle`, use the expiry produced by the real registration writer
 and propagated to the listener as `ADP_CONTROL_TOKEN_EXPIRES_AT`. Record an
@@ -246,6 +248,85 @@ Two the harness is strict about, because the evaluation names them:
   from "still trying".
 * **`journal_tests.assistant_turns`** must be `0`. Polling a read contract must
   cost no model tokens and must not perturb the run.
+
+### `neutral_contract` (W2-02, wave 2)
+
+The one artifact whose evidence comes from a test run rather than from the
+cluster. The neutral contract suite lives where the code does, and the story is
+explicit that development and PR tests need no AWS credential — so record its
+result here and the harness validates it, like every other artifact.
+
+Produce it from the suite the story names:
+
+```sh
+(cd modules/agent-factory/agent && npx jest --runInBand --json --outputFile=/tmp/contract.json \
+   --runTestsByPath src/control-runtime.test.ts src/harnesses/claude-control.test.ts \
+                    src/utils/resilientQuery.test.ts)
+```
+
+Then record, per adapter, whether the neutral suite passed and how many tests
+ran. The count is not decoration: a suite that ran **zero** tests exits 0, so
+`passed: true` alone is satisfied by a deleted file.
+
+```json
+{
+  "protocol_version": 1,
+  "adapter_id": "claude",
+  "sdk_version": "0.3.220",
+  "sdk_matches_lockfile": true,
+  "adapters": {
+    "claude": {"passed": true, "test_count": 61},
+    "echo":   {"passed": true, "test_count": 61}
+  },
+  "second_adapter": {
+    "name": "echo",
+    "declares_missing_capability": true,
+    "imports_provider_sdk": false
+  },
+  "no_provider_types_in_shared_contract": true,
+  "capability_intersection_proven": true,
+  "normalized_input_kinds_proven": true,
+  "authorization_at_handoff": true,
+  "unknown_outcome_supported": true,
+  "opaque_attempt_replacement": true,
+  "stale_events_rejected": true,
+  "disposed_once": true,
+  "fresh_private_input_per_attempt": true,
+  "session_and_no_option_behavior_preserved": true,
+  "cancel_prevents_new_query": true,
+  "forced_retry_exercised": true
+}
+```
+
+Three things the harness is strict about:
+
+* **Both adapters must appear, and the second must not be Claude.** One adapter
+  passing a neutral suite proves the suite runs, not that the contract is
+  neutral.
+* **`second_adapter.declares_missing_capability` must be `true`.** Without a
+  capability gap, the intersection is never observed doing anything — an adapter
+  that ignored support entirely would pass.
+* **`second_adapter.imports_provider_sdk` must be `false`.** A second adapter
+  that mimics `Query`/`SDKUserMessage` proves the shared contract accepts
+  Claude's shape, which is the opposite of the property being evaluated.
+
+`sdk_version` is compared against the lockfile pin. The streaming-input and
+`shouldQuery` behaviours the adapter relies on are *observed* SDK behaviour, not
+a documented permanent guarantee, so evidence from another version does not
+carry over — a bump is a prompt to rerun this suite.
+
+## Wave 2 is incomplete on purpose
+
+`--wave 2` runs today and does **not** exit 0. Its full ten-check manifest is
+transcribed from evaluation #3968, but only `W2-02` has a predicate: it is the
+check S3 delivers. The other nine report `not_run` naming the story that owns
+them.
+
+That is deliberate. `report_is_passing` asks `passed == required`, so a wave
+registered with only its one finished check would be a 1/1 wave that exits 0 —
+handing you a green report for a wave whose pause proof and abort vocabulary do
+not exist yet. Run `--wave 2` to see `W2-02` pass and exactly which stories are
+outstanding; expect exit 4 until they land.
 
 ## Cleanup
 
