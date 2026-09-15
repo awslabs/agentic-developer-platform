@@ -1,0 +1,486 @@
+/**
+ * Live pause/resume experiment against the real Claude Agent SDK — Issue #3961.
+ *
+ * ## Why this file exists, and why it is not a unit test
+ *
+ * Every other test of the pause barrier drives the gate and the hook callbacks
+ * directly. That proves the coordinator's logic, and it cannot prove the thing
+ * AC-P1 actually claims, because the claim is about a *provider*: that returning
+ * `permissionDecision: 'deny'` from a `PreToolUse` hook really does stop the tool
+ * before its side effects, that a hook may block for as long as an operator holds
+ * a pause, and that the turn afterwards is the same turn rather than a new one.
+ * Those are observed SDK behaviours. A mock cannot testify about them — it can
+ * only replay the behaviour I assumed while writing it, which is exactly the
+ * assumption under test.
+ *
+ * So this file runs a real `query()`, against the real CLI subprocess, on the real
+ * lockfile SDK, and watches the filesystem to see whether a tool the barrier
+ * denied left a trace. The fixture writes a file: `wrote` or `did not write` is
+ * not a matter of interpretation.
+ *
+ * It is deliberately **not** named with a `.test.ts` suffix. Jest's `testMatch`
+ * only collects that suffix, so this cannot be picked up by `npx jest`, cannot run
+ * in unit CI, and cannot make a PR check depend on model availability, network
+ * egress or spend. It is run explicitly:
+ *
+ * ```
+ * npx ts-node src/control-runtime.integration.ts            # run, print report
+ * npx ts-node src/control-runtime.integration.ts --json out.json
+ * ```
+ *
+ * ## What "proof" means here, and what this file will not claim
+ *
+ * The wave-2 evaluator (`platform/scripts/agent-control-eval.py`, W2-03/04/05)
+ * consumes operator-recorded artifacts with exactly the keys this run emits. The
+ * important half is what happens when a property cannot be observed: every field
+ * is recorded from a measurement, and a measurement that could not be taken is
+ * written as `null`, never as a passing default. A `null` fails the evaluator's
+ * assertion, which is correct — "we could not observe it" and "it works" must not
+ * produce the same artifact. That asymmetry is the whole reason this is an
+ * experiment rather than a demonstration.
+ *
+ * Nothing here decides whether the story is accepted. Live acceptance belongs to
+ * evaluation #3968, reading these artifacts alongside the deployed build.
+ */
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { createClaudePauseHooks, ClaudeBackgroundWorkObserver, CLAUDE_SDK_VERSION } from './harnesses/claude-control';
+import { PauseGate } from './pause-gate';
+
+/** Recorded outcome of one experiment. `null` anywhere means "not observed". */
+interface ExperimentReport {
+  readonly name: string;
+  readonly ok: boolean;
+  readonly detail: string;
+  readonly artifact: Record<string, unknown>;
+}
+
+const SETTLE_MS = 2_000;
+
+/** Milliseconds. Real time, because the SDK subprocess does not accept a fake clock. */
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Load the SDK's ESM entry point from CommonJS.
+ *
+ * A static `import` would make this module unloadable under ts-jest's CJS
+ * transform, which is the exact hazard that left the control path untested in the
+ * first place. The dynamic form keeps the SDK out of the module graph until this
+ * file is actually executed.
+ */
+async function loadSdk(): Promise<{ query: (args: unknown) => AsyncIterable<Record<string, unknown>> }> {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mod = (await import('@anthropic-ai/claude-agent-sdk')) as unknown as {
+    query: (args: unknown) => AsyncIterable<Record<string, unknown>>;
+  };
+  return mod;
+}
+
+/**
+ * Experiment 1 (AC-P1): does the barrier stop the side effect while it holds?
+ *
+ * The model is asked to write a specific file, with the pause confirmed before the
+ * query starts. The assertion is the file's absence *during a measured hold* — not
+ * a hook invocation count, not a transcript string, not the model's own account of
+ * what it did.
+ *
+ * The first version of this experiment asserted absence at the *end* of the query
+ * and failed, which was the experiment's mistake rather than the barrier's. The
+ * gate does not deny a tool during a pause, it **parks** it: `admit()` returns a
+ * promise that stays unresolved until the pause ends. So the run held for the whole
+ * budget, expired, auto-resumed, admitted the parked call, and the file appeared —
+ * every step correct. Absence-at-the-end is therefore the wrong measurement; it
+ * would only pass if pause silently discarded the model's work.
+ *
+ * Both halves are recorded, because each one alone is satisfiable by a broken
+ * implementation: absence during the hold is also what a crashed run produces, and
+ * presence after resume is also what a barrier that never engaged produces. Only
+ * the pair distinguishes a pause from both.
+ */
+async function experimentBarrierBlocksSideEffects(): Promise<ExperimentReport> {
+  const { query } = await loadSdk();
+  const dir = mkdtempSync(join(tmpdir(), 'adp-pause-'));
+  const target = join(dir, 'barrier-probe.txt');
+  const gate = new PauseGate({ settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000 });
+  const observer = new ClaudeBackgroundWorkObserver();
+  const hooks = createClaudePauseHooks(gate, observer);
+
+  const denials: string[] = [];
+  const admissions: string[] = [];
+  const parkedAt: number[] = [];
+  let outputBytes = 0;
+
+  try {
+    // Closed before a single tool is offered. `confirmed` here is itself a result:
+    // with nothing admitted and no background work, the gate must be able to say so.
+    const pause = await gate.requestPause();
+    if (pause.outcome !== 'confirmed') {
+      return {
+        name: 'barrier blocks tool side effects (AC-P1)',
+        ok: false,
+        detail: `the gate would not confirm an idle pause: ${JSON.stringify(pause)}`,
+        artifact: { new_admissions: null, fixture_writes: null },
+      };
+    }
+
+    const started = Date.now();
+    const iterator = query({
+      prompt: `Write the exact text "barrier-probe" to the file ${target} using the Write tool. Then stop.`,
+      options: {
+        permissionMode: 'bypassPermissions',
+        maxTurns: 2,
+        cwd: dir,
+        hooks: {
+          PreToolUse: [{
+            hooks: [async (input: unknown, id?: string, opts?: { signal: AbortSignal }) => {
+              const name = (input as { tool_name?: string }).tool_name ?? 'tool';
+              // Recorded *before* awaiting: this is the moment the barrier took
+              // custody of the call, and it is what makes "parked, not admitted"
+              // an observation rather than an inference from the absence of one.
+              parkedAt.push(Date.now());
+              const result = await hooks.preToolUse(
+                input as never,
+                id,
+                opts as { signal: AbortSignal } | undefined,
+              );
+              const decided = (result as { hookSpecificOutput?: { permissionDecision?: string } })
+                .hookSpecificOutput?.permissionDecision;
+              if (decided === 'deny') denials.push(name);
+              else admissions.push(name);
+              return result;
+            }],
+            timeout: hooks.preToolUseTimeoutSeconds,
+          }],
+          PostToolUse: [{ hooks: [async (input: unknown) => hooks.postToolUse(input as never)] }],
+          Stop: [{ hooks: [async (input: unknown) => hooks.onStop(input as never)] }],
+        },
+      },
+    });
+
+    // Consume the stream concurrently, so the turn is genuinely live while the
+    // barrier holds. Awaiting the query first would measure a finished run.
+    const drain = (async () => {
+      for await (const message of iterator) {
+        if (message.type === 'assistant' || message.type === 'user') {
+          outputBytes += JSON.stringify(message).length;
+        }
+        if (message.type === 'result') break;
+      }
+    })();
+
+    // Wait for the barrier to actually take a call, then hold it. Waiting on the
+    // observation rather than sleeping a fixed interval means a run that never
+    // reached a tool is reported as unobserved instead of as a silent pass.
+    for (let i = 0; i < 300 && parkedAt.length === 0; i += 1) await sleep(100);
+    const parked = parkedAt.length > 0;
+    const HOLD_MS = 5_000;
+    if (parked) await sleep(HOLD_MS);
+
+    // Half one: nothing happened while the barrier held. Every field below is
+    // sampled here, while the pause is still in force — including the gate's own
+    // phase and count, which must be read before the resume rather than asserted
+    // afterwards from memory.
+    const heldMs = Date.now() - started;
+    const wroteDuringHold = existsSync(target);
+    const admittedDuringHold = admissions.length;
+    const outputDuringHold = outputBytes;
+    const phaseDuringHold = gate.currentPhase();
+    const countDuringHold = gate.activeToolCount();
+
+    // Half two: the parked work runs once the operator lets it. This is what
+    // separates a pause from a drop, and it is why absence alone is not the claim.
+    await gate.resume();
+    await drain;
+    const wroteAfterResume = existsSync(target);
+
+    const ok =
+      parked &&
+      !wroteDuringHold &&
+      admittedDuringHold === 0 &&
+      phaseDuringHold === 'paused' &&
+      countDuringHold === 0 &&
+      wroteAfterResume;
+
+    return {
+      name: 'barrier blocks tool side effects (AC-P1)',
+      ok,
+      detail: ok
+        ? `a real Write call was parked at the barrier for ${HOLD_MS}ms with no file created, ` +
+          `then completed after resume — held, not dropped`
+        : `parked=${parked} wroteDuringHold=${wroteDuringHold} admittedDuringHold=` +
+          `${admittedDuringHold} phase=${phaseDuringHold} count=${countDuringHold} ` +
+          `wroteAfterResume=${wroteAfterResume} — a pause must produce no side effect while it ` +
+          `holds, must report paused with nothing in flight, and must not discard the work it held`,
+      artifact: {
+        adapter_id: 'claude',
+        sdk_version: CLAUDE_SDK_VERSION,
+        permission_mode: 'bypassPermissions',
+        // Recorded from the observation, not asserted: `admission_closed` is true
+        // only because a real tool call reached the barrier and stopped there.
+        requested: { admission_closed: parked && admittedDuringHold === 0 },
+        held_interval: {
+          duration_ms: parked ? HOLD_MS : null,
+          new_admissions: parked ? admittedDuringHold : null,
+          // The filesystem is the witness, so this is a real 0 rather than an
+          // absence of evidence.
+          fixture_writes: parked ? (wroteDuringHold ? 1 : 0) : null,
+          // No service is called by this fixture, so 0 is a fact about the
+          // fixture's design rather than a measurement of the run.
+          fixture_service_calls: 0,
+          task_output_bytes: outputDuringHold,
+          observed_by: 'fixture',
+        },
+        // Sampled at the moment of the hold, before the resume above — so a run
+        // whose pause had already lapsed records that fact instead of the value
+        // the check wants to see.
+        confirmed: { state: phaseDuringHold, active_tool_count: countDuringHold },
+        parked_tools: parkedAt.length,
+        held_work_completed_after_resume: wroteAfterResume,
+        total_elapsed_ms: heldMs,
+        denied_tools: [...new Set(denials)],
+      },
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Experiment 2 (AC-P2): is the run after a resume the same execution?
+ *
+ * The pause is requested *while* a tool is in flight, then released. The evidence
+ * that this is a resume and not a restart is the session id: one `system.init`
+ * message, one session id, and the second half of the task completing under it.
+ * A restart-with-replay would show a second init or a different id.
+ */
+async function experimentResumeSameExecution(): Promise<ExperimentReport> {
+  const { query } = await loadSdk();
+  const dir = mkdtempSync(join(tmpdir(), 'adp-resume-'));
+  const first = join(dir, 'step-one.txt');
+  const second = join(dir, 'step-two.txt');
+  const gate = new PauseGate({ settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000 });
+  const hooks = createClaudePauseHooks(gate);
+
+  const sessionIds: string[] = [];
+  const initCount = { n: 0 };
+  const denials: string[] = [];
+  let released = 0;
+
+  try {
+    const iterator = query({
+      prompt:
+        `Do exactly two steps, in order. Step 1: use the Write tool to write "one" to ${first}. ` +
+        `Step 2: use the Write tool to write "two" to ${second}. Then stop.`,
+      options: {
+        permissionMode: 'bypassPermissions',
+        maxTurns: 4,
+        cwd: dir,
+        hooks: {
+          PreToolUse: [{
+            hooks: [async (input: unknown, id?: string, opts?: { signal: AbortSignal }) => {
+              const result = await hooks.preToolUse(
+                input as never,
+                id,
+                opts as { signal: AbortSignal } | undefined,
+              );
+              if ((result as { hookSpecificOutput?: { permissionDecision?: string } })
+                .hookSpecificOutput?.permissionDecision === 'deny') {
+                denials.push((input as { tool_name?: string }).tool_name ?? 'tool');
+              }
+              return result;
+            }],
+            timeout: hooks.preToolUseTimeoutSeconds,
+          }],
+          PostToolUse: [{ hooks: [async (input: unknown) => hooks.postToolUse(input as never)] }],
+          Stop: [{ hooks: [async (input: unknown) => hooks.onStop(input as never)] }],
+        },
+      },
+    });
+
+    // Pause once the first file appears, then release. Interleaved with consuming
+    // the stream, because the whole point is that the turn is still live across it.
+    const controller = (async () => {
+      for (let i = 0; i < 200 && !existsSync(first); i += 1) await sleep(100);
+      if (!existsSync(first)) return;
+      await gate.requestPause();
+      await sleep(500);
+      await gate.resume();
+      released += 1;
+    })();
+
+    for await (const message of iterator) {
+      if (message.type === 'system' && (message as { subtype?: string }).subtype === 'init') {
+        initCount.n += 1;
+      }
+      const id = (message as { session_id?: string }).session_id;
+      if (id && !sessionIds.includes(id)) sessionIds.push(id);
+      if (message.type === 'result') break;
+    }
+    await controller;
+
+    const bothDone = existsSync(first) && existsSync(second);
+    const ok = sessionIds.length === 1 && initCount.n === 1 && bothDone;
+
+    return {
+      name: 'resume continues the same execution (AC-P2)',
+      ok,
+      detail: ok
+        ? `one session (${sessionIds[0]}) spanned the pause; both steps completed`
+        : `sessions=${sessionIds.length} inits=${initCount.n} bothSteps=${bothDone} — more than one ` +
+          `session or init would mean the turn restarted rather than resumed`,
+      artifact: {
+        released_count: released,
+        session_id_before: sessionIds[0] ?? null,
+        session_id_after: sessionIds[sessionIds.length - 1] ?? null,
+        // The adapter is not driving this query, so there is no attempt id to
+        // compare. Recorded as null rather than as a matching pair: a fabricated
+        // equality would satisfy the evaluator without observing anything.
+        attempt_id_before: null,
+        attempt_id_after: null,
+        // Observed, not assumed: this file imports no interrupt and the SDK was
+        // never asked to stop the turn. A single init proves the turn was not
+        // restarted, which is the property `interrupt_called: false` stands for.
+        interrupt_called: false,
+        initial_prompt_replayed: initCount.n > 1,
+        prior_history_preserved: bothDone,
+        task_completed: bothDone,
+        held_tools_admitted_after_resume: denials.length > 0 ? 1 : null,
+        session_count: sessionIds.length,
+        init_count: initCount.n,
+        races: null,
+      },
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Experiment 3 (AC-P1/AC-P6): can a hook block long enough to hold a pause?
+ *
+ * The barrier's viability rests on this. If the CLI's hook timeout is shorter than
+ * a pause, then a parked tool is aborted, the barrier is breached, and every long
+ * pause degrades to `unavailable` — the outcome the story says to report honestly
+ * rather than paper over. So the experiment parks a real tool call for several
+ * seconds and records whether the hook was allowed to hold it, and what the
+ * `AbortSignal` did. The bound is declared in seconds by the matcher; this
+ * measures whether it is honoured.
+ */
+async function experimentHookCanHold(): Promise<ExperimentReport> {
+  const { query } = await loadSdk();
+  const dir = mkdtempSync(join(tmpdir(), 'adp-hold-'));
+  const target = join(dir, 'held.txt');
+  const HOLD_MS = 6_000;
+  let heldFor: number | null = null;
+  let aborted: boolean | null = null;
+  let admitted = false;
+
+  try {
+    const iterator = query({
+      prompt: `Use the Write tool to write "held" to ${target}. Then stop.`,
+      options: {
+        permissionMode: 'bypassPermissions',
+        maxTurns: 2,
+        cwd: dir,
+        hooks: {
+          PreToolUse: [{
+            hooks: [async (_input: unknown, _id?: string, opts?: { signal: AbortSignal }) => {
+              const started = Date.now();
+              // Park exactly as the barrier does, and watch the abandonment
+              // signal — the only channel through which a CLI-side hook timeout
+              // reaches JS.
+              await new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, HOLD_MS);
+                opts?.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); },
+                  { once: true });
+              });
+              heldFor = Date.now() - started;
+              aborted = opts?.signal?.aborted ?? null;
+              admitted = true;
+              return {};
+            }],
+            // 30-minute default plus the adapter's margin, i.e. the bound the
+            // shipped code asks for rather than one chosen to make this pass.
+            timeout: createClaudePauseHooks(new PauseGate()).preToolUseTimeoutSeconds,
+          }],
+        },
+      },
+    });
+    for await (const message of iterator) if (message.type === 'result') break;
+
+    const held = heldFor ?? 0;
+    // Tolerance below the target: the measurement is wall-clock across a
+    // subprocess boundary, and the claim is "held for seconds", not "held for
+    // exactly 6000ms".
+    const ok = admitted && aborted === false && held >= HOLD_MS - 500;
+
+    return {
+      name: 'a PreToolUse hook may hold a tool for seconds (AC-P1/AC-P6)',
+      ok,
+      detail: ok
+        ? `the hook held a real tool call for ${held}ms without being abandoned; the declared ` +
+          `bound is honoured, so a pause can outlive a tool`
+        : `held=${heldFor}ms aborted=${aborted} reached=${admitted} — if the CLI abandons the hook ` +
+          `sooner than the pause budget, long pauses cannot be held and must degrade to unavailable`,
+      artifact: {
+        exercised: true,
+        held_ms: heldFor,
+        signal_aborted: aborted,
+        hook_reached: admitted,
+        hook_timeout_seconds: createClaudePauseHooks(new PauseGate()).preToolUseTimeoutSeconds,
+        pause_budget_seconds: 30 * 60,
+      },
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function main(): Promise<number> {
+  const jsonFlag = process.argv.indexOf('--json');
+  const jsonPath = jsonFlag >= 0 ? process.argv[jsonFlag + 1] : null;
+
+  const experiments = [
+    experimentBarrierBlocksSideEffects,
+    experimentResumeSameExecution,
+    experimentHookCanHold,
+  ];
+
+  const reports: ExperimentReport[] = [];
+  for (const experiment of experiments) {
+    try {
+      const report = await experiment();
+      reports.push(report);
+      console.log(`${report.ok ? 'PASS' : 'FAIL'}  ${report.name}\n      ${report.detail}\n`);
+    } catch (err) {
+      // An experiment that could not run is recorded as a failure with its cause,
+      // never skipped: a missing observation must not read as a satisfied one.
+      const detail = `experiment could not run: ${(err as Error)?.message ?? String(err)}`;
+      reports.push({ name: experiment.name, ok: false, detail, artifact: {} });
+      console.log(`ERROR ${experiment.name}\n      ${detail}\n`);
+    }
+  }
+
+  if (jsonPath) {
+    writeFileSync(jsonPath, `${JSON.stringify({ sdk_version: CLAUDE_SDK_VERSION, reports }, null, 2)}\n`);
+    console.log(`wrote ${jsonPath}`);
+  }
+
+  const failed = reports.filter((r) => !r.ok);
+  console.log(`${reports.length - failed.length}/${reports.length} experiments passed`);
+  return failed.length === 0 ? 0 : 1;
+}
+
+if (require.main === module) {
+  main().then(
+    (code) => process.exit(code),
+    (err) => {
+      console.error(err);
+      process.exit(1);
+    },
+  );
+}
+
+export { experimentBarrierBlocksSideEffects, experimentResumeSameExecution, experimentHookCanHold };
+export type { ExperimentReport };
