@@ -15,8 +15,14 @@ PROVIDERS = [("bedrock", "Model access", "adp-bedrock.py"), ("github", "GitHub A
 
 def provider_step(provider, action, context, name):
     try:
-        return getattr(provider, action)(context)
-    except common.CliError as exc:
+        result = getattr(provider, action)(context)
+        if not isinstance(result, dict) or result.get("status") not in {"configured", "verified", "pending", "failed", "unavailable"}:
+            raise ValueError("Invalid provider result")
+        return result
+    except Exception as exc:
+        # Providers must not stop other setup steps or expose raw SDK responses.
+        if not isinstance(exc, common.CliError):
+            exc = common.CliError("Provider could not complete this step. Update the CLI and retry.", "provider_failed")
         result = common.envelope("failed", f"admin {name}", next_action="Check this provider and rerun adp admin setup.")
         result["error"] = {"code": exc.code, "message": str(exc)}
         return result
