@@ -491,3 +491,38 @@ Setup reports each provider as verified, configured, pending, failed or
 unavailable. Providers not yet shipped remain unavailable. `--json` produces one
 object; exit codes are 0 success, 1 usage, 2 authentication, 3 authorization,
 4 external action pending, and 5 failure. Domain commands ship separately.
+
+### Bootstrap release smoke test
+
+`modules/gateway/scripts/test-cli-bootstrap.py` compares a fresh public download
+with the expected checkout before accepting credentials. It checks an explicit
+Cognito pool/client binding, installs into a temporary home, signs in through
+`adp admin login`, refreshes the saved session, and checks administrator setup.
+Use an existing test administrator and a private 0600 credentials JSON file with
+`username`, `password`, and challenge inputs when required. No AWS credentials
+are needed by this test.
+
+```sh
+python modules/gateway/scripts/test-cli-bootstrap.py \
+  --gateway-url https://DEPLOYMENT/api \
+  --expected-pool POOL_ID --expected-client CLI_CLIENT_ID \
+  --expected-cli-dir modules/gateway/cli \
+  --credentials-file /private/test-admin.json \
+  --report /private/bootstrap-report.json
+```
+
+Use `--artifacts-only` instead of `--credentials-file` to check deployment before
+signing in. A mismatch fails without sending credentials. Reports contain only
+binding metadata, artifact hashes and step outcomes. This deployed check remains
+separate from mocked authentication tests and must pass after the gateway and its
+pool-scoped Cognito IAM policy are released.
+
+Before deployment, the opt-in component check
+`tests/auth/test_cli_native_cognito_live.py` can reuse the running #5173 fixture
+identities with actual Cognito and deployed refresh. Set `ADP_NATIVE_LIVE_CONFIG`
+to the private environment config, `ADP_NATIVE_LIVE_STATE` to its `state.json`,
+and `ADP_NATIVE_LIVE_CLIENT` to the **CLI** app client ID (not the discovery
+`client_id`, which belongs to the browser). Run with `pytest -q --tb=no` to keep
+raw SDK failures out of output. It creates no users or grants and changes no
+passwords. Its native routes/database run locally; deployment, gateway IAM and
+PostgreSQL rate-limit concurrency still require release verification.
