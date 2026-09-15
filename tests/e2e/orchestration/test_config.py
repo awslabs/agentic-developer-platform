@@ -7,6 +7,9 @@ malformed pinned versions. Network-free.
 
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 
 from tests.e2e.orchestration.config import (
@@ -50,13 +53,20 @@ class TestValidConfig:
         assert tags["adp:managed-by"] == "tests.e2e.orchestration"
 
     def test_loading_makes_no_aws_call(self, write_config, monkeypatch):
-        """Loading must work with no credentials: --preflight depends on it."""
-        import boto3
+        """Loading must work with no credentials: --preflight depends on it.
+
+        A booby-trapped stand-in is injected into ``sys.modules`` rather than
+        importing the real boto3: the offline CI job installs no AWS SDK, so
+        importing it here would make this test pass only where boto3 happens to
+        exist — which is exactly the coupling the test exists to rule out.
+        """
 
         def explode(*args, **kwargs):
             raise AssertionError("load_config must not construct an AWS client")
 
-        monkeypatch.setattr(boto3, "client", explode)
+        fake = types.ModuleType("boto3")
+        fake.client = explode
+        monkeypatch.setitem(sys.modules, "boto3", fake)
         assert load_config(write_config()).environment == "dev"
 
 
