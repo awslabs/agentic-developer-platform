@@ -95,6 +95,9 @@ def main():
     mode.add_argument("--resume", action="store_true", help="Rerun against retained fixtures, preserving earlier failed/not-run acceptance checks")
     parser.add_argument("--hosted", action="store_true", help="Also exercise real cloud-agent dispatch at each hierarchy step")
     parser.add_argument("--maintenance-kubeconfig")
+    parser.add_argument(
+        "--provision", choices=("direct", "handoff"), help="Provision a fresh role with the CLI on EC2, then run Claude/Codex evidence checks"
+    )
     args = parser.parse_args()
     if args.hosted and not args.cleanup_only:
         try:
@@ -120,6 +123,12 @@ def main():
             return super().api(method, path, body, who, expected)
 
     harness.Fixtures = CliFixtures
+    if args.provision:
+        if args.hosted:
+            parser.error("Use the separate hierarchy run for --hosted")
+        from cli_provisioning import install
+
+        install(harness, cli_dir, args.provision)
     if args.resume:
         from tests.e2e.tenant_validation import regression
 
@@ -156,7 +165,9 @@ def main():
         harness.validate_suites = validate_suites
     argv = ["cleanup" if args.cleanup_only else "run" if args.resume else "test", "--config", args.config, "--state-dir", args.state_dir]
     if not args.cleanup_only:
-        argv += ["--routing-matrix", "--suites", "ec2-claude", "ec2-codex"]
+        argv += ["--suites", "ec2-claude", "ec2-codex"]
+        if not args.provision:
+            argv += ["--routing-matrix"]
     if args.maintenance_kubeconfig:
         argv += ["--maintenance-kubeconfig", args.maintenance_kubeconfig]
     return harness.main(argv)

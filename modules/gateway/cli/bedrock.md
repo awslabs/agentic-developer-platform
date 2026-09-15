@@ -87,3 +87,39 @@ acceptance checks remain in the report. Run `--cleanup-only` afterward. It must
 not be used to turn a failed cloud gate into a passing EC2-only report. The optional
 `--maintenance-kubeconfig` retains the harness's scoped cleanup for gateways that
 lack the destination delete API. Never delete another run's state or resources.
+
+To validate creation of a **new** role through the CLI, use a fresh state directory
+for each mode:
+
+```sh
+python modules/gateway/scripts/test-cli-routing.py \
+  --harness-root /path/to/adp-routing-harness \
+  --config /private/environment.json --state-dir /private/cli-direct --provision direct
+python modules/gateway/scripts/test-cli-routing.py \
+  --harness-root /path/to/adp-routing-harness \
+  --config /private/environment.json --state-dir /private/cli-handoff --provision handoff
+```
+
+Both modes execute the candidate ADP CLI, AWS provisioning, Claude and Codex on
+disposable private EC2 instances. The operator machine orchestrates fixtures and
+collects evidence. Each instance assumes a temporary destination-account role
+restricted to its single test stack and role; it cannot invoke Bedrock directly.
+No operator AWS credentials are copied to EC2. The worker checks its EC2 instance
+and account identity before accessing the private fixture session.
+
+Direct mode checks account mismatch and dry-run safety, creates/verifies/assigns
+the role, then repeats the command to prove reuse. Handoff mode downloads with
+AWS access disabled in the ADP process, confirms premature resume cannot assign,
+applies the files in a separate AWS-admin process, and resumes without AWS access.
+Both check the CLI's effective route and correlate actual Claude/Codex requests
+with destination-account invocation logs and ADP usage. This uses the deployed
+gateway's routing APIs and a seeded Cognito session; it does not validate deployment
+of the new native-login endpoint or the hosted-agent dispatch path.
+
+Reports include the EC2 ID, provisioning caller ARN, candidate file hashes, stack
+ID and separate provisioning/inference gates. Setup failures remain failures.
+Cleanup removes only the fixture, including its temporary provisioner role. The
+CLI-created stack has no test tag, so cleanup additionally requires recorded prior
+absence, matching account/name/creation time, the original stack ID, and only the
+expected IAM role resource. Interrupted runs use the same `--provision` mode and
+state directory with `--cleanup-only`; never substitute another run's state.
