@@ -100,9 +100,16 @@ arbitrate different questions and share no members:
   agent*?", keyed on a principal of the form `<invocation_id>#<attempt>`, and its
   targets are runs.
 - :class:`Action` here is **delivery-lifecycle** vocabulary — develop, review,
-  repair, merge, deploy, evaluate, the six the issue enumerates. It answers "did
-  the plan owner authorize *this kind of work*, here, within these bounds?", keyed
-  on a human principal, and its targets are repositories and environments.
+  repair, merge, deploy, evaluate (#5128's six), plus `coordinate` (#5224). It
+  answers "did the plan owner authorize *this kind of work*, here, within these
+  bounds?", keyed on a human principal, and its targets are repositories and
+  environments.
+
+`coordinate` is the one member that authorizes *requesting* work rather than doing
+any, and it is still not `AgentAction.DISPATCH`: that answers "may this execution
+identity control that running agent?", while this answers "did the owner accept a
+coordinator over this node set, and is this child inside its bounds?". A coordinator
+needs both, from the two different planes, and neither substitutes for the other.
 
 Merging them would put "may I abort a sibling run?" and "may we deploy to
 production?" in one enum, and every grant would then have to enumerate members
@@ -135,6 +142,17 @@ What this module deliberately does NOT do
   Version 2 additionally permits `USER_GRANTED` for explicitly accepted user
   credentials/roles and actions. Their provider permissions and lifetime remain
   user-configured; no existing policy silently acquires this authority.
+- **Coordination authority never substitutes for a child's own authority.** A
+  policy accepting `COORDINATE` (schema v3, bounded by :class:`CoordinationScope`)
+  lets a coordinator read progress and *request* an eligible child through
+  :func:`authorize_child_request`. That permit means "the coordinator was allowed to
+  ask" and nothing more: the child still needs its own accepted action, its own live
+  work claim and its own bounded grant. A coordinator cannot approve, accept or
+  resume a human gate, conclude an evaluation, merge, deploy, widen its own scope or
+  issue arbitrary credentials — none of those are reachable from `coordinate`, and
+  `MERGE`/`DEPLOY`/`EVALUATE` are refused as child actions at acceptance *and* at
+  admission. Version 1 and 2 documents carry no scope, and **absence grants
+  nothing** rather than defaulting to one.
 """
 
 from __future__ import annotations
@@ -159,6 +177,9 @@ __all__ = [
     "Action",
     "AcceptanceMode",
     "AuthorizationContext",
+    "ChildPersona",
+    "CoordinationScope",
+    "CoordinationSummary",
     "CredentialScope",
     "Decision",
     "DenyReason",
@@ -168,6 +189,7 @@ __all__ = [
     "PolicySummary",
     "ResourceRef",
     "authorize_action",
+    "authorize_child_request",
     "flow_budget_binding",
     "policy_hash",
     "stamp_policy",
@@ -182,7 +204,16 @@ __all__ = [
 # its shape. `authorize_action` denies a version it was not built for
 # (`schema_unsupported`) rather than interpreting it optimistically.
 POLICY_SCHEMA_VERSION = 1
-SUPPORTED_POLICY_SCHEMA_VERSIONS = frozenset({1, 2})
+SUPPORTED_POLICY_SCHEMA_VERSIONS = frozenset({1, 2, 3})
+
+# The version that carries `coordination`. Version 3 rather than a new optional
+# field on 2 because coordinate authority changes what an *already accepted*
+# document would mean if it were reinterpreted: a v1/v2 policy has no coordination
+# scope, and the correct reading of that absence is "no coordinator", not "a
+# coordinator with default bounds". Pinning it to a version makes that reading
+# structural — `_coordination_requires_v3` refuses the combination outright rather
+# than silently upgrading an older accepted policy (#5224).
+COORDINATION_SCHEMA_VERSION = 3
 
 
 class Action(StrEnum):
@@ -197,6 +228,9 @@ class Action(StrEnum):
     actions with effects outside the platform — a merged branch and a changed
     environment survive the run that made them. An owner permitting delivery work
     is not thereby permitting either.
+
+    `COORDINATE` is separate from all of them for a different reason: it is
+    authority to *request* work, not to perform any. See :class:`CoordinationScope`.
     """
 
     DEVELOP = "develop"
@@ -205,6 +239,13 @@ class Action(StrEnum):
     MERGE = "merge"
     DEPLOY = "deploy"
     EVALUATE = "evaluate"
+    # Authority to read progress and request an eligible child dispatch, and
+    # nothing else. A coordinator holding this cannot itself develop, review,
+    # merge, deploy or conclude an evaluation — each child needs its own accepted
+    # action, its own live claim and its own bounded grant, which is why
+    # `authorize_child_request` is a separate check rather than a branch in the
+    # action test. Bounded by :class:`CoordinationScope`; requires schema v3.
+    COORDINATE = "coordinate"
 
 
 class AcceptanceMode(StrEnum):
@@ -284,6 +325,15 @@ class DenyReason(StrEnum):
     ATTEMPT_LIMIT_EXCEEDED = "attempt_limit_exceeded"
     CONCURRENCY_LIMIT_EXCEEDED = "concurrency_limit_exceeded"
     MACHINE_ACCEPTANCE_NOT_PERMITTED = "machine_acceptance_not_permitted"
+    # --- Coordination (#5224) ---------------------------------------------
+    # Distinct from `ACTION_NOT_PERMITTED` because the operator responses differ:
+    # the scope refusals mean "this coordinator is bounded and you are outside the
+    # bounds" (amend the accepted scope), while `COORDINATION_NOT_PERMITTED` means
+    # the policy never accepted a coordinator at all.
+    COORDINATION_NOT_PERMITTED = "coordination_not_permitted"
+    COORDINATION_NODE_NOT_ASSIGNED = "coordination_node_not_assigned"
+    CHILD_PERSONA_NOT_PERMITTED = "child_persona_not_permitted"
+    CHILD_ACTION_NOT_PERMITTED = "child_action_not_permitted"
 
 
 class PolicyRejectedError(ValueError):
@@ -356,6 +406,87 @@ class UserCredentialAuthority(BaseModel):
         return self
 
 
+class ChildPersona(StrEnum):
+    """The worker personas a coordinator may request.
+
+    A closed set for the same reason :class:`Action` is closed: an unknown persona
+    string in an accepted document would either be silently permitted or silently
+    ignored, and both make the policy's text disagree with its effect.
+
+    `OPERATIONS` is deliberately absent. A coordinator that could request another
+    coordinator could build an unbounded tree of them, and every limit in
+    :class:`PolicyLimits` is per-policy rather than per-level, so the tree would
+    share one allowance while multiplying the requesters spending it. Coordinating
+    a successor wave is the existing engine dispatch path's job, not a child
+    request (#5224 design point 4: one clear owner for the lane).
+    """
+
+    DEVELOPER = "developer"
+    REVIEWER = "reviewer"
+
+
+class CoordinationScope(BaseModel):
+    """The exact bounds of a coordinator's authority. **Required for `COORDINATE`.**
+
+    There is no "coordinate everything" spelling, and that is the point — the same
+    structural argument :class:`PolicyLimits` makes about unbounded limits. A
+    coordinator is the one role whose whole job is to cause *other* work, so an
+    unbounded one multiplies every other authority in the policy. `min_length=1` on
+    both lists means an owner cannot accept a coordinator that names no node set or
+    no child action even by accident.
+
+    Note what is NOT here: no spend, attempt, concurrency or wall-clock fields. Those
+    stay in :class:`PolicyLimits` and are shared with every other action under this
+    policy. A coordinator with its own allowance would be a second budget for the
+    same delivery, and the flow meter (`flow_budget_binding`) exists precisely so
+    that a coordinator's children charge the *same* meter as everything else. A
+    coordinator cannot widen its flow's allowance by fanning out.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # The exact graph addresses this coordinator is assigned to. Full addresses
+    # rather than a prefix or a glob: a prefix would silently extend authority to
+    # every node added under it after acceptance, so the owner would be accepting a
+    # scope whose membership changes without them. Validated against
+    # `ADDRESS_PATTERN` below for the same reason `evaluation_acceptance` keys are.
+    assigned_node_addresses: list[str] = Field(min_length=1, max_length=512)
+    # Which personas this coordinator may request. See :class:`ChildPersona`.
+    allowed_child_personas: list[ChildPersona] = Field(min_length=1, max_length=len(ChildPersona))
+    # The actions a requested child may take. Constrained further at admission:
+    # `authorize_child_request` also requires each one to be in the policy's own
+    # `allowed_actions` and refuses any that the policy gates to a human, so a
+    # coordinator can never route around a gate by naming the action here.
+    allowed_child_actions: list[Action] = Field(min_length=1, max_length=len(Action))
+
+    @model_validator(mode="after")
+    def _bounded_and_canonical(self) -> CoordinationScope:
+        for name in ("assigned_node_addresses", "allowed_child_personas", "allowed_child_actions"):
+            values = [str(value) for value in getattr(self, name)]
+            duplicates = sorted({value for value in values if values.count(value) > 1})
+            if duplicates:
+                raise ValueError(f"{name} repeats: {', '.join(duplicates)}")
+        malformed = sorted(address for address in self.assigned_node_addresses if not ADDRESS_PATTERN.match(address))
+        if malformed:
+            raise ValueError(f"assigned_node_addresses must be graph addresses of the form 'flow/epic/wave/node': {', '.join(malformed)}")
+        # A coordinator that may request a coordinator is the unbounded-tree case
+        # `ChildPersona` documents. Refused structurally as well as by the enum, so
+        # adding a member to `ChildPersona` cannot quietly enable it.
+        if Action.COORDINATE in self.allowed_child_actions:
+            raise ValueError("allowed_child_actions must not include 'coordinate'; a coordinator cannot delegate coordination authority onward")
+        # Machine acceptance and the two out-of-platform actions are human-gate
+        # territory. Naming them here would read as a control an owner granted, and
+        # `authorize_child_request` denies them anyway — an entry that cannot take
+        # effect but looks like authority is the misreading `_human_gates_are_declared_actions` refuses too.
+        forbidden = sorted(set(self.allowed_child_actions) & {Action.MERGE, Action.DEPLOY, Action.EVALUATE})
+        if forbidden:
+            raise ValueError(
+                f"allowed_child_actions must not include {', '.join(forbidden)}; merging, deploying and concluding an evaluation "
+                "are not delegable through coordination authority"
+            )
+        return self
+
+
 class ExecutionPolicy(BaseModel):
     """What a plan owner authorized, recorded on the accepted plan version.
 
@@ -377,8 +508,14 @@ class ExecutionPolicy(BaseModel):
     # Pinned, not defaulted-and-ignored: `authorize_action` refuses a version it
     # was not built for. A `Literal` so an unknown version is a 422 at the
     # boundary, which is where a document this build cannot interpret should stop.
-    schema_version: Literal[1, 2] = POLICY_SCHEMA_VERSION
+    schema_version: Literal[1, 2, 3] = POLICY_SCHEMA_VERSION
     user_credentials: UserCredentialAuthority | None = None
+    # The bounded coordination scope, when this policy accepts a coordinator.
+    # `None` — which is every v1/v2 document — grants nothing: `authorize_action`
+    # denies `COORDINATE` on absence rather than defaulting a scope, and the
+    # serializer below drops the key entirely so an older accepted document's bytes
+    # and hash are unchanged by this field existing (#5224).
+    coordination: CoordinationScope | None = None
 
     # --- Server-stamped. A submitted document must leave all three unset. ---
     # Not "may leave unset": :func:`stamp_policy` rejects a document that sets any
@@ -431,15 +568,68 @@ class ExecutionPolicy(BaseModel):
 
     @model_serializer(mode="wrap")
     def _preserve_v1_document(self, handler):
+        """Drop optional-and-absent keys so older documents serialize byte-identically.
+
+        This is what keeps `policy_hash` stable for every already-accepted v1/v2
+        policy as new optional fields are added. Emitting `"coordination": null`
+        would change the canonical JSON of every existing document and therefore its
+        hash — which `compile.plan_hash` compares for idempotency, so a retried
+        acceptance of an unchanged policy would stop matching its own in-force plan.
+        """
         document = handler(self)
         if self.user_credentials is None:
             document.pop("user_credentials", None)
+        if self.coordination is None:
+            document.pop("coordination", None)
         return document
+
+    @model_validator(mode="after")
+    def _coordination_requires_v3(self) -> ExecutionPolicy:
+        """`coordinate` and a coordination scope imply each other, and imply v3.
+
+        All four combinations are decided explicitly rather than left to the
+        admission check, because each one would otherwise be a policy whose text and
+        effect disagree:
+
+        * scope on a v1/v2 document — **refused**, not upgraded. Silently reading an
+          older accepted policy as v3 is exactly the "silently upgrading old accepted
+          policies" the issue forbids.
+        * `coordinate` with no scope — refused. An unbounded coordinator has no safe
+          default, so there is nothing to fall back to.
+        * a scope with no `coordinate` — refused. It would be dead configuration that
+          reads as granted authority, the same misreading `human_gates` refuses.
+        """
+        coordinate_allowed = Action.COORDINATE in self.allowed_actions
+        if self.coordination is not None and self.schema_version != COORDINATION_SCHEMA_VERSION:
+            raise ValueError(f"a coordination scope requires policy schema_version {COORDINATION_SCHEMA_VERSION}")
+        if coordinate_allowed and self.coordination is None:
+            raise ValueError(
+                "allowed_actions names 'coordinate' but the policy declares no coordination scope; an unbounded coordinator is not accepted"
+            )
+        if self.coordination is not None and not coordinate_allowed:
+            raise ValueError("a coordination scope has no effect unless allowed_actions names 'coordinate'")
+        if self.coordination is not None:
+            # Every child action must ALSO be an action this policy authorizes, and
+            # must not be one it gates. Checked here so an owner reading the accepted
+            # document cannot see a child action the policy would refuse at dispatch.
+            undeclared = sorted(set(self.coordination.allowed_child_actions) - set(self.allowed_actions))
+            if undeclared:
+                raise ValueError(f"allowed_child_actions names action(s) absent from allowed_actions: {', '.join(undeclared)}")
+            gated = sorted(set(self.coordination.allowed_child_actions) & set(self.human_gates))
+            if gated:
+                raise ValueError(
+                    f"allowed_child_actions names human-gated action(s): {', '.join(gated)}; coordination cannot route around a human gate"
+                )
+        return self
 
     @model_validator(mode="after")
     def _user_credentials_require_v2(self):
         if self.user_credentials is not None:
-            if self.schema_version != 2:
+            # v3 is a superset of v2 rather than an alternative to it: a flow that
+            # accepted user credentials must not have to give them up to accept a
+            # coordinator. v1 still refuses, so no already-accepted v1 document
+            # acquires this authority.
+            if self.schema_version not in {2, COORDINATION_SCHEMA_VERSION}:
                 raise ValueError("user credential permissions require policy schema_version 2")
             if not set(self.user_credentials.actions) <= set(self.allowed_actions):
                 raise ValueError("credential actions must be declared policy actions")
@@ -507,6 +697,24 @@ class ExecutionPolicy(BaseModel):
         return action in self.allowed_actions and action not in self.human_gates
 
 
+class CoordinationSummary(BaseModel):
+    """A coordinator's bounds, in the shape an owner reads before accepting them.
+
+    Counts the assigned nodes rather than listing their addresses, for the same
+    reason `PolicySummary` omits `evaluation_acceptance`: graph addresses are
+    internal and §7.2 makes them non-renderable. The child personas and actions ARE
+    listed, because "what can this thing cause to happen?" is the question an owner
+    is actually answering when they accept a coordinator, and a count would not
+    answer it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    assigned_node_count: int
+    allowed_child_personas: list[ChildPersona]
+    allowed_child_actions: list[Action]
+
+
 class PolicySummary(BaseModel):
     """What an owner authorized, in the shape a reader needs (#5128 design point 2).
 
@@ -548,6 +756,12 @@ class PolicySummary(BaseModel):
     # How many evaluations an owner marked for machine acceptance. A count, not the
     # addresses (see the class docstring).
     machine_accepted_evaluations: int
+    # The accepted coordinator's bounds, or `None` when the policy accepts no
+    # coordinator. Absent rather than an empty summary: a `CoordinationSummary`
+    # reading "0 nodes, no personas" describes an accepted-but-useless coordinator,
+    # which is a different fact from "no coordinator was accepted" and would be the
+    # more alarming of the two to show an owner who accepted neither.
+    coordination: CoordinationSummary | None = None
     expires_at: datetime
     limits: PolicyLimits
 
@@ -574,6 +788,18 @@ def summarize_policy(policy: ExecutionPolicy) -> PolicySummary:
         # the two agree — and this spelling stays correct if that ever loosens.
         human_decisions=[action for action in Action if action in policy.human_gates],
         machine_accepted_evaluations=sum(1 for mode in policy.evaluation_acceptance.values() if mode is AcceptanceMode.MACHINE),
+        coordination=(
+            CoordinationSummary(
+                assigned_node_count=len(policy.coordination.assigned_node_addresses),
+                # Canonical declaration order, like `autonomous_actions` above, so the
+                # same accepted scope always reads identically to an owner comparing two
+                # summaries by eye.
+                allowed_child_personas=[persona for persona in ChildPersona if persona in policy.coordination.allowed_child_personas],
+                allowed_child_actions=[action for action in Action if action in policy.coordination.allowed_child_actions],
+            )
+            if policy.coordination is not None
+            else None
+        ),
         expires_at=policy.expires_at,
         limits=policy.limits,
     )
@@ -845,6 +1071,13 @@ _ENVIRONMENT_ACTIONS = frozenset({Action.DEPLOY})
 # evidence about work already done and does not itself need repository authority,
 # so requiring one would block a policy that legitimately names no repository for
 # its evaluation nodes.
+#
+# `COORDINATE` is absent for a stronger reason: a coordinator does not act in a
+# repository at all. It reads progress and requests children, and each child's own
+# admission (`authorize_child_request` plus a full `authorize_action` for the child)
+# is where the repository check belongs. Putting `COORDINATE` here would grant a
+# coordinator repository authority it never needs, and would make the *coordinator's*
+# repository the one checked rather than the child's.
 _REPOSITORY_ACTIONS = frozenset({Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE})
 
 
@@ -988,6 +1221,29 @@ def authorize_action(
             f"action {action.value!r} is explicitly gated to a human decision by this policy",
         )
 
+    # --- Coordination: bounded to the accepted node set ---------------------
+    # Reached only when `COORDINATE` is in `allowed_actions` and not gated, so the
+    # refusals below are scope refusals rather than authority ones. The scope is
+    # re-read from the accepted document on every request (#5224 design point 3):
+    # an amendment that narrows the assigned set takes effect at the next child
+    # request, not at the next acceptance.
+    if action is Action.COORDINATE:
+        scope = policy.coordination
+        if scope is None:
+            # Unreachable through pydantic (`_coordination_requires_v3` requires the
+            # pair), but reachable from a raw-dict rehydration by a future reader —
+            # the same route `SCHEMA_UNSUPPORTED` guards. An absent scope grants
+            # nothing rather than defaulting to one.
+            return Decision.block(
+                DenyReason.COORDINATION_NOT_PERMITTED,
+                "policy permits 'coordinate' but declares no coordination scope; no coordination is admitted without accepted bounds",
+            )
+        if resource.node_address is None or resource.node_address not in scope.assigned_node_addresses:
+            return Decision.block(
+                DenyReason.COORDINATION_NODE_NOT_ASSIGNED,
+                f"coordination at {resource.node_address or '(unnamed)'} is outside the node set this policy assigns to a coordinator",
+            )
+
     # Machine acceptance is a MODE for an evaluation, never authority over a gate.
     if action is Action.EVALUATE:
         address = resource.node_address
@@ -1067,3 +1323,96 @@ def authorize_action(
         )
 
     return Decision.permit(f"action {action.value!r} is authorized by policy {policy.policy_id or '(unstamped)'} at plan v{policy_version}")
+
+
+def authorize_child_request(
+    context: AuthorizationContext,
+    child_persona: ChildPersona | str,
+    child_action: Action,
+    resource: ResourceRef,
+    policy_version: int,
+) -> Decision:
+    """Decide whether a coordinator may request ONE eligible child. **Not the child's own admission.**
+
+    Two checks, deliberately in this order and deliberately not collapsed into one:
+
+    1. The coordinator's own `COORDINATE` authority at its assigned node, via
+       :func:`authorize_action`. Everything a normal admission checks — version,
+       expiry, revocation, membership, role, credential scope, shared spend, attempts
+       and concurrency — therefore applies to the *request itself*, so a coordinator
+       whose flow has exhausted its allowance cannot keep asking.
+    2. The requested child against the accepted coordination scope.
+
+    **What this deliberately does NOT do, and it is the whole safety argument:**
+    permitting here does not authorize the child. The child still needs its own
+    `authorize_action` under its own action, its own live work claim and its own
+    bounded grant — this function only establishes that a coordinator was *allowed to
+    ask*. `graph_dispatch` calls both, and the child's admission is what mints
+    anything. Collapsing the two would let coordinator authority substitute for a
+    child's, which is the substitution #5224 forbids outright.
+
+    A coordinator therefore cannot approve, accept or resume a human gate, conclude
+    an evaluation, merge, deploy, change scope or issue credentials by virtue of
+    holding `coordinate`: none of those are reachable from here. `MERGE`, `DEPLOY`
+    and `EVALUATE` are refused at acceptance by `CoordinationScope`, and refused
+    again below for a document that reached this build without validation.
+
+    Args:
+        context: The COORDINATOR's live facts — not the child's. The caller resolves
+            a fresh context for the child before admitting it.
+        child_persona: The persona to be dispatched. A plain string is accepted (it
+            arrives from a request body) and an unrecognised one denies rather than
+            raising, so a malformed request is a typed refusal like any other.
+        child_action: The action the child would take.
+        resource: The COORDINATOR's assigned node and tenant.
+        policy_version: The version the caller read the work from.
+
+    Returns:
+        A :class:`Decision`. A permit means "this request was allowed to be made".
+    """
+    coordinator = authorize_action(context, Action.COORDINATE, resource, policy_version)
+    if not coordinator.permitted:
+        return coordinator
+
+    # `authorize_action` already refused an absent scope above, so this is a
+    # narrowing for the type checker rather than a second policy decision.
+    scope = context.policy.coordination
+    if scope is None:  # pragma: no cover - unreachable; authorize_action blocks first
+        return Decision.block(DenyReason.COORDINATION_NOT_PERMITTED, "no coordination scope is accepted on this policy")
+
+    try:
+        persona = ChildPersona(child_persona)
+    except ValueError:
+        # An unexpected persona string is a refusal, never a pass-through. The set of
+        # dispatchable personas is closed at acceptance, so a request naming one the
+        # owner never accepted must not reach dispatch on the strength of the
+        # coordinator's own authority.
+        return Decision.block(
+            DenyReason.CHILD_PERSONA_NOT_PERMITTED,
+            f"requested child persona {str(child_persona)!r} is not a persona a coordinator may request",
+        )
+
+    if persona not in scope.allowed_child_personas:
+        return Decision.block(
+            DenyReason.CHILD_PERSONA_NOT_PERMITTED,
+            f"this policy's coordination scope does not permit requesting a {persona.value!r} child",
+        )
+
+    if child_action not in scope.allowed_child_actions:
+        return Decision.block(
+            DenyReason.CHILD_ACTION_NOT_PERMITTED,
+            f"this policy's coordination scope does not permit a child performing {child_action.value!r}",
+        )
+
+    # Re-checked rather than trusted from acceptance, for a document that reached
+    # this build without passing the validators (a raw-dict rehydration).
+    if child_action not in context.policy.allowed_actions or child_action in context.policy.human_gates:
+        return Decision.block(
+            DenyReason.CHILD_ACTION_NOT_PERMITTED,
+            f"child action {child_action.value!r} is not autonomously authorized by this policy; coordination cannot substitute for it",
+        )
+
+    return Decision.permit(
+        f"a {persona.value!r} child performing {child_action.value!r} may be requested by the coordinator at {resource.node_address} "
+        f"under policy {context.policy.policy_id or '(unstamped)'}; the child's own admission still applies"
+    )
