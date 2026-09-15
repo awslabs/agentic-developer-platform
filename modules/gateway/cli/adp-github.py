@@ -310,9 +310,7 @@ def status(args, api):
 
     if not owner:
         detail["connections"] = [detail_of(connection) for connection in rows]
-        detail["agent_integration"] = [
-            {"installation_id": connection.get("installation_id"), **agent_integration(connection)} for connection in rows
-        ]
+        detail["agent_integration"] = [{"installation_id": connection.get("installation_id"), **agent_integration(connection)} for connection in rows]
         if not rows:
             return common.envelope(
                 "pending",
