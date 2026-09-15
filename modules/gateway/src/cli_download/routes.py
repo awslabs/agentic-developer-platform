@@ -68,6 +68,7 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "bg-cognito-auth.sh": (_CLI_DIR / "bg-cognito-auth.sh").resolve(),
     "bg-gateway-proxy.py": (_CLI_DIR / "bg-gateway-proxy.py").resolve(),
     "adp-bedrock.py": (_CLI_DIR / "adp-bedrock.py").resolve(),
+    "adp-github.py": (_CLI_DIR / "adp-github.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
@@ -83,6 +84,7 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "bg-cognito-auth.sh": SHELL_SCRIPT_MEDIA_TYPE,
     "bg-gateway-proxy.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-bedrock.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-github.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }
 
 
