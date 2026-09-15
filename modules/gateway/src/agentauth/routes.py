@@ -53,11 +53,6 @@ class BootstrapRequest(BaseModel):
     envelope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class WorkAdmissionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    invocation_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9:_-]+$")
-
-
 class AgentRuntime:
     def __init__(
         self,
@@ -246,32 +241,13 @@ async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRunt
         await runtime.validate_flow(record, grant)
         from src.orchestration.work_admission import worker_checkpoint
 
-        await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id)
+        await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except (BootstrapRefusedError, WorkloadRefusedError, WorkClaimError):
         raise HTTPException(404, "not found") from None
     except AuthorityStoreError:
         raise HTTPException(503, "agent authority unavailable") from None
-
-
-@router.post("/work/admit")
-async def admit_work(body: WorkAdmissionRequest, runtime: AgentRuntime = Depends(get_agent_runtime)) -> JSONResponse:
-    """Trusted producers may reserve only an already-authorized invocation.
-
-    No tenant, repository, issue, owner or release operation is accepted from
-    this transport. Worker writes still require its verified pod/run identity.
-    """
-    from src.orchestration.work_admission import admit_pending
-
-    try:
-        receipt = await admit_pending(runtime.store, body.invocation_id)
-        return JSONResponse(receipt, headers={"Cache-Control": "no-store"})
-    except WorkClaimError as exc:
-        logger.info("work admission refused invocation=%s reason=%s", body.invocation_id, exc.code)
-        raise HTTPException(409, "work ownership refused") from None
-    except (BootstrapRefusedError, AuthorityStoreError):
-        raise HTTPException(404, "not found") from None
 
 
 async def _agent_call(request: Request, runtime: AgentRuntime, method, *args) -> JSONResponse:

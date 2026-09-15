@@ -50,6 +50,11 @@ on:
         required: false
         type: boolean
         default: false
+      stage1_authority_plan:
+        description: 'Plan existing protected-identity prerequisites for Stage 1 (no apply)'
+        required: false
+        type: boolean
+        default: false
       environment:
         description: 'Deployment environment (dev/staging/prod)'
         required: false
@@ -95,6 +100,17 @@ jobs:
       - name: Stage 1 runtime readback
         if: github.event_name == 'workflow_dispatch' && inputs.stage1_readback
         run: python3 modules/gateway/scripts/stage1-runtime-readback.py
+
+      - name: Set up Terraform for Stage 1 prerequisite plan
+        if: github.event_name == 'workflow_dispatch' && inputs.stage1_authority_plan
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.3'
+          terraform_wrapper: false
+
+      - name: Plan Stage 1 authority prerequisites
+        if: github.event_name == 'workflow_dispatch' && inputs.stage1_authority_plan
+        run: python3 modules/gateway/scripts/stage1-authority-plan.py
 
       - name: Read refresh token from Secrets Manager
         id: token

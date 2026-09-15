@@ -3,11 +3,43 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # The module-level SUBMIT_QUEUE_URL in sqs_publisher is evaluated at import
 # time, so patching os.environ alone is insufficient when another test file
 # imports the module first with a different URL.  We patch the module-level
 # constant directly alongside os.environ to guarantee test isolation.
 _TEST_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123/queue.fifo"
+
+
+@pytest.mark.parametrize(
+    "authority, admitted, expected",
+    [(False, True, False), (True, False, False), (True, True, True)],
+)
+def test_claim_admission_precedes_queue_publication(
+    monkeypatch, authority, admitted, expected
+):
+    from common import gateway_client, sqs_publisher
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", str(authority).lower())
+    monkeypatch.setattr(sqs_publisher, "SUBMIT_QUEUE_URL", _TEST_QUEUE_URL)
+    producer = MagicMock()
+    producer.send_message.return_value = {"MessageId": "sqs-id"}
+    monkeypatch.setattr(sqs_publisher, "_sqs", producer)
+    admit = MagicMock(return_value=admitted)
+    monkeypatch.setattr(gateway_client, "admit_issue_work", admit)
+    result = sqs_publisher.publish_envelope(
+        {
+            "channel": "github",
+            "message_id": "run",
+            "tenant_id": "org",
+            "source_ref": {"repo": "org/repo", "issue": 1},
+        }
+    )
+    assert producer.send_message.called is expected
+    assert bool(result) is expected
+    assert admit.called is authority
 
 
 class TestPublishEnvelope:

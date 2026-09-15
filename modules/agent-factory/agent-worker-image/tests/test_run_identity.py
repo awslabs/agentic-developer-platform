@@ -17,6 +17,14 @@ from lib.run_identity import (
 )
 
 
+@pytest.mark.parametrize("source", ["envelope", "configuration"])
+def test_claimed_work_cannot_run_on_legacy_worker(monkeypatch, source):
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true" if source == "configuration" else "false")
+    with pytest.raises(RunIdentityError, match="Work ownership requires"):
+        bootstrap_run_identity({"work_claim_required": source == "envelope"})
+
+
 @pytest.fixture
 def identity(tmp_path, monkeypatch):
     monkeypatch.setenv(

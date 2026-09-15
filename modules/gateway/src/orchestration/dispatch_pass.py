@@ -822,6 +822,7 @@ async def _dispatch_one(session, node, *, config, report) -> None:
         await _dispatch_one_unclaimed(session, node, config=config, report=report)
         return
     before = len(report.pending)
+    node_id, org_id = node.id, node.org_id
     try:
         require_authority()
         installation = await resolve_installation_id(session, org_id=node.org_id)
@@ -844,8 +845,8 @@ async def _dispatch_one(session, node, *, config, report) -> None:
     except _AdmissionUnusedError:
         return
     except WorkClaimError as exc:
-        report.record(node.org_id, "undispatchable")
-        logger.warning("orchestration ownership refused node=%s reason=%s", node.id, exc.code)
+        report.record(org_id, "undispatchable")
+        logger.warning("orchestration ownership refused node=%s reason=%s", node_id, exc.code)
 
 
 async def run_dispatch_pass(

@@ -70,7 +70,7 @@ async def test_crash_recovery_requires_positive_workload_exit(session, exited):
         )
     )
     workloads = SimpleNamespace(has_exited=Mock(return_value=exited))
-    assert await recover_exited_claims(session, store=store, workloads=workloads) == int(exited)
+    assert (await recover_exited_claims(session, store=store, workloads=workloads)).released == int(exited)
     row = await session.get(OrchestrationWorkClaim, receipt["claim_id"])
     assert row.state == (ClaimState.RELEASED.value if exited else ClaimState.HELD.value)
     workloads.has_exited.assert_called_once_with(name="worker-1", uid="uid-1")
@@ -79,5 +79,5 @@ async def test_crash_recovery_requires_positive_workload_exit(session, exited):
 async def test_other_tenants_execution_cannot_release_claim(session):
     receipt = await start(session)
     store = SimpleNamespace(_read=Mock(return_value={"tenant_id": {"S": "other"}, "status": {"S": "completed"}}))
-    assert await recover_exited_claims(session, store=store, workloads=None) == 0
+    assert (await recover_exited_claims(session, store=store, workloads=None)).released == 0
     assert (await session.get(OrchestrationWorkClaim, receipt["claim_id"])).state == ClaimState.HELD.value

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
@@ -119,10 +120,6 @@ async def admit_pending(store, invocation_id: str, *, session=None) -> dict:
         raise WorkClaimError("dispatch_binding_missing", "Protected dispatch lacks immutable work identity.") from None
     if not grant.flow_id or repo not in grant.repo_scope or grant.tenant_id != org_id:
         raise WorkClaimError("dispatch_scope_invalid", "Protected work scope is unresolved.")
-    if issue == 0 and grant.authority.kind == "service_policy":
-        # A scheduled coordinator with no assigned issue owns no issue work.
-        # Every issue-bearing child still passes this admission independently.
-        return {"enforced": True, "disposition": "no_issue"}
     if repository_id <= 0:
         repository_id = await resolve_repository_id(org_id=org_id, installation_id=int(execution["installation_id"]["N"]), repo=repo)
         await run_in_threadpool(
@@ -136,6 +133,10 @@ async def admit_pending(store, invocation_id: str, *, session=None) -> dict:
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={":repo": {"N": str(repository_id)}, ":pending": {"S": "pending"}},
         )
+    if issue == 0 and grant.authority.kind == "service_policy":
+        # Resolve the repository for future issue-bearing child dispatches even
+        # though the scheduled coordinator itself owns no assigned issue.
+        return {"enforced": True, "disposition": "no_issue"}
     owner = ClaimOwner(OwnerKind.ENGINE_FLOW if grant.authority.kind == "gate_decision" else OwnerKind.DIRECT_DISPATCH, grant.flow_id)
 
     async def reserve(active_session):
@@ -183,17 +184,29 @@ async def maintain_worker_claim(session, *, org_id: str, invocation_id: str, ter
         await heartbeat(session, org_id=org_id, claim_id=row.id, generation=row.generation)
 
 
-async def worker_checkpoint(*, org_id: str, invocation_id: str, terminal: bool = False) -> None:
+async def worker_checkpoint(*, org_id: str, invocation_id: str, terminal: bool = False, store=None) -> None:
     from src.shared.database import get_session_factory
 
     if not enabled():
         return
+    if store is not None:
+        raw = await run_in_threadpool(store._read, f"TENANT#{org_id}", f"EXEC#{invocation_id}")
+        if raw and raw.get("issue_number") == {"N": "0"}:
+            grant = await run_in_threadpool(store._read, f"TENANT#{org_id}", f"GRANT#{invocation_id}#1")
+            if grant and grant.get("authority_kind") == {"S": "service_policy"}:
+                return
     async with get_session_factory()() as session:
         await maintain_worker_claim(session, org_id=org_id, invocation_id=invocation_id, terminal=terminal)
         await session.commit()
 
 
-async def recover_exited_claims(session, *, store, workloads, limit: int = 50) -> int:
+@dataclass(frozen=True)
+class ClaimRecoveryReport:
+    released: int
+    next_id: str | None
+
+
+async def recover_exited_claims(session, *, store, workloads, limit: int = 50, after_id: str | None = None) -> ClaimRecoveryReport:
     """Bounded recovery after a worker dies before its terminal callback.
 
     Multiple gateway processes may run this pass. Row locks serialize release;
@@ -202,15 +215,17 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50) -
     """
     rows = list(
         (
-            await session.scalars(
-                select(OrchestrationWorkClaim)
+            await session.execute(
+                select(
+                    OrchestrationWorkClaim.id, OrchestrationWorkClaim.org_id, OrchestrationWorkClaim.generation, OrchestrationWorkClaim.active_run_id
+                )
                 .where(
                     OrchestrationWorkClaim.state == ClaimState.HELD.value,
                     OrchestrationWorkClaim.active_run_id.is_not(None),
+                    OrchestrationWorkClaim.id > (after_id or ""),
                 )
-                .order_by(OrchestrationWorkClaim.heartbeat_at)
+                .order_by(OrchestrationWorkClaim.id)
                 .limit(limit)
-                .with_for_update(skip_locked=True)
             )
         ).all()
     )
@@ -226,15 +241,18 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50) -
             evidence = f"kubernetes terminated pod:{uid} run:{row.active_run_id}"
         else:
             continue
-        await release_work(
+        # Never hold a claim lock across an external read. The captured generation
+        # fences this release if ownership changed while Kubernetes was queried.
+        receipt = await release_work(
             session, org_id=row.org_id, claim_id=row.id, generation=row.generation, reason=ReleaseReason.ABANDONED, terminal_evidence=evidence
         )
-        released += 1
-    return released
+        released += int(receipt.admitted)
+    return ClaimRecoveryReport(released, rows[-1].id if len(rows) == limit else None)
 
 
 async def maintain_work_claims() -> None:
     """Lifecycle cleanup in existing gateway processes; no new scheduler."""
+    cursor = None
     while True:
         try:
             if enabled():
@@ -244,10 +262,11 @@ async def maintain_work_claims() -> None:
 
                 runtime = get_agent_runtime()
                 async with get_session_factory()() as session:
-                    count = await recover_exited_claims(session, store=runtime.store, workloads=runtime.workloads)
+                    report = await recover_exited_claims(session, store=runtime.store, workloads=runtime.workloads, after_id=cursor)
                     await session.commit()
-                if count:
-                    logger.info("work_claim_recovery released=%s", count)
+                cursor = report.next_id
+                if report.released:
+                    logger.info("work_claim_recovery released=%s", report.released)
         except Exception:
             logger.exception("work_claim_recovery failed; unresolved claims remain held")
         await asyncio.sleep(60)

@@ -294,7 +294,9 @@ async def record_status(
 
     if enabled():
         caller = verify_credential(runtime.credential(request), env=runtime.runtime.env)
-        await worker_checkpoint(org_id=caller.tenant_id, invocation_id=caller.invocation_id, terminal=body.status != "in_progress")
+        await worker_checkpoint(
+            org_id=caller.tenant_id, invocation_id=caller.invocation_id, terminal=body.status != "in_progress", store=runtime.runtime.store
+        )
     return response
 
 

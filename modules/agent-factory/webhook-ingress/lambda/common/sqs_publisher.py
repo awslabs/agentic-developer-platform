@@ -50,11 +50,19 @@ def publish_envelope(envelope: dict) -> str | None:
         envelope = prepare_envelope(envelope)
     except ValueError:
         return None
-    if os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true" and envelope.get("channel") != "gitlab":
+    if (
+        os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
+        and envelope.get("channel") != "gitlab"
+    ):
         from common.gateway_client import admit_issue_work
 
-        if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true" or not admit_issue_work(envelope):
-            logger.warning("Work ownership admission refused run_id=%s; nothing published", envelope.get("message_id"))
+        if os.environ.get(
+            "AGENT_AUTHORITY_ENABLED", "false"
+        ).lower() != "true" or not admit_issue_work(envelope):
+            logger.warning(
+                "Work ownership admission refused run_id=%s; nothing published",
+                envelope.get("message_id"),
+            )
             return None
     message_body = json.dumps(envelope, default=str)
 

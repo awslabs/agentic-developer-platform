@@ -25,7 +25,7 @@ if identity["Account"] != expected:
     raise SystemExit("Refused: runner identity does not match deployment target")
 run("aws", "eks", "update-kubeconfig", "--name", "adp-dev-eks-cluster", "--region", "us-east-1")
 gateway = kubernetes("deployment", "bedrockgateway", "adp-gateway")
-config = kubernetes("configmap", "bedrock-gateway-config", "adp-gateway")
+config = kubernetes("configmap", "bedrockgateway-config", "adp-gateway")
 if config is None:
     config = kubernetes("configmap", "gateway-config", "adp-gateway")
 workers = kubernetes("scaledjob", "agent-scaledjob", "adp-agents")
