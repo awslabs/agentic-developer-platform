@@ -123,6 +123,167 @@ describe('resilientQuery', () => {
     });
   });
 
+  describe('SDK response failures', () => {
+    // Shape observed on #5185: a provider error followed by a success result
+    // with real cost/turn counts. The worker stops consuming at the result.
+    const bedrockError = 'API Error: An error occurred (internalServerException) when calling the '
+      + 'InvokeModelWithResponseStream operation: The system encountered an unexpected error '
+      + 'during processing. Try your request again.';
+    const assistant = (text: string, extra: Record<string, unknown> = {}) => ({
+      type: 'assistant', parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      ...extra,
+    });
+    const success = {
+      type: 'result', subtype: 'success', is_error: false,
+      total_cost_usd: 5.5267, num_turns: 31, result: 'Completed',
+    };
+    const options = (): ResilientQueryOptions => ({
+      queryParams: { prompt: 'Implement the issue', options: { persistSession: true } } as any,
+      maxRetries: 2, baseDelayMs: 10, maxDelayMs: 20, log: jest.fn(),
+    });
+
+    async function consumeUntilResult(opts: ResilientQueryOptions, seen: unknown[]): Promise<void> {
+      for await (const message of resilientQuery(opts)) {
+        seen.push(message);
+        if (message.type === 'result') break;
+      }
+    }
+
+    it.each([undefined, 'unknown', 'server_error'])(
+      'resumes before yielding a false success (assistant error=%s)', async (error) => {
+        const init = { type: 'system', subtype: 'init', session_id: 'bedrock-session' };
+        const progress = assistant('I have written the design document.');
+        const failed = asyncFromArray([init, progress, assistant(bedrockError, { error }), success]);
+        const completed = assistant('Implementation and tests are complete.');
+        const recovered = asyncFromArray([completed, success]);
+        mockQuery.mockReturnValueOnce(failed as any).mockReturnValueOnce(recovered as any);
+        const onSessionId = jest.fn();
+        const seen: unknown[] = [];
+        const done = consumeUntilResult({ ...options(), onSessionId }, seen);
+        await jest.advanceTimersByTimeAsync(100);
+        await done;
+
+        expect(seen).toEqual([init, progress, completed, success]);
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        expect(mockQuery.mock.calls[1][0]).toMatchObject({
+          prompt: 'Continue the task from where you left off. Do not repeat completed steps.',
+          options: { persistSession: true, resume: 'bedrock-session' },
+        });
+        expect(onSessionId).toHaveBeenCalledTimes(1);
+        expect(failed.close).toHaveBeenCalledTimes(1);
+        expect(recovered.close).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([0, 2])('throws after exhausting %i retries without yielding completion', async (maxRetries) => {
+      const attempts: ReturnType<typeof asyncFromArray>[] = [];
+      mockQuery.mockImplementation(() => {
+        const session = asyncFromArray([assistant(bedrockError), success]);
+        attempts.push(session);
+        return session as any;
+      });
+      const seen: unknown[] = [];
+      const rejected = expect(consumeUntilResult({ ...options(), maxRetries }, seen)).rejects.toThrow(bedrockError);
+      await jest.advanceTimersByTimeAsync(100);
+      await rejected;
+
+      expect(mockQuery).toHaveBeenCalledTimes(maxRetries + 1);
+      expect(seen).toEqual([]);
+      for (const attempt of attempts) expect(attempt.close).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['is_error result', [{ ...success, is_error: true, result: bedrockError }]],
+      ['success result containing API error', [{ ...success, result: bedrockError }]],
+      ['execution error result', [{ type: 'result', subtype: 'error_during_execution', is_error: true, errors: [bedrockError] }]],
+      ['structured server error', [assistant('The provider failed.', { error: 'server_error' }), success]],
+      ['structured rate limit', [assistant('Please wait.', { error: 'rate_limit' }), success]],
+      ['structured overload', [assistant('Please wait.', { error: 'overloaded' }), success]],
+      ['error followed by EOF', [assistant(bedrockError, { session_id: 'error-only-session' })]],
+    ])('retries %s through the existing wrapper', async (_name, messages) => {
+      const failed = asyncFromArray(messages as unknown[]);
+      mockQuery.mockReturnValueOnce(failed as any).mockReturnValueOnce(asyncFromArray([success]) as any);
+      const done = collectAll(resilientQuery(options()));
+      await jest.advanceTimersByTimeAsync(100);
+
+      expect(await done).toEqual([success]);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(failed.close).toHaveBeenCalledTimes(1);
+      if (_name === 'error followed by EOF') {
+        expect(mockQuery.mock.calls[1][0].options?.resume).toBe('error-only-session');
+      }
+    });
+
+    it.each([
+      ['authentication', [assistant('API Error: authentication failed; previous attempt was overloaded', { error: 'authentication_failed' }), success]],
+      ['billing', [assistant('API Error: billing error after internalServerException', { error: 'billing_error' }), success]],
+      ['invalid request', [assistant('API Error: invalid timeout parameter', { error: 'invalid_request' }), success]],
+      ['access denied', [assistant('API Error: AccessDeniedException: not authorized to perform bedrock:InvokeModel'), success]],
+      ['unclassified API error', [assistant('API Error: unexpected provider response'), success]],
+      ['execution failure', [{ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['Permission denied'] }]],
+      ['unknown failed result', [{ ...success, is_error: true, result: '' }]],
+      ['max turns', [assistant(bedrockError), { type: 'result', subtype: 'error_max_turns', errors: [bedrockError] }]],
+      ['max budget', [assistant(bedrockError), { type: 'result', subtype: 'error_max_budget_usd', errors: [bedrockError] }]],
+      ['structured output limit', [{ type: 'result', subtype: 'error_max_structured_output_retries', errors: ['timeout'] }]],
+    ])('reports %s as failure without retrying', async (_name, messages) => {
+      const session = asyncFromArray(messages as unknown[]);
+      mockQuery.mockReturnValue(session as any);
+      const seen: unknown[] = [];
+      await expect(consumeUntilResult(options(), seen)).rejects.toThrow();
+      expect(seen).toEqual([]);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(session.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows the SDK to recover internally before its final result', async () => {
+      const recovered = assistant('The request recovered and the work is complete.');
+      mockQuery.mockReturnValue(asyncFromArray([assistant(bedrockError), recovered, success]) as any);
+      expect(await collectAll(resilientQuery(options()))).toEqual([recovered, success]);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not mistake normal output, tool failures, child errors, or SDK retry notices for run failures', async () => {
+      const messages = [
+        assistant('I fixed the API Error: internalServerException handling.'),
+        assistant('```\n' + bedrockError + '\n```'),
+        assistant('Example:\n' + bedrockError),
+        { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: bedrockError }] } },
+        assistant(bedrockError, { parent_tool_use_id: 'child-task', error: 'server_error' }),
+        { type: 'system', subtype: 'api_retry', error: 'server_error', attempt: 1 },
+        success,
+      ];
+      mockQuery.mockReturnValue(asyncFromArray(messages) as any);
+      expect(await collectAll(resilientQuery(options()))).toEqual(messages);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not let a child response clear a pending top-level error', async () => {
+      const child = assistant('Child task finished.', { parent_tool_use_id: 'child-task' });
+      mockQuery.mockReturnValue(asyncFromArray([assistant(bedrockError), child, success]) as any);
+      const seen: unknown[] = [];
+      await expect(consumeUntilResult({ ...options(), maxRetries: 0 }, seen)).rejects.toThrow(bedrockError);
+      expect(seen).toEqual([child]);
+    });
+
+    it('honours cancellation during provider-error backoff', async () => {
+      const controller = new AbortController();
+      const session = asyncFromArray([assistant(bedrockError), success]);
+      mockQuery.mockReturnValue(session as any);
+      const seen: unknown[] = [];
+      const rejected = expect(consumeUntilResult({
+        ...options(), baseDelayMs: 1000, maxDelayMs: 1000,
+        cancellation: { isCancelled: () => controller.signal.aborted, signal: controller.signal },
+      }, seen)).rejects.toThrow('cancelled');
+      await jest.advanceTimersByTimeAsync(1);
+      controller.abort();
+      await rejected;
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(session.close).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual([]);
+    });
+  });
+
   describe('retry behavior on retryable errors', () => {
     it('should retry on "fetch failed" error', async () => {
       const messages = [{ type: 'result', subtype: 'success' }];
@@ -891,6 +1052,7 @@ describe('resilientQuery', () => {
       'overloaded',
       'capacity exceeded',
       'internal server error',
+      'internalServerException',
       'bad gateway',
       'gateway timeout',
     ];
