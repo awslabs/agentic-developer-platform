@@ -50,6 +50,30 @@ deploy/read back/clean up a disposable resource, refresh and chain roles, and
 keep gateway/GitHub/model calls working during deployment. Record source and
 destination caller identities and sanitized provider evidence; never credentials.
 
+## Vault API-key compatibility — release blocker
+
+Workers must also retain existing authorized use of user-supplied API keys and
+other credentials through ADP vault. Preserve service/label selection, existing
+user/team/org authorization, proxy credential injection, enabled raw-key delivery
+to SDKs/tools, and file materialization where configured. Existing scope flags,
+destination restrictions, audit records and credential rotation remain effective;
+this requirement does not enable vault capabilities that were previously disabled.
+
+The draft is not ready for these workloads: accepted-policy raw-secret delivery
+is refused, the protected broker only covers GitHub/assume-role/raw-read paths,
+and the worker IAM route allowlist omits the direct vault proxy and materialize
+endpoints. Adding those routes alone would not establish accepted-policy
+authorization. #5174 must resolve credential selection and permitted provider
+effects while preserving existing vault workflows before they can be migrated.
+
+Live release acceptance must exercise an authorized API call through vault proxy
+injection and a tool/SDK consuming an enabled raw API key, plus file delivery
+where configured. Verify the selected service/label, credential rotation, existing
+access refusals, audit records and operation while customer AWS credentials are
+loaded. Use a controlled provider fixture and keep API keys out of evidence/logs.
+Transport tests alone do not establish vault workflow compatibility. This gate
+applies alongside cross-account role compatibility; neither is optional for release.
+
 ## Enforced boundaries
 
 The accepted plan supplies the policy; protected execution/grant records supply
