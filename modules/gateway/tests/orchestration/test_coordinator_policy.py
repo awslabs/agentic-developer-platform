@@ -205,6 +205,34 @@ class TestExistingDocumentsAreUnchanged:
         with pytest.raises(ValidationError, match="declares no coordination scope"):
             _policy(allowed_actions=[Action.DEVELOP, Action.COORDINATE])
 
+    def test_accepting_a_coordinator_does_not_forfeit_v2_user_credentials(self) -> None:
+        """v3 is a superset of v2, at admission as well as at parse.
+
+        The failure this pins is a silent *downgrade* rather than a refusal: a flow
+        that had already been granted user-credential authority under v2, then
+        accepted a coordinator, would keep the `user_credentials` field (the validator
+        allows it) while the admission rule stopped honouring it — so an owner would
+        read the accepted document as granting authority the engine no longer applied.
+        """
+        from src.orchestration.execution_policy import UserCredentialAuthority
+
+        authority = UserCredentialAuthority(
+            permission_mode="user_configured",
+            lifetime="provider_managed",
+            vault_credential_ids=["approved-key"],
+            aws_role_arns=[],
+            actions=[Action.DEVELOP],
+        )
+        policy = _stamped_coordinator(user_credentials=authority)
+        assert policy.schema_version == COORDINATION_SCHEMA_VERSION
+        decision = authorize_action(
+            _coordinator_context(policy=policy, credential_scope=CredentialScope.USER_GRANTED),
+            Action.DEVELOP,
+            ResourceRef(repository_id=REPO_A, org_id=ORG_A, node_address=COORDINATOR_NODE, user_credential_id="approved-key"),
+            1,
+        )
+        assert decision.permitted, decision.detail
+
 
 # ---------------------------------------------------------------------------
 # Schema: an unbounded coordinator is unrepresentable

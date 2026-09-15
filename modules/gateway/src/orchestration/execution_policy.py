@@ -215,6 +215,12 @@ SUPPORTED_POLICY_SCHEMA_VERSIONS = frozenset({1, 2, 3})
 # than silently upgrading an older accepted policy (#5224).
 COORDINATION_SCHEMA_VERSION = 3
 
+# Which versions carry the v2 user-credential contract. One name, read by both the
+# parse-time validator and the admission rule, because those two disagreeing is a
+# silent authority change in either direction: a validator that accepts a document
+# the rule then ignores, or a rule that honours a field the validator refuses.
+_USER_CREDENTIAL_SCHEMA_VERSIONS = frozenset({2, COORDINATION_SCHEMA_VERSION})
+
 
 class Action(StrEnum):
     """The autonomous actions a policy can permit.
@@ -629,7 +635,7 @@ class ExecutionPolicy(BaseModel):
             # accepted user credentials must not have to give them up to accept a
             # coordinator. v1 still refuses, so no already-accepted v1 document
             # acquires this authority.
-            if self.schema_version not in {2, COORDINATION_SCHEMA_VERSION}:
+            if self.schema_version not in _USER_CREDENTIAL_SCHEMA_VERSIONS:
                 raise ValueError("user credential permissions require policy schema_version 2")
             if not set(self.user_credentials.actions) <= set(self.allowed_actions):
                 raise ValueError("credential actions must be declared policy actions")
@@ -1275,11 +1281,15 @@ def authorize_action(
             )
 
     # --- Delegated identity: scoped or explicitly accepted user authority --
-    # USER_GRANTED is a distinct v2 contract, never a fallback from SCOPED.
+    # USER_GRANTED is a distinct v2 contract, never a fallback from SCOPED. v3 is
+    # a superset of v2, so the set here must match `_user_credentials_require_v2`
+    # exactly: pinning `== 2` would let a flow that accepted a coordinator lose
+    # user-credential authority it had already been granted, which is a silent
+    # downgrade rather than a refusal. v1 still has no such contract to honour.
     user_authority = policy.user_credentials
     user_granted = (
         context.credential_scope is CredentialScope.USER_GRANTED
-        and policy.schema_version == 2
+        and policy.schema_version in _USER_CREDENTIAL_SCHEMA_VERSIONS
         and user_authority is not None
         and action in user_authority.actions
         and (resource.user_credential_id is not None or resource.aws_role_arn is not None)
