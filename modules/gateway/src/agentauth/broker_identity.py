@@ -36,6 +36,7 @@ async def verify_broker_worker(request: Request) -> None:
 
     context = None
     try:
+        body = await request.json()
         runtime = get_agent_runtime()
         context = await run_in_threadpool(
             runtime.authenticate,
@@ -43,14 +44,13 @@ async def verify_broker_worker(request: Request) -> None:
             request.headers.get(WORKLOAD_HEADER, ""),
         )
         await runtime.validate_flow(context[2], context[3])
-        body = await request.json()
         caller = context[1]
         if not isinstance(body, dict) or body.get("invocation_id") != caller.invocation_id:
             raise BootstrapRefusedError("broker invocation mismatch")
         execution = await run_in_threadpool(runtime.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
         if not execution:
             raise BootstrapRefusedError("broker execution unavailable")
-        from src.orchestration.runtime_policy import authorize_worker_credential
+        from src.orchestration.runtime_policy import WorkerCredentialDecision, authorize_worker_credential
         from src.shared.database import get_session_factory
 
         async with get_session_factory()() as session:
@@ -61,6 +61,9 @@ async def verify_broker_worker(request: Request) -> None:
                 extra={"principal": caller.principal, "reason": decision.reason.value, "action": request.url.path},
             )
             raise BootstrapRefusedError("worker credential policy refused")
+        if isinstance(decision, WorkerCredentialDecision):
+            request.state.agent_github_permissions = decision.permissions
+            request.state.agent_github_not_after = decision.not_after
         if request.url.path == "/internal/v1/github-installation-token":
             repo = f"{body.get('repo_owner', '')}/{body.get('repo_name', '')}"
             if execution.get("repo") != {"S": repo} or execution.get("installation_id", {}).get("N") != str(body.get("installation_id")):

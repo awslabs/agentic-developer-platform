@@ -438,7 +438,7 @@ async def authorize_node_dispatch(
     if inputs.policy is None:
         return Decision.permit("no execution policy in force; legacy semantics apply")
 
-    from .runtime_policy import flow_started_at
+    from .runtime_policy import flow_started_at, policy_github_permissions
 
     started = await flow_started_at(session, org_id=node.org_id, flow_id=node.flow_id)
     if started is not None and (utcnow() - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
@@ -491,7 +491,9 @@ async def authorize_node_dispatch(
     # real rather than assumed. When they do not, `UNKNOWN` is passed and the rule
     # blocks — which is the point: there is no branch here that reaches for a
     # broader platform credential when the narrow one cannot be established.
-    scope = CredentialScope.SCOPED if installation_resolved and target_repository in inputs.policy.repository_ids else CredentialScope.UNKNOWN
+    scope = CredentialScope.UNKNOWN
+    if installation_resolved and target_repository in inputs.policy.repository_ids:
+        scope = CredentialScope.SCOPED if policy_github_permissions(inputs.policy, action) is not None else CredentialScope.UNSCOPABLE
 
     # One ledger read, used for the rule's total and for the releases below.
     spend = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes)
@@ -565,5 +567,13 @@ async def authorize_node_dispatch(
             DenyReason.SPEND_LIMIT_EXCEEDED,
             f"flow allowance of ${inputs.policy.limits.max_spend_usd} is exhausted once in-flight admissions are counted",
         )
+
+    from .flow_meter import prepare_flow_meter
+
+    if not await prepare_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, nodes=flow_nodes):
+        await release_flow_admission(
+            org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, settled_usd=context.observed_spend_usd or Decimal(0), node_id=node.id
+        )
+        return Decision.block(DenyReason.BUDGET_UNAVAILABLE, "shared model allowance is unavailable; existing usage must be reconciled")
 
     return decision

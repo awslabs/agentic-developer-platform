@@ -7,8 +7,8 @@ this action gate. Unsupported credential scoping is a refusal.
 
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 
@@ -17,10 +17,31 @@ from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_ro
 from src.shared.models.base import utcnow
 
 from .dispatch import graph_address
-from .execution_policy import Action, CredentialScope, Decision, DenyReason, ResourceRef, authorize_action
+from .execution_policy import Action, CredentialScope, Decision, DenyReason, ExecutionPolicy, ResourceRef, authorize_action
 from .models import DecisionKind, NodeKind, OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
-from .policy_admission import _observed_spend, load_in_force_policy, resolve_authorization_context
+from .policy_admission import AdmissionInputs, SpendObservation, load_in_force_policy, resolve_authorization_context
 from .state import NodeState
+
+
+@dataclass(frozen=True)
+class WorkerCredentialDecision(Decision):
+    permissions: dict[str, str] | None = None
+    not_after: datetime | None = None
+
+
+def policy_github_permissions(policy: ExecutionPolicy, action: Action) -> dict[str, str] | None:
+    """GitHub contents-write also authorizes merge; never disguise that scope."""
+    permissions = {"contents": "read", "pull_requests": "read", "issues": "read", "checks": "read", "metadata": "read"}
+    if action is Action.EVALUATE:
+        return permissions
+    if action is Action.REVIEW:
+        return {**permissions, "pull_requests": "write", "issues": "write"}
+    if action in {Action.DEVELOP, Action.REPAIR} and policy.permits(Action.MERGE):
+        return {**permissions, "contents": "write", "pull_requests": "write", "issues": "write"}
+    # A provider token that can write contents cannot enforce a human-only merge
+    # gate. That needs mediated writes/scoped branch capabilities, not a broad
+    # installation-token fallback.
+    return None
 
 
 async def flow_started_at(session, *, org_id: str, flow_id: str) -> datetime | None:
@@ -47,7 +68,9 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
     return None
 
 
-async def authorize_worker_credential(session, *, execution: dict, grant: DelegatedGrant, broker_path: str) -> Decision:
+async def authorize_worker_credential(
+    session, *, execution: dict, grant: DelegatedGrant, broker_path: str, inputs: AdmissionInputs | None = None
+) -> Decision:
     """Authorize the existing assignment; this never admits another attempt.
 
     AWS and raw-secret brokers currently cannot bind a token to an accepted
@@ -56,7 +79,7 @@ async def authorize_worker_credential(session, *, execution: dict, grant: Delega
     """
     if grant.authority.kind != "gate_decision":
         return Decision.permit("no accepted engine policy binding")
-    inputs = await load_in_force_policy(session, org_id=grant.tenant_id, flow_id=grant.flow_id)
+    inputs = inputs or await load_in_force_policy(session, org_id=grant.tenant_id, flow_id=grant.flow_id)
     if inputs.refusal is not None:
         return inputs.refusal
     if inputs.policy is None:
@@ -117,18 +140,22 @@ async def authorize_worker_credential(session, *, execution: dict, grant: Delega
         return Decision.block(DenyReason.MEMBERSHIP_REVOKED, "policy principal no longer resolves in this tenant")
     if principal != accepted_principal:
         return Decision.block(DenyReason.MEMBERSHIP_REVOKED, "worker authority does not belong to the policy principal")
-    nodes = list(
-        (
-            await session.scalars(
-                select(OrchestrationNode).where(OrchestrationNode.org_id == grant.tenant_id, OrchestrationNode.flow_id == grant.flow_id)
-            )
-        ).all()
-    )
-    spend = await _observed_spend(session, org_id=grant.tenant_id, flow_slug=flow.slug, nodes=nodes)
+    from .flow_meter import read_flow_meter
+
+    meter = await read_flow_meter(org_id=grant.tenant_id, flow_id=grant.flow_id, policy=policy)
+    spend = SpendObservation(total_usd=meter.total_usd if meter is not None else None)
     repo = execution.get("repo", {}).get("S")
     repository_id = execution.get("provider_repository_id", {}).get("N", "")
     scope = CredentialScope.UNSCOPABLE
+    permissions = policy_github_permissions(policy, action)
+    not_after = min(policy.expires_at, grant.expires_at) if grant.expires_at is not None else policy.expires_at
     if broker_path == "/internal/v1/github-installation-token" and repo in policy.repository_ids and repo in grant.repo_scope:
+        # GitHub installation tokens last one hour. We cannot issue one whose
+        # lifetime would exceed this grant, even when issuance itself is allowed.
+        if permissions is not None and not_after > now + timedelta(hours=1, seconds=30):
+            scope = CredentialScope.SCOPED
+    elif broker_path == "model" and repo in policy.repository_ids and repo in grant.repo_scope:
+        # Model execution remains inside the policy-checking gateway boundary.
         scope = CredentialScope.SCOPED
     context = await resolve_authorization_context(
         session,
@@ -150,9 +177,12 @@ async def authorize_worker_credential(session, *, execution: dict, grant: Delega
         observed_attempts=max(0, node.attempts - 1),
         observed_concurrency=max(0, context.observed_concurrency - 1),
     )
-    return authorize_action(
+    decision = authorize_action(
         context,
         action,
         ResourceRef(repository_id=repo, org_id=grant.tenant_id, node_address=graph_address(node, flow_slug=flow.slug)),
         accepted_version,
     )
+    if decision.permitted and broker_path == "/internal/v1/github-installation-token":
+        return WorkerCredentialDecision(permitted=True, detail=decision.detail, permissions=permissions, not_after=not_after)
+    return decision

@@ -565,6 +565,12 @@ class BudgetEnforcementService:
         row here would let an agent pin its spend on an arbitrary human, which is
         exactly the forgery surface #4187/AD-1 closed.
         """
+        if context.auth_source == "iam" and context.user_id == "authority-worker":
+            binding = context._protected_run_binding
+            if binding is None or (run_id is not None and run_id != binding.run_id):
+                raise RunBindingError("unverified_worker", "Protected worker identity is unavailable or mismatched.")
+            return binding
+
         if not budget_config.budget_run_cap_enabled:
             # Issue #4591: the run-cap FEATURE being off must not starve
             # attribution — that is the same defect this issue fixes for shadow
@@ -768,13 +774,21 @@ class BudgetEnforcementService:
         Returns:
             EnforcementResult indicating if request is allowed
         """
+        policy_target = context._policy_flow_target
+        if policy_target is not None:
+            if context._policy_estimated_cost is None:
+                return self._policy_budget_unavailable()
+            estimated_cost = max(estimated_cost, context._policy_estimated_cost)
         if not budget_config.budget_check_enabled:
+            if policy_target is not None:
+                return self._policy_budget_unavailable()
             return EnforcementResult(allowed=True)
 
         try:
             async with self._get_session() as session:
                 all_warnings = []
-                reservation_targets: list[ReservationTarget] = []
+                reservation_targets: list[ReservationTarget] = [policy_target] if policy_target is not None else []
+                context._run_scope_reservations = list(reservation_targets)
 
                 # Issue #4187: run and chain scopes go FIRST so the reservation
                 # script attributes a denial to the most specific scope that ran
@@ -823,7 +837,9 @@ class BudgetEnforcementService:
                     # disabled, _resolve_run_scope now returns verified bindings
                     # for attribution, and a leftover mode=enforce setting must
                     # not switch the cap machinery on through this path.
-                    enforcing = budget_config.budget_run_cap_enabled and budget_config.budget_run_binding_mode.lower() == "enforce"
+                    enforcing = policy_target is not None or (
+                        budget_config.budget_run_cap_enabled and budget_config.budget_run_binding_mode.lower() == "enforce"
+                    )
 
                     if enforcing:
                         # Issue #4337 (B1): the cap is looked up for the tenant the ROW
@@ -867,7 +883,7 @@ class BudgetEnforcementService:
                         # `object.__setattr__` would instead shadow a stale default
                         # there with a value in `__dict__`. Two homes for one value is
                         # a silent-divergence trap; this writes the one pydantic reads.
-                        context._run_scope_reservations = scope_targets
+                        context._run_scope_reservations = ([policy_target] if policy_target is not None else []) + scope_targets
 
                     # Issue #4300: publish the server-resolved root human onto the
                     # context so (a) the hierarchy below can add its budget entity
@@ -998,6 +1014,8 @@ class BudgetEnforcementService:
                 await self._note_check_succeeded()
 
         except Exception as e:
+            if policy_target is not None:
+                return self._policy_budget_unavailable()
             return await self._handle_check_failure(e, "Budget check")
 
         # Issue #4287: the live-denominator gate. Deliberately OUTSIDE the try
@@ -1005,7 +1023,9 @@ class BudgetEnforcementService:
         # into _handle_check_failure would let a Redis blip burn the DB grace
         # window and then deny all traffic. It degrades instead — see
         # _reserve_or_degrade.
-        reservation_denial = await self._reserve_or_degrade(request_id, estimated_cost, reservation_targets)
+        reservation_denial = await self._reserve_or_degrade(
+            request_id, estimated_cost, reservation_targets, **({"strict": True} if policy_target is not None else {})
+        )
         if reservation_denial is not None:
             return reservation_denial
 
@@ -1016,6 +1036,8 @@ class BudgetEnforcementService:
         request_id: str | None,
         estimated_cost: Decimal,
         targets: list[ReservationTarget],
+        *,
+        strict: bool = False,
     ) -> EnforcementResult | None:
         """Take a live reservation, or degrade to the settled-ledger verdict.
 
@@ -1032,11 +1054,11 @@ class BudgetEnforcementService:
             A denial result, or ``None`` to leave the caller's verdict alone.
         """
         if not budget_config.budget_reservation_enabled or not targets or request_id is None:
-            return None
+            return self._policy_budget_unavailable() if strict else None
 
         store = self._get_reservations()
         if not store.enabled:
-            return None
+            return self._policy_budget_unavailable() if strict else None
 
         environment = self._get_environment()
         outcome = await store.reserve(request_id, estimated_cost, targets)
@@ -1045,7 +1067,7 @@ class BudgetEnforcementService:
             # Redis unavailable. Degrade to the settled-ledger check (lagged
             # denominator, still fail-closed on the ledger itself) and alarm.
             emit_budget_reservation_outcome(outcome="degraded", environment=environment)
-            return None
+            return self._policy_budget_unavailable() if strict else None
 
         if outcome.admitted:
             emit_budget_reservation_outcome(outcome="reserved", environment=environment)
@@ -1071,6 +1093,7 @@ class BudgetEnforcementService:
             EntityType.RUN.value,
             EntityType.CHAIN.value,
             EntityType.ROOT_USER.value,
+            EntityType.FLOW.value,
         )
         return EnforcementResult(
             allowed=False,
@@ -1088,6 +1111,15 @@ class BudgetEnforcementService:
             scope_cap_usd=exhausted.headroom_usd if is_scope_denial else None,
         )
 
+    @staticmethod
+    def _policy_budget_unavailable() -> EnforcementResult:
+        return EnforcementResult(
+            allowed=False,
+            deny_reason=DenyReason.CHECK_UNAVAILABLE,
+            blocked_reason="Accepted policy budget is unavailable or has unresolved usage",
+            scope="flow",
+        )
+
     async def reconcile_reservation(
         self,
         context: TokenContext,
@@ -1096,6 +1128,7 @@ class BudgetEnforcementService:
         input_tokens: int,
         output_tokens: int,
         actual_cost_usd: Decimal | None = None,
+        usage_known: bool = True,
     ) -> None:
         """Adjust this request's reservation from estimate to settled actual (#4287).
 
@@ -1154,6 +1187,14 @@ class BudgetEnforcementService:
         # this request touches only this request's field, even in the chain key
         # the two siblings share.
         targets.extend(context._run_scope_reservations)
+
+        if not usage_known or actual_cost_usd is None:
+            # Policy totals require a trusted price receipt. A failed upstream
+            # call or missing usage must not turn its estimate into zero spend.
+            unresolved = [target for target in targets if target.require_initialization]
+            for target in unresolved:
+                await store.mark_unknown(request_id, target)
+            targets = [target for target in targets if not target.require_initialization]
 
         await store.reconcile(request_id, actual_cost, targets)
 
@@ -2272,6 +2313,7 @@ async def reconcile_budget_reservation(
     input_tokens: int,
     output_tokens: int,
     actual_cost_usd: Decimal | None = None,
+    usage_known: bool = True,
 ) -> None:
     """Metering-side entry point for reservation reconciliation (Issue #4287).
 
@@ -2296,6 +2338,7 @@ async def reconcile_budget_reservation(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             **({"actual_cost_usd": actual_cost_usd} if actual_cost_usd is not None else {}),
+            **({"usage_known": False} if not usage_known else {}),
         )
     except Exception as exc:
         logger.warning(f"Budget reservation reconcile failed: {exc}")

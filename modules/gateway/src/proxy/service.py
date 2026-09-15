@@ -587,6 +587,7 @@ class ProxyService(IProxyService):
                     input_tokens=0,
                     output_tokens=0,
                     actual_cost_usd=Decimal("0"),
+                    usage_known=False,
                 )
                 if status_code < 400:
                     return

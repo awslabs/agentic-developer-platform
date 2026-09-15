@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.admin.middleware import create_request_logging_middleware
+from src.agentauth.model_identity import AgentModelIdentityMiddleware
 from src.auth.approval_middleware import ApprovalEnforcementMiddleware  # Issue #4144: gate spend on approval
 from src.auth.dependencies import require_admin  # Issue #1424: for agent-context indexing admin router guard
 from src.auth.middleware import TokenContextMiddleware
@@ -298,6 +299,10 @@ def create_app() -> FastAPI:
     if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() == "true":
         app.add_middleware(BudgetEnforcementMiddleware)
         logger.info("Budget enforcement middleware enabled")
+
+    # Execute after token-context authentication and before budget resolution.
+    # Protected workers cannot fall back to a caller-selected run capability.
+    app.add_middleware(AgentModelIdentityMiddleware)
 
     # Issue #4144: approval (org-assignment) enforcement. Added AFTER budget/rate-limit
     # and BEFORE TokenContextMiddleware, so at runtime it executes after token_context is

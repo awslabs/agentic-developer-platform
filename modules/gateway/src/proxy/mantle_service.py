@@ -607,6 +607,7 @@ class MantlePassthroughService:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             actual_cost_usd=cost_usd,
+            usage_known=decision is not None,
         )
 
         # Budget & Spend reads budget_usage, not usage_logs. Only the S3 event

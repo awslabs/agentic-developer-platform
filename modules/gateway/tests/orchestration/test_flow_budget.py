@@ -62,6 +62,7 @@ from tests.orchestration.test_policy_admission import (  # noqa: F401  (autouse 
     _make_node,
     _make_usage,
     _policy,
+    policy_budget_initializers,
     run_store,
 )
 from tests.orchestration.test_policy_admission import engine as engine_fixture
@@ -125,7 +126,9 @@ def _budget_config(**overrides) -> BudgetConfig:
 
 
 async def _keys(redis_client) -> list[str]:
-    return sorted(await redis_client.keys("*"))
+    # This suite inspects dispatch holds. Model charges have their own accumulator
+    # under the same stable flow binding, tested by test_flow_meter.py.
+    return sorted(key for key in await redis_client.keys("*") if ":models:run:lifetime" not in key)
 
 
 async def _holds(redis_client) -> dict[str, Decimal]:

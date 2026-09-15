@@ -23,7 +23,6 @@ from tests.orchestration.test_policy_admission import (
     _accept_policy,
     _authorize,
     _fixture,
-    _make_usage,
     _policy,
 )
 from tests.orchestration.test_policy_admission import (
@@ -33,12 +32,16 @@ from tests.orchestration.test_policy_admission import (
     healthy_policy_reservations as reservations_fixture,
 )
 from tests.orchestration.test_policy_admission import (
+    policy_budget_initializers as initializers_fixture,
+)
+from tests.orchestration.test_policy_admission import (
     session as session_fixture,
 )
 
 engine = engine_fixture
 healthy_policy_reservations = reservations_fixture
 session = session_fixture
+policy_budget_initializers = initializers_fixture
 
 GITHUB = "/internal/v1/github-installation-token"
 
@@ -46,7 +49,6 @@ GITHUB = "/internal/v1/github-installation-token"
 @pytest.fixture
 async def assignment(session):
     flow, node = await _fixture(session, policy=_policy(), node_kwargs={"state": NodeState.RUNNING, "attempts": 1})
-    await _make_usage(session, node)
     approval = await session.scalar(select(OrchestrationDecision).where(OrchestrationDecision.flow_id == flow.id))
     dispatch = OrchestrationDecision(
         org_id=ORG_A,
@@ -77,7 +79,7 @@ async def assignment(session):
         allowed_actions=frozenset(),
         flow_id=flow.id,
         repo_scope=frozenset({REPO}),
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        expires_at=datetime.now(UTC) + timedelta(hours=2),
     )
     return SimpleNamespace(flow=flow, node=node, execution=execution, grant=grant, dispatch=dispatch)
 

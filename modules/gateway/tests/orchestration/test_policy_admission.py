@@ -79,6 +79,22 @@ EXPIRY = datetime.now(UTC) + timedelta(days=30)
 
 
 @pytest.fixture(autouse=True)
+def policy_budget_initializers(monkeypatch):
+    initialized = set()
+
+    async def claim(*, org_id, flow_id, allow_create):
+        key = (org_id, flow_id)
+        if key in initialized:
+            return False
+        if not allow_create:
+            raise RuntimeError("existing work requires reconciliation")
+        initialized.add(key)
+        return True
+
+    monkeypatch.setattr("src.orchestration.flow_meter._claim_initialization", claim)
+
+
+@pytest.fixture(autouse=True)
 async def healthy_policy_reservations(monkeypatch):
     """Permitting-policy cases require real atomic holds, not an absent backend."""
     import fakeredis.aioredis
@@ -171,7 +187,7 @@ def _policy(**overrides: Any) -> ExecutionPolicy:
     base: dict[str, Any] = {
         "org_id": ORG_A,
         "repository_ids": [REPO],
-        "allowed_actions": [Action.DEVELOP, Action.EVALUATE],
+        "allowed_actions": [Action.DEVELOP, Action.MERGE, Action.EVALUATE],
         "expires_at": EXPIRY,
         "limits": _limits(),
     }
@@ -326,6 +342,12 @@ async def _fixture(
     await _make_member(session)
     flow = await _make_flow(session)
     await _accept_policy(session, flow, policy)
+    if policy is not None:
+        from src.orchestration.flow_meter import prepare_flow_meter
+
+        # Fixtures with historical work model a flow whose first admission already
+        # initialized its meter. Fault tests may deliberately make this unavailable.
+        await prepare_flow_meter(org_id=flow.org_id, flow_id=flow.id, policy=policy, nodes=[])
     await _make_approval(session, flow)
     node = await _make_node(session, flow, **(node_kwargs or {}))
     return flow, node
