@@ -121,6 +121,11 @@ offline-ness with a final step that fails if `AWS_ROLE_ARN` /
 `AWS_ACCESS_KEY_ID` / `AWS_WEB_IDENTITY_TOKEN_FILE` are present, so it can't
 quietly become a credentialed job later.
 
+> **Correction (review repair, below):** that last sentence was true of the guard's
+> *logic* and false of the job as shipped. On `arc-runner-org` those variables are
+> always present, so the guard could never pass and the lane failed on 100% of runs.
+> See "Two blockers, and why both were the same mistake".
+
 ## Pre-existing lint noise, correctly left alone
 
 `ruff check src/ tests/` reports 6 `I001` import-sort errors in
@@ -134,3 +139,127 @@ installed) — environment noise, not a regression.
 **Lesson:** when a repo-wide lint fails, prove authorship against the merge base
 before either fixing it or claiming it isn't yours. A worktree at the merge base
 answers this in one command and costs nothing.
+
+---
+
+# Review repair (PR #5198 revision 2)
+
+Two blockers. Both had passing tests over them, and that is the actual lesson.
+
+## Two blockers, and why both were the same mistake
+
+**Blocker 1 — the offline lane's guard asserted something untrue of its own runner.**
+The job ran on `arc-runner-org` and ended with a step failing if `AWS_ROLE_ARN` or
+`AWS_WEB_IDENTITY_TOKEN_FILE` were set. But ARC runner pods have an IRSA service
+account annotated `eks.amazonaws.com/role-arn`
+(`modules/agent-factory/infra/modules/arc-runner/main.tf`), so the EKS pod-identity
+webhook injects exactly those two variables into **every** container. The guard was
+a working detector pointed at an impossible premise: lint passed, all 48 tests
+passed, and the job failed on 100% of runs.
+
+The non-obvious part: **omitting `configure-aws-credentials` does not make an ARC job
+credential-free.** The identity is ambient, from the pod, not from a step. I only
+believed this after running the guard's own loop in my environment — it failed on
+`AWS_WEB_IDENTITY_TOKEN_FILE` — and printing `PASS: clean` under `env -i`.
+
+Fixed with `runs-on: ubuntu-latest`, not by weakening the assertion. The two
+reviewer-offered options are not equally good: keeping ARC leaves a
+`pull_request`-triggered job holding real `adp-dev-agent-runner-role` credentials in
+order to prove that a directory lints. Only a runner with no identity makes the
+credential model *enforceable* rather than aspirational. `ubuntu-latest` is the
+minority choice here (104 workflows use `arc-runner-org`, 1 uses hosted), so I
+checked hosted runners actually work in this repo — `aidlc-gate-nudge.yml`, 8/8
+recent successes — while noting that job only runs `github-script`, so it proves
+availability, not that `pip install` works. That got confirmed on the real lane run.
+
+**Blocker 2 — `--superplane-only` ran a near-full platform deploy.** `SUPERPLANE_ONLY`
+was read exactly once, at the Step 12 gate. An operator running it got gateway infra,
+gateway build/deploy, ALB + API-GW rewire, frontend S3 sync with CloudFront
+invalidation, broker Lambda, **first-admin DB seeding**, webhook-ingress and
+agent-factory — every one with `terraform apply -auto-approve` — and then reached the
+one module they asked for. Now 17 references across every phase guard. Bootstrap and
+platform infra still run, per the flag's name.
+
+**What links them:** a declaration was added and the thing that *consumes* it was
+not. Same defect class as the two registration points the issue's inventory missed
+(above). The pattern is stable enough to check for deliberately: after adding a flag
+or list entry, grep for every consumer and confirm each one reads it.
+
+## A text assertion reproduced the bug it was meant to catch
+
+`test_enable_and_skip_flags_exist` asserted the *string* `--superplane-only` appears
+somewhere in `deploy-all.sh`. True from the argument parser alone, while the flag did
+nearly the opposite of what it advertised. So the test embodied the same
+"declaration without consumer" error one level up — it verified the flag was
+*declared*, never that it *did* anything.
+
+**Lesson:** for anything with runtime behaviour, a substring assertion is a
+placeholder, not a test. Text assertions were genuinely right for the registration
+lists (Bash arrays and Markdown aren't importable), and that correct precedent is
+what made it feel acceptable to reach for one here. Reusing a technique past the
+conditions that justified it is its own failure mode.
+
+## Behavioural shell testing: five things that cost real time
+
+The replacement suite executes `deploy-all.sh` with stubbed tooling on `PATH`.
+Non-obvious mechanics:
+
+1. **Drain stdin in no-op stubs.** The script pipes generated manifests into
+   `kubectl apply -f -`. A stub that exits without reading closes the pipe, the
+   writing `sed` dies of SIGPIPE, and `set -o pipefail` aborts the whole run with
+   exit 141 — which presents as a scope failure with no useful message. Every stub
+   is `cat >/dev/null 2>&1 || true; exit 0`.
+2. **Detect phases by section, not by header line.** Steps 3 and 4 print their
+   `Step N/12` header *unconditionally*, then branch and announce the skip in the
+   body. A header-only check reports them as having run no matter what the guards
+   say — it would have passed against the unfixed script.
+3. **Distinguish "phase skipped" from "phase ran and did nothing."** Step 12 prints
+   "skipping infrastructure apply" *while running*, because U3 owns the Terraform.
+   A naive `/skipping/` match therefore reads a working phase as excluded. Match
+   only the two real skip-announcement shapes.
+4. **`PATH` stubbing cannot intercept `python3 <path>`.** An interpreter invoked with
+   an explicit script path bypasses `PATH` entirely, so `pricing-rollout.py` needed
+   an executable stub *at that path*.
+5. **Assert the harness is offline, in the harness.** `shutil.which("aws")` must
+   resolve inside the stub directory, or the suite could reach a real endpoint on
+   somebody's credentials and nobody would notice. Also strip every `AWS_*` from the
+   child env and pass `stdin=subprocess.DEVNULL`.
+
+## The negative control found two things the review didn't
+
+Ran the new suite against the pre-fix script (`git stash` + `git show <sha>:path`).
+Exactly 13 of 35 failed — the 8 phase-skip cases, 4 sub-script cases, and
+agent-context — while the other 22 passed, proving they aren't coupled to the fix.
+A suite that has never failed against the broken code is decoration.
+
+Writing the tests also surfaced two defects nobody had flagged:
+
+- **Step 5 (ALB wiring) printed nothing at all when out of scope** — a bare `if` with
+  no `else`. Every other phase announces its exclusion; a run jumping from Step 4 to
+  Step 6 in silence reads like the script lost a phase.
+- **Stale `Step 10b/11`** after the 11→12 renumbering. Invisible to the existing
+  denominator test because its regex is `Step \d+/(\d+)` and `10b` contains a letter.
+
+## A necessary comment broke an absence assertion
+
+`test_lane_declares_no_aws_credentials` grepped the whole file for
+`configure-aws-credentials` — and started failing on my own fix, because the header
+now has to explain the ARC/IRSA behaviour *by name* to stop someone helpfully moving
+the runner back. Deleting the explanation to satisfy the test would have been
+backwards.
+
+Made it structural instead: `yaml.safe_load`, then check `permissions` and
+`job["steps"]`. A substring search cannot tell a credential step from a comment
+explaining why there is no credential step, and an absence assertion that forbids
+naming the thing being avoided makes the file undocumentable.
+
+**Lesson:** absence assertions belong on the executable surface, not the file bytes.
+
+## Lint the files your own CI lane lints
+
+`ruff format --check` failed on two files, one of them
+`test_superplane_registration.py` — which the lane lints *by name*. The required
+check would have gone red on formatting after all the substantive work was correct.
+Run the exact commands your workflow runs, on the files it names, before pushing.
+The 6 pre-existing `I001` errors in `tests/migrations/` were re-verified as untouched
+by this branch (`git diff origin/main --quiet` per file) rather than assumed.
