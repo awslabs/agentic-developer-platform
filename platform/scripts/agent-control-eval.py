@@ -103,8 +103,20 @@ STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
 STATUS_NOT_RUN = "not_run"
 
-# The four verbs, all of which must answer 501 in S1.
+# The four verbs, all of which must answer 501 in S1 and still in S3.
 CONTROL_VERBS: tuple[str, ...] = ("pause", "resume", "steer", "abort")
+
+# The neutral control contract's protocol version, and the first production
+# adapter's identity and pinned SDK. Mirrored from
+# `modules/agent-factory/agent/src/control-runtime.ts` and
+# `harnesses/claude-control.ts` rather than imported, for the same reason the
+# request bodies above are mirrored: this harness runs standalone against a URL
+# and must not acquire the agent module's dependency tree. A test pins these
+# against the TypeScript sources, so a bump there surfaces as a harness test to
+# update rather than as a live evaluation that silently accepts stale evidence.
+CONTROL_PROTOCOL_VERSION = 1
+CLAUDE_ADAPTER_ID = "claude"
+EXPECTED_CLAUDE_SDK_VERSION = "0.3.220"
 
 # `steer` is the one verb whose request model REQUIRES its free text: pause,
 # resume and abort take the idempotency key plus an optional `reason`, while
@@ -118,6 +130,7 @@ CONTROL_VERBS: tuple[str, ...] = ("pause", "resume", "steer", "abort")
 # a schema change on the gateway side surfaces as a harness test to update rather
 # than as a silent 400 in a live evaluation.
 STEER_VERB = "steer"
+ABORTED_STATUS = "aborted"
 
 # Short and deliberately inert. Every command in wave 1 is refused — by
 # authorization, by the terminal-row gate, or by the 501 that follows both — so
@@ -259,21 +272,151 @@ WAVE1_CHECKS: tuple[CheckSpec, ...] = (
     ),
 )
 
-# S1 delivers wave 1. Waves 2-4 are extended by their owning stories (§7:
-# "S2/S5 extend wave 2; S4/S6 extend wave 3; S7 extends wave 4"). Asking for one
-# of those is an honest nonzero, not an empty pass.
-WAVE_CHECKS: dict[int, tuple[CheckSpec, ...]] = {1: WAVE1_CHECKS}
+# Transcribed from evaluation #3968's acceptance table (revision
+# harness-neutral-2026-09-15), on the same rule §7 states for wave 1: the
+# evaluation file's check IDs are authoritative.
+#
+# Keep all ten checks even while only S3 and S5 have landed: shrinking the
+# manifest to implemented checks would turn incomplete Wave 2 into a false pass.
+WAVE2_CHECKS: tuple[CheckSpec, ...] = (
+    CheckSpec(
+        "W2-01",
+        ("Gate/regression",),
+        "preflight includes accepted wave 1 evidence and current merged S3/S2/S5 "
+        "revisions, protocol/adapter/package versions and capabilities; worker AND "
+        "gateway digests verified, CI passed, fixture-only flags, required check "
+        "inventory and cleanup configuration",
+    ),
+    CheckSpec(
+        "W2-02",
+        ("AC-T7",),
+        "one neutral contract suite runs against Claude plus an independently shaped "
+        "non-Claude test adapter with a missing capability; no provider SDK/types in "
+        "the shared contract; capability intersection, normalized "
+        "annotation/steering input, authorization at handoff, unknown outcomes, "
+        "opaque attempt replacement, stale-event rejection and disposal once are "
+        "proven; real Claude/version lifecycle plus forced idle/error retry proves "
+        "fresh private input, preserved session/no-option behavior and cancel "
+        "preventing another query; both adapter results recorded",
+    ),
+    CheckSpec(
+        "W2-03",
+        ("AC-P1",),
+        "selected Claude adapter on the lockfile SDK with bypassPermissions and "
+        "existing spill hooks through the neutral coordinator: pause_requested "
+        "closes new admission, admitted tools finish, paused only with "
+        "active_tool_count=0; across a timed hold new admissions, fixture writes, "
+        "fixture service calls and task output are all zero; untracked activity or "
+        "hook timeout yields unavailable/requested, never paused",
+    ),
+    CheckSpec(
+        "W2-04",
+        ("AC-P2",),
+        "resume releases once; neutral attempt and Claude live Query/session "
+        "identity plus prior history preserved; task completes; no interrupt call or "
+        "replayed initial prompt; pending-resume and repeated-resume races serialized",
+    ),
+    CheckSpec(
+        "W2-05",
+        ("AC-P3", "AC-P5", "AC-P6"),
+        "a shortened fixture timeout auto-resumes with one neutral annotation "
+        "(Claude maps to shouldQuery:false), no extra assistant turn and no pod "
+        "kill/idle retry/exit watchdog; heartbeats continue and paused differs from "
+        "stalled; deadline clamp/no-budget rejection, held-hook timeout and "
+        "cancellation without admitting blocked work are tested",
+    ),
+    CheckSpec(
+        "W2-06",
+        ("AC-A3", "AC-A9"),
+        "provider-independent fixtures produce identical normalized outcome "
+        "accounting and native interruption alone is not aborted; a uniquely named "
+        "synthetic aborted invocation seeded through the real writer contract has "
+        "completed_at populated; live API/detail plus browser fixtures show aborted "
+        "in list, detail, card, chain and filter with no active/no-op fallback",
+    ),
+    CheckSpec(
+        "W2-07",
+        ("AC-A10",),
+        "a dedicated four-category dataset increments total and aborted once, with "
+        "today total=completed+failed+active+aborted; daily/persona buckets and "
+        "mixed blocked/skipped/budget_stopped fixtures preserve existing accounting; "
+        "isolated before/after deltas are asserted, never shared production totals",
+    ),
+    CheckSpec(
+        "W2-08",
+        ("AC-A11", "AC-A12"),
+        "shared terminal/renderer parity, the existing guard and worker writer tests "
+        "pass on merged head; the writer rejects an unknown status; both the "
+        "deployed writer and the gateway readers support aborted",
+    ),
+    CheckSpec(
+        "W2-09",
+        ("AC-A10",),
+        "live GET /api/me/agent-run-stats carries every declared field at each "
+        "level — window_days/active_runs/today/daily/by_persona/recent_failures/"
+        "top_repos/spend, today and daily and by_persona aborted counts, active-run "
+        "and recent_failures and top_repos keys and nonnull spend — compared field "
+        "by field against RunStatsResponse with nonempty seeded arrays",
+    ),
+    CheckSpec(
+        "W2-10",
+        ("Gate/regression",),
+        "only synthetic rows are deleted using event_id AND arrived_at with a "
+        "consistent get confirming absence; exact fixture workloads/probes removed "
+        "and cleanup recorded even after failure; isolation and relevant wave 1 "
+        "security rechecked on the current revision preserving #5029 "
+        "admission/delivery authorization; unsupported adapters/verbs remain "
+        "false/501 with no general flag enablement",
+    ),
+)
+
+# S1 delivered wave 1; the wave owners extend the rest (§7: "S2/S5 extend wave 2;
+# S4/S6 extend wave 3; S7 extends wave 4"). Asking for a wave with no manifest at
+# all is an honest nonzero, not an empty pass.
+WAVE_CHECKS: dict[int, tuple[CheckSpec, ...]] = {1: WAVE1_CHECKS, 2: WAVE2_CHECKS}
 SUPPORTED_WAVES: tuple[int, ...] = tuple(sorted(WAVE_CHECKS))
 
-# Retained for the manifest guard and for callers that only need the ID set.
+# The evaluation issue that reads each wave's report, and the design revision that
+# wave's checks were transcribed from. #3967 accepted wave 1 with 10/10 and is
+# closed; #3968 owns wave 2's live acceptance.
+WAVE_EVALUATIONS: dict[int, str] = {1: "3967", 2: "3968"}
+WAVE_REVISIONS: dict[int, str] = {
+    1: "revival-2026-09-12",
+    2: "harness-neutral-2026-09-15",
+}
+
+# Which story owns each check whose predicate is not implemented yet, so a
+# not_run says who to go to rather than just "missing". Registering a check with
+# no predicate is deliberate — see WAVE2_CHECKS above — but it must never be
+# indistinguishable from a check the harness forgot.
+PENDING_CHECK_OWNERS: dict[str, str] = {
+    "W2-01": "S2 #3961 — consolidated Wave 2 preflight after S3/S2/S5 merge",
+    "W2-03": "S2 #3961 — pause admission and quiescence (AC-P1)",
+    "W2-04": "S2 #3961 — same-execution resume (AC-P2)",
+    "W2-05": "S2 #3961 — auto-resume, heartbeats and deadline clamp (AC-P3/P5/P6)",
+    "W2-10": "evaluation #3968 — Wave 2 cleanup and security recheck",
+}
+
+# Retained for the manifest guard and for callers that only need wave 1's ID set.
+# Deliberately still wave 1: it is the DEFAULT for `assert_check_manifest`, and a
+# default that silently grew to span every wave would make a wave-1 report pass
+# the manifest guard while missing nine checks.
 EXPECTED_CHECK_IDS: tuple[str, ...] = tuple(spec.check_id for spec in WAVE1_CHECKS)
 
+ALL_CHECK_SPECS: tuple[CheckSpec, ...] = tuple(
+    spec for wave in sorted(WAVE_CHECKS) for spec in WAVE_CHECKS[wave]
+)
+
+# Keyed by check ID across every wave. Safe to span waves because these are only
+# ever read as a per-ID fallback, and the IDs are globally unique by construction
+# (W1-* / W2-*) — which a test pins, since two waves sharing an ID would make one
+# check's evidence silently describe the other's.
 CHECK_DESCRIPTIONS: dict[str, str] = {
-    spec.check_id: spec.description for spec in WAVE1_CHECKS
+    spec.check_id: spec.description for spec in ALL_CHECK_SPECS
 }
 
 CHECK_ACCEPTANCE_IDS: dict[str, tuple[str, ...]] = {
-    spec.check_id: spec.acceptance_ids for spec in WAVE1_CHECKS
+    spec.check_id: spec.acceptance_ids for spec in ALL_CHECK_SPECS
 }
 
 REQUIRED_CONFIG_FIELDS: tuple[str, ...] = (
@@ -313,6 +456,123 @@ REQUIRED_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
     "flag_parity": ("flag_off_events_digest", "flag_on_events_digest", "differing_fields", "ordinary_flags_off"),
     "journal_tests": ("replay_same_id", "content_conflict", "bounds_enforced", "expiry_is_unknown", "assistant_turns"),
     "negative_tests": ("wrong_account", "missing_isolation", "wrong_key", "absent_required_check", "unknown_check_id", "failed_cleanup"),
+    # Wave 2 / S5 (#3964). Each of these is an observation the harness cannot make
+    # over HTTP: two adapter fixtures normalized side by side, before/after counter
+    # snapshots around a controlled seed, and the deployed digests of two separate
+    # images. Declaring the required keys here means a partially filled artifact is
+    # an immediate named failure rather than a KeyError mid-check.
+    "harness_neutrality": (
+        "adapter_a",
+        "adapter_b",
+        "native_interrupt_status",
+        "shared_code_imports_sdk",
+    ),
+    "aborted_counters": (
+        "today_before",
+        "today_after",
+        "seeded_aborted",
+        "four_category_dataset",
+        "mixed_dataset",
+        "mixed_expected",
+        "daily_deltas",
+        "persona_deltas",
+    ),
+    "vocabulary_parity": (
+        "writer_digest_deployed",
+        "gateway_digest_deployed",
+        "writer_allowed_statuses",
+        "gateway_terminal_statuses",
+        "unknown_status_rejected",
+        "unknown_status_reached_table",
+        "suites",
+    ),
+    "stats_schema_keys": ("levels",),
+    # W2-02 / AC-T7. One key per property the acceptance table names, rather than
+    # a single "contract_suite_passed": a green suite is not the claim, the named
+    # properties are, and a collapsed boolean cannot say which one is unproven.
+    "neutral_contract": (
+        "protocol_version",
+        "adapter_id",
+        "sdk_version",
+        "sdk_matches_lockfile",
+        "adapters",
+        "second_adapter",
+        "no_provider_types_in_shared_contract",
+        "capability_intersection_proven",
+        "normalized_input_kinds_proven",
+        "authorization_at_handoff",
+        "unknown_outcome_supported",
+        "opaque_attempt_replacement",
+        "stale_events_rejected",
+        "disposed_once",
+        "fresh_private_input_per_attempt",
+        "session_and_no_option_behavior_preserved",
+        "cancel_prevents_new_query",
+        "forced_retry_exercised",
+    ),
+}
+
+# Keys of the neutral_contract artifact that carry data rather than a proof
+# boolean. Listed explicitly so the boolean loop cannot accidentally demand
+# ``adapters is True``, and so adding a proof key without listing it here is
+# checked by default rather than skipped by default.
+_NEUTRAL_CONTRACT_NON_BOOLEAN_KEYS: frozenset[str] = frozenset(
+    {"protocol_version", "adapter_id", "sdk_version", "adapters", "second_adapter"}
+)
+
+# Why each neutral-contract property is required, quoted into the failure message.
+# A report that says `disposed_once: False` tells an operator what was observed;
+# it does not tell them why anyone cared, and this evidence gets read by people who
+# did not write the story.
+_NEUTRAL_CONTRACT_WHY: dict[str, str] = {
+    "no_provider_types_in_shared_contract": (
+        "A shared consumer that imports the provider SDK or exposes Query/SDKUserMessage/AsyncIterable "
+        "input means the next harness cannot arrive without editing pause and abort code."
+    ),
+    "capability_intersection_proven": (
+        "Capability selection is the intersection of ADP-implemented verbs, adapter support and current "
+        "availability; combined any other way, one input can enable a verb the other two refuse."
+    ),
+    "normalized_input_kinds_proven": (
+        "Steering starts a turn and an annotation records context without starting one. Collapsing them "
+        "makes an auto-resume note cost a model turn the operator never asked for."
+    ),
+    "authorization_at_handoff": (
+        "#5029 requires revalidation immediately before physical handoff. A buffer that revalidates "
+        "earlier delivers instructions authorized by a grant that has since been revoked."
+    ),
+    "unknown_outcome_supported": (
+        "An ambiguous handoff must resolve unknown rather than delivered-or-rejected: 'unknown' never "
+        "triggers replay, while a wrong 'rejected' resends an instruction that already landed."
+    ),
+    "opaque_attempt_replacement": (
+        "Attempt identity must be opaque and replaceable, or a control aimed at the run reaches a "
+        "session that was torn down and rebuilt underneath it."
+    ),
+    "stale_events_rejected": (
+        "A replaced attempt's events must be inert rather than an error path — a retry is normal "
+        "operation, and treating its late events as failures makes every retry look like a fault."
+    ),
+    "disposed_once": (
+        "Disposal must happen exactly once. Two owners each disposing correctly once is still a double "
+        "close, which is the defect this property exists to keep fixed."
+    ),
+    "fresh_private_input_per_attempt": (
+        "Each attempt needs its own open input channel: an iterable a previous query consumed is "
+        "exhausted, so a reused one yields an attempt that looks live and can never receive a command."
+    ),
+    "session_and_no_option_behavior_preserved": (
+        "The one-time fail-soft session callback and the exact no-option query shape are relied on by "
+        "callers outside the control path; changing them makes unrelated runs repeat work."
+    ),
+    "cancel_prevents_new_query": (
+        "Cancellation during setup, backoff or idle must not launch another query nor be classified as "
+        "a retryable error — cancellation text contains words the retry patterns match."
+    ),
+    "forced_retry_exercised": (
+        "The retry-safety properties are only evidence if a retry actually happened; asserted on a run "
+        "that never retried, they are all vacuously true."
+    ),
 }
 
 # Substrings that mark a value as secret regardless of its own key name — a
@@ -1269,6 +1529,494 @@ class Driver:
                 f"missing {sorted(expected - set(emitted_ids))}, unexpected {sorted(set(emitted_ids) - expected)}"
             )
 
+    # ---- W2-02 ---------------------------------------------------------
+
+    def check_w2_02(self) -> None:
+        """The harness-neutral adapter contract (AC-T7, owned by S3 #3962).
+
+        Two halves, and the split is deliberate.
+
+        The contract suite itself runs where the code is — a jest run over the
+        neutral contract, the Claude adapter and the independently shaped test
+        adapter — so it is consumed here as an operator-recorded artifact,
+        validated and not trusted, exactly like every other observation that
+        cannot be made from outside the cluster. That is not a weaker form of
+        evidence than an HTTP probe: it is a *different* observation, and the
+        story is explicit that development and PR tests need no AWS credential.
+
+        The second half the harness does make itself: it reads the deployed
+        capability surface. That matters because the artifact describes the source
+        tree while the evaluation is about a deployment, and the failure this
+        catches is a green suite paired with a build that advertises a verb. §7's
+        digest guard makes them the same revision; this makes them the same
+        *behaviour*.
+        """
+        contract = self._artifact("neutral_contract")
+
+        # --- protocol and adapter identity -----------------------------------
+        if contract["protocol_version"] != CONTROL_PROTOCOL_VERSION:
+            raise AssertionError(
+                f"the recorded control protocol version is {contract['protocol_version']!r}, but this "
+                f"harness verifies version {CONTROL_PROTOCOL_VERSION}. A protocol change must update the "
+                "gateway peer, the adapter and this harness together, so a mismatch means one of the "
+                "three is describing a different contract than the other two."
+            )
+        if contract["adapter_id"] != CLAUDE_ADAPTER_ID:
+            raise AssertionError(
+                f"the production adapter recorded is {contract['adapter_id']!r}, expected "
+                f"{CLAUDE_ADAPTER_ID!r}. Claude is the first production adapter in this wave; a different "
+                "selection is not accepted live second-harness support."
+            )
+        if contract["sdk_version"] != EXPECTED_CLAUDE_SDK_VERSION:
+            raise AssertionError(
+                f"the adapter was exercised against SDK {contract['sdk_version']!r}, but the lockfile "
+                f"pins {EXPECTED_CLAUDE_SDK_VERSION!r}. The streaming-input and shouldQuery behaviours "
+                "this adapter relies on are observed SDK behaviour rather than a documented permanent "
+                "guarantee, so evidence from a different version does not carry over."
+            )
+        if contract["sdk_matches_lockfile"] is not True:
+            raise AssertionError(
+                "'sdk_matches_lockfile' is not True: the installed SDK was not recorded as matching the "
+                "lockfile, so the evaluation would be describing a dependency tree the deployment does "
+                "not have"
+            )
+
+        # --- both adapters, and the second one genuinely differently shaped ---
+        adapters = contract["adapters"]
+        if not isinstance(adapters, dict) or len(adapters) < 2:
+            raise AssertionError(
+                f"the contract suite must record a result for BOTH adapters, got {adapters!r}. One "
+                "adapter passing a neutral suite proves the suite runs, not that the contract is neutral."
+            )
+        if CLAUDE_ADAPTER_ID not in adapters:
+            raise AssertionError(
+                f"no result recorded for the {CLAUDE_ADAPTER_ID!r} adapter: {sorted(adapters)}"
+            )
+        others = [name for name in adapters if name != CLAUDE_ADAPTER_ID]
+        if not others:
+            raise AssertionError(
+                "only the Claude adapter was exercised; AC-T7 requires an independently shaped "
+                "non-Claude adapter, which is what distinguishes a neutral contract from a Claude "
+                "contract with an interface in front of it"
+            )
+        for name, outcome in adapters.items():
+            if not isinstance(outcome, dict):
+                raise AssertionError(f"adapter {name!r} result must be an object, got {outcome!r}")
+            if outcome.get("passed") is not True:
+                raise AssertionError(
+                    f"the neutral contract suite did not pass against the {name!r} adapter: {outcome!r}"
+                )
+            # A suite that ran zero tests passes. Both adapters must have been
+            # driven through real assertions for "both passed" to mean anything.
+            count = outcome.get("test_count")
+            if type(count) is not int or count <= 0:
+                raise AssertionError(
+                    f"adapter {name!r} records {count!r} tests; a suite that ran nothing reports "
+                    "success, so a positive count is what makes 'passed' evidence"
+                )
+
+        # The second adapter must be missing a capability the Claude one has, and
+        # must not imitate the provider. Both are what force the contract to be
+        # exercised rather than merely satisfied by a look-alike.
+        second = contract["second_adapter"]
+        if not isinstance(second, dict):
+            raise AssertionError("second_adapter must be an object")
+        if second.get("name") not in others:
+            raise AssertionError(
+                f"second_adapter names {second.get('name')!r}, which is not among the non-Claude "
+                f"adapter results {sorted(others)}"
+            )
+        if second.get("declares_missing_capability") is not True:
+            raise AssertionError(
+                "the second adapter does not declare a missing capability; without one, capability "
+                "intersection is never observed doing anything and an adapter that ignored support "
+                "entirely would pass"
+            )
+        if second.get("imports_provider_sdk") is not False:
+            raise AssertionError(
+                "the second adapter was recorded as importing the provider SDK; an adapter that mimics "
+                "Query/SDKUserMessage proves the shared contract accepts Claude's shape, which is the "
+                "opposite of the property under test"
+            )
+
+        # --- the named contract properties ------------------------------------
+        # Each is a distinct failure mode named by the acceptance table, checked
+        # individually so a report says WHICH property is unproven. An `all(...)`
+        # over the group would collapse seven answers into one boolean.
+        for prop in REQUIRED_ARTIFACT_KEYS["neutral_contract"]:
+            if prop in _NEUTRAL_CONTRACT_NON_BOOLEAN_KEYS:
+                continue
+            if contract[prop] is not True:
+                raise AssertionError(
+                    f"neutral-contract property {prop!r} is recorded as {contract[prop]!r}, not True. "
+                    f"{_NEUTRAL_CONTRACT_WHY.get(prop, '')}".rstrip()
+                )
+
+        # --- the deployed surface must agree ----------------------------------
+        # S3 has no implemented verbs; S2 adds pause/resume later in this wave.
+        # Record the source build's expectations rather than freezing the final
+        # Wave 2 gate at S3's temporary capability surface.
+        implemented = contract.get("implemented_verbs", [])
+        if not isinstance(implemented, list) or implemented not in ([], ["pause", "resume"]):
+            raise AssertionError("implemented_verbs must be [] (S3) or ['pause', 'resume'] (S2)")
+        live = self._require("live_run_id")
+        owner = self._token("owner")
+        for adapter, paths in ADAPTERS.items():
+            state = self.probe.request(
+                "GET", paths["state"].format(run_id=live), role="owner", token=owner
+            )
+            if state.status != 200:
+                raise AssertionError(f"{adapter}: state read returned {state.status}, expected 200")
+            capabilities = self._body_of(state).get("capabilities")
+            if not isinstance(capabilities, dict):
+                raise AssertionError(f"{adapter}: state response carries no capabilities object")
+            # Presence, not just truth: `capabilities.get(verb)` is falsy for an
+            # absent key, so a dropped verb would read as "unsupported" while the
+            # deployed contract said nothing about it at all.
+            absent = [verb for verb in CONTROL_VERBS if verb not in capabilities]
+            if absent:
+                raise AssertionError(
+                    f"{adapter}: the deployed capability map omits {absent}; the intersection must "
+                    "produce an explicit answer for every verb, because an absent key and a false one "
+                    "are indistinguishable to the dashboard but not to the contract"
+                )
+            invalid = [verb for verb, value in capabilities.items() if type(value) is not bool]
+            if invalid:
+                raise AssertionError(f"{adapter}: capabilities must be booleans: {invalid}")
+            enabled = sorted(verb for verb, value in capabilities.items() if value)
+            if enabled != sorted(implemented):
+                raise AssertionError(
+                    f"{adapter}: deployed capabilities {enabled} disagree with the tested build's "
+                    f"implemented_verbs {implemented}"
+                )
+
+
+
+    def check_w2_06(self) -> None:
+        """Aborted is terminal end-to-end, and native interruption alone is not.
+
+        The seeded row is read back through the live API rather than asserted from
+        the write: the whole point of AC-A3 is what the READERS do with the status,
+        and a writer test cannot see a reader that still treats the row as active.
+        """
+        run_id = self._require("aborted_run_id")
+        owner = self._token("owner")
+
+        detail = self.probe.request(
+            "GET", f"/me/agent-invocations/{run_id}", role="owner", token=owner
+        )
+        if detail.status != 200:
+            raise AssertionError(
+                f"the seeded aborted invocation returned {detail.status}, expected 200"
+            )
+        body = self._body_of(detail)
+        if body.get("status") != ABORTED_STATUS:
+            raise AssertionError(
+                f"the seeded row reports status {body.get('status')!r}, expected {ABORTED_STATUS!r} — "
+                "if the writer normalized it to something else, every reader below is testing the "
+                "wrong row"
+            )
+        # AC-A3. `completed_at` null on a terminal row is the defect this check
+        # exists for: the run is over, and a null here is what makes the dashboard
+        # keep it in the active set forever.
+        if not body.get("completed_at"):
+            raise AssertionError(
+                f"the aborted run has completed_at={body.get('completed_at')!r}; a terminal row with no "
+                "completion timestamp reads as still running (AC-A3)"
+            )
+        if body.get("liveness") != "exited":
+            raise AssertionError(
+                f"the aborted run reports liveness {body.get('liveness')!r}, expected 'exited' — a "
+                "deliberately stopped run was positively observed to end, which is exactly the "
+                "evidence 'exited' requires"
+            )
+
+        # AC-A9: the row must be reachable BY the aborted filter, not merely
+        # present in an unfiltered list. A filter that silently returns everything
+        # would satisfy a presence-only assertion.
+        listed = self.probe.request(
+            "GET",
+            f"/me/agent-invocations?status={ABORTED_STATUS}&page_size=50",
+            role="owner",
+            token=owner,
+        )
+        if listed.status != 200:
+            raise AssertionError(f"the aborted filter returned {listed.status}, expected 200")
+        items = self._body_of(listed).get("items") or []
+        if not any(item.get("invocation_id") == run_id for item in items):
+            raise AssertionError(
+                f"the seeded aborted run {run_id!r} is not returned by status={ABORTED_STATUS}; the "
+                "filter option exists but does not select the rows it names (AC-A9)"
+            )
+        foreign = sorted(
+            {item.get("status") for item in items if item.get("status") != ABORTED_STATUS}
+        )
+        if foreign:
+            raise AssertionError(
+                f"the aborted filter also returned {foreign}; a filter that ignores its argument would "
+                "have passed the presence check above"
+            )
+
+        # Harness neutrality: two differently named adapter fixtures whose native
+        # outcomes normalize to the same thing must produce identical accounting,
+        # and a native interruption with no confirmed ADP abort finalization must
+        # NOT have become an aborted run.
+        neutrality = self._artifact("harness_neutrality")
+        first, second = neutrality["adapter_a"], neutrality["adapter_b"]
+        if not isinstance(first, dict) or not first or not isinstance(second, dict) or not second:
+            raise AssertionError("both adapters must record nonempty normalized outcome accounting")
+        if first != second:
+            raise AssertionError(
+                f"two adapters' normalized outcome accounting differs: {first!r} vs {second!r}. The "
+                "shared writers and readers must not be able to tell which harness produced a run"
+            )
+        if neutrality["native_interrupt_status"] == ABORTED_STATUS:
+            raise AssertionError(
+                "a native interrupted turn with no confirmed ADP abort finalization was recorded as "
+                f"{ABORTED_STATUS!r}. Only a confirmed abort finalization may carry this status; "
+                "pattern-matching a provider's interrupt string is the specific error forbidden here"
+            )
+        if neutrality["shared_code_imports_sdk"] is not False:
+            raise AssertionError(
+                "the shared writer/reader path was recorded as importing a provider SDK; the shared "
+                "contract must not depend on any one harness"
+            )
+
+    # ---- W2-07 (S5 / #3964) --------------------------------------------
+
+    def check_w2_07(self) -> None:
+        """Additive counting: once each, and nothing else reclassified.
+
+        Deltas, never absolute totals. §7 forbids asserting against shared
+        production numbers, and an equality on a live tenant's totals would be
+        flaky for reasons that have nothing to do with this story.
+        """
+        counters = self._artifact("aborted_counters")
+
+        before, after = counters["today_before"], counters["today_after"]
+        seeded = counters["seeded_aborted"]
+
+        if type(seeded) is not int or seeded <= 0:
+            raise AssertionError("seeded_aborted must be a positive row count")
+
+        delta_total = after["total"] - before["total"]
+        delta_aborted = after[ABORTED_STATUS] - before[ABORTED_STATUS]
+        if delta_total != seeded or delta_aborted != seeded:
+            raise AssertionError(
+                f"seeding {seeded} aborted row(s) moved total by {delta_total} and aborted by "
+                f"{delta_aborted}; each aborted row must contribute exactly once to each (AC-A10)"
+            )
+        # The other three buckets must not move at all. This is the "counted once"
+        # half that a total-only assertion cannot see: a row counted into both
+        # `aborted` and `failed` keeps `total` correct while doubling the failure
+        # rate an operator is judged on.
+        for bucket in ("completed", "failed", "active"):
+            moved = after[bucket] - before[bucket]
+            if moved != 0:
+                raise AssertionError(
+                    f"seeding aborted rows moved {bucket!r} by {moved}; an aborted run must never also "
+                    f"count as {bucket} (AC-A10)"
+                )
+
+        # The four-way equality, asserted ONLY on the dedicated four-category
+        # dataset. It does not hold in general — blocked/skipped/no_op rows are
+        # counted in `total` and in none of the four buckets — so asserting it on a
+        # mixed dataset would be a false claim that someone would later "fix" by
+        # breaking the counters.
+        four = counters["four_category_dataset"]
+        bucket_sum = four["completed"] + four["failed"] + four["active"] + four[ABORTED_STATUS]
+        if four["total"] != bucket_sum:
+            raise AssertionError(
+                f"on the controlled four-category dataset total={four['total']} but the buckets sum to "
+                f"{bucket_sum}; with exactly these four outcomes present they must agree"
+            )
+
+        # Mixed dataset: existing outcomes preserved, and the four-way equality
+        # explicitly NOT claimed.
+        mixed = counters["mixed_dataset"]
+        mixed_sum = mixed["completed"] + mixed["failed"] + mixed["active"] + mixed[ABORTED_STATUS]
+        if mixed["total"] <= mixed_sum:
+            raise AssertionError(
+                f"the mixed dataset's total ({mixed['total']}) does not exceed its four buckets "
+                f"({mixed_sum}); it is supposed to contain blocked/skipped/budget_stopped rows that "
+                "count toward total only. If it no longer does, it is not testing preservation"
+            )
+        for bucket, expected in (counters["mixed_expected"] or {}).items():
+            if mixed[bucket] != expected:
+                raise AssertionError(
+                    f"mixed dataset bucket {bucket!r} is {mixed[bucket]}, expected {expected}: adding "
+                    "aborted reclassified a pre-existing outcome"
+                )
+
+        for scope in ("daily", "persona"):
+            entry = counters[f"{scope}_deltas"]
+            if entry.get(ABORTED_STATUS) != seeded:
+                raise AssertionError(
+                    f"the {scope} breakdown moved aborted by {entry.get(ABORTED_STATUS)}, expected "
+                    f"{seeded}; the per-{scope} counter is a separate accumulator and can drift from "
+                    "today's independently"
+                )
+            for bucket in ("completed", "failed"):
+                if entry.get(bucket, 0) != 0:
+                    raise AssertionError(
+                        f"the {scope} breakdown moved {bucket!r} by {entry.get(bucket)}, expected 0"
+                    )
+
+    # ---- W2-08 (S5 / #3964) --------------------------------------------
+
+    def check_w2_08(self) -> None:
+        """Parity across the split: the deployed writer and the deployed readers.
+
+        The two live in different images and ship through different workflows
+        (`agent-worker-image.yml` and `gateway-deploy.yml`), so "merged" does not
+        imply "both deployed" — a gateway that understands aborted in front of a
+        worker that cannot write it is a silent half-deployment.
+        """
+        parity = self._artifact("vocabulary_parity")
+
+        for name in ("writer_digest_deployed", "gateway_digest_deployed"):
+            if parity[name] is not True:
+                raise AssertionError(
+                    f"{name} is {parity[name]!r}: the aborted vocabulary spans the worker image and the "
+                    "gateway, and both must be the reviewed revision before abort is enabled"
+                )
+        if ABORTED_STATUS not in (parity["writer_allowed_statuses"] or []):
+            raise AssertionError(
+                f"the deployed writer's allowlist does not contain {ABORTED_STATUS!r}; the abort's own "
+                "terminal write would be refused and the run would read as live forever (AC-A12)"
+            )
+        if ABORTED_STATUS not in (parity["gateway_terminal_statuses"] or []):
+            raise AssertionError(
+                f"the deployed gateway's terminal set does not contain {ABORTED_STATUS!r} (AC-A11)"
+            )
+        # The reject path, which is the load-bearing half: an allowlist that
+        # accepts everything is indistinguishable from no allowlist at all until
+        # something unknown arrives.
+        if parity["unknown_status_rejected"] is not True:
+            raise AssertionError(
+                "the deployed writer did not reject an unknown status; an allowlist whose reject path "
+                "never fires is not a validation (AC-A12)"
+            )
+        if parity["unknown_status_reached_table"] is not False:
+            raise AssertionError(
+                "an unknown status reached the invocation table despite being rejected; validation must "
+                "happen BEFORE the write, not be corrected after it"
+            )
+        suites = parity["suites"]
+        required_suites = {
+            "tests/activity/test_status_aborted.py",
+            "tests/test_status_vocabulary.py",
+            "src/__tests__/utils/status.test.ts",
+            "src/__tests__/components/InvocationChain.test.tsx",
+        }
+        if not isinstance(suites, dict) or not required_suites.issubset(suites):
+            raise AssertionError("vocabulary parity must include every required writer/reader/renderer suite")
+        failed_suites = [name for name, status in suites.items() if status != "passed"]
+        if failed_suites:
+            raise AssertionError(
+                f"shared vocabulary/renderer parity suites did not pass on merged head: "
+                f"{sorted(failed_suites)}"
+            )
+
+    # ---- W2-09 (S5 / #3964) --------------------------------------------
+
+    def check_w2_09(self) -> None:
+        """The live stats contract, key by key, at every level.
+
+        Presence, not values: this check is about whether the response the SPA
+        destructures actually carries the fields it reads. A missing key is an
+        `undefined` in a dashboard, which renders as a blank rather than an error.
+        """
+        fixture = self._artifact("stats_schema_keys")
+        owner = self._token("owner")
+        observation = self.probe.request(
+            "GET", "/me/agent-run-stats?days=7", role="owner", token=owner
+        )
+        if observation.status != 200:
+            raise AssertionError(f"agent-run-stats returned {observation.status}, expected 200")
+        body = self._body_of(observation)
+
+        top_level = (
+            "window_days",
+            "active_runs",
+            "today",
+            "daily",
+            "by_persona",
+            "recent_failures",
+            "top_repos",
+            "spend",
+        )
+        missing = [name for name in top_level if name not in body]
+        if missing:
+            raise AssertionError(f"the stats response is missing top-level keys {missing}")
+
+        today_keys = ("total", "completed", "failed", "active", ABORTED_STATUS)
+        missing = [name for name in today_keys if name not in (body.get("today") or {})]
+        if missing:
+            raise AssertionError(
+                f"`today` is missing {missing}; the aborted counter is the field this story adds and an "
+                "absent key is indistinguishable from zero to every client"
+            )
+
+        # Arrays must be NONEMPTY before their keys mean anything: an empty list
+        # trivially satisfies "every element has the required keys".
+        for name, required in (
+            ("daily", ("date", "total", "completed", "failed", ABORTED_STATUS)),
+            ("by_persona", ("persona", "total", "completed", "failed", ABORTED_STATUS)),
+            ("active_runs", ("invocation_id", "invoked_at", "persona", "repo", "topic")),
+            (
+                "recent_failures",
+                ("invocation_id", "invoked_at", "persona", "repo", "topic", "error_message"),
+            ),
+            ("top_repos", ("repo", "total")),
+        ):
+            rows = body.get(name) or []
+            if not rows:
+                raise PrerequisiteMissingError(
+                    f"`{name}` is empty, so its keys cannot be verified. §7 requires seeded nonempty "
+                    "arrays: an empty list satisfies any per-element assertion vacuously"
+                )
+            for index, row in enumerate(rows):
+                absent = [key for key in required if key not in row]
+                if absent:
+                    raise AssertionError(f"`{name}[{index}]` is missing {absent}")
+
+        spend = body.get("spend")
+        if not isinstance(spend, dict):
+            raise PrerequisiteMissingError(
+                f"`spend` is {spend!r}, so its keys cannot be verified; §7 requires a nonnull spend "
+                "aggregate, which means the fixture runs must have recorded cost"
+            )
+        absent = [
+            key for key in ("total_cost_usd", "total_tokens", "total_calls") if key not in spend
+        ]
+        if absent:
+            raise AssertionError(f"`spend` is missing {absent}")
+
+        # The comparison the issue asks for in the other direction: every key the
+        # backend schema declares, checked against the live response. Presence
+        # checks above are a fixed list in this file and would not notice a field
+        # ADDED to the schema and omitted by the deployment.
+        levels = fixture["levels"]
+        required_levels = {"response", "today", "daily", "by_persona", "active_runs", "recent_failures", "top_repos", "spend"}
+        if not isinstance(levels, dict) or not required_levels.issubset(levels):
+            raise AssertionError("schema-derived keys must cover every stats response level")
+        for level, expected_keys in levels.items():
+            if not isinstance(expected_keys, list) or not expected_keys or not all(isinstance(key, str) and key for key in expected_keys):
+                raise AssertionError(f"schema-derived keys for {level!r} must be a nonempty string list")
+            actual = body if level == "response" else body.get(level)
+            actual_keys = set(
+                actual.keys()
+                if isinstance(actual, dict)
+                else (actual[0].keys() if isinstance(actual, list) and actual else ())
+            )
+            absent = sorted(set(expected_keys) - actual_keys)
+            if absent:
+                raise AssertionError(
+                    f"schema-derived keys missing from the live `{level}`: {absent}. The fixture is "
+                    "exported from the backend models, so this catches a field the deployment predates"
+                )
+
 
 # Predicate lookup. Explicit rather than derived from ``dir()`` so a renamed
 # method is an immediate KeyError instead of a silently shorter report.
@@ -1285,6 +2033,19 @@ WAVE1_PREDICATES: dict[str, str] = {
     "W1-10": "check_w1_10",
 }
 
+# S3 provides W2-02 and S5 provides W2-06..09. The other five checks retain
+# named NOT RUN results until their implementation and live evidence land.
+WAVE2_PREDICATES: dict[str, str] = {
+    "W2-02": "check_w2_02",
+    "W2-06": "check_w2_06",
+    "W2-07": "check_w2_07",
+    "W2-08": "check_w2_08",
+    "W2-09": "check_w2_09",
+
+}
+
+CHECK_PREDICATES: dict[str, str] = {**WAVE1_PREDICATES, **WAVE2_PREDICATES}
+
 
 def run_checks(driver: Driver, specs: tuple[CheckSpec, ...] = WAVE1_CHECKS) -> list[CheckResult]:
     """Execute every predicate, converting outcomes into check results.
@@ -1292,10 +2053,49 @@ def run_checks(driver: Driver, specs: tuple[CheckSpec, ...] = WAVE1_CHECKS) -> l
     One check's failure never stops the others: a partial report with nine real
     answers and one named failure is far more useful to the operator who has to
     fix it than an abort at the first problem.
+
+    A spec with no predicate is ``not_run`` naming its owning story. That is the
+    honest answer for a wave under construction, and it keeps the run nonzero —
+    the alternative, dropping the check, would make an incomplete wave produce a
+    report that passes its own gate.
     """
     results: list[CheckResult] = []
     for spec in specs:
-        method_name = WAVE1_PREDICATES[spec.check_id]
+        method_name = CHECK_PREDICATES.get(spec.check_id)
+        if method_name is None:
+            owner = PENDING_CHECK_OWNERS.get(spec.check_id)
+            if owner is None:
+                # In the manifest, not implemented, and nobody named. That is a
+                # harness bug rather than a wave in progress, so it is a FAILURE:
+                # an unowned not_run is how a check quietly stops being anyone's
+                # job.
+                message = (
+                    f"{spec.check_id} is in this wave's manifest but has no predicate and no owning "
+                    "story recorded in PENDING_CHECK_OWNERS; the harness cannot say who delivers it"
+                )
+                logger.error("%s FAILED — %s", spec.check_id, message)
+                results.append(
+                    CheckResult(
+                        check_id=spec.check_id,
+                        status=STATUS_FAILED,
+                        description=spec.description,
+                        acceptance_ids=spec.acceptance_ids,
+                        message=message,
+                    )
+                )
+                continue
+            message = f"not implemented in this revision; delivered by {owner}"
+            logger.warning("%s NOT RUN — %s", spec.check_id, message)
+            results.append(
+                CheckResult(
+                    check_id=spec.check_id,
+                    status=STATUS_NOT_RUN,
+                    description=spec.description,
+                    acceptance_ids=spec.acceptance_ids,
+                    message=message,
+                )
+            )
+            continue
         method = getattr(driver, method_name)
         result = CheckResult(
             check_id=spec.check_id,
@@ -1356,8 +2156,13 @@ def build_report(
     report = {
         "harness": "agent-control-eval",
         "issue": "3960",
-        "evaluation": "3967",
-        "revision": "revival-2026-09-12",
+        # Which evaluation issue reads this report, per wave. Not one constant:
+        # #3967 accepted wave 1 and is closed, so a wave-2 report labelled 3967
+        # would attach evidence to a finished evaluation. Unknown waves keep the
+        # wave-1 label only because they cannot be reached — main() refuses a wave
+        # with no manifest before any report is built.
+        "evaluation": WAVE_EVALUATIONS.get(wave, "3967"),
+        "revision": WAVE_REVISIONS.get(wave, "revival-2026-09-12"),
         "wave": wave,
         "generated_at": _now(),
         "environment": config.get("environment"),
@@ -1462,7 +2267,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--wave",
         type=int,
         default=1,
-        help=f"Which wave's checks to run. S1 delivers {list(SUPPORTED_WAVES)}.",
+        help=(
+            f"Which wave's checks to run. This revision carries {list(SUPPORTED_WAVES)}. "
+            "Checks whose owning story has not landed report not_run, so an incomplete wave "
+            "exits nonzero rather than passing short."
+        ),
     )
     # Required with no default, deliberately: invoked bare this exits nonzero
     # rather than discovering a target.
@@ -1504,8 +2313,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - each exit is 
 
     if args.wave not in WAVE_CHECKS:
         logger.error(
-            "wave %s has no checks in this revision. S1 delivers wave %s; waves 2-4 are extended by "
-            "their owning stories (revival-design §7). Refusing rather than emitting an empty pass.",
+            "wave %s has no checks in this revision. This harness carries wave %s; the remaining waves "
+            "are extended by their owning stories (revival-design §7). Refusing rather than emitting an "
+            "empty pass.",
             args.wave,
             list(SUPPORTED_WAVES),
         )

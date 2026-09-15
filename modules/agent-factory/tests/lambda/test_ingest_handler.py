@@ -24,7 +24,15 @@ import pytest
 from moto import mock_aws
 from botocore.exceptions import ClientError
 
-from tests.conftest import mock_apigw_event
+from tests.conftest import mock_apigw_event as _mock_apigw_event
+
+
+def mock_apigw_event(**kwargs):
+    """Valid signed-in chat fixtures include the user's tenant claim."""
+    claims = dict(kwargs.get("authorizer_claims") or {})
+    if claims.get("sub"):
+        claims.setdefault("custom:tenant_id", "test-tenant")
+    return _mock_apigw_event(**{**kwargs, "authorizer_claims": claims})
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +62,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "")
     monkeypatch.setenv("SLACK_BOT_USER_ID", "")
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", "adp-dev-webhook-events")
 
 
 def _make_bedrock_response(classification: dict) -> dict:
@@ -78,6 +87,13 @@ def mocked_aws_services(mock_env):
             BillingMode="PAY_PER_REQUEST",
         )
 
+        ddb.create_table(
+            TableName="adp-dev-webhook-events",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
         # Create SQS queues
         sqs_client = boto3.client("sqs", region_name="us-east-1")
         sqs_client.create_queue(QueueName="adp-dev-agent-gateway-tasks")
@@ -97,7 +113,7 @@ def _import_handler(mock_bedrock=None):
     # Clear any cached module imports
     for mod_name in list(sys.modules.keys()):
         if mod_name in ("handler", "classifier", "channels", "channels.base",
-                        "channels.webchat", "channels.slack", "github_dispatch"):
+                        "channels.webchat", "channels.slack", "github_dispatch", "invocation_logger"):
             del sys.modules[mod_name]
 
     import handler  # noqa: F811
@@ -535,6 +551,7 @@ class TestExtendedClaimsPersistence:
         connect_event["requestContext"]["authorizer"] = {
             "claims": {
                 "sub": "user-sqs-1",
+                "custom:tenant_id": "test-tenant",
                 "email": "sqs@example.com",
                 "custom:org_id": "org-sqs",
                 "custom:team_id": "team-sqs",

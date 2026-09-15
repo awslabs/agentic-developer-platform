@@ -19,6 +19,27 @@ resource "aws_s3_bucket" "frontend" {
     Service = "frontend"
     Purpose = "spa-hosting"
   })
+
+  # Provider 6.x still carries deprecated inline policy/acl/grant/cors_rule/
+  # lifecycle_rule/versioning on aws_s3_bucket as optional+computed, and this
+  # state holds them null or empty because each concern is owned by its own
+  # dedicated aws_s3_bucket_* resource below. The consequence is that ANY planned
+  # update to this resource — a tag edit, a force_destroy change, anything — makes
+  # the SDK's update path push those empties to S3.
+  #
+  # This is not theoretical. On 2026-08-31T20:35Z a single planned update here
+  # issued DeleteBucketPolicy, DeleteBucketCors, DeleteBucketLifecycle and
+  # PutBucketVersioning(Suspended) against the live bucket, confirmed in
+  # CloudTrail. Deleting the policy removed CloudFront's OAC read grant and took
+  # the dashboard down until the policy was reapplied.
+  #
+  # ignore_changes suppresses the diff, so no update is planned, so those calls
+  # are never issued. `grant` is included because state holds a CanonicalUser
+  # FULL_CONTROL grant that the config does not declare — another latent diff on
+  # the same resource.
+  lifecycle {
+    ignore_changes = [policy, acl, grant, cors_rule, lifecycle_rule, versioning]
+  }
 }
 
 # Block ALL public access (CloudFront uses OAC, not public bucket)

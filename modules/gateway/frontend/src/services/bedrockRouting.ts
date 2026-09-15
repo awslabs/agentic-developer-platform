@@ -21,6 +21,7 @@
 
 import { apiClient, buildQueryString } from './api';
 import type {
+  DestinationSetupResponse,
   DestinationSummary,
   ExistingAwsConnection,
   EffectiveMappingResponse,
@@ -205,6 +206,11 @@ export async function verifyDestination(destinationId: string): Promise<VerifyDe
   return apiClient.post<VerifyDestinationResponse>(
     `/admin/bedrock-routing/destinations/${encodeURIComponent(destinationId)}/verify`
   );
+}
+
+/** Fresh console link and portable template/parameters for a saved destination. */
+export async function getDestinationSetup(destinationId: string): Promise<DestinationSetupResponse> {
+  return apiClient.get<DestinationSetupResponse>(`/admin/bedrock-routing/destinations/${encodeURIComponent(destinationId)}/setup`);
 }
 
 /** Metadata only. Original AWS credentials remain with their current owners. */

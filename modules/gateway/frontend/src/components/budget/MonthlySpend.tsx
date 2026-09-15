@@ -17,13 +17,13 @@ export function BedrockBillingAccount() {
   const { data, isPending, error } = useQuery({ queryKey: ['myBedrockSelection'], queryFn: getMySelection });
   const effective = data?.effective;
   return <Card>
-    <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Bedrock billed to · Current AWS account</p>
+    <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Bedrock routing · AWS account</p>
     {isPending ? <p role="status">Loading account…</p> : error || !effective ? <p role="status">Account details unavailable</p> : <>
-      <p className="mt-2 text-lg font-semibold">{effective.destination_label || (effective.rung === 'platform' ? 'Platform account' : 'AWS account')}
-        <span className="ml-3 font-mono text-base">{effective.account_id || 'Account ID unavailable'}</span></p>
+      <p className="mt-2 text-lg font-semibold">{effective.destination_label || (effective.rung === 'platform' ? 'Platform account' : 'AWS account')}</p>
+      <p className="mt-1 text-sm">Account ID: <span className="font-mono">{effective.account_id || 'Unavailable'}</span></p>
       <p className={`mt-1 ${muted}`}>Routing source: {({ user: 'Individual', team: 'Team default', org: 'Organization default', platform: 'Platform default', self: 'Your selection' } as Record<string, string>)[effective.rung] || effective.rung}</p>
     </>}
-    <p className={`mt-2 ${muted}`}>For new Bedrock requests using your routing. Cloud execution may use its own destination; this is not a record of historical billing.</p>
+    <p className={`mt-2 ${muted}`}>Your personal calls and cloud agents follow your routing: Individual → Team → Organization → Platform default. Historical spend may include other accounts.</p>
   </Card>;
 }
 

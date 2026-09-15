@@ -171,9 +171,10 @@ def set_mantle_service(service: MantlePassthroughService | None) -> None:
     _mantle_service = service
 
 
-def set_agent_run_id_from_header(request: Request) -> str | None:
+async def set_agent_run_id_from_header(request: Request) -> str | None:
     """Extract X-Agent-RunId header and set the contextvar for _log_usage.
 
+    Async so the contextvar is set in the request task, not a worker thread.
     Issue #1616: The agent-worker sigv4-proxy injects this header on every
     Bedrock call so we can attribute usage_logs rows to the originating run.
     Returns the value (or None) for transparency; the contextvar side-effect

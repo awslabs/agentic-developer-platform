@@ -31,7 +31,7 @@ def metering(monkeypatch):
     monkeypatch.setattr(mantle_service, "get_session_factory", lambda: lambda: session)
     monkeypatch.setattr(mantle_service, "UsageService", lambda db: usage_service)
     monkeypatch.setattr(mantle_service, "reconcile_budget_reservation", AsyncMock())
-    monkeypatch.setattr(mantle_service, "resolve_shadow_target", AsyncMock(return_value=None))
+    monkeypatch.setattr(mantle_service, "resolve_routing_decision", AsyncMock(return_value=mantle_service.RoutingDecision()))
     return writer, usage_service, chat_logger
 
 

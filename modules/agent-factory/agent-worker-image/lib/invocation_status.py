@@ -54,6 +54,46 @@ _ddb: "boto3.client" | None = None
 # losing the status transition too — the exact failure mode we're fixing.
 _MAX_ERROR_MESSAGE_CHARS = 1024
 
+# The only status values this worker may write (#3964, ADR-7).
+#
+# `status` is not decoration: the gateway derives `completed_at` from it, decides
+# whether a run is still controllable, and counts it on the dashboard. A typo or an
+# invented value therefore does real damage in two directions — an unrecognised
+# status is not terminal to any reader, so a finished run keeps its control
+# authority and its budget headroom and reads as "in progress" forever; and a value
+# that happens to collide with a terminal one retires a live run's controls.
+# Neither failure is visible at the call site, which is why this is checked here
+# rather than left to the readers to tolerate.
+#
+# Every value below is one this worker actually writes today, enumerated from the
+# `update_status` call sites in `entrypoint.py` (bootstrap failure, idempotency
+# skip, in_progress, session-id record, terminal complete/failed, post-agent
+# failure) plus `budget_stopped` from #4187. `tests/test_status_vocabulary.py`
+# asserts that parity in both directions, so adding a write with a new status fails
+# there rather than silently degrading a dashboard.
+#
+# `aborted` is the status a CONFIRMED ADP abort finalization writes. It is listed
+# here so the write path exists when S4 (#3963) delivers the mechanism that calls
+# it — this story is vocabulary only and never initiates an abort.
+#
+# **This allowlist is provider-neutral by construction.** It is a fixed set of ADP
+# outcome names, so a provider's native interrupt or error vocabulary
+# (`interrupted`, `AbortError`, `ECONNRESET`, a signal name) is rejected rather than
+# mapped. Normalization belongs in the harness adapter, which decides whether an
+# interruption actually finalized an abort; a writer that guessed from a provider
+# string would report a run as deliberately stopped when it merely lost its
+# transport.
+ALLOWED_WRITE_STATUSES = frozenset(
+    {
+        "in_progress",
+        "complete",
+        "failed",
+        "skipped",
+        "budget_stopped",
+        "aborted",
+    }
+)
+
 # The generation this process was assigned when it registered its listener, so
 # teardown can name it (#5028 AC4). Process-local because it describes this pod's
 # own attempt: a value carried across attempts is precisely what must not be used
@@ -114,7 +154,31 @@ def update_status(
             ``error_message`` for the same reason ``skip_reason`` is: hitting a
             configured cap is the control working, not a fault, and rendering it
             as an error sends operators debugging a run that behaved correctly.
+
+    Raises nothing. An unrecognised ``status`` is refused here — before either
+    write path — and logged; see :data:`ALLOWED_WRITE_STATUSES`.
     """
+    # Validated FIRST, ahead of both the gateway path and the DynamoDB path
+    # (#3964 AC-A12). Ordering is the requirement, not an optimization: a check
+    # placed inside either branch would leave the other able to persist a status no
+    # reader understands, and the gateway branch is the one that runs in production
+    # with delegated authority enabled. Rejecting before any client is constructed
+    # also means the unknown value never reaches the network.
+    #
+    # Fail-soft in the established style of this module: log and return rather than
+    # raise. The caller is usually mid-teardown and a status write must never abort
+    # the run it is describing. The cost of the refusal is a stale dashboard row;
+    # the cost of writing the value would be a finished run that no reader can tell
+    # is finished.
+    if status not in ALLOWED_WRITE_STATUSES:
+        logger.warning(
+            "Refusing to write unrecognised invocation status %r (allowed: %s); "
+            "a status no reader understands would leave this run looking active",
+            status,
+            sorted(ALLOWED_WRITE_STATUSES),
+        )
+        return
+
     if authority_enabled():
         # The gateway derives the row key from the protected execution record, so
         # event_id/arrived_at are deliberately not forwarded: this call cannot

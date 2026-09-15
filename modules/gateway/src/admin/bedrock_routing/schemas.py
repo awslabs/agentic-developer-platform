@@ -285,10 +285,10 @@ class RegisterNewDestination(BaseModel):
 
     source: Literal["new_account"] = "new_account"
     account_id: str = Field(min_length=12, max_length=12)
-    label: str = Field(min_length=1, max_length=255)
+    label: str = Field(min_length=1, max_length=54, pattern=r"^[A-Za-z0-9-]+$")
     #: The org whose team/user/org rules may route here. Sets ``owner_org_id``.
     link_to_org_id: str = Field(min_length=1)
-    region: str = "us-east-1"
+    region: str = Field(default="us-east-1", pattern=r"^[a-z]{2}(?:-[a-z]+)+-\d+$")
 
     #: **No ``role_name`` field, and the mockup's "Role name" input is therefore not
     #: wired to one.** ``aws_role_v2.yaml`` names the role ``ADP-Agent-${Nickname}``
@@ -346,6 +346,17 @@ class RegisterDestinationResponse(BaseModel):
 
     destination: DestinationSummary
     launch_url: str | None = None
+
+
+class DestinationSetupResponse(BaseModel):
+    """Sensitive, non-cacheable setup handoff; never included in list responses."""
+
+    account_id: str
+    role_arn: str
+    region: str
+    launch_url: str
+    download_filename: str
+    download_base64: str
 
 
 class VerifyDestinationResponse(BaseModel):

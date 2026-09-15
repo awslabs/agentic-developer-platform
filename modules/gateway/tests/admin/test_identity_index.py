@@ -381,3 +381,55 @@ class TestAdminServiceIdentityWriteThrough:
         org = db_result.scalar_one_or_none()
         assert org is not None
         assert org.name == "Resilient Org"
+
+
+class TestUpdateUserIdentityCoreBotFields:
+    """Issue #780 follow-up: user_kind/bot_kind on the UpdateItem path.
+
+    Bot-identity seeding (src/admin/connections/bot_identity.py) writes these
+    fields so the webhook Lambda's identity_resolver recognizes the platform
+    App's own bot sender instead of 403'ing as unknown_user.
+    """
+
+    @pytest.fixture
+    def mock_dynamodb(self):
+        client = MagicMock()
+        client.update_item = MagicMock(return_value={})
+        return client
+
+    @pytest.fixture
+    def index_client(self, mock_dynamodb):
+        return IdentityIndexClient(table_name="adp-dev-identity-index", dynamodb_client=mock_dynamodb)
+
+    @pytest.mark.asyncio
+    async def test_sets_user_kind_and_bot_kind_when_provided(self, index_client, mock_dynamodb):
+        result = await index_client.update_user_identity_core(
+            identity_value="317952797",
+            user_id="user-bot-1",
+            org_id="org-001",
+            provider_username="es-adp[bot]",
+            user_kind="bot",
+            bot_kind="es-adp",
+        )
+        assert result is True
+        call_args = mock_dynamodb.update_item.call_args
+        expr = call_args[1]["UpdateExpression"]
+        values = call_args[1]["ExpressionAttributeValues"]
+        assert "user_kind = :ukind" in expr
+        assert "bot_kind = :bkind" in expr
+        assert values[":ukind"] == {"S": "bot"}
+        assert values[":bkind"] == {"S": "es-adp"}
+
+    @pytest.mark.asyncio
+    async def test_omits_user_kind_and_bot_kind_when_not_provided(self, index_client, mock_dynamodb):
+        """Human/default calls (no user_kind/bot_kind passed) must not touch
+        these attrs — an existing bot row's fields must survive an unrelated
+        core-attrs update, and a human row must never gain them."""
+        await index_client.update_user_identity_core(
+            identity_value="100",
+            user_id="user-human-1",
+            org_id="org-001",
+        )
+        expr = mock_dynamodb.update_item.call_args[1]["UpdateExpression"]
+        assert "user_kind" not in expr
+        assert "bot_kind" not in expr
