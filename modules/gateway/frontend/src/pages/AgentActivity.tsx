@@ -459,6 +459,14 @@ export default function AgentActivity() {
   // Issue #3632: Deep-link — auto-open detail modal when ?id= param is present.
   // Fetches the invocation detail on mount; silently ignores 404/errors.
   useEffect(() => {
+    // Story cards link descendants through the authorized chain. A child may
+    // lack direct user attribution even though its parent belongs to the caller.
+    const deepLinkChain = searchParams.get('chain');
+    if (deepLinkChain) {
+      setActiveChainId(deepLinkChain);
+      setChainHighlightId(searchParams.get('highlight') || undefined);
+      return;
+    }
     const deepLinkId = searchParams.get('id');
     if (!deepLinkId) return;
 
