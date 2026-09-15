@@ -291,12 +291,20 @@ async def record_status(
     # and committed a protected terminal report before releasing ownership.
     from src.agentauth.run_credential import verify_credential
     from src.orchestration.work_admission import enabled, worker_checkpoint
+    from src.orchestration.work_claims import ReleaseReason, WorkClaimError
 
     if enabled():
         caller = verify_credential(runtime.credential(request), env=runtime.runtime.env)
-        await worker_checkpoint(
-            org_id=caller.tenant_id, invocation_id=caller.invocation_id, terminal=body.status != "in_progress", store=runtime.runtime.store
-        )
+        try:
+            await worker_checkpoint(
+                org_id=caller.tenant_id,
+                invocation_id=caller.invocation_id,
+                terminal=body.status != "in_progress",
+                store=runtime.runtime.store,
+                reason=ReleaseReason.COMPLETED if body.status == "completed" else ReleaseReason.FAILED,
+            )
+        except WorkClaimError:
+            raise HTTPException(409, "work ownership refused") from None
     return response
 
 

@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
+from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
@@ -52,7 +54,7 @@ async def resolve_repository_id(*, org_id: str, installation_id: int, repo: str)
     """
     from src.knowledge.github_app_service import mint_installation_token_with_expiry, resolve_tenant_app_credentials
 
-    if len(repo.split("/")) != 2 or any(part in {"", ".", ".."} for part in repo.split("/")):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or any(part in {".", ".."} for part in repo.split("/")):
         raise WorkClaimError("invalid_repository", "Repository must name an owner and repository.")
     app_id, key = await resolve_tenant_app_credentials(org_id)
     token, _ = await mint_installation_token_with_expiry(
@@ -94,7 +96,7 @@ async def admit(session, *, org_id: str, repository_id: int, issue: int, owner: 
     return {"claim_id": receipt.claim_id, "generation": receipt.generation, "invocation_id": invocation_id, "disposition": receipt.disposition.value}
 
 
-async def admit_pending(store, invocation_id: str, *, session=None) -> dict:
+async def admit_pending(store, invocation_id: str, *, session=None, allow_defer: bool = False) -> dict:
     """Resolve every authority field from protected dispatch, not HTTP input.
 
     The producer endpoint accepts only an invocation ID. It cannot manufacture
@@ -140,7 +142,33 @@ async def admit_pending(store, invocation_id: str, *, session=None) -> dict:
     owner = ClaimOwner(OwnerKind.ENGINE_FLOW if grant.authority.kind == "gate_decision" else OwnerKind.DIRECT_DISPATCH, grant.flow_id)
 
     async def reserve(active_session):
-        return await admit(active_session, org_id=org_id, repository_id=repository_id, issue=issue, owner=owner, invocation_id=invocation_id)
+        try:
+            return await admit(active_session, org_id=org_id, repository_id=repository_id, issue=issue, owner=owner, invocation_id=invocation_id)
+        except WorkClaimError as exc:
+            if not allow_defer or exc.code not in {"held_by_other_owner", "held_lease_lapsed"}:
+                raise
+            held = await active_session.scalar(
+                select(OrchestrationWorkClaim).where(
+                    OrchestrationWorkClaim.org_id == org_id,
+                    OrchestrationWorkClaim.provider_repository_id == repository_id,
+                    OrchestrationWorkClaim.issue_number == issue,
+                )
+            )
+            parent = execution.get("parent_principal", {}).get("S", "").rsplit("#", 1)[0]
+            if not parent or held is None or held.owner_ref != owner.ref or held.owner_kind != owner.kind.value or held.active_run_id != parent:
+                raise
+            # Only an already-authorized direct child of THIS lane's active run
+            # may wait. An independent webhook/engine launch is still refused.
+            await run_in_threadpool(
+                store.client.update_item,
+                TableName=store.table,
+                Key={k: execution[k] for k in ("pk", "sk")},
+                UpdateExpression="SET work_claim_deferred_from = :parent",
+                ConditionExpression="#st = :pending AND attribute_not_exists(workload_binding)",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":parent": {"S": parent}, ":pending": {"S": "pending"}},
+            )
+            return {"disposition": "waiting_for_owner", "invocation_id": invocation_id}
 
     if session is not None:
         return await reserve(session)
@@ -152,7 +180,40 @@ async def admit_pending(store, invocation_id: str, *, session=None) -> dict:
         return receipt
 
 
-async def maintain_worker_claim(session, *, org_id: str, invocation_id: str, terminal: bool = False) -> None:
+async def admit_deferred_bootstrap(store, invocation_id: str, digest: str) -> None:
+    """Called after pod verification, before binding or returning any credential."""
+    if not enabled():
+        return
+    from src.agentauth.bootstrap import BootstrapRefusedError
+
+    pointer = await run_in_threadpool(store._read, f"INVOCATION#{invocation_id}", "DISPATCH")
+    org_id = (pointer or {}).get("tenant_id", {}).get("S")
+    if not org_id:
+        raise BootstrapRefusedError("dispatch unavailable")
+    raw = await run_in_threadpool(store._read, f"TENANT#{org_id}", f"EXEC#{invocation_id}")
+    if not raw or raw.get("envelope_digest") != {"S": digest}:
+        raise BootstrapRefusedError("dispatch unavailable")
+    if not raw.get("work_claim_deferred_from") or raw.get("status") != {"S": "pending"}:
+        return
+    if await run_in_threadpool(cancel_unstarted_claim, store, raw, now=datetime.now(UTC)):
+        await run_in_threadpool(
+            store.authority.release_dispatch,
+            tenant_id=org_id,
+            grant_id=raw["parent_grant_id"]["S"],
+            reservation_id=raw["dispatch_reservation_id"]["S"],
+        )
+        raise BootstrapRefusedError("startup deadline exceeded")
+    try:
+        await admit_pending(store, invocation_id)
+    except WorkClaimError as exc:
+        if exc.code in {"held_by_other_owner", "held_lease_lapsed", "claim_race_lost"}:
+            raise WorkClaimError("work_waiting", "Authorized child is waiting for exclusive ownership.") from None
+        raise
+
+
+async def maintain_worker_claim(
+    session, *, org_id: str, invocation_id: str, terminal: bool = False, reason: ReleaseReason = ReleaseReason.COMPLETED
+) -> None:
     """Called after protected run/workload verification, never with body IDs."""
     row = await session.scalar(
         select(OrchestrationWorkClaim)
@@ -177,14 +238,16 @@ async def maintain_worker_claim(session, *, org_id: str, invocation_id: str, ter
             org_id=org_id,
             claim_id=row.id,
             generation=row.generation,
-            reason=ReleaseReason.COMPLETED,
+            reason=reason,
             terminal_evidence=f"protected terminal report:{invocation_id}",
         )
     else:
         await heartbeat(session, org_id=org_id, claim_id=row.id, generation=row.generation)
 
 
-async def worker_checkpoint(*, org_id: str, invocation_id: str, terminal: bool = False, store=None) -> None:
+async def worker_checkpoint(
+    *, org_id: str, invocation_id: str, terminal: bool = False, store=None, reason: ReleaseReason = ReleaseReason.COMPLETED
+) -> None:
     from src.shared.database import get_session_factory
 
     if not enabled():
@@ -196,7 +259,7 @@ async def worker_checkpoint(*, org_id: str, invocation_id: str, terminal: bool =
             if grant and grant.get("authority_kind") == {"S": "service_policy"}:
                 return
     async with get_session_factory()() as session:
-        await maintain_worker_claim(session, org_id=org_id, invocation_id=invocation_id, terminal=terminal)
+        await maintain_worker_claim(session, org_id=org_id, invocation_id=invocation_id, terminal=terminal, reason=reason)
         await session.commit()
 
 
@@ -204,6 +267,40 @@ async def worker_checkpoint(*, org_id: str, invocation_id: str, terminal: bool =
 class ClaimRecoveryReport:
     released: int
     next_id: str | None
+
+
+def cancel_unstarted_claim(store, raw: dict, *, now: datetime) -> bool:
+    """Fence a dispatch that never bootstrapped within the startup deadline.
+
+    This is a conditional cancellation, not a liveness inference from a lease.
+    A concurrently bootstrapping pod wins the same protected status transition;
+    cancellation then fails and its claim remains held. A delayed queue delivery
+    cannot bootstrap after cancellation and cannot receive action credentials.
+    """
+    if raw.get("workload_binding") or raw.get("status") != {"S": "pending"}:
+        return False
+    arrived = raw.get("arrived_at", {}).get("S", "")
+    try:
+        created = datetime.fromisoformat(arrived.replace("Z", "+00:00"))
+        if created.tzinfo is None or (now - created).total_seconds() < 1800:
+            return False
+        store.client.update_item(
+            TableName=store.table,
+            Key={k: raw[k] for k in ("pk", "sk")},
+            UpdateExpression="SET #st = :cancelled, work_claim_cancellation = :reason",
+            ConditionExpression="#st = :pending AND attribute_not_exists(workload_binding) AND arrived_at = :arrived",
+            ExpressionAttributeNames={"#st": "status"},
+            ExpressionAttributeValues={
+                ":pending": {"S": "pending"},
+                ":cancelled": {"S": "cancelled"},
+                ":arrived": {"S": arrived},
+                ":reason": {"S": "startup_deadline_exceeded"},
+            },
+        )
+    except (KeyError, ValueError, TypeError, ClientError, BotoCoreError):
+        return False
+    logger.warning("work claim cancelled before bootstrap tenant=%s invocation=%s", raw["tenant_id"]["S"], raw["invocation_id"]["S"])
+    return True
 
 
 async def recover_exited_claims(session, *, store, workloads, limit: int = 50, after_id: str | None = None) -> ClaimRecoveryReport:
@@ -229,22 +326,39 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
             )
         ).all()
     )
-    released = 0
+    releasable = []
     for row in rows:
         raw = await run_in_threadpool(store._read, f"TENANT#{row.org_id}", f"EXEC#{row.active_run_id}")
         if not raw or raw.get("tenant_id") != {"S": row.org_id}:
             continue
         name, uid = raw.get("pod_name", {}).get("S"), raw.get("workload_binding", {}).get("S")
+        reason = ReleaseReason.ABANDONED
         if raw.get("status") == {"S": "completed"}:
             evidence = f"protected terminal report:{row.active_run_id}"
+            reason = ReleaseReason.COMPLETED if raw.get("terminal_outcome") == {"S": "completed"} else ReleaseReason.FAILED
+        elif (raw.get("status") == {"S": "cancelled"} and not uid) or await run_in_threadpool(
+            cancel_unstarted_claim, store, raw, now=datetime.now(UTC)
+        ):
+            evidence = f"protected cancellation before bootstrap:{row.active_run_id}"
+            reason = ReleaseReason.FAILED
         elif name and uid and await run_in_threadpool(workloads.has_exited, name=name, uid=uid):
             evidence = f"kubernetes terminated pod:{uid} run:{row.active_run_id}"
         else:
             continue
+        parent_grant = raw.get("parent_grant_id", {}).get("S")
+        reservation = raw.get("dispatch_reservation_id", {}).get("S")
+        if bool(parent_grant) != bool(reservation):
+            logger.error("work claim recovery missing reservation binding invocation=%s", row.active_run_id)
+            continue
+        if parent_grant:
+            await run_in_threadpool(store.authority.release_dispatch, tenant_id=row.org_id, grant_id=parent_grant, reservation_id=reservation)
+        releasable.append((row, reason, evidence))
+    released = 0
+    for row, reason, evidence in releasable:
         # Never hold a claim lock across an external read. The captured generation
         # fences this release if ownership changed while Kubernetes was queried.
         receipt = await release_work(
-            session, org_id=row.org_id, claim_id=row.id, generation=row.generation, reason=ReleaseReason.ABANDONED, terminal_evidence=evidence
+            session, org_id=row.org_id, claim_id=row.id, generation=row.generation, reason=reason, terminal_evidence=evidence
         )
         released += int(receipt.admitted)
     return ClaimRecoveryReport(released, rows[-1].id if len(rows) == limit else None)

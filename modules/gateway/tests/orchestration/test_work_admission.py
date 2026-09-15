@@ -81,3 +81,29 @@ async def test_other_tenants_execution_cannot_release_claim(session):
     store = SimpleNamespace(_read=Mock(return_value={"tenant_id": {"S": "other"}, "status": {"S": "completed"}}))
     assert (await recover_exited_claims(session, store=store, workloads=None)).released == 0
     assert (await session.get(OrchestrationWorkClaim, receipt["claim_id"])).state == ClaimState.HELD.value
+
+
+async def test_recovery_cursor_reaches_later_claims_behind_live_workers(session):
+    from sqlalchemy import select
+
+    for i in range(3):
+        await admit(
+            session, org_id="org-alpha", repository_id=1234, issue=5000 + i, owner=ClaimOwner(OwnerKind.ENGINE_FLOW, "flow"), invocation_id=f"run-{i}"
+        )
+    ordered = list((await session.scalars(select(OrchestrationWorkClaim).order_by(OrchestrationWorkClaim.id))).all())
+    dead = ordered[-1].active_run_id
+
+    def execution(_pk, sk):
+        invocation = sk.removeprefix("EXEC#")
+        return {"tenant_id": {"S": "org-alpha"}, "status": {"S": "active"}, "pod_name": {"S": invocation}, "workload_binding": {"S": invocation}}
+
+    store = SimpleNamespace(_read=Mock(side_effect=execution))
+    workloads = SimpleNamespace(has_exited=Mock(side_effect=lambda *, name, uid: uid == dead))
+    cursor, released = None, 0
+    for _ in range(4):
+        report = await recover_exited_claims(session, store=store, workloads=workloads, limit=1, after_id=cursor)
+        cursor = report.next_id
+        released += report.released
+    assert released == 1
+    assert cursor is None
+    assert workloads.has_exited.call_count == 3

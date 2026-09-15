@@ -207,6 +207,12 @@ class AgentRuntime:
 
     def bootstrap(self, body: BootstrapRequest, token: str) -> dict:
         pod = self.workloads.verify(token)
+        from src.orchestration.work_admission import admit_deferred_bootstrap, enabled
+
+        if enabled():
+            from anyio import from_thread
+
+            from_thread.run(admit_deferred_bootstrap, self.store, body.invocation_id, body.envelope_digest)
         now = datetime.now(UTC)
         record = self.store.bind(invocation_id=body.invocation_id, digest=body.envelope_digest, pod=pod, now=now)
         return issue_bound_credential(record, now=now, env=self.env)
@@ -244,7 +250,11 @@ async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRunt
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
-    except (BootstrapRefusedError, WorkloadRefusedError, WorkClaimError):
+    except WorkClaimError as exc:
+        if exc.code == "work_waiting":
+            raise HTTPException(425, "work ownership pending", headers={"Retry-After": "10"}) from None
+        raise HTTPException(404, "not found") from None
+    except (BootstrapRefusedError, WorkloadRefusedError):
         raise HTTPException(404, "not found") from None
     except AuthorityStoreError:
         raise HTTPException(503, "agent authority unavailable") from None

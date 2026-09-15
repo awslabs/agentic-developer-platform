@@ -524,7 +524,7 @@ def _build_envelope(
     token_source: str | None = None,
 ) -> dict:
     """Build the normalized webhook envelope for SQS."""
-    envelope = {
+    envelope: dict = {
         "version": "1.0",
         "channel": "github",
         "tenant_id": tenant_id,
