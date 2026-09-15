@@ -540,6 +540,27 @@ def test_main_reports_a_usage_error_as_exit_1(monkeypatch):
     assert cli.main(["connect", "--repo", "not-a-repo"]) == 1
 
 
+def test_a_malformed_repo_is_a_usage_error_even_with_no_gateway_configured(monkeypatch, capsys):
+    """A typo in --repo must not be reported as a gateway problem.
+
+    Found by running the real dispatcher on a machine with no config: building
+    the transport before validating the argument made `--repo not-a-repo` fail
+    with "No valid gateway configured" and exit 2, sending the user off to
+    reinstall the CLI over a fixable typo. The caller's own argument is checked
+    first, so the message names the real mistake.
+    """
+
+    def no_gateway():
+        raise cli.CliError("No valid gateway configured.", "configuration_error", 2)
+
+    monkeypatch.setattr(cli, "Api", no_gateway)
+
+    assert cli.main(["connect", "--repo", "not-a-repo", "--json"]) == 1
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["code"] == "usage_error"
+    assert "owner/name" in error["message"]
+
+
 def test_main_returns_4_while_an_approval_is_pending(monkeypatch):
     monkeypatch.setattr(cli, "Api", lambda: FakeApi())
     assert cli.main(["connect", "--repo", REPO, "--no-browser"]) == 4

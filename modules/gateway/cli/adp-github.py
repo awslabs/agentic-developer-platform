@@ -386,6 +386,12 @@ def main(argv=None):
     command = "github " + (argv[0] if argv and not argv[0].startswith("-") else "status")
     try:
         args = parser().parse_args(argv)
+        # Validate the caller's OWN argument before resolving a gateway, so a
+        # typo in --repo is reported as the usage error it is. Constructing Api()
+        # first makes "not-a-repo" complain about gateway configuration instead,
+        # which sends the user to reinstall the CLI over a fixable typo.
+        if getattr(args, "repo", None):
+            parse_repo(args.repo)
         return common.emit(run(args, Api()), args.json)
     except (CliError, OSError, ValueError, KeyError, TypeError) as exc:
         return common.report_error(exc, command, as_json)
