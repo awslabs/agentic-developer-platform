@@ -37,7 +37,7 @@ from .conftest import write_adp_session
 
 GATEWAY_URL = "https://gw.example.com/api"
 
-INSTALLED_FILES = ["adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py", "adp-bedrock.py"]
+INSTALLED_FILES = ["adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py", "adp-bedrock.py", "adp-aws.py"]
 
 
 @pytest.fixture
