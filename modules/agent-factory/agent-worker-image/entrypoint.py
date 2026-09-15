@@ -28,6 +28,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
@@ -131,7 +132,7 @@ ADP_GH_TOKEN_BROKER_ENV = "ADP_GH_TOKEN_BROKER_ENABLED"
 def _gh_token_broker_enabled(environ: dict | None = None) -> bool:
     """Return True when the GitHub-token gatekeeper is enabled (issue #4272)."""
     env = environ if environ is not None else os.environ
-    return env.get(ADP_GH_TOKEN_BROKER_ENV, "").lower() in ("1", "true", "yes")
+    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true" or env.get(ADP_GH_TOKEN_BROKER_ENV, "").lower() in ("1", "true", "yes")
 
 
 def _broker_installation_token(
@@ -140,7 +141,7 @@ def _broker_installation_token(
     repo_owner: str,
     repo_name: str,
     cred_client: GatewayCredentialClient | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """Mint this run's GitHub token through the gateway gatekeeper.
 
     Issue #4272. Replaces the in-pod ``mint_installation_token`` (and the vault
@@ -151,7 +152,7 @@ def _broker_installation_token(
     bootstrap failure, which the caller surfaces via _fail_bootstrap_status.
 
     Returns:
-        ``(token, app_id)``. The App ID is public (not a credential) and comes
+        ``(token, app_id, expires_at)``. The App ID is public (not a credential) and comes
         back from the gateway because the caller still needs it for the bot commit
         identity and for the GH_APP_ID the JS TokenManager gates on — both of
         which used to be read from the vault alongside the private key.
@@ -174,7 +175,16 @@ def _broker_installation_token(
         repo_name=repo_name,
         purpose="bootstrap GitHub token for agent run",
     )
-    return result["token"], str(result.get("app_id") or "")
+    expires_at = result.get("expires_at", "")
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if expiry.tzinfo is None or expiry <= datetime.now(UTC):
+            raise ValueError("expired token")
+        if not result.get("token") or not result.get("app_id"):
+            raise ValueError("missing token or app ID")
+    except (ValueError, TypeError, AttributeError):
+        raise RuntimeError("GitHub broker returned an unusable token or expiry") from None
+    return result["token"], str(result["app_id"]), expires_at
 
 
 class PatResolutionResult:
@@ -1084,7 +1094,7 @@ def main() -> int:
             repo=f"{repo_owner}/{repo_name}",
         )
         try:
-            token, app_id = _broker_installation_token(
+            token, app_id, token_expires_at = _broker_installation_token(
                 installation_id=installation_id,
                 repo_owner=repo_owner,
                 repo_name=repo_name,
@@ -1214,6 +1224,8 @@ def main() -> int:
     # side adopts the env GITHUB_TOKEN as-is.
     if _token_mode == "pat":
         env_vars["ADP_TOKEN_MODE"] = "pat"
+        for key in ("GH_APP_ID", "GH_APP_PRIVATE_KEY", "GH_APP_KEY", "GH_APP_INSTALLATION_ID", "GH_APP_TOKEN", "GH_APP_TOKEN_EXPIRES_AT"):
+            os.environ.pop(key, None)
         # Write PAT to the askpass token file so git-askpass-helper reads it.
         # TokenManager won't overwrite since it has no app credentials.
         # Use 0o600 + atomic rename to prevent world-readable window.
@@ -1241,9 +1253,12 @@ def main() -> int:
         # being present; with the key gone and no flag to key off, they would go
         # false, the token manager would never initialise, no refresh would ever
         # be scheduled, and the run would die silently at the 1-hour mark.
+        env_vars["ADP_TOKEN_MODE"] = "app"
+        env_vars["GH_APP_TOKEN"] = token
         env_vars["GH_APP_ID"] = str(app_id)
         if _gh_token_broker_enabled():
             env_vars[ADP_GH_TOKEN_BROKER_ENV] = "1"
+            env_vars["GH_APP_TOKEN_EXPIRES_AT"] = token_expires_at
             # Not setting it is NOT sufficient. The agent subprocess env is
             # os.environ.copy() (see the agent_env assembly below), so any
             # GH_APP_PRIVATE_KEY the pod inherited from somewhere else — a
@@ -1252,7 +1267,9 @@ def main() -> int:
             # and the flag would be silently ineffective. Remove it explicitly so
             # the invariant holds regardless of how the pod env was populated.
             os.environ.pop("GH_APP_PRIVATE_KEY", None)
+            os.environ.pop("GH_APP_KEY", None)
         else:
+            os.environ.pop("GH_APP_TOKEN_EXPIRES_AT", None)
             env_vars["GH_APP_PRIVATE_KEY"] = private_key
         # Authoritative installation id for THIS run's target org. The JS worker
         # must re-mint against this installation — NOT installations[0], which is

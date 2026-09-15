@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -519,6 +521,38 @@ async def resolve_installation(
     )
 
 
+async def _revalidate_github_binding(request: Request, binding, permissions=None) -> None:
+    if getattr(request.state, "agent_broker_grant", None) is None:
+        return  # Legacy rollout cohort, not a protected worker.
+    from src.agentauth.broker_identity import verify_broker_worker
+
+    await verify_broker_worker(request)
+    current = request.state.agent_installation_binding
+    if current != binding or (permissions is not None and getattr(request.state, "agent_github_permissions", AGENT_RUN_PERMISSIONS) != permissions):
+        raise HTTPException(404, "not found")
+
+
+def _validate_github_expiry(request: Request, expires_at: str) -> None:
+    expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    not_after = getattr(request.state, "agent_github_not_after", None)
+    if expiry.tzinfo is None or expiry <= datetime.now(UTC) or (not_after is not None and expiry > not_after):
+        raise ValueError("provider token lifetime exceeds accepted grant")
+
+
+async def _revoke_undelivered_github_token(token: str) -> None:
+    """Best effort provider revocation. Never log token/response/exception text."""
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+            response = await client.delete(
+                "https://api.github.com/installation/token",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            )
+        if response.status_code not in (204, 401):
+            logger.error("Undelivered GitHub token revocation refused: status=%s", response.status_code)
+    except Exception:
+        logger.error("Undelivered GitHub token revocation unavailable")
+
+
 # ---------------------------------------------------------------------------
 # Endpoint: POST /internal/v1/github-installation-token
 # ---------------------------------------------------------------------------
@@ -550,6 +584,7 @@ async def resolve_installation(
 async def github_installation_token(
     body: GithubInstallationTokenRequest,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> GithubInstallationTokenResponse:
@@ -605,7 +640,7 @@ async def github_installation_token(
         status_code = 409 if exc.state is OwnerState.RESOLVED else 403
         raise HTTPException(
             status_code=status_code,
-            detail={"error": "installation_not_owned", "message": str(exc)},
+            detail={"error": "installation_not_owned", "message": "Installation ownership could not be verified"},
         ) from exc
 
     # Mint. The key is read here, inside the gateway, and never leaves it.
@@ -615,18 +650,20 @@ async def github_installation_token(
         logger.warning(
             "github-installation-token: no App credentials for tenant=%s: %s",
             binding.tenant_id,
-            exc,
+            type(exc).__name__,
         )
         raise HTTPException(
             status_code=502,
-            detail={"error": "app_credentials_unavailable", "message": str(exc)},
+            detail={"error": "app_credentials_unavailable", "message": "GitHub App credentials unavailable"},
         ) from exc
 
     # Least-privilege: this run's one repo, and only the verbs an agent run needs.
     # GitHub already scopes the token to one org (one installation = one org);
     # narrowing repo + permissions on top means a hijacked run's live token can
     # touch only the repo it was working on.
-    permissions = getattr(request.state, "agent_github_permissions", AGENT_RUN_PERMISSIONS)
+    await _revalidate_github_binding(request, binding)
+    permissions = dict(getattr(request.state, "agent_github_permissions", AGENT_RUN_PERMISSIONS))
+    token = None
     try:
         token, expires_at = await mint_installation_token_with_expiry(
             app_id,
@@ -635,14 +672,11 @@ async def github_installation_token(
             repositories=[body.repo_name],
             permissions=permissions,
         )
-        not_after = getattr(request.state, "agent_github_not_after", None)
-        if not_after is not None:
-            from datetime import UTC, datetime
-
-            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            if expiry.tzinfo is None or expiry <= datetime.now(UTC) or expiry > not_after:
-                raise ValueError("provider token lifetime exceeds accepted grant")
+        await _revalidate_github_binding(request, binding, permissions)
+        _validate_github_expiry(request, expires_at)
     except Exception as exc:
+        if token:
+            await _revoke_undelivered_github_token(token)
         await _write_audit(
             db,
             event_type="github_installation_token_denied",
@@ -653,7 +687,7 @@ async def github_installation_token(
                 "installation_id": binding.installation_id,
                 "repo": f"{body.repo_owner}/{body.repo_name}",
                 "invocation_id": body.invocation_id,
-                "error": str(exc),
+                "error_type": type(exc).__name__,
             },
         )
         await db.commit()
@@ -661,32 +695,41 @@ async def github_installation_token(
             "github-installation-token: mint failed tenant=%s installation=%s: %s",
             binding.tenant_id,
             binding.installation_id,
-            exc,
+            type(exc).__name__,
         )
+        if isinstance(exc, HTTPException):
+            raise
         raise HTTPException(
             status_code=502,
             detail={"error": "mint_failed", "message": "GitHub rejected the installation token request."},
         ) from exc
 
-    # Audit every mint, mirroring credential-raw-read. Without this an operator
-    # cannot answer "which run got a token for which org" after the fact — which
-    # is the whole point of moving the mint server-side.
-    await _write_audit(
-        db,
-        event_type="github_installation_token_minted",
-        org_id=binding.tenant_id,
-        actor_id=None,
-        details={
-            "installation_id": binding.installation_id,
-            "repo": f"{body.repo_owner}/{body.repo_name}",
-            "repositories": [body.repo_name],
-            "permissions": permissions,
-            "invocation_id": body.invocation_id,
-            "expires_at": expires_at,
-            "purpose": body.purpose,
-        },
-    )
-    await db.commit()
+    try:
+        # Audit every mint, mirroring credential-raw-read. Without this an operator
+        # cannot answer "which run got a token for which org" after the fact — which
+        # is the whole point of moving the mint server-side.
+        await _write_audit(
+            db,
+            event_type="github_installation_token_minted",
+            org_id=binding.tenant_id,
+            actor_id=None,
+            details={
+                "installation_id": binding.installation_id,
+                "repo": f"{body.repo_owner}/{body.repo_name}",
+                "repositories": [body.repo_name],
+                "permissions": permissions,
+                "invocation_id": body.invocation_id,
+                "expires_at": expires_at,
+                "purpose": body.purpose,
+            },
+        )
+        await db.commit()
+
+        await _revalidate_github_binding(request, binding, permissions)
+        _validate_github_expiry(request, expires_at)
+    except Exception:
+        await _revoke_undelivered_github_token(token)
+        raise
 
     logger.info(
         "github-installation-token minted tenant=%s installation=%s repo=%s/%s expires_at=%s",
@@ -696,4 +739,5 @@ async def github_installation_token(
         body.repo_name,
         expires_at,
     )
+    response.headers["Cache-Control"] = "no-store"
     return GithubInstallationTokenResponse(token=token, expires_at=expires_at, app_id=str(app_id))

@@ -161,14 +161,15 @@ class GatewayCredentialClient:
             with opener(req, timeout=self._timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except HTTPError as exc:
-            error_body = exc.read().decode("utf-8") if exc.fp else ""
             raise GatewayCredentialError(
-                f"Gateway returned HTTP {exc.code}: {error_body}"
-            ) from exc
+                f"Gateway returned HTTP {exc.code}"
+            ) from None
         except URLError as exc:
             raise GatewayCredentialError(
-                f"Cannot reach gateway at {self._base_url}: {exc.reason}"
-            ) from exc
+                "Cannot reach gateway"
+            ) from None
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise GatewayCredentialError("Credential gateway returned invalid JSON") from None
 
     def raw_read(
         self,

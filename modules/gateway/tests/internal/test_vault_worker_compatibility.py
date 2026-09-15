@@ -230,6 +230,7 @@ async def test_task_session_is_never_delivered_without_current_authority(vault, 
         "Expiration": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
     }
     body = {"user_id": "vault-user", "invocation_id": "vault-run"}
+    headers = dict(vault.headers)
     if reason == "revoked":
         vault.runtime.validate_flow.side_effect = [None, BootstrapRefusedError("cancelled")]
     elif reason == "shortened":
@@ -239,12 +240,13 @@ async def test_task_session_is_never_delivered_without_current_authority(vault, 
         )
     elif reason == "unprotected":
         monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+        headers = {key: value for key, value in headers.items() if key.lower() not in {"x-adp-run-credential", "x-adp-workload-token"}}
     elif reason == "caller-policy":
         body["targets"] = ["arn:aws:iam::222222222222:role/customer"]
     else:
         body["user_id" if reason == "wrong-user" else "invocation_id"] = "other"
     with patch("src.internal.task_credentials.issue_task_session", return_value=value) as issue:
-        response = vault.client.post("/internal/v1/worker-task-credentials", json=body, headers=vault.headers)
+        response = vault.client.post("/internal/v1/worker-task-credentials", json=body, headers=headers)
     assert response.status_code in (404, 422), response.text
     assert "source-key" not in response.text and "source-secret" not in response.text
     if reason not in {"revoked", "shortened"}:

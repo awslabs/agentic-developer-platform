@@ -24,7 +24,7 @@ import * as identity from './runIdentity';
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
-const EXPIRES_AT = '2026-08-27T16:45:00Z';
+const EXPIRES_AT = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
 function okResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body } as Response;
@@ -167,6 +167,30 @@ describe('githubTokenBroker', () => {
 
       await expect(fetchBrokeredToken(REQ)).rejects.toThrow(/403/);
     });
+  });
+
+  it('forces broker mode for protected workers even when the optional broker flag is off', () => {
+    expect(isBrokerEnabled({ ADP_AGENT_AUTHORITY_ENABLED: 'true', ADP_GH_TOKEN_BROKER_ENABLED: 'false' })).toBe(true);
+  });
+
+  it('retries transient unavailability, but never retries authorization or logs the response body', async () => {
+    process.env.VAULT_GATEWAY_URL = 'https://gw.internal';
+    process.env.VAULT_INTERNAL_API_KEY = 'k';
+    mockFetch.mockResolvedValueOnce(errResponse(503, 'secret-from-provider'))
+      .mockResolvedValueOnce(okResponse({ token: 'refreshed', expires_at: EXPIRES_AT }));
+    expect((await fetchBrokeredToken(REQ)).token).toBe('refreshed');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    mockFetch.mockReset().mockResolvedValue(errResponse(403, 'secret-from-provider'));
+    await expect(fetchBrokeredToken(REQ)).rejects.toThrow('Gateway returned 403 minting installation token');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds retries when the gateway remains unavailable', async () => {
+    process.env.VAULT_GATEWAY_URL = 'https://gw.internal';
+    process.env.VAULT_INTERNAL_API_KEY = 'k';
+    mockFetch.mockRejectedValue(new Error('network error with credentials'));
+    await expect(fetchBrokeredToken(REQ)).rejects.toThrow('Gateway unavailable during token renewal');
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
   describe('request contract', () => {
@@ -312,6 +336,11 @@ describe('githubTokenBroker', () => {
       const result = await fetchBrokeredToken(REQ);
 
       expect(result.expiresAt.toISOString()).toBe(new Date(EXPIRES_AT).toISOString());
+    });
+
+    it('rejects an already expired token', async () => {
+      mockFetch.mockResolvedValue(okResponse({ token: 'expired', expires_at: new Date(Date.now() - 1000).toISOString() }));
+      await expect(fetchBrokeredToken(REQ)).rejects.toThrow('expired');
     });
 
     it('throws when expires_at is missing', async () => {
