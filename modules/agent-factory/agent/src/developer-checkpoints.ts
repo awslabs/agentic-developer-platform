@@ -1,5 +1,6 @@
 import type { HookCallback, HookInput } from '@anthropic-ai/claude-agent-sdk';
 import { createSpillHookCallback, SpillHookOptions } from './utils/spill';
+import type { ClaudePauseHooks } from './harnesses/claude-control';
 
 const CHECKPOINT_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -69,15 +70,51 @@ function checkpointReminder(agentType: string): HookCallback {
   };
 }
 
-/** Compose explicitly so a reminder cannot discard a spilled tool-output locator. */
-export function createWorkerToolHooks(opts: SpillHookOptions & { agentType: string }) {
+/**
+ * Compose explicitly so a reminder cannot discard a spilled tool-output locator.
+ *
+ * The single-callback merge is deliberate, not stylistic. Handing the SDK two
+ * array entries for `PostToolUse` would put the merge semantics in the CLI's
+ * hands, and the field at risk is `updatedToolOutput` — the locator that replaces
+ * a spilled blob. Lose it and the model receives the original oversized output,
+ * which is the exact failure spilling exists to prevent.
+ *
+ * `pause` (#3961) composes into the same shape. Its barrier is a `PreToolUse`
+ * hook, which is unoccupied and therefore additive; its settle edge shares
+ * `PostToolUse` with the two above and so joins the merged callback. It returns
+ * no `hookSpecificOutput` of its own, so it cannot displace either.
+ */
+export function createWorkerToolHooks(
+  opts: SpillHookOptions & { agentType: string; pauseHooks?: ClaudePauseHooks },
+) {
   const spill = createSpillHookCallback(opts);
   const remind = checkpointReminder(opts.agentType);
+  const pause = opts.pauseHooks;
   return {
+    ...(pause
+      ? {
+          // The admission barrier. Nothing else claims PreToolUse, so this is a
+          // straight addition rather than a merge.
+          PreToolUse: [{ hooks: [pause.preToolUse] }],
+          // Both edges settle the admission: a tool that failed has stopped
+          // running just as surely as one that succeeded, and treating only
+          // success as an ending would leave a failed tool's admission
+          // outstanding forever — every later pause would then wait on it and
+          // never confirm.
+          PostToolUseFailure: [{ hooks: [pause.postToolUse] }],
+          // Background work behind finished tools, which is the one thing the
+          // barrier cannot see for itself.
+          Stop: [{ hooks: [pause.onStop] }],
+          SubagentStop: [{ hooks: [pause.onStop] }],
+        }
+      : {}),
     PostToolUse: [{ hooks: [async (input: HookInput, toolUseID: string | undefined,
       options: { signal: AbortSignal }) => {
       const reminder = await remind(input, toolUseID, options);
       const spilled = await spill(input);
+      // Settle before returning, so the admission is released even if the two
+      // above produced nothing to merge.
+      await pause?.postToolUse(input);
       if (!('hookSpecificOutput' in reminder)) return spilled;
       return {
         ...spilled,

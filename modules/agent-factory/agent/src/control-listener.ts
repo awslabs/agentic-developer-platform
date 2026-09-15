@@ -127,6 +127,24 @@ export interface ControlListenerConfig {
   logger?: (level: string, message: string, context?: Record<string, unknown>) => void;
 
   /**
+   * Apply an accepted command to the running agent — Issue #3961.
+   *
+   * The seam between the wire and the harness. Absent for a run with no adapter
+   * (or before any verb was implemented), in which case accepted commands stay
+   * `pending` — see {@link applyAccepted} for why that, and not `rejected`.
+   *
+   * Called after the 202 is written, deliberately: `pause` waits for admitted
+   * tool work to reach a boundary, and a synchronous apply would hold the socket
+   * open for the whole settle timeout. The journal carries the outcome, and the
+   * dashboard already polls state.
+   *
+   * Invoked *through* the journal's delivery gate rather than directly, so an
+   * envelope-bearing command is revalidated against the gateway first. The
+   * executor itself must therefore settle the command it is handed.
+   */
+  executor?: (action: ControlAction, commandId: string) => Promise<void>;
+
+  /**
    * This run's own id — Issue #5028.
    *
    * The listener's independently-known target identity, used to check the
@@ -482,8 +500,75 @@ export class ControlListener {
         this.writeJson(res, 200, { command: outcome.record, state: this.config.store.snapshot().state });
         return;
       case 'accepted':
+        // Respond first, then apply — Issue #3961. The HTTP contract is 202
+        // "accepted", not "done": pause has to wait for admitted tool work to
+        // reach a boundary, and holding the socket for that would turn a bounded
+        // acknowledgement into a request that hangs for the settle timeout. The
+        // journal is the durable record, and the dashboard polls state, so the
+        // outcome reaches the operator either way.
         this.writeJson(res, 202, { command: outcome.record, state: this.config.store.snapshot().state });
+        void this.applyAccepted(action, validation.commandId);
         return;
+    }
+  }
+
+  /**
+   * Hand an accepted command to whatever can actually perform it — Issue #3961.
+   *
+   * Delivery goes through the journal, never straight to the executor, and the
+   * method depends on whether the command carried an envelope:
+   *
+   * - proof-bearing commands go through `deliverAuthorized`, which re-checks the
+   *   grant against the gateway immediately before handoff. Calling the executor
+   *   directly would skip that re-check and execute an action whose authority may
+   *   have been revoked since the 202 — the exact hidden-queue bypass
+   *   `ClaudeAttemptEndpoint.deliver` documents as forbidden;
+   * - unauthorized-path commands (no envelope required for this verb) go through
+   *   `markDelivered`, which is the only transition `settle('applied', ...)` will
+   *   accept afterwards.
+   *
+   * With **no executor** the command is left `pending` and nothing is settled.
+   * That is deliberate: `pending` means "accepted, not yet acted on", which is
+   * the truth for a run whose harness cannot perform the verb, and it keeps the
+   * pending cap doing its job. Auto-rejecting here instead would silently drain
+   * the queue and disable the 429 backpressure the cap exists to provide.
+   */
+  private async applyAccepted(action: ControlAction, commandId: string): Promise<void> {
+    const executor = this.config.executor;
+    if (!executor) {
+      // Nothing to apply it with. Logged, not settled — see above.
+      this.log('warn', 'control command accepted with no executor attached', { action, command_id: commandId });
+      return;
+    }
+    try {
+      const store = this.config.store;
+      // Synchronous by contract: `deliverAuthorized` permits no `await` between
+      // its bounded re-check and the handoff, so the executor is *started* here
+      // and its failure is caught on the promise rather than by the try below,
+      // which has already returned by then. Without this catch an executor
+      // rejection would surface as an unhandled rejection and could take the
+      // worker down over a control command.
+      const run = () => {
+        void executor(action, commandId).catch((err: unknown) => {
+          this.log('warn', 'control executor failed', { action, command_id: commandId,
+            detail: (err as Error)?.message ?? String(err) });
+          store.settle(commandId, 'rejected', 'control executor failed');
+        });
+      };
+      // `deliverAuthorized` returns false when the re-check fails, having already
+      // settled the command `rejected`. Nothing more to do on that path.
+      if (this.requiresEnvelope(action)) {
+        await store.deliverAuthorized(commandId, run);
+        return;
+      }
+      if (store.markDelivered(commandId)) run();
+    } catch (err) {
+      // An executor failure is the run's business, not the listener's: the
+      // listener has already answered, and a throw here would become an
+      // unhandled rejection that takes down a worker over a control command.
+      this.log('warn', 'control executor failed', { action, command_id: commandId,
+        detail: (err as Error)?.message ?? String(err) });
+      this.config.store.settle(commandId, 'rejected', 'control executor failed');
     }
   }
 
