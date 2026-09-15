@@ -502,6 +502,59 @@ describe('input handoff reporting', () => {
     expect(await adapter.submitInput({ kind: 'steering', text: 'unread' })).toBe('rejected');
   });
 
+  it('reports rejected when the channel closes between the open check and the push', async () => {
+    const adapter = new ClaudeControlAdapter();
+    const attempt = await startAttempt(adapter);
+
+    // Both steps inside deliver() must agree on `rejected` once the channel has
+    // ended. A `delivered` here would tell the operator an instruction landed in
+    // a channel nothing will read. Closed via the factory disposer, which is
+    // exactly what the wrapper's per-attempt `finally` does during a retry.
+    await attempt.dispose();
+    expect(await adapter.submitInput({ kind: 'steering', text: 'raced' })).toBe('rejected');
+  });
+
+  it('clears the pending channel only when the disposer matches the current one', async () => {
+    const adapter = new ClaudeControlAdapter();
+    // Two factory calls without an intervening handle: the second replaces the
+    // pending channel, so disposing the FIRST must not clear the second's slot.
+    // Otherwise the attempt that is genuinely being built loses its channel and
+    // attaches with nothing able to receive input.
+    const first = adapter.attemptInputFactory()({ attemptNumber: 1, isResume: false, promptText: 'a' });
+    const second = adapter.attemptInputFactory()({ attemptNumber: 2, isResume: false, promptText: 'b' });
+
+    await first.dispose();
+
+    // The second channel is still pending, so the handle attaches successfully.
+    adapter.onAttemptHandle()({ attemptNumber: 2, session: fakeSession() });
+    await adapter.whenAttached();
+    expect(adapter.currentAttempt()).not.toBeNull();
+    expect(await adapter.submitInput({ kind: 'steering', text: 'to second' })).toBe('delivered');
+
+    const drained = drain(second.input as AsyncIterable<{ message: { content: string } }>);
+    await adapter.dispose();
+    expect((await drained).map((m) => m.message.content)).toEqual(['to second']);
+  });
+
+  it('logs a non-cancellation attach failure without taking the run down', async () => {
+    const logged: string[] = [];
+    const adapter = new ClaudeControlAdapter({ log: (m) => logged.push(m) });
+
+    // Force attach to fail for a reason that is NOT a cancellation, which takes
+    // the other arm of the error handler. A control sink failing must be logged
+    // and survived rather than propagated into the run.
+    const registry = (adapter as unknown as { registry: { attach: (e: unknown) => Promise<void> } }).registry;
+    registry.attach = async () => {
+      throw new Error('registry exploded');
+    };
+
+    adapter.attemptInputFactory()({ attemptNumber: 1, isResume: false, promptText: 'task' });
+    expect(() => adapter.onAttemptHandle()({ attemptNumber: 1, session: fakeSession() })).not.toThrow();
+    await expect(adapter.whenAttached()).resolves.toBeUndefined();
+
+    expect(logged.some((m) => m.includes('attach failed') && m.includes('registry exploded'))).toBe(true);
+  });
+
   it('names the command id in the handoff event so the journal can reconcile it', async () => {
     const adapter = new ClaudeControlAdapter();
     const events: Array<{ type: string; command_id?: string; result?: string }> = [];
