@@ -19,6 +19,14 @@ import time
 from pathlib import Path
 
 
+def resume_matrix(start, state, suites):
+    """Keep omitted acceptance gates visible when resuming only some suites."""
+    previous = state.data.get("matrix", [])[:]
+    start(state, suites)
+    state.data["matrix"] = list(dict.fromkeys([*previous, *state.data["matrix"]]))
+    state.save()
+
+
 def cli_command(fixtures, cli_dir, path, body, who):
     """Only fixture-owned org/team/user mappings may be exercised by this adapter."""
     from urllib.parse import unquote
@@ -82,7 +90,9 @@ def main():
     parser.add_argument("--harness-root", required=True, type=Path)
     parser.add_argument("--config", required=True)
     parser.add_argument("--state-dir", required=True)
-    parser.add_argument("--cleanup-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--cleanup-only", action="store_true")
+    mode.add_argument("--resume", action="store_true", help="Rerun against retained fixtures, preserving earlier failed/not-run acceptance checks")
     parser.add_argument("--hosted", action="store_true", help="Also exercise real cloud-agent dispatch at each hierarchy step")
     parser.add_argument("--maintenance-kubeconfig")
     args = parser.parse_args()
@@ -110,6 +120,15 @@ def main():
             return super().api(method, path, body, who, expected)
 
     harness.Fixtures = CliFixtures
+    if args.resume:
+        from tests.e2e.tenant_validation import regression
+
+        previous_start = regression.start_routing_matrix
+
+        def start_resumed(state, suites):
+            resume_matrix(previous_start, state, suites)
+
+        regression.start_routing_matrix = start_resumed
     if args.hosted and not args.cleanup_only:
         from tests.e2e.tenant_validation import regression
 
@@ -121,7 +140,8 @@ def main():
             original_start(state, suites)
             for phase, member, _ in regression.CASES:
                 key = f"{phase}:hosted-chat:{member}"
-                state.data["matrix"].append(key)
+                if key not in state.data["matrix"]:
+                    state.data["matrix"].append(key)
                 state.data["checks"][key] = {"status": "not_run", "details": {}, "at": harness.now()}
             state.save()
 
@@ -134,7 +154,7 @@ def main():
         regression.start_routing_matrix = start_matrix
         harness.run_suites = run_suites
         harness.validate_suites = validate_suites
-    argv = ["cleanup" if args.cleanup_only else "test", "--config", args.config, "--state-dir", args.state_dir]
+    argv = ["cleanup" if args.cleanup_only else "run" if args.resume else "test", "--config", args.config, "--state-dir", args.state_dir]
     if not args.cleanup_only:
         argv += ["--routing-matrix", "--suites", "ec2-claude", "ec2-codex"]
     if args.maintenance_kubeconfig:

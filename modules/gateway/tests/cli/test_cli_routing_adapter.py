@@ -27,3 +27,15 @@ def test_adapter_refuses_nonfixture_mapping_before_running_cli(scope, destinatio
     monkeypatch.setattr(adapter.subprocess, "run", forbidden)
     with pytest.raises(RuntimeError, match="outside the fixture"):
         adapter.cli_command(fixture, Path("unused"), "/admin/bedrock-routing/mappings/" + scope, {"destination_id": destination}, "admin")
+
+
+def test_resume_keeps_omitted_cloud_failure_in_acceptance_matrix():
+    state = SimpleNamespace(data={"matrix": ["ec2", "cloud"], "checks": {"cloud": {"status": "failed"}}}, save=lambda: None)
+
+    def start(state, suites):
+        state.data["matrix"] = ["ec2"]
+        state.data["checks"]["ec2"] = {"status": "not_run"}
+
+    adapter.resume_matrix(start, state, ["ec2"])
+    assert state.data["matrix"] == ["ec2", "cloud"]
+    assert state.data["checks"]["cloud"]["status"] == "failed"

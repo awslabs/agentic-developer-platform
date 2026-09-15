@@ -82,5 +82,8 @@ and live hierarchy, not direct provisioning by the CLI or deployment of its file
 The report records candidate hashes and separate Claude, Codex and cloud outcomes.
 Hosted/usage failures remain acceptance failures even when inference evidence exists.
 Use the same arguments with `--cleanup-only` after interrupted cleanup. The optional
+`--resume` reruns against retained fixtures without provisioning; earlier omitted
+acceptance checks remain in the report. Run `--cleanup-only` afterward. It must
+not be used to turn a failed cloud gate into a passing EC2-only report. The optional
 `--maintenance-kubeconfig` retains the harness's scoped cleanup for gateways that
 lack the destination delete API. Never delete another run's state or resources.
