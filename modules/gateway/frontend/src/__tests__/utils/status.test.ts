@@ -73,6 +73,45 @@ describe('describeStatus', () => {
     expect(describeStatus('budget_stopped').colorClass).not.toContain('red');
   });
 
+  it('styles aborted amber rather than red', () => {
+    // Issue #3964: a person stopped this run on purpose. Red would report an
+    // operator's own intervention back to them as a fault, which is how you get
+    // someone debugging a run that behaved exactly as asked.
+    expect(describeStatus('aborted').colorClass).toContain('amber');
+    expect(describeStatus('aborted').colorClass).not.toContain('red');
+  });
+
+  it('gives aborted a glyph distinct from budget_stopped', () => {
+    // Issue #3964: both are amber, so colour alone cannot separate "stopped by
+    // hand" from "refused by a cap" — and those are different answers to the
+    // question an operator is actually asking, "why did this end?". If the glyphs
+    // ever collapse, the two become indistinguishable on the board.
+    expect(describeStatus('aborted').glyph).not.toBe(describeStatus('budget_stopped').glyph);
+    expect(describeStatus('aborted').label).toBe('Aborted');
+  });
+
+  it('exposes aborted as a known status', () => {
+    // KNOWN_STATUSES drives the exhaustiveness loop above and is exported for
+    // filters. A status missing from it renders through the `?? no_op` fallback —
+    // a deliberately stopped run shown as "✗ No-op".
+    expect(KNOWN_STATUSES).toContain('aborted');
+  });
+
+  it('does not render a provider native interruption as an aborted run', () => {
+    // Issue #3964, harness-neutral contract. Only a confirmed ADP abort
+    // finalization carries `aborted`; adapters normalize their own outcomes before
+    // anything is written, so these strings should never reach the frontend — and
+    // if one does, it must degrade visibly rather than borrow the aborted badge.
+    // `AbortError` is the pointed case: substring-matching on "abort" is exactly
+    // the shortcut this forbids.
+    for (const native of ['interrupted', 'cancelled', 'AbortError', 'ECONNRESET']) {
+      const presentation = describeStatus(native);
+      expect(presentation.label, `${native} was mapped to a real status`).toBe(native);
+      expect(presentation.colorClass).toBe(describeStatus('no_op').colorClass);
+      expect(presentation.glyph).not.toBe(describeStatus('aborted').glyph);
+    }
+  });
+
   it('degrades an unrecognised status to neutral styling with the raw value', () => {
     // The API may add a status on its own cadence and this SPA ships on another.
     // The unknown value must be visible and inert — never relabelled as a status
