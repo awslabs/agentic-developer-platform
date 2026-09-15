@@ -22,8 +22,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from tests.e2e.orchestration.config import ConfigError, QualificationConfig, load_config
 from tests.e2e.orchestration.fixtures import FixtureProvider, cleanup, resume
@@ -192,7 +193,9 @@ def run(config: QualificationConfig) -> Outcome:
             break
         try:
             adapter.execute(config=config, inventory=inventory, providers=providers)
-        except Exception as exc:
+        except Exception as exc:  # any adapter failure is data, not a crash
+            # One scenario failing must not skip the others or abandon the
+            # inventory: the run reports FAILED and the fixtures stay cleanable.
             failures.append({"scenario": name, "error": str(exc)})
             continue
         executed.append({"scenario": name})

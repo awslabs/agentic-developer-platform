@@ -1,0 +1,204 @@
+name: Orchestration Live Tests
+
+# MANUAL ONLY. Runs a bounded qualification (tests/e2e/orchestration/, #5156)
+# against a real environment, which provisions real fixtures and can spend money.
+#
+# There is deliberately no push, pull_request or schedule trigger. An ordinary PR
+# must never launch a paid qualification, so the offline half of this suite runs
+# in orchestration-harness-ci.yml and this workflow is dispatched by a human who
+# has reviewed the config.
+#
+# Inputs name a REVIEWED CONFIG FILE IN THE REPO and an environment. No input
+# accepts a credential: the config carries secret *references* that the harness
+# resolves at runtime through the OIDC role assumed below, and config.py refuses
+# a config with an embedded secret. Never add a `secret`/`token`/`password` input
+# to this file — a dispatch input is recorded in the run log.
+#
+# This workflow does not perform live acceptance for #5156. Issue #5158
+# (ENGINE-Q3) owns the live qualification run and its evidence.
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: >-
+          Repo-relative path to the reviewed qualification config
+          (e.g. tests/e2e/orchestration/config.example.json). Must be committed
+          and reviewed; it is loaded from the checked-out tree.
+        required: true
+        default: 'tests/e2e/orchestration/config.example.json'
+      environment:
+        description: 'Environment the config targets. Must match the config; a mismatch fails.'
+        required: true
+        type: choice
+        options: [dev, staging]
+        default: dev
+      mode:
+        description: >-
+          preflight = read-only validation (default, mutates nothing).
+          run = execute the qualification (provisions fixtures, may spend).
+          resume/cleanup = act on an existing qualification id.
+        required: true
+        type: choice
+        options: [preflight, run, resume, cleanup]
+        default: preflight
+      qualification_id:
+        description: 'Qualification id. Required for resume and cleanup; ignored otherwise.'
+        required: false
+        default: ''
+
+# Least privilege: OIDC to assume a scoped role, and read-only on the repo. The
+# harness reads secrets it needs through that role at runtime.
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  # Two qualifications against one environment would provision overlapping
+  # fixtures. Queue rather than cancel so a run is never interrupted midway
+  # between recording an intent and creating the resource.
+  group: orchestration-live-${{ github.event.inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  qualification:
+    name: ${{ github.event.inputs.mode }} (${{ github.event.inputs.environment }})
+    runs-on: arc-runner-org
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Fail before touching AWS if the dispatch is internally inconsistent.
+      # resume/cleanup without an id would otherwise reach the CLI as a mode
+      # with an empty argument.
+      - name: Validate dispatch inputs
+        run: |
+          set -euo pipefail
+          CONFIG="${{ github.event.inputs.config_path }}"
+          MODE="${{ github.event.inputs.mode }}"
+          QUAL_ID="${{ github.event.inputs.qualification_id }}"
+
+          case "$CONFIG" in
+            /*|*..*)
+              echo "::error::config_path must be a repo-relative path without '..' segments."
+              exit 1
+              ;;
+          esac
+          if [ ! -f "$CONFIG" ]; then
+            echo "::error::config_path '$CONFIG' does not exist in the checked-out tree. It must be committed and reviewed."
+            exit 1
+          fi
+          if { [ "$MODE" = "resume" ] || [ "$MODE" = "cleanup" ]; } && [ -z "$QUAL_ID" ]; then
+            echo "::error::mode '$MODE' requires qualification_id."
+            exit 1
+          fi
+
+          # The config declares its own target; a dispatch pointing a dev config
+          # at staging must not proceed on the dispatch value.
+          CONFIG_ENV=$(python -c "import json,sys; print(json.load(open(sys.argv[1])).get('environment',''))" "$CONFIG")
+          if [ "$CONFIG_ENV" != "${{ github.event.inputs.environment }}" ]; then
+            echo "::error::config targets '${CONFIG_ENV}' but the dispatch selected '${{ github.event.inputs.environment }}'."
+            exit 1
+          fi
+          echo "config=$CONFIG mode=$MODE environment=$CONFIG_ENV"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # boto3 is needed here (unlike the offline job): the live path resolves
+      # secret references and verifies the caller identity.
+      - name: Install dependencies
+        run: pip install pytest==9.0.3 boto3
+
+      # Scoped role, assumed after input validation. This is the only credential
+      # in the workflow and it is never written to a file or an input.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_QUALIFICATION_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # Reported before any mutation so the run log records which account was
+      # actually touched, not which one the operator believed they selected.
+      - name: Report the verified target account
+        run: |
+          set -euo pipefail
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          {
+            echo "### Qualification target"
+            echo ""
+            echo "| Setting | Value |"
+            echo "|---|---|"
+            echo "| Account | \`${ACCOUNT}\` |"
+            echo "| Role | \`${ARN}\` |"
+            echo "| Environment | \`${{ github.event.inputs.environment }}\` |"
+            echo "| Mode | \`${{ github.event.inputs.mode }}\` |"
+            echo "| Config | \`${{ github.event.inputs.config_path }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Exit codes are meaningful and distinct (run.py): 4 = nothing ran
+      # (incomplete, NOT a pass), 5 = failed, 6 = cleanup refused something.
+      # They are propagated rather than swallowed.
+      - name: Run qualification
+        id: qualification
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          AWS_REGION: us-east-1
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          case "${{ github.event.inputs.mode }}" in
+            preflight) MODE_ARGS="--preflight" ;;
+            run)       MODE_ARGS="--run" ;;
+            resume)    MODE_ARGS="--resume ${{ github.event.inputs.qualification_id }}" ;;
+            cleanup)   MODE_ARGS="--cleanup ${{ github.event.inputs.qualification_id }}" ;;
+          esac
+
+          set +e
+          python -m tests.e2e.orchestration.run \
+            --config "${{ github.event.inputs.config_path }}" \
+            $MODE_ARGS \
+            2>&1 | tee test-results/qualification-output.txt
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=${RC}" >> "$GITHUB_OUTPUT"
+
+          case "$RC" in
+            0) echo "Qualification reported success." ;;
+            4) echo "::error::No scenario executed. This is NOT a pass — scenario adapters come from #5157." ;;
+            6) echo "::warning::Cleanup refused one or more fixtures it could not verify as owned; they were left untouched and need review." ;;
+            *) echo "::error::Qualification failed with exit code ${RC}." ;;
+          esac
+          exit "$RC"
+
+      # Always uploaded, especially on failure: a failed run is exactly when the
+      # inventory is needed to find a fixture that may still exist. The inventory
+      # records resource ids and ownership tags, never a credential.
+      - name: Upload qualification artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qualification-${{ github.event.inputs.mode }}-${{ github.run_id }}
+          path: |
+            test-results/
+            artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # A failed `run` may have left fixtures behind. Say so explicitly with the
+      # command to clean them up, rather than leaving an operator to discover the
+      # leak from a bill.
+      - name: Remind about leftover fixtures
+        if: failure() && github.event.inputs.mode == 'run'
+        run: |
+          {
+            echo ""
+            echo "> **Fixtures may still exist.** Download the artifact above, find the"
+            echo "> \`qualification_id\` in the run output, then reconcile and remove them:"
+            echo "> \`--resume <id>\` followed by \`--cleanup <id>\` via this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"

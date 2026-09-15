@@ -22,9 +22,10 @@ import os
 import re
 import tempfile
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 INVENTORY_VERSION = 1
 INVENTORY_FILENAME = "inventory.json"

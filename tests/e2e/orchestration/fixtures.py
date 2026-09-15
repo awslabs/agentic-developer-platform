@@ -215,6 +215,10 @@ def resume(inventory: Inventory, providers: dict[str, FixtureProvider]) -> list[
             continue
 
         token = record.idempotency_token or _idempotency_token(inventory.qualification_id, record.fixture_id)
+        # Blind catches here and below are deliberate: a provider is third-party
+        # code that may raise anything, and an unhandled exception would abandon
+        # the remaining records mid-reconcile — the one outcome guaranteed to
+        # leak. Every failure is recorded and reported instead.
         try:
             existing = provider.find(intended_identity=record.intended_identity, idempotency_token=token)
         except Exception as exc:
@@ -256,8 +260,10 @@ def cleanup(
             refused.append(
                 (
                     record.fixture_id,
-                    "fixture is still 'planned' with no observed resource id; run --resume first "
-                    "so it can be reconciled rather than guessed at",
+                    (
+                        "fixture is still 'planned' with no observed resource id; run --resume "
+                        "first so it can be reconciled rather than guessed at"
+                    ),
                 )
             )
             continue

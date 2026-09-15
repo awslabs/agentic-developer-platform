@@ -17,6 +17,7 @@ Standard library only, and no AWS call happens at import or during
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -350,7 +351,7 @@ def _check_bounds(bounds: Any, problems: list[str]) -> None:
                 f"(an unbounded or non-numeric limit is refused)"
             )
             continue
-        if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
+        if math.isnan(value) or math.isinf(value):
             problems.append(f"bounds.{key} must be finite, got {value!r}")
             continue
         if value <= 0:

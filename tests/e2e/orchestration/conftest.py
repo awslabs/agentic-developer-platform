@@ -53,24 +53,35 @@ VALID_CONFIG: dict = {
 }
 
 
+@pytest.hookimpl(hookwrapper=True)
 def pytest_collection_modifyitems(config, items):
     """Undo a sibling package's unfiltered skip of every collected item.
 
     ``tests/e2e/chat/conftest.py`` and ``tests/e2e/infra/conftest.py`` skip all
-    collected items when their opt-in variable is unset, without filtering to
-    their own package. Collected in the same session, they would mark these
-    offline tests skipped too — a vacuous green run. This hook removes that skip
-    from this package's items only; the sibling live suites keep their gate.
+    collected items when ``E2E_CHAT_ENABLED`` is unset, without filtering to
+    their own package. Collected in the same session — ``pytest tests/`` — they
+    would mark these offline tests skipped too, and pytest would still exit 0: a
+    vacuous green run.
+
+    This is a hookwrapper so the cleanup happens *after* every other
+    implementation has had its say. A plain hook is not enough: hook call order
+    would let a sibling add its skip marker after this one removed it, which is
+    exactly what happened before (199 passing under a package-scoped run, all
+    silently skipped under ``pytest tests/``).
+
+    Only this package's items are touched; the sibling live suites keep their
+    gate, which is theirs to own.
     """
+    yield
     for item in items:
         if not Path(item.path).resolve().is_relative_to(PACKAGE):
             continue
-        own = [
+        inherited = [
             marker
             for marker in item.own_markers
             if marker.name == "skip" and "E2E_CHAT_ENABLED" in str(marker.kwargs.get("reason", ""))
         ]
-        for marker in own:
+        for marker in inherited:
             item.own_markers.remove(marker)
 
 

@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aws-e/adp/tests/e2e/orchestration/config.schema.json",
+  "title": "ADP qualification config",
+  "description": "Bounded qualification configuration for tests/e2e/orchestration. Documents the contract enforced by config.py, which is the authority: the loader is hand-written (the repo-root test tree has no jsonschema dependency) and enforces rules this schema cannot express, notably the embedded-secret scan and the refusal of production targets. Keep the two in sync when either changes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "config_version",
+    "environment",
+    "connection",
+    "identity",
+    "versions",
+    "bounds",
+    "artifacts"
+  ],
+  "properties": {
+    "config_version": {
+      "const": 1,
+      "description": "Layout version. A different value is refused rather than guessed at."
+    },
+    "environment": {
+      "enum": ["dev", "staging"],
+      "description": "Target environment. 'prod'/'production' are refused: this harness provisions fixtures."
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connection_ref", "repository"],
+      "properties": {
+        "connection_ref": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "description": "Registered user connection to run through. Never a credential."
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+          "description": "Authorized repository as owner/repo."
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["org_ref", "team_ref", "identity_ref"],
+      "description": "References to org/team/identity fixtures. References only; this harness does not duplicate the production identity APIs.",
+      "properties": {
+        "org_ref": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "team_ref": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "identity_ref": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" }
+      }
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "worker", "harness"],
+      "description": "Pinned versions. An exact semver or a 40-character commit SHA; floating refs such as 'latest' or 'main' are refused so a qualification is reproducible.",
+      "properties": {
+        "engine": { "$ref": "#/$defs/pinnedVersion" },
+        "worker": { "$ref": "#/$defs/pinnedVersion" },
+        "harness": { "$ref": "#/$defs/pinnedVersion" }
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_resources", "max_runs", "max_usd", "max_duration_seconds"],
+      "description": "Every bound is required and must be positive. Ceilings are additionally enforced by config.py (BOUND_CEILINGS) so a typo cannot authorize a large spend.",
+      "properties": {
+        "max_resources": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum fixtures that may exist at once, counting unresolved ones."
+        },
+        "max_runs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum scenario executions."
+        },
+        "max_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 50,
+          "description": "Spend ceiling in USD. Does not replace the policy/budget authority in #5128."
+        },
+        "max_duration_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7200,
+          "description": "Wall-clock ceiling for the qualification."
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory"],
+      "properties": {
+        "directory": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Where inventories and evidence are written. May not contain '..' segments."
+        }
+      }
+    },
+    "secret_refs": {
+      "type": "object",
+      "description": "Named REFERENCES to credentials, resolved at runtime only. A literal credential here is refused, as is a secret-like key anywhere else in this file.",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^(secretsmanager|ssm|env):[A-Za-z0-9_./-]{1,256}$"
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "description": "Scenario adapter ids to run, supplied by #5157. Empty or absent means all registered adapters; an id with no registered adapter is an error, not a smaller run.",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      }
+    }
+  },
+  "$defs": {
+    "pinnedVersion": {
+      "type": "string",
+      "pattern": "^(?:\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?|[0-9a-f]{40})$"
+    }
+  }
+}

@@ -15,7 +15,7 @@ import types
 import pytest
 
 from tests.e2e.orchestration import run as runner
-from tests.e2e.orchestration.fixtures import FixtureRequest, provision
+from tests.e2e.orchestration.fixtures import FixtureError, FixtureRequest, provision
 from tests.e2e.orchestration.inventory import Inventory
 from tests.e2e.orchestration.run import (
     EXIT_CONFIG_INVALID,
@@ -269,7 +269,7 @@ class TestResumeMode:
         register_scenarios({"bounded": adapter})
         inventory = Inventory.create(valid_config.artifact_directory, QUAL_ID, "dev")
         adapter.provider.fail_create_after_resource_exists = True
-        with pytest.raises(Exception):
+        with pytest.raises(FixtureError, match="retained for resume"):
             provision(inventory, valid_config, adapter.provider, ORG)
         adapter.provider.fail_create_after_resource_exists = False
 
@@ -287,7 +287,7 @@ class TestResumeMode:
         register_scenarios({"bounded": adapter})
         inventory = Inventory.create(valid_config.artifact_directory, QUAL_ID, "dev")
         adapter.provider.fail_create = True
-        with pytest.raises(Exception):
+        with pytest.raises(FixtureError, match="retained for resume"):
             provision(inventory, valid_config, adapter.provider, ORG)
         adapter.provider.fail_find = True
 
