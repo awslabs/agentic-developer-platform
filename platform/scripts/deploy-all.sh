@@ -748,6 +748,21 @@ else
     else
       warn "Update mode: ALB details not yet in SSM (first deploy?). Step 3 will run without VPC origin vars — Step 5 will wire them."
     fi
+    # Preserve the dedicated internal plane on the first pass too. Otherwise
+    # every upgrade temporarily points /internal back at the edge ALB, whose
+    # explicit deny is already active after the previous deployment.
+    _STEP3_INTERNAL_ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-arn" --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    _STEP3_INTERNAL_ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-dns" --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    _STEP3_INTERNAL_SG_IDS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-security-group-ids" --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "[]")
+    if [ -n "$_STEP3_INTERNAL_ALB_ARN" ] && [ "$_STEP3_INTERNAL_ALB_ARN" != "None" ]; then
+      [ -n "$_STEP3_INTERNAL_ALB_DNS" ] && [ "$_STEP3_INTERNAL_ALB_DNS" != "None" ] \
+        || fail "Cached internal-plane ALB has no DNS name; re-run wire-gateway-alb.sh"
+      STEP3_EXTRA_VARS+=(
+        -var "internal_plane_alb_arn=$_STEP3_INTERNAL_ALB_ARN"
+        -var "internal_plane_alb_dns=$_STEP3_INTERNAL_ALB_DNS"
+        -var "internal_plane_alb_security_group_ids=$_STEP3_INTERNAL_SG_IDS"
+      )
+    fi
     terraform_update_apply "gateway" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
       ${STEP3_EXTRA_VARS[@]+"${STEP3_EXTRA_VARS[@]}"}
   else
