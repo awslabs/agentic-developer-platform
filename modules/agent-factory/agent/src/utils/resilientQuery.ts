@@ -26,8 +26,21 @@
  * `onSessionId` (Phase 1 of #4186) exists so the caller can record the id
  * durably; the cross-pod resume branch that would consume it is Phase 3 and
  * is NOT implemented here.
+ *
+ * Live-control lifecycle (issue #3962): three OPTIONAL hooks let the Claude
+ * control adapter own one attempt's transport without this file learning
+ * anything about control semantics — `attemptInputFactory` (fresh open input
+ * per attempt), `onAttemptHandle` (access to the live query handle) and
+ * `cancellation` (typed intentional stop). All three are absent for the 17
+ * existing callers. Ordinary callers preserve the pre-#3962 contract: the same
+ * query params, prompt construction, and
+ * one-time fail-soft `onSessionId`, same `session.close()`. That is a hard
+ * requirement, not a nicety — this wrapper is on the critical path of every
+ * agent run in the platform, and a control feature that is disabled everywhere
+ * must not be able to change how ordinary runs behave.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { ControlCancelledError, isControlCancellation } from '../control-runtime';
 
 /** The shape of a single message yielded by query(). */
 export type SDKStreamMessage = Awaited<ReturnType<typeof query>> extends AsyncIterable<infer T> ? T : never;
@@ -84,6 +97,64 @@ export interface ResilientQueryOptions {
   onSessionId?: (sessionId: string) => void;
   /** Optional logger — receives retry lifecycle messages. */
   log?: (msg: string) => void;
+  /**
+   * Optional per-attempt input factory (issue #3962), consumed only by the
+   * Claude control adapter.
+   *
+   * Called BEFORE every `query()` — attempt 1, true-resume retries and
+   * fallback retries alike. There is no path that builds a query without
+   * calling it, because the one thing a steering channel cannot survive is an
+   * attempt whose input nobody is holding: the operator's instruction would be
+   * accepted, queued, and then delivered into a transport that the retry
+   * already replaced.
+   *
+   * Returns a fresh open iterable plus a disposer. Fresh each time is required —
+   * an async iterable that a prior `query()` already consumed is exhausted, so
+   * reusing it would silently produce an attempt that can never receive input.
+   *
+   * `isResume` lets the adapter distinguish continuation from initial context:
+   * a resumed attempt already has the task in its reloaded history and needs
+   * only pending input, while a fallback attempt must preserve the initial task
+   * prompt. The disposer is invoked exactly once per attempt in the `finally`
+   * that closes the session, so no attempt's input outlives its transport.
+   */
+  attemptInputFactory?: (context: {
+    attemptNumber: number;
+    isResume: boolean;
+    /** The prompt this attempt would otherwise send (task or continuation nudge). */
+    promptText: string;
+  }) => { input: AsyncIterable<unknown>; dispose: () => void | Promise<void> };
+  /**
+   * Optional callback receiving the live query handle for each attempt
+   * (issue #3962).
+   *
+   * Fired immediately after `query()` returns and before the stream is
+   * consumed, so the adapter can publish the new attempt endpoint and
+   * invalidate the previous one at the moment the swap actually happens rather
+   * than inferring it later. Fail-soft: a throw is logged and swallowed, since
+   * an observability or control sink must never take a run down.
+   */
+  onAttemptHandle?: (handle: { attemptNumber: number; session: unknown }) => void | Promise<void>;
+  /**
+   * Optional typed cancellation source (issue #3962).
+   *
+   * Checked at every point where this loop would otherwise commit to more work:
+   * before constructing a query, after backoff, and when classifying an error.
+   * `signal` wakes waits immediately. Sources without a signal are polled at
+   * 25ms while waiting; no cancellation timers exist for ordinary callers.
+   *
+   * The critical rule: a cancellation NEVER enters retryable-error-text
+   * classification. Cancellations carry words like "aborted" that the pattern
+   * list matches, so without this the wrapper would treat a deliberate abort as
+   * a transient blip and start a fresh attempt — turning "stop" into "restart".
+   */
+  cancellation?: {
+    isCancelled: () => boolean;
+    /** Wakes idle/setup/backoff waits immediately; polling supports older sources. */
+    signal?: AbortSignal;
+    /** The typed error to throw. Defaults to the caller's cancellation error. */
+    error?: () => Error;
+  };
 }
 
 /**
@@ -146,7 +217,34 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
     resumeContext,
     onSessionId,
     log = console.log,
+    attemptInputFactory,
+    onAttemptHandle,
+    cancellation,
   } = opts;
+
+  /** Typed cancellation error, never routed through error-text classification. */
+  const cancellationError = (): Error =>
+    cancellation?.error?.() ?? new ControlCancelledError('resilient query cancelled by control runtime');
+
+  const wait = async <T>(work: Promise<T>): Promise<T> => {
+    if (!cancellation) return work;
+    let poll: ReturnType<typeof setInterval> | undefined;
+    let onCancel: () => void = () => {};
+    const cancelled = new Promise<never>((_, reject) => {
+      onCancel = () => reject(cancellationError());
+      cancellation.signal?.addEventListener('abort', onCancel, { once: true });
+      if (cancellation.isCancelled() || cancellation.signal?.aborted) onCancel();
+      else if (!cancellation.signal) {
+        poll = setInterval(() => { if (cancellation.isCancelled()) onCancel(); }, 25);
+      }
+    });
+    try {
+      return await Promise.race([work, cancelled]);
+    } finally {
+      clearInterval(poll);
+      cancellation.signal?.removeEventListener('abort', onCancel);
+    }
+  };
 
   let attempt = 0;
   // Total messages yielded across ALL attempts (cross-attempt progress).
@@ -162,12 +260,33 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
   let capturedSessionId: string | undefined;
 
   while (true) {
+    // Cancelled before this attempt is built: stop here. Checked at the top of
+    // the loop so a cancel arriving during the previous backoff sleep cannot be
+    // followed by another query — "cancel during backoff starts no new attempt"
+    // is enforced structurally rather than by hoping the timing works out.
+    if (cancellation?.isCancelled()) {
+      log('   ⛔ Cancelled before query construction — no further attempts');
+      throw cancellationError();
+    }
     attempt++;
     let messagesThisAttempt = 0;
+    // This attempt's input disposer, if a factory supplied one.
+    let disposeAttemptInput: (() => void | Promise<void>) | undefined;
+    const disposeInput = async (): Promise<void> => {
+      const dispose = disposeAttemptInput;
+      disposeAttemptInput = undefined;
+      if (dispose) {
+        try { await dispose(); }
+        catch (err) { log(`   ⚠️  attempt input disposal threw (ignored): ${(err as Error)?.message ?? err}`); }
+      }
+    };
     try {
       // On retry (attempt > 1), continue the prior conversation rather than
       // re-running the task from scratch.
       let effectiveParams = queryParams;
+      // Whether this attempt is a TRUE resume (SDK reloads history) or a
+      // fallback/initial attempt (prompt carries the task).
+      let isResumeAttempt = false;
       if (attempt > 1) {
         const nudge = resumeContext?.(attempt, totalMessagesYielded);
         if (capturedSessionId) {
@@ -182,6 +301,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
             prompt: nudge ?? 'Continue the task from where you left off. Do not repeat completed steps.',
             options: { ...baseOptions, resume: capturedSessionId },
           } as typeof queryParams;
+          isResumeAttempt = true;
           log(`   ↩️  Resuming session ${capturedSessionId} (true SDK resume — full history reloaded)`);
         } else if (nudge && typeof queryParams.prompt === 'string') {
           // Fallback: no session_id was captured (the stream stalled before the
@@ -197,9 +317,43 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
         }
       }
 
+      // Issue #3962: build this attempt's input BEFORE the query, on every
+      // attempt including resumes and fallbacks. When no factory is supplied
+      // `effectiveParams` is untouched, so the 17 legacy callers send exactly
+      // the params they always sent.
+      if (attemptInputFactory) {
+        const promptText = typeof (effectiveParams as { prompt?: unknown }).prompt === 'string'
+          ? (effectiveParams as { prompt: string }).prompt
+          : '';
+        const attemptInput = attemptInputFactory({ attemptNumber: attempt, isResume: isResumeAttempt, promptText });
+        disposeAttemptInput = attemptInput.dispose;
+        // The adapter's iterable replaces the prompt: the Claude SDK accepts
+        // `string | AsyncIterable<SDKUserMessage>`, and the streaming form is
+        // what allows a second turn to be delivered into a live attempt. The
+        // cast is confined to this Claude-specific helper — the neutral contract
+        // never exposes an iterable.
+        effectiveParams = { ...effectiveParams, prompt: attemptInput.input } as typeof queryParams;
+      }
+
+      // Last check before committing to a query: a cancellation that landed
+      // while the input factory ran must not produce a live attempt.
+      if (cancellation?.isCancelled()) {
+        log('   ⛔ Cancelled during query construction — no query started');
+        throw cancellationError();
+      }
+
       const session = query(effectiveParams);
-      const iterator = (session as AsyncIterable<SDKStreamMessage>)[Symbol.asyncIterator]();
       try {
+        // Await attachment before reading output. Cancellation wakes stalled setup.
+        if (onAttemptHandle) {
+          try {
+            await wait(Promise.resolve(onAttemptHandle({ attemptNumber: attempt, session })));
+          } catch (err) {
+            if (isControlCancellation(err) || cancellation?.isCancelled()) throw err;
+            log(`   ⚠️  onAttemptHandle callback threw (ignored): ${(err as Error)?.message ?? err}`);
+          }
+        }
+        const iterator = (session as AsyncIterable<SDKStreamMessage>)[Symbol.asyncIterator]();
         while (true) {
           let idleTimer: ReturnType<typeof setTimeout> | undefined;
           const idle = new Promise<never>((_, reject) => {
@@ -210,7 +364,8 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           });
           let result: IteratorResult<SDKStreamMessage>;
           try {
-            result = await Promise.race([iterator.next(), idle]);
+            if (cancellation?.isCancelled()) throw cancellationError();
+            result = await wait(Promise.race([iterator.next(), idle]));
           } finally {
             clearTimeout(idleTimer);
           }
@@ -239,16 +394,26 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           yield result.value;
         }
       } finally {
-        // Close the query to terminate the underlying Claude Code process.
-        // Without this, background processes (sky, tail, etc.) keep the
-        // async generator alive and the agent hangs after completion.
-        // Also resolves/rejects the abandoned iterator.next() on idle timeout.
+        // Invalidate input before closing the transport. Ordinary callers keep
+        // synchronous teardown when no input factory is installed.
+        if (disposeAttemptInput) await disposeInput();
         session.close();
       }
       // Stream completed successfully — we're done.
       return;
     } catch (err) {
+      if (disposeAttemptInput) await disposeInput();
       const error = err as Error;
+
+      // Issue #3962: a typed cancellation exits before ANY error-text
+      // classification. This ordering is the whole safety property — cancellation
+      // messages contain words like "aborted" that RETRYABLE_PATTERNS matches, so
+      // classifying first would convert a deliberate stop into a fresh attempt.
+      if (isControlCancellation(error) || cancellation?.isCancelled()) {
+        log(`⛔ Control cancellation — not retrying: ${error.message}`);
+        throw isControlCancellation(error) ? error : cancellationError();
+      }
+
       const retryable = isRetryableError(error);
 
       if (!retryable || attempt > maxRetries) {
@@ -297,10 +462,17 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
       log(`   Total messages yielded: ${totalMessagesYielded}, high-water mark: ${highWaterMark}`);
       log(`   Retrying in ${(delay / 1000).toFixed(1)}s...`);
 
-      await new Promise(resolve => setTimeout(resolve, delay));
+      let backoffTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await wait(new Promise<void>(resolve => { backoffTimer = setTimeout(resolve, delay); }));
+      } finally {
+        clearTimeout(backoffTimer);
+      }
 
       const mode = capturedSessionId ? 'resuming' : 'restarting';
       log(`🔄 ${mode} query (attempt ${attempt + 1}/${maxRetries + 1})...`);
+    } finally {
+      if (disposeAttemptInput) await disposeInput();
     }
   }
 }

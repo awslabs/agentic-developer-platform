@@ -103,8 +103,20 @@ STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
 STATUS_NOT_RUN = "not_run"
 
-# The four verbs, all of which must answer 501 in S1.
+# The four verbs, all of which must answer 501 in S1 and still in S3.
 CONTROL_VERBS: tuple[str, ...] = ("pause", "resume", "steer", "abort")
+
+# The neutral control contract's protocol version, and the first production
+# adapter's identity and pinned SDK. Mirrored from
+# `modules/agent-factory/agent/src/control-runtime.ts` and
+# `harnesses/claude-control.ts` rather than imported, for the same reason the
+# request bodies above are mirrored: this harness runs standalone against a URL
+# and must not acquire the agent module's dependency tree. A test pins these
+# against the TypeScript sources, so a bump there surfaces as a harness test to
+# update rather than as a live evaluation that silently accepts stale evidence.
+CONTROL_PROTOCOL_VERSION = 1
+CLAUDE_ADAPTER_ID = "claude"
+EXPECTED_CLAUDE_SDK_VERSION = "0.3.220"
 
 # `steer` is the one verb whose request model REQUIRES its free text: pause,
 # resume and abort take the idempotency key plus an optional `reason`, while
@@ -118,6 +130,7 @@ CONTROL_VERBS: tuple[str, ...] = ("pause", "resume", "steer", "abort")
 # a schema change on the gateway side surfaces as a harness test to update rather
 # than as a silent 400 in a live evaluation.
 STEER_VERB = "steer"
+ABORTED_STATUS = "aborted"
 
 # Short and deliberately inert. Every command in wave 1 is refused — by
 # authorization, by the terminal-row gate, or by the 501 that follows both — so
@@ -125,14 +138,6 @@ STEER_VERB = "steer"
 # MAX_INSTRUCTION_CHARS (4000) so it cannot be confused with the oversize probe
 # in W1-05, which is a *different* leg that must keep being rejected.
 STEER_INSTRUCTION = "evaluation probe: no action required"
-
-# The terminal status a confirmed ADP abort finalization writes (#3964). Mirrored
-# rather than imported for the same reason as the command shapes above: this
-# harness runs standalone against a URL. Spelled once so the wave-2 checks, which
-# assert it as a status value, as a filter argument and as a counter key, cannot
-# disagree about it — the three would be a typo away from a check that passes
-# against the wrong field.
-ABORTED_STATUS = "aborted"
 
 # Both adapters that reach the shared control service. W1-02 requires the
 # identical authorization behaviour on each, which is the whole point of there
@@ -267,23 +272,17 @@ WAVE1_CHECKS: tuple[CheckSpec, ...] = (
     ),
 )
 
-# Transcribed from evaluation #3968's table, the same way WAVE1_CHECKS is
-# transcribed from #3967's — the ALL TEN rows, not just the ones this story can
-# answer.
+# Transcribed from evaluation #3968's acceptance table (revision
+# harness-neutral-2026-09-15), on the same rule §7 states for wave 1: the
+# evaluation file's check IDs are authoritative.
 #
-# Registering only S5's four checks here would have been the tempting shortcut and
-# is precisely the defect the wave gate exists to prevent: `required` would be 4,
-# all four would pass, `passed == required` would hold, and `--wave 2` would exit 0
-# while six required checks had never existed. That report would be indistinguish-
-# able from a complete wave-2 pass. So the manifest is complete and the six checks
-# this story does not own resolve to NOT RUN — nonzero, named, and impossible to
-# read as coverage. §7's rule stands either way: "a missing prerequisite is NOT
-# RUN and nonzero, never a pass."
+# Keep all ten checks even while only S3 and S5 have landed: shrinking the
+# manifest to implemented checks would turn incomplete Wave 2 into a false pass.
 WAVE2_CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec(
         "W2-01",
         ("Gate/regression",),
-        "preflight includes accepted Wave 1 evidence and current merged S3/S2/S5 "
+        "preflight includes accepted wave 1 evidence and current merged S3/S2/S5 "
         "revisions, protocol/adapter/package versions and capabilities; worker AND "
         "gateway digests verified, CI passed, fixture-only flags, required check "
         "inventory and cleanup configuration",
@@ -293,42 +292,47 @@ WAVE2_CHECKS: tuple[CheckSpec, ...] = (
         ("AC-T7",),
         "one neutral contract suite runs against Claude plus an independently shaped "
         "non-Claude test adapter with a missing capability; no provider SDK/types in "
-        "the shared contract; capability intersection, normalized annotation/steering "
-        "input, authorization at handoff, unknown outcomes, opaque attempt "
-        "replacement, stale-event rejection and disposal once",
+        "the shared contract; capability intersection, normalized "
+        "annotation/steering input, authorization at handoff, unknown outcomes, "
+        "opaque attempt replacement, stale-event rejection and disposal once are "
+        "proven; real Claude/version lifecycle plus forced idle/error retry proves "
+        "fresh private input, preserved session/no-option behavior and cancel "
+        "preventing another query; both adapter results recorded",
     ),
     CheckSpec(
         "W2-03",
         ("AC-P1",),
-        "pause_requested closes new admission, admitted tools finish, paused only "
-        "with active_tool_count=0; across a timed hold new admissions, fixture "
-        "writes, fixture service calls and task output are all zero; untracked "
-        "activity or hook timeout yields unavailable/requested, never paused",
+        "selected Claude adapter on the lockfile SDK with bypassPermissions and "
+        "existing spill hooks through the neutral coordinator: pause_requested "
+        "closes new admission, admitted tools finish, paused only with "
+        "active_tool_count=0; across a timed hold new admissions, fixture writes, "
+        "fixture service calls and task output are all zero; untracked activity or "
+        "hook timeout yields unavailable/requested, never paused",
     ),
     CheckSpec(
         "W2-04",
         ("AC-P2",),
         "resume releases once; neutral attempt and Claude live Query/session "
-        "identity plus prior history preserved; task completes with no interrupt "
-        "call or replayed initial prompt; pending-resume and repeated-resume races "
-        "serialized",
+        "identity plus prior history preserved; task completes; no interrupt call or "
+        "replayed initial prompt; pending-resume and repeated-resume races serialized",
     ),
     CheckSpec(
         "W2-05",
         ("AC-P3", "AC-P5", "AC-P6"),
-        "shortened fixture timeout auto-resumes with one neutral annotation, no "
-        "extra assistant turn, no pod kill/idle retry/exit watchdog; heartbeats "
-        "continue and paused differs from stalled; deadline clamp/no-budget "
-        "rejection, held-hook timeout and cancellation without admitting blocked work",
+        "a shortened fixture timeout auto-resumes with one neutral annotation "
+        "(Claude maps to shouldQuery:false), no extra assistant turn and no pod "
+        "kill/idle retry/exit watchdog; heartbeats continue and paused differs from "
+        "stalled; deadline clamp/no-budget rejection, held-hook timeout and "
+        "cancellation without admitting blocked work are tested",
     ),
     CheckSpec(
         "W2-06",
         ("AC-A3", "AC-A9"),
         "provider-independent fixtures produce identical normalized outcome "
-        "accounting; native interruption alone is not aborted; a uniquely named "
-        "synthetic aborted invocation seeded via the real writer contract has "
-        "completed_at populated; aborted shows in list, detail, card, chain and "
-        "filter with no active/no-op fallback",
+        "accounting and native interruption alone is not aborted; a uniquely named "
+        "synthetic aborted invocation seeded through the real writer contract has "
+        "completed_at populated; live API/detail plus browser fixtures show aborted "
+        "in list, detail, card, chain and filter with no active/no-op fallback",
     ),
     CheckSpec(
         "W2-07",
@@ -336,59 +340,83 @@ WAVE2_CHECKS: tuple[CheckSpec, ...] = (
         "a dedicated four-category dataset increments total and aborted once, with "
         "today total=completed+failed+active+aborted; daily/persona buckets and "
         "mixed blocked/skipped/budget_stopped fixtures preserve existing accounting; "
-        "isolated before/after deltas asserted, never shared production totals",
+        "isolated before/after deltas are asserted, never shared production totals",
     ),
     CheckSpec(
         "W2-08",
         ("AC-A11", "AC-A12"),
         "shared terminal/renderer parity, the existing guard and worker writer tests "
-        "pass on merged head; the writer rejects an unknown status; both the deployed "
-        "writer and the gateway readers support aborted",
+        "pass on merged head; the writer rejects an unknown status; both the "
+        "deployed writer and the gateway readers support aborted",
     ),
     CheckSpec(
         "W2-09",
         ("AC-A10",),
-        "live agent-run-stats carries every RunStatsResponse field: today "
-        "total/completed/failed/active/aborted, daily date/total/completed/failed/"
-        "aborted, by_persona persona/total/completed/failed/aborted, plus "
-        "active_runs, recent_failures, top_repos and nonnull spend keys compared "
-        "against backend-derived fixture keys at each level",
+        "live GET /api/me/agent-run-stats carries every declared field at each "
+        "level — window_days/active_runs/today/daily/by_persona/recent_failures/"
+        "top_repos/spend, today and daily and by_persona aborted counts, active-run "
+        "and recent_failures and top_repos keys and nonnull spend — compared field "
+        "by field against RunStatsResponse with nonempty seeded arrays",
     ),
     CheckSpec(
         "W2-10",
         ("Gate/regression",),
-        "only synthetic rows deleted using event_id AND arrived_at with a consistent "
-        "get confirming absence; exact fixture workloads/probes removed and cleanup "
-        "recorded even after failure; isolation and relevant Wave 1 security "
-        "rechecked; unsupported adapters/verbs remain false/501",
+        "only synthetic rows are deleted using event_id AND arrived_at with a "
+        "consistent get confirming absence; exact fixture workloads/probes removed "
+        "and cleanup recorded even after failure; isolation and relevant wave 1 "
+        "security rechecked on the current revision preserving #5029 "
+        "admission/delivery authorization; unsupported adapters/verbs remain "
+        "false/501 with no general flag enablement",
     ),
 )
 
-# S1 delivers wave 1. Wave 2 is extended by its owning stories (§7: "S2/S5 extend
-# wave 2; S4/S6 extend wave 3; S7 extends wave 4"), and S5 (#3964) contributes the
-# aborted-vocabulary checks W2-06..W2-09. Waves 3-4 remain absent, so asking for
-# one is still an honest nonzero rather than an empty pass.
+# S1 delivered wave 1; the wave owners extend the rest (§7: "S2/S5 extend wave 2;
+# S4/S6 extend wave 3; S7 extends wave 4"). Asking for a wave with no manifest at
+# all is an honest nonzero, not an empty pass.
 WAVE_CHECKS: dict[int, tuple[CheckSpec, ...]] = {1: WAVE1_CHECKS, 2: WAVE2_CHECKS}
 SUPPORTED_WAVES: tuple[int, ...] = tuple(sorted(WAVE_CHECKS))
 
-# Retained for the manifest guard and for callers that only need the ID set.
-# Wave-1 scoped deliberately: it is the default `expected_ids` for `build_report`
-# and `assert_check_manifest`, and widening it would silently change what a
-# wave-1 report claims to require.
+# The evaluation issue that reads each wave's report, and the design revision that
+# wave's checks were transcribed from. #3967 accepted wave 1 with 10/10 and is
+# closed; #3968 owns wave 2's live acceptance.
+WAVE_EVALUATIONS: dict[int, str] = {1: "3967", 2: "3968"}
+WAVE_REVISIONS: dict[int, str] = {
+    1: "revival-2026-09-12",
+    2: "harness-neutral-2026-09-15",
+}
+
+# Which story owns each check whose predicate is not implemented yet, so a
+# not_run says who to go to rather than just "missing". Registering a check with
+# no predicate is deliberate — see WAVE2_CHECKS above — but it must never be
+# indistinguishable from a check the harness forgot.
+PENDING_CHECK_OWNERS: dict[str, str] = {
+    "W2-01": "S2 #3961 — consolidated Wave 2 preflight after S3/S2/S5 merge",
+    "W2-03": "S2 #3961 — pause admission and quiescence (AC-P1)",
+    "W2-04": "S2 #3961 — same-execution resume (AC-P2)",
+    "W2-05": "S2 #3961 — auto-resume, heartbeats and deadline clamp (AC-P3/P5/P6)",
+    "W2-10": "evaluation #3968 — Wave 2 cleanup and security recheck",
+}
+
+# Retained for the manifest guard and for callers that only need wave 1's ID set.
+# Deliberately still wave 1: it is the DEFAULT for `assert_check_manifest`, and a
+# default that silently grew to span every wave would make a wave-1 report pass
+# the manifest guard while missing nine checks.
 EXPECTED_CHECK_IDS: tuple[str, ...] = tuple(spec.check_id for spec in WAVE1_CHECKS)
 
-# Every known check across every registered wave. These two maps are only the
-# fallback `CheckResult.to_evidence()` reads when a result carries no description
-# of its own, so they must span all waves — a wave-2 row falling back to an empty
-# description would be an evidence entry a reviewer cannot interpret.
-_ALL_CHECKS: tuple[CheckSpec, ...] = tuple(
+ALL_CHECK_SPECS: tuple[CheckSpec, ...] = tuple(
     spec for wave in sorted(WAVE_CHECKS) for spec in WAVE_CHECKS[wave]
 )
 
-CHECK_DESCRIPTIONS: dict[str, str] = {spec.check_id: spec.description for spec in _ALL_CHECKS}
+# Keyed by check ID across every wave. Safe to span waves because these are only
+# ever read as a per-ID fallback, and the IDs are globally unique by construction
+# (W1-* / W2-*) — which a test pins, since two waves sharing an ID would make one
+# check's evidence silently describe the other's.
+CHECK_DESCRIPTIONS: dict[str, str] = {
+    spec.check_id: spec.description for spec in ALL_CHECK_SPECS
+}
 
 CHECK_ACCEPTANCE_IDS: dict[str, tuple[str, ...]] = {
-    spec.check_id: spec.acceptance_ids for spec in _ALL_CHECKS
+    spec.check_id: spec.acceptance_ids for spec in ALL_CHECK_SPECS
 }
 
 REQUIRED_CONFIG_FIELDS: tuple[str, ...] = (
@@ -459,6 +487,92 @@ REQUIRED_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
         "suites",
     ),
     "stats_schema_keys": ("levels",),
+    # W2-02 / AC-T7. One key per property the acceptance table names, rather than
+    # a single "contract_suite_passed": a green suite is not the claim, the named
+    # properties are, and a collapsed boolean cannot say which one is unproven.
+    "neutral_contract": (
+        "protocol_version",
+        "adapter_id",
+        "sdk_version",
+        "sdk_matches_lockfile",
+        "adapters",
+        "second_adapter",
+        "no_provider_types_in_shared_contract",
+        "capability_intersection_proven",
+        "normalized_input_kinds_proven",
+        "authorization_at_handoff",
+        "unknown_outcome_supported",
+        "opaque_attempt_replacement",
+        "stale_events_rejected",
+        "disposed_once",
+        "fresh_private_input_per_attempt",
+        "session_and_no_option_behavior_preserved",
+        "cancel_prevents_new_query",
+        "forced_retry_exercised",
+    ),
+}
+
+# Keys of the neutral_contract artifact that carry data rather than a proof
+# boolean. Listed explicitly so the boolean loop cannot accidentally demand
+# ``adapters is True``, and so adding a proof key without listing it here is
+# checked by default rather than skipped by default.
+_NEUTRAL_CONTRACT_NON_BOOLEAN_KEYS: frozenset[str] = frozenset(
+    {"protocol_version", "adapter_id", "sdk_version", "adapters", "second_adapter"}
+)
+
+# Why each neutral-contract property is required, quoted into the failure message.
+# A report that says `disposed_once: False` tells an operator what was observed;
+# it does not tell them why anyone cared, and this evidence gets read by people who
+# did not write the story.
+_NEUTRAL_CONTRACT_WHY: dict[str, str] = {
+    "no_provider_types_in_shared_contract": (
+        "A shared consumer that imports the provider SDK or exposes Query/SDKUserMessage/AsyncIterable "
+        "input means the next harness cannot arrive without editing pause and abort code."
+    ),
+    "capability_intersection_proven": (
+        "Capability selection is the intersection of ADP-implemented verbs, adapter support and current "
+        "availability; combined any other way, one input can enable a verb the other two refuse."
+    ),
+    "normalized_input_kinds_proven": (
+        "Steering starts a turn and an annotation records context without starting one. Collapsing them "
+        "makes an auto-resume note cost a model turn the operator never asked for."
+    ),
+    "authorization_at_handoff": (
+        "#5029 requires revalidation immediately before physical handoff. A buffer that revalidates "
+        "earlier delivers instructions authorized by a grant that has since been revoked."
+    ),
+    "unknown_outcome_supported": (
+        "An ambiguous handoff must resolve unknown rather than delivered-or-rejected: 'unknown' never "
+        "triggers replay, while a wrong 'rejected' resends an instruction that already landed."
+    ),
+    "opaque_attempt_replacement": (
+        "Attempt identity must be opaque and replaceable, or a control aimed at the run reaches a "
+        "session that was torn down and rebuilt underneath it."
+    ),
+    "stale_events_rejected": (
+        "A replaced attempt's events must be inert rather than an error path — a retry is normal "
+        "operation, and treating its late events as failures makes every retry look like a fault."
+    ),
+    "disposed_once": (
+        "Disposal must happen exactly once. Two owners each disposing correctly once is still a double "
+        "close, which is the defect this property exists to keep fixed."
+    ),
+    "fresh_private_input_per_attempt": (
+        "Each attempt needs its own open input channel: an iterable a previous query consumed is "
+        "exhausted, so a reused one yields an attempt that looks live and can never receive a command."
+    ),
+    "session_and_no_option_behavior_preserved": (
+        "The one-time fail-soft session callback and the exact no-option query shape are relied on by "
+        "callers outside the control path; changing them makes unrelated runs repeat work."
+    ),
+    "cancel_prevents_new_query": (
+        "Cancellation during setup, backoff or idle must not launch another query nor be classified as "
+        "a retryable error — cancellation text contains words the retry patterns match."
+    ),
+    "forced_retry_exercised": (
+        "The retry-safety properties are only evidence if a retry actually happened; asserted on a run "
+        "that never retried, they are all vacuously true."
+    ),
 }
 
 # Substrings that mark a value as secret regardless of its own key name — a
@@ -1415,7 +1529,168 @@ class Driver:
                 f"missing {sorted(expected - set(emitted_ids))}, unexpected {sorted(set(emitted_ids) - expected)}"
             )
 
-    # ---- W2-06 (S5 / #3964) --------------------------------------------
+    # ---- W2-02 ---------------------------------------------------------
+
+    def check_w2_02(self) -> None:
+        """The harness-neutral adapter contract (AC-T7, owned by S3 #3962).
+
+        Two halves, and the split is deliberate.
+
+        The contract suite itself runs where the code is — a jest run over the
+        neutral contract, the Claude adapter and the independently shaped test
+        adapter — so it is consumed here as an operator-recorded artifact,
+        validated and not trusted, exactly like every other observation that
+        cannot be made from outside the cluster. That is not a weaker form of
+        evidence than an HTTP probe: it is a *different* observation, and the
+        story is explicit that development and PR tests need no AWS credential.
+
+        The second half the harness does make itself: it reads the deployed
+        capability surface. That matters because the artifact describes the source
+        tree while the evaluation is about a deployment, and the failure this
+        catches is a green suite paired with a build that advertises a verb. §7's
+        digest guard makes them the same revision; this makes them the same
+        *behaviour*.
+        """
+        contract = self._artifact("neutral_contract")
+
+        # --- protocol and adapter identity -----------------------------------
+        if contract["protocol_version"] != CONTROL_PROTOCOL_VERSION:
+            raise AssertionError(
+                f"the recorded control protocol version is {contract['protocol_version']!r}, but this "
+                f"harness verifies version {CONTROL_PROTOCOL_VERSION}. A protocol change must update the "
+                "gateway peer, the adapter and this harness together, so a mismatch means one of the "
+                "three is describing a different contract than the other two."
+            )
+        if contract["adapter_id"] != CLAUDE_ADAPTER_ID:
+            raise AssertionError(
+                f"the production adapter recorded is {contract['adapter_id']!r}, expected "
+                f"{CLAUDE_ADAPTER_ID!r}. Claude is the first production adapter in this wave; a different "
+                "selection is not accepted live second-harness support."
+            )
+        if contract["sdk_version"] != EXPECTED_CLAUDE_SDK_VERSION:
+            raise AssertionError(
+                f"the adapter was exercised against SDK {contract['sdk_version']!r}, but the lockfile "
+                f"pins {EXPECTED_CLAUDE_SDK_VERSION!r}. The streaming-input and shouldQuery behaviours "
+                "this adapter relies on are observed SDK behaviour rather than a documented permanent "
+                "guarantee, so evidence from a different version does not carry over."
+            )
+        if contract["sdk_matches_lockfile"] is not True:
+            raise AssertionError(
+                "'sdk_matches_lockfile' is not True: the installed SDK was not recorded as matching the "
+                "lockfile, so the evaluation would be describing a dependency tree the deployment does "
+                "not have"
+            )
+
+        # --- both adapters, and the second one genuinely differently shaped ---
+        adapters = contract["adapters"]
+        if not isinstance(adapters, dict) or len(adapters) < 2:
+            raise AssertionError(
+                f"the contract suite must record a result for BOTH adapters, got {adapters!r}. One "
+                "adapter passing a neutral suite proves the suite runs, not that the contract is neutral."
+            )
+        if CLAUDE_ADAPTER_ID not in adapters:
+            raise AssertionError(
+                f"no result recorded for the {CLAUDE_ADAPTER_ID!r} adapter: {sorted(adapters)}"
+            )
+        others = [name for name in adapters if name != CLAUDE_ADAPTER_ID]
+        if not others:
+            raise AssertionError(
+                "only the Claude adapter was exercised; AC-T7 requires an independently shaped "
+                "non-Claude adapter, which is what distinguishes a neutral contract from a Claude "
+                "contract with an interface in front of it"
+            )
+        for name, outcome in adapters.items():
+            if not isinstance(outcome, dict):
+                raise AssertionError(f"adapter {name!r} result must be an object, got {outcome!r}")
+            if outcome.get("passed") is not True:
+                raise AssertionError(
+                    f"the neutral contract suite did not pass against the {name!r} adapter: {outcome!r}"
+                )
+            # A suite that ran zero tests passes. Both adapters must have been
+            # driven through real assertions for "both passed" to mean anything.
+            count = outcome.get("test_count")
+            if type(count) is not int or count <= 0:
+                raise AssertionError(
+                    f"adapter {name!r} records {count!r} tests; a suite that ran nothing reports "
+                    "success, so a positive count is what makes 'passed' evidence"
+                )
+
+        # The second adapter must be missing a capability the Claude one has, and
+        # must not imitate the provider. Both are what force the contract to be
+        # exercised rather than merely satisfied by a look-alike.
+        second = contract["second_adapter"]
+        if not isinstance(second, dict):
+            raise AssertionError("second_adapter must be an object")
+        if second.get("name") not in others:
+            raise AssertionError(
+                f"second_adapter names {second.get('name')!r}, which is not among the non-Claude "
+                f"adapter results {sorted(others)}"
+            )
+        if second.get("declares_missing_capability") is not True:
+            raise AssertionError(
+                "the second adapter does not declare a missing capability; without one, capability "
+                "intersection is never observed doing anything and an adapter that ignored support "
+                "entirely would pass"
+            )
+        if second.get("imports_provider_sdk") is not False:
+            raise AssertionError(
+                "the second adapter was recorded as importing the provider SDK; an adapter that mimics "
+                "Query/SDKUserMessage proves the shared contract accepts Claude's shape, which is the "
+                "opposite of the property under test"
+            )
+
+        # --- the named contract properties ------------------------------------
+        # Each is a distinct failure mode named by the acceptance table, checked
+        # individually so a report says WHICH property is unproven. An `all(...)`
+        # over the group would collapse seven answers into one boolean.
+        for prop in REQUIRED_ARTIFACT_KEYS["neutral_contract"]:
+            if prop in _NEUTRAL_CONTRACT_NON_BOOLEAN_KEYS:
+                continue
+            if contract[prop] is not True:
+                raise AssertionError(
+                    f"neutral-contract property {prop!r} is recorded as {contract[prop]!r}, not True. "
+                    f"{_NEUTRAL_CONTRACT_WHY.get(prop, '')}".rstrip()
+                )
+
+        # --- the deployed surface must agree ----------------------------------
+        # S3 has no implemented verbs; S2 adds pause/resume later in this wave.
+        # Record the source build's expectations rather than freezing the final
+        # Wave 2 gate at S3's temporary capability surface.
+        implemented = contract.get("implemented_verbs", [])
+        if not isinstance(implemented, list) or implemented not in ([], ["pause", "resume"]):
+            raise AssertionError("implemented_verbs must be [] (S3) or ['pause', 'resume'] (S2)")
+        live = self._require("live_run_id")
+        owner = self._token("owner")
+        for adapter, paths in ADAPTERS.items():
+            state = self.probe.request(
+                "GET", paths["state"].format(run_id=live), role="owner", token=owner
+            )
+            if state.status != 200:
+                raise AssertionError(f"{adapter}: state read returned {state.status}, expected 200")
+            capabilities = self._body_of(state).get("capabilities")
+            if not isinstance(capabilities, dict):
+                raise AssertionError(f"{adapter}: state response carries no capabilities object")
+            # Presence, not just truth: `capabilities.get(verb)` is falsy for an
+            # absent key, so a dropped verb would read as "unsupported" while the
+            # deployed contract said nothing about it at all.
+            absent = [verb for verb in CONTROL_VERBS if verb not in capabilities]
+            if absent:
+                raise AssertionError(
+                    f"{adapter}: the deployed capability map omits {absent}; the intersection must "
+                    "produce an explicit answer for every verb, because an absent key and a false one "
+                    "are indistinguishable to the dashboard but not to the contract"
+                )
+            invalid = [verb for verb, value in capabilities.items() if type(value) is not bool]
+            if invalid:
+                raise AssertionError(f"{adapter}: capabilities must be booleans: {invalid}")
+            enabled = sorted(verb for verb, value in capabilities.items() if value)
+            if enabled != sorted(implemented):
+                raise AssertionError(
+                    f"{adapter}: deployed capabilities {enabled} disagree with the tested build's "
+                    f"implemented_verbs {implemented}"
+                )
+
+
 
     def check_w2_06(self) -> None:
         """Aborted is terminal end-to-end, and native interruption alone is not.
@@ -1652,6 +1927,7 @@ class Driver:
         destructures actually carries the fields it reads. A missing key is an
         `undefined` in a dashboard, which renders as a blank rather than an error.
         """
+        fixture = self._artifact("stats_schema_keys")
         owner = self._token("owner")
         observation = self.probe.request(
             "GET", "/me/agent-run-stats?days=7", role="owner", token=owner
@@ -1721,7 +1997,6 @@ class Driver:
         # backend schema declares, checked against the live response. Presence
         # checks above are a fixed list in this file and would not notice a field
         # ADDED to the schema and omitted by the deployment.
-        fixture = self._artifact("stats_schema_keys")
         levels = fixture["levels"]
         required_levels = {"response", "today", "daily", "by_persona", "active_runs", "recent_failures", "top_repos", "spend"}
         if not isinstance(levels, dict) or not required_levels.issubset(levels):
@@ -1758,30 +2033,18 @@ WAVE1_PREDICATES: dict[str, str] = {
     "W1-10": "check_w1_10",
 }
 
-# Wave 2's predicates, for the four checks S5 (#3964) owns. The six others are
-# deliberately ABSENT rather than mapped to a stub: an unmapped ID becomes NOT RUN
-# below, naming the story that owes it, whereas a stub that returned normally
-# would report a pass for work nobody has done.
+# S3 provides W2-02 and S5 provides W2-06..09. The other five checks retain
+# named NOT RUN results until their implementation and live evidence land.
 WAVE2_PREDICATES: dict[str, str] = {
+    "W2-02": "check_w2_02",
     "W2-06": "check_w2_06",
     "W2-07": "check_w2_07",
     "W2-08": "check_w2_08",
     "W2-09": "check_w2_09",
+
 }
 
-# Which story owes each unimplemented wave-2 check, so the NOT RUN message is
-# actionable instead of just absent. From revival-design §7's wave ownership.
-_UNOWNED_WAVE2_CHECKS: dict[str, str] = {
-    "W2-01": "S1/S2/S3 preflight consolidation (needs every wave-2 story's merged revisions)",
-    "W2-02": "S2 — neutral adapter contract suite (AC-T7)",
-    "W2-03": "S3 — pause admission control (AC-P1)",
-    "W2-04": "S3 — resume semantics (AC-P2)",
-    "W2-05": "S3 — auto-resume and watchdog behaviour (AC-P3/AC-P5/AC-P6)",
-    "W2-10": "the wave-2 closing story — cleanup and security recheck",
-}
-
-# All predicates, keyed the same way, so lookups do not have to know the wave.
-ALL_PREDICATES: dict[str, str] = {**WAVE1_PREDICATES, **WAVE2_PREDICATES}
+CHECK_PREDICATES: dict[str, str] = {**WAVE1_PREDICATES, **WAVE2_PREDICATES}
 
 
 def run_checks(driver: Driver, specs: tuple[CheckSpec, ...] = WAVE1_CHECKS) -> list[CheckResult]:
@@ -1791,30 +2054,47 @@ def run_checks(driver: Driver, specs: tuple[CheckSpec, ...] = WAVE1_CHECKS) -> l
     answers and one named failure is far more useful to the operator who has to
     fix it than an abort at the first problem.
 
-    A spec with no registered predicate is NOT RUN, not skipped and never passed.
-    That is the case for the six wave-2 checks other stories own: the manifest is
-    complete so `required` reflects the real bar, and the absence shows up as a
-    named nonzero rather than as an inflated pass rate.
+    A spec with no predicate is ``not_run`` naming its owning story. That is the
+    honest answer for a wave under construction, and it keeps the run nonzero —
+    the alternative, dropping the check, would make an incomplete wave produce a
+    report that passes its own gate.
     """
     results: list[CheckResult] = []
     for spec in specs:
-        method_name = ALL_PREDICATES.get(spec.check_id)
+        method_name = CHECK_PREDICATES.get(spec.check_id)
         if method_name is None:
-            owner = _UNOWNED_WAVE2_CHECKS.get(spec.check_id, "a later story in this wave")
+            owner = PENDING_CHECK_OWNERS.get(spec.check_id)
+            if owner is None:
+                # In the manifest, not implemented, and nobody named. That is a
+                # harness bug rather than a wave in progress, so it is a FAILURE:
+                # an unowned not_run is how a check quietly stops being anyone's
+                # job.
+                message = (
+                    f"{spec.check_id} is in this wave's manifest but has no predicate and no owning "
+                    "story recorded in PENDING_CHECK_OWNERS; the harness cannot say who delivers it"
+                )
+                logger.error("%s FAILED — %s", spec.check_id, message)
+                results.append(
+                    CheckResult(
+                        check_id=spec.check_id,
+                        status=STATUS_FAILED,
+                        description=spec.description,
+                        acceptance_ids=spec.acceptance_ids,
+                        message=message,
+                    )
+                )
+                continue
+            message = f"not implemented in this revision; delivered by {owner}"
+            logger.warning("%s NOT RUN — %s", spec.check_id, message)
             results.append(
                 CheckResult(
                     check_id=spec.check_id,
                     status=STATUS_NOT_RUN,
                     description=spec.description,
                     acceptance_ids=spec.acceptance_ids,
-                    message=(
-                        f"no predicate in this revision: {spec.check_id} is owned by {owner}. "
-                        "Reported NOT RUN rather than omitted so the wave's required count stays "
-                        "honest and this cannot read as a pass."
-                    ),
+                    message=message,
                 )
             )
-            logger.warning("%s NOT RUN — not implemented in this revision (owner: %s)", spec.check_id, owner)
             continue
         method = getattr(driver, method_name)
         result = CheckResult(
@@ -1876,8 +2156,13 @@ def build_report(
     report = {
         "harness": "agent-control-eval",
         "issue": "3960",
-        "evaluation": "3967",
-        "revision": "revival-2026-09-12",
+        # Which evaluation issue reads this report, per wave. Not one constant:
+        # #3967 accepted wave 1 and is closed, so a wave-2 report labelled 3967
+        # would attach evidence to a finished evaluation. Unknown waves keep the
+        # wave-1 label only because they cannot be reached — main() refuses a wave
+        # with no manifest before any report is built.
+        "evaluation": WAVE_EVALUATIONS.get(wave, "3967"),
+        "revision": WAVE_REVISIONS.get(wave, "revival-2026-09-12"),
         "wave": wave,
         "generated_at": _now(),
         "environment": config.get("environment"),
@@ -1983,9 +2268,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=1,
         help=(
-            f"Which wave's checks to run. Registered: {list(SUPPORTED_WAVES)}. Wave 2 is "
-            "partially implemented — S5 (#3964) delivers W2-06..W2-09; the rest report NOT RUN "
-            "until their owning stories land, so wave 2 cannot pass yet."
+            f"Which wave's checks to run. This revision carries {list(SUPPORTED_WAVES)}. "
+            "Checks whose owning story has not landed report not_run, so an incomplete wave "
+            "exits nonzero rather than passing short."
         ),
     )
     # Required with no default, deliberately: invoked bare this exits nonzero
@@ -2028,8 +2313,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - each exit is 
 
     if args.wave not in WAVE_CHECKS:
         logger.error(
-            "wave %s has no checks in this revision. Registered waves: %s; the rest are extended by "
-            "their owning stories (revival-design §7). Refusing rather than emitting an empty pass.",
+            "wave %s has no checks in this revision. This harness carries wave %s; the remaining waves "
+            "are extended by their owning stories (revival-design §7). Refusing rather than emitting an "
+            "empty pass.",
             args.wave,
             list(SUPPORTED_WAVES),
         )
