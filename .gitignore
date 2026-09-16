@@ -72,3 +72,7 @@ config/deployment.yml
 # Live-control evaluation evidence (#3960). The harness's default --evidence-dir;
 # result.json can carry environment identifiers and must never be committed.
 test-results/
+
+# #5199 CLI uplift evaluation: private run state (passwords/tokens until cleanup).
+# Never commit or attach these; report.json/results.xml are the sanitized outputs.
+.adp-eval/

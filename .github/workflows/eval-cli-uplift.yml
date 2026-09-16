@@ -1,0 +1,633 @@
+name: Eval — CLI Uplift (E2E on disposable EC2)
+
+# Repeatable end-to-end evaluation of EPIC #5180 and its five stories
+# (#5185, #5181, #5182, #5183, #5184). Issue #5199.
+#
+# WHERE THE PRODUCT ACTUALLY RUNS
+# Every product CLI command, every AWS provisioning call and all Claude/Codex
+# execution happens on a clean disposable EC2 instance in the approved private
+# subnet. Actions only orchestrates: it holds the OIDC role, assembles the
+# harness bundle, sends SSM commands and aggregates results. It never runs `adp`
+# itself, and no laptop profile or preconfigured agent-worker is an acceptable
+# substitute — the agent-worker image bakes in ANTHROPIC_* env and a wired
+# ~/.codex/config.toml, either of which silently substitutes the platform's
+# internal auth for the auth path under test. That is a FALSE GREEN, which is
+# worse than no evaluation.
+#
+# WHY CLEANUP IS NOT JUST `always()`
+# A cancelled run, a lost runner or an OOM-killed step all skip `always()`
+# blocks. Teardown therefore has two independent mechanisms: the durable private
+# manifest this run writes before each mutating call (swept by exact recorded
+# ID), and the age-plus-tag recovery sweep in the `recover` job, which needs no
+# manifest at all and so catches a run that died before recording anything.
+# Reused fixtures are preserved, never deleted, and nothing here can purge a
+# shared queue.
+#
+# ACCEPTANCE
+# tests/e2e/cli_uplift/cases.py is the authority. Blocked and not-run cases
+# cannot go green, a cleanup failure cannot go green, and a partial suite can
+# never satisfy full acceptance however many cases pass. Closing #5199 needs two
+# fresh full runs against the same integrated deployed revision.
+#
+# See docs/runbooks/cli-uplift-evaluation.md for dispatch/status/resume/cleanup.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (selects the protected GitHub environment)'
+        required: false
+        type: string
+        default: dev
+      expected_revision:
+        description: 'Full 40-char SHA the gateway must be serving. Results are bound to it.'
+        required: true
+        type: string
+      mode:
+        description: 'start = new evaluation; resume = continue one; status = report; cleanup = sweep only'
+        required: false
+        type: choice
+        options: [start, resume, status, cleanup]
+        default: start
+      suites:
+        description: 'Start with login (install + Cognito login + cleanup); full selects the complete evaluation.'
+        required: false
+        type: string
+        default: login
+      evaluation_id:
+        description: 'Reuse an immutable evaluation ID (required for resume/status/cleanup of a prior run)'
+        required: false
+        type: string
+        default: ''
+      inject_fault:
+        description: 'Bounded fault injection, to prove the evaluation fails loudly'
+        required: false
+        type: choice
+        options: [none, wrong_account, missing_usage, cleanup_failure, expired_token, instance_loss]
+        default: none
+  workflow_call:
+    inputs:
+      environment:
+        required: false
+        type: string
+        default: dev
+      expected_revision:
+        required: true
+        type: string
+      suites:
+        required: false
+        type: string
+        default: login
+      inject_fault:
+        required: false
+        type: string
+        default: none
+  pull_request:
+    # Offline checks ONLY on PRs. The live job never runs from a pull request:
+    # it holds a real AWS role and mutates the dev account, and a PR ref is
+    # untrusted input.
+    paths:
+      - 'tests/e2e/cli_uplift/**'
+      - 'tests/unit/test_cli_uplift.py'
+      - 'docs/runbooks/cli-uplift-evaluation.md'
+      - '.github/workflows/eval-cli-uplift.yml'
+    branches:
+      - main
+
+# Deliberately no `schedule`. Scheduled scans are paused, and an unattended run
+# of this evaluation both spends money and mutates the dev account.
+
+# One live run at a time: two would each create instances tagged for this
+# evaluation and contend for the same Cognito pool and destination account.
+# cancel-in-progress stays false — cancelling mid-journey is exactly the case
+# where resources leak, so a run is always allowed to reach its cleanup.
+concurrency:
+  group: eval-cli-uplift-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    name: Offline guards (no AWS, no gateway, no model calls)
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        # ruff pinned to the version the rest of the repo's CI uses, so a
+        # formatting result here matches every other workflow.
+        # pyyaml is REQUIRED, not optional: the workflow-invariant tests parse
+        # this file to assert the live job refuses an untrusted ref, keeps the
+        # protected environment, never schedules itself and uploads only
+        # sanitized artifacts. Without it those tests skip and the guarantees go
+        # unenforced in the one place that enforces them.
+        run: pip install pytest pytest-timeout pytest-socket pyyaml ruff==0.9.6
+
+      - name: Lint and format check
+        run: |
+          set -euo pipefail
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
+
+      - name: Offline guards
+        # --disable-socket is the load-bearing flag: it proves these guards
+        # cannot reach AWS or the gateway, so a green here means the acceptance
+        # logic itself is correct rather than that some environment answered.
+        #
+        # Covers: input validation, EC2-only execution, account/ownership guards,
+        # state compatibility on resume, redaction, cancellation and TTL
+        # recovery, and aggregation. Includes the three mandated injections —
+        # wrong account, missing usage and cleanup failure — each of which must
+        # make full acceptance non-successful.
+        env:
+          AWS_EC2_METADATA_DISABLED: 'true'
+        run: python -m pytest tests/unit/test_cli_uplift.py -q --timeout=60 --disable-socket
+
+      - name: Assert the published result schema still matches the report builder
+        # report.schema.json is a deliverable other tooling validates against, so
+        # a drift between it and report.build() must fail on the PR rather than
+        # be discovered by a consumer parsing a live run's artifact.
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from tests.e2e.cli_uplift import cases, config, report
+
+          matrix = cases.new_matrix(("full",))
+          for case_id in matrix:
+              cases.record(matrix, case_id, cases.PASSED)
+          document = report.build(
+              matrix=matrix,
+              suites=("full",),
+              config=config.load("tests/e2e/cli_uplift/config.example.json"),
+              evaluation_id="adp-e2e-20260915-000000-abcdef",
+              attempt_id="adp-e2e-20260915-000000-abcdef-a1",
+              cleanup_ok=True,
+              timing={"started_at": "x", "ended_at": "y", "duration_seconds": 1},
+              correlation={},
+          )
+          errors = report.validate(document)
+          if errors:
+              raise SystemExit("report.schema.json drifted: " + "; ".join(errors))
+          print(f"schema matches builder across {len(document['cases'])} cases")
+          PY
+
+      - name: Assert the example config carries no secrets
+        # The checked-in fixture example must stay non-secret: it is the file an
+        # operator copies, and a credential pasted into it would be committed.
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from tests.e2e.cli_uplift import config
+          resolved = config.load("tests/e2e/cli_uplift/config.example.json")
+          print(f"example config validates; target {resolved['region']}")
+          PY
+
+  evaluate:
+    name: Live evaluation (${{ inputs.environment || 'dev' }})
+    # Never from a pull_request: this job assumes a real role and mutates dev.
+    if: github.event_name != 'pull_request'
+    needs: [offline]
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    timeout-minutes: 200
+    # Protected environment: required reviewers and the secret scope live here,
+    # so a dispatch cannot reach the destination account without approval.
+    environment: ${{ inputs.environment || 'dev' }}
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      status: ${{ steps.run.outputs.status }}
+      evaluation_id: ${{ steps.run.outputs.evaluation_id }}
+    env:
+      AWS_REGION: us-east-1
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      EVAL_STATE_DIR: /tmp/cli-uplift-eval/state
+      EVAL_OUT_DIR: /tmp/cli-uplift-eval/out
+      EVAL_RUN_CONFIG: /tmp/cli-uplift-eval/run-config.json
+      # The config overlay, read by `config.from_environment()`. Repository
+      # VARIABLES, not secrets: every value is an identifier (an account number, a
+      # role ARN, a bucket, a Secrets Manager secret NAME), never a credential.
+      # The recovery job declares the SAME block, which is what makes it able to
+      # rebuild this run's config on its own runner (R5).
+      CLI_UPLIFT_EVAL_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+      CLI_UPLIFT_EVAL_GITHUB_ORG: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_ORG }}
+      CLI_UPLIFT_EVAL_GITHUB_REPO: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_REPO }}
+      CLI_UPLIFT_EVAL_GITHUB_APP: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_APP }}
+      CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT: ${{ vars.CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT }}
+      CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+      CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+      CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
+      CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
+      CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
+      CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+
+    steps:
+      - name: Refuse an untrusted ref
+        # The live path must only ever run code that has been reviewed on the
+        # default branch or a release tag. A dispatch against an arbitrary branch
+        # would execute that branch's runner against the real account.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref }}" != "refs/heads/main" ] && [[ "${{ github.ref }}" != refs/tags/* ]]; then
+            echo "::error::Live evaluation refuses ref ${{ github.ref }}; dispatch from main or a tag."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - name: Fetch the pinned harness revision
+        # The #5173 harness is NOT merged to main, so it is pinned by immutable
+        # SHA in tests/e2e/cli_uplift/config.py rather than tracked from a
+        # branch. Fetch that exact object and verify the checkout matches the
+        # constant the code expects — a drifted pin must fail here, loudly,
+        # rather than silently evaluate against different harness code.
+        run: |
+          set -euo pipefail
+          PIN="$(python -c 'import re,pathlib; print(re.search(r"HARNESS_COMMIT = \"([0-9a-f]{40})\"", pathlib.Path("tests/e2e/cli_uplift/config.py").read_text()).group(1))')"
+          echo "Harness pin: $PIN"
+          git fetch --no-tags --depth 1 origin "$PIN"
+          git cat-file -e "$PIN^{commit}"
+          mkdir -p /tmp/cli-uplift-eval/harness
+          git archive "$PIN" | tar -x -C /tmp/cli-uplift-eval/harness
+          test -f /tmp/cli-uplift-eval/harness/tests/e2e/tenant_validation/regression.py
+          # The BG_CONFIG_DIR isolation contract exists only at the pin. Without
+          # it the on-instance worker writes into the invoking user's real config
+          # directory and can pick up another identity's session.
+          grep -q 'BG_CONFIG_DIR' /tmp/cli-uplift-eval/harness/modules/gateway/cli/bg-cognito-auth.sh
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install runner dependencies
+        run: pip install boto3 pytest pytest-timeout
+
+      - name: Validate execution bindings and build the run config
+        env:
+          EVAL_SUITES: ${{ inputs.suites || 'login' }}
+          EVAL_MODE: ${{ inputs.mode || 'start' }}
+          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          ARGS=("$EVAL_RUN_CONFIG")
+          if [ "$EVAL_MODE" = start ] || [ "$EVAL_MODE" = resume ]; then
+            ARGS+=(--check-ready --suites "$EVAL_SUITES")
+          fi
+          python -m tests.e2e.cli_uplift.build_run_config "${ARGS[@]}"
+
+      - name: Fetch the expected CLI release
+        # The checkout is the evaluation code; the deployed CLI may be older.
+        # Fetch its exact validated commit before deriving independent hashes.
+        run: |
+          set -euo pipefail
+          REVISION="$(python -c 'import json,os; print(json.load(open(os.environ["EVAL_RUN_CONFIG"]))["expected_revision"])')"
+          git fetch --no-tags --depth 1 origin "$REVISION"
+          git cat-file -e "$REVISION:modules/gateway/cli/install.sh"
+
+      - name: Configure AWS credentials (short-lived OIDC)
+        # OIDC only. There is no access-key path and no laptop profile: the
+        # issue is explicit that operator profiles are not available credentials.
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 10800
+          role-session-name: cli-uplift-eval-${{ github.run_id }}
+
+      - name: Assert the role resolved to the approved platform account
+        # First and cheapest guard against the whole run being pointed at the
+        # wrong account. Preflight re-checks this against config; this catches a
+        # misconfigured secret before we even read the config.
+        run: |
+          set -euo pipefail
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          EXPECTED="$(python -c 'import json; print(json.load(open("tests/e2e/cli_uplift/config.example.json"))["platform_account"])')"
+          echo "Actions role account: $ACCOUNT"
+          if [ "$ACCOUNT" != "$EXPECTED" ]; then
+            echo "::error::Role resolved to $ACCOUNT, not the approved platform account $EXPECTED."
+            exit 1
+          fi
+
+      - name: Run the evaluation
+        id: run
+        # The orchestrator owns the stage sequence (preflight → EC2 →
+        # install/auth → providers → journeys → evidence → cleanup) and writes
+        # the verdict. A selected checkpoint passes only when its cases, stages
+        # and cleanup pass. full_acceptance remains false for a partial run.
+        env:
+          EVAL_MODE: ${{ inputs.mode || 'start' }}
+          EVAL_SUITES: ${{ inputs.suites || 'login' }}
+          EVAL_ID: ${{ inputs.evaluation_id }}
+          EVAL_FAULT: ${{ inputs.inject_fault || 'none' }}
+          EVAL_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HARNESS_ROOT: /tmp/cli-uplift-eval/harness
+        run: |
+          set -uo pipefail
+          # R6: the ID is appended to $GITHUB_OUTPUT before the first stage runs,
+          # so a run that is CANCELLED still publishes the ID the recover job
+          # needs. Reading it from report.json below only works for a run that
+          # reached its final step — i.e. never the one that needs recovering.
+          ARGS=(--mode "$EVAL_MODE" --config "$EVAL_RUN_CONFIG"
+                --state-dir "$EVAL_STATE_DIR" --out-dir "$EVAL_OUT_DIR"
+                --fault "$EVAL_FAULT" --run-url "$EVAL_RUN_URL"
+                --announce-id-to "$GITHUB_OUTPUT")
+          IFS=',' read -ra SELECTED <<< "$EVAL_SUITES"
+          for suite in "${SELECTED[@]}"; do
+            [ -n "${suite// /}" ] && ARGS+=(--suite "${suite// /}")
+          done
+          [ -n "$EVAL_ID" ] && ARGS+=(--evaluation-id "$EVAL_ID")
+
+          # An evaluation ID names a run that happened on a DIFFERENT runner, so
+          # its state directory does not exist here. Restore it from the durable
+          # store, or resume/status/cleanup would operate on an empty state dir
+          # and report "nothing to do" for a run with live resources.
+          if [ -n "$EVAL_ID" ] && [ "$EVAL_MODE" != "start" ]; then
+            ARGS+=(--restore)
+          fi
+
+          python -m tests.e2e.cli_uplift.runner "${ARGS[@]}"
+          CODE=$?
+
+          # Read the verdict from the sanitized report rather than from the exit
+          # code alone, so the summary distinguishes failed from blocked from
+          # not-run instead of collapsing them to "the step failed".
+          if [ -f "$EVAL_OUT_DIR/report.json" ]; then
+            python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          report = json.load(open(os.environ["EVAL_OUT_DIR"] + "/report.json"))
+          print(f"status={report['status']}")
+          # No `evaluation_id` here: --announce-id-to already wrote it, before the
+          # first stage. Re-emitting it from the report would make the value that
+          # survives cancellation the one that gets overwritten on a run that did
+          # not need it, and would tempt a later edit to drop the early publish.
+          print(f"full_acceptance={str(report['full_acceptance']).lower()}")
+          PY
+          fi
+          exit $CODE
+
+      - name: Independent cleanup sweep
+        # Belt and braces for the in-process sweep above. This still does not
+        # cover cancellation — the `recover` job does — but it catches a runner
+        # that survived a failed step.
+        if: always()
+        run: |
+          set -uo pipefail
+          python -m tests.e2e.cli_uplift.runner \
+            --mode cleanup \
+            --config "$EVAL_RUN_CONFIG" \
+            --state-dir "$EVAL_STATE_DIR" || true
+
+      - name: Assert no evaluation resources were left behind
+        # A leak that reports clean is the outcome the issue forbids, so this is
+        # a real gate rather than an informational step. It queries AWS directly
+        # instead of trusting the manifest: the manifest can only describe what
+        # the run knew it created.
+        if: always()
+        run: |
+          set -euo pipefail
+          LEAKED="$(aws ec2 describe-instances \
+            --filters "Name=tag-key,Values=adp:cli-uplift-eval" \
+                      "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' --output text)"
+          if [ -n "$LEAKED" ]; then
+            echo "::error::Evaluation instances still running after cleanup: $LEAKED"
+            exit 1
+          fi
+          echo "No evaluation instances outstanding."
+
+      - name: Upload sanitized evidence
+        # report.json and results.xml only. The run state and the cleanup
+        # manifest are NEVER uploaded: they hold disposable passwords, tokens and
+        # ExternalIds until cleanup completes, and they live 0600 in a 0700
+        # directory precisely so they cannot end up in an artifact.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-uplift-eval-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/cli-uplift-eval/out/report.json
+            /tmp/cli-uplift-eval/out/results.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+  recover:
+    name: Recovery sweep (this run, plus anything expired)
+    # `always()` is not enough on its own — a cancelled run or a lost runner
+    # never reaches the evaluate job's cleanup steps at all. This job depends on
+    # evaluate but runs even when that job was cancelled or never completed, and
+    # it works from tags rather than from the manifest, so it recovers a run that
+    # died before recording anything.
+    #
+    # It holds the SAME destructive AWS role as `evaluate`, so it carries the
+    # same gates: trusted ref, protected environment, verified account. `always()`
+    # makes those gates MORE important, not less — it is the one job an untrusted
+    # ref could still reach after the guarded job refused to run.
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [evaluate]
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    timeout-minutes: 20
+    environment: ${{ inputs.environment || 'dev' }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      # The evaluation ID this run created resources under, when `evaluate` got
+      # far enough to emit it. Empty means fall back to age alone.
+      RUN_EVALUATION_ID: ${{ needs.evaluate.outputs.evaluation_id }}
+      EVAL_STATE_DIR: /tmp/cli-uplift-recover/state
+      EVAL_RUN_CONFIG: /tmp/cli-uplift-recover/run-config.json
+      # R5: the SAME overlay the evaluate job declares. Without it this job could
+      # only fall back to the checked-in example, which has no `state_bucket` — so
+      # `--restore` raised "needs a durable state store" on every run, the failure
+      # was converted to a warning, and the sweep reported clean while the run's
+      # IAM roles, stacks, secrets and Cognito users were still live. Only the
+      # instances were ever recovered.
+      CLI_UPLIFT_EVAL_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+      CLI_UPLIFT_EVAL_GITHUB_ORG: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_ORG }}
+      CLI_UPLIFT_EVAL_GITHUB_REPO: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_REPO }}
+      CLI_UPLIFT_EVAL_GITHUB_APP: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_APP }}
+      CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT: ${{ vars.CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT }}
+      CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+      CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+      CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
+      CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
+      CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
+      CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+    steps:
+      - name: Refuse an untrusted ref
+        # Identical to the evaluate job's gate, and deliberately BEFORE checkout:
+        # this job runs under always(), so without it a dispatch from an
+        # arbitrary branch reaches a job holding a destructive role even though
+        # the guarded job refused. The recovery code itself (which decides what
+        # to terminate) would come from that untrusted ref.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref }}" != "refs/heads/main" ] && [[ "${{ github.ref }}" != refs/tags/* ]]; then
+            echo "::error::Recovery sweep refuses ref ${{ github.ref }}; dispatch from main or a tag."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install runner dependencies
+        # R5: boto3 was never installed in this job, so the state-based sweep
+        # could not have built a durable store even with a bucket configured —
+        # `statestore.default_store` imports boto3 lazily and would have raised
+        # ImportError, which the step then swallowed into a warning.
+        run: pip install boto3
+
+      - name: Configure AWS credentials (short-lived OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: us-east-1
+          role-session-name: cli-uplift-recover-${{ github.run_id }}
+
+      - name: Assert the role resolved to the approved platform account
+        # Same guard as evaluate, for the same reason: this job terminates
+        # instances. Pointed at the wrong account by a misconfigured secret, a
+        # tag-based sweep could delete another account's similarly-tagged
+        # resources. Checked BEFORE anything destructive runs.
+        run: |
+          set -euo pipefail
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          EXPECTED="$(python -c 'import json; print(json.load(open("tests/e2e/cli_uplift/config.example.json"))["platform_account"])')"
+          echo "Recovery role account: $ACCOUNT"
+          if [ "$ACCOUNT" != "$EXPECTED" ]; then
+            echo "::error::Recovery role resolved to $ACCOUNT, not the approved platform account $EXPECTED."
+            exit 1
+          fi
+
+      - name: Rebuild this run's config
+        # The same validated config the evaluate job ran with, from the same
+        # overlay, so the state bucket, the KMS key and the destination bindings
+        # this sweep needs are actually present (R5). Written before anything
+        # destructive so a config error stops the job rather than degrading it to
+        # instances-only.
+        run: |
+          set -euo pipefail
+          python -m tests.e2e.cli_uplift.build_run_config "$EVAL_RUN_CONFIG"
+
+      - name: Terminate this run's instances and anything expired
+        # Two authorities, unioned:
+        #
+        # 1. This run's evaluation ID, at ANY age. Once evaluate has ended —
+        #    cancelled, failed or succeeded — its instances are finished by
+        #    definition, so age is irrelevant. This is what recovers a run
+        #    cancelled minutes after launch, which the age check alone could not
+        #    touch for another four hours.
+        # 2. Ownership tag AND age past TTL, any prefix. This covers a run that
+        #    died before it could report its ID.
+        #
+        # An untagged instance and another service's instance remain untouchable
+        # under both. A DIFFERENT live evaluation is safe too: its ID is not ours,
+        # and instance_ttl_minutes is validated to be at least max_run_minutes, so
+        # it cannot be inside the age window either.
+        env:
+          EVALUATION_ID: ${{ needs.evaluate.outputs.evaluation_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, subprocess, time
+          from tests.e2e.cli_uplift import cleanup, config
+
+          resolved = config.load(os.environ["EVAL_RUN_CONFIG"])
+          ttl = resolved["instance_ttl_minutes"]
+          prefix = (os.environ.get("EVALUATION_ID") or "").strip() or None
+          if prefix:
+              print(f"Recovering this run ({prefix}) at any age, plus anything past {ttl}m.")
+          else:
+              # evaluate never emitted an ID: it died before publishing, or was
+              # cancelled during setup. Age is then the only authority we have.
+              print(f"No evaluation ID from evaluate; falling back to age past {ttl}m only.")
+
+          raw = subprocess.run(
+              ["aws", "ec2", "describe-instances",
+               "--filters", f"Name=tag-key,Values={cleanup.OWNER_TAG}",
+               "--query", "Reservations[].Instances[].{InstanceId:InstanceId,State:State,LaunchTime:LaunchTime,Tags:Tags}",
+               "--output", "json"],
+              capture_output=True, text=True, check=True,
+          )
+          instances = json.loads(raw.stdout or "[]")
+          for instance in instances:
+              stamp = instance.get("LaunchTime")
+              if isinstance(stamp, str):
+                  instance["LaunchTime"] = time.mktime(time.strptime(stamp[:19], "%Y-%m-%dT%H:%M:%S"))
+
+          targets = cleanup.recoverable_instances(
+              instances, now=time.time(), ttl_minutes=ttl, prefix=prefix
+          )
+          terminated = []
+          for item in targets:
+              subprocess.run(["aws", "ec2", "terminate-instances", "--instance-ids", item["id"]],
+                             capture_output=True, check=True)
+              terminated.append(item["id"])
+              print(f"Terminated {item['id']} ({item['reason']}, prefix {item['prefix']})")
+
+          outcome = cleanup.recovery_report(targets, terminated, ttl_minutes=ttl)
+          print(json.dumps(outcome, indent=2))
+          if not outcome["clean"]:
+              raise SystemExit(f"Could not terminate: {outcome['outstanding']}")
+          if not targets:
+              print("Nothing to recover.")
+          PY
+
+      - name: Sweep this run's non-EC2 resources from its restored state
+        # Instances are only part of the blast radius. A cancellation can also
+        # leave an IAM role, an instance profile, a CloudFormation stack, a
+        # secret or a Cognito user. Those have no age-based sweep at all, so
+        # without the manifest they leak indefinitely.
+        #
+        # Restoring the run's own state by evaluation ID is what makes this
+        # possible on a FRESH runner: the /tmp state directory the evaluate job
+        # wrote is gone with that runner. See the state-restore step below.
+        #
+        # R5: this used to run with the checked-in example config (no state
+        # bucket), so `--restore` raised "needs a durable state store" on every
+        # run — and the failure was converted to a `::warning::`, so the job went
+        # green. A sweep that cannot even reach the manifest must FAIL the gate: an
+        # incomplete teardown reported as a warning is indistinguishable from a
+        # clean one in the run list, which is how a leak survives unnoticed.
+        if: ${{ env.RUN_EVALUATION_ID != '' }}
+        env:
+          EVALUATION_ID: ${{ needs.evaluate.outputs.evaluation_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVAL_STATE_DIR"
+          if ! python -m tests.e2e.cli_uplift.runner \
+                --mode cleanup \
+                --config "$EVAL_RUN_CONFIG" \
+                --state-dir "$EVAL_STATE_DIR" \
+                --evaluation-id "$EVALUATION_ID" \
+                --restore; then
+            echo "::error::State-based sweep for $EVALUATION_ID did not complete. Non-EC2 resources (IAM roles, instance profiles, CloudFormation stacks, secrets, Cognito users) may still exist in the platform or destination account. Sweep manually per docs/runbooks/cli-uplift-evaluation.md, then re-dispatch with mode=cleanup."
+            exit 1
+          fi
+
+      - name: Report what could not be recovered automatically
+        # Named explicitly rather than left implicit: a resource this sweep
+        # cannot delete needs an operator, and silence would read as clean.
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## CLI uplift recovery sweep"
+            echo
+            echo "- Evaluate job result: \`${{ needs.evaluate.result }}\`"
+            echo "- Evaluation ID: \`${RUN_EVALUATION_ID:-none reported}\`"
+            echo
+            echo "GitHub Apps are never deleted by automation (a reused fixture is preserved by design; a created one needs its owner). If the report lists an outstanding \`github_app\`, remove it manually."
+          } >> "$GITHUB_STEP_SUMMARY"
