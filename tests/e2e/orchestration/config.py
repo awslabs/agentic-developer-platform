@@ -21,7 +21,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 CONFIG_VERSION = 1
 
@@ -462,6 +462,53 @@ def resolve_secrets(config: QualificationConfig) -> dict[str, str]:
 
 
 @dataclass(frozen=True)
+class ResolvedConnection:
+    """What the connection registry says a ``connection_ref`` actually is.
+
+    This is the *authority* on a qualification's target. The config only
+    *declares* an account; the registry is what establishes that the named
+    connection exists, is still active, and is authorized for that account and
+    org. Without it a config would be checked against itself.
+
+    ``active`` is separate from resolving at all, so a revoked connection is
+    refused with an accurate reason instead of being reported as unknown.
+    """
+
+    connection_ref: str
+    account_id: str
+    org: str
+    active: bool = True
+    detail: str | None = None
+
+
+class ConnectionResolutionError(RuntimeError):
+    """The registry could not answer whether a connection is authorized.
+
+    Distinct from "resolved and says no": a registry that is unreachable or
+    malformed leaves the target *unknown*, and unknown must refuse rather than
+    fall through to the config's own claim.
+    """
+
+
+@runtime_checkable
+class ConnectionResolver(Protocol):
+    """The registry lookup the harness needs, injected rather than imported.
+
+    Scenario adapters (#5157) supply the real implementation, exactly as they do
+    for :class:`~tests.e2e.orchestration.fixtures.FixtureProvider`; the offline
+    tests supply a protocol fixture. This slice deliberately defines only the
+    contract — it does not implement or duplicate a production identity API.
+    """
+
+    def resolve_connection(self, connection_ref: str) -> ResolvedConnection | None:
+        """Return the registered connection, or ``None`` if there is no such ref.
+
+        Raise :class:`ConnectionResolutionError` for "could not determine" — do
+        not return ``None``, which means "positively not registered".
+        """
+
+
+@dataclass(frozen=True)
 class TargetVerification:
     """The result of checking the config's declared target against reality.
 
@@ -477,9 +524,10 @@ class TargetVerification:
     expected_org: str
     observed_account_id: str | None = None
     observed_arn: str | None = None
+    resolved_connection: ResolvedConnection | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "verified": self.verified,
             "reason": self.reason,
             "expected_account_id": self.expected_account_id,
@@ -487,24 +535,87 @@ class TargetVerification:
             "observed_account_id": self.observed_account_id,
             "observed_arn": self.observed_arn,
         }
+        resolved = self.resolved_connection
+        payload["resolved_connection"] = (
+            None
+            if resolved is None
+            else {
+                "connection_ref": resolved.connection_ref,
+                "account_id": resolved.account_id,
+                "org": resolved.org,
+                "active": resolved.active,
+            }
+        )
+        return payload
 
 
 def verify_target(
     config: QualificationConfig,
     identity: dict[str, str] | None,
     identity_error: str | None = None,
+    resolver: ConnectionResolver | None = None,
 ) -> TargetVerification:
-    """Check the resolved connection against the identity actually in effect.
+    """Check the *registered* connection against the identity actually in effect.
 
     The comparison — not the report — is the point. ``preflight`` shows the
     result read-only; ``run``, ``resume`` and ``cleanup`` refuse to mutate unless
     :attr:`TargetVerification.verified` is true.
+
+    Three things must agree before a mutation is allowed:
+
+    1. ``connection_ref`` resolves, through ``resolver``, to a registered and
+       still-active connection;
+    2. that connection's authoritative account/org match what the config
+       declares — a drift means the config is stale or was edited;
+    3. the credentials in effect resolve to that same account.
+
+    Checking only (3) against the config's own ``expected_account_id`` would be
+    self-referential: both values come from the same file, so ``connection_ref``
+    would be decorative and an unregistered ref could still provision fixtures.
+    Resolution is therefore required, and an absent resolver refuses.
 
     The identity is passed in rather than read here so this stays network-free
     and testable; the caller does the one AWS read.
     """
     expected_account = config.expected_account_id
     expected_org = config.expected_org
+
+    resolved, resolution_error = _resolve_connection(config.connection_ref, resolver)
+    if resolution_error is not None:
+        return TargetVerification(
+            verified=False,
+            reason=resolution_error,
+            expected_account_id=expected_account,
+            expected_org=expected_org,
+            resolved_connection=resolved,
+        )
+    assert resolved is not None  # _resolve_connection returns one or the other
+
+    # The registry is the authority, so a config that disagrees with it is
+    # refused rather than silently preferred in either direction.
+    if resolved.account_id != expected_account:
+        return TargetVerification(
+            verified=False,
+            reason=(
+                f"target mismatch: registered connection {config.connection_ref!r} is authorized for "
+                f"account {resolved.account_id} but the config declares {expected_account}; "
+                f"refusing a config that disagrees with the connection registry"
+            ),
+            expected_account_id=expected_account,
+            expected_org=expected_org,
+            resolved_connection=resolved,
+        )
+    if resolved.org != expected_org:
+        return TargetVerification(
+            verified=False,
+            reason=(
+                f"target mismatch: registered connection {config.connection_ref!r} belongs to org "
+                f"{resolved.org!r} but the config declares {expected_org!r}"
+            ),
+            expected_account_id=expected_account,
+            expected_org=expected_org,
+            resolved_connection=resolved,
+        )
 
     if identity_error or identity is None:
         return TargetVerification(
@@ -515,6 +626,7 @@ def verify_target(
             ),
             expected_account_id=expected_account,
             expected_org=expected_org,
+            resolved_connection=resolved,
         )
 
     observed_account = str(identity.get("account") or "")
@@ -527,47 +639,120 @@ def verify_target(
             expected_account_id=expected_account,
             expected_org=expected_org,
             observed_arn=observed_arn or None,
+            resolved_connection=resolved,
         )
 
-    if observed_account != expected_account:
+    # Compared against the REGISTRY's account, not the config's. They are equal
+    # by the check above, but naming the authoritative source here is what makes
+    # this a verification rather than a config agreeing with itself.
+    if observed_account != resolved.account_id:
         return TargetVerification(
             verified=False,
             reason=(
-                f"target mismatch: the config's connection {config.connection_ref!r} declares account "
-                f"{expected_account} but the active credentials resolve to {observed_account}; "
+                f"target mismatch: registered connection {config.connection_ref!r} is authorized for "
+                f"account {resolved.account_id} but the active credentials resolve to {observed_account}; "
                 f"refusing to mutate an account this qualification was not authorized against"
             ),
             expected_account_id=expected_account,
             expected_org=expected_org,
             observed_account_id=observed_account,
             observed_arn=observed_arn or None,
+            resolved_connection=resolved,
         )
 
-    # The repository the config authorizes must belong to the org it declares;
-    # otherwise "expected_org" would be decorative and a config could point at
-    # one org's account while acting on another org's repository.
+    # The repository the config authorizes must belong to the registered
+    # connection's org; otherwise a config could point at one org's account
+    # while acting on another org's repository.
     repository_org = config.repository.split("/", 1)[0]
-    if repository_org != expected_org:
+    if repository_org != resolved.org:
         return TargetVerification(
             verified=False,
             reason=(
                 f"target mismatch: connection.repository {config.repository!r} belongs to "
-                f"{repository_org!r} but connection.expected_org is {expected_org!r}"
+                f"{repository_org!r} but registered connection {config.connection_ref!r} "
+                f"belongs to {resolved.org!r}"
             ),
             expected_account_id=expected_account,
             expected_org=expected_org,
             observed_account_id=observed_account,
             observed_arn=observed_arn or None,
+            resolved_connection=resolved,
         )
 
     return TargetVerification(
         verified=True,
         reason=(
-            f"verified: credentials resolve to the declared account {expected_account} "
-            f"and the repository belongs to {expected_org}"
+            f"verified: connection {config.connection_ref!r} is registered and active for account "
+            f"{resolved.account_id}, the active credentials resolve to that account, and the "
+            f"repository belongs to {resolved.org}"
         ),
         expected_account_id=expected_account,
         expected_org=expected_org,
         observed_account_id=observed_account,
         observed_arn=observed_arn,
+        resolved_connection=resolved,
     )
+
+
+def _resolve_connection(
+    connection_ref: str,
+    resolver: ConnectionResolver | None,
+) -> tuple[ResolvedConnection | None, str | None]:
+    """Resolve a connection ref through the registry, fail-closed.
+
+    Returns ``(resolved, None)`` on success or ``(partial_or_none, reason)`` on
+    refusal. Every branch that is not "registered and active" refuses: an absent
+    resolver, a resolver that raises, a ref with no registration, a revoked
+    connection, and a resolver returning something malformed. None of these are
+    allowed to fall through to the config's own declaration, which is the bug
+    this function exists to close.
+    """
+    if resolver is None:
+        return None, (
+            f"connection {connection_ref!r} could not be resolved: no connection resolver is "
+            f"available, so there is no authority for this target and no mutation is allowed. "
+            f"A resolver is supplied by the scenario adapters (#5157)."
+        )
+
+    try:
+        resolved = resolver.resolve_connection(connection_ref)
+    except ConnectionResolutionError as exc:
+        return None, (
+            f"connection {connection_ref!r} could not be resolved: {exc}; the target is unknown "
+            f"and no mutation is allowed"
+        )
+    except Exception as exc:  # noqa: BLE001 - a registry is third-party code; any failure is "unknown"
+        return None, (
+            f"connection {connection_ref!r} could not be resolved: the connection registry failed "
+            f"with {type(exc).__name__}: {exc}; the target is unknown and no mutation is allowed"
+        )
+
+    if resolved is None:
+        return None, (
+            f"connection {connection_ref!r} is not a registered connection; refusing to qualify "
+            f"against a target that nothing authorizes"
+        )
+    if not isinstance(resolved, ResolvedConnection):
+        return None, (
+            f"connection {connection_ref!r} resolved to {type(resolved).__name__}, not a "
+            f"ResolvedConnection; the target cannot be trusted and no mutation is allowed"
+        )
+    if resolved.connection_ref != connection_ref:
+        # A resolver answering about a different connection is a wiring bug, and
+        # trusting it would verify the wrong target entirely.
+        return resolved, (
+            f"the connection registry was asked about {connection_ref!r} but answered for "
+            f"{resolved.connection_ref!r}; refusing an inconsistent resolution"
+        )
+    if not resolved.active:
+        detail = f": {resolved.detail}" if resolved.detail else ""
+        return resolved, (
+            f"connection {connection_ref!r} is registered but not active{detail}; a revoked "
+            f"connection authorizes nothing and no mutation is allowed"
+        )
+    if not _ACCOUNT_ID.match(resolved.account_id or ""):
+        return resolved, (
+            f"connection {connection_ref!r} resolved to {resolved.account_id!r}, which is not a "
+            f"12-digit AWS account id; the target cannot be confirmed"
+        )
+    return resolved, None

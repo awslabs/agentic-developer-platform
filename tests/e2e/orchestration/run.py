@@ -28,6 +28,7 @@ from typing import Any
 
 from tests.e2e.orchestration.config import (
     ConfigError,
+    ConnectionResolver,
     QualificationConfig,
     TargetVerification,
     load_config,
@@ -71,6 +72,15 @@ class Outcome:
     report: dict[str, Any]
 
 
+def _scenarios_module() -> Any:
+    """Return #5157's scenarios module, or ``None`` while it has not landed."""
+    try:
+        from tests.e2e.orchestration import scenarios  # type: ignore[attr-defined]
+    except ImportError:
+        return None
+    return scenarios
+
+
 def load_scenario_adapters(config: QualificationConfig) -> dict[str, Any]:
     """Discover the scenario adapters supplied by #5157.
 
@@ -78,9 +88,8 @@ def load_scenario_adapters(config: QualificationConfig) -> dict[str, Any]:
     is a legitimate state today (#5157 has not landed) and is handled by the
     callers as "nothing ran", never as a pass.
     """
-    try:
-        from tests.e2e.orchestration import scenarios  # type: ignore[attr-defined]
-    except ImportError:
+    scenarios = _scenarios_module()
+    if scenarios is None:
         return {}
 
     registry = getattr(scenarios, "REGISTRY", None)
@@ -109,14 +118,34 @@ def load_providers(config: QualificationConfig) -> dict[str, FixtureProvider]:
     return providers
 
 
-def verified_target(config: QualificationConfig) -> TargetVerification:
-    """Resolve the real identity and check it against the config's target.
+def load_connection_resolver(config: QualificationConfig) -> ConnectionResolver | None:
+    """Find the connection registry lookup, if one is available.
 
-    One AWS read (``sts:GetCallerIdentity``), compared against the account and
-    org the selected connection declares. Every mutating mode calls this first.
+    Discovered from #5157's slot exactly like :func:`load_providers`, because the
+    registry that knows which connections are registered is the platform's, not
+    this harness's. Returns ``None`` when nothing supplies one, which
+    :func:`verify_target` treats as a refusal — an unverifiable target must never
+    fall back to the config's own claim about itself.
+    """
+    resolver = getattr(_scenarios_module(), "CONNECTION_RESOLVER", None)
+    if resolver is not None:
+        return resolver
+    for adapter in load_scenario_adapters(config).values():
+        candidate = getattr(adapter, "connection_resolver", None)
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def verified_target(config: QualificationConfig) -> TargetVerification:
+    """Resolve the selected connection and check it against the real identity.
+
+    Two reads: the connection registry (which account/org is this ref actually
+    authorized for?) and one ``sts:GetCallerIdentity`` (which account are we
+    really in?). Every mutating mode calls this first.
     """
     identity, identity_error = _caller_identity()
-    return verify_target(config, identity, identity_error)
+    return verify_target(config, identity, identity_error, load_connection_resolver(config))
 
 
 def _refusal(mode: str, config: QualificationConfig, target: TargetVerification, **extra: Any) -> Outcome:
@@ -161,7 +190,7 @@ def preflight(config: QualificationConfig) -> Outcome:
     }
 
     identity, identity_error = _caller_identity()
-    target = verify_target(config, identity, identity_error)
+    target = verify_target(config, identity, identity_error, load_connection_resolver(config))
     report["caller_identity"] = identity
     report["target"] = target.to_json()
     if identity_error:

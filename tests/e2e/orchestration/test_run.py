@@ -15,6 +15,7 @@ import types
 import pytest
 
 from tests.e2e.orchestration import run as runner
+from tests.e2e.orchestration.config import ConnectionResolutionError, ResolvedConnection
 from tests.e2e.orchestration.fixtures import FixtureError, FixtureRequest, provision
 from tests.e2e.orchestration.inventory import Inventory
 from tests.e2e.orchestration.run import (
@@ -40,6 +41,10 @@ from tests.e2e.orchestration.test_fixtures import FakeProvider
 
 QUAL_ID = "q-0123456789abcdef"
 ORG = FixtureRequest("org", "organization", "qual-org")
+
+# Sentinel so `resolver=None` ("no registry at all") is distinguishable from
+# "argument not passed" (install the default recognising resolver).
+_DEFAULT_RESOLVER = object()
 
 
 @pytest.fixture
@@ -73,13 +78,85 @@ def stub_no_identity(monkeypatch):
     monkeypatch.setattr(runner, "_caller_identity", lambda: (None, "no credentials"))
 
 
+class StubConnectionResolver:
+    """A stand-in connection registry: the protocol fixture for this slice.
+
+    The real registry is the platform's and is supplied by #5157; this harness
+    only defines the contract. Defaults to "registered and active for the account
+    the shared valid config declares" so the ordinary path verifies; tests that
+    want a refusal construct one that answers differently or raises.
+    """
+
+    def __init__(
+        self,
+        *,
+        account_id: str = "111122223333",
+        org: str = "aws-e",
+        active: bool = True,
+        known: bool = True,
+        raises: Exception | None = None,
+        answer_ref: str | None = None,
+        returns: object = None,
+    ):
+        self.account_id = account_id
+        self.org = org
+        self.active = active
+        self.known = known
+        self.raises = raises
+        self.answer_ref = answer_ref
+        self.returns = returns
+        self.calls: list[str] = []
+
+    def resolve_connection(self, connection_ref: str):
+        self.calls.append(connection_ref)
+        if self.raises is not None:
+            raise self.raises
+        if self.returns is not None:
+            return self.returns
+        if not self.known:
+            return None  # positively not registered
+        return ResolvedConnection(
+            connection_ref=self.answer_ref or connection_ref,
+            account_id=self.account_id,
+            org=self.org,
+            active=self.active,
+            detail=None if self.active else "revoked by an administrator",
+        )
+
+
+@pytest.fixture
+def stub_resolver(monkeypatch):
+    """Install only a recognising connection resolver, with no adapters.
+
+    For tests whose subject is a mode's behaviour *after* the target gate (an
+    empty registry, a missing inventory) and which therefore still need the gate
+    to pass without registering a scenario.
+    """
+    module = types.ModuleType("tests.e2e.orchestration.scenarios")
+    module.REGISTRY = {}  # type: ignore[attr-defined]
+    resolver = StubConnectionResolver()
+    module.CONNECTION_RESOLVER = resolver  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "tests.e2e.orchestration.scenarios", module)
+    return resolver
+
+
 @pytest.fixture
 def register_scenarios(monkeypatch):
-    """Install a fake `tests.e2e.orchestration.scenarios` module (#5157's slot)."""
+    """Install a fake `tests.e2e.orchestration.scenarios` module (#5157's slot).
 
-    def _register(registry: dict):
+    Also installs a default resolver that recognises the shared valid config's
+    connection, because target verification is now fail-closed: without one every
+    mutating mode refuses. Pass ``resolver=`` to override, including ``None`` to
+    exercise "no registry available".
+    """
+
+    def _register(registry: dict, *, resolver: object = _DEFAULT_RESOLVER):
         module = types.ModuleType("tests.e2e.orchestration.scenarios")
         module.REGISTRY = registry  # type: ignore[attr-defined]
+        if resolver is _DEFAULT_RESOLVER:
+            resolver = StubConnectionResolver()
+        if resolver is not None:
+            module.CONNECTION_RESOLVER = resolver  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "tests.e2e.orchestration.scenarios", module)
         return module
 
@@ -196,7 +273,7 @@ class TestPreflightIsReadOnly:
         report = preflight(valid_config).report
         assert report["secret_refs"] == ["github_app_key"]
 
-    def test_preflight_with_no_adapters_is_not_a_pass(self, valid_config, stub_identity):
+    def test_preflight_with_no_adapters_is_not_a_pass(self, valid_config, stub_identity, stub_resolver):
         outcome = preflight(valid_config)
         assert outcome.status == STATUS_INCOMPLETE
         assert outcome.exit_code == EXIT_NO_SCENARIOS
@@ -373,10 +450,10 @@ class TestAttemptsCountAgainstMaxRuns:
 class TestTargetVerificationGatesMutations:
     """Every mutating mode verifies the real target before acting.
 
-    The config declares the account the selected connection must resolve to;
-    the harness compares it against ``sts:GetCallerIdentity``. Reporting whichever
-    account the credentials happen to reach is not verification, so a mismatch or
-    an unreadable identity refuses the mutation.
+    The selected connection is resolved through the registry, and the account it
+    is authorized for is compared against ``sts:GetCallerIdentity``. Reporting
+    whichever account the credentials happen to reach is not verification, so a
+    mismatch or an unreadable identity refuses the mutation.
     """
 
     def test_run_refuses_a_mismatched_account(
@@ -453,10 +530,14 @@ class TestTargetVerificationGatesMutations:
         assert outcome.status == STATUS_REFUSED
         assert "target mismatch" in outcome.report["detail"]
 
-    def test_a_repository_outside_the_declared_org_is_refused(
+    def test_a_repository_outside_the_registered_org_is_refused(
         self, write_config, register_scenarios, stub_identity
     ):
-        """expected_org must actually constrain the authorized repository."""
+        """The registered connection's org must constrain the repository.
+
+        Otherwise a config could name an account it is authorized for while
+        acting on a repository belonging to somebody else.
+        """
         from tests.e2e.orchestration.config import load_config
 
         config = load_config(write_config({"connection": {"repository": "someone-else/adp"}}))
@@ -465,7 +546,8 @@ class TestTargetVerificationGatesMutations:
         outcome = runner.run(config)
 
         assert outcome.status == STATUS_REFUSED
-        assert "expected_org" in outcome.report["detail"]
+        assert "someone-else" in outcome.report["detail"]
+        assert "belongs to 'aws-e'" in outcome.report["detail"]
 
     def test_a_verified_target_allows_the_run(self, valid_config, register_scenarios, stub_identity):
         """The gate must not be so strict that a correct config cannot run."""
@@ -483,6 +565,249 @@ class TestTargetVerificationGatesMutations:
         assert code == EXIT_TARGET_UNVERIFIED
         assert code != EXIT_FAILED
         assert code != EXIT_OK
+
+
+class TestConnectionMustBeRegistered:
+    """The connection registry, not the config, is the authority on the target.
+
+    Comparing the live identity against ``expected_account_id`` alone is
+    self-referential: both values come from the same file, so ``connection_ref``
+    would be decorative and an unregistered ref could still provision fixtures.
+    Every "not registered and active" branch refuses before any adapter runs.
+    """
+
+    def _config(self, write_config, ref: str):
+        from tests.e2e.orchestration.config import load_config
+
+        return load_config(write_config({"connection": {"connection_ref": ref}}))
+
+    def test_an_unregistered_connection_ref_is_refused(
+        self, write_config, register_scenarios, stub_identity, artifact_dir
+    ):
+        """The reviewer's repro at a1c812bf, inverted.
+
+        Changing ONLY connection_ref to an unregistered value previously still
+        returned status=pass, exit 0, and invoked provider.create for qual-org.
+        """
+        config = self._config(write_config, "unregistered-review-probe")
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(known=False))
+
+        outcome = runner.run(config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert outcome.status != STATUS_PASS
+        assert outcome.exit_code == EXIT_TARGET_UNVERIFIED
+        assert outcome.exit_code != EXIT_OK
+        assert "not a registered connection" in outcome.report["detail"]
+        # The point of the fix: no fixture was created and no inventory written.
+        assert adapter.executions == 0
+        assert adapter.provider.create_calls == []
+        assert list(artifact_dir.iterdir()) == []
+
+    def test_the_resolver_is_asked_about_the_configured_ref(
+        self, write_config, register_scenarios, stub_identity
+    ):
+        """connection_ref must actually reach the registry, not be ignored."""
+        config = self._config(write_config, "adp-dev-embark1")
+        resolver = StubConnectionResolver()
+        register_scenarios({"bounded": StubAdapter()}, resolver=resolver)
+
+        runner.run(config)
+
+        assert resolver.calls == ["adp-dev-embark1"]
+
+    def test_a_revoked_connection_is_refused(self, valid_config, register_scenarios, stub_identity):
+        """Registered once is not authorized now."""
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(active=False))
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "not active" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_an_unreadable_registry_refuses_rather_than_trusting_the_config(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        """"Could not determine" must not fall back to the config's own claim."""
+        adapter = StubAdapter()
+        register_scenarios(
+            {"bounded": adapter},
+            resolver=StubConnectionResolver(raises=ConnectionResolutionError("registry unreachable")),
+        )
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "registry unreachable" in outcome.report["detail"]
+        assert "no mutation is allowed" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_an_arbitrary_resolver_exception_is_also_a_refusal(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        """A registry is third-party code; any failure leaves the target unknown."""
+        adapter = StubAdapter()
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(raises=TimeoutError("timed out"))
+        )
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "TimeoutError" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_no_resolver_at_all_is_a_refusal(self, valid_config, register_scenarios, stub_identity):
+        """Fail-closed: absent authority is not implicit permission."""
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter}, resolver=None)
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "no connection resolver is available" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_a_registry_account_disagreeing_with_the_config_is_refused(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        """A stale or edited config must not win over the registry.
+
+        The credentials here match the CONFIG's declared account, so the old
+        self-referential check would have passed this.
+        """
+        adapter = StubAdapter()
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(account_id="555566667777")
+        )
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "disagrees with the connection registry" in outcome.report["detail"]
+        assert "555566667777" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_a_registry_org_disagreeing_with_the_config_is_refused(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(org="other-org"))
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "other-org" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_credentials_outside_the_registered_account_are_refused(
+        self, valid_config, register_scenarios, stub_wrong_account
+    ):
+        """The registry and the config agree; the credentials are somewhere else.
+
+        The refusal must cite the REGISTERED account as the authority, so the
+        message tells an operator what actually authorized the target.
+        """
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver())
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "registered connection" in outcome.report["detail"]
+        assert "999988887777" in outcome.report["detail"], "must report the observed account"
+        assert adapter.provider.create_calls == []
+
+    def test_a_resolver_answering_about_another_connection_is_refused(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        """A wiring bug that would otherwise verify the wrong target entirely."""
+        adapter = StubAdapter()
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(answer_ref="some-other-connection")
+        )
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "answered for" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_a_malformed_resolution_is_refused(self, valid_config, register_scenarios, stub_identity):
+        """A resolver returning the wrong type must not be trusted."""
+        adapter = StubAdapter()
+        register_scenarios(
+            {"bounded": adapter},
+            resolver=StubConnectionResolver(returns={"account_id": "111122223333"}),
+        )
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "not a ResolvedConnection" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_a_non_account_id_resolution_is_refused(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(account_id="nope"))
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "12-digit AWS account id" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_resume_refuses_an_unregistered_connection_before_reading_the_inventory(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        """The gate precedes the load, so the reported cause is the real one."""
+        register_scenarios({"bounded": StubAdapter()}, resolver=StubConnectionResolver(known=False))
+
+        outcome = resume_qualification(valid_config, "q-neverexisted01")
+
+        assert outcome.status == STATUS_REFUSED
+        assert "not a registered connection" in outcome.report["detail"]
+
+    def test_cleanup_refuses_an_unregistered_connection_and_deletes_nothing(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        """The worst outcome available here is deleting a stranger's resource."""
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter})
+        inventory = Inventory.create(valid_config.artifact_directory, QUAL_ID, "dev")
+        provision(inventory, valid_config, adapter.provider, ORG)
+        assert adapter.provider.resources, "the fixture must exist before cleanup is attempted"
+
+        # Same config and same inventory; only the registry's answer changes.
+        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(known=False))
+        outcome = cleanup_qualification(valid_config, QUAL_ID)
+
+        assert outcome.status == STATUS_REFUSED
+        assert outcome.report["deleted"] == []
+        assert adapter.provider.delete_calls == []
+        assert adapter.provider.resources, "the fixture must survive a refusal"
+
+    def test_the_verified_report_names_the_registered_connection(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        """Evidence must record what authorized the run, not just that it ran."""
+        register_scenarios({"bounded": StubAdapter()})
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_PASS
+        resolved = outcome.report["target"]["resolved_connection"]
+        assert resolved == {
+            "connection_ref": "adp-dev-embark1",
+            "account_id": "111122223333",
+            "org": "aws-e",
+            "active": True,
+        }
 
 
 class TestResumeMode:
@@ -519,11 +844,15 @@ class TestResumeMode:
         assert outcome.report["reconcile_failed"][0]["fixture_id"] == "org"
         assert "may be leaked" in outcome.report["detail"]
 
-    def test_resume_of_an_unknown_qualification_fails_cleanly(self, write_config, stub_identity):
+    def test_resume_of_an_unknown_qualification_fails_cleanly(
+        self, write_config, stub_identity, stub_resolver
+    ):
         code = main(["--config", str(write_config()), "--resume", QUAL_ID])
         assert code == EXIT_FAILED
 
-    def test_resume_refuses_another_environments_inventory(self, write_config, valid_config, stub_identity):
+    def test_resume_refuses_another_environments_inventory(
+        self, write_config, valid_config, stub_identity, stub_resolver
+    ):
         """Its resource ids belong to another account."""
         from tests.e2e.orchestration.config import load_config
 
