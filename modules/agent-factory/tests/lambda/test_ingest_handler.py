@@ -1049,3 +1049,161 @@ class TestConnectionIdentityFailures:
         for key, value in {"tenant_id": "tenant-1", "org_id": "org-1", "team_id": "team-1",
                            "department_id": "dept-1", "account_type": "human", "role": "member"}.items():
             assert message.platform_data[key] == value
+
+
+class TestNativeTenantFallback:
+    """Issue #5268: a natively signed-in user has no `custom:tenant_id`.
+
+    Nothing in the JWT sign-in path ever SETS that claim -- the api-authorizer
+    only reads it, defaulting to "" -- so the dispatch guard in
+    `handle_long_running` refused to enqueue for every native user. No
+    inference, no invocation row, nothing visible in the product. Slack users
+    were unaffected, which is why the feature appeared to work.
+
+    The adapter now substitutes the org, exactly as the Slack path already does
+    deliberately. These tests pin the substitution AND the guard that must
+    survive it.
+    """
+
+    @staticmethod
+    def _long_running_handler():
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "long_running",
+            "persona": "developer",
+            "response": None,
+            "thread_action": "new",
+            "reasoning": "Complex analysis needed",
+        })
+        return _import_handler(mock_bedrock=mock_bedrock)
+
+    @staticmethod
+    def _dequeue(mocked_aws_services):
+        resp = mocked_aws_services["sqs"].receive_message(
+            QueueUrl="https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks",
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=0,
+        )
+        messages = resp.get("Messages", [])
+        return json.loads(messages[0]["Body"]) if messages else None
+
+    def _event(self, claims, *, text="Analyze the codebase architecture"):
+        # `mock_apigw_event` defaults custom:tenant_id to "test-tenant" for any
+        # signed-in fixture; passing the key explicitly is what exercises the
+        # real native shape, where the claim is absent or empty.
+        return mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": text, "session_id": "sess-5268"},
+            connection_id="conn-5268",
+            authorizer_claims=claims,
+        )
+
+    def test_a_native_user_with_only_an_org_claim_dispatches(self, mocked_aws_services):
+        """The regression. Org becomes the tenant, on the wire and on the row."""
+        handler = self._long_running_handler()
+        result = handler.lambda_handler(
+            self._event({"sub": "native-1", "custom:tenant_id": "", "custom:org_id": "org-acme"}),
+            None,
+        )
+
+        assert result["statusCode"] == 200
+        assert json.loads(result["body"])["status"] == "processing"
+        task = self._dequeue(mocked_aws_services)
+        assert task is not None, "a native user's message must reach the queue"
+        assert task["tenant_id"] == "org-acme"
+
+    def test_an_explicit_tenant_claim_still_wins(self, mocked_aws_services):
+        """The fallback must not overwrite a tenant the token actually asserts."""
+        handler = self._long_running_handler()
+        handler.lambda_handler(
+            self._event(
+                {"sub": "native-2", "custom:tenant_id": "tenant-real", "custom:org_id": "org-acme"}
+            ),
+            None,
+        )
+
+        task = self._dequeue(mocked_aws_services)
+        assert task is not None
+        assert task["tenant_id"] == "tenant-real"
+
+    @pytest.mark.parametrize("org", ["", "default"])
+    def test_an_unusable_org_is_still_refused_before_enqueue(self, mocked_aws_services, org):
+        """The guard must survive the fix.
+
+        "" and "default" name no tenant. Substituting either would put an empty
+        value in the invocation row's GSI1PK, making the row unqueryable by
+        tenant -- so these callers must still be rejected, exactly as before.
+        """
+        handler = self._long_running_handler()
+        handler.lambda_handler(
+            self._event({"sub": "native-3", "custom:tenant_id": "", "custom:org_id": org}),
+            None,
+        )
+
+        assert self._dequeue(mocked_aws_services) is None, (
+            f"org_id {org!r} names no tenant and must not authorize a dispatch"
+        )
+
+    def test_the_tenant_comes_from_claims_not_from_the_client_body(self, mocked_aws_services):
+        """A client must not be able to name its own tenant.
+
+        This value lands on the row that authorizes a worker to inherit its
+        owner's Bedrock destination, so a client-supplied org would be
+        cross-tenant spend, not a cosmetic mislabel.
+        """
+        handler = self._long_running_handler()
+        event = mock_apigw_event(
+            route_key="$default",
+            body={
+                "action": "message",
+                "text": "Analyze the codebase architecture",
+                "session_id": "sess-5268",
+                # Attacker-controlled, and named exactly like the trusted fields.
+                "tenant_id": "org-victim",
+                "org_id": "org-victim",
+            },
+            connection_id="conn-5268",
+            authorizer_claims={
+                "sub": "native-4",
+                "custom:tenant_id": "",
+                "custom:org_id": "org-acme",
+            },
+        )
+        handler.lambda_handler(event, None)
+
+        task = self._dequeue(mocked_aws_services)
+        assert task is not None
+        assert task["tenant_id"] == "org-acme"
+        assert task["org_id"] == "org-acme"
+
+
+class TestEffectiveTenantIdHelper:
+    """Issue #5268: the substitution itself, isolated from the dispatch path."""
+
+    @staticmethod
+    def _helper():
+        # `_patch_sys_path` is an autouse fixture, so HANDLER_DIR is already on
+        # sys.path by the time a test body runs.
+        from channels.base import effective_tenant_id
+
+        return effective_tenant_id
+
+    def test_an_explicit_tenant_is_returned_verbatim(self):
+        assert self._helper()({"custom:tenant_id": "t-1", "custom:org_id": "o-1"}) == "t-1"
+
+    def test_a_usable_org_substitutes_for_an_absent_tenant(self):
+        assert self._helper()({"custom:org_id": "o-1"}) == "o-1"
+
+    @pytest.mark.parametrize("org", ["", "default", "DEFAULT", "  ", None])
+    def test_an_unusable_org_yields_no_tenant(self, org):
+        """Returns "" rather than inventing a tenant, so the caller's guard fires.
+
+        "DEFAULT" is included because the handler's own gate compares
+        case-insensitively; a case-sensitive check here would let "DEFAULT"
+        through as a tenant while the repo gate denied it -- two components
+        disagreeing about the same value, which is this bug's whole class.
+        """
+        assert self._helper()({"custom:tenant_id": "", "custom:org_id": org}) == ""
+
+    def test_whitespace_is_not_a_tenant(self):
+        assert self._helper()({"custom:tenant_id": "   ", "custom:org_id": "o-1"}) == "o-1"
