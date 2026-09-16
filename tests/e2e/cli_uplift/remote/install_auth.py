@@ -335,19 +335,28 @@ def _session_document(config, evidence, prefix, home, work_dir):
     )
 
     login = evidence.get("login") or {}
-    evidence["session"] = {
-        "cli_path": str(binary),
-        "access_token": tokens["access_token"],
-        "id_token": tokens.get("id_token", ""),
-        "refresh_token": tokens.get("refresh_token", ""),
-        "expires_at": tokens.get("expires_at", 0),
-        "username": login.get("username", ""),
-        "user_id": login.get("user_id", ""),
-        "org_id": login.get("org_id", ""),
-        # Only set when the run CREATED the identity, because that is what makes
-        # it this run's to delete. A fixture identity must survive cleanup.
-        "created_username": config.get("created_username", ""),
-    }
+    # The tokens stay on the instance. Only a non-secret reference is exported,
+    # because `common.emit()` redacts every credential-shaped value on its way out
+    # — which previously turned this session into the literal string "<redacted>"
+    # and left every later journey authenticating with a truthy placeholder.
+    # See `common.save_session()` for why the vault is on-instance and not in S3.
+    evidence["session"] = common.save_session(
+        {
+            "cli_path": str(binary),
+            "access_token": tokens["access_token"],
+            "id_token": tokens.get("id_token", ""),
+            "refresh_token": tokens.get("refresh_token", ""),
+            "expires_at": tokens.get("expires_at", 0),
+            "username": login.get("username", ""),
+            "user_id": login.get("user_id", ""),
+            "org_id": login.get("org_id", ""),
+            # Only set when the run CREATED the identity, because that is what
+            # makes it this run's to delete. A fixture identity must survive
+            # cleanup.
+            "created_username": config.get("created_username", ""),
+        },
+        work_dir=work_dir,
+    )
 
 
 def _setup(config, evidence, cli):

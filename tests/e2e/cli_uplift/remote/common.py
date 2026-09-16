@@ -45,6 +45,127 @@ SENSITIVE_KEY = re.compile(
 # Anything JWT-shaped, wherever it appears in a string.
 JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+")
 
+# The on-instance session vault.
+#
+# WHY THIS EXISTS
+#
+# `install_auth` establishes the session every later journey reuses, but the only
+# way evidence leaves the instance is `emit()`, which redacts every
+# credential-shaped value by design. So the session's tokens arrived downstream as
+# the literal string "<redacted>": truthy, ten characters, and not authentication.
+# Every `require(config.get("access_token"))` guard passed on it, so the failure
+# surfaced as a confusing routing or parity error instead of "the session never
+# arrived".
+#
+# The fix keeps the tokens on the instance that produced them and passes a
+# reference instead. Only the reference crosses `emit()`, the run document, the
+# report and the SSM payload, so:
+#
+# - redaction is unchanged. Nothing was weakened to make the flow work; the
+#   tokens simply never enter the channel that redacts them.
+# - the tokens stop travelling through SSM command text at all, which is a
+#   strictly better posture than before this fix, not merely an equivalent one.
+# - a missing session is now LOUD. The reference either resolves to real material
+#   or `load_session()` raises naming the journey that should have produced it,
+#   which is the ambiguity this harness exists to remove.
+#
+# The file is 0600 under the 0700 run directory owned by ec2-user, on a
+# disposable instance that is terminated during cleanup. It deliberately does NOT
+# go to S3: the instance role holds no `s3:PutObject` (only GetObject on its own
+# bundle), so an S3 handoff would require widening a deliberately narrow boundary.
+SESSION_VAULT = "session.json"
+
+
+def session_vault_path(work_dir):
+    """Where this run's session material lives on the instance.
+
+    Under `work_dir` because that is the durable, run-owned, 0700 directory the
+    ec2 stage creates — the journey's own temp HOME is deleted when it returns,
+    which is the same reason the CLI itself is copied out of it.
+    """
+    require(work_dir, "No work_dir was supplied; the session vault has no home")
+    return Path(work_dir) / SESSION_VAULT
+
+
+def save_session(session, *, work_dir):
+    """Persist real session material privately and return its reference.
+
+    The reference is a non-secret locator plus the non-secret identity fields the
+    orchestrator legitimately reports on (`cli_path`, `username`, `user_id`,
+    `org_id`). No token, and nothing matching `SENSITIVE_KEY`, is in it.
+    """
+    path = session_vault_path(work_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Written 0600 BEFORE any content lands, so the tokens are never briefly
+    # readable by another local user through a default-mode file.
+    handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(handle, "w") as stream:
+        json.dump(session, stream)
+    os.chmod(str(path), 0o600)
+    return {
+        "session_ref": str(path),
+        "cli_path": session.get("cli_path", ""),
+        "expires_at": session.get("expires_at", 0),
+        "username": session.get("username", ""),
+        "user_id": session.get("user_id", ""),
+        "org_id": session.get("org_id", ""),
+        "created_username": session.get("created_username", ""),
+    }
+
+
+def load_session(config):
+    """Resolve the session reference a journey payload carries.
+
+    Raises rather than returning empties: a journey that cannot find the session
+    must fail naming that, not proceed with a placeholder and be graded as a
+    routing or inference defect.
+    """
+    reference = config.get("session_ref")
+    require(
+        reference,
+        "This journey received no session_ref; install_auth must run before it",
+    )
+    path = Path(reference)
+    # The reference arrives in a payload, so it is treated as input rather than
+    # trusted: it must name the vault inside this run's own work directory. A
+    # payload cannot be used to read an arbitrary file off the instance.
+    require(
+        path.name == SESSION_VAULT,
+        "The supplied session_ref does not name this run's session vault",
+    )
+    try:
+        session = json.loads(path.read_text())
+    except (OSError, ValueError):
+        raise RemoteError(
+            f"The session established by install_auth is not readable at {reference}; "
+            "it did not survive the stage boundary"
+        ) from None
+    require(
+        session.get("access_token"),
+        "The stored session carries no access token; the login did not persist one",
+    )
+    return session
+
+
+def session_tokens(config):
+    """The token trio plus expiry, for a journey materializing its own HOME."""
+    session = load_session(config)
+    return {
+        "access_token": session["access_token"],
+        "id_token": session.get("id_token", ""),
+        "refresh_token": session.get("refresh_token", ""),
+        "expires_at": session.get("expires_at", 0),
+    }
+
+
+def clear_session(work_dir):
+    """Remove the vault. Safe to call twice, and safe to call having never saved."""
+    try:
+        session_vault_path(work_dir).unlink()
+    except (OSError, RemoteError):
+        return False
+    return True
+
 
 class RemoteError(RuntimeError):
     """A remote step failed for a reason we are willing to publish verbatim."""

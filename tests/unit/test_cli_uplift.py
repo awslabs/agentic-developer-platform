@@ -2279,7 +2279,11 @@ def worker_evidence():
                 # is deleted when it returns, so a later journey needs the CLI to
                 # have been preserved outside it.
                 "cli_path": "/home/ec2-user/adp-eval/cli/adp",
-                "access_token": "<token>",
+                # A non-secret reference, which is what the shipped script now
+                # exports: the tokens stay in a private on-instance vault because
+                # anything credential-shaped in evidence is redacted on its way out,
+                # which used to hand later journeys the string "<redacted>".
+                "session_ref": "/home/ec2-user/adp-eval/session.json",
                 "expires_at": NOW + 3600,
                 "username": "eval-admin",
                 "created_username": "eval-admin",
@@ -3410,7 +3414,15 @@ def test_the_session_install_auth_published_is_what_later_journeys_receive(tmp_p
     session = worker_evidence()["install_auth"]["session"]
     for purpose in ("bedrock_routing", "personal_inference", "update_rollback"):
         payload = run.ports["ssm"].payloads[purpose]
-        assert payload["access_token"] == session["access_token"]
+        # A reference, not the tokens: evidence leaving the instance is redacted, so
+        # forwarding "tokens" here forwarded the literal string "<redacted>". The
+        # journey resolves this against its own work directory.
+        assert payload["session_ref"] == session["session_ref"]
+        assert payload["session_ref"], "no session reference was carried forward"
+        assert payload["work_dir"] == stages.WORK_DIR
+        # And no token-shaped value travels in the payload at all.
+        for key in ("access_token", "id_token", "refresh_token"):
+            assert key not in payload
         assert payload["session_expires_at"] == session["expires_at"]
         assert payload["cli_path"] == session["cli_path"]
     inference = run.ports["ssm"].payloads["personal_inference"]
@@ -4163,16 +4175,103 @@ def test_the_handed_over_cli_outlives_the_journey_that_installed_it(tmp_path):
 
 
 def test_the_session_document_carries_the_tokens_the_product_wrote(tmp_path):
-    """Read from the CLI's own token file, not from anything the harness asserts."""
+    """Read from the CLI's own token file, not from anything the harness asserts.
+
+    The tokens are no longer IN the exported document — `emit()` redacts every
+    credential-shaped value, which turned them into the literal "<redacted>" and
+    left later journeys authenticating with a truthy placeholder. The document now
+    carries a reference, so this asserts the reference resolves to the material the
+    product actually wrote.
+    """
+    script, common = shipped_script(tmp_path, "install_auth")
     session, _home = install_auth_session(tmp_path)
-    assert session["access_token"] == "<token>"
-    assert session["id_token"] == "<id>"
-    assert session["refresh_token"] == "<refresh>"
+    stored = common.load_session(
+        {"session_ref": session["session_ref"], "work_dir": str(tmp_path / "adp-eval")}
+    )
+    assert stored["access_token"] == "<token>"
+    assert stored["id_token"] == "<id>"
+    assert stored["refresh_token"] == "<refresh>"
     assert session["expires_at"] == NOW + 3600
     # The gateway's id for the identity, which is what E08 correlates usage on.
+    # Non-secret, so these stay in the exported document.
     assert session["user_id"] == "user-eval"
     assert session["username"] == "eval-admin"
     assert session["org_id"] == "org-eval"
+    assert hasattr(script, "_session_document")
+
+
+def test_the_exported_session_document_carries_no_token_at_all(tmp_path):
+    """The defect this closes: tokens in evidence become "<redacted>" downstream.
+
+    `emit()` is the only way evidence leaves the instance and it redacts anything
+    matching `SENSITIVE_KEY`. So a token in the session document could never arrive
+    intact — it arrived as a ten-character truthy string that passed every
+    `require()` and then failed authentication downstream, where the cause was no
+    longer visible.
+
+    Asserted both ways round: no token-shaped value is exported, AND the reference
+    that IS exported survives redaction unchanged. A reference that were itself
+    redacted would be just as broken as the tokens were.
+    """
+    _script, common = shipped_script(tmp_path, "install_auth")
+    session, _home = install_auth_session(tmp_path)
+
+    serialized = json.dumps(session)
+    for secret in ("<token>", "<id>", "<refresh>"):
+        assert secret not in serialized, "session material is still being exported"
+    for key in ("access_token", "id_token", "refresh_token"):
+        assert key not in session
+
+    assert common.redact(session) == session, (
+        "the exported session reference is itself redacted, so the handoff would "
+        "carry a placeholder exactly as the tokens did"
+    )
+
+
+def test_a_journey_that_cannot_find_the_session_fails_naming_that(tmp_path):
+    """A missing session must be loud, not degraded into a downstream defect.
+
+    Without this, a vault that did not survive the stage boundary would surface as
+    a routing or inference failure — attributing a broken handoff to the product
+    under test, which is the ambiguity this harness exists to remove.
+    """
+    _script, common = shipped_script(tmp_path, "install_auth")
+    work_dir = tmp_path / "adp-eval"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(Exception, match="no session_ref"):
+        common.load_session({"work_dir": str(work_dir)})
+
+    # A reference that names the vault but whose file is gone.
+    with pytest.raises(Exception, match="did not survive the stage boundary"):
+        common.load_session(
+            {
+                "session_ref": str(work_dir / common.SESSION_VAULT),
+                "work_dir": str(work_dir),
+            }
+        )
+
+
+def test_a_session_reference_cannot_read_an_arbitrary_file(tmp_path):
+    """The reference arrives in a payload, so it is input, not a trusted path."""
+    _script, common = shipped_script(tmp_path, "install_auth")
+    work_dir = tmp_path / "adp-eval"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    elsewhere = tmp_path / "id_rsa"
+    elsewhere.write_text(json.dumps({"access_token": "stolen"}))
+
+    with pytest.raises(Exception, match="does not name this run's session vault"):
+        common.load_session({"session_ref": str(elsewhere), "work_dir": str(work_dir)})
+
+
+def test_the_stored_session_is_private_to_the_run_user(tmp_path):
+    """0600: another local user on the instance must not be able to read it."""
+    import os
+
+    _script, common = shipped_script(tmp_path, "install_auth")
+    session, _home = install_auth_session(tmp_path)
+    mode = os.stat(session["session_ref"]).st_mode & 0o777
+    assert mode == 0o600, f"session vault is {oct(mode)}, not 0600"
 
 
 def test_a_login_that_persisted_no_token_is_refused_not_handed_on(tmp_path):

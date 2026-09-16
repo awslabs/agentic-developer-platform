@@ -98,16 +98,7 @@ def _session(config, home):
     )
     config_file.chmod(0o600)
     tokens = directory / "tokens.json"
-    tokens.write_text(
-        json.dumps(
-            {
-                "access_token": config["access_token"],
-                "id_token": config.get("id_token", ""),
-                "refresh_token": config.get("refresh_token", ""),
-                "expires_at": config["session_expires_at"],
-            }
-        )
-    )
+    tokens.write_text(json.dumps(common.session_tokens(config)))
     tokens.chmod(0o600)
     return directory
 
@@ -598,10 +589,10 @@ def execute(config, evidence):
         "No expected release hashes were supplied; an update could not be checked "
         "against the release under test",
     )
-    require(
-        config.get("access_token"),
-        "update_rollback needs the session established by install_auth",
-    )
+    # Resolved from the private on-instance vault before any install is touched, so
+    # a session that did not survive the stage boundary is reported as that rather
+    # than as an update/rollback defect.
+    common.load_session(config)
     port = int(config.get("proxy_port") or 9191)
 
     with tempfile.TemporaryDirectory(prefix="adp-update-") as temporary:
