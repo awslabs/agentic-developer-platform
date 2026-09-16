@@ -521,14 +521,13 @@ def disconnect(api, args):
         "ADP stops using that account and anything an administrator pointed at this connection stops working. "
         "The IAM role stays in AWS — delete its CloudFormation stack yourself if you want it gone.",
     )
-    try:
-        api.request("DELETE", f"{CREDENTIALS}/{segment(connection['id'])}")
-    except CliError as exc:
-        # A successful delete answers 204 with no body, which the shared transport
-        # cannot tell from an unreachable gateway. Settle it by reading the list
-        # back rather than guessing either way.
-        if exc.code != "gateway_unavailable":
-            raise
+    # A successful delete answers 204 with no body. The shared transport used to
+    # report that as "gateway_unavailable", so this call had to swallow that one
+    # code and let the readback below settle it; adp_common now recognises an
+    # empty 204, so a genuine unreachable gateway is again allowed to surface
+    # here instead of being mistaken for success (Issue #5039).
+    api.request("DELETE", f"{CREDENTIALS}/{segment(connection['id'])}")
+    # The readback stays: it confirms ADP really dropped the connection.
     if any(row["id"] == connection["id"] for row in connections(api)):
         raise CliError("ADP still lists that connection. It was not disconnected; check its status before retrying.")
     return {**plan, "disconnected": True}

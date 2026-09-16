@@ -706,19 +706,45 @@ def test_disconnect_is_confirmed_before_removal(environment, monkeypatch):
 
 
 def test_disconnect_confirms_the_removal_against_adp(environment, monkeypatch):
-    """A DELETE answers 204 with no body, which the shared transport cannot tell
-    from an unreachable gateway — so the outcome is read back, not assumed."""
+    """The outcome is read back, not assumed: a DELETE that reports success but
+    leaves the connection listed must not be reported as disconnected.
+
+    Issue #5039: this previously simulated the DELETE raising `gateway_unavailable`,
+    because the shared transport could not tell a successful empty 204 from an
+    unreachable gateway. adp_common now recognises an empty 204, so that premise
+    is gone — but the readback it justified is still worth having, since it is
+    what catches a delete the server accepted without acting on.
+    """
     api, _ = environment
     cli.run(arguments(), api)
     original = api.request
 
     def request(method, path, body=None):
         if method == "DELETE":
-            raise cli.CliError("ADP could not be reached or returned an invalid response.", "gateway_unavailable")
+            return {}  # what a real 204 now yields — but the row deliberately stays
         return original(method, path, body)
 
     api.request = request
     with pytest.raises(cli.CliError, match="still lists that connection"):
+        cli.run(cli.parser().parse_args(["disconnect", NAME, "--yes"]), api)
+
+
+def test_disconnect_surfaces_an_unreachable_gateway(environment):
+    """A real network failure must NOT be mistaken for a successful delete.
+
+    Issue #5039: the old code swallowed `gateway_unavailable` from the DELETE to
+    work around the 204 parsing bug, which meant an genuinely unreachable gateway
+    fell through to the readback. With the transport fixed, the swallow is gone
+    and the failure surfaces.
+    """
+    api, _ = environment
+    cli.run(arguments(), api)
+
+    def request(method, path, body=None):
+        raise cli.CliError("ADP could not be reached or returned an invalid response.", "gateway_unavailable")
+
+    api.request = request
+    with pytest.raises(cli.CliError, match="could not be reached"):
         cli.run(cli.parser().parse_args(["disconnect", NAME, "--yes"]), api)
 
 

@@ -82,7 +82,17 @@ class Api:
         )
         try:
             with self.opener.open(request, timeout=timeout) as response:
-                return json.load(response)
+                payload = response.read()
+                # 204/205 are DEFINED to carry no body, and ADP uses 204 for
+                # successful deletes (src/auth/vault_routes.py). Parsing that as
+                # JSON raised, and the ValueError arm below relabelled a
+                # SUCCESSFUL delete as "gateway_unavailable" (Issue #5039).
+                # Keyed on those two statuses and an actually-empty body only:
+                # an empty or malformed body on any other status is still a
+                # failure, so a truncated response cannot pass as success.
+                if not payload.strip() and response.status in (204, 205):
+                    return {}
+                return json.loads(payload)
         except urllib.error.HTTPError as exc:
             code = "http_error"
             try:

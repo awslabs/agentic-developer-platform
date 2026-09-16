@@ -83,7 +83,7 @@ class TestCliScriptDownload:
 
         assert resp.content == (CLI_DIR / script_name).read_bytes()
 
-    def test_allowlist_contains_exactly_the_four_cli_files(self):
+    def test_allowlist_contains_exactly_the_expected_cli_files(self):
         """Legacy bg-auth.sh (deprecated) and bg-auth.ps1 (no source file) stay
         out. Pinned as a set so adding a file to cli/ never makes it publicly
         downloadable by accident — this route is unauthenticated."""
@@ -100,6 +100,10 @@ class TestCliScriptDownload:
             # command is never advertised before its file is downloadable.
             "adp-github.py",
             "adp-github-admin.py",
+            # Issue #5039: `adp superplane`. Carries no secret — it reads the
+            # session the existing `adp login` already wrote, which is the whole
+            # point of the story, so publishing it exposes nothing.
+            "adp-superplane.py",
         }
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):

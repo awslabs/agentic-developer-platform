@@ -58,6 +58,13 @@ _CLI_DIR = _GATEWAY_ROOT / "cli"
 # what replaces the old manual re-download. Neither file contains a secret, so
 # both keep this route's public-content property.
 #
+# `adp-superplane.py` backs `adp superplane <verb>` (Issue #5039). It must be
+# served here for the same reason it is in install.sh's CLI_FILES: `adp`'s
+# dispatch resolves it as an installed sibling, so a verb present in `adp`'s
+# `case` but absent from this allowlist is a CLI that looks broken for every
+# user. It carries no secret — provider values are prompted for at runtime and
+# POSTed straight to the vault API, never written into the script.
+#
 # Deliberately absent:
 #   bg-auth.sh   — legacy SigV4 helper, deprecated (cli/README.md)
 #   bg-auth.ps1  — never existed in the repo; PowerShell parity is a non-goal
@@ -72,6 +79,7 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp-aws.py": (_CLI_DIR / "adp-aws.py").resolve(),
     "adp-github.py": (_CLI_DIR / "adp-github.py").resolve(),
     "adp-github-admin.py": (_CLI_DIR / "adp-github-admin.py").resolve(),
+    "adp-superplane.py": (_CLI_DIR / "adp-superplane.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
@@ -90,6 +98,7 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp-aws.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-github.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-github-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-superplane.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }
 
 

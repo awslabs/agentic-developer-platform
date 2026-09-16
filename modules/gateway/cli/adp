@@ -47,7 +47,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -787,22 +787,68 @@ exec_python_helper() {
 }
 
 # --- update -----------------------------------------------------------------
+# The ADP_VERSION a given copy of this script declares. Read from the file rather
+# than from a manifest, so a version claim is always checked against the code that
+# would actually run (Issue #5039).
+declared_version() {
+    [ -f "$1" ] || return 0
+    sed -n 's/^readonly ADP_VERSION="\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -n 1
+}
+
 # Re-pull install.sh from the gateway that installed us and re-run it against
 # the same prefix. The previous copies are kept as *.prev for --rollback, which
 # is the mitigation for "adp update pulled a broken CLI".
+#
+# Issue #5039: `--to <version>` makes both directions version-explicit. An
+# unpinned target (a range, a tag, "latest") is rejected rather than resolved,
+# because resolving it would reintroduce exactly the "update installed something
+# I did not choose" behaviour the pin exists to prevent. Bare `adp update` and
+# bare `--rollback` keep their existing meaning.
 cmd_update() {
     local rollback=0
+    local target=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --rollback) rollback=1; shift ;;
+            # Issue #5039: name the version explicitly. `--to` is what makes an
+            # update or rollback verifiable — without it, "update" means whatever
+            # the gateway happens to serve now and "rollback" means one anonymous
+            # generation back.
+            --to)
+                if [ -z "${2:-}" ]; then print_error "--to requires a version, for example --to 1.0.0"; exit 1; fi
+                target="$2"; shift 2 ;;
+            --to=*) target="${1#--to=}"; shift ;;
             *) print_error "Unknown option for 'update': $1"; exit 1 ;;
         esac
     done
+
+    if [ -n "${target}" ] && ! [[ "${target}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        print_error "--to needs an exact version like 1.0.0, not '${target}'."
+        print_warning "A range or tag would not pin anything; only an exact version is accepted."
+        exit 1
+    fi
 
     local dir
     dir="$(adp_dir)"
 
     if [ "${rollback}" -eq 1 ]; then
+        # A rollback target is verified against what the .prev copies ACTUALLY
+        # declare, before anything is moved. Trusting the manifest alone would
+        # let a mismatched pair silently restore the wrong version.
+        if [ -n "${target}" ]; then
+            local previous_version
+            previous_version="$(declared_version "${dir}/adp.prev")"
+            if [ -z "${previous_version}" ]; then
+                print_error "No previous version to roll back to."
+                exit 1
+            fi
+            if [ "${previous_version}" != "${target}" ]; then
+                print_error "Rollback target ${target} is not available; the previous version here is ${previous_version}."
+                print_warning "Roll back to it with 'adp update --rollback --to ${previous_version}', or reinstall pinned to ${target}."
+                exit 1
+            fi
+        fi
+
         local restored=0
         local name
         for name in ${CLI_FILES}; do
@@ -816,7 +862,7 @@ cmd_update() {
             exit 1
         fi
         chmod +x "${dir}/adp" "${dir}/${CORE_SCRIPT_NAME}" 2>/dev/null || true
-        print_success "Rolled back to the previous CLI version."
+        print_success "Rolled back to CLI version $(declared_version "${dir}/adp")."
         return 0
     fi
 
@@ -838,8 +884,16 @@ cmd_update() {
     fi
 
     print_info "Updating from ${gateway_url%/}..."
+    # A pinned update passes the pin through: install.sh verifies the served
+    # version against it and installs nothing on a mismatch, so `--to` either
+    # lands exactly that version or changes nothing.
+    if [ -n "${target}" ]; then
+        ADP_KEEP_PREVIOUS=1 bash "${installer}" --prefix "${dir}" --gateway-url "${gateway_url}" --version-pin "${target}"
+        print_success "Updated to ${target}. 'adp update --rollback' restores the previous version."
+        return 0
+    fi
     ADP_KEEP_PREVIOUS=1 bash "${installer}" --prefix "${dir}" --gateway-url "${gateway_url}"
-    print_success "Updated. 'adp update --rollback' restores the previous version."
+    print_success "Updated to $(declared_version "${dir}/adp"). 'adp update --rollback' restores the previous version."
 }
 
 usage() {
@@ -883,13 +937,26 @@ Self-management:
     daemon install        Opt in to an always-on proxy, so bare 'codex' works (macOS)
     daemon uninstall      Remove it
 
+Run GPU workloads (uses the same sign-in — no second token to manage):
+    superplane workspace    Create, list, select and describe workspaces
+    superplane deploy       Deploy models, list and delete deployments
+    superplane node|cost|events|quota
+                            Nodes, spend, recent activity and workspace quota
+    superplane account|aws-onboard
+                            Register cloud accounts for Superplane
+    superplane provider add Store a provider credential in ADP's vault (prompted)
+
   Administration:
     admin login           Sign in with a Cognito administrator account
     admin setup           Check and resume first-time setup
     admin bedrock         Connect AWS destinations and manage model routing
     admin github          Configure this deployment's GitHub App and check it
     bedrock status        Show your effective Bedrock destination
-    update [--rollback]   Re-pull this CLI from your gateway
+    update [--to <version>]
+                          Re-pull this CLI from your gateway; --to pins the exact
+                          version and installs nothing if it is not what is served
+    update --rollback [--to <version>]
+                          Restore the previous version (--to verifies which)
     version               Print the version
     help                  Show this message
 
@@ -920,6 +987,12 @@ main() {
         bedrock) exec_python_helper "adp-bedrock.py" "$@" ;;
         admin)   exec_python_helper "adp-admin.py" "$@" ;;
         github)  exec_python_helper "adp-github.py" "$@" ;;
+        # Superplane workloads (Issue #5039). Goes through the same helper path
+        # as the areas above, so it inherits ONE credential path: the session
+        # `adp login` already established. The extension has no token store of
+        # its own — that is the whole point of the verb existing here rather
+        # than as a separate `superplane` CLI on the user's PATH.
+        superplane) exec_python_helper "adp-superplane.py" "$@" ;;
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.
