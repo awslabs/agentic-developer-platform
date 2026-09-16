@@ -436,12 +436,15 @@ def execute(config, evidence):
         if config.get("admin_setup_required", True):
             _setup(config, evidence, cli)
         evidence["session_token_present"] = bool(token)
+        # The run-owned durable directory the ec2 stage created, which is where
+        # both the preserved CLI and the session vault belong. `work_dir`, NOT
+        # `work_dir/cli`: `_session_document` appends "cli" itself, and the vault
+        # path a later journey is told to read is derived from this same value —
+        # so passing the CLI subdirectory here would put the vault somewhere no
+        # journey looks for it. Falls back to the journey's own temp directory only
+        # when no work_dir was supplied, which is a degraded single-journey run.
         _session_document(
-            config,
-            evidence,
-            prefix,
-            home,
-            config.get("work_dir") or str(Path(temporary) / "cli"),
+            config, evidence, prefix, home, config.get("work_dir") or temporary
         )
         evidence.update(stage="complete", success=True)
 

@@ -4217,17 +4217,58 @@ def install_auth_session(tmp_path, *, tokens=None, config_overrides=None):
                 "org_id": "org-eval",
             }
         }
+        # `work_dir`, exactly as `execute` passes it: the run-owned durable
+        # directory, NOT its `cli` subdirectory. `_session_document` derives both
+        # the preserved CLI and the vault from this one value, so the two must be
+        # the same value production uses or the vault lands where nothing reads it.
         script._session_document(
             {"work_dir": str(tmp_path / "adp-eval"), **(config_overrides or {})},
             evidence,
             prefix,
             home,
-            str(tmp_path / "adp-eval" / "cli"),
+            str(tmp_path / "adp-eval"),
         )
         return evidence["session"], home
     finally:
         server.kill()
         server.wait()
+
+
+def test_the_vault_lands_where_the_next_journey_is_told_to_look(tmp_path):
+    """The reference published and the path a journey resolves must be one path.
+
+    `_session_document` derives BOTH the preserved CLI (`work_dir/cli`) and the
+    vault (`work_dir/session.json`) from a single `work_dir`, and the orchestrator
+    tells later journeys to look under `stages.WORK_DIR`. Pass the wrong level here
+    — the `cli` subdirectory rather than the work directory — and the CLI lands at
+    `work_dir/cli/cli` while the vault lands where nothing reads it. That was a
+    real defect in this change, caught only because `load_session` compares the
+    whole resolved path; this pins the contract so it cannot come back.
+    """
+    from pathlib import Path
+
+    _script, common = shipped_script(tmp_path, "install_auth")
+    work_dir = tmp_path / "adp-eval"
+    session, _home = install_auth_session(tmp_path)
+
+    assert session["session_ref"] == str(work_dir / common.SESSION_VAULT)
+    # The CLI is one level down from the vault, not two.
+    assert Path(session["cli_path"]) == work_dir / "cli" / "adp"
+    # And the reference resolves under the work_dir the payload carries.
+    assert common.load_session(
+        {"session_ref": session["session_ref"], "work_dir": str(work_dir)}
+    )["access_token"]
+
+
+def test_the_orchestrator_and_the_instance_agree_on_the_work_directory():
+    """One directory, named once. Two spellings of it is a silent broken handoff.
+
+    `stages.WORK_DIR` creates the 0700 run directory and is what the journey
+    payload advertises, so if it ever diverges from the remote bundle's own idea of
+    where it lives, the vault reference resolves to nothing on a real instance
+    while every offline test still passes.
+    """
+    assert stages.WORK_DIR == bundle.REMOTE_DIR
 
 
 def test_the_handed_over_cli_outlives_the_journey_that_installed_it(tmp_path):
@@ -4332,15 +4373,44 @@ def test_a_journey_that_cannot_find_the_session_fails_naming_that(tmp_path):
 
 
 def test_a_session_reference_cannot_read_an_arbitrary_file(tmp_path):
-    """The reference arrives in a payload, so it is input, not a trusted path."""
+    """The reference arrives in a payload, so it is input, not a trusted path.
+
+    Checking only the FILENAME would leave the interesting cases open: a vault
+    name in another directory, or a traversal out of the work directory and back.
+    So each of those is exercised, not just the obvious `/etc/passwd` shape.
+    """
     _script, common = shipped_script(tmp_path, "install_auth")
     work_dir = tmp_path / "adp-eval"
     work_dir.mkdir(parents=True, exist_ok=True)
+    seed_session_vault(work_dir, tokens={"access_token": "<real>"})
+
     elsewhere = tmp_path / "id_rsa"
     elsewhere.write_text(json.dumps({"access_token": "stolen"}))
+    # Same basename the check looks for, but outside this run's work directory.
+    planted = tmp_path / "elsewhere"
+    planted.mkdir()
+    (planted / common.SESSION_VAULT).write_text(json.dumps({"access_token": "stolen"}))
 
-    with pytest.raises(Exception, match="does not name this run's session vault"):
-        common.load_session({"session_ref": str(elsewhere), "work_dir": str(work_dir)})
+    for reference in (
+        elsewhere,
+        planted / common.SESSION_VAULT,
+        work_dir / ".." / "elsewhere" / common.SESSION_VAULT,
+    ):
+        with pytest.raises(Exception, match="does not name this run's session vault"):
+            common.load_session(
+                {"session_ref": str(reference), "work_dir": str(work_dir)}
+            )
+
+    # The run's own vault still resolves, so the guard is not simply refusing all.
+    assert (
+        common.load_session(
+            {
+                "session_ref": str(work_dir / common.SESSION_VAULT),
+                "work_dir": str(work_dir),
+            }
+        )["access_token"]
+        == "<real>"
+    )
 
 
 def test_the_stored_session_is_private_to_the_run_user(tmp_path):
@@ -7192,6 +7262,18 @@ sys.exit(dispatcher.main(["install_auth", sys.argv[2]]))
             assert evidence["login"]["authenticated"] is True
             assert evidence["login"]["refresh_succeeded"] is True
             assert "setup" not in evidence
+            # Where the vault actually landed, through the production entry point
+            # rather than through a direct `_session_document` call. `execute`
+            # chooses the directory, so this is the only place a wrong level
+            # (`work_dir/cli` instead of `work_dir`) is observable: it would put
+            # the session where no later journey resolves it while every other
+            # assertion still passed.
+            session = evidence["session"]
+            assert session["session_ref"] == str(payload["work_dir"]) + "/session.json"
+            assert session["cli_path"] == str(payload["work_dir"]) + "/cli/adp"
+            # And nothing token-shaped came out with it.
+            for key in ("access_token", "id_token", "refresh_token"):
+                assert key not in session
             assert calls.read_text().splitlines() == [
                 "/api/auth/cli/password",
                 "/api/auth/cli/password",

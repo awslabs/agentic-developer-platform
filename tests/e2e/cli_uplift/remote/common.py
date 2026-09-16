@@ -125,12 +125,19 @@ def load_session(config):
         reference,
         "This journey received no session_ref; install_auth must run before it",
     )
-    path = Path(reference)
     # The reference arrives in a payload, so it is treated as input rather than
-    # trusted: it must name the vault inside this run's own work directory. A
-    # payload cannot be used to read an arbitrary file off the instance.
+    # trusted: it must be exactly the vault inside this run's own work directory.
+    # Checking the basename alone would still accept `/etc/session.json` or
+    # `../../elsewhere/session.json`, so the whole resolved path is compared
+    # against the one path this run is allowed to read.
+    path = Path(reference)
+    expected = session_vault_path(config.get("work_dir"))
+    try:
+        allowed = path.resolve() == expected.resolve()
+    except OSError:
+        allowed = False
     require(
-        path.name == SESSION_VAULT,
+        path.name == SESSION_VAULT and allowed,
         "The supplied session_ref does not name this run's session vault",
     )
     try:
