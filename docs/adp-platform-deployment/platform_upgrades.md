@@ -52,6 +52,10 @@ that namespace when needed. It does not infer a customer's org
 from this repository's remote, register an App, enable ARC, copy the platform
 account's installation ID, or overwrite the gateway's registry seed.
 Existing factory installations keep their recovered configuration.
+The upgrade also retains any runner role owned by factory state. When that
+role is missing, it checks for legacy IAM name collisions and selects a
+dedicated factory role without importing or changing the existing role. This
+check also applies when retrying a partially installed factory.
 
 Completion requires factory Terraform state, a Ready agent-gateway ScaledJob,
 the Ready chat worker and its image-prepull DaemonSet, and the intended release

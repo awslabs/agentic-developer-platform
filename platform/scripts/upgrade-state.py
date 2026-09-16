@@ -95,6 +95,9 @@ def factory_settings(state):
     if match:
         result["github_org"] = match[1]
     for resource, attrs in resources(state):
+        if (resource["type"] == "aws_iam_role" and resource["name"] == "runner"
+                and resource.get("module") == "module.runner_iam"):
+            result["runner_role_name"] = attrs["name"]
         if resource["type"] == "aws_dynamodb_table_item" and resource["name"] == "scaledjob_worker_agent":
             result["seed_agent_registry"] = True
         if resource["type"] == "kubernetes_secret" and resource.get("module", "").startswith("module.arc_runner"):
@@ -295,7 +298,21 @@ def prepare_factory(args):
     before = json.loads((directory / "integration-before.json").read_text())
     if aws("sts", "get-caller-identity")["Account"] != before["account"]:
         raise ValueError("Factory installation account differs from upgrade account")
+    target = directory / "agent-factory.tfvars.json"
+    settings = json.loads(target.read_text())
+    if not settings.get("runner_role_name"):
+        # A legacy CodeBuild role can occupy the IRSA role's original name.
+        # Never import or repurpose an unowned role, even on a partial retry.
+        names = {role["RoleName"] for role in aws("iam", "list-roles")["Roles"]}
+        prefix = f"adp-{settings['environment']}-agent"
+        available = next((name for name in (f"{prefix}-runner-role", f"{prefix}-factory-runner-role")
+                          if name not in names), None)
+        if not available:
+            raise ValueError("Both factory runner role names are occupied outside factory state; refusing to adopt them")
+        settings["runner_role_name"] = available
+        print(f"Factory runner will use a new dedicated IAM role: {available}")
     if "agent-factory" in before["modules"]:
+        write_json(target, settings)
         return  # prepare already recovered the existing integration settings.
     missing = {"gateway", "webhook-ingress"} - set(before["modules"])
     if missing:
@@ -309,8 +326,6 @@ def prepare_factory(args):
     if args.github_org and not re.fullmatch(valid_org, args.github_org):
         raise ValueError("ADP_GITHUB_ORG must name a single valid GitHub organization")
     org = args.github_org or (allowed if re.fullmatch(valid_org, allowed) else "")
-    target = directory / "agent-factory.tfvars.json"
-    settings = json.loads(target.read_text())
     settings.update(github_org=org, github_repo="", github_app_dev_installation_id="",
                     enable_github_apps=False, seed_agent_registry=False,
                     runner_namespace="arc-runners", gateway_deployed=True)

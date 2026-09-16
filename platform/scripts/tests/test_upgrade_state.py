@@ -94,6 +94,13 @@ class PreservationTests(unittest.TestCase):
         self.assertEqual(result["github_org"], "")
         self.assertFalse(result["enable_github_apps"])
 
+    def test_existing_factory_runner_role_name_is_recovered(self):
+        for name in ("adp-dev-agent-runner-role", "adp-dev-agent-factory-runner-role"):
+            result = state.factory_settings({"resources": [
+                resource("aws_iam_role", "runner", {"name": name}, "module.runner_iam"),
+                resource("aws_iam_role", "runner", {"name": "unrelated"}, "module.other")]})
+            self.assertEqual(result["runner_role_name"], name)
+
     def baseline(self):
         return {"secrets": {"app-key": ["version-1"]}, "mappings": {"identity": [
             {"identity_type": {"S": "github_installation_id"}, "identity_value": {"S": "456"}, "org_id": {"S": "customer"}}]}}
@@ -131,7 +138,7 @@ class PreservationTests(unittest.TestCase):
 
 
 class RequiredFactoryTests(unittest.TestCase):
-    def prepare(self, modules=None, org="customer", override="", account="111122223333"):
+    def prepare(self, modules=None, org="customer", override="", account="111122223333", roles=(), owned_role=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             before = {"account": "111122223333", "modules": modules if modules is not None else ["platform", "gateway", "webhook-ingress"],
@@ -139,12 +146,19 @@ class RequiredFactoryTests(unittest.TestCase):
             (root / "integration-before.json").write_text(json.dumps(before))
             original = {"environment": "dev", "aws_region": "us-east-1", "enable_github_apps": True,
                         "github_org": "existing-org", "github_app_dev_installation_id": "existing-installation"}
+            if owned_role:
+                original["runner_role_name"] = owned_role
             target = root / "agent-factory.tfvars.json"
             target.write_text(json.dumps(original))
             args = SimpleNamespace(directory=directory, github_org=override)
-            with patch.object(state, "aws", return_value={"Account": account}) as aws:
+            def aws(*args):
+                if args == ("sts", "get-caller-identity"):
+                    return {"Account": account}
+                if args == ("iam", "list-roles") and not owned_role:
+                    return {"Roles": [{"RoleName": name} for name in roles]}
+                self.fail(f"Unexpected AWS call: {args}")
+            with patch.object(state, "aws", side_effect=aws):
                 state.prepare_factory(args)
-            aws.assert_called_once_with("sts", "get-caller-identity")
             return original, json.loads(target.read_text())
 
     def test_missing_factory_installs_without_copying_platform_app_configuration(self):
@@ -158,8 +172,30 @@ class RequiredFactoryTests(unittest.TestCase):
         self.assertEqual(result["environment"], "dev")
 
     def test_existing_factory_configuration_is_not_reinitialized(self):
-        before, after = self.prepare(modules=["platform", "gateway", "webhook-ingress", "agent-factory"])
+        before, after = self.prepare(modules=["platform", "gateway", "webhook-ingress", "agent-factory"],
+                                     owned_role="adp-dev-agent-runner-role")
         self.assertEqual(before, after)
+
+    def test_unoccupied_default_runner_name_is_used(self):
+        _, result = self.prepare()
+        self.assertEqual(result["runner_role_name"], "adp-dev-agent-runner-role")
+
+    def test_legacy_role_collision_is_avoided_for_missing_and_partial_factory(self):
+        for modules in (["platform", "gateway", "webhook-ingress"],
+                        ["platform", "gateway", "webhook-ingress", "agent-factory"]):
+            before, after = self.prepare(modules=modules, roles=["adp-dev-agent-runner-role"])
+            self.assertEqual(after["runner_role_name"], "adp-dev-agent-factory-runner-role")
+            if "agent-factory" in modules:
+                self.assertEqual({k: v for k, v in after.items() if k != "runner_role_name"}, before)
+
+    def test_owned_alternate_role_is_preserved_on_later_upgrades(self):
+        before, after = self.prepare(modules=["platform", "gateway", "webhook-ingress", "agent-factory"],
+                                     owned_role="adp-dev-agent-factory-runner-role")
+        self.assertEqual(before, after)
+
+    def test_both_unowned_names_occupied_refuses_without_adopting_roles(self):
+        with self.assertRaisesRegex(ValueError, "refusing to adopt"):
+            self.prepare(roles=["adp-dev-agent-runner-role", "adp-dev-agent-factory-runner-role"])
 
     def test_missing_dependencies_stop_before_installation(self):
         for modules in (["platform"], ["platform", "gateway"], ["platform", "webhook-ingress"]):

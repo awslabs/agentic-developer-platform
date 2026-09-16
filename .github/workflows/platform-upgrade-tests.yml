@@ -16,6 +16,8 @@ on:
       - 'platform/scripts/tests/test_update_safety.py'
       - 'modules/agent-factory/infra/outputs.tf'
       - 'modules/agent-factory/infra/variables.tf'
+      - 'modules/agent-factory/infra/main.tf'
+      - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'modules/agent-factory/infra/modules/lambda-gateway/**'
       - '.github/workflows/platform-upgrade-tests.yml'
   push:
@@ -34,6 +36,8 @@ on:
       - 'platform/scripts/tests/test_update_safety.py'
       - 'modules/agent-factory/infra/outputs.tf'
       - 'modules/agent-factory/infra/variables.tf'
+      - 'modules/agent-factory/infra/main.tf'
+      - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'modules/agent-factory/infra/modules/lambda-gateway/**'
       - '.github/workflows/platform-upgrade-tests.yml'
 
@@ -76,3 +80,7 @@ jobs:
         working-directory: modules/agent-factory/infra/modules/lambda-gateway
       - run: terraform test -no-color
         working-directory: modules/agent-factory/infra/modules/lambda-gateway
+      - run: terraform init -backend=false -input=false
+        working-directory: modules/agent-factory/infra/modules/runner-iam
+      - run: terraform test -no-color
+        working-directory: modules/agent-factory/infra/modules/runner-iam

@@ -28,6 +28,12 @@ variable "runner_namespace" {
   default     = "arc-runners"
 }
 
+variable "runner_role_name" {
+  description = "Optional factory IRSA role name; upgrades retain the owned role or avoid legacy CodeBuild name collisions"
+  type        = string
+  default     = ""
+}
+
 variable "gateway_deployed" {
   description = "Set true when the Bedrock gateway module has been applied. Enables the agent-factory to read the gateway's Terraform state for the authorizer Lambda ARN."
   type        = bool
