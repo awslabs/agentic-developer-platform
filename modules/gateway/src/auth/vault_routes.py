@@ -79,7 +79,7 @@ def get_secrets_manager() -> SecretsManagerHelper:
 
 
 async def _resolve_user_id_in_context(token_context, db: AsyncSession) -> None:
-    """Resolve Cognito sub → Postgres users.id and mutate token_context in place.
+    """Resolve Cognito sub → Postgres users.id AND the effective org, in place.
 
     TokenContext.user_id holds the Cognito sub for human users (the JWT `sub`
     claim), but user_credentials.user_id is a FK on users.id.  Without this
@@ -91,6 +91,24 @@ async def _resolve_user_id_in_context(token_context, db: AsyncSession) -> None:
     If no users row matches (shouldn't happen for registered humans), leave
     the context untouched — the downstream query will return empty, which is
     the safe behavior.
+
+    Issue #5264: the org has to be resolved here for exactly the same reason the
+    user does.  ``POST /auth/credentials/aws/connect`` WRITES its row with
+    ``resolve_effective_org_id``, which falls back to ``users.org_id`` when the
+    token carries no ``custom:org_id`` claim (#600).  These routes READ with the
+    raw claim.  With a CLI password sign-in — which produces no org claim at all —
+    the create path and the list/delete paths disagreed about which tenant the
+    caller was in, so a connection the user had just made was absent from
+    ``adp aws list`` and 404 on ``adp aws disconnect``, while the create path
+    still saw it and refused the duplicate name.  Every retry leaked another
+    invisible row, its secret and its IAM role, with no product path to reclaim
+    any of them.
+
+    Resolved in this one helper, not per-route, because every credential route
+    already calls it: that is what stops the next route from re-introducing the
+    split.  It NARROWS nothing and WIDENS nothing — the filter still requires
+    org_id equality, and ``caller.org_id`` now simply holds the caller's real org
+    instead of an empty string.  Another org's credential stays invisible.
     """
     if token_context.account_type != "human":
         return
@@ -99,6 +117,34 @@ async def _resolve_user_id_in_context(token_context, db: AsyncSession) -> None:
     user = await workspace_user(db, token_context.user_id, token_context.org_id, username=token_context.cognito_username)
     if user is not None:
         token_context.user_id = user.id
+        # Prefer the user row we just resolved: it is the same row
+        # resolve_effective_org_id's fallback reads, without a second query.
+        if not token_context.org_id and user.org_id:
+            token_context.org_id = user.org_id
+        return
+    # No users row matched under the claimed org. That is the case an org-less
+    # token produces when the sub is only findable via login_user, so try the
+    # login lookup before giving up — otherwise the empty-claim caller stays
+    # unresolved and every credential route keeps returning nothing.
+    #
+    # Deliberately NOT resolve_effective_org_id: that raises 409 when the caller
+    # has no org, and a list endpoint must keep answering with an empty list
+    # rather than start erroring on a surface that worked. Leaving the context
+    # untouched is the existing, safe behaviour for that caller.
+    #
+    # Gated on the claim being ABSENT. If a token asserts an org and no user
+    # matches in it, that caller is not a member of the org they claimed, and
+    # substituting an identity resolved by sub alone would cross a tenant
+    # boundary to do it. Only the org-less token — the case this fixes — takes
+    # this path.
+    if token_context.org_id:
+        return
+    from src.shared.identity.workspaces import login_user
+
+    login = await login_user(db, token_context.user_id)
+    if login is not None and login.org_id:
+        token_context.user_id = login.id
+        token_context.org_id = login.org_id
 
 
 # ---------------------------------------------------------------------------
