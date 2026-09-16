@@ -49,4 +49,9 @@ phases:
 
   post_build:
     commands:
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          echo "Chat agent build failed; refusing to report publication success." >&2
+          exit 1
+        fi
       - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"

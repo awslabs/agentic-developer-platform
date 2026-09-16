@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/build-agent-factory-lambdas.sh'
+      - 'modules/agent-factory/agent/package*.json'
+      - 'modules/agent-factory/agent/src/complex-task-chat/sweepers/**'
+      - 'modules/agent-factory/infra/chat-agent-infra.tf'
       - 'platform/scripts/upgrade-*.py'
       - 'platform/scripts/upgrade-*.sh'
       - 'platform/scripts/terraform-update.sh'
@@ -18,6 +22,10 @@ on:
     branches: [main]
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/build-agent-factory-lambdas.sh'
+      - 'modules/agent-factory/agent/package*.json'
+      - 'modules/agent-factory/agent/src/complex-task-chat/sweepers/**'
+      - 'modules/agent-factory/infra/chat-agent-infra.tf'
       - 'platform/scripts/upgrade-*.py'
       - 'platform/scripts/upgrade-*.sh'
       - 'platform/scripts/terraform-update.sh'
@@ -33,6 +41,18 @@ permissions:
   contents: read
 
 jobs:
+  factory-lambda-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: bash platform/scripts/build-agent-factory-lambdas.sh
+
   upgrade-contracts:
     runs-on: ubuntu-latest
     steps:

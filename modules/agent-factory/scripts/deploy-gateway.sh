@@ -35,6 +35,7 @@ echo "=== Agent Gateway Deploy ==="
 if [[ "${SKIP_TF}" != "true" ]]; then
     echo "[1/3] Terraform apply (enable_gateway=true)..."
     if [[ "${DRY_RUN}" == "false" ]]; then
+        bash "${REPO_ROOT}/platform/scripts/build-agent-factory-lambdas.sh"
         pushd "${MODULE_ROOT}/infra" > /dev/null
         terraform apply -input=false -auto-approve -var="enable_gateway=true"
         INPUT_QUEUE_URL=$(terraform output -raw gateway_input_queue_url 2>/dev/null || echo "")

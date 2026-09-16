@@ -1284,6 +1284,7 @@ refresh_credentials
 # fresh deploys where Apps haven't been registered yet.
 if [ "$DEPLOY_FACTORY" = true ]; then
   step "Step 10/12: Deploy agent-factory"
+  bash "$SCRIPT_DIR/build-agent-factory-lambdas.sh"
 
   # Agent factory infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/agent-factory/infra"
@@ -1382,6 +1383,23 @@ EOF
     ok "Agent gateway deployed"
     warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
   fi
+
+  # The WebSocket ingest Lambda sends to the chat FIFO queue. Its TypeScript
+  # consumer is a separate image from the legacy Python worker above, although
+  # both use the same ECR repository. Never overwrite one release with the other.
+  step "Step 10c/12: Build and deploy chat agent"
+  CHAT_IMAGE_TAG="${IMAGE_TAG}-chat"
+  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
+    cd "$ROOT_DIR/modules/agent-factory"
+    docker build -f agent/Dockerfile -t "$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG" .
+    docker push "$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG"
+  else
+    IMAGE_TAG="$CHAT_IMAGE_TAG" run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml"
+  fi
+  ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" STATE_BUCKET="$STATE_BUCKET" \
+    AGENT_IMAGE="$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG" \
+    bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
+  ok "Chat agent deployed (SHA: $IMAGE_TAG)"
 else
   step "Step 10/12: Skipping agent-factory"
 fi

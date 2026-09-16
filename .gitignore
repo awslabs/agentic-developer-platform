@@ -60,6 +60,7 @@ modules/agent-factory/agent-worker-image/coverage-control.json
 logs/
 
 # Build artifacts
+/modules/agent-factory/infra/.build/
 *.zip
 *.tar.gz
 

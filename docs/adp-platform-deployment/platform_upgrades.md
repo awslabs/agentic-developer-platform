@@ -54,7 +54,11 @@ account's installation ID, or overwrite the gateway's registry seed.
 Existing factory installations keep their recovered configuration.
 
 Completion requires factory Terraform state, a Ready agent-gateway ScaledJob,
-and the intended release image. Missing state or failed readiness stops the
+the Ready chat worker and its image-prepull DaemonSet, and the intended release
+images. The factory stage bundles ingest Lambda dependencies and the real
+session-cleanup handler before Terraform applies; it publishes both worker
+images. Python uses the source SHA tag, while chat uses `<SHA>-chat` in the same
+repository so the two builds cannot overwrite each other. Missing state or failed readiness stops the
 upgrade instead of printing a success message. Missing prerequisite states or
 resources created outside Terraform require recovery before installation;
 the upgrade does not force-create or replace those resources.
