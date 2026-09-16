@@ -14,11 +14,12 @@ stage logic it is trying to exercise.
 from __future__ import annotations
 
 import json
+import secrets
 import shlex
 import time
 from urllib.parse import quote
 
-from . import bundle, config
+from . import bundle, cleanup, config
 from . import ports as ports_module
 
 
@@ -258,6 +259,176 @@ def _run_worker(ssm, cfg, install):
         return document
 
     return run
+
+
+def _admin_fixtures(aws, cfg):
+    """Provision E02's two run-owned identities and the secret carrying them.
+
+    E02 asserts a REAL Cognito challenge flow: the CLI must complete
+    NEW_PASSWORD_REQUIRED, and a non-admin identity must be refused the admin
+    session. Neither can be satisfied by the shared login-regression fixture —
+    it is CONFIRMED (so it issues no challenge) and it is an admin (so it cannot
+    be the negative). Rotating it to force a challenge would break the very
+    regression suite that depends on it, so this run creates its own.
+
+    Two identities, matching the shape of the pool's existing fixture:
+
+    - the challenge identity, created with a TEMPORARY password so Cognito puts
+      it in FORCE_CHANGE_PASSWORD and the login must answer the challenge. It is
+      granted admin the way this pool grants it, `custom:role=platform_admin`
+      plus the `admins` group, because the gateway's `is_admin` accepts either.
+    - the non-admin identity, with a PERMANENT password and no role and no group,
+      so it authenticates (200) and is then refused the admin session (403).
+      `org_admin` is deliberately not used: it is a real role that is excluded
+      from platform admin, but leaving the claim unset tests the weaker case.
+
+    The credentials never travel in the SSM payload or the run config. They are
+    written to a run-owned secret and only its NAME is passed, which is the
+    contract `remote/common.fixture_secret` already implements.
+
+    The instance role cannot read that secret by identity policy — its single
+    GetSecretValue grant is pinned to the one shared fixture ARN, deliberately.
+    So the secret carries a RESOURCE policy naming only that role. Verified with
+    `simulate-principal-policy`: `allowed` via SourcePolicyType "Resource Policy"
+    for the eval instance role on this secret, `implicitDeny` for any other
+    secret. That needs no change to the shared role, no new identity policy and
+    no wider grant — which is why it is done this way.
+    """
+
+    def build(ctx):
+        pool = cfg["cognito_user_pool_id"]
+        prefix = ctx["evaluation_id"]
+        manifest = ctx["manifest"]
+        account, region = str(cfg["platform_account"]), cfg["region"]
+        # `adp-e2e-*` so the ownership tag, the bundle grant and the recovery
+        # sweep all recognise these as this run's.
+        challenge = f"{prefix}-admin@adp-eval.invalid"
+        non_admin = f"{prefix}-user@adp-eval.invalid"
+        secret_name = f"adp/cli-uplift-eval/{prefix}-fixtures"
+
+        # Distinct passwords, generated here and never logged. Each satisfies the
+        # pool policy (>=12 chars, upper, lower, digit, symbol) verified live.
+        def password():
+            return "Ev!" + secrets.token_urlsafe(18) + "9Aa"
+
+        temporary, rotated = password(), password()
+        non_admin_password = password()
+
+        def create(username, *, role):
+            attributes = [
+                {"Name": "email", "Value": username},
+                {"Name": "email_verified", "Value": "true"},
+                {"Name": "name", "Value": f"ADP eval {prefix}"},
+                {
+                    "Name": "custom:org_id",
+                    "Value": cfg.get("fixture_org_id", "") or "adp-platform",
+                },
+            ]
+            if role:
+                attributes.append({"Name": "custom:role", "Value": role})
+            # Recorded BEFORE the create, so an interruption between the two
+            # still leaves the identity findable by the sweep.
+            manifest.record(
+                "cognito_user",
+                f"{pool}/{username}",
+                account=account,
+                region=region,
+                detail={"fixture": "e02", "role": role or "none"},
+            )
+            aws.call(
+                "cognito-idp",
+                "admin_create_user",
+                UserPoolId=pool,
+                Username=username,
+                UserAttributes=attributes,
+                # No email is deliverable to .invalid, and a fixture must not
+                # try: SUPPRESS keeps this from generating mail at all.
+                MessageAction="SUPPRESS",
+                TemporaryPassword=temporary if role else non_admin_password,
+            )
+
+        create(challenge, role="platform_admin")
+        # The pool grants admin by group as well as by claim, and the gateway
+        # accepts either. Both are set so the fixture matches the shared one.
+        aws.call(
+            "cognito-idp",
+            "admin_add_user_to_group",
+            UserPoolId=pool,
+            Username=challenge,
+            GroupName="admins",
+        )
+
+        create(non_admin, role="")
+        # Permanent, so the non-admin authenticates outright: its rejection must
+        # come from authorization, not from an unanswered password challenge.
+        aws.call(
+            "cognito-idp",
+            "admin_set_user_password",
+            UserPoolId=pool,
+            Username=non_admin,
+            Password=non_admin_password,
+            Permanent=True,
+        )
+
+        document = {
+            "admin_username": challenge,
+            "admin_password": temporary,
+            "admin_new_password": rotated,
+            "non_admin_username": non_admin,
+            "non_admin_password": non_admin_password,
+        }
+        manifest.record(
+            "secret",
+            secret_name,
+            account=account,
+            region=region,
+            detail={"fixture": "e02"},
+        )
+        arn = (
+            aws.call(
+                "secretsmanager",
+                "create_secret",
+                Name=secret_name,
+                SecretString=json.dumps(document),
+                Tags=[{"Key": cleanup.OWNER_TAG, "Value": prefix}],
+            )
+            or {}
+        ).get("ARN") or secret_name
+        aws.call(
+            "secretsmanager",
+            "put_resource_policy",
+            SecretId=secret_name,
+            BlockPublicPolicy=True,
+            ResourcePolicy=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Sid": "AllowEvalInstanceRoleOnly",
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": (
+                                    f"arn:aws:iam::{account}:role/"
+                                    + cfg["instance_profile"]
+                                )
+                            },
+                            "Action": "secretsmanager:GetSecretValue",
+                            "Resource": arn,
+                        }
+                    ],
+                }
+            ),
+        )
+
+        # Only the NAME and the usernames leave this function. The passwords stay
+        # in the secret, which is the whole point of the indirection.
+        return {
+            "credential_secret": secret_name,
+            "created_username": challenge,
+            "non_admin_username": non_admin,
+        }
+
+    return build
 
 
 def _worker_config(cfg):
@@ -1015,6 +1186,7 @@ def wire(cfg, supplied=None, *, journeys=None):
         "install_bundle": install,
         "run_worker": _run_worker(ssm, cfg, install),
         "worker_config": _worker_config(cfg),
+        "admin_fixtures": _admin_fixtures(aws, cfg),
         "github_available": _github_available(cfg),
         "hosted_available": _hosted_available(cfg),
         "harness_auth_helper": _read_harness_helper,

@@ -2494,6 +2494,19 @@ def live_doubles(
             "cognito-idp.list_user_pool_clients": {
                 "UserPoolClients": [{"ClientId": "abc123"}]
             },
+            # E02's run-owned fixture identities. Stubbed so the provisioning is
+            # exercised by every full-run test rather than mocked away: a stage
+            # that silently skipped creating them would otherwise still pass.
+            "cognito-idp.admin_create_user": {},
+            "cognito-idp.admin_add_user_to_group": {},
+            "cognito-idp.admin_set_user_password": {},
+            "secretsmanager.create_secret": lambda **kwargs: {
+                "ARN": (
+                    f"arn:aws:secretsmanager:us-east-1:{cfg['platform_account']}"
+                    f":secret:{kwargs['Name']}-AbCdEf"
+                )
+            },
+            "secretsmanager.put_resource_policy": {},
             "iam.get_instance_profile": lambda **kwargs: {
                 "InstanceProfile": {
                     "InstanceProfileName": kwargs["InstanceProfileName"]
@@ -4831,6 +4844,199 @@ def test_a_full_run_removes_the_routing_rule_it_created_and_reports_the_row(tmp_
     assert swept.get("bedrock_destination") == cleanup.FAILED
     assert document["cleanup_ok"] is False
     assert result.code == 1
+
+
+def test_the_e02_fixture_passwords_never_reach_the_run_document_or_the_payload(
+    tmp_path,
+):
+    """The generated credentials must live only in the secret.
+
+    The run document is written to the durable S3 state store and restored by the
+    recovery job, and the SSM command text is visible to anyone who can read the
+    command invocation. So the passwords this stage generates must appear in
+    NEITHER — only the secret's NAME travels, which is the indirection
+    `remote/common.fixture_secret` already implements. This is the same class of
+    defect as the session handoff: a credential that leaks into exported state.
+    """
+    result = run_live_stages(tmp_path)
+    aws = result.ports["aws"]
+
+    # The passwords the stage generated, recovered from the create_secret call so
+    # the test checks the REAL values rather than a guess at their shape.
+    created = [
+        kwargs
+        for service, operation, kwargs in aws.calls
+        if (service, operation) == ("secretsmanager", "create_secret")
+    ]
+    assert created, "the E02 fixture secret was never created"
+    document = json.loads(created[0]["SecretString"])
+    passwords = [
+        document[key]
+        for key in ("admin_password", "admin_new_password", "non_admin_password")
+    ]
+    assert all(passwords), "a fixture password was empty"
+    assert len(set(passwords)) == 3, "the fixture reused one password for two roles"
+
+    # Nowhere in the run document, which is what reaches S3 and the report.
+    serialized = json.dumps(result.document)
+    for password in passwords:
+        assert password not in serialized
+
+    # Nowhere in the SSM command text either.
+    for joined in result.ports["ssm"].commands:
+        for password in passwords:
+            assert password not in joined
+
+    # What DOES travel is the secret name, and the payload carries no password key.
+    payload = result.ports["ssm"].payloads["install_auth"]
+    assert payload["credential_secret"].endswith("-fixtures")
+    assert not [key for key in payload if "password" in key.lower()]
+
+
+def test_the_e02_identities_are_recorded_before_they_are_created(tmp_path):
+    """Record-before-mutate, or an interrupted run leaks an identity nothing finds.
+
+    The manifest is the only route to deletion for a Cognito user — there is no
+    tag-and-age sweep behind it, unlike an EC2 instance. So the intent must be
+    durable BEFORE the create call, which is the ordering `Manifest.record`
+    exists to make possible.
+    """
+    order = []
+    real = cleanup.Manifest.record
+
+    def watched(self, kind, identifier, **kwargs):
+        order.append(("record", kind, identifier))
+        return real(self, kind, identifier, **kwargs)
+
+    # One shared ordering log across both the manifest and the AWS transport, so
+    # the assertion is about their true interleaving rather than two tallies.
+    cleanup.Manifest.record = watched
+
+    def doubles(cfg):
+        ports_double = live_doubles(cfg)
+        aws = ports_double["aws"]
+        underlying = aws.call
+
+        def logged(service, operation, **kwargs):
+            order.append(("call", operation))
+            return underlying(service, operation, **kwargs)
+
+        aws.call = logged
+        return ports_double
+
+    try:
+        result = run_live_stages(tmp_path, doubles=doubles, extra=["--suite", "full"])
+    finally:
+        # Restored unconditionally: a leaked patch would silently corrupt every
+        # test that runs after this one.
+        cleanup.Manifest.record = real
+
+    fixtures = result.document.get("admin_fixtures") or {}
+    assert fixtures.get("created_username"), "no challenge identity was provisioned"
+
+    # Every fixture create is preceded by the record naming that same resource.
+    for kind, operation in (
+        ("cognito_user", "admin_create_user"),
+        ("secret", "create_secret"),
+    ):
+        recorded = next(
+            (i for i, item in enumerate(order) if item[:2] == ("record", kind)), None
+        )
+        created = next(
+            (i for i, item in enumerate(order) if item == ("call", operation)), None
+        )
+        assert recorded is not None, f"{kind} was never recorded"
+        assert created is not None, f"{operation} was never called"
+        assert recorded < created, f"{kind} was recorded AFTER it was created"
+
+
+def test_both_e02_identities_and_the_fixture_secret_are_deleted_by_the_sweep(tmp_path):
+    """All THREE run-owned resources, not just the one the login used.
+
+    The non-admin identity is the easy one to leak: nothing downstream reads it
+    after the denial check, so a missing manifest record would never surface as a
+    failure — it would just leave a real Cognito user behind in a shared pool on
+    every E02 run. A Cognito user has no tag-and-age sweep behind it, so the
+    manifest is its only route to deletion.
+    """
+    result = run_live_stages(tmp_path, extra=["--suite", "full"])
+    fixtures = result.document["admin_fixtures"]
+    aws = result.ports["aws"]
+
+    deleted = {
+        kwargs.get("Username")
+        for service, operation, kwargs in aws.calls
+        if (service, operation) == ("cognito-idp", "admin_delete_user")
+    }
+    assert fixtures["created_username"] in deleted, "the challenge identity leaked"
+    assert fixtures["non_admin_username"] in deleted, "the non-admin identity leaked"
+
+    secrets_deleted = {
+        kwargs.get("SecretId")
+        for service, operation, kwargs in aws.calls
+        if (service, operation) == ("secretsmanager", "delete_secret")
+    }
+    assert any(name.endswith("-fixtures") for name in secrets_deleted), (
+        "the fixture secret carrying live credentials was not deleted"
+    )
+
+
+def test_the_fixture_secret_is_readable_only_by_the_evaluation_instance_role(tmp_path):
+    """The grant must be a resource policy naming one role, and nothing wider.
+
+    The instance role's single GetSecretValue grant is pinned to the one SHARED
+    fixture ARN by design, so a run-owned secret is unreadable by identity policy.
+    A resource policy on the new secret closes that without touching the shared
+    role — verified live with `simulate-principal-policy`, which answered
+    `allowed` via SourcePolicyType "Resource Policy" for this role and
+    `implicitDeny` for any other secret.
+
+    The alternative — widening the role's identity policy to `adp-e2e-*` — would
+    have loosened a shared boundary for every future run, so it is not used.
+    """
+    result = run_live_stages(tmp_path)
+    aws = result.ports["aws"]
+    applied = [
+        kwargs
+        for service, operation, kwargs in aws.calls
+        if (service, operation) == ("secretsmanager", "put_resource_policy")
+    ]
+    assert applied, "the fixture secret was created with no resource policy"
+    policy = json.loads(applied[0]["ResourcePolicy"])
+    assert applied[0]["BlockPublicPolicy"] is True
+
+    statements = policy["Statement"]
+    assert len(statements) == 1, "the grant must be exactly one statement"
+    statement = statements[0]
+    assert statement["Effect"] == "Allow"
+    # One principal, one action. A wildcard in either is the failure this checks.
+    assert statement["Principal"]["AWS"].endswith(":role/adp-cli-uplift-eval-instance")
+    assert statement["Action"] == "secretsmanager:GetSecretValue"
+    assert "*" not in statement["Principal"]["AWS"]
+    assert statement["Resource"].startswith("arn:aws:secretsmanager:")
+    assert statement["Resource"] != "*"
+
+
+def test_a_suite_without_e02_provisions_no_identities_at_all(tmp_path):
+    """Selection gates the WORK here, because the work is a live mutation.
+
+    `selected()` normally filters only what is recorded — a stage still installs
+    and logs in for E01. But creating Cognito identities is a real mutation with a
+    real cleanup obligation, so a suite that cannot record E02 must not create
+    them. The shared configured fixture stays in use for those runs.
+    """
+    result = run_live_stages(tmp_path, extra=["--suite", "install"])
+    aws = result.ports["aws"]
+    operations = {f"{service}.{operation}" for service, operation, _kwargs in aws.calls}
+    assert "cognito-idp.admin_create_user" not in operations
+    assert "secretsmanager.create_secret" not in operations
+    assert "admin_fixtures" not in result.document
+
+    # And the worker still gets the SHARED configured fixture, not an empty name:
+    # an install-only run must still be able to log in.
+    payload = result.ports["ssm"].payloads["install_auth"]
+    assert payload["credential_secret"] == config_fixture()["credential_secret_name"]
+    assert payload["admin_challenges_required"] is False
 
 
 def test_destination_identity_comes_from_an_assumed_role_not_the_runner(tmp_path):
