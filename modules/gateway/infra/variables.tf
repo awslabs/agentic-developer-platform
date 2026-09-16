@@ -594,6 +594,31 @@ variable "orchestration_github_app_secret_arn_pattern" {
   default     = ""
 }
 
+variable "orchestration_engine_command_signing_key_secret_arn" {
+  type        = string
+  description = <<-EOT
+    Issue #4539. Secrets Manager ARN of the engine-command attribution signing
+    keyring, which the tick uses to VERIFY that a pending command's authority and
+    routing fields were delivered by GitHub rather than authored by whatever could
+    write the row.
+
+    Created by the webhook-ingress state (the signer), which publishes it as the
+    `engine_command_signing_key_secret_arn` output and to SSM at
+    `/adp/<env>/webhook-ingress/engine-command-signing-key-arn`. Only the ARN
+    crosses the state boundary; the key value is seeded out of band per
+    `docs/runbooks/engine-command-signing-key-rotation.md`.
+
+    Empty is the fail-closed default: the verifier reports `no_verification_key` and
+    every command quarantines rather than being applied unverified.
+
+    Pair this with the reverse direction — pass the `orchestration_tick_role_arn`
+    output of this state to the webhook-ingress state's
+    `engine_command_verifier_role_arn`, which is what grants the tick read access to
+    the secret and decrypt on its dedicated CMK. Integration owned by #5195/#5210.
+  EOT
+  default     = ""
+}
+
 variable "chat_logging_scrub_level" {
   type        = string
   description = "Chat logging scrub level: off, basic (headers+regex), or standard (headers+regex+Comprehend PII)"

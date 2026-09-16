@@ -504,3 +504,17 @@ variable "gateway_namespace" {
   type        = string
   default     = "adp-gateway"
 }
+
+variable "engine_command_verifier_role_arn" {
+  description = "IAM role ARN of the engine-command VERIFIER — the gateway orchestration tick, which runs in a different deploy unit with its own Terraform state (issue #4539). Passed in rather than referenced because this module cannot see gateway state. Empty (the default) creates no verifier grant at all: an environment that has not wired the verifier gets a signer and no verifier, which fails closed (every command quarantined with no_verification_key) rather than granting access to a role ARN somebody guessed. Must be a role in THIS account; the key policy names it as one of exactly two decrypt principals, so a wrong value here is a real grant to the wrong role."
+  type        = string
+  default     = ""
+
+  validation {
+    # Shape only — Terraform cannot confirm the role exists in another state. A
+    # user ARN or an assumed-role session ARN here would produce a key policy that
+    # either fails to apply or grants something unintended, so reject both.
+    condition     = var.engine_command_verifier_role_arn == "" || can(regex("^arn:aws:iam::[0-9]{12}:role/.+$", var.engine_command_verifier_role_arn))
+    error_message = "engine_command_verifier_role_arn must be empty or a full IAM ROLE arn (arn:aws:iam::<account>:role/<name>) — not a user, not an assumed-role session ARN."
+  }
+}

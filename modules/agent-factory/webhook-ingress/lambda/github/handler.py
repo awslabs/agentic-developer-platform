@@ -1739,6 +1739,19 @@ def handler(event: dict, context) -> dict:
             # own `aws-e-adp-agent-*` accounts without a login-prefix match that
             # would break the day one is renamed.
             sender_is_bot=_is_bot_sender_for_engine(sender) if is_engine_command else False,
+            # Issue #4539: the remaining members of the signed authority tuple.
+            # `delivery_id` is GitHub's own delivery identity, `repo_id` the numeric
+            # repository id (a repo can be renamed, its id cannot) and `sender_type`
+            # GitHub's author kind. Each is signed, so the tick decides who acted and
+            # where a reply goes from values bound to a verified delivery rather than
+            # from mutable row attributes.
+            delivery_id=headers.get("x-github-delivery", "") if is_engine_command else "",
+            sender_type=str(sender.get("type", "")) if is_engine_command else "",
+            repo_id=(
+                int(payload.get("repository", {}).get("id", 0) or 0)
+                if is_engine_command
+                else 0
+            ),
         )
         # Echo the reason in the body for parity with the guard-block response
         # below, which has always included it.
@@ -1902,6 +1915,9 @@ def _capture_invocation_event(
     comment_body: str | None = None,
     sender_github_id: str | None = None,
     sender_is_bot: bool = False,
+    delivery_id: str = "",
+    sender_type: str = "",
+    repo_id: int = 0,
 ) -> None:
     """Write enriched invocation row to DynamoDB (best-effort).
 
@@ -1922,6 +1938,18 @@ def _capture_invocation_event(
     Issue #4599: ``sender_is_bot`` travels the same path, for the same reason —
     author-kind is on the payload here and nowhere the tick can see it. The tick
     uses it to stay quiet rather than post a refusal at a bot's own comment.
+
+    Issue #4539: on the engine path the row's authority tuple is SIGNED here, under
+    a dedicated key, and the signature is stored with the marker. This is the point
+    at which the row's own keys (``event_id``, ``arrived_at``) are finally known,
+    and those keys are part of what is signed — a signature that did not cover them
+    would be liftable onto a different row. ``delivery_id``, ``sender_type`` and
+    ``repo_id`` are forwarded for the same reason ``comment_body`` is: they are
+    payload facts the tick cannot see, and every one of them is in the signed set.
+
+    Signing happens strictly after GitHub's own HMAC check (step 2 of the handler),
+    so the signature attests to a verified delivery. It cannot be reached on any
+    path where that check did not pass.
     """
     try:
         event_logger = _get_webhook_event_logger()
@@ -1946,6 +1974,39 @@ def _capture_invocation_event(
         issue_number = payload.get("issue", {}).get("number")
         if issue_number is None:
             issue_number = payload.get("pull_request", {}).get("number")
+
+        # Issue #4539: sign the authority tuple for engine commands only.
+        #
+        # `log_event` generates the row keys when they are absent, and the keys are
+        # part of the signed set — so they are resolved HERE, before signing, and
+        # passed explicitly. Otherwise the signature would cover a key the row does
+        # not have, and every command would be refused.
+        #
+        # Every signed value is a server-side fact: the delivery header, the
+        # payload of a delivery whose HMAC already verified, or the tenant this
+        # handler resolved. Nothing a commenter can choose reaches the tuple except
+        # the command body itself, which is exactly what the signature is meant to
+        # bind to the rest.
+        signature = key_id = signed_payload = None
+        if engine_command:
+            if not event_id:
+                event_id = str(uuid.uuid4())
+            if not arrived_at:
+                arrived_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            signature, key_id, signed_payload = _sign_engine_command(
+                delivery_id=delivery_id,
+                event_type=event_type,
+                event_id=event_id,
+                arrived_at=arrived_at,
+                tenant_id=tenant_id,
+                installation_id=installation_id,
+                repo_id=repo_id,
+                repo=repo,
+                issue_number=issue_number,
+                sender_github_id=sender_github_id,
+                sender_type=sender_type,
+                command_body=comment_body,
+            )
 
         event_logger.log_event(
             event_id=event_id,
@@ -1973,10 +2034,84 @@ def _capture_invocation_event(
             comment_body=comment_body,
             sender_github_id=sender_github_id,
             sender_is_bot=sender_is_bot,
+            engine_command_signature=signature,
+            engine_command_signing_key_id=key_id,
+            engine_command_signed_payload=signed_payload,
         )
     except Exception as e:
         # Best-effort — never block the webhook response
         logger.warning("Failed to capture invocation event: %s", e)
+
+
+def _sign_engine_command(
+    *,
+    delivery_id: str,
+    event_type: str,
+    event_id: str,
+    arrived_at: str,
+    tenant_id: str,
+    installation_id: int,
+    repo_id: int,
+    repo: str,
+    issue_number: int | None,
+    sender_github_id: str | None,
+    sender_type: str,
+    command_body: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Sign one engine command's authority tuple (issue #4539).
+
+    Returns ``(signature, key_id, canonical_payload)``, or ``(None, None, None)``
+    when the command cannot be signed honestly.
+
+    An unsigned return is NOT an error path to be papered over: the row is written
+    with its marker and without a signature, the tick refuses and quarantines it,
+    and `webhook_events` counts it. That is deliberately more visible than either
+    alternative — dropping the row would erase the audit record of a command a human
+    really sent, and blocking the webhook response would turn a missing key into a
+    GitHub-visible delivery failure for traffic that has nothing to do with the
+    engine.
+
+    Types are normalised here rather than in the signer, because the signer's
+    strictness is the point: it refuses a ``str`` where an ``int`` belongs so the two
+    deploy units can never disagree about which tuple they signed. The conversions
+    below are the single place where payload shapes become protocol types, so a
+    missing installation arrives as ``"0"`` and a missing issue as ``0`` — signed
+    values that the verifier can then reject explicitly, rather than absences that
+    silently skip a check.
+    """
+    from common import command_signing
+
+    try:
+        key_id, signature, envelope = command_signing.sign_command(
+            delivery_id=delivery_id or "",
+            event_type=event_type or "",
+            event_id=event_id,
+            arrived_at=arrived_at,
+            tenant_id=tenant_id or "",
+            installation_id=str(installation_id or 0),
+            repo_id=int(repo_id or 0),
+            repo=repo or "",
+            issue_number=int(issue_number or 0),
+            sender_github_id=str(sender_github_id or ""),
+            sender_type=sender_type or "",
+            command_body=command_body or "",
+            signed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+        # The stored payload is the signer's own canonical bytes, never a
+        # re-serialization of the envelope here: a second `json.dumps` with
+        # different arguments is exactly how the stored payload would stop
+        # reproducing the signature.
+        payload = command_signing.canonical_bytes(envelope).decode("utf-8")
+        return signature, key_id, payload
+    except Exception as e:
+        logger.error(
+            "Engine command %s could not be signed (%s: %s); the row will be "
+            "written unsigned and the orchestration tick will refuse it",
+            event_id,
+            type(e).__name__,
+            e,
+        )
+        return None, None, None
 
 
 def _response(status_code: int, body: dict, *, retry_after: int = 0) -> dict:

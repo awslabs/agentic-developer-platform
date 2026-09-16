@@ -24,6 +24,14 @@ on:
       # guard would go quietly stale. Same lockstep-reachability pattern
       # gateway-ci.yml uses for the webhook-ingress identity resolver.
       - 'modules/agent-factory/infra/modules/runner-iam/main.tf'
+      # Issue #4539: tests/test_engine_command_signing_iam.py asserts that the
+      # placeholder keyring value this module provisions is the same string the
+      # GATEWAY's verifier refuses. That parity is the only thing stopping an
+      # unseeded environment from verifying signatures against a value published
+      # in git (#4128), and half of it lives outside this module — so a
+      # gateway-side edit to _PLACEHOLDER_KEYS must reach this job. Same
+      # lockstep-reachability reason as the runner-iam path above.
+      - 'modules/gateway/src/orchestration/command_attribution.py'
     branches:
       - main
 
@@ -53,7 +61,8 @@ jobs:
           pytest -q --import-mode=importlib .github/scripts/tests/test_webhook_deploy_hold.py \
             modules/agent-factory/webhook-ingress/tests/test_worker_iam_boundary.py \
             modules/agent-factory/webhook-ingress/tests/test_agent_control_manifest.py \
-            modules/agent-factory/webhook-ingress/tests/test_scaledjob_manifest.py
+            modules/agent-factory/webhook-ingress/tests/test_scaledjob_manifest.py \
+            modules/agent-factory/webhook-ingress/tests/test_engine_command_signing_iam.py
 
   lint:
     name: Lint

@@ -270,6 +270,16 @@ def _emit_metrics(report: TickReport) -> None:
                     {"MetricName": "CommandsRead", "Value": engine_command_report.commands_read, "Unit": "Count"},
                     {"MetricName": "CommandsApplied", "Value": engine_command_report.commands_applied, "Unit": "Count"},
                     {"MetricName": "CommandsRefused", "Value": engine_command_report.commands_refused, "Unit": "Count"},
+                    # Issue #4539. Alarm-worthy and deliberately its own metric, not
+                    # folded into `CommandsRefused`: a refusal is a real command the
+                    # platform declined, whereas a quarantine is a row that never
+                    # established it came from a verified delivery. One number for
+                    # both would let a forgery attempt hide inside ordinary
+                    # permission refusals.
+                    {"MetricName": "CommandsQuarantined", "Value": engine_command_report.commands_quarantined, "Unit": "Count"},
+                    # A row that could not be sealed off is re-verified every wake.
+                    # Nothing is applied, but the loop is permanent, so it is visible.
+                    {"MetricName": "CommandQuarantinesFailed", "Value": engine_command_report.quarantines_failed, "Unit": "Count"},
                     {"MetricName": "CommandConsumesFailed", "Value": engine_command_report.consumes_failed, "Unit": "Count"},
                     {"MetricName": "CommandAcksPosted", "Value": engine_command_report.acks_posted, "Unit": "Count"},
                     {"MetricName": "CommandAcksFailed", "Value": engine_command_report.acks_failed, "Unit": "Count"},
@@ -284,6 +294,8 @@ def _emit_metrics(report: TickReport) -> None:
                     ("CommandsRead", "commands_read"),
                     ("CommandsApplied", "commands_applied"),
                     ("CommandsRefused", "commands_refused"),
+                    ("CommandsQuarantined", "commands_quarantined"),
+                    ("CommandQuarantinesFailed", "quarantines_failed"),
                     ("CommandConsumesFailed", "consumes_failed"),
                     ("CommandAcksPosted", "acks_posted"),
                     ("CommandAcksFailed", "acks_failed"),
@@ -297,6 +309,24 @@ def _emit_metrics(report: TickReport) -> None:
                             "Dimensions": dimensions,
                         }
                     )
+
+            # Issue #4539: the sanitized failure reason as a dimension. Every reason
+            # is drawn from `command_attribution`'s bounded REASON_* set — never from
+            # row content — so cardinality is fixed and no attacker-chosen text can
+            # reach CloudWatch. This is the dimension that distinguishes "the signing
+            # key is not seeded in this environment" (every row
+            # `no_verification_key`, an operator problem) from "somebody is writing
+            # rows directly" (`invalid_signature`, an incident). Both are the same
+            # number in `CommandsQuarantined` and need opposite responses.
+            for reason, count in engine_command_report.quarantine_reasons.items():
+                metric_data.append(
+                    {
+                        "MetricName": "CommandsQuarantined",
+                        "Value": count,
+                        "Unit": "Count",
+                        "Dimensions": [{"Name": "AttributionFailureReason", "Value": reason}],
+                    }
+                )
 
         # PutMetricData caps at 1000 datums per call.
         for start in range(0, len(metric_data), 1000):

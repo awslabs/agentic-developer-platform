@@ -46,6 +46,16 @@ on:
       # gate. A mismatched default is what silently dropped every cross-tenant
       # provenance row, so a resolver-side edit must re-run the gateway suite.
       - 'modules/agent-factory/webhook-ingress/lambda/common/identity_resolver.py'
+      # Keyring lockstep (#4539). tests/internal/
+      # test_engine_command_keyring_lockstep.py imports the webhook-ingress SIGNER and
+      # asserts its parse_keyring agrees with the gateway verifier's on every keyring
+      # state the rotation runbook produces, and that the runbook still names the
+      # reasons the code emits. A signer-side or runbook-side edit that breaks that
+      # agreement is a silent command outage — rotation looks complete, then every
+      # command quarantines on the tick — so both must re-run the gateway suite.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/command_signing.py'
+      - 'modules/agent-factory/webhook-ingress/infra/engine-command-signing.tf'
+      - 'docs/runbooks/engine-command-signing-key-rotation.md'
       - 'platform/scripts/smoke_assertions.py'
       - 'platform/scripts/tests/test_smoke_assertions.py'
       # Loop-proposal validator + its fixtures (#4199). The advisory CLI imports

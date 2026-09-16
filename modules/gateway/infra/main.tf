@@ -1141,6 +1141,13 @@ module "orchestration_tick" {
   webhook_events_kms_key_arn    = var.orchestration_webhook_events_kms_key_arn
   github_app_secret_arn_pattern = var.orchestration_github_app_secret_arn_pattern
 
+  # Issue #4539: command attribution. The tick verifies the signature the webhook
+  # Lambda wrote before it trusts any authority field on the row. The secret belongs
+  # to the webhook-ingress state, so it arrives by ARN like the four above; empty
+  # leaves the verifier without a key, which quarantines every command rather than
+  # applying it unverified.
+  engine_command_signing_key_secret_arn = var.orchestration_engine_command_signing_key_secret_arn
+
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 

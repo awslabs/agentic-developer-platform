@@ -369,3 +369,46 @@ variable "github_app_secret_arn_pattern" {
   type        = string
   default     = ""
 }
+
+variable "engine_command_signing_key_secret_arn" {
+  description = <<-EOT
+    Issue #4539. Secrets Manager ARN of the engine-command attribution signing
+    keyring. The tick is the VERIFIER: it recomputes the HMAC over the signed tuple
+    stored on a pending row before it resolves any identity or uses any row field
+    for a side effect, so a row whose authority fields were authored rather than
+    delivered is refused and quarantined instead of applied.
+
+    The secret is created by the webhook-ingress state (which holds the SIGNER), so
+    this arrives as a variable for the same reason the events table and the dispatch
+    queue do. That state publishes the ARN as the
+    `engine_command_signing_key_secret_arn` output and to SSM at
+    `/adp/<env>/webhook-ingress/engine-command-signing-key-arn`. Never the value —
+    only the ARN crosses a state boundary, and the value is seeded out of band.
+
+    Empty is the fail-closed default and the correct setting for an environment
+    where the bridge is not wired: the verifier raises `no_verification_key` and
+    every command quarantines. That is deliberately louder than the alternative of
+    treating an unwired verifier as permission to trust an unsigned row, which is
+    the forgery this issue exists to close.
+
+    Setting this is necessary but not sufficient. The tick's role also needs
+    GetSecretValue on this secret and kms:Decrypt on its dedicated CMK; both grants
+    live in the webhook-ingress state, which names this module's role ARN in the key
+    policy as one of exactly two decrypt principals. Pass `tick_role_arn` (a root
+    output of this gateway state) to that state's
+    `engine_command_verifier_role_arn`. Wiring one side without the other yields a
+    verifier that can find the secret and not read it — still fail-closed, but
+    diagnosed by an AccessDenied in the tick log rather than by a missing env var.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    # Shape only. A wrong-but-well-formed ARN cannot be caught here; it surfaces as
+    # AccessDenied at call time. Catching the malformed case at plan time is still
+    # worth it, because the runtime symptom of ANY misconfiguration here is the same
+    # (every command quarantined), which makes plan-time feedback the cheap signal.
+    condition     = var.engine_command_signing_key_secret_arn == "" || can(regex("^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$", var.engine_command_signing_key_secret_arn))
+    error_message = "engine_command_signing_key_secret_arn must be empty or a full Secrets Manager secret ARN (arn:aws:secretsmanager:<region>:<account>:secret:<name>)."
+  }
+}
