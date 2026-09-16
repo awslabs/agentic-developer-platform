@@ -43,6 +43,11 @@ CIDRs, adds the operator's CIDR if needed, and waits for the EKS access update
 before using kubectl. Private-only endpoints stay private and require existing
 network reachability.
 
+Existing ECR repositories retain their encryption type and KMS key. ECR cannot
+change these settings in place, so applying the key used by new deployments to
+older repositories would otherwise propose deleting their images and replacing
+the repositories. Newly added repositories use the dedicated managed ECR key.
+
 The run saves state snapshots and account-specific variable overrides in a
 private `adp-upgrade-<account>.*` directory (printed at startup). These files can
 contain sensitive Terraform state: do not commit or publish them. Overrides

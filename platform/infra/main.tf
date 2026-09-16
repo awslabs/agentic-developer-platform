@@ -277,6 +277,7 @@ module "ecr" {
   name_prefix            = local.name_prefix
   common_tags            = local.common_tags
   repositories           = var.ecr_repositories
+  repository_encryption  = var.ecr_repository_encryption
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 }
 

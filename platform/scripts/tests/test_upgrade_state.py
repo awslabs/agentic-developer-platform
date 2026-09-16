@@ -35,6 +35,24 @@ class PreservationTests(unittest.TestCase):
         self.assertFalse(result["eks_endpoint_public_access"])
         self.assertTrue(result["eks_endpoint_private_access"])
 
+    def test_retains_each_existing_repository_encryption(self):
+        old = {"resources": [
+            resource("aws_ecr_repository", "main", {"name": "old-kms", "encryption_configuration": [
+                {"encryption_type": "KMS", "kms_key": "arn:aws:kms:us-east-1:123456789012:key/existing"}]}, "module.ecr"),
+            resource("aws_ecr_repository", "main", {"name": "old-aes", "encryption_configuration": [
+                {"encryption_type": "AES256", "kms_key": ""}]}, "module.ecr"),
+            resource("aws_ecr_repository", "other", {"name": "unrelated"}, "module.other")]}
+        self.assertEqual(state.repository_encryption(old), {
+            "old-kms": {"encryption_type": "KMS", "kms_key": "arn:aws:kms:us-east-1:123456789012:key/existing"},
+            "old-aes": {"encryption_type": "AES256", "kms_key": None}})
+
+    def test_missing_existing_repository_encryption_key_refuses(self):
+        for configuration in ([], [{"encryption_type": "KMS", "kms_key": ""}]):
+            old = {"resources": [resource("aws_ecr_repository", "main", {
+                "name": "old-repo", "encryption_configuration": configuration}, "module.ecr")]}
+            with self.assertRaisesRegex(ValueError, "encryption"):
+                state.repository_encryption(old)
+
     def test_broker_keeps_environment_allowlist_and_token_reference(self):
         result = state.broker_settings({"ALLOWLIST_MODE": "org", "ALLOWED_ORGS": "customer-team",
                                        "ALLOW_OPEN_SIGNUP": "false", "GITHUB_TOKEN_SECRET_ARN": "customer-secret"})

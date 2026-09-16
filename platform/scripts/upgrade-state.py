@@ -56,6 +56,24 @@ def preserve_access(state, cluster, extra=(), requested_cidrs=()):
             "eks_endpoint_private_access": cluster["resourcesVpcConfig"].get("endpointPrivateAccess", True)}
 
 
+def repository_encryption(state):
+    # ECR encryption is immutable. Older repositories can use AWS-managed KMS
+    # keys or AES256; selecting the new module key would replace their images.
+    result = {}
+    for resource, attrs in resources(state, "aws_ecr_repository"):
+        if resource.get("module") != "module.ecr" or resource["name"] != "main":
+            continue
+        configuration = attrs.get("encryption_configuration", [])
+        if len(configuration) != 1:
+            raise ValueError("Cannot recover existing ECR repository encryption")
+        encryption = configuration[0]
+        kind, key = encryption.get("encryption_type"), encryption.get("kms_key")
+        if kind not in ("AES256", "KMS", "KMS_DSSE") or (kind != "AES256" and not key):
+            raise ValueError("Cannot recover existing ECR repository encryption key")
+        result[attrs["name"]] = {"encryption_type": kind, "kms_key": key if kind != "AES256" else None}
+    return result
+
+
 def broker_settings(variables):
     mapping = {"ALLOWLIST_MODE": "github_auth_allowlist_mode",
                "ALLOWED_ORGS": "github_auth_allowed_orgs",
@@ -174,6 +192,7 @@ def prepare(args):
     platform = preserve_access(states["platform"], cluster,
                                json.loads(os.environ.get("TF_VAR_extra_cluster_admin_principal_arns", "[]")), requested)
     platform.update(environment=args.environment, aws_region=args.region)
+    platform["ecr_repository_encryption"] = repository_encryption(states["platform"])
     write_json(directory / "platform.tfvars.json", platform)
     write_json(directory / "eks-access.json", {"publicAccessCidrs": platform["eks_public_access_cidrs"]})
     gateway = {"environment": args.environment, "aws_region": args.region}

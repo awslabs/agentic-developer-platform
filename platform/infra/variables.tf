@@ -109,6 +109,15 @@ variable "ecr_repositories" {
   ]
 }
 
+variable "ecr_repository_encryption" {
+  description = "Existing per-repository encryption to retain during upgrades; new repositories use the managed ECR key"
+  type = map(object({
+    encryption_type = string
+    kms_key         = optional(string)
+  }))
+  default = {}
+}
+
 variable "extra_cluster_admin_principal_arns" {
   description = "Additional IAM principal ARNs (users/roles) to grant EKS cluster-admin. The deploying caller is added automatically."
   type        = list(string)
