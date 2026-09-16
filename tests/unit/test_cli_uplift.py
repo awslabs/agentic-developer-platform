@@ -11,9 +11,12 @@ Those are `test_injected_*` below.
 
 from __future__ import annotations
 
+import calendar
 import json
+import os
 import pathlib
 import re
+import time
 from urllib.parse import unquote
 
 import pytest
@@ -1345,9 +1348,118 @@ def test_recovery_report_flags_an_instance_it_could_not_terminate():
         {"id": "i-1", "prefix": PREFIX, "age_minutes": 300},
         {"id": "i-2", "prefix": PREFIX, "age_minutes": 300},
     ]
-    report_document = cleanup.recovery_report(expired, ["i-1"], ttl_minutes=240)
+    report_document = cleanup.recovery_report(
+        expired, {"i-1": "terminated", "i-2": "running"}, ttl_minutes=240
+    )
     assert report_document["outstanding"] == ["i-2"]
     assert report_document["clean"] is False
+
+
+def test_recovery_report_is_not_clean_when_an_instance_is_still_running():
+    """A terminate call that returned 0 does not prove the instance stopped.
+
+    `DisableApiTermination` (and a stuck lifecycle hook) make
+    `terminate-instances` exit 0 while the instance keeps running and billing.
+    The sweep must decide `clean` from re-read state, so this is the exact
+    silent-cost case: every requested termination "succeeded" and the account
+    is still dirty.
+    """
+    expired = [{"id": "i-protected", "prefix": PREFIX, "age_minutes": 300}]
+
+    report_document = cleanup.recovery_report(
+        expired, {"i-protected": "running"}, ttl_minutes=240
+    )
+
+    assert report_document["clean"] is False
+    assert report_document["outstanding"] == ["i-protected"]
+    assert report_document["terminated"] == []
+
+
+def test_recovery_report_does_not_count_shutting_down_as_terminated():
+    """`shutting-down` is a direction, not a finished teardown — still billable."""
+    expired = [{"id": "i-1", "prefix": PREFIX, "age_minutes": 300}]
+
+    report_document = cleanup.recovery_report(
+        expired, {"i-1": "shutting-down"}, ttl_minutes=240
+    )
+
+    assert report_document["clean"] is False
+    assert report_document["outstanding"] == ["i-1"]
+
+
+def test_recovery_report_is_clean_only_on_observed_termination():
+    expired = [{"id": "i-1", "prefix": PREFIX, "age_minutes": 300}]
+
+    report_document = cleanup.recovery_report(
+        expired, {"i-1": "terminated"}, ttl_minutes=240
+    )
+
+    assert report_document["clean"] is True
+    assert report_document["terminated"] == ["i-1"]
+    assert report_document["outstanding"] == []
+
+
+def test_launch_epoch_reads_ec2_stamps_as_utc_in_any_runner_timezone():
+    """EC2 `LaunchTime` is UTC; parsing it as local time skews every age.
+
+    `time.mktime(time.strptime(...))` shifts the stamp by the runner's offset:
+    +420 min under US/Pacific, -540 under Asia/Tokyo. Shifted one way a fresh
+    instance reports a NEGATIVE age, which no positive TTL expires, so the
+    sweep walks past a running instance and calls the account clean. Masked
+    today only because ARC runners are UTC and nothing pins TZ.
+    """
+    stamp = "2026-09-16T06:00:00.000Z"
+    expected = calendar.timegm(
+        time.strptime("2026-09-16T06:00:00", "%Y-%m-%dT%H:%M:%S")
+    )
+
+    original = os.environ.get("TZ")
+    try:
+        for zone in ("UTC", "America/Los_Angeles", "Asia/Tokyo"):
+            os.environ["TZ"] = zone
+            time.tzset()
+            assert cleanup.launch_epoch(stamp) == expected, zone
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()
+
+
+def test_expired_instances_expires_a_string_stamp_outside_utc():
+    """The end-to-end consequence: TTL must hold on a non-UTC runner.
+
+    The pre-existing sweep tests all pass `LaunchTime` as a float, so the
+    workflow's string conversion was never exercised. This drives the string
+    path under a non-UTC TZ, where the local-time bug reported a negative age
+    and expired nothing.
+    """
+    launched = "2026-09-16T00:00:00.000Z"
+    now = calendar.timegm(time.strptime("2026-09-16T06:00:00", "%Y-%m-%dT%H:%M:%S"))
+    instances = [
+        {
+            "InstanceId": "i-old",
+            "State": {"Name": "running"},
+            "LaunchTime": launched,
+            "Tags": [{"Key": cleanup.OWNER_TAG, "Value": PREFIX}],
+        }
+    ]
+
+    original = os.environ.get("TZ")
+    try:
+        for zone in ("UTC", "America/Los_Angeles", "Asia/Tokyo"):
+            os.environ["TZ"] = zone
+            time.tzset()
+            expired = cleanup.expired_instances(instances, now=now, ttl_minutes=240)
+            assert [item["id"] for item in expired] == ["i-old"], zone
+            assert expired[0]["age_minutes"] == 360, zone
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()
 
 
 def test_cleanup_failure_propagates_into_acceptance(tmp_path):
@@ -5206,6 +5318,93 @@ def test_recovery_job_runs_even_when_the_evaluation_was_cancelled():
     # until the TTL elapses.
     assert "recoverable_instances" in body
     assert "terminate-instances" in body
+
+
+def test_recovery_sweep_converts_launch_time_in_the_library_not_inline():
+    """Pin the UTC conversion to `launch_epoch`, because reverting it is SILENT.
+
+    The two sweep fixes fail differently when regressed, which is why this guard
+    exists for one of them. Passing the old exit-code list to `recovery_report`
+    raises `AttributeError` on `.items()`, so that half is self-enforcing: the
+    live step dies loudly. Re-inlining `time.mktime` is not. `launch_epoch`
+    accepts an already-numeric epoch by design, so a skewed float computed in the
+    YAML flows straight through it, every unit test still passes, and a genuinely
+    expired instance silently stops expiring — the exact leak F2 fixed.
+
+    So assert on the workflow text: the conversion must go through the tested
+    library helper, and `mktime` must not reappear as executable code in the
+    sweep. Nothing else in the suite can catch that edit, because unit tests
+    cannot reach inline workflow YAML.
+    """
+    document, _ = workflow()
+    steps = document["jobs"]["recover"]["steps"]
+    sweep = next(
+        step for step in steps if "terminate-instances" in (step.get("run") or "")
+    )
+    body = sweep["run"]
+
+    assert "cleanup.launch_epoch(" in body, (
+        "sweep must convert LaunchTime via the tested library helper"
+    )
+    code = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("#")
+    )
+    assert "mktime" not in code, (
+        "time.mktime reads EC2's UTC LaunchTime as local time; ages skew by the "
+        "runner's offset and negative ages never expire"
+    )
+
+
+def test_recovery_sweep_confirms_termination_by_re_reading_state():
+    """`clean` must come from observed state, not from a terminate call's exit code.
+
+    `terminate-instances` exits 0 for an instance held by
+    `DisableApiTermination` or stuck behind a lifecycle hook. Without the
+    re-read the sweep reports a clean account while the instance keeps billing,
+    and the operator stops looking. This pins the re-read into the step that
+    runs when the cleanup manifest is gone.
+    """
+    document, _ = workflow()
+    steps = document["jobs"]["recover"]["steps"]
+    sweep = next(
+        step for step in steps if "terminate-instances" in (step.get("run") or "")
+    )
+    body = sweep["run"]
+
+    assert "describe-instances" in body.split("terminate-instances", 1)[1], (
+        "sweep must re-read instance state AFTER requesting termination"
+    )
+    assert "State.Name" in body
+    # The observed mapping is what recovery_report decides `clean` from.
+    assert "recovery_report(targets, observed" in body
+
+
+def test_recovery_sweep_does_not_abort_before_verifying_a_refused_terminate():
+    """AWS refuses a protected instance with a NON-ZERO exit.
+
+    `check=True` on the terminate call would raise before the state poll, so the
+    termination-protected case -- the headline reason this verification exists --
+    would report a bare traceback instead of naming the instance in
+    `outstanding`, and would abandon every remaining target unswept.
+    """
+    document, _ = workflow()
+    sweep = next(
+        step["run"]
+        for step in document["jobs"]["recover"]["steps"]
+        if "terminate-instances" in (step.get("run") or "")
+    )
+    # Comments stripped for the same reason as the test above: this step's
+    # comments discuss `check=True` to explain why it is absent.
+    sweep = "\n".join(
+        line for line in sweep.splitlines() if not line.strip().startswith("#")
+    )
+
+    terminate_call = sweep[sweep.index("terminate-instances") :]
+    guard = terminate_call[: terminate_call.index("describe-instances")]
+    assert "check=True" not in guard, (
+        "check=True aborts the sweep before the state re-read; a refused "
+        "termination must still be observed and reported"
+    )
 
 
 def test_recovery_job_carries_the_same_trusted_ref_gate_as_the_live_job():

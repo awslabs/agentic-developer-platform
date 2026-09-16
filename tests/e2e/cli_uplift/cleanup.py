@@ -34,6 +34,7 @@ Two rules run through everything here:
 
 from __future__ import annotations
 
+import calendar
 import fcntl
 import json
 import os
@@ -329,6 +330,33 @@ def sweep(manifest, deleters, *, prefix=None):
     return ok, results
 
 
+def launch_epoch(stamp):
+    """EC2's `LaunchTime` as a UTC epoch, or None if it cannot be parsed.
+
+    EC2 reports `LaunchTime` in UTC (`2026-09-16T06:00:00.000Z`). The obvious
+    `time.mktime(time.strptime(...))` is wrong for it: `mktime` interprets the
+    struct as LOCAL time, so on a runner outside UTC every launch stamp is
+    shifted by the offset. Skewed one way that makes a just-launched instance
+    look hours old; skewed the other it reports a NEGATIVE age, which no
+    positive TTL can ever expire — the sweep then walks past a running instance
+    and reports the account clean. `calendar.timegm` is the UTC-correct
+    inverse of `strptime` and is what keeps age comparisons runner-independent.
+
+    Returning None on an unparseable stamp preserves the existing rule in
+    `expired_instances`: without a provable age we leave the instance to the
+    manifest path rather than terminate on a guess.
+    """
+    if stamp is None:
+        return None
+    if not isinstance(stamp, str):
+        # Already an epoch (the in-run path and most tests pass floats).
+        return float(stamp)
+    try:
+        return float(calendar.timegm(time.strptime(stamp[:19], "%Y-%m-%dT%H:%M:%S")))
+    except (ValueError, TypeError):
+        return None
+
+
 def expired_instances(instances, *, now, ttl_minutes, prefix=None):
     """Instances this evaluation owns that have outlived their TTL.
 
@@ -353,17 +381,17 @@ def expired_instances(instances, *, now, ttl_minutes, prefix=None):
             continue
         if prefix and owner != prefix:
             continue
-        launched = instance.get("LaunchTime")
+        launched = launch_epoch(instance.get("LaunchTime"))
         if launched is None:
             # No launch time means we cannot prove it is expired. Leave it to the
             # manifest path rather than terminate on a guess.
             continue
-        if float(launched) <= cutoff:
+        if launched <= cutoff:
             expired.append(
                 {
                     "id": instance.get("InstanceId"),
                     "prefix": owner,
-                    "age_minutes": int((now - float(launched)) // 60),
+                    "age_minutes": int((now - launched) // 60),
                 }
             )
     return [item for item in expired if item["id"]]
@@ -429,12 +457,37 @@ def recoverable_instances(instances, *, now, ttl_minutes, prefix=None):
     return [candidates[key] for key in sorted(candidates)]
 
 
-def recovery_report(expired, terminated, *, ttl_minutes):
-    """What the recovery sweep did, for the workflow summary."""
+def recovery_report(expired, observed, *, ttl_minutes):
+    """What the recovery sweep did, for the workflow summary.
+
+    `observed` maps instance ID to the state a `describe-instances` RE-READ
+    reported AFTER the terminate call — not the set of calls that returned zero.
+    That distinction is the whole point of this signature. `terminate-instances`
+    exits 0 for an instance held by `DisableApiTermination`, or one stuck in
+    `stopping` behind a lifecycle hook: the API accepted the request, the
+    instance keeps running, and the bill keeps growing. Reporting `clean` from
+    exit codes therefore announces success for exactly the failure this sweep
+    exists to catch, and the operator stops looking.
+
+    The in-run path already gets this right (`live.terminate` polls until state
+    is `terminated` and raises otherwise). The sweep is the path that runs when
+    the manifest is GONE, so it is the one that most needs the same proof.
+
+    Only `terminated` counts. `shutting-down` is deliberately outstanding: it is
+    a promising direction, not a finished teardown, and a sweep that treats it
+    as done can still exit while an instance is billable.
+    """
+    wanted = {item["id"] for item in expired}
+    confirmed = {
+        instance_id
+        for instance_id, state in (observed or {}).items()
+        if str(state or "").lower() == "terminated" and instance_id in wanted
+    }
     return {
         "ttl_minutes": ttl_minutes,
         "expired": [item["id"] for item in expired],
-        "terminated": sorted(terminated),
-        "outstanding": sorted({item["id"] for item in expired} - set(terminated)),
-        "clean": {item["id"] for item in expired} == set(terminated),
+        "terminated": sorted(confirmed),
+        "observed": {key: (observed or {})[key] for key in sorted(observed or {})},
+        "outstanding": sorted(wanted - confirmed),
+        "clean": wanted == confirmed,
     }
