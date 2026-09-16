@@ -109,6 +109,21 @@ variable "ecr_repositories" {
   ]
 }
 
+variable "retained_upgrade_kms_key_ids" {
+  description = "Keys retained in Terraform state after recovery from an interrupted ownership migration"
+  type        = set(string)
+  default     = []
+}
+
+variable "ecr_repository_encryption" {
+  description = "Existing per-repository encryption to retain during upgrades; new repositories use the managed ECR key"
+  type = map(object({
+    encryption_type = string
+    kms_key         = optional(string)
+  }))
+  default = {}
+}
+
 variable "extra_cluster_admin_principal_arns" {
   description = "Additional IAM principal ARNs (users/roles) to grant EKS cluster-admin. The deploying caller is added automatically."
   type        = list(string)
@@ -129,6 +144,18 @@ variable "enable_network_policy_controller" {
   description = "Enable the EKS Auto Mode network-policy controller (what actually enforces NetworkPolicy objects). Audit existing policies for deny-without-allow gaps before enabling."
   type        = bool
   default     = false
+}
+
+variable "eks_endpoint_public_access" {
+  description = "Whether the EKS API has a public endpoint. Upgrades retain the live setting."
+  type        = bool
+  default     = true
+}
+
+variable "eks_endpoint_private_access" {
+  description = "Whether the EKS API has a private endpoint. Upgrades retain the live setting."
+  type        = bool
+  default     = true
 }
 
 variable "state_bucket" {

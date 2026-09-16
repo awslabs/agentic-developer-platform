@@ -76,6 +76,12 @@ esac
 # before the phase under test. `cat` is a real binary here, so this consumes the input for
 # real rather than pretending to.
 _NOOP_STUB = "#!/usr/bin/env bash\ncat >/dev/null 2>&1 || true\nexit 0\n"
+_TERRAFORM_STUB = """#!/usr/bin/env bash
+if [ "$1 $2 $3" = "output -json redis_endpoint" ]; then
+  echo '[{"address":"redis.example.internal"}]'
+fi
+exit 0
+"""
 _GIT_STUB = '#!/usr/bin/env bash\n# Only `rev-parse HEAD` is consulted, to pin an image tag.\necho "0000000000000000000000000000000000000000"\n'
 _CURL_STUB = '#!/usr/bin/env bash\n# Public-IP probe for the EKS CIDR lock.\necho "203.0.113.10"\n'
 
@@ -149,7 +155,7 @@ def harness(tmp_path):
         ("aws", _AWS_STUB),
         ("git", _GIT_STUB),
         ("curl", _CURL_STUB),
-        ("terraform", _NOOP_STUB),
+        ("terraform", _TERRAFORM_STUB),
         ("kubectl", _NOOP_STUB),
         ("npm", _NOOP_STUB),
         ("docker", _NOOP_STUB),
@@ -159,6 +165,11 @@ def harness(tmp_path):
     # The script under test, at the same relative path so SCRIPT_DIR/ROOT_DIR resolve
     # inside the temp tree.
     _write_exec(root / "platform" / "scripts" / "deploy-all.sh", _DEPLOY_ALL.read_text())
+
+    # Copy the real local helpers so the scope checks exercise the shared resolver.
+    # External tools remain stubbed; these helpers only run against the temp tree.
+    for name in ("terraform-update.sh", "upgrade-scope.sh", "gateway-alb-vars.sh", "prepare-backends.py"):
+        _write_exec(root / "platform" / "scripts" / name, (_DEPLOY_ALL.parent / name).read_text())
 
     # load-deploy-config.sh is *sourced*, so it must define what the script reads.
     _write_exec(

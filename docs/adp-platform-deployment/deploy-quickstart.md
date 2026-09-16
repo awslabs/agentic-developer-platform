@@ -115,11 +115,12 @@ If you just want to see the platform work with the least setup,
 > from the profile if absent).
 
 > **Updating an existing deployment?** Use `deploy-all.sh --update` instead of
-> re-running the default fresh-deploy path. Update mode plan-gates Terraform
-> (refuses destructive changes), runs alembic migrations before rollout, and
-> SHA-tags images to guarantee Kubernetes rollout triggers. See
-> [`deploy-all-update-mode-design.md`](./deploy-all-update-mode-design.md) for
-> the full design, or `deploy-all.sh --help` for usage.
+> re-running the default fresh-deploy path. Update mode discovers installed
+> modules, preserves existing GitHub integration, plan-gates Terraform, and
+> runs migrations on Ready replicas of the intended SHA-tagged release. See
+> [`platform_upgrades.md`](./platform_upgrades.md) for the current procedure
+> and the narrowly allowed deployment replacements, or `deploy-all.sh --help`
+> for usage.
 
 ---
 

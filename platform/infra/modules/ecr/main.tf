@@ -29,8 +29,8 @@ resource "aws_ecr_repository" "main" {
   }
 
   encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.ecr.arn
+    encryption_type = contains(keys(var.repository_encryption), each.key) ? var.repository_encryption[each.key].encryption_type : "KMS"
+    kms_key         = contains(keys(var.repository_encryption), each.key) ? var.repository_encryption[each.key].kms_key : aws_kms_key.ecr.arn
   }
 
   tags = merge(var.common_tags, {

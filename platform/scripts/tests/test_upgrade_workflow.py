@@ -1,0 +1,160 @@
+"""Execute scope and finalization shell paths with isolated service doubles."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[3]
+spec = importlib.util.spec_from_file_location("network", ROOT / "platform/scripts/upgrade-network.py")
+network = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(network)
+
+
+class WorkflowTests(unittest.TestCase):
+    def test_scope_updates_only_installed_modules(self):
+        scenarios = [
+            ({}, ["true", "true", "false", "false"]),
+            ({"GATEWAY_ONLY": "true"}, ["true", "false", "false", "false"]),
+            ({"SUPERPLANE_ONLY": "true", "AGENT_CONTEXT_ENABLED": "true"}, ["false"] * 4),
+            ({"UPDATE_MODE": "false", "SUPERPLANE_ONLY": "true", "AGENT_CONTEXT_ENABLED": "true"}, ["false"] * 4),
+            ({"UPGRADE_MODULES": "platform,gateway,webhook-ingress,agent-factory,agent-context"}, ["true"] * 4),
+            ({"UPGRADE_MODULES": "platform,gateway,agent-context", "SKIP_AGENT_CONTEXT": "true"}, ["true", "false", "false", "false"]),
+        ]
+        for flags, expected in scenarios:
+            env = dict(os.environ, UPDATE_MODE="true", UPGRADE_MODULES="platform,gateway,webhook-ingress")
+            env.update(flags)
+            command = 'set -euo pipefail; fail() { exit 1; }; source "$1"; resolve_deploy_scope; printf "%s\\n" "$DEPLOY_GATEWAY" "$DEPLOY_WEBHOOK" "$DEPLOY_FACTORY" "$DEPLOY_AGENT_CONTEXT"'
+            result = subprocess.run(["bash", "-c", command, "test", str(ROOT / "platform/scripts/upgrade-scope.sh")], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), expected)
+
+    def test_explicit_missing_module_refuses(self):
+        env = dict(os.environ, UPDATE_MODE="true", UPGRADE_MODULES="platform,gateway", AGENT_FACTORY_ONLY="true")
+        result = subprocess.run(["bash", "-c", 'set -euo pipefail; fail() { exit 7; }; source "$1"; resolve_deploy_scope', "test",
+                                 str(ROOT / "platform/scripts/upgrade-scope.sh")], env=env)
+        self.assertEqual(result.returncode, 7)
+
+    def test_collector_requires_dns_both_protocols_and_https(self):
+        policy = {"spec": {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "adot-collector"}}, "policyTypes": ["Egress"],
+                           "egress": [{"ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}, {"port": 443, "protocol": "TCP"}]}]}}
+        self.assertTrue(network.collector_allowed(policy))
+        policy["spec"]["egress"][0]["ports"].pop()
+        self.assertFalse(network.collector_allowed(policy))
+        policy["spec"]["egress"][0]["ports"].append({"port": 443, "protocol": "TCP"})
+        policy["spec"]["egress"][0]["to"] = [{"podSelector": {}}]
+        self.assertFalse(network.collector_allowed(policy))
+
+    def finalize(self, audit_fail=False):
+        source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
+        start = source.index("# Finalize after all installed modules")
+        block = source[start:source.index("# Summary\n", start)]
+        prefix = r'''set -euo pipefail
+step() { :; }
+python3() {
+  if [ "$1" = -c ]; then command python3 "$@"; return; fi
+  echo "python $*" >> "$CALLS"
+  if [ "${2:-}" = audit ] && [ "$AUDIT_FAIL" = true ]; then return 1; fi
+}
+terraform_update_apply() { echo "terraform $1 check=${UPGRADE_CHECK_ONLY:-false}" >> "$CALLS"; }
+gateway_alb_vars() { GATEWAY_ALB_ARGS=(-var preserved-albs); }
+bash() { echo "frontend $*" >> "$CALLS"; }
+aws() { echo frontend.example.test; }
+curl() { echo '{"status":"healthy"}'; }
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / "calls"
+            env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(ROOT / "platform/scripts"),
+                       UPDATE_MODE="true", DEPLOY_GATEWAY="true", SKIP_FRONTEND="false", UPGRADE_RUN_DIR=tmp,
+                       ENVIRONMENT="test", AWS_REGION="us-east-1", CALLS=str(calls), AUDIT_FAIL=str(audit_fail).lower())
+            result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
+            return result, calls.read_text().splitlines()
+
+    def test_audit_precedes_activation_and_convergence_precedes_verification(self):
+        result, calls = self.finalize()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("upgrade-network.py audit", calls[0])
+        self.assertEqual(calls[1:4], ["terraform platform check=false", "terraform gateway-final check=false", "terraform gateway-final check=true"])
+        self.assertIn("deploy-frontend.sh", calls[4])
+        self.assertIn("upgrade-state.py verify", calls[5])
+
+    def test_failed_network_audit_stops_before_platform_apply(self):
+        result, calls = self.finalize(audit_fail=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(line.startswith("terraform") for line in calls))
+
+    def test_context_application_deploy_cannot_apply_terraform_again(self):
+        source = (ROOT / "modules/agent-context/deploy.sh").read_text()
+        start = source.index("# Deploy Terraform infrastructure")
+        block = source[start:source.index("# Deploy Ingestion Refresh CronJob", start)]
+        prefix = '''set -euo pipefail
+terraform() { echo "$*" >> "$CALLS"; [ "$1" = output ] || return 97; echo existing-output; }
+'''
+        for lean in ("true", "false"):
+            with tempfile.TemporaryDirectory() as tmp:
+                calls = Path(tmp) / "calls"
+                env = dict(os.environ, SCRIPT_DIR=str(ROOT / "modules/agent-context"), SKIP_TERRAFORM="true",
+                           PERSONAL_CONTEXT_ONLY=lean, GRAPHRAG_ENABLED="true", CALLS=str(calls))
+                result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(all(line.startswith("output ") for line in calls.read_text().splitlines()))
+
+    def test_worker_replacement_preserves_jobs_and_refuses_wrong_context(self):
+        source = (ROOT / "modules/agent-factory/webhook-ingress/infra/scaledjob.tf").read_text()
+        source = source[source.index('resource "null_resource" "keda_scaledjob"'):]
+        command = re.search(r'when\s*=\s*destroy.*?command\s*=\s*<<-CMD\n(.*?)\n\s*CMD', source, re.S)[1]
+        command = command.replace("$${", "${")
+        for key, value in (("cluster_name", "target-cluster"), ("cluster_region", "target-region"), ("namespace", "target-namespace")):
+            command = command.replace("${self.triggers." + key + "}", value)
+        prefix = '''aws() { echo "aws $*" >> "$CALLS"; [ "$AWS_FAIL" = false ]; }
+kubectl() { echo "kubectl $*" >> "$CALLS"; }
+'''
+        for aws_fail in ("false", "true"):
+            with tempfile.TemporaryDirectory() as tmp:
+                calls = Path(tmp) / "calls"
+                env = dict(os.environ, CALLS=str(calls), AWS_FAIL=aws_fail, KUBECONFIG=tmp + "/caller-config")
+                result = subprocess.run(["bash", "-c", prefix + command], env=env, text=True, capture_output=True)
+                recorded = calls.read_text()
+                self.assertIn("--name target-cluster --region target-region --kubeconfig " + env["KUBECONFIG"], recorded)
+                if aws_fail == "true":
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("kubectl", recorded)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("--cascade=orphan", recorded)
+
+    def test_already_managed_log_group_is_never_imported_again(self):
+        source = (ROOT / "modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh").read_text()
+        start = source.index("import_bootstrap_log_group() {")
+        function = source[start:source.index('\n}\n', start) + 3]
+        prefix = '''set -euo pipefail
+aws() { echo "$BOOTSTRAP_LOG_GROUP"; }
+ok() { :; }
+warn() { :; }
+fail() { echo "$*" >&2; exit 1; }
+terraform() {
+  if [ "$1 $2" = "state list" ]; then
+    if [ "$STATE_FAIL" = true ]; then return 1; fi
+    echo aws_cloudwatch_log_group.agent_bootstrap
+    # More than a pipe buffer: the old grep -q pipeline could close the pipe
+    # early and turn a successful state read into a failed import check.
+    command python3 -c 'print("aws_example.resource\\n" * 10000)'
+  else
+    echo "UNEXPECTED IMPORT" >&2
+    exit 99
+  fi
+}
+'''
+        for state_fail in ("false", "true"):
+            env = dict(os.environ, BOOTSTRAP_LOG_GROUP="/adp/test/bootstrap", AWS_REGION="us-east-1", STATE_FAIL=state_fail)
+            result = subprocess.run(["bash", "-c", prefix + function + '\nimport_bootstrap_log_group'],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode == 0, state_fail == "false", result.stderr)
+            self.assertNotIn("UNEXPECTED IMPORT", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

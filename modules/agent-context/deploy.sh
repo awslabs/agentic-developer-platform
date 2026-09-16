@@ -11,6 +11,7 @@ source "${SCRIPT_DIR}/config.env"
 
 # Parse arguments
 PERSONAL_CONTEXT_ONLY="${PERSONAL_CONTEXT_ONLY:-false}"
+SKIP_TERRAFORM=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --config)
@@ -19,6 +20,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --personal-context-only)
       PERSONAL_CONTEXT_ONLY=true
+      shift
+      ;;
+    --skip-terraform)
+      SKIP_TERRAFORM=true
       shift
       ;;
     --skip-validate)
@@ -34,6 +39,7 @@ while [[ $# -gt 0 ]]; do
       echo "                            synthesis CronJob + S3 Vectors). Skips DeepWiki,"
       echo "                            ingestion pipeline, and OpenSearch."
       echo "                            Cost: ~\$80/mo vs ~\$800/mo full stack."
+      echo "  --skip-terraform          Infrastructure already applied through the upgrade gate"
       echo "  --skip-validate           Skip post-deployment validation"
       exit 0
       ;;
@@ -96,7 +102,9 @@ fi
 if [ "${S3_FILES_ENABLED:-true}" = "true" ] && [ -f "${SCRIPT_DIR}/scripts/deploy-s3-files.sh" ]; then
   echo ""
   echo "Deploying S3 Files storage infrastructure..."
-  bash "${SCRIPT_DIR}/scripts/deploy-s3-files.sh" || {
+  S3_FILES_ARGS=()
+  [ "$SKIP_TERRAFORM" = false ] || S3_FILES_ARGS+=(--k8s-only)
+  bash "${SCRIPT_DIR}/scripts/deploy-s3-files.sh" ${S3_FILES_ARGS[@]+"${S3_FILES_ARGS[@]}"} || {
     echo "WARNING: S3 Files deployment failed. Falling back to EBS PVCs."
     if [ -f "${SCRIPT_DIR}/kubernetes/pvcs.yaml" ]; then
       kubectl apply -f "${SCRIPT_DIR}/kubernetes/pvcs.yaml"
@@ -277,11 +285,13 @@ if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
     echo ""
     echo "Deploying Terraform infrastructure (Neptune only, personal-context-only mode)..."
     cd "${SCRIPT_DIR}/terraform"
+    if [ "$SKIP_TERRAFORM" = false ]; then
     terraform init -upgrade
     TF_VARS="-var=graphrag_enabled=true"
     terraform apply -auto-approve ${TF_VARS} || {
       echo "WARNING: Terraform deployment failed."
     }
+    fi
     NEPTUNE_ENDPOINT=$(terraform output -raw neptune_endpoint 2>/dev/null || echo "")
     export NEPTUNE_ENDPOINT
     echo "  Neptune endpoint: ${NEPTUNE_ENDPOINT:-not set}"
@@ -295,6 +305,7 @@ else
   echo "Deploying Terraform infrastructure (SQS, DynamoDB, GraphRAG)..."
   if [ -d "${SCRIPT_DIR}/terraform" ]; then
     cd "${SCRIPT_DIR}/terraform"
+    if [ "$SKIP_TERRAFORM" = false ]; then
     terraform init -upgrade
 
     TF_VARS="-var=graphrag_enabled=${GRAPHRAG_ENABLED:-false}"
@@ -302,6 +313,7 @@ else
       echo "WARNING: Terraform deployment failed."
     }
 
+    fi
     # Export SQS queue URL and DynamoDB table name
     SQS_QUEUE_URL=$(terraform output -raw ingestion_queue_url 2>/dev/null || echo "")
     DYNAMO_TABLE=$(terraform output -raw dynamodb_table_name 2>/dev/null || echo "adp-context-service-state")

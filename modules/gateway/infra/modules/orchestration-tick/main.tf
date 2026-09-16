@@ -128,6 +128,13 @@ resource "aws_cloudwatch_log_group" "tick" {
 # Lambda Function
 # =============================================================================
 
+# IAM policy attachment is not implied by referencing the role ARN. Allow the
+# initial VPC permissions to propagate before Lambda starts provisioning ENIs.
+resource "time_sleep" "tick_iam_ready" {
+  create_duration = "30s"
+  depends_on      = [aws_iam_role_policy.tick]
+}
+
 resource "aws_lambda_function" "tick" {
   lifecycle {
     precondition {
@@ -234,6 +241,7 @@ resource "aws_lambda_function" "tick" {
   })
 
   depends_on = [
+    time_sleep.tick_iam_ready,
     aws_cloudwatch_log_group.tick,
     aws_security_group_rule.tick_to_rds,
     aws_security_group_rule.tick_to_vpc_endpoints,

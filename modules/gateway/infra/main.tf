@@ -32,6 +32,7 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
+data "aws_partition" "current" {}
 
 data "terraform_remote_state" "platform" {
   backend = "s3"
@@ -1728,7 +1729,7 @@ resource "aws_iam_role_policy" "gateway_ingestion_sqs_publish" {
           "sqs:SendMessage",
           "sqs:GetQueueUrl"
         ]
-        Resource = var.agent_context_ingestion_queue_arn
+        Resource = var.agent_context_ingestion_queue_arn != "" ? var.agent_context_ingestion_queue_arn : "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.cluster_name}-context-ingestion"
       }
     ]
   })
