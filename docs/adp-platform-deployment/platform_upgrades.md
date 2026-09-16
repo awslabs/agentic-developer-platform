@@ -36,8 +36,30 @@ AWS_PROFILE=customer-test ./platform/scripts/deploy-all.sh --update --env dev --
 ```
 
 Update mode discovers the platform, gateway, webhook, agent-factory and
-agent-context states in that account. It upgrades installed modules only;
-missing optional modules are not installed. Scope/skip flags restrict that set.
+agent-context states in that account. **Agent factory is required for a full
+platform deployment.** A full upgrade includes it even when an older deployment
+omitted its state. Agent-context remains optional and is upgraded only when
+already installed. Explicit scope flags select a partial maintenance operation;
+they do not certify that the entire platform is deployed.
+
+When factory state is missing, preflight requires existing gateway and
+webhook-ingress states and prepares an additive factory installation through
+the same saved-plan gate. It uses the existing broker's single allowed GitHub
+organization as the legacy secret namespace. An empty or multiple-org
+allowlist leaves legacy GitHub integration unconfigured; the factory still
+installs without upfront GitHub setup. `ADP_GITHUB_ORG` can explicitly select
+that namespace when needed. It does not infer a customer's org
+from this repository's remote, register an App, enable ARC, copy the platform
+account's installation ID, or overwrite the gateway's registry seed.
+Existing factory installations keep their recovered configuration.
+
+Completion requires factory Terraform state, a Ready agent-gateway ScaledJob,
+and the intended release image. Missing state or failed readiness stops the
+upgrade instead of printing a success message. Missing prerequisite states or
+resources created outside Terraform require recovery before installation;
+the upgrade does not force-create or replace those resources.
+
+Scope/skip flags restrict the selected work.
 It retains existing platform-managed EKS admin principals and public access
 CIDRs, adds the operator's CIDR if needed, and waits for the EKS access update
 before using kubectl. Private-only endpoints stay private and require existing
@@ -214,7 +236,7 @@ admin bootstrap anyway.)
 ### Common invocations
 
 ```bash
-# Full upgrade (everything that is deployed):
+# Full upgrade (installed modules plus the required agent factory):
 ./platform/scripts/deploy-all.sh --update
 
 # Gateway-only upgrade, no frontend rebuild (fastest meaningful update):

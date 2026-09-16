@@ -11,8 +11,9 @@ variable "environment" {
 }
 
 variable "github_org" {
-  description = "GitHub organization name for runner registration"
+  description = "GitHub organization for optional legacy ARC integration; empty when GitHub is not configured"
   type        = string
+  default     = ""
 }
 
 variable "github_repo" {

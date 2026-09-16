@@ -3,6 +3,8 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -87,6 +89,11 @@ class PreservationTests(unittest.TestCase):
         self.assertFalse(result["enable_github_apps"])
         self.assertEqual(result["github_org"], "customer")
 
+    def test_factory_installed_before_github_setup_can_be_upgraded_again(self):
+        result = state.factory_settings({"outputs": {"github_org": {"value": ""}, "secrets_prefix": {"value": ""}}})
+        self.assertEqual(result["github_org"], "")
+        self.assertFalse(result["enable_github_apps"])
+
     def baseline(self):
         return {"secrets": {"app-key": ["version-1"]}, "mappings": {"identity": [
             {"identity_type": {"S": "github_installation_id"}, "identity_value": {"S": "456"}, "org_id": {"S": "customer"}}]}}
@@ -121,6 +128,89 @@ class PreservationTests(unittest.TestCase):
             snapshot = state.integration_snapshot({}, "dev")
         self.assertEqual(snapshot["secrets"], {"app-key": ["version-1"]})
         self.assertEqual(len(calls), 2)
+
+
+class RequiredFactoryTests(unittest.TestCase):
+    def prepare(self, modules=None, org="customer", override="", account="111122223333"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = {"account": "111122223333", "modules": modules if modules is not None else ["platform", "gateway", "webhook-ingress"],
+                      "broker_settings": {"ALLOWED_ORGS": org}}
+            (root / "integration-before.json").write_text(json.dumps(before))
+            original = {"environment": "dev", "aws_region": "us-east-1", "enable_github_apps": True,
+                        "github_org": "existing-org", "github_app_dev_installation_id": "existing-installation"}
+            target = root / "agent-factory.tfvars.json"
+            target.write_text(json.dumps(original))
+            args = SimpleNamespace(directory=directory, github_org=override)
+            with patch.object(state, "aws", return_value={"Account": account}) as aws:
+                state.prepare_factory(args)
+            aws.assert_called_once_with("sts", "get-caller-identity")
+            return original, json.loads(target.read_text())
+
+    def test_missing_factory_installs_without_copying_platform_app_configuration(self):
+        _, result = self.prepare()
+        self.assertEqual(result["github_org"], "customer")
+        self.assertFalse(result["enable_github_apps"])
+        self.assertFalse(result["seed_agent_registry"])
+        self.assertEqual(result["github_app_dev_installation_id"], "")
+        self.assertEqual(result["github_repo"], "")
+        self.assertTrue(result["gateway_deployed"])
+        self.assertEqual(result["environment"], "dev")
+
+    def test_existing_factory_configuration_is_not_reinitialized(self):
+        before, after = self.prepare(modules=["platform", "gateway", "webhook-ingress", "agent-factory"])
+        self.assertEqual(before, after)
+
+    def test_missing_dependencies_stop_before_installation(self):
+        for modules in (["platform"], ["platform", "gateway"], ["platform", "webhook-ingress"]):
+            with self.subTest(modules=modules), self.assertRaisesRegex(ValueError, "prerequisites"):
+                self.prepare(modules=modules)
+
+    def test_unconfigured_or_multiple_orgs_do_not_require_upfront_github_setup(self):
+        for org in ("", "one,two", "*", "one/two"):
+            with self.subTest(org=org):
+                _, result = self.prepare(org=org)
+                self.assertEqual(result["github_org"], "")
+                self.assertFalse(result["enable_github_apps"])
+        _, result = self.prepare(org="one,two", override="intended-org")
+        self.assertEqual(result["github_org"], "intended-org")
+        with self.assertRaisesRegex(ValueError, "ADP_GITHUB_ORG"):
+            self.prepare(override="one,two")
+
+    def test_wrong_account_stops_before_installation(self):
+        with self.assertRaisesRegex(ValueError, "account differs"):
+            self.prepare(account="444455556666")
+
+    def verify(self, deployed):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = {"account": "111122223333", "environment": "dev", "modules": [], "outputs": {},
+                      "secrets": {}, "mappings": {}, "broker_function": None}
+            (root / "integration-before.json").write_text(json.dumps(before))
+            def aws(*args):
+                if args[:2] == ("sts", "get-caller-identity"):
+                    return {"Account": before["account"]}
+                if args[:2] == ("s3api", "get-object"):
+                    self.assertEqual(args[5], "dev/modules/agent-factory/terraform.tfstate")
+                    if deployed is None:
+                        raise RuntimeError("NoSuchKey")
+                    Path(args[-1]).write_text(json.dumps(deployed))
+                    return {}
+                self.fail(f"Unexpected AWS call: {args[:2]}")
+            args = SimpleNamespace(directory=directory, require_module=["agent-factory"])
+            with patch.object(state, "aws", side_effect=aws), patch.object(state, "integration_snapshot", return_value=before):
+                state.verify(args)
+            return json.loads((root / "module-verification.json").read_text())
+
+    def test_required_factory_is_checked_even_when_absent_from_original_snapshot(self):
+        result = self.verify({"resources": [resource("aws_sqs_queue", "input", {"name": "factory-queue"})]})
+        self.assertEqual(result, {"required": ["agent-factory"], "verified": ["agent-factory"]})
+
+    def test_missing_or_empty_required_state_cannot_report_success(self):
+        with self.assertRaisesRegex(RuntimeError, "NoSuchKey"):
+            self.verify(None)
+        with self.assertRaisesRegex(ValueError, "no deployed resources"):
+            self.verify({"resources": []})
 
 
 if __name__ == "__main__":
