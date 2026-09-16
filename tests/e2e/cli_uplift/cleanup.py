@@ -60,6 +60,20 @@ ORDER = (
     # the E06 journey; without it here, `record()` raises on an unknown kind and
     # `sweep()` treats it as a leak — a successful E06 would have failed cleanup.
     "bedrock_destination",
+    # The ADP account the run registers for its own E02 login, so the user-scoped
+    # routes later cases exercise have a `users` row to resolve to.
+    #
+    # LAST of the API-deleted kinds, deliberately. Deleting this row is deleting
+    # the very account the deleters above authenticate as, and the connection and
+    # destination deleters call user-scoped endpoints that resolve a Cognito
+    # subject to it — remove it first and they answer 404 `user_not_found`, so a
+    # run would report a leak for resources it could no longer even see. It is
+    # after `cognito_user` for the same reason in reverse: the product's delete
+    # cascades to the login, so by the time this runs that login is already gone
+    # and the cascade is a best-effort no-op. The bearer token stays valid either
+    # way — a JWT is checked by signature and expiry, not by the login still
+    # existing.
+    "adp_user",
     "cloudformation_stack",
     "github_app",
 )

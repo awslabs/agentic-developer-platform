@@ -298,6 +298,113 @@ def _login(config, evidence, cli, env, home, *, challenges_required=True):
     return _access_token(session)
 
 
+def _onboard(config, evidence, token):
+    """Give a run-created login the ADP account that later cases require.
+
+    A Cognito identity is not an ADP account. E02 needs its own identities — the
+    shared fixture is CONFIRMED, so it issues no challenge, and it is an admin, so
+    it cannot be the negative — but the identity created for E02 is then inherited
+    by every LATER case in the run, and those touch user-scoped records. The
+    gateway maps a Cognito subject to a `users` row and answers 404
+    `user_not_found` when there is none, which is how E13's
+    `adp aws connect --download` came to report `failed`/exit 5 where it expects
+    `pending`/exit 4: a failure whose cause was installed two stages earlier.
+    Reproduced live against dev — the same command returns `pending` for the
+    shared fixture, which HAS a row, and `user_not_found` for a run-created
+    identity, which does not.
+
+    Done HERE, on the instance, rather than beside the Cognito create in the
+    orchestrator's `_admin_fixtures`, for one reason: this route requires a
+    platform-admin BEARER token, and the only such token that exists without
+    minting a second one is the session the CLI just earned by completing E02's
+    NEW_PASSWORD_REQUIRED challenge. Having the orchestrator log in to get its own
+    would consume that challenge before the CLI could be tested against it, which
+    is E02 itself. So the identity registers its own ADP account with the session
+    it just proved.
+
+    Through the product's own supported onboarding route, never a database write:
+    the run must exercise the path an operator would, or the fixture proves a
+    shape the product never actually produces. `cognito_identity` adopts the login
+    that already exists, with `expected_sub` as the immutable proof that route
+    demands — a mutable email is deliberately not sufficient there, and it should
+    not be here either.
+
+    The created row is reported as a resource so the sweep removes it. Deleting it
+    cascades to the Cognito login, which is why `cleanup.ORDER` putting
+    `cognito_user` first matters: by the time this row is deleted the login is
+    already gone, and the Cognito deleter treats absence as the success it is.
+
+    Returns without asserting when the run did not create the identity — a shared
+    fixture already has its account and must not be re-provisioned.
+    """
+    username = config.get("created_username") or ""
+    if not username:
+        return
+    evidence["stage"] = "onboard"
+    org = (evidence.get("login") or {}).get("org_id") or ""
+    subject = (evidence.get("login") or {}).get("user_id") or ""
+    require(org, "The gateway attributed no organization to the run's own identity")
+    require(subject, "The gateway attributed no subject to the run's own identity")
+
+    # The org's own team, read rather than constructed. `create_user` refuses a
+    # team that does not exist in the org, and the default it would derive
+    # (`<org>-team-default`) is not what every org actually has — dev's
+    # `adp-platform` does not. Verified live: the constructed name answers 404
+    # "Team does not exist in the requested organization".
+    base = "/api/admin/identity/organizations/" + org
+    _status, listing = common.api(config, base + "/users", token, expect=(200,))
+    team = next(
+        (
+            row.get("team_id")
+            for row in ((listing or {}).get("users") or [])
+            if row.get("team_id")
+        ),
+        "",
+    )
+    require(
+        team,
+        f"Organization {org} has no user carrying a team, so no existing team could "
+        "be resolved to register this run's identity into",
+    )
+
+    status, created = common.api(
+        config,
+        base + "/users",
+        token,
+        method="POST",
+        body={
+            "email": username,
+            "name": "ADP CLI uplift evaluation " + config["evaluation_id"],
+            "role": "platform_admin",
+            "team_id": team,
+            # No mail for an undeliverable address, matching MessageAction=SUPPRESS
+            # on the Cognito create.
+            "send_invite": False,
+            "cognito_identity": {"username": username, "expected_sub": subject},
+        },
+        expect=(201,),
+    )
+    identifier = (created or {}).get("id") or ""
+    require(
+        identifier,
+        f"Registering the run's identity returned HTTP {status} with no user id",
+    )
+    require(
+        (created or {}).get("cognito_sub") == subject,
+        "The registered ADP account was not bound to the login that created it",
+    )
+    # Reported so the orchestrator records it BEFORE anything else uses it, and so
+    # an interrupted run still leaves it findable. Non-secret: an org id and a row
+    # id, both already in the evidence.
+    evidence.setdefault("resources", []).append(["adp_user", org + "/" + identifier])
+    evidence["onboard"] = {
+        "org_id": org,
+        "team_id": team,
+        "user_id": identifier,
+        "cognito_sub_bound": True,
+    }
+
+
 def _access_token(path):
     try:
         return json.loads(Path(path).read_text()).get("access_token") or ""
@@ -452,6 +559,10 @@ def execute(config, evidence):
             home,
             challenges_required=config.get("admin_challenges_required", True),
         )
+        # Before `_setup` and before any later journey: everything downstream of
+        # here authenticates as this identity, and a user-scoped route refuses a
+        # login with no ADP account. A no-op for the shared fixture.
+        _onboard(config, evidence, token)
         if config.get("admin_setup_required", True):
             _setup(config, evidence, cli)
         evidence["session_token_present"] = bool(token)

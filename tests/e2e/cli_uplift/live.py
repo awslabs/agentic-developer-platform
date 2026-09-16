@@ -293,6 +293,26 @@ def _admin_fixtures(aws, cfg):
     for the eval instance role on this secret, `implicitDeny` for any other
     secret. That needs no change to the shared role, no new identity policy and
     no wider grant — which is why it is done this way.
+
+    A Cognito identity is NOT an ADP account, and this function used to create
+    only the former. That was the whole fixture for E02's purposes — a challenge
+    and a negative are both pure sign-in assertions — but the identity it creates
+    is then inherited by every LATER case in the run, and those touch user-scoped
+    records. `_resolve_user_id` maps the Cognito sub to `users.id` and answers 404
+    `user_not_found` when no row exists, so E13's `adp aws connect --download`
+    reported `failed`/exit 5 where it expects `pending`/exit 4 — a failure whose
+    cause was installed two stages earlier, in this function. Reproduced live:
+    the same command as the shared fixture (which HAS a `users` row) returns
+    `pending`, and as a run-created identity returns `user_not_found`.
+
+    The ADP-side record is therefore created too — but NOT here, in
+    `remote/install_auth._onboard`. Registering it needs a platform-admin bearer
+    token, and the only one that exists without minting a second is the session
+    the CLI earns by completing E02's own challenge; logging in from here to get
+    one would consume that challenge before the CLI could be tested against it.
+    So the identity registers its own account, on the instance, immediately after
+    the login that proves it — through the product's own onboarding route rather
+    than a database write.
     """
 
     def build(ctx):
@@ -302,8 +322,16 @@ def _admin_fixtures(aws, cfg):
         account, region = str(cfg["platform_account"]), cfg["region"]
         # `adp-e2e-*` so the ownership tag, the bundle grant and the recovery
         # sweep all recognise these as this run's.
-        challenge = f"{prefix}-admin@adp-eval.invalid"
-        non_admin = f"{prefix}-user@adp-eval.invalid"
+        #
+        # `.example` rather than `.invalid`: the ADP user route below validates
+        # the address with `EmailStr`, which REFUSES reserved TLDs (`.invalid`,
+        # `.test`) — verified, it answers 422 — so the old domain could not be
+        # registered through the product's own onboarding path at all. `.example`
+        # is equally reserved by RFC 2606 and equally undeliverable, which is the
+        # property that mattered: combined with MessageAction=SUPPRESS below, no
+        # mail is generated and none could be delivered if it were.
+        challenge = f"{prefix}-admin@adp-eval.example"
+        non_admin = f"{prefix}-user@adp-eval.example"
         secret_name = f"adp/cli-uplift-eval/{prefix}-fixtures"
 
         # Distinct passwords, generated here and never logged. Each satisfies the
@@ -341,8 +369,8 @@ def _admin_fixtures(aws, cfg):
                 UserPoolId=pool,
                 Username=username,
                 UserAttributes=attributes,
-                # No email is deliverable to .invalid, and a fixture must not
-                # try: SUPPRESS keeps this from generating mail at all.
+                # No email is deliverable to a reserved domain, and a fixture must
+                # not try: SUPPRESS keeps this from generating mail at all.
                 MessageAction="SUPPRESS",
                 TemporaryPassword=temporary if role else non_admin_password,
             )
@@ -1033,6 +1061,84 @@ def _deleters(aws, cfg, http=None, ssm=None):
 
         return delete
 
+    def delete_adp_user(http, session):
+        """Remove the ADP account the run registered for its own E02 login.
+
+        Recorded as `<org_id>/<user_id>`, because the delete route is org-scoped
+        and an id alone would not say which organization to remove it from.
+
+        Ownership is checked before deleting, the same way the connection deleter
+        does it and for the same reason: the identifier came back over SSM from a
+        journey, and a deleter that trusts it could be pointed at a real operator's
+        account. The row's email must carry this run's evaluation ID, which is a
+        property of the name `_admin_fixtures` derives and cannot be true of an
+        identity this evaluation did not create.
+
+        A 404 is success — the end state a deleter exists to reach. It is also the
+        expected answer on a re-run of an interrupted sweep, where the row is
+        already gone but the durable manifest still says pending.
+        """
+
+        def delete(identifier, *, account=None, region=None):
+            org, _, user_id = str(identifier).partition("/")
+            if not (org and user_id):
+                raise ports_module.PortError(
+                    f"ADP user record {identifier} is not <org_id>/<user_id>; "
+                    "refusing to guess which organization to delete it from"
+                )
+            token = (session() or {}).get("access_token") or ""
+            if not token:
+                raise ports_module.PortError(
+                    f"No authenticated session is available to delete ADP user "
+                    f"{identifier}; it must be removed by its owner"
+                )
+            base = cfg["gateway_url"].rstrip("/") + "/api/admin/identity/organizations"
+            prefix = (session() or {}).get("prefix") or ""
+            status, payload = http.get(f"{base}/{org}/users", token=token, expect=None)
+            if status == 404:
+                return
+            if status != 200:
+                raise ports_module.PortError(
+                    f"The identity API returned HTTP {status}; ownership of "
+                    f"{identifier} could not be established"
+                )
+            found = next(
+                (
+                    row
+                    for row in ((payload or {}).get("users") or [])
+                    if str(row.get("id")) == user_id
+                ),
+                None,
+            )
+            if found is None:
+                return  # already gone: the desired end state
+            if prefix and prefix not in str(found.get("email") or ""):
+                raise ports_module.PortError(
+                    f"ADP user {identifier} is not named for this run; refusing to "
+                    "delete an account this evaluation did not create"
+                )
+            delete_status, _ = http.request(
+                f"{base}/{org}/users/{user_id}",
+                method="DELETE",
+                token=token,
+                expect=None,
+            )
+            if delete_status not in (200, 202, 204, 404):
+                raise ports_module.PortError(
+                    f"Deleting ADP user {identifier} returned HTTP {delete_status}"
+                )
+            # A 2xx is a request, not a proof.
+            status, payload = http.get(f"{base}/{org}/users", token=token, expect=None)
+            if any(
+                str(row.get("id")) == user_id
+                for row in ((payload or {}).get("users") or [])
+            ):
+                raise ports_module.PortError(
+                    f"ADP user {identifier} is still present after deletion"
+                )
+
+        return delete
+
     def delete_connection(http, session):
         """R8: authenticated, ownership-checked deletion of an ADP connection.
 
@@ -1152,6 +1258,9 @@ def _deleters(aws, cfg, http=None, ssm=None):
             # delete for it. See `delete_destination` — the residual case is a
             # product gap and is reported as an outstanding resource, not swallowed.
             "bedrock_destination": delete_destination(http, session),
+            # The ADP account the run registered for its own E02 login. Deleted
+            # after the two above, which authenticate as it — see `cleanup.ORDER`.
+            "adp_user": delete_adp_user(http, session),
             # A GitHub App is never deleted by automation: it is either a reused
             # fixture (preserved by design) or it needs an owner's action.
             "github_app": unsupported("github_app"),

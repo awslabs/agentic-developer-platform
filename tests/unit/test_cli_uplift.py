@@ -2009,6 +2009,35 @@ class FakeGateway:
         self.destinations = {}
         self.mappings = []
         self.unlinked = []
+        # The identity surface, for the ADP account the run registers for its own
+        # E02 login. The run's own row is NOT seeded here: it is created by
+        # `enroll()` when the install_auth journey runs, because the address the
+        # deleter's ownership check reads is derived from the run's evaluation ID
+        # and that is not knowable before the run starts. Seeding it with a fixed
+        # prefix would make every ownership check fail for the wrong reason.
+        self.users = {
+            "org-eval": {
+                # An account this evaluation did NOT create, in the same org. The
+                # deleter must never touch it, and its presence is what makes the
+                # ownership check meaningful rather than vacuous.
+                "operator-1": {
+                    "id": "operator-1",
+                    "org_id": "org-eval",
+                    "team_id": "org-eval-team",
+                    "email": "real.operator@example.com",
+                },
+            }
+        }
+        self.deleted_users = []
+
+    def enroll(self, user_id, *, org, email):
+        """What `_onboard` leaves behind: the ADP account behind the run's login."""
+        self.users.setdefault(org, {})[user_id] = {
+            "id": user_id,
+            "org_id": org,
+            "team_id": f"{org}-team",
+            "email": email,
+        }
 
     def register(self, destination_id, *, label, scope=None, grant=False):
         """What a journey's `connect` leaves behind: a row, and a rule naming it."""
@@ -2024,7 +2053,38 @@ class FakeGateway:
         marker = "/admin/bedrock-routing"
         return url[url.index(marker) + len(marker) :] if marker in url else None
 
+    def _identity(self, url, method, *, token=None):
+        """`/api/admin/identity/organizations/{org}/users[/{id}]`.
+
+        Modelled with the product's real semantics for the two that matter: the
+        listing is what establishes ownership before a delete, and deleting a row
+        that is not there answers 404 rather than succeeding — which is the state
+        a re-run of an interrupted sweep meets.
+        """
+        marker = "/api/admin/identity/organizations/"
+        if marker not in url:
+            return None
+        if not token:
+            return 401, None  # the whole router is admin-gated
+        remainder = url[url.index(marker) + len(marker) :]
+        org, _, tail = remainder.partition("/users")
+        rows = self.users.setdefault(org, {})
+        if method == "GET" and tail in ("", "/"):
+            users = list(rows.values())
+            return 200, {"users": users, "total": len(users)}
+        if method == "DELETE" and tail.startswith("/"):
+            identifier = unquote(tail[1:])
+            if identifier not in rows:
+                return 404, None
+            del rows[identifier]
+            self.deleted_users.append(f"{org}/{identifier}")
+            return 204, None
+        return None
+
     def handle(self, url, method, *, token=None):
+        identity = self._identity(url, method, token=token)
+        if identity is not None:
+            return identity
         path = self._path(url)
         if path is None:
             return None
@@ -2204,7 +2264,23 @@ class FakeSsm:
         The row is created with NO connection grant, because that is what `POST
         /destinations` with source `new_account` produces — which is precisely why
         the product cannot delete it again.
+
+        `install_auth` is mirrored the same way, for the same reason: its
+        `_onboard` registers the ADP account behind the run's own login through the
+        product's route, and a cleanup sweep over a row the gateway never heard of
+        would report success for a deletion it never performed. The email carries
+        the identity the fixtures really created, because that is what the
+        deleter's ownership check reads.
         """
+        if self.gateway is not None and found == "install_auth":
+            payload = self.payloads.get(found) or {}
+            for kind, identifier in evidence.get("resources") or []:
+                if kind != "adp_user":
+                    continue
+                org, _, user_id = str(identifier).partition("/")
+                self.gateway.enroll(
+                    user_id, org=org, email=payload.get("created_username") or ""
+                )
         if self.gateway is None or found != "bedrock_routing":
             return evidence
         payload = self.payloads.get(found) or {}
@@ -2306,6 +2382,17 @@ def worker_evidence():
                 "duplicates": [],
                 "reported_states": {"bedrock": "configured"},
             },
+            # The ADP account the journey registers for the run's OWN login, so
+            # every user-scoped route a later case exercises has a `users` row to
+            # resolve the Cognito subject to. Reported as a resource because the
+            # orchestrator cannot know its id in advance -- the product assigns it.
+            "onboard": {
+                "org_id": "org-eval",
+                "team_id": "org-eval-team",
+                "user_id": "adp-user-eval",
+                "cognito_sub_bound": True,
+            },
+            "resources": [["adp_user", "org-eval/adp-user-eval"]],
             "session": {
                 # A durable path, not the journey's temp HOME: install_auth's HOME
                 # is deleted when it returns, so a later journey needs the CLI to
@@ -4504,8 +4591,15 @@ class VaultSsm:
         return {"Status": "Success"}, {"access_token": self.token}
 
 
-def destination_deleter(gateway, *, prefix=EVAL_ID, cfg=None, ssm=None):
-    """The production `bedrock_destination` deleter, over a modelled gateway."""
+def destination_deleter(
+    gateway, *, prefix=EVAL_ID, cfg=None, ssm=None, kind="bedrock_destination"
+):
+    """One production API deleter, over a modelled gateway.
+
+    `kind` selects which: `bedrock_destination`, `adp_connection` and `adp_user`
+    are all built by the same factory and share the same session plumbing, so they
+    share this harness rather than each getting a near-copy of it.
+    """
     cfg = config.validate(cfg or config_fixture())
     http = FakeHttp(gateway=gateway)
     ssm = ssm if ssm is not None else VaultSsm()
@@ -4521,7 +4615,7 @@ def destination_deleter(gateway, *, prefix=EVAL_ID, cfg=None, ssm=None):
             },
         }
     }
-    return build(cfg, ctx)["bedrock_destination"], http
+    return build(cfg, ctx)[kind], http
 
 
 def test_removing_a_destination_drops_its_routing_rules_first(tmp_path):
@@ -4979,6 +5073,299 @@ def test_both_e02_identities_and_the_fixture_secret_are_deleted_by_the_sweep(tmp
     assert any(name.endswith("-fixtures") for name in secrets_deleted), (
         "the fixture secret carrying live credentials was not deleted"
     )
+
+
+# --------------------------------------------------------------------------
+# The ADP account behind the run's own login
+#
+# A Cognito identity is not an ADP account. E02 must create its own identities —
+# the shared fixture is CONFIRMED so it issues no challenge, and it is an admin so
+# it cannot be the negative — but every LATER case inherits that identity, and the
+# user-scoped routes they exercise resolve a Cognito subject to a `users` row and
+# answer 404 `user_not_found` when there is none. That is what made run 10's E13
+# report `failed`/exit 5 where it expects `pending`/exit 4: a failure installed two
+# stages earlier. Confirmed in the deployed gateway's own logs, and reproduced both
+# ways — `pending` for the shared fixture, which has a row, `user_not_found` for a
+# run-created identity, which did not.
+#
+# The product is right to refuse; the harness was wrong. So the run registers the
+# account through the product's own onboarding route.
+# --------------------------------------------------------------------------
+
+
+def onboard_gateway(tmp_path, *, listing=None, created=None, status=201):
+    """Drive the shipped `_onboard` over a recording double of `common.api`.
+
+    The script, not a copy of it: `shipped_script` imports from the extracted
+    bundle, so a module that never packaged fails here rather than on the instance.
+    """
+    script, common = shipped_script(tmp_path, "install_auth")
+    calls = []
+
+    def api(config, path, token, *, method="GET", body=None, expect=(200,)):
+        calls.append(
+            {
+                "path": path,
+                "method": method,
+                "body": body,
+                "token": token,
+                "expect": expect,
+            }
+        )
+        if method == "GET":
+            answer = (
+                listing
+                if listing is not None
+                else {"users": [{"id": "someone", "team_id": "org-eval-team"}]}
+            )
+            return 200, answer
+        if status not in expect:
+            raise common.RemoteError(
+                f"{path} returned HTTP {status}, expected {expect}"
+            )
+        return status, (
+            created
+            if created is not None
+            else {"id": "adp-user-eval", "cognito_sub": "sub-eval"}
+        )
+
+    common.api = api
+    evidence = {
+        "login": {"org_id": "org-eval", "user_id": "sub-eval", "username": "who"},
+    }
+    config = {
+        "gateway_url": "https://gw.example/api",
+        "evaluation_id": EVAL_ID,
+        "created_username": f"{EVAL_ID}-admin@adp-eval.example",
+    }
+    return script, common, config, evidence, calls
+
+
+def test_the_run_registers_an_adp_account_for_the_login_it_created(tmp_path):
+    """Through the product's own onboarding route, with the immutable subject.
+
+    A direct database write would prove a shape the product never produces, so the
+    fixture must go through the same path an operator uses. `cognito_identity`
+    adopts the login that already exists, and the route demands `expected_sub`
+    rather than the email precisely because an email is mutable — so the run
+    supplies the subject the gateway itself attributed to the session.
+    """
+    script, _common, config, evidence, calls = onboard_gateway(tmp_path)
+    script._onboard(config, evidence, "<token>")
+
+    posted = [call for call in calls if call["method"] == "POST"]
+    assert len(posted) == 1, "the account was registered by more or less than one call"
+    body = posted[0]["body"]
+    assert posted[0]["path"] == "/api/admin/identity/organizations/org-eval/users"
+    # The route is org-scoped and platform-admin gated; the bearer token is the
+    # session the CLI just earned by completing E02's challenge.
+    assert posted[0]["token"] == "<token>"
+    assert body["cognito_identity"] == {
+        "username": config["created_username"],
+        "expected_sub": "sub-eval",
+    }
+    assert body["email"] == config["created_username"]
+    # No mail for an undeliverable reserved domain, matching MessageAction=SUPPRESS
+    # on the Cognito create.
+    assert body["send_invite"] is False
+    assert evidence["onboard"]["user_id"] == "adp-user-eval"
+    assert evidence["onboard"]["cognito_sub_bound"] is True
+
+
+def test_the_registered_account_is_reported_so_the_sweep_removes_it(tmp_path):
+    """The orchestrator cannot know this id in advance — the product assigns it.
+
+    So the journey reports it, as `<org>/<id>` because the delete route is
+    org-scoped and an id alone would not say which organization to remove it from.
+    Without the report the row would outlive the run in a shared environment on
+    every E02 pass, with no tag-and-age sweep behind it.
+    """
+    script, _common, config, evidence, _calls = onboard_gateway(tmp_path)
+    script._onboard(config, evidence, "<token>")
+    assert evidence["resources"] == [["adp_user", "org-eval/adp-user-eval"]]
+    assert "adp_user" in cleanup.ORDER
+
+
+def test_the_shared_fixture_is_never_re_provisioned(tmp_path):
+    """A run that did not create its identity must not touch that identity's account.
+
+    `created_username` is what makes a login this run's, and the shared fixture
+    already has its ADP account. Registering one for it would be writing to a
+    Terraform-managed fixture other e2e consumers depend on — and would answer 409
+    anyway, failing the stage over a precondition that was already satisfied.
+    """
+    script, _common, config, evidence, calls = onboard_gateway(tmp_path)
+    del config["created_username"]
+    script._onboard(config, evidence, "<token>")
+    assert calls == [], "the shared fixture's account was re-provisioned"
+    assert "onboard" not in evidence and "resources" not in evidence
+
+
+def test_the_team_is_read_from_the_organization_not_constructed(tmp_path):
+    """`create_user` refuses a team that does not exist, and the default is a guess.
+
+    The product derives `<org>-team-default` when no team is given, but that row is
+    not what every organization actually has — dev's `adp-platform` does not, and
+    the constructed name answers 404 "Team does not exist in the requested
+    organization" (verified live). So the run reads a real team off the org's own
+    listing instead of assuming the naming convention holds.
+    """
+    script, _common, config, evidence, calls = onboard_gateway(
+        tmp_path,
+        listing={"users": [{"id": "u1"}, {"id": "u2", "team_id": "acd514aa-real"}]},
+    )
+    script._onboard(config, evidence, "<token>")
+    posted = next(call for call in calls if call["method"] == "POST")
+    assert posted["body"]["team_id"] == "acd514aa-real"
+    assert "org-eval-team-default" not in json.dumps(posted["body"])
+
+
+def test_an_organization_with_no_resolvable_team_fails_loudly(tmp_path):
+    """Naming the missing precondition beats a 404 from the create three lines later.
+
+    Falling back to the constructed default here would turn "this org has no team
+    we can see" into the product's own "Team does not exist" — attributing a
+    fixture gap to the gateway, which is exactly the ambiguity this harness exists
+    to remove.
+    """
+    script, common, config, evidence, calls = onboard_gateway(
+        tmp_path, listing={"users": []}
+    )
+    with pytest.raises(common.RemoteError) as raised:
+        script._onboard(config, evidence, "<token>")
+    assert "no existing team could be resolved" in str(raised.value)
+    assert not [call for call in calls if call["method"] == "POST"]
+
+
+def test_an_account_bound_to_a_different_login_is_a_failure(tmp_path):
+    """The bind is the whole point; a row without it resolves to nobody.
+
+    A 201 that came back bound to another subject would leave every later case
+    authenticating as an identity the gateway still cannot resolve — the original
+    defect, now silent. So the returned subject is checked against the one that
+    asked.
+    """
+    script, common, config, evidence, _calls = onboard_gateway(
+        tmp_path, created={"id": "adp-user-eval", "cognito_sub": "sub-somebody-else"}
+    )
+    with pytest.raises(common.RemoteError) as raised:
+        script._onboard(config, evidence, "<token>")
+    assert "not bound to the login that created it" in str(raised.value)
+
+
+def test_the_account_is_registered_before_setup_and_every_later_journey(tmp_path):
+    """Ordering is the fix. Registering it late would leave the gap it closes.
+
+    E03's `adp admin setup` and every journey after it authenticate as this
+    identity, so the account has to exist before the first of them runs — which is
+    why the call sits between the login and `_setup` in `execute`.
+    """
+    source = (extracted_bundle(tmp_path) / "remote" / "install_auth.py").read_text()
+    body = source[source.index("def execute(") :]
+    onboard, setup = body.find("_onboard("), body.find("_setup(")
+    assert onboard != -1, "execute() never registers the run's ADP account at all"
+    assert setup != -1, "execute() no longer runs setup; this test needs rewriting"
+    assert onboard < setup, (
+        "the ADP account is registered after setup, so setup still runs as an "
+        "identity the gateway cannot resolve"
+    )
+
+
+def test_the_sweep_deletes_the_adp_account_and_leaves_a_real_operator_alone(tmp_path):
+    """Ownership-checked, like the connection deleter and for the same reason.
+
+    The identifier arrives over SSM from a journey. A deleter that trusted it could
+    be pointed at a real operator's account in a shared organization — so the row's
+    email must carry this run's evaluation ID, a property of the address
+    `_admin_fixtures` derives that cannot hold for an account this evaluation did
+    not create.
+    """
+    gateway = FakeGateway()
+
+    def doubles(cfg):
+        wired = live_doubles(cfg, gateway=gateway)
+
+        def absent(**kwargs):
+            raise ports.PortError("s3.head_object failed: 404")
+
+        wired["aws"].replies.update(
+            {
+                "ec2.terminate_instances": {},
+                "ec2.describe_instances": {
+                    "Reservations": [{"Instances": [{"State": {"Name": "terminated"}}]}]
+                },
+                "s3.delete_object": {},
+                "s3.head_object": absent,
+                "cognito-idp.admin_delete_user": {},
+                "secretsmanager.delete_secret": {},
+            }
+        )
+        return wired
+
+    result = run_live_stages(
+        tmp_path,
+        doubles=doubles,
+        extra=("--suite", "install", "--suite", "admin", "--suite", "parity"),
+    )
+    swept = {
+        entry["kind"]: entry["status"] for entry in result.document["cleanup_results"]
+    }
+    assert swept.get("adp_user") == cleanup.DELETED
+    assert gateway.deleted_users == ["org-eval/adp-user-eval"]
+    # The operator's account, in the same organization, is untouched.
+    assert list(gateway.users["org-eval"]) == ["operator-1"]
+    assert result.document["cleanup_ok"] is True
+
+
+def test_the_sweep_refuses_an_account_this_run_did_not_create(tmp_path):
+    """A misrecorded id must be reported as outstanding, never deleted.
+
+    Deleting a row cascades to its Cognito login, so a wrong identifier here is an
+    operator locked out of the product — the one outcome strictly worse than a
+    reported leak.
+    """
+    gateway = FakeGateway()
+    delete, _http = destination_deleter(gateway, kind="adp_user")
+    with pytest.raises(ports.PortError) as raised:
+        delete("org-eval/operator-1")
+    assert "not named for this run" in str(raised.value)
+    assert gateway.deleted_users == []
+    assert "operator-1" in gateway.users["org-eval"]
+
+
+def test_an_adp_account_already_gone_is_a_successful_deletion(tmp_path):
+    """The end state a deleter exists to reach, met on arrival.
+
+    `sweep()` deletes and THEN marks, and that mark is best-effort — so a run
+    cancelled mid-sweep leaves the durable manifest saying `pending` for a row that
+    is already gone. The recovery job deletes it again, and raising there would deny
+    acceptance over a resource that is not there.
+    """
+    # Never enrolled, which is exactly the state a second delete meets.
+    gateway = FakeGateway()
+    delete, _http = destination_deleter(gateway, kind="adp_user")
+    delete("org-eval/adp-user-eval")  # must not raise
+    assert gateway.deleted_users == []
+
+
+def test_the_adp_account_is_deleted_after_the_deleters_that_authenticate_as_it(
+    tmp_path,
+):
+    """`cleanup.ORDER` is load-bearing here, in both directions.
+
+    The connection and destination deleters call user-scoped endpoints that resolve
+    a Cognito subject to this very row: remove it first and they answer 404
+    `user_not_found`, so the run would report a leak for resources it could no
+    longer even see. And it comes after `cognito_user` because the product's delete
+    cascades to the login — by the time this runs the login is already gone, and the
+    cascade is a best-effort no-op rather than a failure.
+    """
+    order = cleanup.ORDER
+    assert order.index("cognito_user") < order.index("adp_user")
+    for kind in ("adp_connection", "bedrock_destination"):
+        assert order.index(kind) < order.index("adp_user"), (
+            f"{kind} is deleted after the account its endpoint resolves through"
+        )
 
 
 def test_the_fixture_secret_is_readable_only_by_the_evaluation_instance_role(tmp_path):
@@ -7276,7 +7663,15 @@ def test_e13_fails_when_the_user_scoped_list_leaks_another_identity(tmp_path):
 def test_login_checkpoint_needs_only_platform_and_native_login(tmp_path):
     def doubles(cfg):
         evidence = worker_evidence()
+        # The login suite does not select E02, so the journey reuses the shared
+        # fixture instead of creating its own identity. Both of these say that:
+        # `created_username` is what makes a Cognito user this run's to remove, and
+        # the ADP account only gets registered for an identity the run created —
+        # `_onboard` returns early otherwise, because a shared fixture already has
+        # one and must not be re-provisioned.
         evidence["install_auth"]["session"].pop("created_username")
+        evidence["install_auth"].pop("resources")
+        evidence["install_auth"].pop("onboard")
         wired = live_doubles(cfg, evidence=evidence)
 
         def absent(**kwargs):

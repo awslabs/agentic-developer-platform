@@ -467,6 +467,12 @@ def install_auth_stage(cfg, ports):
                 account=str(cfg["platform_account"]),
                 region=cfg["region"],
             )
+        # Records the journey itself reports — the ADP account it registered for
+        # the run's own login. Unlike the Cognito identity above, the orchestrator
+        # cannot know this id in advance: the product assigns it. Recorded here,
+        # immediately on return, which is the earliest moment it is knowable.
+        for kind, identifier in evidence.get("resources") or []:
+            ctx["manifest"].record(kind, identifier, detail={"case": "E02"})
 
         # E01: discovery/download unauthenticated, executable install, hashes match.
         install = evidence.get("install") or {}
