@@ -7819,3 +7819,144 @@ def test_e03_surfaces_a_failed_provider_as_a_finding_not_an_exit_code_abort(tmp_
         run_shipped_setup(tmp_path, cli)
     # It got past both dry runs (exit 5) to the rerun, which is the point.
     assert ["admin", "setup", "--yes"] in cli.calls
+
+
+# --------------------------------------------------------------------------
+# Credential lifetime (blocker 6)
+#
+# `max_run_minutes` is 180, but the chained-role path is capped at the STS
+# one-hour maximum, so the orchestrator's own session can be SHORTER than the run
+# it is meant to cover. The platform account has no GitHub OIDC provider (only
+# EKS ones), so the longer 3h path cannot resolve today and this is a live
+# condition, not a hypothetical.
+#
+# Before this, an expiry surfaced as whichever AWS call happened to be in flight
+# when the token died -- an ExpiredToken blamed on an instance launch, or a
+# cleanup that could not authenticate and so could not honestly report what it
+# had failed to delete. The run must instead stop between stages, name the
+# reason, and stop EARLY enough to still terminate what it created.
+# --------------------------------------------------------------------------
+
+
+def test_credential_expiry_reads_both_iso_and_epoch_forms(monkeypatch):
+    monkeypatch.setenv(runner.CREDENTIAL_EXPIRY_ENV, "2027-01-02T03:04:05Z")
+    assert runner.credential_expiry() == 1798859045
+    monkeypatch.setenv(runner.CREDENTIAL_EXPIRY_ENV, "1798859045")
+    assert runner.credential_expiry() == 1798859045
+
+
+def test_an_unknown_or_malformed_credential_expiry_does_not_block_the_run(monkeypatch):
+    """None, not an error, and not a far-future guess.
+
+    A malformed value must not be the thing that stops a run from evaluating
+    anything; the guard degrades to the pre-existing wall-clock behaviour.
+    """
+    monkeypatch.delenv(runner.CREDENTIAL_EXPIRY_ENV, raising=False)
+    assert runner.credential_expiry() is None
+    monkeypatch.setenv(runner.CREDENTIAL_EXPIRY_ENV, "not-a-timestamp")
+    assert runner.credential_expiry() is None
+    monkeypatch.setenv(runner.CREDENTIAL_EXPIRY_ENV, "")
+    assert runner.credential_expiry() is None
+
+
+def test_an_expiring_session_stops_the_run_with_a_named_credential_reason(
+    tmp_path, monkeypatch, capsys
+):
+    """The whole point: `credentials_expired`, not a mystery ExpiredToken.
+
+    The session dies 30s from now while `cleanup_wait_seconds` alone is 120, so
+    there is not enough left to run a stage AND clean up. The run must stop at the
+    stage boundary and say so.
+    """
+    monkeypatch.setenv(runner.CREDENTIAL_EXPIRY_ENV, str(NOW + 30))
+    reached = []
+    code = run_cli(
+        tmp_path,
+        {
+            "preflight": lambda ctx: reached.append("preflight"),
+            "journeys": pass_everything,
+            "cleanup": lambda ctx: True,
+        },
+    )
+    assert code == 1
+    document = json.loads((tmp_path / STATE / runner.STATE_FILE).read_text())
+    assert "credentials_expired" in document["stages"].values()
+    assert reached == [], "a stage ran on credentials that could not outlast it"
+    capsys.readouterr()
+    # The published report must name the credential as the cause, so an operator
+    # reads "the session was too short" and not "preflight is broken".
+    report_text = (tmp_path / STATE / "out" / "report.json").read_text()
+    published = json.loads(report_text)
+    assert any("credentials_expired" in reason for reason in published["reasons"]), (
+        published["reasons"]
+    )
+    # The full operator-facing explanation is a harness error type, so it carries
+    # no provider text and is safe to keep -- but it lives in the private state,
+    # which is where an operator diagnosing a stopped run looks.
+    assert "credentials expire" in json.dumps(document.get("errors") or []).lower()
+    # And nothing in the published report leaks the session material itself.
+    assert "expire_at" not in report_text or "credentials_expire_at" not in report_text
+    # Distinguishable from the spend deadline, which is a different operator fix.
+    assert "timed_out" not in document["stages"].values()
+
+
+def test_the_credential_guard_reserves_enough_session_to_clean_up(
+    tmp_path, monkeypatch
+):
+    """Stopping when the token dies would be too late -- cleanup needs to authenticate.
+
+    Session outlives the stage boundary by 150s, which is MORE than zero but less
+    than `cleanup_wait_seconds` (120) plus margin. It must still stop.
+    """
+    monkeypatch.setenv(runner.CREDENTIAL_EXPIRY_ENV, str(NOW + 150))
+    swept = []
+    code = run_cli(
+        tmp_path,
+        {
+            "journeys": pass_everything,
+            "cleanup": lambda ctx: swept.append(True) or True,
+        },
+    )
+    assert code == 1
+    document = json.loads((tmp_path / STATE / runner.STATE_FILE).read_text())
+    assert "credentials_expired" in document["stages"].values()
+    # Cleanup still ran, on credentials that were still alive. That is the reserve
+    # doing its job: the run stopped while it could still terminate what it made.
+    assert swept == [True]
+    assert document["cleanup_ok"] is True
+
+
+def test_a_session_that_outlasts_the_run_changes_nothing(tmp_path, monkeypatch):
+    """No false positives: an adequate session must not degrade the run."""
+    monkeypatch.setenv(runner.CREDENTIAL_EXPIRY_ENV, str(NOW + 10_000))
+    code = run_cli(tmp_path, {"journeys": pass_everything, "cleanup": lambda ctx: True})
+    assert code == 0
+    document = json.loads((tmp_path / STATE / runner.STATE_FILE).read_text())
+    assert "credentials_expired" not in document["stages"].values()
+    assert document["credentials_expire_at"] == NOW + 10_000
+
+
+def test_a_resumed_attempt_takes_the_new_session_not_the_dead_one(
+    tmp_path, monkeypatch
+):
+    """Otherwise the mechanism that RECOVERS from an expiry refuses to start.
+
+    Resume runs in a new job with a new session. Inheriting the previous
+    attempt's expiry would make every resume-after-expiry stop immediately,
+    reporting a credential it no longer holds.
+    """
+    monkeypatch.setenv(runner.CREDENTIAL_EXPIRY_ENV, str(NOW + 30))
+    assert run_cli(tmp_path, {"cleanup": lambda ctx: True}) == 1
+    stale = json.loads((tmp_path / STATE / runner.STATE_FILE).read_text())
+    assert stale["credentials_expire_at"] == NOW + 30
+
+    monkeypatch.setenv(runner.CREDENTIAL_EXPIRY_ENV, str(NOW + 10_000))
+    code = run_cli(
+        tmp_path,
+        {"journeys": pass_everything, "cleanup": lambda ctx: True},
+        mode="resume",
+    )
+    assert code == 0
+    document = json.loads((tmp_path / STATE / runner.STATE_FILE).read_text())
+    assert document["credentials_expire_at"] == NOW + 10_000
+    assert "credentials_expired" not in document["stages"].values()

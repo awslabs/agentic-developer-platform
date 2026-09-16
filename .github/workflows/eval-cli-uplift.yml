@@ -358,6 +358,40 @@ jobs:
           role-duration-seconds: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && '10800' || '3600' }}
           role-session-name: cli-uplift-eval-${{ github.run_id }}
 
+      - name: Publish when these credentials expire
+        # The run has to know when its own AWS session dies, and this step is the
+        # only place that can tell it: `role-duration-seconds` above is what was
+        # ASKED for, and on the chained path STS silently caps the answer at one
+        # hour. So the duration is read back from the session itself rather than
+        # assumed from the input.
+        #
+        # Why it matters: `max_run_minutes` is 180. A chained one-hour session is
+        # therefore shorter than the run it is meant to cover, and before this the
+        # expiry surfaced as whichever AWS call happened to be in flight when the
+        # token died — an ExpiredToken attributed to an instance launch, or a
+        # cleanup that could not authenticate and so could not honestly report
+        # what it had failed to delete. The runner now stops between stages with
+        # `credentials_expired` and a named reason, while it still has enough
+        # session left to terminate what it created.
+        #
+        # Publishes a timestamp only. Never the token, the key, or the ARN.
+        run: |
+          set -euo pipefail
+          # The session's own view of its lifetime, via a role it can always read:
+          # itself. `--duration-seconds` on get-session-token is not available to
+          # an assumed-role principal, so the expiry comes from the credential
+          # file the action wrote, falling back to the conservative one-hour
+          # chained cap when it cannot be determined. Conservative is the right
+          # direction: guessing SHORTER than reality stops the run early and
+          # cleanly, guessing longer is what we are fixing.
+          EXPIRY="${AWS_CREDENTIAL_EXPIRATION:-}"
+          if [ -z "$EXPIRY" ]; then
+            echo "No AWS_CREDENTIAL_EXPIRATION was exported; assuming the STS chained cap of 1h."
+            EXPIRY="$(python -c 'import datetime;print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(seconds=3600)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+          fi
+          echo "Orchestrator credentials expire at $EXPIRY"
+          echo "CLI_UPLIFT_EVAL_CREDENTIALS_EXPIRE_AT=$EXPIRY" >> "$GITHUB_ENV"
+
       - name: Assert the role resolved to the approved platform account
         # First and cheapest guard against the whole run being pointed at the
         # wrong account. Preflight re-checks this against config; this catches a

@@ -20,6 +20,7 @@ fault injections — is exercised offline with sockets disabled.
 from __future__ import annotations
 
 import argparse
+import datetime
 import fcntl
 import hashlib
 import json
@@ -185,6 +186,39 @@ class State:
         return handle
 
 
+# When the orchestrator's AWS session stops working. Set by the workflow's
+# credentials step, which is the only place that knows the duration it actually
+# got: the chained path is capped at the STS one-hour maximum regardless of what
+# was asked for, so this cannot be inferred from config. ISO-8601 or epoch
+# seconds; absent means "unknown", which is not treated as "unlimited" so much as
+# "the guard cannot help", and the run proceeds exactly as it did before.
+CREDENTIAL_EXPIRY_ENV = "CLI_UPLIFT_EVAL_CREDENTIALS_EXPIRE_AT"
+
+
+def credential_expiry(environ=None):
+    """Parse the orchestrator credential expiry, or None when it is unknown.
+
+    Unparseable is deliberately None rather than an error: a malformed value must
+    not be the thing that stops a run from evaluating anything, and the guard
+    degrades to the pre-existing wall-clock behaviour. It must never parse to
+    something FURTHER away than reality, which is why only these two exact forms
+    are accepted.
+    """
+    raw = (
+        (environ if environ is not None else os.environ).get(CREDENTIAL_EXPIRY_ENV)
+        or ""
+    ).strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\d{10,}", raw):
+        return int(raw)
+    try:
+        text = raw.replace("Z", "+00:00")
+        return int(datetime.datetime.fromisoformat(text).timestamp())
+    except ValueError:
+        return None
+
+
 def initial_state(cfg, suites, evaluation_id, *, now, fault="none"):
     if fault not in FAULTS:
         raise RunnerError(
@@ -210,6 +244,8 @@ def initial_state(cfg, suites, evaluation_id, *, now, fault="none"):
         "harness_commit": config.HARNESS_COMMIT,
         "started_at": int(now),
         "deadline": int(now) + cfg["max_run_minutes"] * 60,
+        # Separate from `deadline`: that one bounds spend, this one bounds trust.
+        "credentials_expire_at": credential_expiry(),
         "stages": {name: "pending" for name in STAGES},
         "matrix": matrix,
         "cleanup_ok": False,
@@ -273,6 +309,12 @@ def next_attempt(document, *, now):
         + max(1, (document.get("deadline", 0) - document.get("started_at", 0)) // 60)
         * 60
     )
+    # A resumed attempt runs in a NEW job with a NEW session, so it must take the
+    # new expiry rather than inherit the dead one — otherwise the very mechanism
+    # that recovers from an expiry would refuse to start, reporting the credential
+    # it no longer holds. Absent from the environment resets to None, which is the
+    # honest reading of "this attempt cannot tell".
+    document["credentials_expire_at"] = credential_expiry()
     return document
 
 
@@ -323,9 +365,35 @@ class Evaluation:
             "preflight": document["preflight"],
         }
 
+    def credential_deadline(self, document):
+        """When the orchestrator's own AWS credentials stop working.
+
+        Distinct from `deadline`, which bounds spend. This one bounds TRUST: past
+        it, every AWS call fails with ExpiredToken, including the ones cleanup
+        needs. `max_run_minutes` is 180 but the chained-role path is capped at the
+        STS one-hour maximum, so the two genuinely disagree and the run has to
+        know which comes first.
+        """
+        expiry = document.get("credentials_expire_at")
+        return int(expiry) if expiry else None
+
+    def credentials_exhausted(self, document, *, reserve):
+        """True when too little credential lifetime remains to finish a stage AND clean up.
+
+        The reserve is the point: stopping the instant the token dies would leave
+        cleanup unable to authenticate, so the run must stop while it can still
+        terminate what it created.
+        """
+        expiry = self.credential_deadline(document)
+        return expiry is not None and self.clock() + reserve >= expiry
+
     def run(self, document):
         ctx = self.context(document)
         failure = None
+        # What cleanup needs to authenticate after the last stage stops. Derived
+        # from the configured cleanup wait rather than a fresh constant, so a
+        # slower teardown budget automatically reserves more credential life.
+        reserve = int(self.config.get("cleanup_wait_seconds", 120)) + 60
         for name in STAGES:
             if name == "cleanup":
                 continue
@@ -336,6 +404,34 @@ class Evaluation:
                 failure = failure or RunnerError(
                     f"Run exceeded max_run_minutes before {name}"
                 )
+                break
+            # Checked BEFORE the stage, and separately from the spend deadline,
+            # so an expiry is reported as itself. Without this the token simply
+            # died mid-stage and surfaced as whatever AWS call happened to be in
+            # flight — "ec2.run_instances failed: ExpiredToken" attributed to the
+            # instance launch, or worse, a cleanup that could not authenticate
+            # and so could not report honestly what it had failed to delete.
+            if self.credentials_exhausted(document, reserve=reserve):
+                document["stages"][name] = "credentials_expired"
+                message = (
+                    f"Orchestrator credentials expire before {name} could complete and "
+                    "still leave time to clean up; the AWS session is shorter than "
+                    "max_run_minutes. Re-run with a longer-lived role (GitHub OIDC) "
+                    "or a smaller suite selection."
+                )
+                # Recorded like a stage failure, not only raised. A stopped run's
+                # operator reads the errors list; leaving it empty here would make
+                # a credential-bound stop indistinguishable from a stage that
+                # simply never got scheduled. The text is a harness message: it
+                # names a timestamp bound at most, never the session material.
+                document.setdefault("errors", []).append(
+                    {
+                        "stage": name,
+                        "type": "CredentialsExpired",
+                        "message": message,
+                    }
+                )
+                failure = failure or RunnerError(message)
                 break
             stage = self.stages.get(name)
             if stage is None:
