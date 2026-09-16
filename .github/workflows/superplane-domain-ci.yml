@@ -146,6 +146,23 @@ jobs:
             tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py
 
+      - name: Verify Superplane authorization policy
+        working-directory: modules/gateway
+        # Domain-only policy edits must exercise these integration tests even
+        # when Gateway CI's path filter does not match the new domain path.
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q \
+            tests/auth/test_domain_token_policy.py \
+            tests/auth/test_validation_path_boundary.py \
+            tests/auth/test_authority_after_authentication.py \
+            tests/auth/test_spoofed_context_rejected.py \
+            tests/auth/test_workspace_authorization.py \
+            tests/auth/test_endpoint_inventory_complete.py \
+            tests/auth/test_adp_common_packaging.py \
+            tests/auth/test_domain_review_regressions.py \
+            --cov=../domain-apps/superplane/auth/superplane_auth --cov-fail-under=90
+
       - name: Run domain module tests
         run: |
           set -euo pipefail
