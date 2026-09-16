@@ -171,13 +171,14 @@ class TestExecutionPolicySchema:
         with pytest.raises(ValidationError):
             _policy(allowed_actions=["exfiltrate"])
 
-    def test_all_six_issue_actions_expressible(self) -> None:
-        """The six actions the issue enumerates, and only those.
+    def test_action_vocabulary_is_exactly_the_accepted_set(self) -> None:
+        """The delivery actions plus `coordinate`, and only those.
 
         Pinned as an exact set so adding a member is a deliberate act with a test
-        change, not a silent widening of what a policy can authorize.
+        change, not a silent widening of what a policy can authorize. `coordinate`
+        was added deliberately by #5224; the six before it are #5128's original set.
         """
-        assert {action.value for action in Action} == {"develop", "review", "repair", "merge", "deploy", "evaluate"}
+        assert {action.value for action in Action} == {"develop", "review", "repair", "merge", "deploy", "evaluate", "coordinate"}
 
     def test_at_least_one_action_required(self) -> None:
         with pytest.raises(ValidationError):
@@ -204,9 +205,13 @@ class TestExecutionPolicySchema:
             _policy(github_token="ghp_notarealtoken")
 
     def test_unsupported_schema_version_rejected_at_parse(self) -> None:
-        """`schema_version` is a Literal, so a future document stops at the boundary."""
+        """`schema_version` is a Literal, so a future document stops at the boundary.
+
+        Version 3 became real with #5224's coordination scope, so the boundary moved
+        up rather than away — 4 is the next unrepresentable one.
+        """
         with pytest.raises(ValidationError):
-            _policy(schema_version=3)
+            _policy(schema_version=4)
 
     def test_human_gate_must_name_an_allowed_action(self) -> None:
         """A gate on an unpermitted action reads as a control but is not one."""

@@ -41,6 +41,14 @@ def policy_github_permissions(policy: ExecutionPolicy, action: Action) -> dict[s
     permissions = {"contents": "read", "pull_requests": "read", "issues": "read", "checks": "read", "metadata": "read"}
     if action is Action.EVALUATE:
         return permissions
+    if action is Action.COORDINATE:
+        # Read-only, deliberately. A coordinator's job is to read progress and
+        # evidence and to request children through the authenticated dispatch
+        # service — a platform-internal call that needs no provider write. Any
+        # write it appeared to need (a comment, a label) is a GitHub *mutation*,
+        # which #5223's separately authorized mediated capability owns; granting
+        # `issues: write` here would pre-empt that authorization decision.
+        return permissions
     if action is Action.REVIEW:
         return {**permissions, "pull_requests": "write", "issues": "write"}
     if action in {Action.DEVELOP, Action.REPAIR} and policy.permits(Action.MERGE):
@@ -64,7 +72,38 @@ async def flow_started_at(session, *, org_id: str, flow_id: str) -> datetime | N
 
 
 def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
+    """The policy action this protected assignment is performing.
+
+    Resolved from the execution record's **engine-written** fields, never from
+    anything a worker body can choose. `persona` is a request-supplied string on the
+    dispatch body, so it alone cannot decide authority; `wave_coordinator` and
+    `coordinator_flow_id` are written only by `agentauth/dispatch.py` under a
+    `gate_decision` authority and only alongside a committed dispatch receipt, which
+    is why the coordinator test keys on them and treats the persona as a corroborating
+    condition rather than the deciding one (#5224 design point 3).
+
+    **A coordinator resolves to `COORDINATE`, not `EVALUATE`.** A wave coordinator is
+    assigned to its wave's evaluation node, so the persona/kind test below would
+    otherwise classify it as an evaluation — handing a coordinator the machine
+    acceptance authority to *conclude* that evaluation, which is precisely the
+    conflation #5224 forbids. The coordinator branch therefore comes first.
+
+    This is not a live behavior change for existing flows: under an accepted policy a
+    coordinator could not be dispatched at all before this story
+    (`graph_dispatch._authorize_dispatch_policy` refused every `coordinates` request),
+    and a flow with no accepted policy never reaches this function
+    (`authorize_worker_credential` returns early). So no already-running coordinator
+    was relying on the `EVALUATE` reading. A v1/v2 policy now resolves `COORDINATE`
+    and denies with `action_not_permitted`, which is the correct refusal: absence of
+    an accepted coordination scope grants nothing.
+    """
     persona = execution.get("persona", {}).get("S")
+    if execution.get("wave_coordinator") == {"BOOL": True} and execution.get("coordinator_flow_id", {}).get("S"):
+        # Engine-written metadata, corroborated by the coordinator personas the
+        # dispatch path admits. An execution carrying coordinator metadata but a
+        # persona the engine never assigns as a coordinator is a mismatch, and
+        # returning `None` refuses it rather than guessing which field to trust.
+        return Action.COORDINATE if persona in {"operations", "aidlc"} else None
     if node.kind == NodeKind.EVAL.value and persona == "operations":
         return Action.EVALUATE
     if node.kind == NodeKind.STORY.value:
