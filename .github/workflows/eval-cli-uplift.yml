@@ -244,6 +244,14 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      # Must precede the harness-pin fetch below: that step parses the pin with
+      # `python`, and the ARC runner image provides only `python3` until
+      # setup-python puts `python` on PATH (run 35062497818 failed there with
+      # "python: command not found", exit 127, before any AWS call).
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       - name: Fetch the pinned harness revision
         # The #5173 harness is NOT merged to main, so it is pinned by immutable
         # SHA in tests/e2e/cli_uplift/config.py rather than tracked from a
@@ -263,10 +271,6 @@ jobs:
           # it the on-instance worker writes into the invoking user's real config
           # directory and can pick up another identity's session.
           grep -q 'BG_CONFIG_DIR' /tmp/cli-uplift-eval/harness/modules/gateway/cli/bg-cognito-auth.sh
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
 
       - name: Install runner dependencies
         run: pip install boto3 pytest pytest-timeout
