@@ -27,6 +27,24 @@ MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-product": "product",
     "@agent-malware-analysis-agent": "malware-analysis-agent",
     "@agent-superpower": "pt-superpower",
+    # Issue #5038 (EPIC #4910, U4): Superplane domain-pack personas. Their
+    # prompt files live in modules/domain-apps/superplane/agent/personas/ and are
+    # staged into the worker image by stage-personas.sh, same as the cyber pack's
+    # malware-analysis-agent.
+    #
+    # Mention-triggered only, deliberately: neither has a LABEL_TO_PERSONA entry.
+    # @agent-superplane-operator can allocate paid compute, and a label is a
+    # weaker, more easily-applied-by-accident trigger than a mention (a stale
+    # label on a reopened issue re-dispatches). Following the `codex` precedent
+    # of restricting the trigger surface for a persona whose actions are costly.
+    #
+    # Placed before aidlc/codex to preserve the codex-last dict-order invariant.
+    # Neither key is a substring of any other mention string in this dict, so
+    # first-match routing cannot shadow them in either direction — asserted by
+    # test_no_mention_string_shadows_another in
+    # webhook-ingress/lambda/common/tests/test_persona_prompt_files.py.
+    "@agent-superplane-operator": "superplane-operator",
+    "@agent-superplane-researcher": "superplane-researcher",
     # Issue #3169: AIDLC inception persona. Mention-triggered only (no label
     # equivalent — the trigger path is issues.opened with aidlc-intent label
     # OR @agent-aidlc mention). Placed before codex to preserve the codex-last

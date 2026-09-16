@@ -68,6 +68,19 @@ on:
       - 'modules/gateway/tests/features/test_superplane_registration.py'
       - 'modules/gateway/tests/features/test_superplane_deploy_scope.py'
       - 'modules/gateway/tests/e2e/test_superplane_route_gated.py'
+      # The persona catalogue (issue #5038, U4). Same reasoning as the lists above:
+      # these live OUTSIDE the module, and U4 registers two Superplane personas in
+      # them. A PR editing the catalogue without its prompt files — or a prompt file
+      # without the catalogue — must be able to run the suites that assert the
+      # pairing, or the "name registered without its file" bug class (#4037) ships
+      # again. `stage-personas.sh` is here because the persona-file resolution rule
+      # those suites encode is derived from it: change the staging and the suites'
+      # premise changes with it.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/tests/test_persona_prompt_files.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/tests/test_persona_catalogue_parity.py'
+      - 'modules/agent-factory/agent-worker-image/stage-personas.sh'
+      - 'docs/agent-catalogue.md'
   workflow_dispatch:
 
 # No `permissions: id-token` — this lane must never be able to assume an AWS role.
@@ -143,6 +156,52 @@ jobs:
           else
             echo "No tests in modules/domain-apps/superplane/tests/ yet — nothing to run."
           fi
+
+      - name: Run MCP tool surface tests with coverage
+        # Pinned BY PATH and NOT tolerant of an empty glob, unlike the step above: these
+        # tests exist as of #5038, so "no tests found" here means a PR deleted them and
+        # must fail rather than pass silently.
+        #
+        # This is a separate step from the one above because the tool surface lives under
+        # `tools/`, not `tests/` — the module-wide `tests/` glob never reached it, so
+        # before #5038 these tests would have been committed into a lane that did not run
+        # them. Coverage is gated at the level the issue requires (>=85%).
+        run: |
+          set -euo pipefail
+          cd modules/domain-apps/superplane/tools/superplane-mcp
+          python3 -m pytest tests/ -v --tb=short \
+            --cov=superplane_mcp --cov-report=term-missing --cov-fail-under=85
+
+      - name: Run domain skill tests
+        # Skills may ship their own tests (the cyber pack's url-analysis skill does).
+        # Discovered rather than pinned, because a skill added later should be picked up
+        # without editing this lane — but the log distinguishes "none found" from "passed".
+        run: |
+          set -euo pipefail
+          if find modules/domain-apps/superplane/agent/skills -name 'test_*.py' -print -quit | grep -q .; then
+            python3 -m pytest modules/domain-apps/superplane/agent/skills/ -v --tb=short
+          else
+            echo "No skill tests under modules/domain-apps/superplane/agent/skills/ — nothing to run."
+          fi
+
+      - name: Run persona registration tests
+        working-directory: modules/agent-factory/webhook-ingress
+        # Run from the module root, not from `lambda/`, so the `pythonpath = ["lambda"]`
+        # in this module's pyproject.toml is what makes `common` importable — matching
+        # webhook-ingress-ci.yml. Invoking from inside `lambda/` also happens to work,
+        # via pytest's rootdir insertion, but that is incidental to the package layout
+        # and would break if an `__init__.py` were added or removed above the tests.
+        #
+        # Pinned BY NAME for the same reason as the gateway suites: these are the only
+        # checks that every registered persona name has its prompt file (#4037's bug
+        # class) and that a domain persona filename does not silently shadow a core one.
+        # A directory glob would pass if they were deleted.
+        run: |
+          set -euo pipefail
+          python3 -m pytest \
+            lambda/common/tests/test_persona_prompt_files.py \
+            lambda/common/tests/test_persona_catalogue_parity.py \
+            -v --tb=short
 
       - name: Run gate and registration tests
         working-directory: modules/gateway

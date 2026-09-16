@@ -22,7 +22,7 @@ unless you specifically want a deterministic GitHub Actions pipeline (see
 @agent-developer please implement this issue.
 ```
 
-## The 10 personas
+## The 12 personas
 
 | Persona | Mention string (exact) | Webhook label | ARC label | What it does | Typical use |
 |---|---|---|---|---|---|
@@ -34,6 +34,8 @@ unless you specifically want a deterministic GitHub Actions pipeline (see
 | `product` | `@agent-product` | *(none)* | `agent-product` | Gathers requirements, writes user stories and acceptance criteria. Represents the user's perspective. | Turning a vague ask into a testable, prioritized spec. |
 | `malware-analysis-agent` | `@agent-malware-analysis-agent` | `malware-analysis-agent` | `malware-analysis-agent` | Runs a structured 7-stage malware analysis pipeline on a sample (S3 pointer + issue), posting one comment per stage. | Cyber domain pack: triage → OSINT → static → dynamic → verdict → report. |
 | `pt-superpower` | `@agent-superpower` | `superpower` | `agent-pt-superpower` | Pen test / security review. **See the constraint below — this persona has no prompt file and currently dispatches without a persona identity ([#4037](https://github.com/aws-e/adp/issues/4037)).** | Security review (⚠️ known-broken, see constraints). |
+| `superplane-operator` | `@agent-superplane-operator` | *(none, deliberately)* | *(none)* | SRE/DevOps for Superplane multi-cloud GPU infrastructure: cluster health, incident response, GPU utilization, cost right-sizing. Runs a structured alert-driven investigation (acknowledge → metrics → root cause → impact → remediation → confidence). | Superplane domain pack: alerts, incidents, idle/over-provisioned GPU capacity. |
+| `superplane-researcher` | `@agent-superplane-researcher` | *(none, deliberately)* | *(none)* | Development-side counterpart: model deployment, GPU sizing and cost estimation, CI/CD, deployment strategies, workspace and dev-environment setup. Estimates before provisioning. | Superplane domain pack: "what will this run on, what will it cost, how do I deploy it?" |
 | `aidlc` | `@agent-aidlc` | *(none — see constraints)* | *(none)* | Runs the AIDLC inception workflow: problem framing, scope, design options, risks, acceptance criteria. Never enters Construction. | Producing structured inception artifacts from a raw intent. |
 | `codex` | `@agent-codex` | *(none, deliberately)* | *(none)* | Supervisor that delegates bounded implementation tasks to the OpenAI Codex CLI via the `codex-bridge` skill, reviews every diff, and owns the final PR. | Only when a human explicitly wants Codex to do the work. |
 
@@ -98,3 +100,13 @@ want a deterministic, auditable, repeatable Actions pipeline
   identity** — it looks like a success in the Activity feed but produces a generic
   agent. Do not rely on this persona until #4037 lands.
 - **`product`** — has an ARC label but no webhook label; summon it by mention.
+- **`superplane-operator`**, **`superplane-researcher`** — live in the Superplane domain
+  pack (`modules/domain-apps/superplane/agent/personas/`), not in `rules/personas/`;
+  staged into the worker image by `stage-personas.sh` like the cyber pack's personas.
+  Both are **mention-triggered only, deliberately** — `superplane-operator` can allocate
+  paid compute, and a label is a weaker trigger than a mention (a stale label on a
+  reopened issue re-dispatches), so the trigger surface is restricted for the same reason
+  as `codex`. Their filenames are namespaced (`superplane-operator.md`, not
+  `operations.md`) because domain personas stage **flat** into `/app/personas/` and
+  override core ones of the same name — an un-namespaced `developer.md` here would
+  silently replace ADP's core `developer` persona for every agent run.
