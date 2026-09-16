@@ -1337,21 +1337,14 @@ EOF
   LOCAL_IMAGE_TAG="${IMAGE_TAG:-latest}"
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
     cd "$ROOT_DIR/modules/agent-factory"
-    BUILD_DIR="/tmp/agent-gateway-build"
-    rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
-    cp -r gateway/app "$BUILD_DIR/app"
-    cp -r agent "$BUILD_DIR/agent"
-    cp gateway/Dockerfile "$BUILD_DIR/Dockerfile"
-    cp gateway/entrypoint.sh "$BUILD_DIR/entrypoint.sh"
 
     aws ecr describe-repositories --repository-names "adp-agent-gateway" --region "$AWS_REGION" 2>/dev/null || \
       aws ecr create-repository --repository-name "adp-agent-gateway" --region "$AWS_REGION" --no-cli-pager
     aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-    docker build -t "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" "$BUILD_DIR"
+    docker build -f gateway/Dockerfile -t "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" .
     docker tag "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" "$REGISTRY/adp-agent-gateway:latest"
     docker push "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
     docker push "$REGISTRY/adp-agent-gateway:latest"
-    rm -rf "$BUILD_DIR"
   else
     # Docker build via CodeBuild (Terraform-managed project)
     run_codebuild "adp-${ENVIRONMENT}-agent-gateway" "codebuild/bs-agent-gateway.yml"

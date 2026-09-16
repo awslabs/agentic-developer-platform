@@ -71,16 +71,8 @@ if [[ "${SKIP_IMG}" != "true" ]]; then
         aws ecr get-login-password --region "${AWS_REGION}" | \
             docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-        BUILD_DIR="/tmp/agent-gateway-build"
-        rm -rf "${BUILD_DIR}"; mkdir -p "${BUILD_DIR}"
-        cp -r "${MODULE_ROOT}/gateway/app" "${BUILD_DIR}/app"
-        cp -r "${MODULE_ROOT}/agent" "${BUILD_DIR}/agent"
-        cp "${MODULE_ROOT}/gateway/Dockerfile" "${BUILD_DIR}/Dockerfile"
-        cp "${MODULE_ROOT}/gateway/entrypoint.sh" "${BUILD_DIR}/entrypoint.sh"
-
-        docker build -t "${ECR_URI}:${AGENT_IMAGE_TAG}" "${BUILD_DIR}"
+        docker build -f "${MODULE_ROOT}/gateway/Dockerfile" -t "${ECR_URI}:${AGENT_IMAGE_TAG}" "${MODULE_ROOT}"
         docker push "${ECR_URI}:${AGENT_IMAGE_TAG}"
-        rm -rf "${BUILD_DIR}"
         AGENT_IMAGE="${ECR_URI}:${AGENT_IMAGE_TAG}"
         echo "  Pushed: ${AGENT_IMAGE}"
     else
