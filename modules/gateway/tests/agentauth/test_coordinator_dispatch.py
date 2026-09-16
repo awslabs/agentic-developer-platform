@@ -28,6 +28,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select, update
 
+from src.agentauth.bootstrap import envelope_digest
 from src.orchestration.dispatch import graph_address
 from src.orchestration.execution_policy import (
     COORDINATION_SCHEMA_VERSION,
@@ -439,6 +440,115 @@ class TestCoordinationGrantsNoForbiddenAuthority:
                 allowed_child_personas=[ChildPersona.DEVELOPER, "operations"],
                 allowed_child_actions=[Action.DEVELOP],
             )
+
+
+class TestChildIdentitiesArePersistedAndReportable:
+    """Pending, refused and committed child identities, on the coordinator's lane.
+
+    Three distinct facts, and an operator asking "what did this coordinator actually
+    start?" needs all three separable. A refused request that left no trace is
+    indistinguishable from one never made, and a pending one that read as committed
+    would have an operator waiting on a child that will never arrive.
+
+    Read through the records the existing dispatch machinery already keeps —
+    `publish_state` on the reserved command, `status` on the execution, and the
+    `AGENT_DISPATCHED` receipt — rather than through anything this story added. That
+    is the point of the checklist item: the coordinator lane must report through the
+    same surfaces, not acquire its own scheduler or its own bookkeeping.
+    """
+
+    async def test_a_committed_child_is_reported_with_its_receipt_and_identity(self, wave_context):
+        """The committed case: identity on the response, on the receipt, on the queue.
+
+        The invocation the coordinator is told about must be the same one the receipt
+        records and the same one the child bootstraps with. If those three could
+        disagree, a coordinator's readback would follow an id that no worker will ever
+        claim.
+        """
+        ctx = wave_context
+        await _accept(ctx)
+        _, headers = await _launch(ctx)
+
+        child = await _child(ctx, headers, request_id="story")
+        assert child.status_code == 202, child.text
+        invocation = child.json()["invocation_id"]
+
+        published = drain(ctx)
+        assert len(published) == 1
+        assert invocation in published[0]["Body"]
+
+        execution = ctx.store._read("TENANT#tenant", f"EXEC#{invocation}")
+        assert execution["status"] == {"S": "pending"}, "not yet bootstrapped, so pending — not absent"
+
+        async with ctx.session_factory() as db:
+            receipt = await db.scalar(
+                select(OrchestrationDecision).where(
+                    OrchestrationDecision.kind == DecisionKind.AGENT_DISPATCHED.value,
+                    OrchestrationDecision.node_id == ctx.node.id,
+                )
+            )
+        assert receipt is not None
+        assert invocation in receipt.reason
+
+    async def test_a_pending_child_becomes_committed_only_on_bootstrap(self, wave_context):
+        """Accepted transport is not a started invocation (issue AC-4).
+
+        `202` means the request was admitted and an envelope published. The child is
+        still `pending` until it bootstraps, and reporting it as started before then
+        would tell an operator work is underway that nothing has picked up.
+        """
+        ctx = wave_context
+        await _accept(ctx)
+        _, headers = await _launch(ctx)
+
+        child = await _child(ctx, headers, request_id="story")
+        invocation = child.json()["invocation_id"]
+        assert ctx.store._read("TENANT#tenant", f"EXEC#{invocation}")["status"] == {"S": "pending"}
+
+        boot, _ = await bootstrap_child(ctx, invocation)
+        assert boot.status_code == 200, boot.text
+        started = ctx.store._read("TENANT#tenant", f"EXEC#{invocation}")
+        assert started["status"] != {"S": "pending"}
+        assert started.get("workload_binding"), "the bound worker is what distinguishes started from published"
+
+    async def test_a_refused_child_is_recorded_as_refused_and_not_as_absent(self, wave_context):
+        """The refused case, and the one most easily lost.
+
+        A policy refusal after the reservation was taken must leave the reservation
+        fenced `refused` and the execution `cancelled`, so the slot is freed without
+        the attempt being refundable — and so an operator can see that a request was
+        made and denied. Reporting nothing would be indistinguishable from a
+        coordinator that never asked.
+        """
+        ctx = wave_context
+        # A scope permitting only `review` refuses the developer child at admission,
+        # after the reservation exists — which is precisely the state this asserts on.
+        await _accept(ctx, _policy(actions=[Action.REVIEW, Action.MERGE, Action.COORDINATE]))
+        launch, headers = await _launch(ctx)
+
+        refused = await _child(ctx, headers, request_id="story")
+        assert refused.status_code == 409, refused.text
+        assert "child_action_not_permitted" in refused.text
+        assert drain(ctx) == [], "a refused child must never reach the queue"
+        assert await _story_state(ctx) == ("ready", 0)
+
+        # The requester is the *coordinator's* run, not the engine that launched it:
+        # `dispatch_graph` keys the reservation on the calling credential's principal,
+        # so a refused coordinator request is recorded under the coordinator's identity.
+        key = envelope_digest({"principal": f"{launch.json()['invocation_id']}#1", "request_id": "story"})
+        command = ctx.store._read("TENANT#tenant", f"DISPATCH#{key}")
+        assert command is not None, "the refusal is recorded against the request identity, not discarded"
+        assert command["publish_state"] == {"S": "refused"}
+        assert ctx.store._read("TENANT#tenant", f"EXEC#{command['invocation_id']['S']}")["status"] == {"S": "cancelled"}
+
+        async with ctx.session_factory() as db:
+            committed = await db.scalar(
+                select(OrchestrationDecision).where(
+                    OrchestrationDecision.kind == DecisionKind.AGENT_DISPATCHED.value,
+                    OrchestrationDecision.node_id == ctx.node.id,
+                )
+            )
+        assert committed is None, "a refused request must leave no committed receipt"
 
 
 class TestSharedLimitsAndRevocation:
