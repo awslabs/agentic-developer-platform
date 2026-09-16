@@ -404,16 +404,40 @@ def install_auth_stage(cfg, ports):
             expected_hashes,
             "install_auth ran before preflight derived the expected release hashes",
         )
+        # E02 needs a challenge identity and a non-admin identity that the shared
+        # login-regression fixture cannot provide: that fixture is CONFIRMED (so
+        # it issues no NEW_PASSWORD_REQUIRED) and it is an admin (so it cannot be
+        # the negative). Rotating it would break the suite that depends on it, so
+        # when E02 is selected the run provisions its own and points the worker at
+        # them. Every other suite keeps using the configured shared fixture.
+        #
+        # Selected, not merely present in the matrix: a BLOCKED or already-passed
+        # E02 must not create identities nothing will use.
+        challenges = selected(ctx, "E02")
+        fixtures = ports["admin_fixtures"](ctx) if challenges else {}
+        if fixtures.get("created_username"):
+            # Published before the worker runs so a failed login still reports
+            # which identity it was attempted against, and so cleanup has it.
+            ctx["document"]["admin_fixtures"] = {
+                key: value
+                for key, value in fixtures.items()
+                if key != "credential_secret"
+            }
         evidence = ports["run_worker"](
             instance,
             "install_auth",
             {
                 **ports["worker_config"](cfg, ctx, "install"),
+                **{
+                    key: value
+                    for key, value in fixtures.items()
+                    if key in ("credential_secret", "created_username")
+                },
                 "expected_hashes": expected_hashes,
                 "cognito_user_pool_id": cfg["cognito_user_pool_id"],
                 "work_dir": WORK_DIR,
                 "login_required": any(key != "E01" for key in ctx["matrix"]),
-                "admin_challenges_required": "E02" in ctx["matrix"],
+                "admin_challenges_required": challenges,
                 "admin_setup_required": "E03" in ctx["matrix"],
             },
         )
@@ -429,7 +453,13 @@ def install_auth_stage(cfg, ports):
                 **session,
                 "prefix": ctx["evaluation_id"],
             }
-        # A Cognito identity the run created is this run's to remove.
+        # A Cognito identity the run created is this run's to remove. When the
+        # fixtures above created it, this is a no-op: `Manifest.record` is
+        # idempotent per (kind, id) and the identity was already recorded BEFORE
+        # the create, which is the ordering that survives an interruption. This
+        # remains for the identity a worker creates on its own, where the
+        # orchestrator only learns the name from the returned evidence and so
+        # cannot record it any earlier.
         if session.get("created_username"):
             ctx["manifest"].record(
                 "cognito_user",
