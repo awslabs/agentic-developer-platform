@@ -73,6 +73,13 @@ ORDER = (
     # and the cascade is a best-effort no-op. The bearer token stays valid either
     # way — a JWT is checked by signature and expiry, not by the login still
     # existing.
+    #
+    # It CANNOT be moved before `ec2_instance`, and does not need to be: the
+    # instance is terminated first because it holds the ENI, and the token these
+    # API deleters need lives in a vault on it. `live._deleters`' `build` therefore
+    # reads that token eagerly, before `sweep()` runs anything — see the comment
+    # there. Order within the sweep is a dependency statement about the RESOURCES,
+    # not about where credentials come from.
     "adp_user",
     "cloudformation_stack",
     "github_app",

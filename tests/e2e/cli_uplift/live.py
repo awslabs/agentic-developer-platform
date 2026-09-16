@@ -1212,23 +1212,29 @@ def _deleters(aws, cfg, http=None, ssm=None):
     def build(_cfg, ctx=None):
         # The session the API deleters authenticate with.
         #
-        # `cleanup.ORDER` terminates the instance FIRST (it holds the ENI), and
-        # `adp_connection`/`bedrock_destination` are deleted after that — so by the
-        # time those deleters run, the on-instance vault is gone with the instance.
-        # The token is therefore fetched ONCE, lazily, on the first deleter that
-        # needs it, and cached: at that point the sweep has not yet reached the
-        # instance, so the vault is still there. Nothing token-shaped is written
-        # back into the run document, which is what the report and durable state
-        # are built from.
+        # Read EAGERLY, here, before the sweep runs a single deleter — not lazily on
+        # first use. `cleanup.ORDER` terminates `ec2_instance` FIRST (it holds the
+        # ENI), and the vault holding this token lives on that instance, so by the
+        # time any API deleter asks for it the instance is gone and the SSM read can
+        # only fail. A lazy read is therefore never early enough. `build` is called
+        # by `cleanup_stage` before `sweep()` begins, which is the last moment the
+        # instance is still running.
+        #
+        # This went unnoticed because the two API deleters that existed before were
+        # both for resources a SUCCESSFUL journey removes through the product's own
+        # CLI: `adp_connection` and `bedrock_destination` are marked deleted by the
+        # journey, so their deleters only run for an interrupted worker and almost
+        # never executed. `adp_user` is the first kind the sweep must ALWAYS delete
+        # itself, which is what surfaced it — live, as
+        # `adp_user:<org>/<id>` outstanding with a PortError while every other kind
+        # reported deleted.
+        #
+        # Nothing token-shaped is written back into the run document, which is what
+        # the report and the durable state are built from.
         cached = {}
-
-        def session():
-            if ctx is None:
-                return {}
+        if ctx is not None:
             document = ctx["document"].get("session") or {}
-            if not document:
-                return {}
-            if "access_token" not in cached:
+            if document:
                 # Non-secret fields come straight from the document; only the token
                 # needs the instance. A read that fails leaves the token absent, and
                 # the deleters already refuse to act without one rather than
@@ -1237,6 +1243,8 @@ def _deleters(aws, cfg, http=None, ssm=None):
                 cached["access_token"] = _vault_token(
                     ssm, ctx["document"].get("instance_id"), document
                 )
+
+        def session():
             return cached
 
         return {

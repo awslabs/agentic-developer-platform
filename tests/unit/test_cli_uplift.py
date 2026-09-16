@@ -2198,6 +2198,9 @@ class FakeSsm:
         # orchestrator came back for it (production caches: exactly one read).
         self.session_ref = (worker_evidence()["install_auth"]["session"])["session_ref"]
         self.session_reads = 0
+        # Flipped by the terminate deleter. After that the vault is unreachable,
+        # because the disk holding it is gone with the instance.
+        self.instance_terminated = False
 
     # -- helpers over the real command text --------------------------------
 
@@ -2230,12 +2233,18 @@ class FakeSsm:
     def _session_handoff(self, joined):
         """Read back the private session vault install_auth left on the instance.
 
-        The API deleters (`adp_connection`, `bedrock_destination`) run AFTER the
-        instance is terminated, so they cannot resolve the session the way a
-        journey does; production reads the vault once over this same transport
-        while the instance is still up. Modelled here because without it the
-        deleters get no token, refuse to act, and the run reports a routing rule as
-        outstanding that it could in fact have removed.
+        The API deleters run AFTER the instance is terminated, so they cannot
+        resolve the session the way a journey does; production reads the vault
+        eagerly over this same transport when the deleters are built, while the
+        instance is still up. Modelled here because without it the deleters get no
+        token, refuse to act, and the run reports resources as outstanding that it
+        could in fact have removed.
+
+        A read attempted after termination RAISES, exactly as the real transport
+        does — there is no instance left to run a command on. This is what turns
+        "the token is fetched too late" from a silent nothing into a failure, and
+        it is the live defect: a lazily-fetched token was always fetched after
+        `ec2_instance`, the first entry in `cleanup.ORDER`.
 
         The command really must be a read of THIS run's vault as ec2-user: a
         deleter that shelled something else, or read a path the session document
@@ -2248,6 +2257,11 @@ class FakeSsm:
             "the vault was read as the wrong user; it is 0600 and owned by ec2-user"
         )
         self.session_reads += 1
+        if self.instance_terminated:
+            raise ports.PortError(
+                "the session vault was read after the instance was terminated; "
+                "there is no instance left to read it from"
+            )
         return {
             "Status": "Success",
             "StandardOutputContent": json.dumps({"access_token": "<token>"}),
@@ -4567,15 +4581,21 @@ class VaultSsm:
 
     The cleanup sweep terminates the instance FIRST (it holds the ENI), so the API
     deleters that run after it cannot resolve the session on-instance the way a
-    journey does. Production reads the vault once, lazily, over SSM before the
-    sweep reaches the instance. This double is that transport, and it is strict
-    about the purpose so a deleter that started running journeys would be caught.
+    journey does. Production therefore reads the vault EAGERLY, when the deleters
+    are built, which is before the sweep terminates anything. This double is that
+    transport, and it is strict about the purpose so a deleter that started running
+    journeys would be caught.
+
+    `terminated` models the part that made this a live failure: once the instance
+    is gone the read cannot succeed, so a read attempted too late raises exactly as
+    the real SSM transport does.
     """
 
     def __init__(self, *, token="<token>", fail=False):
         self.token = token
         self.fail = fail
         self.reads = []
+        self.terminated = False
 
     def run(self, instance_id, commands, *, purpose, timeout=600):
         raise AssertionError(f"the deleters must not run {purpose!r} on the instance")
@@ -4586,7 +4606,7 @@ class VaultSsm:
         )
         joined = "\n".join(commands)
         self.reads.append((instance_id, joined))
-        if self.fail:
+        if self.fail or self.terminated:
             raise ports.PortError("the instance is gone")
         return {"Status": "Success"}, {"access_token": self.token}
 
@@ -5281,16 +5301,26 @@ def test_the_sweep_deletes_the_adp_account_and_leaves_a_real_operator_alone(tmp_
     not create.
     """
     gateway = FakeGateway()
+    transports = {}
 
     def doubles(cfg):
         wired = live_doubles(cfg, gateway=gateway)
+        transports.update(wired)
 
         def absent(**kwargs):
             raise ports.PortError("s3.head_object failed: 404")
 
+        def terminate(**kwargs):
+            # Terminating the instance destroys the vault with it. `cleanup.ORDER`
+            # does this FIRST, so any deleter that waits until it needs the token
+            # to fetch it will find nothing to fetch it from — the live failure
+            # this models.
+            wired["ssm"].instance_terminated = True
+            return {}
+
         wired["aws"].replies.update(
             {
-                "ec2.terminate_instances": {},
+                "ec2.terminate_instances": terminate,
                 "ec2.describe_instances": {
                     "Reservations": [{"Instances": [{"State": {"Name": "terminated"}}]}]
                 },
@@ -5315,6 +5345,70 @@ def test_the_sweep_deletes_the_adp_account_and_leaves_a_real_operator_alone(tmp_
     # The operator's account, in the same organization, is untouched.
     assert list(gateway.users["org-eval"]) == ["operator-1"]
     assert result.document["cleanup_ok"] is True
+    # The token was read while the instance was still up, exactly once.
+    # `cleanup.ORDER` terminates it first, so this can only hold if the read
+    # happens when the deleters are BUILT rather than when one first needs it.
+    assert transports["ssm"].session_reads == 1
+
+
+def test_the_session_token_is_read_before_the_sweep_terminates_the_instance(tmp_path):
+    """The vault dies with the instance, and the instance is deleted FIRST.
+
+    `cleanup.ORDER` begins with `ec2_instance` because it holds the ENI several
+    other kinds depend on. The token the API deleters authenticate with lives in a
+    0600 vault ON that instance, so a token fetched at the moment a deleter needs
+    it is always fetched after the only machine that could serve it is gone.
+
+    This is not hypothetical: it is what made a live run report
+    `adp_user:<org>/<id>` outstanding with a PortError while all seven other kinds
+    reported deleted. It hid for as long as it did because the two API deleters
+    that existed before — `adp_connection` and `bedrock_destination` — cover
+    resources a SUCCESSFUL journey removes through the product's own CLI, so they
+    only ever ran for an interrupted worker. `adp_user` is the first kind the sweep
+    must always delete itself.
+
+    Asserted at the seam rather than through a full run so the guarantee is stated
+    once, directly: building the deleters reads the vault; nothing else has to have
+    happened yet.
+    """
+    cfg = config.validate(config_fixture())
+    ssm = VaultSsm()
+    build = live.wire(cfg, {"aws": FakeAws(), "http": FakeHttp(), "ssm": ssm})[
+        "deleters"
+    ]
+    ctx = {
+        "document": {
+            "instance_id": "i-0eval",
+            "session": {
+                "session_ref": "/home/ec2-user/adp-eval/session.json",
+                "prefix": EVAL_ID,
+            },
+        }
+    }
+    deleters = build(cfg, ctx)
+    assert len(ssm.reads) == 1, (
+        "building the deleters read the session vault "
+        f"{len(ssm.reads)} times; exactly one eager read is required — zero means "
+        "the token is fetched later, after ec2_instance has already been "
+        "terminated, and more than one means it is not cached"
+    )
+    # And the captured token survives the instance: terminating it now makes the
+    # transport unreadable, yet the deleter still has what it needs. Reading
+    # through the same accessor twice must not go back to a machine that is gone.
+    ssm.terminated = True
+    token = live._vault_token(ssm, "i-0eval", ctx["document"]["session"])
+    assert token == "", (
+        "the double must model a terminated instance as unreadable, or this test "
+        "cannot distinguish an eager read from a lucky one"
+    )
+    # The ADP-account deleter is the kind that always needs it. It must not be
+    # refusing to act for want of a token at this point.
+    with pytest.raises(ports.PortError) as raised:
+        deleters["adp_user"]("not-an-org-slash-id-shape")
+    assert "No authenticated session" not in str(raised.value), (
+        "the deleter had no token after the instance was terminated, which is the "
+        "live failure this guards"
+    )
 
 
 def test_the_sweep_refuses_an_account_this_run_did_not_create(tmp_path):
