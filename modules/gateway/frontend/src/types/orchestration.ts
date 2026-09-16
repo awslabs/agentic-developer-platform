@@ -125,8 +125,47 @@ export interface GraphEdge {
  * set validated at acceptance — so an unknown string never reaches this type.
  * `merge` and `deploy` are separate from `develop` because their effects outlive
  * the run: authorizing delivery work is not authorizing either.
+ *
+ * `coordinate` is separate for a different reason: it is authority to *request*
+ * eligible work, not to perform any. A coordinator holding it cannot itself write
+ * code, merge, deploy, conclude an evaluation or release a human gate — every child
+ * it asks for is admitted on that child's own authorized action. So a reader must
+ * never take `coordinate` appearing in `autonomous_actions` as shorthand for the
+ * actions in `coordination.allowed_child_actions` being unattended: those are what a
+ * coordinator may *ask* for, and each request is checked again on its own terms.
  */
-export type PolicyAction = 'develop' | 'review' | 'repair' | 'merge' | 'deploy' | 'evaluate';
+export type PolicyAction = 'develop' | 'review' | 'repair' | 'merge' | 'deploy' | 'evaluate' | 'coordinate';
+
+/**
+ * The personas a coordinator may request work from. Mirrors `ChildPersona`.
+ *
+ * There is no `operations` member, and its absence is a guarantee rather than an
+ * omission: a coordinator cannot request another coordinator, so an accepted scope
+ * can never describe a tree of them sharing one policy's limits.
+ */
+export type ChildPersona = 'developer' | 'reviewer';
+
+/**
+ * An accepted coordinator's bounds, as an owner reads them. Mirrors
+ * `CoordinationSummary`.
+ *
+ * **`assigned_node_count` is a count, and there is no address array to render.** The
+ * assigned addresses are `flow/epic/wave/node` graph keys, which §7.2 makes
+ * non-renderable — the same reason `machine_accepted_evaluations` is a count. The
+ * child personas and actions *are* listed, because "what can this thing cause to
+ * happen?" is the question an owner is answering when they accept a coordinator, and
+ * a count would not answer it.
+ *
+ * `allowed_child_actions` never contains `coordinate`, `merge`, `deploy` or
+ * `evaluate`: the server refuses such a scope at acceptance and refuses the request
+ * again at admission. A renderer therefore does not need — and must not add — a
+ * branch warning about them, since the state it would warn about cannot be accepted.
+ */
+export interface CoordinationSummary {
+  assigned_node_count: number;
+  allowed_child_personas: ChildPersona[];
+  allowed_child_actions: PolicyAction[];
+}
 
 /**
  * The bounds an accepted policy places on autonomous work.
@@ -178,6 +217,17 @@ export interface PolicySummary {
   autonomous_actions: PolicyAction[];
   human_decisions: PolicyAction[];
   machine_accepted_evaluations: number;
+  /**
+   * The accepted coordinator's bounds, or absent/null when the policy accepts none.
+   *
+   * Absent rather than a zeroed summary, for the same reason `execution_policy`
+   * itself is: a `CoordinationSummary` reading "0 nodes, no personas" describes an
+   * accepted-but-useless coordinator, which is a different fact from "no coordinator
+   * was accepted" and the more alarming of the two to show an owner who accepted
+   * neither. Optional as well as nullable so a client built against a pre-#5224 API
+   * release, whose payload omits the key, type-checks unchanged.
+   */
+  coordination?: CoordinationSummary | null;
   expires_at: string;
   limits: PolicyLimits;
 }
