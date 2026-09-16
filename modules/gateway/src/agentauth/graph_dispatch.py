@@ -26,8 +26,41 @@ from src.orchestration.models import DecisionKind, NodeKind, OrchestrationDecisi
 from src.orchestration.state import ActorKind, NodeState
 
 
-async def _authorize_dispatch_policy(*, session, service, command, grant, node, body, continuing, coordinates):
-    from src.orchestration.policy_admission import authorize_node_dispatch, load_in_force_policy
+def _claimed_issue(execution) -> int | None:
+    """The issue an execution's work claim is held on, from its protected record.
+
+    Engine-written (`issue_number` on the dispatch record), never request-supplied.
+    `None` when unreadable, which leaves the claim lookup on its existing default
+    rather than substituting a guess that could match another lane's claim.
+    """
+    try:
+        return int((execution or {})["issue_number"]["N"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+async def _authorize_dispatch_policy(*, session, service, command, grant, node, body, continuing, coordinates, parent=None, coordinator_node=None):
+    """Admit this dispatch under the flow's accepted policy, or raise `PolicyError`.
+
+    Three shapes reach here, and #5224 separates them deliberately:
+
+    1. **An ordinary child dispatch** (`coordinates` False, no coordinator parent) —
+       the node's own admission, unchanged.
+    2. **Dispatching a coordinator** (`coordinates` True) — a wave launch. Admitted as
+       `COORDINATE` at the wave's evaluation anchor, which is the address an accepted
+       `CoordinationScope` names. Before this story every such request was refused
+       outright with a blanket message, because the vocabulary had nothing to accept.
+       A v1/v2 policy still refuses — now as a typed `action_not_permitted`, since
+       absence of an accepted scope grants nothing.
+    3. **A coordinator requesting a child** (`coordinates` False, `coordinator_node`
+       present) — BOTH the coordinator's authority to ask (`authorize_child_request`,
+       via `authorize_coordinator_child_request`) AND the child's own admission. The
+       order matters: the coordinator check is a precondition, never a substitute. The
+       child's own `authorize_node_dispatch` is what reserves budget and mints
+       anything, so coordinator authority cannot stand in for a child's accepted
+       action, live claim and bounded grant.
+    """
+    from src.orchestration.policy_admission import authorize_coordinator_child_request, authorize_node_dispatch, load_in_force_policy
     from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
 
     inputs = await load_in_force_policy(session, org_id=grant.tenant_id, flow_id=grant.flow_id)
@@ -35,8 +68,6 @@ async def _authorize_dispatch_policy(*, session, service, command, grant, node, 
         raise PolicyError(409, f"execution policy refused: {inputs.refusal.reason.value}")
     if inputs.policy is None:
         return
-    if coordinates:
-        raise PolicyError(409, "execution policy refused: unsupported autonomous coordinator capability")
     execution = await run_in_threadpool(service.store._read, f"TENANT#{grant.tenant_id}", f"EXEC#{command['invocation_id']['S']}")
     if not execution:
         raise BootstrapRefusedError("policy dispatch binding unavailable")
@@ -46,6 +77,50 @@ async def _authorize_dispatch_policy(*, session, service, command, grant, node, 
         principal = await resolve_root_user_entity_id(session, grant.tenant_id, grant.authority.human_id)
     except UnresolvableUserEntityError:
         raise PolicyError(409, "execution policy refused: membership_revoked") from None
+
+    if coordinator_node is not None:
+        # The requesting coordinator's own claim and repository, not the child's: the
+        # child's are checked by its own admission below, and it does not own work yet.
+        parent_repository = (parent or {}).get("provider_repository_id", {}).get("N", "")
+        parent_invocation = (parent or {}).get("work_claim_deferred_from", {}).get("S") or (parent or {}).get("invocation_id", {}).get("S")
+        coordinator = await authorize_coordinator_child_request(
+            session,
+            coordinator_node=coordinator_node,
+            child_node=node,
+            child_persona=body.persona,
+            principal_user_id=principal,
+            inputs=inputs,
+            child_action_override=Action.REVIEW if body.persona == "reviewer" else None,
+            continuing_child=continuing,
+            expected_invocation_id=parent_invocation,
+            provider_repository_id=int(parent_repository) if parent_repository.isdigit() else None,
+            work_claim_issue=_claimed_issue(parent),
+        )
+        if not coordinator.permitted:
+            raise PolicyError(409, f"execution policy refused: {coordinator.reason.value}")
+
+    if coordinates:
+        # A coordinator anchors to its wave's evaluation node but does not execute it —
+        # the engine leaves that node `pending`, so `continuing_node` (which requires a
+        # running node) would refuse every wave launch and its idempotent replay.
+        decision = await authorize_node_dispatch(
+            session,
+            node=node,
+            principal_user_id=principal,
+            target_repository=body.target.repo,
+            installation_resolved=int(execution.get("installation_id", {}).get("N", "0")) > 0,
+            provider_repository_id=int(repository) if repository.isdigit() else None,
+            expected_invocation_id=invocation,
+            action_override=Action.COORDINATE,
+            # The coordinator holds its claim on its launch issue; the evaluation
+            # anchor's own `issue_ref` is a different issue (or unset). See
+            # `resolve_authorization_context`'s `work_claim_issue`.
+            work_claim_issue=_claimed_issue(execution),
+        )
+        if not decision.permitted:
+            raise PolicyError(409, f"execution policy refused: {decision.reason.value}")
+        return
+
     action = Action.REVIEW if body.persona == "reviewer" else Action.EVALUATE if body.persona == "operations" else None
     decision = await authorize_node_dispatch(
         session,
@@ -60,6 +135,28 @@ async def _authorize_dispatch_policy(*, session, service, command, grant, node, 
     )
     if not decision.permitted:
         raise PolicyError(409, f"execution policy refused: {decision.reason.value}")
+
+
+async def _coordinator_anchor(session, *, grant, node_id):
+    """Re-read the coordinator's assigned anchor in the current session.
+
+    The second authorization pass runs in a fresh session, so the node object from
+    the first pass is detached. Re-reading by the id already validated against the
+    coordinator's committed dispatch receipt keeps the tenant/flow scoping explicit,
+    and a vanished anchor refuses rather than silently skipping the coordinator check.
+    """
+    if node_id is None:
+        return None
+    anchor = await session.scalar(
+        select(OrchestrationNode).where(
+            OrchestrationNode.id == node_id,
+            OrchestrationNode.org_id == grant.tenant_id,
+            OrchestrationNode.flow_id == grant.flow_id,
+        )
+    )
+    if anchor is None:
+        raise BootstrapRefusedError("coordinator assignment is unavailable")
+    return anchor
 
 
 async def _lock_assignment(session, *, grant, issue):
@@ -107,6 +204,7 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
     async with session_factory() as session:
         mapping = None
         coordinates = False
+        coordinator_anchor_id = None
         if body.persona == "operations":
             loaded = await load_issue_wave(
                 service=service, session=session, tenant_id=grant.tenant_id, flow_id=grant.flow_id, repo=body.target.repo, issue=body.target.issue
@@ -134,6 +232,12 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
                     raise BootstrapRefusedError("successor wave is not eligible")
             elif node.id not in {n.id for n in own_nodes}:
                 raise BootstrapRefusedError("dispatch is outside the assigned wave")
+            else:
+                # A live coordinator is asking for a child inside its own wave. Its
+                # accepted coordination scope names the evaluation anchor this receipt
+                # already binds, so policy admission checks the coordinator's authority
+                # to ask at that address in addition to the child's own admission.
+                coordinator_anchor_id = own_eval.id
         if not parent.get("coordinator_flow_id") and (body.persona != "reviewer" or parent.get("orchestration_node_id") != {"S": node.id}):
             raise BootstrapRefusedError("dispatch is outside the assigned story")
         receipt = (
@@ -194,6 +298,8 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
                 body=body,
                 continuing=bool(receipt) or body.persona == "reviewer",
                 coordinates=coordinates,
+                parent=parent,
+                coordinator_node=await _coordinator_anchor(session, grant=grant, node_id=coordinator_anchor_id),
             )
         except PolicyError:
             if not receipt:
@@ -253,5 +359,7 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
             body=body,
             continuing=True,
             coordinates=coordinates,
+            parent=parent,
+            coordinator_node=await _coordinator_anchor(session, grant=grant, node_id=coordinator_anchor_id),
         )
         return await run_in_threadpool(service._publish, command, grant, caller)

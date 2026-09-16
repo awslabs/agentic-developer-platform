@@ -171,6 +171,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_valid
 from .address import ADDRESS_PATTERN
 
 __all__ = [
+    "NON_DELEGABLE_CHILD_ACTIONS",
     "POLICY_SCHEMA_VERSION",
     "SUPPORTED_POLICY_SCHEMA_VERSIONS",
     "UserCredentialAuthority",
@@ -431,6 +432,17 @@ class ChildPersona(StrEnum):
     REVIEWER = "reviewer"
 
 
+#: Actions no coordination scope may name and no child request may carry, whatever a
+#: policy document says. `merge` and `deploy` act outside the platform's own boundary;
+#: `evaluate` carries the machine acceptance authority that concludes a wave; and
+#: `coordinate` would let a coordinator delegate coordination onward and build the
+#: unbounded tree :class:`ChildPersona` describes. Named once and enforced twice — at
+#: acceptance by `CoordinationScope._bounded_and_canonical` and again at admission by
+#: `authorize_child_request` — so a document that reaches a build without passing the
+#: validators cannot make the acceptance-time refusal the only thing standing there.
+NON_DELEGABLE_CHILD_ACTIONS: frozenset[Action] = frozenset({Action.COORDINATE, Action.MERGE, Action.DEPLOY, Action.EVALUATE})
+
+
 class CoordinationScope(BaseModel):
     """The exact bounds of a coordinator's authority. **Required for `COORDINATE`.**
 
@@ -484,7 +496,7 @@ class CoordinationScope(BaseModel):
         # territory. Naming them here would read as a control an owner granted, and
         # `authorize_child_request` denies them anyway — an entry that cannot take
         # effect but looks like authority is the misreading `_human_gates_are_declared_actions` refuses too.
-        forbidden = sorted(set(self.allowed_child_actions) & {Action.MERGE, Action.DEPLOY, Action.EVALUATE})
+        forbidden = sorted(set(self.allowed_child_actions) & (NON_DELEGABLE_CHILD_ACTIONS - {Action.COORDINATE}))
         if forbidden:
             raise ValueError(
                 f"allowed_child_actions must not include {', '.join(forbidden)}; merging, deploying and concluding an evaluation "
@@ -1363,9 +1375,11 @@ def authorize_child_request(
 
     A coordinator therefore cannot approve, accept or resume a human gate, conclude
     an evaluation, merge, deploy, change scope or issue credentials by virtue of
-    holding `coordinate`: none of those are reachable from here. `MERGE`, `DEPLOY`
-    and `EVALUATE` are refused at acceptance by `CoordinationScope`, and refused
-    again below for a document that reached this build without validation.
+    holding `coordinate`: none of those are reachable from here.
+    :data:`NON_DELEGABLE_CHILD_ACTIONS` — `merge`, `deploy`, `evaluate` and
+    `coordinate` itself — is refused at acceptance by `CoordinationScope` and refused
+    again below, so a document that reached this build without passing the validators
+    still cannot delegate them.
 
     Args:
         context: The COORDINATOR's live facts — not the child's. The caller resolves
@@ -1412,6 +1426,18 @@ def authorize_child_request(
         return Decision.block(
             DenyReason.CHILD_ACTION_NOT_PERMITTED,
             f"this policy's coordination scope does not permit a child performing {child_action.value!r}",
+        )
+
+    # The non-delegable set, enforced here and not only at acceptance. A policy that
+    # autonomously permits `merge` for its own workers is perfectly valid, so the
+    # `allowed_actions`/`human_gates` re-check below would pass such a document — it
+    # is not a substitute for this test. Coordination authority must never be the
+    # thing that reaches a merge, a deploy or an evaluation conclusion, whatever
+    # else the policy allows a directly admitted worker to do.
+    if child_action in NON_DELEGABLE_CHILD_ACTIONS:
+        return Decision.block(
+            DenyReason.CHILD_ACTION_NOT_PERMITTED,
+            f"child action {child_action.value!r} is never delegable through coordination authority",
         )
 
     # Re-checked rather than trusted from acceptance, for a document that reached

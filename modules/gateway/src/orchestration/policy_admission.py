@@ -74,9 +74,11 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AdmissionInputs",
     "action_for_node_kind",
+    "authorize_coordinator_child_request",
     "authorize_node_dispatch",
     "load_in_force_policy",
     "resolve_authorization_context",
+    "resolve_node_action",
 ]
 
 
@@ -115,6 +117,31 @@ def action_for_node_kind(kind: str) -> Action | None:
     still never guessing an action.
     """
     return _NODE_KIND_ACTIONS.get(kind)
+
+
+def resolve_node_action(node: OrchestrationNode, *, action_override: Action | None = None, continuing_node: bool = False) -> Action | None:
+    """The action dispatching THIS node would perform, repair promotion included.
+
+    Extracted from :func:`authorize_node_dispatch` because #5224's coordinator path
+    needs the same value to pass as `child_action` to `authorize_child_request`. Two
+    sites deriving it independently is precisely the drift that produced the
+    `schema_version == 2` downgrade this story already had to fix: a coordinator
+    could be told a `develop` child was permitted while the child's own admission
+    then evaluated `repair`, so the owner's accepted `allowed_child_actions` would
+    not describe what actually ran.
+
+    `None` for a kind with no autonomous action (a gate), so the caller refuses
+    rather than guesses. `continuing_node` reproduces the existing off-by-one
+    exactly: a continuation is re-authorizing the attempt already counted, so it
+    compares against `attempts > 1` rather than `attempts > 0`.
+    """
+    if action_for_node_kind(node.kind) is None:
+        return None
+    if action_override is not None:
+        return action_override
+    if node.kind == NodeKind.STORY.value and node.attempts > int(continuing_node):
+        return Action.REPAIR
+    return action_for_node_kind(node.kind)
 
 
 @dataclass(frozen=True)
@@ -339,6 +366,7 @@ async def resolve_authorization_context(
     spend: SpendObservation,
     provider_repository_id: int | None = None,
     expected_invocation_id: str | None = None,
+    work_claim_issue: int | None = None,
 ) -> AuthorizationContext:
     """Build the fact set for one admission decision from live state.
 
@@ -356,6 +384,15 @@ async def resolve_authorization_context(
     releases superseded holds from that same observation, and re-reading the ledger
     here would let the total the rule denies on and the releases performed against it
     come from two different reads of a moving ledger.
+
+    `work_claim_issue` overrides which issue the claim is looked up by. It exists for
+    #5224's coordinator: a wave coordinator holds the claim on its **launch** issue but
+    is anchored, for policy purposes, to its wave's *evaluation* node — whose
+    `issue_ref` is a different issue (or unset until the wave is materialized). Keying
+    the lookup on the node would therefore find no held claim and deny every
+    coordinator request once work claims are enabled. The default is unchanged, so no
+    existing caller's lookup moves, and this narrows rather than widens: an explicit
+    issue must still match a claim held by this same flow and invocation.
     """
     member_org_id, member_team_ids = await _member_facts(session, org_id=node.org_id, user_id=principal_user_id)
     from src.admin.access_control import AccessControl
@@ -379,7 +416,7 @@ async def resolve_authorization_context(
         # A node belonging to a flow does not prove that flow owns the issue.
         # Check the same immutable binding and invocation the producer reserved.
         try:
-            issue = int(str(node.issue_ref).lstrip("#"))
+            issue = work_claim_issue if work_claim_issue is not None else int(str(node.issue_ref).lstrip("#"))
         except (ValueError, TypeError):
             issue = 0
         work_owned = bool(
@@ -440,6 +477,7 @@ async def authorize_node_dispatch(
     expected_invocation_id: str | None = None,
     action_override: Action | None = None,
     continuing_node: bool = False,
+    work_claim_issue: int | None = None,
 ) -> Decision:
     """Admit or refuse dispatching one node under its flow's accepted policy.
 
@@ -504,10 +542,8 @@ async def authorize_node_dispatch(
         .all()
     )
 
-    action = action_override or action_for_node_kind(node.kind)
-    if action_override is None and node.kind == NodeKind.STORY.value and node.attempts > int(continuing_node):
-        action = Action.REPAIR
-    if action_for_node_kind(node.kind) is None or action is None:
+    action = resolve_node_action(node, action_override=action_override, continuing_node=continuing_node)
+    if action is None:
         # A gate is never dispatched, and an unclassifiable kind must not be guessed.
         return Decision.block(
             DenyReason.ACTION_NOT_PERMITTED,
@@ -549,6 +585,7 @@ async def authorize_node_dispatch(
         spend=spend,
         provider_repository_id=provider_repository_id,
         expected_invocation_id=expected_invocation_id,
+        work_claim_issue=work_claim_issue,
     )
     if continuing_node:
         context = replace(context, observed_attempts=max(0, node.attempts - 1), observed_concurrency=max(0, context.observed_concurrency - 1))
@@ -620,3 +657,118 @@ async def authorize_node_dispatch(
         return Decision.block(DenyReason.BUDGET_UNAVAILABLE, "shared model allowance is unavailable; existing usage must be reconciled")
 
     return decision
+
+
+async def authorize_coordinator_child_request(
+    session: AsyncSession,
+    *,
+    coordinator_node: OrchestrationNode,
+    child_node: OrchestrationNode,
+    child_persona: str,
+    principal_user_id: str,
+    inputs: AdmissionInputs,
+    child_action_override: Action | None = None,
+    continuing_child: bool = False,
+    expected_invocation_id: str | None = None,
+    provider_repository_id: int | None = None,
+    work_claim_issue: int | None = None,
+) -> Decision:
+    """May this coordinator REQUEST this child? **Not the child's own admission** (#5224).
+
+    The coordinator half of a child dispatch. The caller must still run the child's
+    own :func:`authorize_node_dispatch` — this establishes only that the coordinator
+    was allowed to ask, and `graph_dispatch` calls both. Collapsing them would let
+    coordinator authority substitute for the child's accepted action, live claim and
+    bounded grant, which is the substitution the issue forbids outright.
+
+    **Nothing here reserves budget.** Asking is not spending: the child's own
+    admission holds the headroom against the same shared flow allowance, so a
+    coordinator cannot charge the meter twice by fanning out, and a refused child
+    leaves no hold behind. The coordinator's request is still *bounded* by that
+    allowance, because the `authorize_action` inside `authorize_child_request`
+    observes the same spend, attempt and concurrency facts — a coordinator whose flow
+    is exhausted cannot keep asking.
+
+    Facts are resolved against the COORDINATOR's own node, immediately before the
+    request. `resolve_authorization_context` therefore re-reads ownership, policy
+    version, current membership, role and the shared limits on every call, so an
+    amendment that narrows the assigned node set, a revoked membership or an
+    exhausted allowance takes effect at the next child request rather than at the
+    next acceptance.
+
+    `expected_invocation_id`, `provider_repository_id` and `work_claim_issue` describe
+    the COORDINATOR's claim, not the child's. The child's claim is checked by its own
+    admission; passing the child's identity here would ask whether the child owned work
+    it has not been dispatched for yet.
+    """
+    if inputs.policy is None:  # pragma: no cover - callers check absence first
+        return Decision.permit("no execution policy in force; legacy semantics apply")
+
+    child_action = resolve_node_action(child_node, action_override=child_action_override, continuing_node=continuing_child)
+    if child_action is None:
+        # A gate, or a kind this build cannot classify. Refused rather than guessed:
+        # a coordinator must not be able to request work whose action nobody can name.
+        return Decision.block(
+            DenyReason.CHILD_ACTION_NOT_PERMITTED,
+            f"child node kind {child_node.kind!r} has no autonomous action a coordinator could request",
+        )
+
+    flow_slug = await session.scalar(
+        select(OrchestrationFlow.slug).where(
+            OrchestrationFlow.org_id == coordinator_node.org_id,
+            OrchestrationFlow.id == coordinator_node.flow_id,
+        )
+    )
+    if flow_slug is None:
+        # Without a slug there is no address, so the accepted node set cannot be
+        # compared against anything. The same refusal `authorize_node_dispatch` makes.
+        return Decision.block(DenyReason.WORK_NOT_OWNED, f"coordinator node references missing flow {coordinator_node.flow_id!r}")
+
+    # The coordinator's own spend observation, over its flow's nodes. Read through
+    # the meter rather than the settled ledger: the coordinator is mid-run, so its
+    # own initialized accumulator is the current reading, exactly as the
+    # `continuing_node` branch of `authorize_node_dispatch` does.
+    from .flow_meter import read_flow_meter
+
+    meter = await read_flow_meter(org_id=coordinator_node.org_id, flow_id=coordinator_node.flow_id, policy=inputs.policy)
+    spend = SpendObservation(total_usd=meter.total_usd if meter is not None else None)
+
+    context = await resolve_authorization_context(
+        session,
+        policy=inputs.policy,
+        plan_version=inputs.plan_version,
+        node=coordinator_node,
+        principal_user_id=principal_user_id,
+        # A coordinator needs no provider credential to ask: `COORDINATE` is not in
+        # `_REPOSITORY_ACTIONS`, and the request goes to the platform's own
+        # authenticated dispatch service. The child's admission establishes the
+        # child's credential scope, which is where a provider token is actually
+        # minted. Claiming SCOPED here would assert a credential nobody issued.
+        credential_scope=CredentialScope.SCOPED,
+        spend=spend,
+        provider_repository_id=provider_repository_id,
+        expected_invocation_id=expected_invocation_id,
+        work_claim_issue=work_claim_issue,
+    )
+    # The coordinator's own admitted attempt and concurrency slot are already counted
+    # — it is running right now. Requesting a child must not be charged against them a
+    # second time, the same correction `authorize_worker_credential` applies when it
+    # revalidates an already-admitted action.
+    context = replace(
+        context,
+        observed_attempts=max(0, coordinator_node.attempts - 1),
+        observed_concurrency=max(0, context.observed_concurrency - 1),
+    )
+
+    from .execution_policy import authorize_child_request
+
+    return authorize_child_request(
+        context,
+        child_persona,
+        child_action,
+        ResourceRef(
+            org_id=coordinator_node.org_id,
+            node_address=graph_address(coordinator_node, flow_slug=flow_slug),
+        ),
+        inputs.plan_version,
+    )
