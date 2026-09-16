@@ -36,10 +36,10 @@ Per design note §3 (lines 149–162). Each directory is owned by the unit named
 | `agent/skills/` | Agent skills for domain workflows | U4 |
 | `tools/superplane-mcp/` | MCP tool surface over the domain contracts | U8 |
 | `cli/` | CLI verb implementations | U6 |
-| `contracts/` | Versioned domain OpenAPI + event contracts and their thin clients | U8 |
+| `contracts/` | Versioned observation contracts — authenticated, signed, workspace-scoped fleet-health and budget submission ([README](contracts/README.md), [wire schema](contracts/WIRE-SCHEMA.md)) | U8 |
 | `integrations/mlflow/` | MLflow integration adapters | U9 |
 | `ui/` | Domain-specific UI surfaces | later units |
-| `events/` | Event schemas and handlers | U8 |
+| `events/` | Event schemas and handlers — empty; no event schema is needed for R11's criteria, and versioning one ahead of a consumer is premature | U8 |
 | `infra/control-plane/` | Terraform for the control plane | U3 |
 | `infra/workspaces/` | Terraform for per-workspace resources | U3 |
 | `releases/` | Pinned upstream release manifests (digest-pinned images) | U2 |
