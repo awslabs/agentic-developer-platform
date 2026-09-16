@@ -512,6 +512,58 @@ def _deleters(aws, cfg, http=None, ssm=None):
     session_for = _sessions(aws, cfg)
     wait_seconds = int(cfg.get("cleanup_wait_seconds", 120))
 
+    # The AWS error codes that mean "it is already gone", per service. Absence is
+    # the end state a deleter exists to reach, so meeting it on arrival is a
+    # SUCCESS, not a failure.
+    #
+    # This is not a theoretical case. `cleanup.sweep()` deletes a resource and
+    # THEN marks it deleted, and the durable push behind that mark is
+    # deliberately best-effort (`critical=False` in `Manifest.mark`, so an
+    # unreachable store cannot strand the remaining deletions). So a run that is
+    # cancelled mid-sweep — or whose status push simply failed — leaves the
+    # durable manifest saying `pending` for a resource that is already deleted.
+    # The recover job runs `always()`, restores that manifest, and deletes it
+    # again. Without this, the second delete raises, `sweep()` records a FAILURE,
+    # `cleanup_ok` goes false, and `cases.accept()` denies acceptance over a
+    # resource that is not there.
+    #
+    # `cleanup.ORDER` makes the strand window widest for the kinds deleted first
+    # (instance, profile, role, security group), so those need this as much as
+    # the secret and the Cognito user do.
+    #
+    # Codes, not messages: `ports.PortError` carries the AWS error code only, by
+    # design, so a provider message cannot leak an ARN or an ExternalId into the
+    # report. Verified live where the sandbox allows a truthful answer
+    # (`iam.NoSuchEntity`, `cognito-idp.UserNotFoundException`); the rest are the
+    # documented codes for each API.
+    ABSENT = (
+        "NoSuchEntity",  # IAM role, instance profile
+        "ResourceNotFound",  # Secrets Manager (also ResourceNotFoundException)
+        "UserNotFound",  # Cognito admin_delete_user
+        "InvalidInstanceID.NotFound",  # EC2 instance
+        "InvalidGroup.NotFound",  # EC2 security group
+        "ValidationError",  # CloudFormation: stack does not exist
+        "NoSuchKey",  # S3 object
+        "NotFound",
+        "404",
+    )
+
+    def gone_is_good(call, *what):
+        """Run a deleting call, treating "already absent" as the success it is.
+
+        Only absence is forgiven. Every other error — AccessDenied above all —
+        still raises, because "we were not allowed to delete it" must never be
+        recorded as a clean teardown.
+        """
+        try:
+            call()
+        except ports_module.PortError as exc:
+            message = str(exc)
+            if not any(code in message for code in ABSENT):
+                raise
+            return False
+        return True
+
     def _absent(call, *, retries=None, interval=5):
         """Poll until a describe call reports the resource gone."""
         attempts = max(
@@ -526,15 +578,30 @@ def _deleters(aws, cfg, http=None, ssm=None):
 
     def terminate(instance_id, *, account=None, region=None):
         scoped = session_for(account)
-        scoped.call("ec2", "terminate_instances", InstanceIds=[instance_id])
+        # An instance EC2 has already reclaimed answers InvalidInstanceID.NotFound
+        # instead of terminating. That is the end state this deleter wants, so it
+        # returns rather than polling a describe that can only raise.
+        if not gone_is_good(
+            lambda: scoped.call("ec2", "terminate_instances", InstanceIds=[instance_id])
+        ):
+            return
 
         def gone():
-            found = (
-                scoped.call("ec2", "describe_instances", InstanceIds=[instance_id]).get(
-                    "Reservations"
+            # Absence here is also success — but ONLY absence. Any other error
+            # keeps `gone()` false so the poll runs its course and the run reports
+            # the instance as outstanding rather than assuming it died.
+            reservations = {}
+
+            def call():
+                reservations.update(
+                    scoped.call("ec2", "describe_instances", InstanceIds=[instance_id])
                 )
-                or [{}]
-            )[0].get("Instances") or [{}]
+
+            if not gone_is_good(call):
+                return True
+            found = (reservations.get("Reservations") or [{}])[0].get("Instances") or [
+                {}
+            ]
             return (found[0].get("State") or {}).get("Name") == "terminated"
 
         if not _absent(gone):
@@ -546,19 +613,27 @@ def _deleters(aws, cfg, http=None, ssm=None):
         # The destination account's stack, deleted with the destination account's
         # own credentials. This is the R7 case exactly.
         scoped = session_for(account)
-        scoped.call("cloudformation", "delete_stack", StackName=name)
+        if not gone_is_good(
+            lambda: scoped.call("cloudformation", "delete_stack", StackName=name)
+        ):
+            return
 
         def gone():
-            try:
-                stacks = (
-                    scoped.call(
-                        "cloudformation", "describe_stacks", StackName=name
-                    ).get("Stacks")
-                    or []
+            # Describe by name fails with ValidationError once the stack is fully
+            # deleted, which is success. Catching every PortError here would also
+            # swallow an AccessDenied — reporting a clean sweep over a stack still
+            # standing in the destination account, the exact R7 defect this
+            # deleter's account scoping exists to prevent.
+            described = {}
+
+            def call():
+                described.update(
+                    scoped.call("cloudformation", "describe_stacks", StackName=name)
                 )
-            except ports_module.PortError:
-                # Describe by name fails once the stack is fully deleted.
+
+            if not gone_is_good(call):
                 return True
+            stacks = described.get("Stacks") or []
             status = (stacks or [{}])[0].get("StackStatus") or ""
             if status.endswith("_FAILED"):
                 raise ports_module.PortError(
@@ -572,55 +647,82 @@ def _deleters(aws, cfg, http=None, ssm=None):
 
     def delete_role(name, *, account=None, region=None):
         scoped = session_for(account)
-        for policy in (
-            scoped.call("iam", "list_attached_role_policies", RoleName=name).get(
-                "AttachedPolicies"
-            )
-            or []
-        ):
+
+        # A role already gone has no policies to list, and IAM answers
+        # NoSuchEntity to the LIST rather than to the delete — so the absence
+        # check has to happen here, before the detach loops, not just around the
+        # final delete_role call.
+        def listed(operation, key):
+            found = {}
+
+            def call():
+                found.update(scoped.call("iam", operation, RoleName=name))
+
+            if not gone_is_good(call):
+                return None
+            return found.get(key) or []
+
+        attached = listed("list_attached_role_policies", "AttachedPolicies")
+        if attached is None:
+            return
+        for policy in attached:
             scoped.call(
                 "iam",
                 "detach_role_policy",
                 RoleName=name,
                 PolicyArn=policy["PolicyArn"],
             )
-        for policy in (
-            scoped.call("iam", "list_role_policies", RoleName=name).get("PolicyNames")
-            or []
-        ):
+        inline = listed("list_role_policies", "PolicyNames")
+        if inline is None:
+            return
+        for policy in inline:
             scoped.call("iam", "delete_role_policy", RoleName=name, PolicyName=policy)
-        scoped.call("iam", "delete_role", RoleName=name)
+        if not gone_is_good(lambda: scoped.call("iam", "delete_role", RoleName=name)):
+            return
 
         def gone():
-            try:
-                scoped.call("iam", "get_role", RoleName=name)
-            except ports_module.PortError:
-                return True
-            return False
+            # NoSuchEntity means deleted; anything else (AccessDenied above all)
+            # must not read as absence, or a role we were forbidden to delete
+            # would be reported as successfully removed.
+            return not gone_is_good(
+                lambda: scoped.call("iam", "get_role", RoleName=name)
+            )
 
         if not _absent(gone, retries=3):
             raise ports_module.PortError(f"Role {name} still exists after deletion")
 
     def delete_profile(name, *, account=None, region=None):
-        session_for(account).call(
-            "iam", "delete_instance_profile", InstanceProfileName=name
+        gone_is_good(
+            lambda: session_for(account).call(
+                "iam", "delete_instance_profile", InstanceProfileName=name
+            )
         )
 
     def delete_security_group(group_id, *, account=None, region=None):
-        session_for(account).call("ec2", "delete_security_group", GroupId=group_id)
+        gone_is_good(
+            lambda: session_for(account).call(
+                "ec2", "delete_security_group", GroupId=group_id
+            )
+        )
 
     def delete_secret(secret_id, *, account=None, region=None):
-        session_for(account).call(
-            "secretsmanager",
-            "delete_secret",
-            SecretId=secret_id,
-            ForceDeleteWithoutRecovery=True,
+        gone_is_good(
+            lambda: session_for(account).call(
+                "secretsmanager",
+                "delete_secret",
+                SecretId=secret_id,
+                ForceDeleteWithoutRecovery=True,
+            )
         )
 
     def delete_cognito_user(spec, *, account=None, region=None):
         pool, _, username = str(spec).partition("/")
-        session_for(account).call(
-            "cognito-idp", "admin_delete_user", UserPoolId=pool, Username=username
+        # Verified against the live pool: AdminDeleteUser raises
+        # UserNotFoundException for an absent user rather than succeeding.
+        gone_is_good(
+            lambda: session_for(account).call(
+                "cognito-idp", "admin_delete_user", UserPoolId=pool, Username=username
+            )
         )
 
     def delete_s3_object(spec, *, account=None, region=None):

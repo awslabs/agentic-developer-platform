@@ -4558,6 +4558,195 @@ def test_a_destination_another_run_created_is_never_removed():
     assert gateway.unlinked == []
 
 
+def aws_deleters(replies):
+    """The production deleter mapping over a canned AWS double."""
+    cfg = config.validate(config_fixture())
+    return live.wire(cfg, {"aws": FakeAws(replies), "http": FakeHttp()})["deleters"](
+        cfg, None
+    )
+
+
+def test_a_cognito_identity_already_deleted_is_a_successful_cleanup():
+    """A retried or resumed sweep must not fail over a user that is gone.
+
+    Verified against the live pool: `AdminDeleteUser` raises UserNotFoundException
+    for an absent user rather than succeeding quietly. `sweep()` records a raising
+    deleter as FAILED and a single failure makes `cleanup_ok` false, so without
+    this a recovery sweep over an already-clean run would DENY acceptance for a
+    resource that is not there — while a genuinely undeleted user reported clean
+    would be the opposite and worse failure. Hence: absence is success, every other
+    error still raises.
+    """
+    delete = aws_deleters(
+        {
+            "cognito-idp.admin_delete_user": lambda **_k: (_ for _ in ()).throw(
+                ports.PortError("cognito-idp.admin_delete_user failed: UserNotFound")
+            )
+        }
+    )["cognito_user"]
+    delete(
+        "us-east-1_JEhv9xSGG/adp-e2e-gone", account=PLATFORM_ACCOUNT
+    )  # must not raise
+
+    # Any OTHER failure is still a real one: a pool we cannot reach must not be
+    # reported as a user successfully removed.
+    denied = aws_deleters(
+        {
+            "cognito-idp.admin_delete_user": lambda **_k: (_ for _ in ()).throw(
+                ports.PortError("cognito-idp.admin_delete_user failed: AccessDenied")
+            )
+        }
+    )["cognito_user"]
+    with pytest.raises(ports.PortError, match="AccessDenied"):
+        denied("us-east-1_JEhv9xSGG/adp-e2e-live", account=PLATFORM_ACCOUNT)
+
+
+def test_a_run_owned_secret_already_deleted_is_a_successful_cleanup():
+    """Same rule for the run-owned fixture secret, for the same reason."""
+    delete = aws_deleters(
+        {
+            "secretsmanager.delete_secret": lambda **_k: (_ for _ in ()).throw(
+                ports.PortError("secretsmanager.delete_secret failed: ResourceNotFound")
+            )
+        }
+    )["secret"]
+    delete(
+        "adp/cli-uplift-eval/adp-e2e-gone", account=PLATFORM_ACCOUNT
+    )  # must not raise
+
+    denied = aws_deleters(
+        {
+            "secretsmanager.delete_secret": lambda **_k: (_ for _ in ()).throw(
+                ports.PortError("secretsmanager.delete_secret failed: AccessDenied")
+            )
+        }
+    )["secret"]
+    with pytest.raises(ports.PortError, match="AccessDenied"):
+        denied("adp/cli-uplift-eval/adp-e2e-live", account=PLATFORM_ACCOUNT)
+
+
+def test_every_resource_kind_treats_absence_as_a_successful_cleanup():
+    """The rule has to hold for the kinds swept FIRST, not just the last two.
+
+    `cleanup.ORDER` deletes the instance, profile, role and security group before
+    the secret and the Cognito user, and `sweep()` marks a resource deleted only
+    AFTER the delete returns — with a best-effort durable push behind that mark
+    (`critical=False`). So a run cancelled mid-sweep leaves the durable manifest
+    saying `pending` for exactly these early kinds, and the `always()` recover job
+    deletes them a second time. They are the MOST exposed to double deletion, so
+    covering only the secret and the user would have left the real gap open.
+    """
+    absent = {
+        "iam_instance_profile": (
+            "iam.delete_instance_profile",
+            "NoSuchEntity",
+            "adp-e2e-gone",
+        ),
+        "security_group": (
+            "ec2.delete_security_group",
+            "InvalidGroup.NotFound",
+            "sg-0abc",
+        ),
+        "ec2_instance": (
+            "ec2.terminate_instances",
+            "InvalidInstanceID.NotFound",
+            "i-0abc",
+        ),
+        "cloudformation_stack": (
+            "cloudformation.delete_stack",
+            "ValidationError",
+            "adp-e2e-stack",
+        ),
+        "iam_role": (
+            "iam.list_attached_role_policies",
+            "NoSuchEntity",
+            "adp-e2e-role",
+        ),
+    }
+    for kind, (operation, code, identifier) in absent.items():
+        deleters = aws_deleters(
+            {
+                operation: lambda _c=code, _o=operation, **_k: (_ for _ in ()).throw(
+                    ports.PortError(f"{_o} failed: {_c}")
+                )
+            }
+        )
+        # Must not raise: absence is the end state the deleter exists to reach.
+        deleters[kind](identifier, account=PLATFORM_ACCOUNT, region="us-east-1")
+
+        # ...and the same call denied must still raise, so a resource we were
+        # forbidden to delete is never recorded as successfully removed.
+        denied = aws_deleters(
+            {
+                operation: lambda _o=operation, **_k: (_ for _ in ()).throw(
+                    ports.PortError(f"{_o} failed: AccessDenied")
+                )
+            }
+        )
+        with pytest.raises(ports.PortError, match="AccessDenied"):
+            denied[kind](identifier, account=PLATFORM_ACCOUNT, region="us-east-1")
+
+
+def test_a_role_we_are_forbidden_to_read_is_not_reported_as_deleted():
+    """The absence poll must not accept AccessDenied as "gone".
+
+    `delete_role` verified removal with a bare `except PortError: return True`, so
+    an AccessDenied on `get_role` — a role still very much present — satisfied the
+    check and the sweep reported a clean teardown over a live IAM role. Now only
+    NoSuchEntity counts as gone and the denial propagates.
+    """
+    calls = []
+
+    def denied(**_kwargs):
+        raise ports.PortError("iam.get_role failed: AccessDenied")
+
+    def observe(operation):
+        def reply(**_kwargs):
+            calls.append(operation)
+            return {}
+
+        return reply
+
+    deleters = aws_deleters(
+        {
+            "iam.list_attached_role_policies": observe("list_attached"),
+            "iam.list_role_policies": observe("list_inline"),
+            "iam.delete_role": observe("delete"),
+            "iam.get_role": denied,
+        }
+    )
+    # The denial itself surfaces, rather than being converted into a timeout after
+    # a full absence poll: it is the more accurate error and it fails fast.
+    with pytest.raises(ports.PortError, match="AccessDenied"):
+        deleters["iam_role"](
+            "adp-e2e-role", account=PLATFORM_ACCOUNT, region="us-east-1"
+        )
+    assert "delete" in calls
+
+
+def test_a_stack_we_are_forbidden_to_describe_is_not_reported_as_deleted():
+    """Same masking bug on the CloudFormation poll, which is the R7 surface.
+
+    The stack lives in the DESTINATION account, so an AccessDenied on
+    `describe_stacks` is the precise symptom of deleting with the wrong account's
+    credentials — the failure this deleter's account scoping exists to catch. A
+    bare `except PortError: return True` reported it as deleted instead; now the
+    denial propagates and the stack is reported as outstanding.
+    """
+    deleters = aws_deleters(
+        {
+            "cloudformation.delete_stack": lambda **_k: {},
+            "cloudformation.describe_stacks": lambda **_k: (_ for _ in ()).throw(
+                ports.PortError("cloudformation.describe_stacks failed: AccessDenied")
+            ),
+        }
+    )
+    with pytest.raises(ports.PortError, match="AccessDenied"):
+        deleters["cloudformation_stack"](
+            "adp-e2e-stack", account=DESTINATION_ACCOUNT, region="us-east-1"
+        )
+
+
 def test_a_destination_that_is_already_gone_is_a_successful_cleanup():
     """Absence is the desired end state, so a retried sweep must not fail."""
     delete, _http = destination_deleter(FakeGateway())
