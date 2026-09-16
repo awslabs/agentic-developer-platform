@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     # src.shared.schemas.auth.
     from src.budget.reservations import ReservationTarget
     from src.budget.run_binding import RunBinding
+    from src.orchestration.provider_quotes import ProviderQuote
 
 
 class AuthExchangeRequest(BaseModel):
@@ -124,6 +125,12 @@ class TokenContext(BaseModel):
     _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
     _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)
     _policy_request_id: str | None = PrivateAttr(default=None)
+    # Issue #5225: the typed quote whose total became _policy_estimated_cost. Kept
+    # alongside the amount so the reservation can be audited against the request
+    # bytes, billing model and pricing revision that were actually priced —
+    # rather than a number whose provenance is gone. A PrivateAttr for the same
+    # reasons as the fields above: no caller can inject one.
+    _policy_quote: "ProviderQuote | None" = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _default_attributed_org_id(self) -> "TokenContext":

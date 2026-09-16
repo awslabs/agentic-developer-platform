@@ -7,11 +7,9 @@ zero allowance. Admission holds and model charges use separate reservation keys.
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import replace
-from decimal import ROUND_UP, Decimal
-from urllib.parse import unquote
+from decimal import Decimal
 
 from starlette.concurrency import run_in_threadpool
 
@@ -88,78 +86,27 @@ async def read_flow_meter(*, org_id: str, flow_id: str, policy: ExecutionPolicy)
 
 
 def estimate_policy_model_cost(body: bytes, path: str) -> Decimal:
-    """Conservative text-request quote with explicit output and published rates.
+    """The bounded upper-bound amount for a policy-governed model request.
 
-    Stateful server history, server tools and non-text payloads need provider
-    token-count support. They cannot use the ordinary heuristic/default quote
-    under an accepted hard allowance. The forwarded bytes remain unchanged.
+    Issue #5225 moved the bound itself into ``provider_quotes``, where it is one
+    typed, request-bound adapter among the providers still to come. This remains
+    as the amount-only view for callers that need just the number, and delegates
+    so there is exactly one implementation of the safety margin.
+
+    Prefer ``provider_quotes.quote_request`` in new code: it returns the typed
+    quote, which carries the request-byte hash, billing model and pricing
+    revision needed to prove the amount belongs to THIS request. A refusal here
+    is still a ``ValueError``, so existing callers are unchanged.
     """
-    from pricing_policy import canonical_billing_model_id, is_anthropic_model, load_snapshot
-    from pricing_policy.policy import model_rate_candidates
-    from src.budget.pricing_v2_reader import cached_rate_state
+    from .provider_quotes import AnthropicTextQuoteAdapter, QuoteRefusedError, QuoteRequest
 
-    def unique_object(pairs):
-        value = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError("ambiguous request field")
-            value[key] = item
-        return value
-
-    request = json.loads(body, object_pairs_hook=unique_object)
-    if not isinstance(request, dict):
-        raise ValueError("unsupported model request")
-    model = request.get("model")
-    if path.startswith("/model/"):
-        model = unquote(path[len("/model/") :].rsplit("/", 1)[0])
-    elif path != "/v1/messages":
+    # Bound synchronously against the one adapter whose bound needs no provider
+    # round trip. Async-only adapters (#5226/#5227) are reachable solely through
+    # ``quote_request``; this sync view cannot silently serve them an estimate.
+    adapter = AnthropicTextQuoteAdapter()
+    if not adapter.handles(path):
         raise ValueError("provider token-count capability required")
-    if not isinstance(model, str) or not is_anthropic_model(canonical_billing_model_id(model)):
-        raise ValueError("published bounded model quote unavailable")
-    output = request.get("max_tokens")
-    if isinstance(output, bool) or not isinstance(output, int) or output <= 0:
-        raise ValueError("explicit output bound required")
-    if any(request.get(key) for key in ("mcp_servers", "container", "context_management", "previous_response_id")):
-        raise ValueError("stateful input cannot be bounded locally")
-    if any(tool.get("type") not in (None, "custom") for tool in request.get("tools", [])):
-        raise ValueError("server tool costs require a scoped quote")
-
-    def text_content(content):
-        if isinstance(content, str):
-            return
-        if not isinstance(content, list):
-            raise ValueError("unsupported content")
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") not in {"text", "thinking", "tool_use", "tool_result"}:
-                raise ValueError("non-text token-count capability required")
-            if block.get("type") == "tool_result":
-                text_content(block.get("content", ""))
-
-    text_content(request.get("system", ""))
-    messages = request.get("messages")
-    if not isinstance(messages, list) or not messages:
-        raise ValueError("explicit input required")
-    for message in messages:
-        text_content(message["content"])
-    snapshot = load_snapshot()
-    billing_model = canonical_billing_model_id(model)
-    context_limit = snapshot.models.get(billing_model, {}).get("context_max_input_tokens")
-    if isinstance(context_limit, bool) or not isinstance(context_limit, int) or context_limit <= 0:
-        raise ValueError("published model context bound unavailable")
-    rows = model_rate_candidates(snapshot.rates + cached_rate_state().rows, billing_model)
-    if not rows:
-        raise ValueError("published model pricing unavailable")
-    # Price every possible input token at the most expensive published input or
-    # cache-write rate, across context/geography variants. Reserve the model's
-    # entire published context capacity: byte estimates cannot bound hidden
-    # provider framing. This is deliberately pessimistic until provider token
-    # counts are available. Output uses the requested maximum, including thinking.
-    input_rate = max(
-        max(row.input_price_per_1k_tokens, row.cache_write_price_per_1k_tokens or Decimal(0), row.cache_write_1h_price_per_1k_tokens or Decimal(0))
-        for row in rows
-    )
-    output_rate = max(row.output_price_per_1k_tokens for row in rows)
-    cost = (Decimal(context_limit) * input_rate + Decimal(output) * output_rate) / 1000
-    if not cost.is_finite() or cost <= 0:
-        raise ValueError("model price unavailable")
-    return cost.quantize(Decimal("0.000001"), rounding=ROUND_UP)
+    try:
+        return adapter.bound(QuoteRequest(body=body, path=path)).total_usd
+    except QuoteRefusedError as exc:
+        raise ValueError(exc.refusal.detail or exc.refusal.reason) from None

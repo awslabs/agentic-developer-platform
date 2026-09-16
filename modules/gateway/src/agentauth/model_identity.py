@@ -22,6 +22,7 @@ from src.agentauth.execution import ExecutionStateError
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
+from src.orchestration.provider_quotes import QuoteRefusedError, quote_request, revalidate_quote
 from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.logging import get_logger
 
@@ -72,7 +73,7 @@ class AgentModelIdentityMiddleware:
                 async with get_session_factory()() as session:
                     root = await resolve_root_user_entity_id(session, caller.tenant_id, root)
                     if grant.authority.kind == "gate_decision":
-                        from src.orchestration.flow_meter import estimate_policy_model_cost, meter_target
+                        from src.orchestration.flow_meter import meter_target
                         from src.orchestration.policy_admission import load_in_force_policy
                         from src.orchestration.runtime_policy import authorize_worker_credential
 
@@ -104,10 +105,22 @@ class AgentModelIdentityMiddleware:
                     chunks.append(chunk)
                     if not frame.get("more_body", False):
                         break
+                body = b"".join(chunks)
                 try:
-                    context._policy_estimated_cost = estimate_policy_model_cost(b"".join(chunks), scope["path"])
+                    quote = await quote_request(body, scope["path"])
+                except QuoteRefusedError as exc:
+                    # A refusal is a value, not a cost. There is no estimate, no
+                    # default model price and no client token count to fall back
+                    # to, so nothing is forwarded upstream.
+                    logger.info(
+                        "Bounded provider quote refused",
+                        extra={"reason": exc.refusal.reason, "capability": exc.refusal.capability, "principal": caller.invocation_id},
+                    )
+                    raise BootstrapRefusedError("bounded provider quote unavailable") from None
                 except (ValueError, KeyError, TypeError, AttributeError):
                     raise BootstrapRefusedError("bounded provider quote unavailable") from None
+                context._policy_quote = quote
+                context._policy_estimated_cost = quote.total_usd
                 remaining_frames = iter(frames)
                 upstream_receive = receive
 
@@ -126,7 +139,21 @@ class AgentModelIdentityMiddleware:
                     decision = await authorize_worker_credential(session, execution=execution or {}, grant=grant, broker_path="model")
                     if not decision.permitted:
                         raise ModelPolicyRefusedError(decision)
-                # Client IDs are trace hints, not spend idempotency keys.
+                # The quote is evidence about specific bytes priced at a specific
+                # published revision. Re-verify that binding here — after upload
+                # and reauthentication, immediately before the reservation — so a
+                # rate generation that rolled over, or any divergence between the
+                # quoted and forwarded bytes, requotes instead of spending.
+                try:
+                    await revalidate_quote(quote, body, scope["path"])
+                except QuoteRefusedError as exc:
+                    logger.info(
+                        "Bounded provider quote no longer binds this request",
+                        extra={"reason": exc.refusal.reason, "capability": exc.refusal.capability, "principal": caller.invocation_id},
+                    )
+                    raise BootstrapRefusedError("bounded provider quote unavailable") from None
+                # Client IDs are trace hints, not spend idempotency keys. Every
+                # separate upstream submission gets its own reservation id.
                 context._policy_request_id = str(uuid4())
                 scope.setdefault("state", {})["request_id"] = context._policy_request_id
             # Authenticated registry org remains __platform__. Only attribution

@@ -776,7 +776,12 @@ class BudgetEnforcementService:
         """
         policy_target = context._policy_flow_target
         if policy_target is not None:
-            if context._policy_estimated_cost is None or context._policy_request_id is None:
+            # Issue #5225: the typed quote is required, not merely preferred. An
+            # amount with no quote behind it is a number whose provenance is
+            # gone — nothing says which bytes, which billing model or which
+            # published revision produced it, which is exactly what this path
+            # must not spend against.
+            if context._policy_estimated_cost is None or context._policy_request_id is None or context._policy_quote is None:
                 return self._policy_budget_unavailable()
             request_id = context._policy_request_id
             estimated_cost = max(estimated_cost, context._policy_estimated_cost)
@@ -1018,6 +1023,35 @@ class BudgetEnforcementService:
             if policy_target is not None:
                 return self._policy_budget_unavailable()
             return await self._handle_check_failure(e, "Budget check")
+
+        # Issue #5225: confirm the quote at the boundary that actually spends.
+        #
+        # The middleware revalidated it before handing control inward, but
+        # everything above this line is awaited work — a session, the run
+        # binding, the scope caps, the entity hierarchy, the person layer. A
+        # 120-second quote TTL can lapse inside that window and a published rate
+        # generation can roll over inside it, and the hold below would then be
+        # taken against a bound that no longer describes the request's cost.
+        #
+        # Deliberately the LAST thing before reserving, for the same reason the
+        # middleware's own check sits immediately before minting the request id:
+        # any awaited work placed after it would reopen the window it closes.
+        #
+        # Nothing has been reserved and nothing submitted upstream at this point,
+        # so a refusal is a definite pre-submission failure: deny, take no hold,
+        # and leave every prior hold untouched. It reports as CHECK_UNAVAILABLE
+        # (503 + Retry-After) rather than a 402, because no cap was exceeded —
+        # the bound is merely unconfirmed, and a retry requotes.
+        if policy_target is not None:
+            from src.orchestration.provider_quotes import confirm_quote_spendable
+
+            refusal = await confirm_quote_spendable(context._policy_quote)
+            if refusal is not None:
+                logger.warning(
+                    "Denying policy model request: quote no longer spendable at the reservation boundary "
+                    f"(reason={refusal.reason}, capability={refusal.capability})"
+                )
+                return self._policy_budget_unavailable()
 
         # Issue #4287: the live-denominator gate. Deliberately OUTSIDE the try
         # above: a reservation fault is not a ledger-read fault, and routing it
