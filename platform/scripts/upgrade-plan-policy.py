@@ -20,9 +20,13 @@ def routine(resource, module, account):
             return (order == ["create", "delete"] and bool(before.get("rest_api_id"))
                     and before["rest_api_id"] == after.get("rest_api_id"))
         if address == "module.budget_lambda[0].aws_lambda_permission.usage_tracker_s3":
-            fixed = ("function_name", "action", "principal", "source_arn", "statement_id", "qualifier")
+            fixed = ("function_name", "action", "principal", "source_arn", "statement_id",
+                     "principal_org_id", "event_source_token", "function_url_auth_type", "invoked_via_function_url")
             return (order in (["delete", "create"], ["create", "delete"])
                     and all(before.get(k) == after.get(k) for k in fixed)
+                    # Older provider states store an omitted qualifier as "";
+                    # newer plans use null. Both invoke the unqualified function.
+                    and (before.get("qualifier") or None) == (after.get("qualifier") or None)
                     and before.get("principal") == "s3.amazonaws.com"
                     and before.get("action") == "lambda:InvokeFunction"
                     and bool(before.get("function_name")) and bool(before.get("source_arn"))

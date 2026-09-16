@@ -46,6 +46,18 @@ class PlanPolicyTests(unittest.TestCase):
         r["address"] = "null_resource.unreviewed"
         self.assertTrue(self.evaluate(r, "webhook-ingress")["blocked"])
 
+    def test_empty_and_null_lambda_qualifiers_are_equivalent(self):
+        before = {"function_name": "existing", "action": "lambda:InvokeFunction", "principal": "s3.amazonaws.com",
+                  "source_arn": "existing-bucket", "qualifier": ""}
+        after = dict(before, source_account="123456789012", qualifier=None)
+        r = change("module.budget_lambda[0].aws_lambda_permission.usage_tracker_s3", "aws_lambda_permission", before, after)
+        self.assertTrue(self.evaluate(r)["routine"])
+        for key, value in (("qualifier", "version-1"), ("principal_org_id", "different-org"),
+                           ("function_url_auth_type", "NONE"), ("event_source_token", "different-token")):
+            bad = copy.deepcopy(r)
+            bad["change"]["after"][key] = value
+            self.assertTrue(self.evaluate(bad)["blocked"])
+
     def test_stateful_delete_is_never_routine(self):
         for kind in ("aws_db_instance", "aws_s3_bucket", "aws_eks_access_entry", "aws_dynamodb_table"):
             r = change(kind + ".existing", kind, {"id": "existing"}, None, ("delete",))
