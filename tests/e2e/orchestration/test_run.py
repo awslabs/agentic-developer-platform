@@ -762,6 +762,40 @@ class TestConnectionMustBeRegistered:
         assert "12-digit AWS account id" in outcome.report["detail"]
         assert adapter.provider.create_calls == []
 
+    @pytest.mark.parametrize("account_id", [111122223333, None, ["111122223333"]])
+    def test_a_non_string_account_resolution_refuses_rather_than_crashing(
+        self, valid_config, register_scenarios, stub_identity, account_id
+    ):
+        """A JSON-number account id must refuse, not raise out of the gate.
+
+        A registry fronting an HTTP API can easily hand back a number. Matching a
+        regex against it raises TypeError, and a crash inside the gate is not a
+        refusal — the caller sees an exception rather than exit 7.
+        """
+        adapter = StubAdapter()
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(account_id=account_id)
+        )
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert outcome.exit_code == EXIT_TARGET_UNVERIFIED
+        assert "as a string" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
+    def test_a_non_string_org_resolution_refuses_rather_than_crashing(
+        self, valid_config, register_scenarios, stub_identity
+    ):
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(org=None))
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "not a valid GitHub org name" in outcome.report["detail"]
+        assert adapter.provider.create_calls == []
+
     def test_resume_refuses_an_unregistered_connection_before_reading_the_inventory(
         self, valid_config, register_scenarios, stub_identity
     ):

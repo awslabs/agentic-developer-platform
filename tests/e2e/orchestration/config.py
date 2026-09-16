@@ -750,9 +750,17 @@ def _resolve_connection(
             f"connection {connection_ref!r} is registered but not active{detail}; a revoked "
             f"connection authorizes nothing and no mutation is allowed"
         )
-    if not _ACCOUNT_ID.match(resolved.account_id or ""):
+    # `isinstance` before the regex: a registry handing back a JSON number would
+    # otherwise raise TypeError out of a path whose whole job is to refuse
+    # cleanly, and a crash inside the gate is not a refusal.
+    if not isinstance(resolved.account_id, str) or not _ACCOUNT_ID.match(resolved.account_id):
         return resolved, (
             f"connection {connection_ref!r} resolved to {resolved.account_id!r}, which is not a "
-            f"12-digit AWS account id; the target cannot be confirmed"
+            f"12-digit AWS account id as a string; the target cannot be confirmed"
+        )
+    if not isinstance(resolved.org, str) or not _ORG.match(resolved.org):
+        return resolved, (
+            f"connection {connection_ref!r} resolved to org {resolved.org!r}, which is not a "
+            f"valid GitHub org name; the target cannot be confirmed"
         )
     return resolved, None
