@@ -232,11 +232,19 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
                     raise BootstrapRefusedError("successor wave is not eligible")
             elif node.id not in {n.id for n in own_nodes}:
                 raise BootstrapRefusedError("dispatch is outside the assigned wave")
-            else:
+            elif body.persona in {"developer", "reviewer"}:
                 # A live coordinator is asking for a child inside its own wave. Its
                 # accepted coordination scope names the evaluation anchor this receipt
                 # already binds, so policy admission checks the coordinator's authority
                 # to ask at that address in addition to the child's own admission.
+                #
+                # Restricted to the two `ChildPersona` members deliberately. The other
+                # dispatch a coordinator makes inside its own wave is its wave's
+                # EVALUATION, and that is not a delegated child request: it is admitted
+                # on its own `EVALUATE` action and additionally requires the address to
+                # be marked for machine acceptance. Routing it through the coordination
+                # scope would both refuse it as an unrecognised child persona and, worse,
+                # imply coordination authority is what governs concluding an evaluation.
                 coordinator_anchor_id = own_eval.id
         if not parent.get("coordinator_flow_id") and (body.persona != "reviewer" or parent.get("orchestration_node_id") != {"S": node.id}):
             raise BootstrapRefusedError("dispatch is outside the assigned story")

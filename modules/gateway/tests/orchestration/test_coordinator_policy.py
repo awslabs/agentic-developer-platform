@@ -32,6 +32,7 @@ from pydantic import ValidationError
 
 from src.orchestration.execution_policy import (
     COORDINATION_SCHEMA_VERSION,
+    NON_DELEGABLE_CHILD_ACTIONS,
     AcceptanceMode,
     Action,
     ChildPersona,
@@ -492,6 +493,33 @@ class TestCoordinationDoesNotSubstituteForChildAuthority:
         )
         decision = authorize_child_request(_coordinator_context(policy=rehydrated), ChildPersona.DEVELOPER, Action.MERGE, _at(), 1)
         assert decision.reason is DenyReason.CHILD_ACTION_NOT_PERMITTED
+
+    @pytest.mark.parametrize("action", [Action.MERGE, Action.DEPLOY, Action.EVALUATE, Action.COORDINATE])
+    def test_a_non_delegable_action_is_refused_even_when_the_policy_permits_it(self, action: Action) -> None:
+        """The case the two tests above cannot reach, and the reason the guard exists.
+
+        Both preceding tests are satisfied by the `allowed_actions`/`human_gates`
+        re-check: `MERGE` is absent from the policy and `DEPLOY` is gated, so each is
+        refused for a reason that has nothing to do with delegability. Here every one
+        of these actions is autonomously permitted to a *directly admitted* worker —
+        a perfectly valid policy — so that re-check passes and only
+        `NON_DELEGABLE_CHILD_ACTIONS` stands between a coordinator and a delegated
+        merge, deploy, evaluation conclusion or onward coordinator.
+
+        Without the explicit guard, `authorize_child_request`'s docstring claimed an
+        invariant its code did not enforce for exactly this document.
+        """
+        permissive = _stamped_coordinator(
+            allowed_actions=[Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE, Action.DEPLOY, Action.EVALUATE, Action.COORDINATE],
+            human_gates=[],
+        )
+        rehydrated = permissive.model_construct(
+            **{**permissive.__dict__, "coordination": _unvalidated_scope(allowed_child_actions=[Action.DEVELOP, action])}
+        )
+        decision = authorize_child_request(_coordinator_context(policy=rehydrated), ChildPersona.DEVELOPER, action, _at(), 1)
+        assert not decision.permitted
+        assert decision.reason is DenyReason.CHILD_ACTION_NOT_PERMITTED
+        assert action in NON_DELEGABLE_CHILD_ACTIONS
 
     def test_independent_approved_child_actions_still_work(self) -> None:
         """The capability is additive: accepting a coordinator breaks nothing.
