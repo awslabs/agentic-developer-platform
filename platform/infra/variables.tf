@@ -109,6 +109,12 @@ variable "ecr_repositories" {
   ]
 }
 
+variable "retained_upgrade_kms_key_ids" {
+  description = "Keys retained in Terraform state after recovery from an interrupted ownership migration"
+  type        = set(string)
+  default     = []
+}
+
 variable "ecr_repository_encryption" {
   description = "Existing per-repository encryption to retain during upgrades; new repositories use the managed ECR key"
   type = map(object({

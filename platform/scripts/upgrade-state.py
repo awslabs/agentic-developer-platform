@@ -193,6 +193,8 @@ def prepare(args):
                                json.loads(os.environ.get("TF_VAR_extra_cluster_admin_principal_arns", "[]")), requested)
     platform.update(environment=args.environment, aws_region=args.region)
     platform["ecr_repository_encryption"] = repository_encryption(states["platform"])
+    platform["retained_upgrade_kms_key_ids"] = [a["id"] for r, a in resources(states["platform"], "aws_kms_key")
+                                               if not r.get("module") and r["name"] == "retained_upgrade"]
     write_json(directory / "platform.tfvars.json", platform)
     write_json(directory / "eks-access.json", {"publicAccessCidrs": platform["eks_public_access_cidrs"]})
     gateway = {"environment": args.environment, "aws_region": args.region}

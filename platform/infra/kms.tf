@@ -20,6 +20,16 @@
 # pass fresh deploy — see #3789 for the full root-cause analysis.
 # =============================================================================
 
+# Retain keys created by an interrupted ownership migration. These keys are
+# moved here in state, never deleted or modified as part of an upgrade.
+resource "aws_kms_key" "retained_upgrade" {
+  for_each = var.retained_upgrade_kms_key_ids
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = all
+  }
+}
+
 resource "aws_kms_key" "webhook_secrets" {
   description             = "Customer-managed KMS key for webhook-ingress and gateway Secrets Manager secrets"
   deletion_window_in_days = 30

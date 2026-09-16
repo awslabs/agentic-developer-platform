@@ -73,6 +73,13 @@ App installation.
 
 ### Ordered upgrades and completion
 
+Legacy webhook-secret KMS ownership moves from webhook state to platform state
+before the first apply. The script imports and verifies destination ownership
+before removing source tracking; the AWS key and alias stay unchanged. It also
+removes obsolete duplicate tracking of the gateway DynamoDB alias after checking
+gateway ownership. Conflicting key IDs stop the migration for recovery. Keys
+retained during recovery stay managed with deletion protection.
+
 On clusters where network-policy enforcement is not yet active, the initial
 platform pass defers activation. Webhook infrastructure installs the collector
 egress policy first; the final platform pass audits DNS and HTTPS allowances

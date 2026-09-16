@@ -691,6 +691,11 @@ fi
 python3 "$SCRIPT_DIR/prepare-backends.py" "$ROOT_DIR/environments/$ENVIRONMENT" "$ACCOUNT_ID"
 ok "Environment backend configs updated"
 
+if [ "$UPDATE_MODE" = true ]; then
+  step "Migrate legacy shared-key ownership"
+  python3 "$SCRIPT_DIR/upgrade-migrations.py" --root "$ROOT_DIR" --directory "$UPGRADE_RUN_DIR"
+fi
+
 # =============================================================================
 # Upload source for CodeBuild docker-build steps
 # =============================================================================
