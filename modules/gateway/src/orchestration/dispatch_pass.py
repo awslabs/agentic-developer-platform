@@ -140,6 +140,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
@@ -169,7 +170,84 @@ __all__ = [
     # dispatchability by the same rule dispatch enforces. See its docstring.
     "resolve_installation_id",
     "run_dispatch_pass",
+    # Exported for the same reason, and for the same caller (#4334): the issue
+    # routing rule below is the SECOND precondition dispatch enforces, and the
+    # route must report it by calling this rather than restating it.
+    "RoutingBlocker",
+    "issue_number_for_dispatch",
+    "node_requires_issue_routing",
+    "routing_blocker_for_node",
 ]
+
+
+class RoutingBlocker(StrEnum):
+    """Why one node's issue routing cannot produce a dispatch.
+
+    A closed vocabulary with stable ids rather than prose, so the submission
+    report can name a cause a client keys off while the human-readable detail
+    stays free to be reworded. Ordered as dispatch checks them.
+
+    `MISSING_ISSUE_REF` and `MALFORMED_ISSUE_REF` are deliberately distinct even
+    though dispatch refuses both: they need different fixes. The first means
+    nobody has materialised the node's issue yet; the second means an issue
+    reference exists but is not an issue number, which is an authoring error in
+    the plan document and will not resolve itself.
+    """
+
+    MISSING_ISSUE_REF = "missing_issue_ref"
+    MALFORMED_ISSUE_REF = "malformed_issue_ref"
+
+
+def node_requires_issue_routing(kind: str) -> bool:
+    """Whether a node of this kind must carry a routable issue to dispatch.
+
+    Story and evaluation nodes dispatch to an existing GitHub issue; gates are
+    presented by the tick and never consume a worker, so a gate with no
+    `issue_ref` is correct rather than blocked. This mirrors the kind filter
+    `_fetch_ready_nodes` applies in SQL, and exists so the route can apply the
+    same scope without reimplementing that predicate — a route that flagged
+    gates would report a healthy plan as blocked.
+    """
+    return kind in (NodeKind.STORY.value, NodeKind.EVAL.value)
+
+
+def issue_number_for_dispatch(issue_ref: str | None) -> int | None:
+    """The positive issue number `issue_ref` denotes, or None if there isn't one.
+
+    The single parse of a node's issue reference. Accepts a bare number and a
+    `#`-prefixed one; rejects anything else, including zero and negatives, since
+    `source_ref.issue` must address a real issue.
+
+    Module-public and shared with the flow-creation route for the same reason
+    `resolve_installation_id` is — see its docstring. This one matters more, not
+    less: it is checked FIRST by dispatch, so a route that knew only about the
+    installation rule could report a plan dispatchable that dispatch refuses
+    before it ever looks at the installation.
+    """
+    if not issue_ref:
+        return None
+    try:
+        issue = int(str(issue_ref).lstrip("#"))
+    except ValueError:
+        return None
+    return issue if issue > 0 else None
+
+
+def routing_blocker_for_node(*, kind: str, issue_ref: str | None) -> RoutingBlocker | None:
+    """The issue-routing blocker for one node, or None if it is routable.
+
+    Pure: no session, no network, no environment. That is what lets the
+    submission route call it on nodes it already holds without a second query,
+    and what lets one test assert the route's verdict and the dispatch guard
+    agree on the same node rather than merely look similar.
+    """
+    if not node_requires_issue_routing(kind):
+        return None
+    if not issue_ref:
+        return RoutingBlocker.MISSING_ISSUE_REF
+    if issue_number_for_dispatch(issue_ref) is None:
+        return RoutingBlocker.MALFORMED_ISSUE_REF
+    return None
 
 
 # Environment variables, stamped in by Terraform. Read from the environment and
@@ -625,20 +703,27 @@ async def _dispatch_one_unclaimed(
         report.record(org_id, "undispatchable")
         return
 
-    if not node.issue_ref:
-        # Story nodes are expected to carry an issue. One that does not has
-        # nothing for an agent to act on, and materialising an issue is out of
-        # scope (see the module docstring).
+    # The issue-routing rule, evaluated by the shared predicate rather than
+    # restated here (#4334). An execution node without a routable issue has
+    # nothing for an agent to act on, and materialising an issue is out of scope
+    # (see the module docstring). The submission route calls the same function,
+    # so what it reports and what this refuses cannot drift.
+    blocker = routing_blocker_for_node(kind=node.kind, issue_ref=node.issue_ref)
+    if blocker is RoutingBlocker.MISSING_ISSUE_REF:
         logger.warning("orchestration dispatch: execution node %s has no issue_ref — not dispatching", node.id)
         report.record(org_id, "undispatchable")
         return
-
-    try:
-        issue = int(str(node.issue_ref).lstrip("#"))
-        if issue <= 0:
-            raise ValueError("issue must be positive")
-    except ValueError:
+    if blocker is RoutingBlocker.MALFORMED_ISSUE_REF:
         logger.error("orchestration dispatch: node %s has issue_ref=%r which is not an issue number — not dispatching", node.id, node.issue_ref)
+        report.record(org_id, "undispatchable")
+        return
+
+    issue = issue_number_for_dispatch(node.issue_ref)
+    if issue is None:
+        # Unreachable: `routing_blocker_for_node` returned None for an execution
+        # node, which means the reference parses. Guarded so a future change to
+        # either function cannot silently produce a `source_ref` with no issue.
+        logger.error("orchestration dispatch: node %s issue_ref=%r did not resolve to an issue number — not dispatching", node.id, node.issue_ref)
         report.record(org_id, "undispatchable")
         return
 

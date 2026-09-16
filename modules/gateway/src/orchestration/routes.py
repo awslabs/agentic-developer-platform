@@ -46,6 +46,7 @@ untestable end-to-end. It is a read, gated on the same permission.
 
 import json
 import logging
+import os
 import re
 from collections import defaultdict
 from dataclasses import asdict
@@ -70,7 +71,12 @@ from src.orchestration.cost import (
     get_cost_by_address_prefixes,
     get_flow_cost,
 )
-from src.orchestration.dispatch_pass import resolve_installation_id
+from src.orchestration.dispatch_pass import (
+    REPO_ENV,
+    RoutingBlocker,
+    resolve_installation_id,
+    routing_blocker_for_node,
+)
 from src.orchestration.display_state import FlowStatus
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.models import DecisionKind
@@ -123,6 +129,25 @@ class AmendmentResponse(BaseModel):
     already_amended: bool
 
 
+class DispatchBlockedCause(BaseModel):
+    """One reason a submitted plan cannot be delivered.
+
+    `cause` is a stable id a client may key off; `detail` is human-readable prose
+    that stays free to be reworded. Split that way because the two have different
+    consumers — a dashboard branches on the id, an operator reads the detail.
+
+    `detail` names only the submitter's own nodes, by their tenant-local
+    `node_ref`. Never another tenant's data and never an installation id: the
+    ambiguous-installation cause reports how many installations resolved, which
+    is what the submitter needs to fix it, and not which ones.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cause: str
+    detail: str
+
+
 class FlowCreatedResponse(BaseModel):
     """The outcome of submitting an approved plan.
 
@@ -130,14 +155,27 @@ class FlowCreatedResponse(BaseModel):
     nothing was written — the route returns 200 rather than 201 in that case, so a
     retried submission is distinguishable from a first one by status code alone.
 
-    `dispatchable` / `dispatch_blocked_reason` are not decoration. A flow whose org
-    has no single unambiguous GitHub installation compiles perfectly and then never
-    dispatches: every node is counted `undispatchable` by the tick and the
-    submitter is told nothing. That is the invisible-stall class this EPIC exists
-    to remove, so the condition is surfaced here, at submission, where the person
-    who can fix it is still watching. `dispatchable=False` does NOT mean the
-    submission failed — the rows are committed and are exactly what a correct
-    submission produces; it means the plan cannot yet be delivered.
+    `dispatchable` / `dispatch_blocked_reason` / `dispatch_blocked_causes` are not
+    decoration. A flow that trips any dispatch precondition compiles perfectly and
+    then never dispatches: every node is counted `undispatchable` by the tick and
+    the submitter is told nothing. That is the invisible-stall class this EPIC
+    exists to remove, so the conditions are surfaced here, at submission, where
+    the person who can fix them is still watching.
+
+    **All causes, not the first (#4334).** The engine enforces several independent
+    preconditions and checks issue routing *before* the installation, so a report
+    naming one of them sends the submitter to fix that one, resubmit, and hit the
+    same silent stall. `dispatch_blocked_causes` enumerates every cause; the
+    single `dispatch_blocked_reason` string remains as their joined prose, with
+    the installation cause keeping its original wording so existing consumers of
+    that string are unaffected.
+
+    `dispatchable=False` does NOT mean the submission failed — the rows are
+    committed and are exactly what a correct submission produces; it means the
+    plan cannot yet be delivered. Nor does `dispatchable=True` promise immediate
+    execution: it means the *routing* prerequisites hold at submission time.
+    Policy admission, gates, ownership and capacity are all evaluated later, by
+    the tick, and none of them are reported here.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -151,6 +189,7 @@ class FlowCreatedResponse(BaseModel):
     already_compiled: bool
     dispatchable: bool
     dispatch_blocked_reason: str | None
+    dispatch_blocked_causes: list[DispatchBlockedCause] = []
 
 
 class PlanVersionResponse(BaseModel):
@@ -164,6 +203,119 @@ class PlanVersionResponse(BaseModel):
     accepted_by_decision_id: str | None
     superseded_at: str | None
     created_at: str
+
+
+# Cause ids for the preconditions that are NOT per-node. The per-node ones come
+# from `RoutingBlocker` in `dispatch_pass`, so the two vocabularies are declared
+# where their rule lives rather than restated as one list here.
+_CAUSE_AMBIGUOUS_INSTALLATION = "ambiguous_installation"
+_CAUSE_UNKNOWN_DISPATCH_REPO = "unknown_dispatch_repo"
+
+# The sentinel Terraform writes to SSM when no dispatch repository is configured
+# (`agent-authority-coordinator.tf`), which reaches the pod as this literal
+# rather than as an empty string. Treated as unconfigured, exactly as an empty
+# value is.
+_DISPATCH_REPO_DISABLED = "disabled"
+
+
+async def _dispatch_blocked_causes(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    flow_id: str,
+    installation_id: int | None,
+) -> list[DispatchBlockedCause]:
+    """Every reason this flow cannot be delivered, in the order dispatch checks them.
+
+    Enumerated rather than short-circuited at the first: a submitter told one of
+    three causes fixes it, resubmits, and gets the same silent stall (#4334).
+
+    Each cause is evaluated by the same code dispatch enforces, never a restatement
+    of it — `routing_blocker_for_node` for the per-node issue-routing rule and
+    `resolve_installation_id` for the tenant installation (resolved by the caller
+    and passed in, since it is also needed for the `dispatchable` flag). A second
+    implementation of a fail-closed check would be free to drift, and the drift is
+    invisible in the worst direction.
+
+    Bounded: one read of the just-compiled flow's nodes, scoped to `org_id`, with
+    no per-node query. `installation_id` is resolved once for the whole flow
+    because it is a property of the org, not of a node.
+    """
+    causes: list[DispatchBlockedCause] = []
+
+    # --- Configuration: is there a repository to dispatch into at all? ---
+    #
+    # Reported as *unknown* rather than as a confirmed block. The gateway pod and
+    # the scheduled tick are configured from separate places (the pod's configmap
+    # versus the tick's own Terraform-stamped environment), so this process's view
+    # is evidence about the gateway, not proof about the deployed tick. Naming it
+    # `unknown_dispatch_repo` keeps the honest reading available; claiming the
+    # tick is misconfigured from here would be a guess, and claiming the plan is
+    # fine would hide a real and common cause.
+    if (os.environ.get(REPO_ENV) or "").strip() in ("", _DISPATCH_REPO_DISABLED):
+        causes.append(
+            DispatchBlockedCause(
+                cause=_CAUSE_UNKNOWN_DISPATCH_REPO,
+                detail=(
+                    "no dispatch target repository is configured for this gateway, so the engine may have no repository to "
+                    "deliver into; confirm the deployed engine's dispatch configuration"
+                ),
+            )
+        )
+
+    # --- Per-node: story and evaluation nodes need a routable issue. ---
+    #
+    # Checked FIRST by dispatch, which is why reporting only the installation
+    # cause was insufficient. Gate nodes are correctly exempt — they are presented
+    # by the tick and never consume a worker — and that exemption comes from the
+    # shared predicate rather than a kind check written here.
+    repo = OrchestrationRepository(db)
+    missing: list[str] = []
+    malformed: list[str] = []
+    for node in await repo.list_nodes(org_id=org_id, flow_id=flow_id):
+        blocker = routing_blocker_for_node(kind=node.kind, issue_ref=node.issue_ref)
+        if blocker is RoutingBlocker.MISSING_ISSUE_REF:
+            missing.append(f"{node.kind} node {node.node_ref!r}")
+        elif blocker is RoutingBlocker.MALFORMED_ISSUE_REF:
+            malformed.append(f"{node.kind} node {node.node_ref!r} (issue_ref {node.issue_ref!r})")
+
+    # One cause per blocker kind rather than per node: a plan with forty
+    # issue-less stories has one problem to fix, not forty. The node references
+    # are listed in the detail so the submitter still knows which ones, and they
+    # are `node_ref`s — tenant-local addresses from the flow just compiled under
+    # the caller's own org.
+    if missing:
+        causes.append(
+            DispatchBlockedCause(
+                cause=RoutingBlocker.MISSING_ISSUE_REF.value,
+                detail=f"{len(missing)} node(s) have no issue_ref and cannot be dispatched: {', '.join(sorted(missing))}",
+            )
+        )
+    if malformed:
+        causes.append(
+            DispatchBlockedCause(
+                cause=RoutingBlocker.MALFORMED_ISSUE_REF.value,
+                detail=f"{len(malformed)} node(s) have an issue_ref that is not an issue number: {', '.join(sorted(malformed))}",
+            )
+        )
+
+    # --- Tenant: exactly one GitHub installation. ---
+    #
+    # Last because dispatch checks it last, and the ordering is what makes the
+    # joined reason string read in the order an operator would hit the causes.
+    if installation_id is None:
+        causes.append(
+            DispatchBlockedCause(
+                cause=_CAUSE_AMBIGUOUS_INSTALLATION,
+                # Deliberately does not report *which* installations resolved, or
+                # how many: the count is another org's-shape detail that the
+                # submitter does not need in order to fix it, and this string is
+                # logged and rendered widely.
+                detail=f"org {org_id!r} does not resolve to exactly one GitHub installation",
+            )
+        )
+
+    return causes
 
 
 async def _resolve_actor_role(access: AccessControl, current_user: TokenContext) -> str:
@@ -245,14 +397,28 @@ async def create_flow(
     # validly approved plan, and refusing it here would make an operational data
     # problem look like a rejected document.
     installation_id = await resolve_installation_id(db, org_id=actor.org_id)
-    dispatch_blocked_reason = (
-        None
-        if installation_id is not None
-        else (
+    causes = await _dispatch_blocked_causes(
+        db,
+        org_id=actor.org_id,
+        flow_id=result.flow_id,
+        installation_id=installation_id,
+    )
+
+    # The installation cause keeps its ORIGINAL wording verbatim when it is the
+    # cause, so a consumer matching on that string is unaffected by this change
+    # (#4334 names it as a regression check). Other causes are joined onto it in
+    # the order dispatch checks them.
+    reasons = [
+        (
             f"org {actor.org_id!r} does not resolve to exactly one GitHub installation, so no node in this flow can be "
             "dispatched; the engine will count every node undispatchable until exactly one installation is configured"
         )
-    )
+        if cause.cause == _CAUSE_AMBIGUOUS_INSTALLATION
+        else cause.detail
+        for cause in causes
+    ]
+    dispatch_blocked_reason = "; ".join(reasons) if reasons else None
+    dispatchable = not causes
 
     # 200, not 201, for a resubmission: nothing was created, and a client
     # reporting "N nodes created" must not present a retry as a fresh submission.
@@ -268,13 +434,20 @@ async def create_flow(
         result.nodes_created,
         result.edges_created,
         result.already_compiled,
-        installation_id is not None,
+        dispatchable,
     )
 
     if dispatch_blocked_reason is not None:
         # Logged at warning as well as returned: the submitter sees the response,
         # but whoever is watching the engine wonder why nothing moved sees this.
-        logger.warning("plan_submitted flow=%s is undispatchable: %s", result.flow_id, dispatch_blocked_reason)
+        # The cause ids are logged alongside the prose so a log search can find
+        # every plan blocked by one cause without matching on wording.
+        logger.warning(
+            "plan_submitted flow=%s is undispatchable causes=%s: %s",
+            result.flow_id,
+            ",".join(cause.cause for cause in causes),
+            dispatch_blocked_reason,
+        )
 
     return FlowCreatedResponse(
         flow_id=result.flow_id,
@@ -284,8 +457,9 @@ async def create_flow(
         nodes_created=result.nodes_created,
         edges_created=result.edges_created,
         already_compiled=result.already_compiled,
-        dispatchable=installation_id is not None,
+        dispatchable=dispatchable,
         dispatch_blocked_reason=dispatch_blocked_reason,
+        dispatch_blocked_causes=causes,
     )
 
 

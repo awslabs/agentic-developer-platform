@@ -110,6 +110,17 @@ export function Navigation() {
     navItems.push({ to: '/budget', label: 'Budget & Spend', icon: '💵' });
   }
 
+  // Superplane domain app (Issue #5037, EPIC #4910).
+  //
+  // Feature-gated because `superplane` is fail-CLOSED in `ALL_FEATURES_ENABLED`: an
+  // environment not running the domain app must not advertise a menu item whose route
+  // redirects straight back to the dashboard. Deliberately UNGATED by permission —
+  // nothing tenant-scoped ships behind this flag yet, so there is no permission to
+  // check, and inventing one here would hide the entry from the operators enabling it.
+  if (features.superplane) {
+    navItems.push({ to: '/superplane', label: 'Superplane', icon: '🛩️' });
+  }
+
   // Agent Chat for all authenticated users (Issue #97)
   if (features.chat) {
     navItems.push({ to: '/chat', label: 'Agent Chat', icon: '🤖' });
