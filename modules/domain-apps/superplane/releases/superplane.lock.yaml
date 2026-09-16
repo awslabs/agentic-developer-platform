@@ -1,0 +1,183 @@
+# Superplane + SkyPilot release lock — Issue #5041 (U2), EPIC #4910.
+#
+# WHAT THIS FILE IS FOR
+#
+# Every later deploy resolves what to run against this file, so that "which revision is
+# actually running" has an answer that does not depend on when somebody last pulled. The
+# practice is new to ADP: there is no digest-pinning precedent to reuse here. The existing
+# cyber lanes deploy floating tags (cyber-k8s-deploy.yml, cyber/scripts/deploy.sh), and
+# upstream's own SkyPilot manifests deploy `berkeleyskypilot/skypilot:latest` in all three
+# of infra/skypilot-api/02-*, 03-* and templates/skypilot-api.yaml.
+#
+# That floating tag is not a theoretical hazard. At the time this lock was authored the two
+# refs resolved to different images:
+#
+#     berkeleyskypilot/skypilot:latest -> sha256:3bc8bf8f4d83023bae2260b15d01f7581fa2c3e225b75983d92c7f781252662d
+#     berkeleyskypilot/skypilot:0.12.0 -> sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019
+#
+# A deploy reading the first one cannot say what it ran. This file pins the second.
+#
+# WHY THERE ARE TWO MAPS AND NOT ONE
+#
+# `images` and `pending_images` exist because the things this lock covers are not equally
+# knowable, and collapsing them would require inventing a value.
+#
+#   `images`         — digest resolved and verifiable. A deploy may use these.
+#   `pending_images` — the image does not exist yet, because building it needs access ADP
+#                      does not have. These entries carry NO digest field at all.
+#
+# The three Superplane images are built from aws-innovate/AISuperPlane, which the hosted
+# agent token cannot read (it is scoped to this repository). Their digests therefore cannot
+# exist until the access grant below is resolved. A placeholder digest would be worse than
+# a floating tag: a tag is visibly unpinned, whereas a fabricated `sha256:` looks
+# authoritative and would be believed. So they are recorded as pending, with the gate that
+# blocks them named, and `tests/test_lock.py` asserts they carry no digest — which keeps
+# this a declaration of what is unresolved rather than a place a tag can hide.
+#
+# Consequently the smoke check (`all(...startswith('sha256:') for i in d['images']...)`)
+# passes over resolved entries only, and passes honestly.
+
+schema_version: 1
+
+# ── Upstream identity ────────────────────────────────────────────────────────────────
+#
+# The revision the three Superplane images are to be built FROM. It matches
+# spike/provenance.py:UPSTREAM_REVISION, which is the same fact used by U12's parity
+# fixtures; the two must not drift, and tests/test_lock.py asserts they have not.
+#
+# The read-only reference snapshot at this revision (planning branch agent/issue-4910,
+# modules/domain-apps/ai-super-plane/reference/) is EVIDENCE, not a build input. Building
+# from it would ship evidence as a product and pin a revision that is already stale.
+# tests/test_build_source_is_declared.py enforces that no build lane reads it.
+upstream:
+  repository: https://github.com/aws-innovate/AISuperPlane
+  revision: 5d543c952493f0765133b92e93301b0b24d028ee
+
+# ── How the pinned source is obtained ────────────────────────────────────────────────
+#
+# Stated, not assumed. This story does not choose between the options below: an access
+# grant is not a planning decision, so the plan records it unresolved
+# (inception/delivery-planning/validation-mapping.md, "Upstream source-ownership
+# mechanism — Unresolved; read access confers none").
+source_access:
+  status: unresolved
+  blocks:
+    - the first run of the three pinned Superplane image builds
+    - "U2-L2: a build that actually resolves the pinned source or artifact"
+  # Exactly one must be chosen and recorded here by whoever holds the grant.
+  candidate_mechanisms:
+    - authorized machine identity with read access to the upstream repository
+    - a published upstream artifact or registry ADP is permitted to pull
+    - a transferred source location inside ADP's control
+  ruled_out:
+    - why: the hosted agent token is scoped to this repository, so a checkout of the
+        upstream repository fails for everyone rather than only in CI
+      mechanism: actions/checkout of aws-innovate/AISuperPlane
+    - why: it is read-only evidence at the revision above, verified inert; building from
+        it would pin a stale revision and ship evidence as a product
+      mechanism: the reference snapshot on the planning branch
+
+# ── Resolved pins ────────────────────────────────────────────────────────────────────
+#
+# Digest-addressed and verifiable. Keys are referenced by name from the deploy side (U3),
+# so treat them as a contract.
+images:
+  skypilot-api: sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019
+
+# Provenance for each entry in `images`: which registry/repository/tag the digest was
+# resolved from, so a reader can re-resolve it and get the same answer.
+image_sources:
+  skypilot-api:
+    registry: registry-1.docker.io
+    repository: berkeleyskypilot/skypilot
+    # The tag is recorded for auditability ONLY — deploys use the digest above. This tag
+    # is mutable and may point elsewhere later; that is exactly why the digest is the pin.
+    tag: 0.12.0
+    resolved_by: >-
+      GET /v2/berkeleyskypilot/skypilot/manifests/0.12.0, docker-content-digest header
+    # Chosen to match the version the upstream controller's SkyPilot client reports
+    # (src/superplane-controller, HealthResponse Version "0.12.0"), so the pinned runtime
+    # is the one the controller was written against rather than a newer arbitrary release.
+    selected_because: matches the SkyPilot version the upstream controller reports
+
+# ── Not yet buildable ────────────────────────────────────────────────────────────────
+#
+# No `digest` key by construction — see the header. Each names its upstream source
+# directory (at `upstream.revision`), its target ECR repository, the lane that will build
+# it, and what blocks that lane.
+pending_images:
+  superplane-api:
+    upstream_path: src/superplane-api
+    ecr_repository: adp-superplane-api
+    build_workflow: .github/workflows/superplane-api-build.yml
+    blocked_by: source_access
+  superplane-controller:
+    upstream_path: src/superplane-controller
+    ecr_repository: adp-superplane-controller
+    build_workflow: .github/workflows/superplane-controller-build.yml
+    blocked_by: source_access
+  superplane-platform-monitor:
+    upstream_path: src/superplane-platform-monitor
+    ecr_repository: adp-superplane-platform-monitor
+    build_workflow: .github/workflows/superplane-monitor-build.yml
+    blocked_by: source_access
+
+# ── SkyPilot configuration inputs ────────────────────────────────────────────────────
+#
+# Pinned alongside the image because a reproducible runtime with a floating configuration
+# is not reproducible. U2 owns these release inputs; U3 owns deployment
+# (docs/design-notes/4910-skypilot-eks-migration-amendment.md).
+#
+# Values that would name an environment are deliberately absent: the approved plan records
+# no AWS account and no adp-cred label, and upstream's infra/skypilot-api/config.env
+# carries UPSTREAM's account id (605440105851), which is not ADP's target and must not be
+# adopted as one by being copied into a lock file.
+skypilot_config:
+  # From infra/skypilot-api/sky-config.yaml at the pinned revision.
+  allowed_clouds:
+    - aws
+    - lambda
+    - nebius
+    - kubernetes
+  namespace: skypilot
+  # Postgres-backed, not the SQLite variant: SQLite loses SkyPilot's cluster/job state on
+  # pod replacement, and U19's handover work needs that state to survive a restart.
+  state_backend: postgres
+  api_manifest: infra/skypilot-api/03-skypilot-api-postgres.yaml
+  deployment_target:
+    status: unresolved
+    needs:
+      - AWS account id and region
+      - adp-cred label
+    note: >-
+      Required by emission lint Rule 2 and not invented here. Upstream's config.env account
+      id is upstream's, not ADP's.
+
+# ── Schema compatibility ─────────────────────────────────────────────────────────────
+#
+# Recorded as OBSERVED, not asserted as a version. The migration chain at the pinned
+# revision does not have a single head: reading alembic/versions/ there, revision id `006`
+# is declared by four separate files and `007` by three, several sharing down_revision
+# `005`/`006`. `alembic upgrade head` cannot resolve that.
+#
+# This is U13's repaired-chain work (the earliest upstream hard stop in this EPIC, per
+# acceptance-index.md U3-L2) and NOT U2's to fix — U2's obligation is to record the fact so
+# that no deploy reads a compatible-looking schema field that was never verified.
+schema:
+  migration_tool: alembic
+  config: src/superplane-api/alembic.ini
+  status: unverified
+  single_head: false
+  observed:
+    duplicate_revision_ids:
+      # id: number of files declaring it, at upstream.revision
+      "006": 4
+      "007": 3
+  compatible_with: null
+  blocked_by:
+    issue: 5045
+    unit: U13
+    why: >-
+      duplicate revision ids and multiple heads at the pinned revision; the chain must be
+      repaired before any schema compatibility claim here can be verified against a real
+      database
