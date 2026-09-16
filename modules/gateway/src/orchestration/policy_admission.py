@@ -743,7 +743,17 @@ async def authorize_coordinator_child_request(
         # `_REPOSITORY_ACTIONS`, and the request goes to the platform's own
         # authenticated dispatch service. The child's admission establishes the
         # child's credential scope, which is where a provider token is actually
-        # minted. Claiming SCOPED here would assert a credential nobody issued.
+        # minted.
+        #
+        # `SCOPED` is nonetheless the correct value and not a convenience: the
+        # credential test in `authorize_child_request` blocks anything that is neither
+        # `SCOPED` nor an explicit v2 user grant, and it makes no exception for
+        # non-repository actions. Passing `UNSCOPABLE` to mean "no provider credential
+        # is involved" would therefore refuse every coordinator request with
+        # `credential_scope_unavailable` — a deny reason directing an operator to go
+        # implement a provider capability that this path never needed. The narrow
+        # reading is the accurate one: a request carrying no provider credential cannot
+        # exceed this policy's repositories, which is exactly what `SCOPED` asserts.
         credential_scope=CredentialScope.SCOPED,
         spend=spend,
         provider_repository_id=provider_repository_id,
