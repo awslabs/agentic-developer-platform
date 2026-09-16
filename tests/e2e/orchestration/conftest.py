@@ -30,6 +30,8 @@ VALID_CONFIG: dict = {
     "connection": {
         "connection_ref": "adp-dev-embark1",
         "repository": "aws-e/adp",
+        "expected_account_id": "111122223333",
+        "expected_org": "aws-e",
     },
     "identity": {
         "org_ref": "qual-org",

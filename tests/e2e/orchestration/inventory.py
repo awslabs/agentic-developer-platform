@@ -387,6 +387,72 @@ def verify_ownership(
     return True, "ownership tags match this qualification"
 
 
+def restore_inventory(
+    artifact_directory: str | Path,
+    qualification_id: str,
+    restore_root: str | Path,
+    environment: str | None = None,
+) -> Path:
+    """Bring a previous run's inventory into this run's artifact directory.
+
+    A ``--resume`` or ``--cleanup`` dispatch is a *separate* workflow run with an
+    empty workspace: the inventory the original run wrote is not there, so its
+    fixtures would be unreachable and uncleanable. The workflow downloads the
+    original run's artifact and this copies the verified inventory into place.
+
+    ``restore_root`` is the downloaded artifact tree. The file is verified with
+    :meth:`Inventory.load` — version, ``managed_by``, qualification id and
+    environment — *before* it is installed, so a foreign or mismatched archive is
+    refused rather than adopted. Returns the path written.
+    """
+    source_root = Path(restore_root).expanduser().resolve()
+    if not source_root.is_dir():
+        raise InventoryError(f"restore root does not exist or is not a directory: {source_root}")
+
+    # Locate the inventory inside the downloaded tree. An artifact may unpack
+    # either as `<root>/<qual-id>/inventory.json` or with the artifact directory
+    # nested one or more levels down, so search rather than assume one layout.
+    candidates = sorted(
+        path
+        for path in source_root.rglob(INVENTORY_FILENAME)
+        if path.is_file() and path.parent.name == qualification_id
+    )
+    if not candidates:
+        raise InventoryError(
+            f"no {INVENTORY_FILENAME} for qualification {qualification_id!r} was found under "
+            f"{source_root}; the originating run's artifact must be restored before resume or cleanup"
+        )
+    if len(candidates) > 1:
+        raise InventoryError(
+            f"found {len(candidates)} inventories for qualification {qualification_id!r} under "
+            f"{source_root}; refusing to guess which one is authoritative: "
+            f"{', '.join(str(c) for c in candidates)}"
+        )
+    source = candidates[0]
+
+    # Validate BEFORE installing. `load` performs the foreign/version/environment
+    # checks, so an archive from another tool or environment never lands on disk
+    # where a later load would trust it.
+    Inventory.load(source.parent.parent, qualification_id, environment)
+
+    destination = inventory_path(artifact_directory, qualification_id)
+    if destination.exists():
+        # The current run already has one. Adopting a downloaded copy over it
+        # could silently roll back deletions this run already recorded.
+        existing = Inventory.load(artifact_directory, qualification_id, environment)
+        raise InventoryError(
+            f"an inventory for qualification {qualification_id!r} already exists at {destination} "
+            f"with {len(existing.fixtures)} fixture(s); refusing to overwrite it with a restored copy"
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Re-serialize through the validated object rather than copying bytes, so
+    # nothing unvalidated in the archive survives into this run's artifact.
+    restored = Inventory.load(source.parent.parent, qualification_id, environment)
+    restored.path = destination
+    return restored.flush()
+
+
 def sanitize_evidence(entries: Iterable[FixtureRecord]) -> list[dict[str, Any]]:
     """Reduce records to evidence safe to keep after cleanup.
 

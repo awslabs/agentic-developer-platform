@@ -23,11 +23,13 @@ from tests.e2e.orchestration.run import (
     EXIT_INCOMPLETE,
     EXIT_NO_SCENARIOS,
     EXIT_OK,
+    EXIT_TARGET_UNVERIFIED,
     EXIT_USAGE,
     STATUS_FAILED,
     STATUS_INCOMPLETE,
     STATUS_PASS,
     STATUS_READY,
+    STATUS_REFUSED,
     build_parser,
     cleanup_qualification,
     main,
@@ -42,12 +44,33 @@ ORG = FixtureRequest("org", "organization", "qual-org")
 
 @pytest.fixture
 def stub_identity(monkeypatch):
-    """Stub sts:GetCallerIdentity so preflight needs no credentials."""
+    """Stub sts:GetCallerIdentity so no test needs credentials.
+
+    The account matches ``connection.expected_account_id`` in the shared valid
+    config, so the target verifies and the mode under test is reached. Tests that
+    want a refusal stub a *different* account explicitly.
+    """
     monkeypatch.setattr(
         runner,
         "_caller_identity",
         lambda: ({"account": "111122223333", "arn": "arn:aws:sts::111122223333:assumed-role/qual"}, None),
     )
+
+
+@pytest.fixture
+def stub_wrong_account(monkeypatch):
+    """Credentials that resolve to an account the config does not authorize."""
+    monkeypatch.setattr(
+        runner,
+        "_caller_identity",
+        lambda: ({"account": "999988887777", "arn": "arn:aws:sts::999988887777:assumed-role/other"}, None),
+    )
+
+
+@pytest.fixture
+def stub_no_identity(monkeypatch):
+    """No readable caller identity at all."""
+    monkeypatch.setattr(runner, "_caller_identity", lambda: (None, "no credentials"))
 
 
 @pytest.fixture
@@ -164,7 +187,7 @@ class TestPreflightIsReadOnly:
         outcome = preflight(valid_config)
 
         assert outcome.status == STATUS_FAILED
-        assert outcome.exit_code == EXIT_FAILED
+        assert outcome.exit_code == EXIT_TARGET_UNVERIFIED
         assert "could not be verified" in outcome.report["detail"]
 
     def test_preflight_never_exposes_a_secret_value(self, valid_config, stub_identity, register_scenarios):
@@ -221,7 +244,9 @@ class TestEmptyRegistryCannotPass:
 
 
 class TestRun:
-    def test_successful_run_passes_and_records_the_inventory(self, valid_config, register_scenarios):
+    def test_successful_run_passes_and_records_the_inventory(
+        self, valid_config, register_scenarios, stub_identity
+    ):
         adapter = StubAdapter()
         register_scenarios({"bounded": adapter})
 
@@ -233,7 +258,9 @@ class TestRun:
         assert outcome.report["live_resources"] == 1
         assert adapter.executions == 1
 
-    def test_failing_scenario_reports_failed_and_retains_fixtures(self, valid_config, register_scenarios):
+    def test_failing_scenario_reports_failed_and_retains_fixtures(
+        self, valid_config, register_scenarios, stub_identity
+    ):
         """Fixtures survive a failure so they can be resumed or cleaned up."""
         register_scenarios({"bounded": StubAdapter(fail=True)})
 
@@ -244,7 +271,7 @@ class TestRun:
         assert outcome.report["failures"][0]["scenario"] == "bounded"
         assert "retained for --resume or --cleanup" in outcome.report["detail"]
 
-    def test_max_runs_bound_stops_further_scenarios(self, write_config, register_scenarios):
+    def test_max_runs_bound_stops_further_scenarios(self, write_config, register_scenarios, stub_identity):
         """The run cap is enforced across scenarios, not just within one."""
         from tests.e2e.orchestration.config import load_config
 
@@ -263,8 +290,205 @@ class TestRun:
         assert "max_runs" in outcome.report["failures"][0]["error"]
 
 
+class TestAttemptsCountAgainstMaxRuns:
+    """`max_runs` bounds ATTEMPTS, not successes.
+
+    Counting only successes would make the cap unenforceable in exactly the case
+    it matters: an adapter that fails every time would be invoked once per
+    registered scenario while the counter stayed at zero.
+    """
+
+    def _config(self, write_config, max_runs: int):
+        from tests.e2e.orchestration.config import load_config
+
+        return load_config(write_config({"bounds": {"max_runs": max_runs}}))
+
+    def test_max_runs_one_stops_after_a_single_failing_attempt(
+        self, write_config, register_scenarios, stub_identity
+    ):
+        """The checklist case: max_runs=1 with multiple FAILING adapters.
+
+        The first attempt fails and still consumes the single budgeted run, so
+        the second adapter is never invoked.
+        """
+        adapters = {
+            "a_first": StubAdapter(fail=True),
+            "b_second": StubAdapter(fail=True),
+            "c_third": StubAdapter(fail=True),
+        }
+        register_scenarios(adapters)
+
+        outcome = runner.run(self._config(write_config, 1))
+
+        assert adapters["a_first"].executions == 1
+        assert adapters["b_second"].executions == 0, "a failed attempt must still consume the run budget"
+        assert adapters["c_third"].executions == 0
+        assert outcome.report["attempts"] == 1
+        assert outcome.report["scenarios_executed"] == 0
+        assert outcome.status == STATUS_FAILED
+
+    def test_a_failed_attempt_is_counted_before_the_adapter_is_invoked(
+        self, write_config, register_scenarios, stub_identity
+    ):
+        """Two failures against max_runs=2 exhaust the budget for a third."""
+        adapters = {
+            "a_first": StubAdapter(fail=True),
+            "b_second": StubAdapter(fail=True),
+            "c_third": StubAdapter(),
+        }
+        register_scenarios(adapters)
+
+        outcome = runner.run(self._config(write_config, 2))
+
+        assert adapters["a_first"].executions == 1
+        assert adapters["b_second"].executions == 1
+        assert adapters["c_third"].executions == 0
+        assert outcome.report["attempts"] == 2
+        assert any("max_runs" in f["error"] for f in outcome.report["failures"])
+
+    def test_mixed_success_and_failure_both_consume_the_budget(
+        self, write_config, register_scenarios, stub_identity
+    ):
+        adapters = {
+            "a_first": StubAdapter(fail=True),
+            "b_second": StubAdapter(),
+            "c_third": StubAdapter(),
+        }
+        register_scenarios(adapters)
+
+        outcome = runner.run(self._config(write_config, 2))
+
+        assert adapters["c_third"].executions == 0
+        assert outcome.report["attempts"] == 2
+        assert outcome.report["scenarios_executed"] == 1
+
+    def test_the_reported_attempt_count_never_exceeds_the_bound(
+        self, write_config, register_scenarios, stub_identity
+    ):
+        register_scenarios({f"s{i}": StubAdapter(fail=True) for i in range(6)})
+        outcome = runner.run(self._config(write_config, 3))
+        assert outcome.report["attempts"] == 3
+
+
+class TestTargetVerificationGatesMutations:
+    """Every mutating mode verifies the real target before acting.
+
+    The config declares the account the selected connection must resolve to;
+    the harness compares it against ``sts:GetCallerIdentity``. Reporting whichever
+    account the credentials happen to reach is not verification, so a mismatch or
+    an unreadable identity refuses the mutation.
+    """
+
+    def test_run_refuses_a_mismatched_account(
+        self, valid_config, register_scenarios, stub_wrong_account, artifact_dir
+    ):
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter})
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert outcome.exit_code == EXIT_TARGET_UNVERIFIED
+        assert adapter.executions == 0
+        assert adapter.provider.create_calls == []
+        assert "target mismatch" in outcome.report["detail"]
+        assert list(artifact_dir.iterdir()) == [], "a refused run must not write an inventory"
+
+    def test_run_refuses_when_the_identity_cannot_be_read(
+        self, valid_config, register_scenarios, stub_no_identity, artifact_dir
+    ):
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter})
+
+        outcome = runner.run(valid_config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert adapter.executions == 0
+        assert list(artifact_dir.iterdir()) == []
+
+    def test_the_refusal_reports_both_the_expected_and_the_observed_account(
+        self, valid_config, register_scenarios, stub_wrong_account
+    ):
+        """An operator needs to see which account was reached, not just 'denied'."""
+        register_scenarios({"bounded": StubAdapter()})
+        target = runner.run(valid_config).report["target"]
+        assert target["expected_account_id"] == "111122223333"
+        assert target["observed_account_id"] == "999988887777"
+        assert target["verified"] is False
+
+    def test_cleanup_refuses_a_mismatched_account_and_deletes_nothing(
+        self, valid_config, register_scenarios, stub_identity, monkeypatch
+    ):
+        """The most dangerous mode: a wrong-account cleanup must delete nothing."""
+        adapter = StubAdapter()
+        register_scenarios({"bounded": adapter})
+        inventory = Inventory.create(valid_config.artifact_directory, QUAL_ID, "dev")
+        provision(inventory, valid_config, adapter.provider, ORG)
+
+        # The credentials change between the run and the cleanup.
+        monkeypatch.setattr(
+            runner,
+            "_caller_identity",
+            lambda: ({"account": "999988887777", "arn": "arn:aws:sts::999988887777:role/other"}, None),
+        )
+        outcome = cleanup_qualification(valid_config, QUAL_ID)
+
+        assert outcome.status == STATUS_REFUSED
+        assert outcome.exit_code == EXIT_TARGET_UNVERIFIED
+        assert adapter.provider.delete_calls == []
+        assert adapter.provider.resources != {}, "the fixture must survive a refused cleanup"
+
+    def test_resume_refuses_a_mismatched_account(
+        self, valid_config, register_scenarios, stub_wrong_account
+    ):
+        register_scenarios({"bounded": StubAdapter()})
+        outcome = resume_qualification(valid_config, QUAL_ID)
+        assert outcome.status == STATUS_REFUSED
+        assert outcome.exit_code == EXIT_TARGET_UNVERIFIED
+
+    def test_resume_refuses_before_it_reads_the_inventory(
+        self, valid_config, register_scenarios, stub_wrong_account
+    ):
+        """The gate precedes the load: an absent inventory is not the error reported."""
+        register_scenarios({"bounded": StubAdapter()})
+        outcome = resume_qualification(valid_config, "q-neverexisted01")
+        assert outcome.status == STATUS_REFUSED
+        assert "target mismatch" in outcome.report["detail"]
+
+    def test_a_repository_outside_the_declared_org_is_refused(
+        self, write_config, register_scenarios, stub_identity
+    ):
+        """expected_org must actually constrain the authorized repository."""
+        from tests.e2e.orchestration.config import load_config
+
+        config = load_config(write_config({"connection": {"repository": "someone-else/adp"}}))
+        register_scenarios({"bounded": StubAdapter()})
+
+        outcome = runner.run(config)
+
+        assert outcome.status == STATUS_REFUSED
+        assert "expected_org" in outcome.report["detail"]
+
+    def test_a_verified_target_allows_the_run(self, valid_config, register_scenarios, stub_identity):
+        """The gate must not be so strict that a correct config cannot run."""
+        register_scenarios({"bounded": StubAdapter()})
+        outcome = runner.run(valid_config)
+        assert outcome.status == STATUS_PASS
+        assert outcome.report["target"]["verified"] is True
+
+    def test_cli_exit_code_distinguishes_a_refusal_from_a_failure(
+        self, write_config, register_scenarios, stub_wrong_account
+    ):
+        """"We refused to touch this account" is a different action from "it failed"."""
+        register_scenarios({"bounded": StubAdapter()})
+        code = main(["--config", str(write_config()), "--run"])
+        assert code == EXIT_TARGET_UNVERIFIED
+        assert code != EXIT_FAILED
+        assert code != EXIT_OK
+
+
 class TestResumeMode:
-    def test_resume_reconciles_and_reports_ready(self, valid_config, register_scenarios):
+    def test_resume_reconciles_and_reports_ready(self, valid_config, register_scenarios, stub_identity):
         adapter = StubAdapter()
         register_scenarios({"bounded": adapter})
         inventory = Inventory.create(valid_config.artifact_directory, QUAL_ID, "dev")
@@ -280,7 +504,7 @@ class TestResumeMode:
         assert len(adapter.provider.resources) == 1
 
     def test_resume_reports_failure_when_a_fixture_cannot_be_reconciled(
-        self, valid_config, register_scenarios
+        self, valid_config, register_scenarios, stub_identity
     ):
         """A possible leak surfaces as a failure needing a human."""
         adapter = StubAdapter()
@@ -297,11 +521,11 @@ class TestResumeMode:
         assert outcome.report["reconcile_failed"][0]["fixture_id"] == "org"
         assert "may be leaked" in outcome.report["detail"]
 
-    def test_resume_of_an_unknown_qualification_fails_cleanly(self, write_config):
+    def test_resume_of_an_unknown_qualification_fails_cleanly(self, write_config, stub_identity):
         code = main(["--config", str(write_config()), "--resume", QUAL_ID])
         assert code == EXIT_FAILED
 
-    def test_resume_refuses_another_environments_inventory(self, write_config, valid_config):
+    def test_resume_refuses_another_environments_inventory(self, write_config, valid_config, stub_identity):
         """Its resource ids belong to another account."""
         from tests.e2e.orchestration.config import load_config
 
@@ -312,7 +536,9 @@ class TestResumeMode:
 
 
 class TestCleanupMode:
-    def test_cleanup_deletes_verified_fixtures_and_reports_pass(self, valid_config, register_scenarios):
+    def test_cleanup_deletes_verified_fixtures_and_reports_pass(
+        self, valid_config, register_scenarios, stub_identity
+    ):
         adapter = StubAdapter()
         register_scenarios({"bounded": adapter})
         inventory = Inventory.create(valid_config.artifact_directory, QUAL_ID, "dev")
@@ -325,7 +551,7 @@ class TestCleanupMode:
         assert adapter.provider.resources == {}
 
     def test_cleanup_refuses_foreign_fixtures_and_reports_incomplete(
-        self, valid_config, register_scenarios
+        self, valid_config, register_scenarios, stub_identity
     ):
         """Refusing to delete is a distinct outcome from succeeding."""
         adapter = StubAdapter()
@@ -341,7 +567,7 @@ class TestCleanupMode:
         assert outcome.report["deleted"] == []
         assert adapter.provider.delete_calls == []
 
-    def test_cleanup_retains_sanitized_evidence(self, valid_config, register_scenarios):
+    def test_cleanup_retains_sanitized_evidence(self, valid_config, register_scenarios, stub_identity):
         """Evidence survives cleanup, minus the provider dedupe key."""
         adapter = StubAdapter()
         register_scenarios({"bounded": adapter})

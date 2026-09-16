@@ -26,7 +26,7 @@
     "connection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["connection_ref", "repository"],
+      "required": ["connection_ref", "repository", "expected_account_id", "expected_org"],
       "properties": {
         "connection_ref": {
           "type": "string",
@@ -37,6 +37,16 @@
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
           "description": "Authorized repository as owner/repo."
+        },
+        "expected_account_id": {
+          "type": "string",
+          "pattern": "^[0-9]{12}$",
+          "description": "The AWS account the selected connection must resolve to. Compared against sts:GetCallerIdentity before run, resume and cleanup; a mismatch or an unreadable identity refuses the mutation. A string, not a number, so a leading zero survives."
+        },
+        "expected_org": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$",
+          "description": "The GitHub org the authorized repository must belong to. Checked against the owner segment of 'repository'."
         }
       }
     },

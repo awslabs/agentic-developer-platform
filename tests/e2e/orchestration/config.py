@@ -49,6 +49,10 @@ _FLOATING_VERSIONS = frozenset({"latest", "main", "master", "head", "stable", "e
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 _SCENARIO_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# An AWS account id is exactly 12 digits. Declared in the config so the harness
+# can compare it against the account the credentials ACTUALLY resolve to.
+_ACCOUNT_ID = re.compile(r"^[0-9]{12}$")
+_ORG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 
 # Keys that must never hold a literal value in a config file. A secret belongs
 # in `secret_refs` as a reference; seeing one of these names anywhere else means
@@ -92,7 +96,14 @@ _REQUIRED_TOP_LEVEL = (
 )
 _SECTION_KEYS: dict[str, tuple[frozenset[str], tuple[str, ...]]] = {
     # section -> (allowed keys, required keys)
-    "connection": (frozenset({"connection_ref", "repository"}), ("connection_ref", "repository")),
+    # `expected_account_id` and `expected_org` are what the selected connection
+    # MUST resolve to. They are required: without them there is nothing to check
+    # the real identity against, and reporting whichever account the credentials
+    # happen to reach is not target verification.
+    "connection": (
+        frozenset({"connection_ref", "repository", "expected_account_id", "expected_org"}),
+        ("connection_ref", "repository", "expected_account_id", "expected_org"),
+    ),
     "identity": (
         frozenset({"org_ref", "team_ref", "identity_ref"}),
         ("org_ref", "team_ref", "identity_ref"),
@@ -125,6 +136,8 @@ class QualificationConfig:
     environment: str
     connection_ref: str
     repository: str
+    expected_account_id: str
+    expected_org: str
     org_ref: str
     team_ref: str
     identity_ref: str
@@ -198,6 +211,8 @@ def load_config(path: str | Path) -> QualificationConfig:
         environment=document["environment"],
         connection_ref=document["connection"]["connection_ref"],
         repository=document["connection"]["repository"],
+        expected_account_id=document["connection"]["expected_account_id"],
+        expected_org=document["connection"]["expected_org"],
         org_ref=document["identity"]["org_ref"],
         team_ref=document["identity"]["team_ref"],
         identity_ref=document["identity"]["identity_ref"],
@@ -276,6 +291,16 @@ def _check_shape(document: dict[str, Any], problems: list[str]) -> None:
         repository = connection.get("repository")
         if repository is not None and not (isinstance(repository, str) and _REPOSITORY.match(repository)):
             problems.append(f"connection.repository must be 'owner/repo', got {repository!r}")
+        account = connection.get("expected_account_id")
+        if account is not None and not (isinstance(account, str) and _ACCOUNT_ID.match(account)):
+            # A string, not an int: a 12-digit account id with a leading zero
+            # loses it in JSON number form.
+            problems.append(
+                f"connection.expected_account_id must be a 12-digit AWS account id as a string, got {account!r}"
+            )
+        org = connection.get("expected_org")
+        if org is not None and not (isinstance(org, str) and _ORG.match(org)):
+            problems.append(f"connection.expected_org must be a GitHub org name, got {org!r}")
 
     identity = document.get("identity")
     if isinstance(identity, dict):
@@ -434,3 +459,115 @@ def resolve_secret_ref(reference: str) -> str:
 def resolve_secrets(config: QualificationConfig) -> dict[str, str]:
     """Resolve every secret reference in a config. Live path only."""
     return {name: resolve_secret_ref(ref) for name, ref in config.secret_refs.items()}
+
+
+@dataclass(frozen=True)
+class TargetVerification:
+    """The result of checking the config's declared target against reality.
+
+    ``verified`` is the only value that may precede a mutation. Everything else —
+    an unreadable identity, a mismatched account, a missing connection — is a
+    refusal, because acting on an unverified target is how a qualification
+    provisions fixtures in somebody else's account.
+    """
+
+    verified: bool
+    reason: str
+    expected_account_id: str
+    expected_org: str
+    observed_account_id: str | None = None
+    observed_arn: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "verified": self.verified,
+            "reason": self.reason,
+            "expected_account_id": self.expected_account_id,
+            "expected_org": self.expected_org,
+            "observed_account_id": self.observed_account_id,
+            "observed_arn": self.observed_arn,
+        }
+
+
+def verify_target(
+    config: QualificationConfig,
+    identity: dict[str, str] | None,
+    identity_error: str | None = None,
+) -> TargetVerification:
+    """Check the resolved connection against the identity actually in effect.
+
+    The comparison — not the report — is the point. ``preflight`` shows the
+    result read-only; ``run``, ``resume`` and ``cleanup`` refuse to mutate unless
+    :attr:`TargetVerification.verified` is true.
+
+    The identity is passed in rather than read here so this stays network-free
+    and testable; the caller does the one AWS read.
+    """
+    expected_account = config.expected_account_id
+    expected_org = config.expected_org
+
+    if identity_error or identity is None:
+        return TargetVerification(
+            verified=False,
+            reason=(
+                "the target account could not be verified, so no mutation is allowed: "
+                f"{identity_error or 'no caller identity was available'}"
+            ),
+            expected_account_id=expected_account,
+            expected_org=expected_org,
+        )
+
+    observed_account = str(identity.get("account") or "")
+    observed_arn = str(identity.get("arn") or "")
+
+    if not observed_account:
+        return TargetVerification(
+            verified=False,
+            reason="the caller identity carried no account id, so the target cannot be confirmed",
+            expected_account_id=expected_account,
+            expected_org=expected_org,
+            observed_arn=observed_arn or None,
+        )
+
+    if observed_account != expected_account:
+        return TargetVerification(
+            verified=False,
+            reason=(
+                f"target mismatch: the config's connection {config.connection_ref!r} declares account "
+                f"{expected_account} but the active credentials resolve to {observed_account}; "
+                f"refusing to mutate an account this qualification was not authorized against"
+            ),
+            expected_account_id=expected_account,
+            expected_org=expected_org,
+            observed_account_id=observed_account,
+            observed_arn=observed_arn or None,
+        )
+
+    # The repository the config authorizes must belong to the org it declares;
+    # otherwise "expected_org" would be decorative and a config could point at
+    # one org's account while acting on another org's repository.
+    repository_org = config.repository.split("/", 1)[0]
+    if repository_org != expected_org:
+        return TargetVerification(
+            verified=False,
+            reason=(
+                f"target mismatch: connection.repository {config.repository!r} belongs to "
+                f"{repository_org!r} but connection.expected_org is {expected_org!r}"
+            ),
+            expected_account_id=expected_account,
+            expected_org=expected_org,
+            observed_account_id=observed_account,
+            observed_arn=observed_arn or None,
+        )
+
+    return TargetVerification(
+        verified=True,
+        reason=(
+            f"verified: credentials resolve to the declared account {expected_account} "
+            f"and the repository belongs to {expected_org}"
+        ),
+        expected_account_id=expected_account,
+        expected_org=expected_org,
+        observed_account_id=observed_account,
+        observed_arn=observed_arn,
+    )

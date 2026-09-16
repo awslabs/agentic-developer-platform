@@ -3,7 +3,9 @@
   "environment": "dev",
   "connection": {
     "connection_ref": "adp-dev-embark1",
-    "repository": "aws-e/adp"
+    "repository": "aws-e/adp",
+    "expected_account_id": "000000000000",
+    "expected_org": "aws-e"
   },
   "identity": {
     "org_ref": "qual-org",

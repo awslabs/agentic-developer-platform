@@ -26,7 +26,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from tests.e2e.orchestration.config import ConfigError, QualificationConfig, load_config
+from tests.e2e.orchestration.config import (
+    ConfigError,
+    QualificationConfig,
+    TargetVerification,
+    load_config,
+    verify_target,
+)
 from tests.e2e.orchestration.fixtures import FixtureProvider, cleanup, resume
 from tests.e2e.orchestration.inventory import (
     CREATED,
@@ -34,6 +40,7 @@ from tests.e2e.orchestration.inventory import (
     Inventory,
     InventoryError,
     new_qualification_id,
+    restore_inventory,
     sanitize_evidence,
 )
 
@@ -44,11 +51,15 @@ EXIT_CONFIG_INVALID = 3
 EXIT_NO_SCENARIOS = 4
 EXIT_FAILED = 5
 EXIT_INCOMPLETE = 6
+# Distinct from EXIT_FAILED: "we refused to touch this account" is a different
+# operator action from "the qualification ran and failed".
+EXIT_TARGET_UNVERIFIED = 7
 
 STATUS_PASS = "pass"
 STATUS_INCOMPLETE = "incomplete"
 STATUS_FAILED = "failed"
 STATUS_READY = "ready"
+STATUS_REFUSED = "refused"
 
 
 @dataclass(frozen=True)
@@ -98,6 +109,33 @@ def load_providers(config: QualificationConfig) -> dict[str, FixtureProvider]:
     return providers
 
 
+def verified_target(config: QualificationConfig) -> TargetVerification:
+    """Resolve the real identity and check it against the config's target.
+
+    One AWS read (``sts:GetCallerIdentity``), compared against the account and
+    org the selected connection declares. Every mutating mode calls this first.
+    """
+    identity, identity_error = _caller_identity()
+    return verify_target(config, identity, identity_error)
+
+
+def _refusal(mode: str, config: QualificationConfig, target: TargetVerification, **extra: Any) -> Outcome:
+    """The outcome for a mode that refused to mutate an unverified target."""
+    return Outcome(
+        STATUS_REFUSED,
+        EXIT_TARGET_UNVERIFIED,
+        {
+            "mode": mode,
+            "environment": config.environment,
+            "connection_ref": config.connection_ref,
+            "target": target.to_json(),
+            "mutations": [],
+            "detail": target.reason,
+            **extra,
+        },
+    )
+
+
 def preflight(config: QualificationConfig) -> Outcome:
     """Read-only check of the real target, authorization and planned resources.
 
@@ -111,6 +149,8 @@ def preflight(config: QualificationConfig) -> Outcome:
         "environment": config.environment,
         "repository": config.repository,
         "connection_ref": config.connection_ref,
+        "expected_account_id": config.expected_account_id,
+        "expected_org": config.expected_org,
         "versions": dict(config.versions),
         "bounds": dict(config.bounds),
         "artifact_directory": str(config.artifact_directory),
@@ -121,7 +161,9 @@ def preflight(config: QualificationConfig) -> Outcome:
     }
 
     identity, identity_error = _caller_identity()
+    target = verify_target(config, identity, identity_error)
     report["caller_identity"] = identity
+    report["target"] = target.to_json()
     if identity_error:
         report["authorization_error"] = identity_error
 
@@ -132,9 +174,12 @@ def preflight(config: QualificationConfig) -> Outcome:
             {"scenario": name, "fixture_id": item.fixture_id, "kind": item.kind} for item in planned
         )
 
-    if identity_error:
-        report["detail"] = "target account and authorization could not be verified"
-        return Outcome(STATUS_FAILED, EXIT_FAILED, report)
+    # Preflight reports rather than refuses — it mutates nothing either way — but
+    # it reports the COMPARISON, so an operator sees a mismatch before dispatching
+    # a run that would be refused.
+    if not target.verified:
+        report["detail"] = target.reason
+        return Outcome(STATUS_FAILED, EXIT_TARGET_UNVERIFIED, report)
 
     if not adapters:
         report["detail"] = (
@@ -181,16 +226,36 @@ def run(config: QualificationConfig) -> Outcome:
             },
         )
 
+    # Verified before the inventory is created: a refused run must leave no trace
+    # in the artifact directory, exactly like preflight.
+    target = verified_target(config)
+    if not target.verified:
+        return _refusal("run", config, target, scenarios_executed=0, attempts=0)
+
     qualification_id = new_qualification_id()
     inventory = Inventory.create(config.artifact_directory, qualification_id, config.environment)
     providers = load_providers(config)
 
     executed: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    attempts = 0
     for name, adapter in sorted(adapters.items()):
-        if len(executed) >= config.max_runs:
-            failures.append({"scenario": name, "error": f"bounds.max_runs={config.max_runs} reached"})
+        # Every ATTEMPT counts against max_runs, including one that fails. A cap
+        # that only counted successes would let a repeatedly-failing adapter
+        # invoke the engine without limit — each failed attempt still consumed
+        # the run it was budgeted for.
+        if attempts >= config.max_runs:
+            failures.append(
+                {
+                    "scenario": name,
+                    "error": (
+                        f"bounds.max_runs={config.max_runs} reached after {attempts} attempt(s); "
+                        f"not invoked"
+                    ),
+                }
+            )
             break
+        attempts += 1
         try:
             adapter.execute(config=config, inventory=inventory, providers=providers)
         except Exception as exc:  # any adapter failure is data, not a crash
@@ -204,7 +269,9 @@ def run(config: QualificationConfig) -> Outcome:
         "mode": "run",
         "qualification_id": qualification_id,
         "environment": config.environment,
+        "target": target.to_json(),
         "inventory": str(inventory.path),
+        "attempts": attempts,
         "scenarios_executed": len(executed),
         "scenarios_failed": len(failures),
         "failures": failures,
@@ -223,6 +290,12 @@ def run(config: QualificationConfig) -> Outcome:
 
 def resume_qualification(config: QualificationConfig, qualification_id: str) -> Outcome:
     """Reconcile a partially provisioned qualification."""
+    # Resume adopts and re-creates real resources, so it is a mutation and gets
+    # the same target gate as a run.
+    target = verified_target(config)
+    if not target.verified:
+        return _refusal("resume", config, target, qualification_id=qualification_id)
+
     inventory = Inventory.load(config.artifact_directory, qualification_id, config.environment)
     unresolved = resume(inventory, load_providers(config))
     stuck = inventory.in_state(RECONCILE_FAILED)
@@ -231,6 +304,7 @@ def resume_qualification(config: QualificationConfig, qualification_id: str) -> 
         "mode": "resume",
         "qualification_id": qualification_id,
         "environment": config.environment,
+        "target": target.to_json(),
         "inventory": str(inventory.path),
         "reconciled": [r.fixture_id for r in inventory.in_state(CREATED)],
         "unresolved": [r.fixture_id for r in unresolved],
@@ -248,6 +322,12 @@ def resume_qualification(config: QualificationConfig, qualification_id: str) -> 
 
 def cleanup_qualification(config: QualificationConfig, qualification_id: str) -> Outcome:
     """Delete verified owned fixtures and retain sanitized evidence."""
+    # Deletion against the wrong account is the worst outcome available here, so
+    # cleanup verifies the target before reading the inventory.
+    target = verified_target(config)
+    if not target.verified:
+        return _refusal("cleanup", config, target, qualification_id=qualification_id, deleted=[])
+
     inventory = Inventory.load(config.artifact_directory, qualification_id, config.environment)
     outcome = cleanup(inventory, config, load_providers(config))
 
@@ -255,6 +335,7 @@ def cleanup_qualification(config: QualificationConfig, qualification_id: str) ->
         "mode": "cleanup",
         "qualification_id": qualification_id,
         "environment": config.environment,
+        "target": target.to_json(),
         "inventory": str(inventory.path),
         "deleted": list(outcome.deleted),
         "refused": [{"fixture_id": f, "reason": r} for f, r in outcome.refused],
@@ -288,6 +369,16 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--run", action="store_true", help="execute the qualification")
     mode.add_argument("--resume", metavar="QUALIFICATION_ID", help="reconcile a partial qualification")
     mode.add_argument("--cleanup", metavar="QUALIFICATION_ID", help="delete verified owned fixtures")
+    # Not a mode: a modifier for resume/cleanup, which in a separate workflow run
+    # start with an empty workspace and no inventory to act on.
+    parser.add_argument(
+        "--restore-from",
+        metavar="DIRECTORY",
+        help=(
+            "directory holding the originating run's downloaded artifact; its verified inventory "
+            "is copied into the configured artifact directory before --resume or --cleanup"
+        ),
+    )
     return parser
 
 
@@ -301,7 +392,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return EXIT_CONFIG_INVALID
 
+    if args.restore_from and not (args.resume or args.cleanup):
+        parser.error("--restore-from applies only to --resume or --cleanup")
+
     try:
+        if args.restore_from:
+            qualification_id = args.resume or args.cleanup
+            restored = restore_inventory(
+                config.artifact_directory,
+                qualification_id,
+                args.restore_from,
+                config.environment,
+            )
+            print(f"restored inventory for {qualification_id} to {restored}", file=sys.stderr)
+
         if args.preflight:
             outcome = preflight(config)
         elif args.run:
