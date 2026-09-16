@@ -31,7 +31,7 @@
         "connection_ref": {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-          "description": "Registered user connection to run through. Never a credential."
+          "description": "Registered user connection to run through. Never a credential. Resolved through the connection registry before run, resume and cleanup: an unregistered, revoked or unresolvable ref refuses the mutation, and the registry's account/org must match the expected_* fields below."
         },
         "repository": {
           "type": "string",
@@ -41,12 +41,12 @@
         "expected_account_id": {
           "type": "string",
           "pattern": "^[0-9]{12}$",
-          "description": "The AWS account the selected connection must resolve to. Compared against sts:GetCallerIdentity before run, resume and cleanup; a mismatch or an unreadable identity refuses the mutation. A string, not a number, so a leading zero survives."
+          "description": "The AWS account the selected connection is expected to resolve to. Checked against BOTH the connection registry's authoritative account and sts:GetCallerIdentity before run, resume and cleanup; any disagreement, or an unreadable identity, refuses the mutation. The registry is the authority — this field only declares what the config believes, so drift is caught rather than trusted. A string, not a number, so a leading zero survives."
         },
         "expected_org": {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$",
-          "description": "The GitHub org the authorized repository must belong to. Checked against the owner segment of 'repository'."
+          "description": "The GitHub org the authorized repository must belong to. Checked against the owner segment of 'repository' and against the registered connection's org."
         }
       }
     },

@@ -306,3 +306,14 @@ class TestTargetVerificationIsSurfaced:
         """Exit 7 means nothing was touched; it must not read as a generic failure."""
         assert "NOTHING was mutated" in live_text
         assert "connection.expected_account_id" in live_text
+
+    def test_the_refusal_message_names_connection_resolution_as_a_cause(self, live_text):
+        """Exit 7 has two causes, and an operator debugs the wrong one otherwise.
+
+        An unregistered or revoked connection_ref refuses identically to an
+        account mismatch, so the guidance must mention both rather than sending
+        the operator to check only the account.
+        """
+        message = live_text.split("7) echo", 1)[1].split(";;", 1)[0]
+        assert "connection_ref" in message
+        assert "registered" in message

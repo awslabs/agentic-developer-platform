@@ -228,7 +228,7 @@ jobs:
             0) echo "Qualification reported success." ;;
             4) echo "::error::No scenario executed. This is NOT a pass — scenario adapters come from #5157." ;;
             6) echo "::warning::Cleanup refused one or more fixtures it could not verify as owned; they were left untouched and need review." ;;
-            7) echo "::error::The target account could not be verified against the config's connection. NOTHING was mutated. Check connection.expected_account_id against the role this workflow assumes." ;;
+            7) echo "::error::The target could not be verified. NOTHING was mutated. Either connection.connection_ref did not resolve to a registered, active connection, or its authorized account disagrees with connection.expected_account_id or with the role this workflow assumes." ;;
             *) echo "::error::Qualification failed with exit code ${RC}." ;;
           esac
           exit "$RC"

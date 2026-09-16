@@ -52,7 +52,7 @@ usage error rather than a guessed precedence. `--restore-from` is a modifier for
 | `4` | **Nothing ran** — `incomplete`, explicitly *not* a pass |
 | `5` | Failed (scenario failure, unreconcilable fixture, missing inventory) |
 | `6` | Cleanup refused a fixture whose ownership could not be verified |
-| `7` | **Target unverified** — `refused`; the account did not match and *nothing* was mutated |
+| `7` | **Target unverified** — `refused`; the connection was not registered/active or the account did not match, and *nothing* was mutated |
 
 `4` is distinct from `0` on purpose: a green check that executed no scenario is
 worse than no check, so CI can tell the two apart without parsing output.
@@ -71,18 +71,47 @@ resource/run/spend/duration bounds, and the artifact directory.
 
 ### Target verification
 
-`connection.expected_account_id` and `connection.expected_org` declare what the
-selected connection **must** resolve to. Before `--run`, `--resume` and
-`--cleanup`, the harness reads `sts:GetCallerIdentity` and compares it:
+**The connection registry is the authority, not the config.** Before `--run`,
+`--resume` and `--cleanup`, the harness resolves `connection.connection_ref`
+through a `ConnectionResolver` and reads `sts:GetCallerIdentity`. Three things
+must agree:
 
-- account mismatch → refused, exit `7`, nothing mutated (no inventory is even created)
-- identity unreadable → refused, exit `7`
-- `repository` owner ≠ `expected_org` → refused, exit `7`
+1. the ref resolves to a **registered and still-active** connection;
+2. that connection's authoritative account/org match the config's
+   `expected_account_id` / `expected_org`;
+3. the credentials in effect resolve to **that** account.
 
-Reporting whichever account the credentials happen to reach is *not*
-verification, so the comparison — not the report — is what gates a mutation.
+Comparing the live identity against `expected_account_id` alone would be
+self-referential — both values come from the same file, so `connection_ref` would
+be decorative and an unregistered ref could still provision fixtures. That was a
+real defect: changing only `connection_ref` to an unregistered value once
+returned `pass`/exit `0` and created a fixture.
+
+Every branch that is not "registered and active" refuses with exit `7`, before
+any adapter runs and before the inventory is created or read:
+
+| Situation | Result |
+|---|---|
+| Ref is not registered | refused |
+| Connection registered but revoked | refused |
+| Registry unreachable, raising or malformed | refused — *unknown* never falls back to the config's claim |
+| No resolver available at all | refused — absent authority is not implicit permission |
+| Registry account/org disagrees with the config | refused — a stale config does not win |
+| Resolver answers about a different ref | refused |
+| Credentials outside the registered account | refused |
+| Identity unreadable | refused |
+| `repository` owner ≠ the registered connection's org | refused |
+
+The resolver is supplied by the scenario adapters (#5157), discovered from the
+same slot as fixture providers — either `scenarios.CONNECTION_RESOLVER` or an
+adapter's `connection_resolver` attribute. This package defines only the
+*contract*; it does not implement or duplicate a production identity API. The
+offline tests inject a protocol fixture (`StubConnectionResolver`).
+
 `--preflight` performs the same comparison and reports it read-only, so a
-mismatch is visible before anyone dispatches a run that would be refused.
+mismatch is visible before anyone dispatches a run that would be refused. The
+verified report records which connection authorized the run, so the evidence says
+what granted the access rather than only that it ran.
 
 ### Bounds
 
