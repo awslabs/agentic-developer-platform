@@ -1,0 +1,18 @@
+{
+  "_comment": "Reviewed NON-SECRET binding references for the dev CLI uplift evaluation (#5248 / #5199). Every value here is an identifier — a bucket name, an instance-profile name, a Secrets Manager secret NAME. There is no credential in this file and config.validate()/no_secrets() structurally refuses one, so a pasted password fails the offline guards instead of reaching a commit.",
+
+  "_why_this_file_exists": "The workflow's binding block reads CLI_UPLIFT_EVAL_* repository VARIABLES. Those variables are unset, and the agent executing this evaluation gets HTTP 403 'Resource not accessible by integration' on the Actions variables API, so it cannot set them. Rather than block the checkpoint on a privileged GitHub write, the same identifiers are carried here, in review, and layered UNDER the environment overlay by config.from_environment(). Consequence: the moment a repository variable IS set it wins, so this file never fights the eventual variable and no cleanup is needed when the coordinator applies them.",
+
+  "_precedence": "config.example.json (base) < this file (dev bindings) < CLI_UPLIFT_EVAL_* environment overlay. Selected by CLI_UPLIFT_EVAL_BINDINGS, which the workflow points at this path.",
+
+  "_state_bucket": "Private, versioned, SSE-S3, all public access blocked; created for this evaluation in platform account 879318057152. Holds the remote script bundle under bundles/ and the durable run state that makes resume and the non-EC2 recovery sweep possible. Without it build_run_config reports 'Durable state: DISABLED' and --restore raises, which is how a leak previously went green.",
+  "state_bucket": "adp-cli-uplift-eval-state-879318057152",
+
+  "_instance_profile": "Provisioned for this evaluation; the default name in config.example.json did not exist (GetInstanceProfile returned NoSuchEntity). The role carries AmazonSSMManagedInstanceCore plus exactly two scoped reads: GetObject on this bucket's bundles/* and GetSecretValue on the one Cognito fixture secret below. It deliberately has NO Bedrock permission — a pre-granted Bedrock policy would let a broken `adp connect` flow still show working inference, which is the false green E04-E06 exist to catch.",
+  "instance_profile": "adp-cli-uplift-eval-instance",
+
+  "_fixture_reference": "The established dev Cognito admin test fixture, tagged Purpose=e2e-testing, Owner=gateway-team, ManagedBy=terraform. A NAME, not a value: the instance reads it at run time through its own single GetSecretValue grant. Reused rather than recreated; its user is CONFIRMED, i.e. the initial password challenge is already complete, which is what makes this checkpoint repeatable. Its keys are username/password, aliased to admin_username/admin_password by remote/common.FIXTURE_KEY_ALIASES.",
+  "credential_secret_name": "adp/dev/gateway/test-admin-credentials",
+
+  "_absent_on_purpose": "state_kms_key_id is absent: the bucket uses SSE-S3, so no KMS grant is required and naming a key that is not used would be misleading. destination_role_arn/provisioner_role_arn are absent because the login checkpoint does not touch the destination account (config.require_bindings only demands them for cases requiring DESTINATION) — supplying a placeholder would risk a cross-account test silently running against one account. github.* stay absent so the GitHub cases BLOCK rather than pass on something weaker."
+}

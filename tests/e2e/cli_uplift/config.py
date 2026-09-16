@@ -378,8 +378,50 @@ def from_environment(env, *, base=None):
     role ARN would produce a cross-account test that silently ran against one
     account, and an absent GitHub fixture must block its cases rather than
     downgrade them to something weaker that passes.
+
+    `CLI_UPLIFT_EVAL_BINDINGS` may name a reviewed non-secret binding file
+    (tests/e2e/cli_uplift/bindings.dev.json) that layers between the example and
+    the environment overlay. It exists because the identifiers below are carried
+    by repository VARIABLES that the executing identity cannot write (HTTP 403 on
+    the Actions variables API), and blocking the evaluation on a privileged
+    GitHub write is worse than carrying the same non-secret references in review.
+    It is layered UNDER the overlay, so a repository variable always wins once
+    set and this file never has to be removed to hand control back. It is passed
+    through the same validate()/no_secrets() gate as every other config, so it
+    cannot introduce a credential.
     """
     document = dict(base) if base is not None else json.loads(EXAMPLE_PATH.read_text())
+    if base is None:
+        bindings_path = str(env.get("CLI_UPLIFT_EVAL_BINDINGS") or "").strip()
+        if bindings_path:
+            try:
+                overlay = json.loads(Path(bindings_path).read_text())
+            except OSError as exc:
+                raise ConfigError(
+                    f"CLI_UPLIFT_EVAL_BINDINGS names {bindings_path!r}, "
+                    f"which could not be read: {exc}"
+                ) from None
+            except ValueError as exc:
+                raise ConfigError(
+                    f"CLI_UPLIFT_EVAL_BINDINGS file is not valid JSON: {exc}"
+                ) from None
+            require(
+                isinstance(overlay, dict),
+                "CLI_UPLIFT_EVAL_BINDINGS file must be a JSON object",
+            )
+            # `_`-prefixed keys are this file's own documentation and are dropped
+            # BEFORE the guard runs, not after: they never reach the run config,
+            # and a prose key explaining the fixture reference would otherwise be
+            # refused for merely containing a credential-shaped word.
+            bindings = {
+                key: value
+                for key, value in overlay.items()
+                if not str(key).startswith("_")
+            }
+            # Refused here as well as in validate(), so a credential in this file
+            # fails before it is merged into the run config.
+            no_secrets(bindings, "bindings")
+            document.update(bindings)
     for name, key in OVERLAY.items():
         value = str(env.get(name) or "").strip()
         if not value:

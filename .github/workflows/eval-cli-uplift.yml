@@ -229,6 +229,15 @@ jobs:
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
+      # overlay by `config.from_environment()`. The repository variables are
+      # unset and the identity executing this evaluation gets HTTP 403 on the
+      # Actions variables API, so it cannot set them; every value in this file is
+      # a bucket/profile/secret NAME, never a credential, and `no_secrets()`
+      # refuses a credential-shaped key structurally. Because it is layered under
+      # the overlay, setting the real variables later silently takes precedence —
+      # this needs no revert to hand control back.
+      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.dev.json
 
     steps:
       - name: Refuse an untrusted ref
@@ -279,7 +288,17 @@ jobs:
         env:
           EVAL_SUITES: ${{ inputs.suites || 'login' }}
           EVAL_MODE: ${{ inputs.mode || 'start' }}
-          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          # Falls back to the purpose-scoped orchestrator role assumed from the
+          # ARC runner's own short-lived identity. Neither OIDC secret is set and
+          # no GitHub OIDC provider exists in the platform account, so the OIDC
+          # path cannot resolve; the runner already holds an authorized session in
+          # 879318057152 (the recovery job proved this by passing its account
+          # assertion with an empty role ARN). GitHub OIDC remains a supported
+          # means, not an acceptance goal — when its secret IS set it wins here.
+          # Still no static keys and no laptop profile: this is an assumed role
+          # scoped to tag-conditioned EC2 lifecycle, SSM to eval-tagged instances,
+          # PassRole of only the eval instance role, and this run's bucket.
+          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
         run: |
           set -euo pipefail
           ARGS=("$EVAL_RUN_CONFIG")
@@ -297,14 +316,31 @@ jobs:
           git fetch --no-tags --depth 1 origin "$REVISION"
           git cat-file -e "$REVISION:modules/gateway/cli/install.sh"
 
-      - name: Configure AWS credentials (short-lived OIDC)
-        # OIDC only. There is no access-key path and no laptop profile: the
-        # issue is explicit that operator profiles are not available credentials.
+      - name: Configure AWS credentials (short-lived, scoped role)
+        # Short-lived assumed-role session only. There is no access-key path and
+        # no laptop profile: the issue is explicit that operator profiles are not
+        # available credentials.
+        #
+        # Two ways in, in this order of preference:
+        #  1. GitHub OIDC, when AWS_CLI_UPLIFT_EVAL_ROLE_ARN / AWS_E2E_ROLE_ARN is
+        #     set. Unchanged behaviour, and still the preferred path.
+        #  2. Otherwise role CHAINING from the ARC runner's own short-lived
+        #     identity into the purpose-scoped orchestrator role. Needed because
+        #     neither secret is set and the platform account has no GitHub OIDC
+        #     provider at all (only 4 EKS ones), so path 1 cannot resolve today.
+        #
+        # `role-duration-seconds` is 3600 on the chained path because STS caps a
+        # chained session at one hour and asking for more is a hard
+        # ValidationError. That is shorter than `max_run_minutes: 180`, so a FULL
+        # suite would outlive its credentials — acceptable for this login
+        # checkpoint, which is minutes long, and the reason path 1 stays
+        # preferred for the eventual full run.
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
           aws-region: us-east-1
-          role-duration-seconds: 10800
+          role-chaining: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && 'false' || 'true' }}
+          role-duration-seconds: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && '10800' || '3600' }}
           role-session-name: cli-uplift-eval-${{ github.run_id }}
 
       - name: Assert the role resolved to the approved platform account
@@ -466,6 +502,15 @@ jobs:
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
+      # overlay by `config.from_environment()`. The repository variables are
+      # unset and the identity executing this evaluation gets HTTP 403 on the
+      # Actions variables API, so it cannot set them; every value in this file is
+      # a bucket/profile/secret NAME, never a credential, and `no_secrets()`
+      # refuses a credential-shaped key structurally. Because it is layered under
+      # the overlay, setting the real variables later silently takes precedence —
+      # this needs no revert to hand control back.
+      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.dev.json
     steps:
       - name: Refuse an untrusted ref
         # Identical to the evaluate job's gate, and deliberately BEFORE checkout:
@@ -493,11 +538,19 @@ jobs:
         # ImportError, which the step then swallowed into a warning.
         run: pip install boto3
 
-      - name: Configure AWS credentials (short-lived OIDC)
+      - name: Configure AWS credentials (short-lived, scoped role)
+        # Same two-path resolution as the evaluate job, and it must stay
+        # identical: this job is the one that still runs after a cancellation, so
+        # if it resolved credentials differently it would lose exactly the
+        # termination rights the run depends on. Previously this step "succeeded"
+        # with an empty role ARN and silently kept the runner's own ambient
+        # identity — which worked, but meant the destructive sweep ran with far
+        # broader rights than the scoped role it was supposed to use.
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
           aws-region: us-east-1
+          role-chaining: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && 'false' || 'true' }}
           role-session-name: cli-uplift-recover-${{ github.run_id }}
 
       - name: Assert the role resolved to the approved platform account

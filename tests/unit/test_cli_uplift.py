@@ -6628,6 +6628,174 @@ def test_readiness_names_missing_bindings_before_writing_config(tmp_path, monkey
     assert config.load(target)["credential_secret_name"] == "adp/test/login"
 
 
+def test_reviewed_bindings_file_supplies_references_but_never_beats_a_variable(
+    tmp_path, monkeypatch
+):
+    """The bindings file unblocks a run that cannot write repository variables.
+
+    It must lose to the environment overlay, or setting the real variable later
+    would silently have no effect and the file would have to be reverted by hand.
+    """
+    for name in config.OVERLAY:
+        monkeypatch.delenv(name, raising=False)
+    bindings = tmp_path / "bindings.json"
+    bindings.write_text(
+        json.dumps(
+            {
+                "_comment": "underscore keys are documentation and must not overlay",
+                "state_bucket": "bucket-from-file",
+                "instance_profile": "profile-from-file",
+                "credential_secret_name": "adp/from/file",
+            }
+        )
+    )
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_BINDINGS", str(bindings))
+
+    resolved = config.from_environment(os.environ)
+    assert resolved["state_bucket"] == "bucket-from-file"
+    assert resolved["instance_profile"] == "profile-from-file"
+    assert resolved["credential_secret_name"] == "adp/from/file"
+    # The bindings file's own documentation key never reaches the run config.
+    assert "_comment" not in {
+        key
+        for key in resolved
+        if key not in json.loads(config.EXAMPLE_PATH.read_text())
+    }
+
+    # A repository variable wins, so handing control back needs no revert.
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_STATE_BUCKET", "bucket-from-variable")
+    assert config.from_environment(os.environ)["state_bucket"] == "bucket-from-variable"
+
+
+def test_bindings_file_cannot_smuggle_a_credential_or_be_silently_absent(
+    tmp_path, monkeypatch
+):
+    """The file is reviewed, but the guard is structural rather than trusting review."""
+    for name in config.OVERLAY:
+        monkeypatch.delenv(name, raising=False)
+    leaky = tmp_path / "leaky.json"
+    leaky.write_text(json.dumps({"admin_password": "hunter2"}))
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_BINDINGS", str(leaky))
+    with pytest.raises(config.ConfigError, match="looks like a secret"):
+        config.from_environment(os.environ)
+
+    # A typo'd path must fail loudly: silently ignoring it would resurrect the
+    # "Durable state: DISABLED" run that reported clean while resources lived.
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_BINDINGS", str(tmp_path / "absent.json"))
+    with pytest.raises(config.ConfigError, match="could not be read"):
+        config.from_environment(os.environ)
+
+
+def test_checked_in_dev_bindings_carry_the_login_references_and_no_secret(monkeypatch):
+    """The actual file the workflow points at must satisfy the login checkpoint."""
+    path = pathlib.Path("tests/e2e/cli_uplift/bindings.dev.json")
+    document = json.loads(path.read_text())
+    # Loading it through the real code path is what proves it passes the secret
+    # guard, since that is where documentation keys are dropped first.
+    for name in config.OVERLAY:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_BINDINGS", str(path))
+    resolved = config.from_environment(os.environ)
+    assert resolved["instance_profile"] == "adp-cli-uplift-eval-instance"
+    assert (
+        resolved["credential_secret_name"] == "adp/dev/gateway/test-admin-credentials"
+    )
+    assert resolved["state_bucket"]
+    # This file's own documentation keys stay out of the run config. (The example
+    # config's `_`-prefixed prose is pre-existing and deliberately retained.)
+    own_docs = {key for key in document if str(key).startswith("_")}
+    example = json.loads(
+        pathlib.Path("tests/e2e/cli_uplift/config.example.json").read_text()
+    )
+    assert own_docs - set(example) and not (own_docs - set(example)) & set(resolved)
+    # Destination/GitHub bindings must stay ABSENT: a placeholder would let a
+    # cross-account test run against one account, and a weaker GitHub fixture
+    # would pass cases that should block.
+    for key in ("destination_role_arn", "provisioner_role_arn", "github"):
+        assert key not in document
+
+
+def load_remote_common():
+    """Import the SHIPPED remote/common.py the way the instance imports it."""
+    import importlib.util
+
+    path = pathlib.Path("tests/e2e/cli_uplift/remote/common.py")
+    spec = importlib.util.spec_from_file_location("cli_uplift_remote_common", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_login_fixture_reader_accepts_the_established_unprefixed_keys():
+    """The dev fixture stores username/password; the journeys read admin_*.
+
+    A missing key raises by design (so a typo cannot degrade a check into a
+    skip), which is exactly why the checkpoint failed on a fixture that is
+    correct and correctly owned. Exercised through `fixture_secret` itself rather
+    than by asserting the alias table, so the precedence rules are really tested.
+    """
+    module = load_remote_common()
+    fixture = {"username": "admin-fixture", "password": "from-unprefixed-key"}
+    module._SECRET_CACHE.clear()
+    module._SECRET_CACHE["adp/dev/gateway/test-admin-credentials"] = fixture
+    cfg = {"credential_secret": "adp/dev/gateway/test-admin-credentials"}
+
+    # The alias resolves, so the login journey can read the real fixture.
+    assert module.fixture_secret(cfg, {}, "admin_username") == "admin-fixture"
+    assert module.fixture_secret(cfg, {}, "admin_password") == "from-unprefixed-key"
+
+    # A canonical key still wins over its alias.
+    module._SECRET_CACHE["adp/dev/gateway/test-admin-credentials"] = {
+        "username": "unprefixed",
+        "admin_username": "canonical",
+    }
+    assert module.fixture_secret(cfg, {}, "admin_username") == "canonical"
+
+    # The alias must NOT leak across roles: a non-admin lookup can never resolve
+    # to the admin identity, which would silently escalate the case under test.
+    module._SECRET_CACHE["adp/dev/gateway/test-admin-credentials"] = fixture
+    with pytest.raises(Exception, match="non_admin_username"):
+        module.fixture_secret(cfg, {}, "non_admin_username")
+    assert module.fixture_secret(cfg, {}, "non_admin_username", default="") == ""
+    module._SECRET_CACHE.clear()
+
+
+def test_ci_binds_a_scoped_role_and_chains_only_when_oidc_is_absent():
+    document, _ = workflow()
+    for job in ("evaluate", "recover"):
+        auth = next(
+            s
+            for s in document["jobs"][job]["steps"]
+            if "configure-aws-credentials@" in s.get("uses", "")
+        )
+        role = auth["with"]["role-to-assume"]
+        # OIDC stays first, so a configured secret keeps the preferred path.
+        assert role.index("AWS_CLI_UPLIFT_EVAL_ROLE_ARN") < role.index(
+            "adp-cli-uplift-eval-orchestrator"
+        )
+        assert "role-chaining" in auth["with"]
+        # No static-key path anywhere.
+        assert "aws-access-key-id" not in auth["with"]
+    # A chained STS session is capped at one hour; asking for more hard-fails.
+    evaluate_auth = next(
+        s
+        for s in document["jobs"]["evaluate"]["steps"]
+        if "configure-aws-credentials@" in s.get("uses", "")
+    )
+    assert "3600" in str(evaluate_auth["with"]["role-duration-seconds"])
+
+
+def test_ci_points_both_jobs_at_the_same_reviewed_bindings_file():
+    """Divergence here is what made the recovery sweep report clean falsely."""
+    document, _ = workflow()
+    paths = {
+        document["jobs"][job]["env"]["CLI_UPLIFT_EVAL_BINDINGS"]
+        for job in ("evaluate", "recover")
+    }
+    assert paths == {"tests/e2e/cli_uplift/bindings.dev.json"}
+    assert pathlib.Path(paths.pop()).is_file()
+
+
 def test_ci_fetches_release_history_and_defaults_to_login_checkpoint():
     document, _ = workflow()
     checkout = next(

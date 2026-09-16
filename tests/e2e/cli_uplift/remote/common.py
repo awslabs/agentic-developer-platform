@@ -302,6 +302,25 @@ def api(config, path, token, *, method="GET", body=None, expect=(200,)):
 
 _SECRET_CACHE = {}
 
+# The established dev Cognito fixture (`adp/dev/gateway/test-admin-credentials`,
+# tagged Purpose=e2e-testing) stores the admin identity under the unprefixed
+# `username`/`password` keys, while these journeys ask for `admin_username`/
+# `admin_password`. That is a naming mismatch between two things that already
+# exist, not a missing fixture — but because a missing key RAISES here (by
+# design, so a typo cannot degrade a check into a skip), the login checkpoint
+# failed on a fixture that was otherwise correct and correctly owned.
+#
+# Resolved by accepting the existing key as an alias rather than by recreating
+# the user or rewriting the shared secret: the fixture is Terraform-managed and
+# owned by the gateway team, and rotating it would break other e2e consumers.
+# Deliberately narrow — only the `admin_` role prefix is aliased, and only when
+# the canonical key is absent, so a fixture that does carry `admin_username`
+# still wins and a `non_admin_*` key can never silently resolve to the admin.
+FIXTURE_KEY_ALIASES = {
+    "admin_username": ("username",),
+    "admin_password": ("password",),
+}
+
 
 def fixture_secret(config, env, key, *, default=_SECRET_CACHE):
     """Fetch one fixture credential from Secrets Manager, by reference.
@@ -314,6 +333,9 @@ def fixture_secret(config, env, key, *, default=_SECRET_CACHE):
     and each miss is another API call carrying the same value. Absent `default`,
     a missing key raises: an optional fixture must be opted into explicitly, so a
     typo in a key name cannot silently degrade a check into a skip.
+
+    `FIXTURE_KEY_ALIASES` is consulted only after the canonical key misses, so an
+    alias can never shadow an explicitly provisioned value.
     """
     name = config.get("credential_secret")
     require(name, "No credential_secret reference was supplied for this journey")
@@ -336,6 +358,9 @@ def fixture_secret(config, env, key, *, default=_SECRET_CACHE):
             raise RemoteError("The fixture secret is not a JSON document") from None
     document = _SECRET_CACHE[name]
     if key not in document:
+        for alias in FIXTURE_KEY_ALIASES.get(key, ()):
+            if alias in document:
+                return document[alias]
         # Sentinel comparison, not a falsy check: "" is a legitimate default.
         require(
             default is not _SECRET_CACHE,
