@@ -1,0 +1,123 @@
+name: Orchestration Harness CI
+
+# Network-free unit tests for the qualification harness (tests/e2e/orchestration/,
+# issue #5156). This is the ONLY orchestration job that runs on a pull request,
+# and it deliberately runs nothing that costs money or touches an account:
+# no AWS call, no browser, no deployed environment, no fixture provisioning.
+#
+# Paid qualification lives in orchestration-live-tests.yml, which is
+# workflow_dispatch-only. That split is the point: the harness enforces spend and
+# resource bounds, so its own tests must be runnable on every PR without
+# spending anything.
+#
+# A separate workflow rather than a job in gateway-ci.yml because this suite is
+# not gateway code — gateway-ci.yml's paths and working-directory are all
+# modules/gateway, and repo-root tests/ is covered by no PR workflow at all.
+
+on:
+  pull_request:
+    paths:
+      - 'tests/e2e/orchestration/**'
+      - '.github/workflows/orchestration-harness-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tests/e2e/orchestration/**'
+      - '.github/workflows/orchestration-harness-ci.yml'
+
+# No `permissions: id-token` and no AWS credential step anywhere in this file.
+# The suite must pass with no credentials available; if a test ever needs one,
+# it belongs in orchestration-live-tests.yml instead.
+permissions:
+  contents: read
+
+concurrency:
+  group: orchestration-harness-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness-tests:
+    name: Qualification harness unit tests (offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # pytest only. The harness is standard-library-only by design: repo-root
+      # tests/ has no requirements file, and the offline suite must not need
+      # boto3 (config.py imports it lazily, inside the runtime secret-resolution
+      # path that these tests never take).
+      - name: Install pytest
+        run: pip install pytest==9.0.3
+
+      # Selecting the package explicitly matters. tests/e2e/chat/conftest.py and
+      # tests/e2e/infra/conftest.py skip EVERY collected item when their opt-in
+      # variable is unset, without filtering to their own package — so a whole
+      # tests/ run would report these tests as skipped. This suite's conftest.py
+      # also strips that inherited skip, but the narrow selection keeps the run
+      # from depending on collection order.
+      - name: Run offline harness tests
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          python -m pytest tests/e2e/orchestration \
+            -v \
+            --tb=short \
+            --junitxml=test-results/orchestration-harness-junit.xml
+
+      # The failure mode this guards is a VACUOUS pass: if a sibling conftest's
+      # unfiltered skip ever reaches these items again, pytest still exits 0
+      # while asserting nothing. A green check that tested nothing is worse than
+      # no check, so assert on the executed count rather than the exit code.
+      - name: Assert the run was not vacuous
+        if: always()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("test-results/orchestration-harness-junit.xml")
+          if not report.is_file():
+              sys.exit("::error::No JUnit report — pytest did not get far enough to report "
+                       "anything, so this run is not evidence.")
+
+          root = ET.parse(report).getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          failures = sum(int(s.get("failures", 0)) for s in suites)
+          errors = sum(int(s.get("errors", 0)) for s in suites)
+          executed = total - skipped
+
+          print(f"collected={total} skipped={skipped} executed={executed} "
+                f"failures={failures} errors={errors}")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write("### Qualification harness (offline)\n\n"
+                           "| Collected | Skipped | Executed | Failures | Errors |\n"
+                           "|---|---|---|---|---|\n"
+                           f"| {total} | {skipped} | {executed} | {failures} | {errors} |\n")
+
+          if executed == 0:
+              sys.exit("::error::0 tests executed (collected=%d, skipped=%d). These tests are "
+                       "network-free and must always run; a fully skipped run is not a pass."
+                       % (total, skipped))
+          PY
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: orchestration-harness-results
+          path: test-results/
+          retention-days: 14
