@@ -438,9 +438,7 @@ class TestTargetVerificationGatesMutations:
         assert adapter.provider.delete_calls == []
         assert adapter.provider.resources != {}, "the fixture must survive a refused cleanup"
 
-    def test_resume_refuses_a_mismatched_account(
-        self, valid_config, register_scenarios, stub_wrong_account
-    ):
+    def test_resume_refuses_a_mismatched_account(self, valid_config, register_scenarios, stub_wrong_account):
         register_scenarios({"bounded": StubAdapter()})
         outcome = resume_qualification(valid_config, QUAL_ID)
         assert outcome.status == STATUS_REFUSED
