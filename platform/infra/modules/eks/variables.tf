@@ -153,6 +153,18 @@ variable "enable_container_insights" {
   default     = false
 }
 
+variable "endpoint_public_access" {
+  description = "Enable the EKS public API endpoint."
+  type        = bool
+  default     = true
+}
+
+variable "endpoint_private_access" {
+  description = "Enable the EKS private API endpoint."
+  type        = bool
+  default     = true
+}
+
 # NetworkPolicy enforcement — Auto Mode network-policy controller (#4999)
 variable "enable_network_policy_controller" {
   type        = bool

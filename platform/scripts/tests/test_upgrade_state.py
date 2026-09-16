@@ -30,6 +30,11 @@ class PreservationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             state.preserve_access({}, {"resourcesVpcConfig": {}}, requested_cidrs=["invalid"])
 
+    def test_private_endpoint_is_not_made_public_by_an_upgrade(self):
+        result = state.preserve_access({}, {"resourcesVpcConfig": {"endpointPublicAccess": False, "endpointPrivateAccess": True}})
+        self.assertFalse(result["eks_endpoint_public_access"])
+        self.assertTrue(result["eks_endpoint_private_access"])
+
     def test_broker_keeps_environment_allowlist_and_token_reference(self):
         result = state.broker_settings({"ALLOWLIST_MODE": "org", "ALLOWED_ORGS": "customer-team",
                                        "ALLOW_OPEN_SIGNUP": "false", "GITHUB_TOKEN_SECRET_ARN": "customer-secret"})

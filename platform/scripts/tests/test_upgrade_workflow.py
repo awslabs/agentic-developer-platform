@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -82,6 +83,75 @@ curl() { echo '{"status":"healthy"}'; }
         result, calls = self.finalize(audit_fail=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(line.startswith("terraform") for line in calls))
+
+    def test_context_application_deploy_cannot_apply_terraform_again(self):
+        source = (ROOT / "modules/agent-context/deploy.sh").read_text()
+        start = source.index("# Deploy Terraform infrastructure")
+        block = source[start:source.index("# Deploy Ingestion Refresh CronJob", start)]
+        prefix = '''set -euo pipefail
+terraform() { echo "$*" >> "$CALLS"; [ "$1" = output ] || return 97; echo existing-output; }
+'''
+        for lean in ("true", "false"):
+            with tempfile.TemporaryDirectory() as tmp:
+                calls = Path(tmp) / "calls"
+                env = dict(os.environ, SCRIPT_DIR=str(ROOT / "modules/agent-context"), SKIP_TERRAFORM="true",
+                           PERSONAL_CONTEXT_ONLY=lean, GRAPHRAG_ENABLED="true", CALLS=str(calls))
+                result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(all(line.startswith("output ") for line in calls.read_text().splitlines()))
+
+    def test_worker_replacement_preserves_jobs_and_refuses_wrong_context(self):
+        source = (ROOT / "modules/agent-factory/webhook-ingress/infra/scaledjob.tf").read_text()
+        source = source[source.index('resource "null_resource" "keda_scaledjob"'):]
+        command = re.search(r'when\s*=\s*destroy.*?command\s*=\s*<<-CMD\n(.*?)\n\s*CMD', source, re.S)[1]
+        command = command.replace("$${", "${")
+        for key, value in (("cluster_name", "target-cluster"), ("cluster_region", "target-region"), ("namespace", "target-namespace")):
+            command = command.replace("${self.triggers." + key + "}", value)
+        prefix = '''aws() { echo "aws $*" >> "$CALLS"; [ "$AWS_FAIL" = false ]; }
+kubectl() { echo "kubectl $*" >> "$CALLS"; }
+'''
+        for aws_fail in ("false", "true"):
+            with tempfile.TemporaryDirectory() as tmp:
+                calls = Path(tmp) / "calls"
+                env = dict(os.environ, CALLS=str(calls), AWS_FAIL=aws_fail, KUBECONFIG=tmp + "/caller-config")
+                result = subprocess.run(["bash", "-c", prefix + command], env=env, text=True, capture_output=True)
+                recorded = calls.read_text()
+                self.assertIn("--name target-cluster --region target-region --kubeconfig " + env["KUBECONFIG"], recorded)
+                if aws_fail == "true":
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("kubectl", recorded)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("--cascade=orphan", recorded)
+
+    def test_already_managed_log_group_is_never_imported_again(self):
+        source = (ROOT / "modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh").read_text()
+        start = source.index("import_bootstrap_log_group() {")
+        function = source[start:source.index('\n}\n', start) + 3]
+        prefix = '''set -euo pipefail
+aws() { echo "$BOOTSTRAP_LOG_GROUP"; }
+ok() { :; }
+warn() { :; }
+fail() { echo "$*" >&2; exit 1; }
+terraform() {
+  if [ "$1 $2" = "state list" ]; then
+    if [ "$STATE_FAIL" = true ]; then return 1; fi
+    echo aws_cloudwatch_log_group.agent_bootstrap
+    # More than a pipe buffer: the old grep -q pipeline could close the pipe
+    # early and turn a successful state read into a failed import check.
+    command python3 -c 'print("aws_example.resource\\n" * 10000)'
+  else
+    echo "UNEXPECTED IMPORT" >&2
+    exit 99
+  fi
+}
+'''
+        for state_fail in ("false", "true"):
+            env = dict(os.environ, BOOTSTRAP_LOG_GROUP="/adp/test/bootstrap", AWS_REGION="us-east-1", STATE_FAIL=state_fail)
+            result = subprocess.run(["bash", "-c", prefix + function + '\nimport_bootstrap_log_group'],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode == 0, state_fail == "false", result.stderr)
+            self.assertNotIn("UNEXPECTED IMPORT", result.stderr)
 
 
 if __name__ == "__main__":

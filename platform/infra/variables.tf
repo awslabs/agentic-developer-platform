@@ -131,6 +131,18 @@ variable "enable_network_policy_controller" {
   default     = false
 }
 
+variable "eks_endpoint_public_access" {
+  description = "Whether the EKS API has a public endpoint. Upgrades retain the live setting."
+  type        = bool
+  default     = true
+}
+
+variable "eks_endpoint_private_access" {
+  description = "Whether the EKS API has a private endpoint. Upgrades retain the live setting."
+  type        = bool
+  default     = true
+}
+
 variable "state_bucket" {
   description = "S3 bucket for Terraform state and CodeBuild source zips. Defaults to adp-terraform-state-<account_id>."
   type        = string

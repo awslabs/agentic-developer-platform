@@ -212,7 +212,12 @@ import_bootstrap_log_group() {
     ok "Bootstrap log group does not exist yet — terraform will create it"
     return 0
   fi
-  if terraform state list 2>/dev/null | grep -qx 'aws_cloudwatch_log_group.agent_bootstrap'; then
+  # Do not pipe Terraform into grep -q under pipefail: grep exits at its first
+  # match, Terraform can receive SIGPIPE, and an already-managed group is then
+  # incorrectly imported again. State-read failures must also stop the upgrade.
+  local managed_addresses
+  managed_addresses=$(terraform state list) || fail "Cannot inspect webhook Terraform state"
+  if grep -Fxq 'aws_cloudwatch_log_group.agent_bootstrap' <<< "$managed_addresses"; then
     ok "Bootstrap log group already in state — no import needed"
     return 0
   fi

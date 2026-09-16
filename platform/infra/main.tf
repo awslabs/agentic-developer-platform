@@ -202,6 +202,8 @@ module "eks" {
   eks_cluster_role_arn         = module.iam.eks_cluster_role_arn
   node_group_role_arn          = module.iam.eks_node_group_role_arn
   eks_public_access_cidrs      = var.eks_public_access_cidrs
+  endpoint_public_access       = var.eks_endpoint_public_access
+  endpoint_private_access      = var.eks_endpoint_private_access
   cluster_admin_principal_arns = local.cluster_admin_principal_arns
 
   cluster_version           = var.eks_cluster_version

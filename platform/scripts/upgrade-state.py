@@ -51,7 +51,9 @@ def preserve_access(state, cluster, extra=(), requested_cidrs=()):
     for cidr in [*cidrs, *requested_cidrs]:
         ipaddress.ip_network(cidr)
     return {"extra_cluster_admin_principal_arns": sorted(set(admins) | set(extra)),
-            "eks_public_access_cidrs": sorted(set(cidrs) | set(requested_cidrs))}
+            "eks_public_access_cidrs": sorted(set(cidrs) | set(requested_cidrs)),
+            "eks_endpoint_public_access": cluster["resourcesVpcConfig"].get("endpointPublicAccess", True),
+            "eks_endpoint_private_access": cluster["resourcesVpcConfig"].get("endpointPrivateAccess", True)}
 
 
 def broker_settings(variables):
