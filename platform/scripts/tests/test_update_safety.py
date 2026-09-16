@@ -11,7 +11,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 
 
 class UpdateGateTests(unittest.TestCase):
-    def run_gate(self, actions=None, plan_exit=2, show_exit=0, invalid=False, confirm=False):
+    def run_gate(self, actions=None, plan_exit=2, show_exit=0, invalid=False, confirm=False, resource=None, check_only=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calls = root / "calls"
@@ -27,11 +27,11 @@ esac
             mock.chmod(0o755)
             plan = root / "fixture.json"
             plan.write_text("{}" if invalid else json.dumps({"resource_changes": [
-                {"address": "aws_example.live", "change": {"actions": actions or ["update"]}}
+                resource or {"address": "aws_example.live", "change": {"actions": actions or ["update"]}}
             ]}))
             env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", CALLS=str(calls),
                        FIXTURE_JSON=str(plan), PLAN_EXIT=str(plan_exit), SHOW_EXIT=str(show_exit),
-                       TMPDIR=directory, CONFIRM_DESTRUCTIVE=str(confirm).lower())
+                       TMPDIR=directory, CONFIRM_DESTRUCTIVE=str(confirm).lower(), UPGRADE_CHECK_ONLY=str(check_only).lower())
             command = '''set -euo pipefail
 ok() { :; }
 warn() { :; }
@@ -76,6 +76,19 @@ terraform_update_apply test example.tfvars
         result, calls = self.run_gate(["create", "delete"], confirm=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(calls[-1].startswith("apply "))
+
+    def test_final_convergence_check_never_applies_drift(self):
+        result, calls = self.run_gate(check_only=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c.startswith("apply ") for c in calls))
+
+    def test_credential_reset_is_blocked_even_with_destructive_override(self):
+        resource = {"address": "aws_secretsmanager_secret_version.github", "type": "aws_secretsmanager_secret_version",
+                    "change": {"actions": ["update"], "before": {"secret_id": "existing", "secret_string": "existing-key"},
+                               "after": {"secret_id": "existing", "secret_string": "PLACEHOLDER"}}}
+        result, calls = self.run_gate(resource=resource, confirm=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c.startswith("apply ") for c in calls))
 
 
 class BackendTests(unittest.TestCase):

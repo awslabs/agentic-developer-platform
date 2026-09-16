@@ -76,9 +76,15 @@ STATE_BUCKET="${ADP_STATE_BUCKET:-adp-terraform-state-${ACCOUNT_ID}}"
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 if [ "$UPDATE_MODE" = true ]; then
   IMAGE_TAG="${IMAGE_TAG:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
-  aws s3api head-object --bucket "$STATE_BUCKET" \
-    --key "$ENVIRONMENT/modules/webhook-ingress/terraform.tfstate" >/dev/null \
-    || fail "--update requires existing webhook-ingress state"
+  if [ "$DRY_RUN" = false ] && [ -z "${UPGRADE_RUN_DIR:-}" ]; then
+    export UPGRADE_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/adp-upgrade-${ACCOUNT_ID}.XXXXXX")"
+    python3 "$REPO_ROOT/platform/scripts/upgrade-state.py" prepare --directory "$UPGRADE_RUN_DIR" \
+      --account "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION"
+    source "$UPGRADE_RUN_DIR/context.env"
+  fi
+  if [ "$DRY_RUN" = false ]; then
+    case ",${UPGRADE_MODULES:-}," in *,webhook-ingress,*) ;; *) fail "--update requires existing webhook-ingress state" ;; esac
+  fi
 else
   IMAGE_TAG="${IMAGE_TAG:-latest}"
 fi
@@ -154,7 +160,7 @@ fi
 # Check if gitlab.zip exists in S3; if not, override gitlab_webhook_enabled to
 # false so terraform doesn't fail on the missing artifact (Issue #3488).
 GITLAB_OVERRIDE=""
-if ! aws s3api head-object --bucket "$STATE_BUCKET" --key "lambda-artifacts/webhook-ingress/gitlab.zip" --region "$AWS_REGION" &>/dev/null; then
+if [ "$UPDATE_MODE" = false ] && ! aws s3api head-object --bucket "$STATE_BUCKET" --key "lambda-artifacts/webhook-ingress/gitlab.zip" --region "$AWS_REGION" &>/dev/null; then
   warn "gitlab.zip not found in S3 — overriding gitlab_webhook_enabled=false"
   GITLAB_OVERRIDE='-var=gitlab_webhook_enabled=false'
 fi
@@ -164,7 +170,7 @@ fi
 # secret. terraform.tfvars sets enable_adversarial_e2e=true for CI, but the
 # auto-loaded tfvars also applies to fresh deploys. (Issue #3488/#3490)
 ADVERSARIAL_OVERRIDE=""
-if ! aws secretsmanager describe-secret --secret-id "adp/${ENVIRONMENT}/gateway/internal-api-key" --region "$AWS_REGION" &>/dev/null; then
+if [ "$UPDATE_MODE" = false ] && ! aws secretsmanager describe-secret --secret-id "adp/${ENVIRONMENT}/gateway/internal-api-key" --region "$AWS_REGION" &>/dev/null; then
   warn "internal-api-key secret not found — overriding enable_adversarial_e2e=false"
   ADVERSARIAL_OVERRIDE='-var=enable_adversarial_e2e=false'
 fi
@@ -211,7 +217,11 @@ import_bootstrap_log_group() {
     return 0
   fi
   warn "Bootstrap log group exists in AWS but not in state — importing (#4051)"
-  terraform import \
+  local import_args=()
+  if [ "$UPDATE_MODE" = true ]; then
+    import_args+=(-var-file="$UPGRADE_RUN_DIR/webhook-ingress.tfvars.json")
+  fi
+  terraform import ${import_args[@]+"${import_args[@]}"} \
     -var="environment=${ENVIRONMENT}" \
     aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
   ok "Imported aws_cloudwatch_log_group.agent_bootstrap"
@@ -227,15 +237,20 @@ else
   (
     cd "${MODULE_ROOT}/infra"
     terraform init -backend-config="$BACKEND" -input=false -reconfigure >/dev/null
-    import_bootstrap_log_group
     TF_ARGS=(
       -var="environment=${ENVIRONMENT}"
-      -var="gateway_api_url=${GATEWAY_API_URL}"
+      -var="aws_region=${AWS_REGION}"
       -var="agent_image=${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}"
     )
+    if [ "$UPDATE_MODE" = false ]; then
+      TF_ARGS+=(-var="gateway_api_url=${GATEWAY_API_URL}")
+    fi
+    import_bootstrap_log_group
     [ -z "$GITLAB_OVERRIDE" ] || TF_ARGS+=("$GITLAB_OVERRIDE")
     [ -z "$ADVERSARIAL_OVERRIDE" ] || TF_ARGS+=("$ADVERSARIAL_OVERRIDE")
-    [ -z "$INTERNAL_API_KEY_OVERRIDE" ] || TF_ARGS+=("$INTERNAL_API_KEY_OVERRIDE")
+    if [ "$UPDATE_MODE" = false ]; then
+      [ -z "$INTERNAL_API_KEY_OVERRIDE" ] || TF_ARGS+=("$INTERNAL_API_KEY_OVERRIDE")
+    fi
     if [ "$UPDATE_MODE" = true ]; then
       terraform_update_apply webhook-ingress terraform.tfvars "${TF_ARGS[@]}"
     else
@@ -247,5 +262,8 @@ fi
 
 echo ""
 ok "Webhook-ingress deploy complete."
-echo "  Next: register-github-app.sh <org> --env ${ENVIRONMENT}  (creates + wires the GitHub App)"
-echo "        then install the App on a repo and @mention an agent."
+if [ "$UPDATE_MODE" = true ] && [ "$DRY_RUN" = false ]; then
+  python3 "$REPO_ROOT/platform/scripts/upgrade-state.py" verify --directory "$UPGRADE_RUN_DIR" --region "$AWS_REGION"
+elif [ "$UPDATE_MODE" = false ]; then
+  echo "  Next: register-github-app.sh <org> --env ${ENVIRONMENT} (first-time setup only)"
+fi

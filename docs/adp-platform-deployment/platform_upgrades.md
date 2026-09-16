@@ -28,14 +28,73 @@ aws sts get-caller-identity --query Account --output text   # verify!
 ./platform/scripts/deploy-all.sh --update
 ```
 
+Select an account with `AWS_PROFILE`; `--env` and `--region` select its deployed
+environment and region:
+
+```bash
+AWS_PROFILE=customer-test ./platform/scripts/deploy-all.sh --update --env dev --region us-east-1
+```
+
+Update mode discovers the platform, gateway, webhook, agent-factory and
+agent-context states in that account. It upgrades installed modules only;
+missing optional modules are not installed. Scope/skip flags restrict that set.
+It retains existing platform-managed EKS admin principals and public access
+CIDRs, adds the operator's CIDR if needed, and waits for the EKS access update
+before using kubectl. Private-only endpoints stay private and require existing
+network reachability.
+
+The run saves state snapshots and account-specific variable overrides in a
+private `adp-upgrade-<account>.*` directory (printed at startup). These files can
+contain sensitive Terraform state: do not commit or publish them. Overrides
+take precedence over shared tfvars for preserved settings; deliberate changes
+to those settings belong in a separate reviewed configuration change.
+
+### Existing GitHub integration
+
+An upgrade does not register a new GitHub App or rotate its credentials. It
+preserves the existing broker allowlist, organization, ARC repository and
+installation ID, custom frontend hostname/certificate, and optional GitLab
+origin. It snapshots current secret **version IDs** without fetching secret
+values, and existing installation-to-tenant mappings. After deployment it checks
+that those versions, mappings, broker settings and integration URLs are still
+present and unchanged. Added installations are allowed. Changing existing
+credential material or deleting an identity table is blocked by the plan gate,
+including when `--confirm-destructive` is supplied.
+
+This check proves configuration preservation, not an issue-to-PR round trip.
+The latter requires a separate authorized GitHub smoke test. An environment
+without an App stays unconfigured. No browser setup is required for an existing
+App installation.
+
+### Ordered upgrades and completion
+
+On clusters where network-policy enforcement is not yet active, the initial
+platform pass defers activation. Webhook infrastructure installs the collector
+egress policy first; the final platform pass audits DNS and HTTPS allowances
+before activation. Already-active enforcement is retained.
+
+All gateway passes preserve both ALBs. A final reconciliation repairs resources
+that API/ALB controllers removed during earlier passes, followed by a plan that
+must report no remaining changes. Frontend publishing uses the standalone
+publisher, includes both account-connection templates, and runs after optional
+chat endpoints have been provisioned. CDN health and GitHub preservation checks
+must pass before success is reported.
+
+Agent-context still needs its original `modules/agent-context/config.local.env`
+when that module is installed. Preflight requires that file and checks its
+cluster and region before any apply; use `--skip-agent-context` when upgrading
+only the other components. Its application deploy runs with `--skip-terraform`
+so nested scripts cannot bypass the update gate.
+
 That's the whole happy path. The script plans everything first, applies only
 non-destructive changes, builds SHA-tagged images, rolls out the backend with
 mandatory health verification, and runs database migrations. A no-change
 convergence takes ~3–5 minutes; a real update takes ~15–30 minutes (dominated
 by CodeBuild image builds).
 
-**What stops the run:** a Terraform plan containing resource **destroys**. That
-is deliberate — see §5.
+**What stops the run:** failed validation, protected integration changes, or
+unrecognized Terraform deletes/replacements. See §5 for the narrowly defined
+routine deployment replacements that proceed automatically.
 
 ---
 
@@ -158,6 +217,23 @@ admin bootstrap anyway.)
 ---
 
 ## 5. The Terraform destroy gate
+
+The gate automatically accepts these routine replacements after checking their
+before/after values:
+
+- An API Gateway deployment revision using create-before-destroy on the same
+  REST API (the API itself is retained).
+- The existing usage-tracker S3 permission when the only supported tightening
+  adds the current account's `source_account`, retaining its function, principal
+  and source bucket.
+- The webhook ScaledJob, warm-pool and image-prepull manifest wrappers when
+  namespace, cluster and region stay unchanged. ScaledJob replacement orphans
+  existing Jobs, and gradual rollout retains running work.
+
+This is an explicit address-and-value policy, not an exemption for every
+`null_resource` or every create-before-destroy change. Stateful replacements and
+unknown operations still stop for review. Credential/identity protection cannot
+be overridden by the destructive flag.
 
 In update mode, every Terraform apply is replaced by a **plan-first gate**
 (`terraform_update_apply`):

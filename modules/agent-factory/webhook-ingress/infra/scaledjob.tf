@@ -185,6 +185,9 @@ locals {
       # diagnostic surface an operator needs to keep.
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 5
+      # Keep existing Jobs running when the worker template changes.
+      rollout:
+        strategy: gradual
       jobTargetRef:
         parallelism: 1
         completions: 1
@@ -406,12 +409,10 @@ resource "null_resource" "keda_trigger_auth" {
   }
 
   provisioner "local-exec" {
-    environment = {
-      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
-    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig "$KUBECONFIG" >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.keda_trigger_auth_yaml}
 EOF
@@ -427,7 +428,12 @@ EOF
   provisioner "local-exec" {
     when       = destroy
     on_failure = continue
-    command    = "kubectl delete triggerauthentication agent-scaledjob-aws-auth -n ${self.triggers.namespace} --ignore-not-found || true"
+    command    = <<-CMD
+      set -e
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${self.triggers.cluster_name} --region ${self.triggers.cluster_region} --kubeconfig "$KUBECONFIG" >/dev/null
+      kubectl delete triggerauthentication agent-scaledjob-aws-auth -n ${self.triggers.namespace} --ignore-not-found || true
+    CMD
   }
 
   # RBAC must exist before kubectl apply runs as the runner SA.
@@ -448,12 +454,10 @@ resource "null_resource" "keda_scaledjob" {
   }
 
   provisioner "local-exec" {
-    environment = {
-      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
-    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig "$KUBECONFIG" >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.keda_scaledjob_yaml}
 EOF
@@ -464,7 +468,12 @@ EOF
   provisioner "local-exec" {
     when       = destroy
     on_failure = continue
-    command    = "kubectl delete scaledjob agent-scaledjob -n ${self.triggers.namespace} --ignore-not-found || true"
+    command    = <<-CMD
+      set -e
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${self.triggers.cluster_name} --region ${self.triggers.cluster_region} --kubeconfig "$KUBECONFIG" >/dev/null
+      kubectl delete scaledjob agent-scaledjob -n ${self.triggers.namespace} --cascade=orphan --ignore-not-found || true
+    CMD
   }
 
   # RBAC must exist before kubectl apply runs as the runner SA.

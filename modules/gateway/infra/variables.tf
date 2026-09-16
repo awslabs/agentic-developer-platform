@@ -724,7 +724,7 @@ variable "enable_agent_context_sqs" {
 
 variable "agent_context_ingestion_queue_arn" {
   type        = string
-  description = "ARN of the agent-context SQS ingestion queue. Required when enable_agent_context_sqs = true."
+  description = "ARN of the agent-context SQS ingestion queue. Empty derives the standard queue in the deployment account and region."
   default     = ""
 }
 

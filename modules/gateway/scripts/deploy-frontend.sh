@@ -100,7 +100,7 @@ else
   [ -n "$BROKER" ] || warn "VITE source BROKER is empty — the bundle will use its compiled-in default; GitHub login will point at the wrong host."
   [ -n "$WS_URL" ] || warn "VITE source WS_URL is empty — agent chat will remain unavailable in this deployment."
   echo "Building frontend with VITE_* from SSM..."
-  run "(cd '${FRONTEND_DIR}' && npm ci && \
+  run "(cd '${FRONTEND_DIR}' && npm ci --include=dev && \
     VITE_API_URL='/api' \
     VITE_COGNITO_REGION='${AWS_REGION}' \
     VITE_COGNITO_USER_POOL_ID='${POOL_ID}' \
