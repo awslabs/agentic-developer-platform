@@ -628,6 +628,8 @@ async def test_concurrent_coordinator_requests_admit_one_child(wave_context):
         _child(ctx, headers, request_id="race-a"),
         _child(ctx, headers, request_id="race-b"),
     )
-    assert sorted(response.status_code for response in results) == [202, 409]
+    # The losing request sees an ineligible story, which the dispatch route
+    # deliberately reports as 404 (the same contract as ordinary child dispatch).
+    assert sorted(response.status_code for response in results) == [202, 404]
     assert await _story_state(ctx) == ("running", 1)
     assert len(messages(ctx)) == 1
