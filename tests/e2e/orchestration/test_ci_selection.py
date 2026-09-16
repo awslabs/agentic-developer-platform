@@ -40,6 +40,19 @@ def _trigger_block(text: str) -> str:
     return match.group(1)
 
 
+def _permissions(text: str) -> dict[str, str]:
+    """Return the workflow-level `permissions:` block as scope -> level.
+
+    Parsed rather than substring-matched because the question is what the block
+    GRANTS. A declared block disables every scope it omits, so an absent entry is
+    a denial and has to be distinguishable from a granted one.
+    """
+    body = _strip_comments(text)
+    match = re.search(r"^permissions:\n(.*?)(?=^[a-z_]+:)", body, re.MULTILINE | re.DOTALL)
+    assert match, "workflow has no parsable 'permissions:' block"
+    return dict(re.findall(r"^  ([a-z-]+):\s*([a-z-]+)\s*$", match.group(1), re.MULTILINE))
+
+
 @pytest.fixture(scope="module")
 def offline_text() -> str:
     return OFFLINE_WORKFLOW.read_text(encoding="utf-8")
@@ -268,6 +281,24 @@ class TestInventoryRecoveryAcrossRuns:
     def test_the_failure_reminder_names_the_run_id_needed_to_clean_up(self, live_text):
         """An operator must be told how to reach the leaked fixtures."""
         assert "source_run_id=${{ github.run_id }}" in live_text
+
+    def test_the_workflow_can_read_another_runs_artifact(self, live_text):
+        """Downloading the originating run's inventory needs `actions: read`.
+
+        `download-artifact` with `run-id` is an Actions API read of a DIFFERENT
+        run. A declared `permissions:` block disables every scope it omits, so
+        without this entry the restore step fails and cleanup has no inventory —
+        the recorded fixtures become unreachable. Asserted because the symptom
+        appears only on a live cleanup dispatch, which no test exercises.
+        """
+        assert _permissions(live_text).get("actions") == "read"
+
+    def test_the_workflow_keeps_least_privilege(self, live_text):
+        """The added scope must be read-only, and nothing else may be widened."""
+        granted = _permissions(live_text)
+        assert granted == {"id-token": "write", "contents": "read", "actions": "read"}, (
+            f"unexpected workflow permissions: {granted}"
+        )
 
 
 class TestTargetVerificationIsSurfaced:

@@ -58,9 +58,16 @@ on:
 
 # Least privilege: OIDC to assume a scoped role, and read-only on the repo. The
 # harness reads secrets it needs through that role at runtime.
+#
+# `actions: read` is required, not incidental: resume/cleanup download the
+# ORIGINATING run's inventory artifact, which is an Actions API read of a
+# different run. Declaring a `permissions` block disables every scope not listed,
+# so without this the restore step below fails and cleanup has no inventory —
+# leaving the recorded fixtures unreachable. It stays read-only.
 permissions:
   id-token: write
   contents: read
+  actions: read
 
 concurrency:
   # Two qualifications against one environment would provision overlapping
