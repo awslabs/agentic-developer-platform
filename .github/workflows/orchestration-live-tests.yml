@@ -46,6 +46,15 @@ on:
         description: 'Qualification id. Required for resume and cleanup; ignored otherwise.'
         required: false
         default: ''
+      source_run_id:
+        description: >-
+          Run id of the ORIGINAL qualification whose inventory this run must act
+          on. Required for resume and cleanup: those modes execute in a separate
+          workflow run with an empty workspace, so the inventory recording the
+          fixtures is restored from that run's artifact. Without it there is
+          nothing to reconcile or delete.
+        required: false
+        default: ''
 
 # Least privilege: OIDC to assume a scoped role, and read-only on the repo. The
 # harness reads secrets it needs through that role at runtime.
@@ -74,6 +83,7 @@ jobs:
       # resume/cleanup without an id would otherwise reach the CLI as a mode
       # with an empty argument.
       - name: Validate dispatch inputs
+        id: dispatch
         run: |
           set -euo pipefail
           CONFIG="${{ github.event.inputs.config_path }}"
@@ -94,6 +104,14 @@ jobs:
             echo "::error::mode '$MODE' requires qualification_id."
             exit 1
           fi
+          # resume/cleanup act on fixtures recorded by an EARLIER run. This
+          # workspace is empty, so without the originating run's artifact there is
+          # no inventory to reconcile or delete against.
+          if { [ "$MODE" = "resume" ] || [ "$MODE" = "cleanup" ]; } \
+             && [ -z "${{ github.event.inputs.source_run_id }}" ]; then
+            echo "::error::mode '$MODE' requires source_run_id: the inventory recording the fixtures lives in the original run's artifact."
+            exit 1
+          fi
 
           # The config declares its own target; a dispatch pointing a dev config
           # at staging must not proceed on the dispatch value.
@@ -103,6 +121,18 @@ jobs:
             exit 1
           fi
           echo "config=$CONFIG mode=$MODE environment=$CONFIG_ENV"
+
+          # The artifact directory the CONFIG names, so the upload below collects
+          # the inventory this run actually wrote rather than a hardcoded guess.
+          ARTIFACT_DIR=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['artifacts']['directory'])" "$CONFIG")
+          case "$ARTIFACT_DIR" in
+            /*|*..*)
+              echo "::error::artifacts.directory must be a relative path without '..' segments, got '$ARTIFACT_DIR'."
+              exit 1
+              ;;
+          esac
+          echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
+          echo "artifact directory (from config) = $ARTIFACT_DIR"
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
@@ -141,8 +171,21 @@ jobs:
             echo "| Config | \`${{ github.event.inputs.config_path }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # resume/cleanup act on fixtures an EARLIER run created. That run's
+      # inventory is the only record of them, and this workspace does not have
+      # it, so it is downloaded here and installed by --restore-from below.
+      # Fixtures would otherwise be unreachable and could not be cleaned up.
+      - name: Restore the originating run's inventory
+        if: github.event.inputs.mode == 'resume' || github.event.inputs.mode == 'cleanup'
+        uses: actions/download-artifact@v7
+        with:
+          path: restored-inventory
+          run-id: ${{ github.event.inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # Exit codes are meaningful and distinct (run.py): 4 = nothing ran
-      # (incomplete, NOT a pass), 5 = failed, 6 = cleanup refused something.
+      # (incomplete, NOT a pass), 5 = failed, 6 = cleanup refused something,
+      # 7 = the target account could not be verified and nothing was touched.
       # They are propagated rather than swallowed.
       - name: Run qualification
         id: qualification
@@ -152,17 +195,23 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p test-results
+          # --restore-from installs the downloaded inventory into the config's
+          # artifact directory, after verifying it belongs to this qualification
+          # and environment. A foreign or mismatched archive is refused.
+          RESTORE=""
           case "${{ github.event.inputs.mode }}" in
             preflight) MODE_ARGS="--preflight" ;;
             run)       MODE_ARGS="--run" ;;
-            resume)    MODE_ARGS="--resume ${{ github.event.inputs.qualification_id }}" ;;
-            cleanup)   MODE_ARGS="--cleanup ${{ github.event.inputs.qualification_id }}" ;;
+            resume)    MODE_ARGS="--resume ${{ github.event.inputs.qualification_id }}"
+                       RESTORE="--restore-from restored-inventory" ;;
+            cleanup)   MODE_ARGS="--cleanup ${{ github.event.inputs.qualification_id }}"
+                       RESTORE="--restore-from restored-inventory" ;;
           esac
 
           set +e
           python -m tests.e2e.orchestration.run \
             --config "${{ github.event.inputs.config_path }}" \
-            $MODE_ARGS \
+            $MODE_ARGS $RESTORE \
             2>&1 | tee test-results/qualification-output.txt
           RC=${PIPESTATUS[0]}
           set -e
@@ -172,6 +221,7 @@ jobs:
             0) echo "Qualification reported success." ;;
             4) echo "::error::No scenario executed. This is NOT a pass — scenario adapters come from #5157." ;;
             6) echo "::warning::Cleanup refused one or more fixtures it could not verify as owned; they were left untouched and need review." ;;
+            7) echo "::error::The target account could not be verified against the config's connection. NOTHING was mutated. Check connection.expected_account_id against the role this workflow assumes." ;;
             *) echo "::error::Qualification failed with exit code ${RC}." ;;
           esac
           exit "$RC"
@@ -184,9 +234,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: qualification-${{ github.event.inputs.mode }}-${{ github.run_id }}
+          # The directory the CONFIG names, not a hardcoded one: this artifact is
+          # what a later resume/cleanup restores, so missing the inventory here
+          # would leave those fixtures unreachable.
           path: |
             test-results/
-            artifacts/
+            ${{ steps.dispatch.outputs.artifact_dir }}/
           retention-days: 30
           if-no-files-found: warn
 
@@ -198,7 +251,9 @@ jobs:
         run: |
           {
             echo ""
-            echo "> **Fixtures may still exist.** Download the artifact above, find the"
-            echo "> \`qualification_id\` in the run output, then reconcile and remove them:"
-            echo "> \`--resume <id>\` followed by \`--cleanup <id>\` via this workflow."
+            echo "> **Fixtures may still exist.** Find the \`qualification_id\` in the run"
+            echo "> output above, then dispatch this workflow with \`mode=resume\` followed by"
+            echo "> \`mode=cleanup\`, passing that id AND \`source_run_id=${{ github.run_id }}\`."
+            echo "> The run id is required: it is how this run's inventory — the only record"
+            echo "> of the fixtures — is restored into the cleanup run's empty workspace."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -31,10 +31,16 @@ python -m tests.e2e.orchestration.run --config <path> --resume <qualification-id
 
 # Delete only positively verified owned fixtures; retain sanitized evidence.
 python -m tests.e2e.orchestration.run --config <path> --cleanup <qualification-id>
+
+# Running resume/cleanup somewhere other than the original run's workspace?
+# Restore that run's inventory first (see "Recovering across separate runs").
+python -m tests.e2e.orchestration.run --config <path> \
+    --cleanup <qualification-id> --restore-from <downloaded-artifact-dir>
 ```
 
 The four modes are mutually exclusive and one is required. Combining them is a
-usage error rather than a guessed precedence.
+usage error rather than a guessed precedence. `--restore-from` is a modifier for
+`--resume`/`--cleanup`, not a mode.
 
 ### Exit codes
 
@@ -44,8 +50,9 @@ usage error rather than a guessed precedence.
 | `2` | Usage error (no mode, conflicting modes, missing `--config`) |
 | `3` | Config refused |
 | `4` | **Nothing ran** — `incomplete`, explicitly *not* a pass |
-| `5` | Failed (scenario failure, unverifiable target, unreconcilable fixture) |
+| `5` | Failed (scenario failure, unreconcilable fixture, missing inventory) |
 | `6` | Cleanup refused a fixture whose ownership could not be verified |
+| `7` | **Target unverified** — `refused`; the account did not match and *nothing* was mutated |
 
 `4` is distinct from `0` on purpose: a green check that executed no scenario is
 worse than no check, so CI can tell the two apart without parsing output.
@@ -61,6 +68,29 @@ has no `jsonschema` dependency) and enforces rules the schema cannot express.
 A config pins the authorized repository and registered connection, the
 org/team/identity fixture references, the engine/worker/harness versions, the
 resource/run/spend/duration bounds, and the artifact directory.
+
+### Target verification
+
+`connection.expected_account_id` and `connection.expected_org` declare what the
+selected connection **must** resolve to. Before `--run`, `--resume` and
+`--cleanup`, the harness reads `sts:GetCallerIdentity` and compares it:
+
+- account mismatch → refused, exit `7`, nothing mutated (no inventory is even created)
+- identity unreadable → refused, exit `7`
+- `repository` owner ≠ `expected_org` → refused, exit `7`
+
+Reporting whichever account the credentials happen to reach is *not*
+verification, so the comparison — not the report — is what gates a mutation.
+`--preflight` performs the same comparison and reports it read-only, so a
+mismatch is visible before anyone dispatches a run that would be refused.
+
+### Bounds
+
+`bounds.max_runs` caps **attempts, not successes.** Each attempt is counted
+before its adapter is invoked, so a scenario that fails every time still consumes
+the run it was budgeted for. Counting only successes would leave the cap
+unenforceable in exactly the case it matters — a repeatedly failing adapter would
+be invoked once per registered scenario while the counter stayed at zero.
 
 **It never contains a credential.** Secrets are named by reference
 (`secretsmanager:`, `ssm:` or `env:`) and resolved at runtime only, so
@@ -119,6 +149,26 @@ leak stays investigable.
 Foreign, mis-versioned and wrong-environment inventories are refused rather than
 adopted — acting on records this run did not write is how one run deletes
 another run's resources.
+
+### Recovering across separate runs
+
+A `--resume` or `--cleanup` **dispatch is a different workflow run with an empty
+workspace.** The inventory is the only record of the fixtures, and it is not
+there, so those fixtures would be unreachable and uncleanable.
+
+`orchestration-live-tests.yml` therefore requires a `source_run_id` for those two
+modes, downloads that run's artifact, and passes `--restore-from` so the inventory
+is installed into the artifact directory the config names. The archive is verified
+(version, `managed_by`, qualification id, environment) *before* it lands on disk,
+and a restore that would overwrite an inventory this run already has is refused —
+overwriting could roll back deletions already recorded here.
+
+The upload follows `artifacts.directory` from the config rather than a hardcoded
+path, since that artifact is exactly what a later cleanup restores.
+
+To clean up after a failed run, dispatch with `mode=cleanup`, the
+`qualification_id` from the run output, and `source_run_id` set to the original
+run's id. The failure summary prints both.
 
 ## Running the tests
 

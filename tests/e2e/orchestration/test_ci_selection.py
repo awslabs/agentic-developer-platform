@@ -214,3 +214,64 @@ class TestNoOtherWorkflowRunsTheQualification:
             if re.search(r"pytest\s+tests/\s*(\\|$|\n)", body, re.MULTILINE):
                 offenders.append(workflow.name)
         assert offenders == [], f"workflow(s) run the whole root test tree on PRs: {offenders}"
+
+
+class TestInventoryRecoveryAcrossRuns:
+    """resume/cleanup run in a SEPARATE workflow run with an empty workspace.
+
+    Without the originating run's inventory restored, the fixtures it recorded are
+    unreachable and cannot be cleaned up — so the wiring that carries the
+    inventory between runs is asserted against the file, not assumed.
+    """
+
+    def test_resume_and_cleanup_require_the_source_run_id(self, live_text):
+        """Dispatching a cleanup with no inventory to act on must be refused."""
+        assert "source_run_id:" in live_text
+        assert "requires source_run_id" in live_text
+
+    def test_the_workflow_downloads_the_originating_runs_artifact(self, live_text):
+        assert "download-artifact" in _strip_comments(live_text)
+        assert "run-id: ${{ github.event.inputs.source_run_id }}" in live_text
+
+    def test_the_restore_step_is_scoped_to_resume_and_cleanup(self, live_text):
+        """A fresh run has nothing to restore and must not try."""
+        block = live_text.split("Restore the originating run's inventory", 1)[1]
+        condition = block.split("uses:", 1)[0]
+        assert "mode == 'resume'" in condition
+        assert "mode == 'cleanup'" in condition
+
+    def test_the_restored_inventory_is_passed_to_the_cli(self, live_text):
+        assert "--restore-from" in live_text
+
+    def test_the_restore_happens_before_the_qualification_runs(self, live_text):
+        restore = live_text.index("Restore the originating run's inventory")
+        run = live_text.index("- name: Run qualification")
+        assert restore < run, "the inventory must be in place before the mode executes"
+
+    def test_the_upload_uses_the_configured_artifact_directory(self, live_text):
+        """A hardcoded path can silently miss the inventory the config wrote.
+
+        The uploaded artifact is exactly what a later resume/cleanup restores, so
+        it must follow artifacts.directory from the config.
+        """
+        assert "steps.dispatch.outputs.artifact_dir" in live_text
+        upload = live_text.split("Upload qualification artifacts", 1)[1]
+        assert "artifact_dir" in upload
+        assert "\n            artifacts/\n" not in upload, "the upload path must not be hardcoded"
+
+    def test_the_artifact_directory_is_read_from_the_config(self, live_text):
+        assert "['artifacts']['directory']" in live_text
+
+    def test_a_traversing_artifact_directory_is_refused(self, live_text):
+        assert "artifacts.directory must be a relative path" in live_text
+
+    def test_the_failure_reminder_names_the_run_id_needed_to_clean_up(self, live_text):
+        """An operator must be told how to reach the leaked fixtures."""
+        assert "source_run_id=${{ github.run_id }}" in live_text
+
+
+class TestTargetVerificationIsSurfaced:
+    def test_the_unverified_target_exit_code_is_handled(self, live_text):
+        """Exit 7 means nothing was touched; it must not read as a generic failure."""
+        assert "NOTHING was mutated" in live_text
+        assert "connection.expected_account_id" in live_text

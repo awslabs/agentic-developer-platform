@@ -15,6 +15,7 @@ import pytest
 
 from tests.e2e.orchestration.inventory import (
     CREATED,
+    DELETED,
     INVENTORY_VERSION,
     PLANNED,
     RECONCILE_FAILED,
@@ -24,6 +25,7 @@ from tests.e2e.orchestration.inventory import (
     InventoryError,
     inventory_path,
     new_qualification_id,
+    restore_inventory,
     sanitize_evidence,
     verify_ownership,
 )
@@ -372,3 +374,183 @@ class TestQueries:
         assert inventory.live_resource_count() == 1
         inventory.mark_deleted("org")
         assert inventory.live_resource_count() == 0
+
+
+class TestRestoreAcrossSeparateWorkflowRuns:
+    """A resume/cleanup dispatch is a DIFFERENT workflow run with an empty
+    workspace, so the originating run's inventory is not on disk. Without an
+    explicit restore, its fixtures are unreachable and uncleanable — the leak the
+    write-ahead inventory exists to prevent.
+
+    These tests simulate that by writing an inventory in one directory (run 1)
+    and restoring it into a fresh one (run 2), offline throughout.
+    """
+
+    def _completed_run(self, root, qualification_id: str = QUAL_ID, environment: str = "dev"):
+        """Stand in for run 1: an inventory with one live fixture."""
+        inv = Inventory.create(root, qualification_id, environment)
+        inv.record_planned(
+            fixture_id="org",
+            kind="organization",
+            intended_identity="qual-org",
+            ownership_tags=dict(TAGS),
+            idempotency_token=f"{qualification_id}-org",
+        )
+        inv.mark_created("org", "org-real-123")
+        return inv
+
+    def test_restore_makes_a_previous_runs_inventory_loadable(self, tmp_path):
+        """The round trip: run 1's artifact becomes run 2's working inventory."""
+        run1 = tmp_path / "run1-artifacts"
+        run1.mkdir()
+        self._completed_run(run1)
+
+        run2 = tmp_path / "run2-artifacts"
+        run2.mkdir()
+        # Run 2 starts with nothing: the fixture is unreachable until restored.
+        with pytest.raises(InventoryError, match="no inventory"):
+            Inventory.load(run2, QUAL_ID, "dev")
+
+        restore_inventory(run2, QUAL_ID, run1, "dev")
+
+        recovered = Inventory.load(run2, QUAL_ID, "dev")
+        assert recovered.get("org").observed_resource_id == "org-real-123"
+        assert recovered.get("org").state == CREATED
+
+    def test_restore_finds_the_inventory_nested_in_a_downloaded_artifact(self, tmp_path):
+        """An unpacked artifact nests the tree; the layout must not be assumed."""
+        nested = tmp_path / "download" / "qualification-run-9" / "artifacts"
+        nested.mkdir(parents=True)
+        self._completed_run(nested)
+
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+        restore_inventory(run2, QUAL_ID, tmp_path / "download", "dev")
+
+        assert Inventory.load(run2, QUAL_ID, "dev").get("org").observed_resource_id == "org-real-123"
+
+    def test_restore_refuses_a_missing_archive(self, tmp_path):
+        """Cleanup must fail loudly, not silently act on an empty inventory."""
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        with pytest.raises(InventoryError, match="must be restored before resume or cleanup"):
+            restore_inventory(run2, QUAL_ID, empty, "dev")
+
+    def test_restore_refuses_a_nonexistent_restore_root(self, tmp_path):
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+        with pytest.raises(InventoryError, match="restore root does not exist"):
+            restore_inventory(run2, QUAL_ID, tmp_path / "absent", "dev")
+
+    def test_restore_refuses_another_environments_archive(self, tmp_path):
+        """Its resource ids name another account's resources."""
+        run1 = tmp_path / "run1"
+        run1.mkdir()
+        self._completed_run(run1, environment="staging")
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+
+        with pytest.raises(ForeignInventoryError, match="another environment"):
+            restore_inventory(run2, QUAL_ID, run1, "dev")
+        assert not (run2 / QUAL_ID).exists(), "a refused archive must not land on disk"
+
+    def test_restore_refuses_a_foreign_archive(self, tmp_path):
+        """An inventory written by another tool is never adopted."""
+        run1 = tmp_path / "run1"
+        run1.mkdir()
+        inv = self._completed_run(run1)
+        document = json.loads(inv.path.read_text())
+        document["managed_by"] = "somebody-elses-harness"
+        inv.path.write_text(json.dumps(document))
+
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+        with pytest.raises(ForeignInventoryError):
+            restore_inventory(run2, QUAL_ID, run1, "dev")
+        assert not (run2 / QUAL_ID).exists()
+
+    def test_restore_refuses_a_mismatched_version(self, tmp_path):
+        run1 = tmp_path / "run1"
+        run1.mkdir()
+        inv = self._completed_run(run1)
+        document = json.loads(inv.path.read_text())
+        document["inventory_version"] = INVENTORY_VERSION + 1
+        inv.path.write_text(json.dumps(document))
+
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+        with pytest.raises(InventoryError, match="version"):
+            restore_inventory(run2, QUAL_ID, run1, "dev")
+
+    def test_restore_refuses_to_overwrite_this_runs_inventory(self, tmp_path):
+        """Overwriting could roll back deletions this run already recorded."""
+        run1 = tmp_path / "run1"
+        run1.mkdir()
+        self._completed_run(run1)
+
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+        current = self._completed_run(run2)
+        current.mark_deleted("org", detail="already cleaned up here")
+
+        with pytest.raises(InventoryError, match="refusing to overwrite"):
+            restore_inventory(run2, QUAL_ID, run1, "dev")
+        # The local record of the deletion survives.
+        assert Inventory.load(run2, QUAL_ID, "dev").get("org").state == DELETED
+
+    def test_restore_refuses_an_ambiguous_archive(self, tmp_path):
+        """Two inventories for one qualification: refuse rather than pick one."""
+        download = tmp_path / "download"
+        (download / "a").mkdir(parents=True)
+        (download / "b").mkdir(parents=True)
+        self._completed_run(download / "a")
+        self._completed_run(download / "b")
+
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+        with pytest.raises(InventoryError, match="refusing to guess"):
+            restore_inventory(run2, QUAL_ID, download, "dev")
+
+    def test_restore_ignores_an_archive_for_a_different_qualification(self, tmp_path):
+        run1 = tmp_path / "run1"
+        run1.mkdir()
+        self._completed_run(run1, qualification_id=OTHER_QUAL_ID)
+
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+        with pytest.raises(InventoryError, match="must be restored"):
+            restore_inventory(run2, QUAL_ID, run1, "dev")
+
+    def test_a_restored_inventory_is_written_with_owner_only_permissions(self, tmp_path):
+        """It names real resources, so the restored copy keeps 0600 too."""
+        run1 = tmp_path / "run1"
+        run1.mkdir()
+        self._completed_run(run1)
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+
+        restored = restore_inventory(run2, QUAL_ID, run1, "dev")
+
+        assert stat.S_IMODE(os.stat(restored).st_mode) == 0o600
+
+    def test_a_restored_inventory_can_then_be_cleaned_up(self, tmp_path, valid_config):
+        """End to end: restore in run 2, then cleanup deletes the run-1 fixture."""
+        from tests.e2e.orchestration.fixtures import cleanup
+        from tests.e2e.orchestration.test_fixtures import FakeProvider
+
+        run1 = tmp_path / "run1"
+        run1.mkdir()
+        self._completed_run(run1)
+
+        run2 = tmp_path / "run2"
+        run2.mkdir()
+        restore_inventory(run2, QUAL_ID, run1, "dev")
+
+        provider = FakeProvider()
+        provider.resources["org-real-123"] = dict(TAGS)
+        outcome = cleanup(Inventory.load(run2, QUAL_ID, "dev"), valid_config, {"organization": provider})
+
+        assert outcome.deleted == ("org",)
+        assert provider.resources == {}, "the fixture created by run 1 is gone after run 2's cleanup"
