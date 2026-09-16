@@ -62,7 +62,8 @@ jobs:
             modules/agent-factory/webhook-ingress/tests/test_worker_iam_boundary.py \
             modules/agent-factory/webhook-ingress/tests/test_agent_control_manifest.py \
             modules/agent-factory/webhook-ingress/tests/test_scaledjob_manifest.py \
-            modules/agent-factory/webhook-ingress/tests/test_engine_command_signing_iam.py
+            modules/agent-factory/webhook-ingress/tests/test_engine_command_signing_iam.py \
+            modules/agent-factory/webhook-ingress/tests/test_webhook_waf.py
 
   lint:
     name: Lint

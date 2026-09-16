@@ -5,8 +5,8 @@
 # Associated directly with the REST API stage (not possible with HTTP API v2).
 #
 # When the IP-set ARNs below are supplied, the ACL flips to default-Block with a
-# single Allow rule over GitHub's published hooks ranges plus the deployment's
-# internal callers. Unset (the default) it stays default-Allow with the rate limit
+# single Allow rule over GitHub's published hooks ranges, internal callers and
+# configured GitLab sources. Unset (the default) it stays default-Allow with the rate limit
 # only, which is the prior behaviour.
 #
 # The internal-callers set is NOT optional when restricting. This ACL is
@@ -17,20 +17,57 @@
 # =============================================================================
 
 locals {
-  # Restrict only when every set needed to avoid locking out a legitimate caller
-  # is present. A partial configuration is worse than none: it would look
-  # enforcing while blocking either GitHub or the agent path.
-  waf_restrict = (
-    var.github_hooks_ipv4_ip_set_arn != "" &&
-    var.github_hooks_ipv6_ip_set_arn != "" &&
-    var.internal_callers_ip_set_arn != ""
-  )
+  waf_required_source_sets = compact([
+    trimspace(var.github_hooks_ipv4_ip_set_arn),
+    trimspace(var.github_hooks_ipv6_ip_set_arn),
+    trimspace(var.internal_callers_ip_set_arn),
+  ])
+  waf_restrict = length(local.waf_required_source_sets) == 3
+  waf_source_sets = distinct(concat(
+    local.waf_required_source_sets,
+    [for arn in var.gitlab_webhook_ip_set_arns : trimspace(arn)],
+  ))
+
+  # WAF log redaction does not cover sampled requests. Keep legacy sampling
+  # only while logging is off; enabling logs must not create an unredacted copy.
+  waf_sample_requests = !var.enable_waf_logging
+  waf_redacted_headers = toset([
+    "authorization", "cookie", "x-api-key", "x-amz-security-token", "x-gitlab-token",
+  ])
 }
 
 resource "aws_wafv2_web_acl" "webhook" {
   name        = "${local.name_prefix}-webhook-ingress-waf"
   description = "Rate-limit webhook ingress to prevent abuse"
   scope       = "REGIONAL"
+
+  lifecycle {
+    # Resource preconditions work with the module's Terraform >= 1.5 contract;
+    # cross-variable validation would require Terraform >= 1.9.
+    precondition {
+      condition     = contains([0, 3], length(local.waf_required_source_sets))
+      error_message = "Supply all three WAF source IP-set ARNs (GitHub IPv4, GitHub IPv6 and internal callers), or leave all three empty. Partial source restriction is not allowed."
+    }
+    precondition {
+      condition     = !local.waf_restrict || trimspace(var.github_hooks_ipv4_ip_set_arn) != trimspace(var.github_hooks_ipv6_ip_set_arn)
+      error_message = "GitHub IPv4 and IPv6 must use different IP sets: a WAF IP set can contain only one address family."
+    }
+    precondition {
+      condition     = !local.waf_restrict || !var.gitlab_webhook_enabled || length(var.gitlab_webhook_ip_set_arns) > 0
+      error_message = "Restricting the shared webhook WAF while GitLab is enabled requires gitlab_webhook_ip_set_arns covering the GitLab server's outbound addresses. An existing internal-callers IP set may be reused if it covers those addresses."
+    }
+    precondition {
+      condition     = length(var.gitlab_webhook_ip_set_arns) == 0 || (local.waf_restrict && var.gitlab_webhook_enabled)
+      error_message = "GitLab WAF source sets require GitLab to be enabled and all three primary WAF source sets to be configured."
+    }
+    precondition {
+      condition = alltrue([
+        for arn in local.waf_source_sets :
+        can(regex("^arn:(aws|aws-us-gov|aws-cn):wafv2:[a-z0-9-]+:[0-9]{12}:regional/ipset/[^/]+/[0-9a-fA-F-]{36}$", arn))
+      ])
+      error_message = "WAF source sets must be non-empty REGIONAL WAFv2 IP-set ARNs. CloudFront/global IP sets cannot be attached to this regional API stage."
+    }
+  }
 
   default_action {
     dynamic "allow" {
@@ -43,14 +80,13 @@ resource "aws_wafv2_web_acl" "webhook" {
     }
   }
 
-  # Priority 0 so it is evaluated before the rate limit: a legitimate GitHub
-  # delivery that trips the rate limit should still be rate-limited, but an
-  # address that is not allowed at all should never reach that rule.
+  # Allow is terminating. Evaluate the priority-1 rate-limit Block first so
+  # even an allowlisted caller remains subject to throttling.
   dynamic "rule" {
     for_each = local.waf_restrict ? [1] : []
     content {
       name     = "allow-github-hooks-and-internal-callers"
-      priority = 0
+      priority = 2
 
       action {
         allow {}
@@ -58,26 +94,19 @@ resource "aws_wafv2_web_acl" "webhook" {
 
       statement {
         or_statement {
-          statement {
-            ip_set_reference_statement {
-              arn = var.github_hooks_ipv4_ip_set_arn
-            }
-          }
-          statement {
-            ip_set_reference_statement {
-              arn = var.github_hooks_ipv6_ip_set_arn
-            }
-          }
-          statement {
-            ip_set_reference_statement {
-              arn = var.internal_callers_ip_set_arn
+          dynamic "statement" {
+            for_each = local.waf_source_sets
+            content {
+              ip_set_reference_statement {
+                arn = statement.value
+              }
             }
           }
         }
       }
 
       visibility_config {
-        sampled_requests_enabled   = true
+        sampled_requests_enabled   = local.waf_sample_requests
         cloudwatch_metrics_enabled = true
         metric_name                = "${local.name_prefix}-webhook-allow-known-sources"
       }
@@ -100,14 +129,14 @@ resource "aws_wafv2_web_acl" "webhook" {
     }
 
     visibility_config {
-      sampled_requests_enabled   = true
+      sampled_requests_enabled   = local.waf_sample_requests
       cloudwatch_metrics_enabled = true
       metric_name                = "${local.name_prefix}-webhook-rate-limit"
     }
   }
 
   visibility_config {
-    sampled_requests_enabled   = true
+    sampled_requests_enabled   = local.waf_sample_requests
     cloudwatch_metrics_enabled = true
     metric_name                = "${local.name_prefix}-webhook-waf"
   }
@@ -143,4 +172,13 @@ resource "aws_wafv2_web_acl_logging_configuration" "webhook" {
 
   resource_arn            = aws_wafv2_web_acl.webhook.arn
   log_destination_configs = [aws_cloudwatch_log_group.webhook_waf[0].arn]
+
+  dynamic "redacted_fields" {
+    for_each = local.waf_redacted_headers
+    content {
+      single_header {
+        name = redacted_fields.value
+      }
+    }
+  }
 }
