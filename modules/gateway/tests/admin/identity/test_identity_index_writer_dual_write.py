@@ -59,6 +59,8 @@ class TestDualWritePutUserIdentity:
             user_id="user-001",
             org_id="org-001",
             provider_username=None,
+            user_kind=None,
+            bot_kind=None,
         )
         # PutItem NOT called (would wipe member_org_ids)
         mock_old_client.put_identity.assert_not_awaited()
@@ -85,6 +87,8 @@ class TestDualWritePutUserIdentity:
             user_id="user-001",
             org_id="org-001",
             provider_username="testuser",
+            user_kind=None,
+            bot_kind=None,
         )
         mock_old_client.put_identity.assert_not_awaited()
         # New table: UpdateItem (preserves member_org_ids)
@@ -94,6 +98,8 @@ class TestDualWritePutUserIdentity:
             user_id="user-001",
             org_id="org-001",
             provider_username="testuser",
+            user_kind=None,
+            bot_kind=None,
         )
         mock_new_client.put_user_identity.assert_not_awaited()
 
@@ -121,6 +127,8 @@ class TestDualWritePutUserIdentity:
             org_id="org-001",
             provider_username="testuser",
             member_org_ids=["org-001", "org-002"],
+            user_kind=None,
+            bot_kind=None,
         )
         mock_new_client.update_user_core_attrs.assert_not_awaited()
 
@@ -178,6 +186,8 @@ class TestDualWritePutUserIdentity:
             user_id="user-002",
             org_id="org-001",
             provider_username=None,
+            user_kind=None,
+            bot_kind=None,
         )
 
     @pytest.mark.asyncio
@@ -195,6 +205,8 @@ class TestDualWritePutUserIdentity:
             user_id="user-001",
             org_id="org-001",
             provider_username=None,
+            user_kind=None,
+            bot_kind=None,
         )
 
 

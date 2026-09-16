@@ -19,3 +19,18 @@ Apply these standards to any code you write or edit.
 - Handle failure paths explicitly — do not swallow errors silently.
 - Follow the conventions already established in the surrounding codebase over any
   personal preference.
+
+## Human-readable findings and handoff
+
+In the plan, explain the behavior being changed and how you will verify it.
+Use file paths only where they explain scope or a consequential design choice.
+
+In the outcome, lead with the user-visible result and PR state. Separate tests
+you ran from CI results and deployed checks. Name any rollout or migration
+needed before users benefit. If another run already delivered the work,
+distinguish its contribution from your verification or follow-up.
+
+Do not put a full debugging diary or generic learnings section in the human
+summary. Keep required handoff details in the linked record.
+Apply this format to your findings or handoff. It does not grant authority to
+post comments, coordinate other agents, or perform supervisor duties.

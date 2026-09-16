@@ -129,6 +129,12 @@ resource "aws_cloudwatch_log_group" "tick" {
 # =============================================================================
 
 resource "aws_lambda_function" "tick" {
+  lifecycle {
+    precondition {
+      condition     = !var.agent_authority_enabled || (var.webhook_events_table_name != "" && var.webhook_events_kms_key_arn != "")
+      error_message = "Protected engine dispatch requires the webhook events table and its KMS key."
+    }
+  }
   function_name = local.tick_name
   description   = "Orchestration engine tick: advances graph nodes whose predecessors are satisfied (Issue #4203)"
 
@@ -189,6 +195,8 @@ resource "aws_lambda_function" "tick" {
       BG_ORCH_DISPATCH_REPO         = var.dispatch_repo
       BG_ORCH_DISPATCH_PERSONA      = var.dispatch_persona
       BG_ORCH_DISPATCH_MAX_PER_TICK = tostring(var.dispatch_max_per_tick)
+      AGENT_AUTHORITY_ENABLED       = tostring(var.agent_authority_enabled)
+      AGENT_AUTHORITY_TABLE         = "${var.name_prefix}-agent-authority"
 
       # Issue #4527 — the GitHub engine-command bridge. NOT BG_-prefixed: both are
       # read with a bare `os.environ.get`, the flag because `engine_commands.py`
@@ -203,6 +211,19 @@ resource "aws_lambda_function" "tick" {
       # advertise the bridge to anyone who can comment on an issue.
       FEATURE_ORCHESTRATION_ENGINE_ENABLED = tostring(var.engine_enabled)
       WEBHOOK_EVENTS_TABLE                 = var.webhook_events_table_name
+
+      # Issue #4539 — command attribution. NOT BG_-prefixed, and deliberately the
+      # SAME name the signer reads in the webhook Lambda: one signing key behind two
+      # env-var names drifts silently, and the failure mode of that drift is every
+      # command refused. `command_attribution.py` reads it with a bare
+      # `os.environ.get` for the same reason `engine_commands.py` does.
+      #
+      # Empty means the verifier has no key, so every pending command quarantines
+      # with `no_verification_key` rather than being applied unverified. That is the
+      # fail-closed default: an unwired verifier must never be read as permission to
+      # trust a row whose authority fields could have been authored rather than
+      # delivered.
+      ENGINE_COMMAND_SIGNING_KEY_SECRET_ARN = var.engine_command_signing_key_secret_arn
     }
   }
 

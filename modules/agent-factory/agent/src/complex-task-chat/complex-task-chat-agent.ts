@@ -14,6 +14,7 @@ import { getChannelDirective, getChannelEffort } from './channel-profiles';
 import { loadPersona, composeSystemPrompt } from './persona-loader';
 import { runQuery } from './run-query';
 import { SqsClient, TaskPayload, AgUiEventEnvelope } from './sqs-client';
+import { withChatBedrockRouting } from './bedrock-routing';
 import { AgentTool } from './context/types';
 import { ArtifactRef } from './artifacts/port';
 import { ArtifactSpillStore } from '../utils/spill/artifact-store-adapter';
@@ -66,10 +67,6 @@ function estimateTokens(text: string): number {
 async function main(): Promise<void> {
   console.log('[chat-agent] Starting complex-task-chat-agent');
 
-  const context = buildContextManager();
-  const memory = buildMemoryProvider();
-  const artifacts = buildArtifactStore();
-  const draftStore = buildDraftStore();
   const sqs = new SqsClient();
 
   // KEDA ScaledJob: process one message and exit
@@ -80,7 +77,14 @@ async function main(): Promise<void> {
   }
 
   for (const msg of messages) {
-    await processOne(msg, { context, memory, artifacts, draftStore, sqs });
+    const task: TaskPayload = JSON.parse(msg.Body ?? '{}');
+    await withChatBedrockRouting(task, async () => {
+      const context = buildContextManager();
+      const memory = buildMemoryProvider();
+      const artifacts = buildArtifactStore();
+      const draftStore = buildDraftStore();
+      await processOne(msg, { context, memory, artifacts, draftStore, sqs });
+    });
   }
 }
 

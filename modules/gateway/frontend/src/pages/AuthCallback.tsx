@@ -12,7 +12,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { Spinner } from '@/components/ui/Spinner';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
-import { handleOAuthCallback, buildLoginUrl } from '@/services/auth';
+import { handleOAuthCallback, buildLoginUrl, consumePostLoginRedirect } from '@/services/auth';
 
 export default function AuthCallback() {
   const [searchParams] = useSearchParams();
@@ -121,7 +121,9 @@ export default function AuthCallback() {
             isLoading: false,
           });
 
-          navigate('/', { replace: true });
+          // Return to the deep link the user was originally headed to (e.g.
+          // the CLI approval page), falling back to the dashboard.
+          navigate(consumePostLoginRedirect() ?? '/', { replace: true });
           return;
         }
 
@@ -145,8 +147,8 @@ export default function AuthCallback() {
           isLoading: false,
         });
 
-        // Redirect to role-appropriate dashboard
-        navigate('/', { replace: true });
+        // Return to the original deep link, else the role-appropriate dashboard
+        navigate(consumePostLoginRedirect() ?? '/', { replace: true });
       } catch (err) {
         console.error('OAuth callback error:', err);
         setError(

@@ -18,6 +18,9 @@ import {
 import type { AgUiEvent } from './ag-ui-events';
 
 export interface TaskPayload {
+  /** Server-registered run capability, distinct from the SQS delivery id. */
+  message_id?: string;
+  arrived_at?: string;
   task_id: string;
   session_id: string;
   message: string;

@@ -1,12 +1,21 @@
 /**
- * Tests for the envelope lines and the combined total — Issue #4402 (U-5).
+ * Tests for the envelope lines — Issue #4402 (U-5), trimmed by #4685.
  *
- * The load-bearing assertions here are the negative ones. Criterion 4 of the issue is
- * that the combined direct+cloud figure renders with **no** `role="progressbar"` and
- * **no** `x / y` denominator, because no cap governs that number — a bar or a
- * denominator would have users planning against an invented ceiling. A test that only
- * checked the figure appeared would pass just as happily with a bar next to it, so the
- * absence is asserted explicitly.
+ * The load-bearing assertions here are the negative ones: a bar is drawn **only** where
+ * the wire carries a real cap, because a bar without a denominator has users planning
+ * against an invented ceiling. A test that only checked a figure appeared would pass just
+ * as happily with a spurious bar beside it, so each absence is asserted explicitly.
+ *
+ * **The combined-total block is gone (#4685).** `CombinedTotal` rendered the direct+cloud
+ * sum, and its tests asserted the right things about it — no progressbar, no denominator,
+ * captioned as not-a-budget. The #4669 ruling deleted the component rather than fixing it:
+ * a figure no cap governs had no business competing with the two governed figures at the
+ * top of `/budget`, however carefully it was captioned. `SpendTiles.test.tsx` now asserts
+ * that the sum appears nowhere on the page.
+ *
+ * `BudgetLines` itself is no longer mounted by `/budget` (the two tiles are that page's
+ * whole spend surface) but remains the canonical rendering of a separately-capped line,
+ * including the `service:`-principal affordance of criterion 10 — so these tests stay.
  *
  * Fixtures come from `mocks/data/budgetSpend.ts`, transcribed from
  * `src/budget/schemas.py` — never from `src/types/budget.ts` (the #3675 guard).
@@ -14,8 +23,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
-import { BudgetLines, BudgetLineRow, CombinedTotal } from '@/components/budget/BudgetLines';
-import { mockBudgetEnvelope, mockDirectLine, mockCloudLine, mockServiceLine, mockUncappedLine } from '@/mocks/data/budgetSpend';
+import { BudgetLines, BudgetLineRow } from '@/components/budget/BudgetLines';
+import { mockDirectLine, mockCloudLine, mockServiceLine, mockUncappedLine } from '@/mocks/data/budgetSpend';
 import type { BudgetLine } from '@/types/budget';
 
 /** Build a line at a given utilisation + band, as the SERVER would report it. */
@@ -25,7 +34,7 @@ function lineAt(utilization_pct: number, band: BudgetLine['band']): BudgetLine {
 
 describe('BudgetLines — per-line rows', () => {
   it('renders each line with its own cap, spend, headroom and utilisation', () => {
-    render(<BudgetLines lines={[mockDirectLine, mockCloudLine]} combined={null} />);
+    render(<BudgetLines lines={[mockDirectLine, mockCloudLine]} />);
 
     const rows = screen.getAllByTestId('budget-line-row');
     expect(rows).toHaveLength(2);
@@ -106,46 +115,25 @@ describe('BudgetLines — bands come from the server, not a local constant', () 
   });
 });
 
-describe('BudgetLines — combined informational total', () => {
-  const combined = mockBudgetEnvelope.combined_informational!;
-
-  it('renders the combined figure with NO progressbar anywhere', () => {
-    // Criterion 4. No cap governs this number, so a bar would imply a ceiling that
-    // does not exist. Rendered without any line rows so the only candidate bar would
-    // be the combined figure's own.
-    render(<CombinedTotal combined={combined} />);
-
-    expect(screen.getByTestId('combined-total-amount')).toHaveTextContent('$584.20');
-    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
-  });
-
-  it('renders the combined figure with no "x / y" denominator', () => {
-    render(<CombinedTotal combined={combined} />);
-
-    const region = screen.getByTestId('combined-informational');
-    // No slash-joined pair of figures, which is the shape a denominator takes.
-    expect(region.textContent).not.toMatch(/\$[\d,.]+\s*\/\s*\$?[\d,.]+/);
-    // And neither of the two caps leaks in as a denominator.
-    expect(region.textContent).not.toContain('$600.00');
-    expect(region.textContent).not.toContain('$200.00');
-  });
-
-  it('captions the combined figure as not a budget, using the server note', () => {
-    render(<CombinedTotal combined={combined} />);
-    expect(screen.getByText(combined.note)).toBeInTheDocument();
-  });
-
-  it('keeps the per-line bars while adding none for the combined total', () => {
-    // The distinction the screen must draw: a LINE has a real cap on the wire, so its
-    // bar is honest; the combined total has none, so it gets no bar. Two capped lines
-    // in, exactly two progressbars out.
-    render(<BudgetLines lines={[mockDirectLine, mockCloudLine]} combined={combined} />);
+describe('BudgetLines — one bar per capped line, and no total (#4685)', () => {
+  it('draws exactly one bar per capped line and none for any total', () => {
+    // The distinction the component must draw: a LINE has a real cap on the wire, so
+    // its bar has a genuine denominator and is honest. Two capped lines in, exactly
+    // two progressbars out — a third would mean something summed them and drew a bar
+    // under a figure no cap governs.
+    render(<BudgetLines lines={[mockDirectLine, mockCloudLine]} />);
     expect(screen.getAllByRole('progressbar')).toHaveLength(2);
   });
 
-  it('omits the combined section entirely when there is nothing to combine', () => {
-    render(<BudgetLines lines={[mockDirectLine]} combined={null} />);
+  it('renders no summed figure of any kind', () => {
+    // `CombinedTotal` is deleted, and the sum must not reappear as incidental markup:
+    // $412.80 + $171.40 = $584.20 is a figure keyed across two different ledgers
+    // (Cognito sub vs canonical users.id), so nothing enforces it.
+    render(<BudgetLines lines={[mockDirectLine, mockCloudLine]} />);
+
     expect(screen.queryByTestId('combined-informational')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('combined-total-amount')).not.toBeInTheDocument();
+    expect(screen.getByText('Your budget lines').closest('div')?.textContent ?? '').not.toContain('$584.20');
   });
 });
 
@@ -175,7 +163,7 @@ describe('BudgetLines — service principals', () => {
 
 describe('BudgetLines — empty state', () => {
   it('renders an empty state when there are no lines', () => {
-    render(<BudgetLines lines={[]} combined={null} />);
+    render(<BudgetLines lines={[]} />);
     expect(screen.getByTestId('budget-lines-empty')).toBeInTheDocument();
   });
 });

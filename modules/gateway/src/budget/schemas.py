@@ -69,6 +69,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+# The wire enum is the LADDER's own type, imported rather than restated (#4690).
+# `person_ledger` is a deliberate leaf — models and shared schemas only — so this
+# adds no cycle, and it means the set of values this contract advertises cannot
+# drift from the set the resolver can actually return. A hand-copied Literal here
+# would go stale the first time a rung is added (department scope is explicitly
+# left room for).
+from .person_ledger import PersonLimitSource
+
 # The warning band a utilisation figure falls in. Derived server-side from
 # `budget_config.budget_warning_threshold_percent` / `_critical_threshold_percent`
 # (80.0 / 95.0) so the frontend cannot drift its own thresholds — today
@@ -319,6 +327,210 @@ class Freshness(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Cross-org person view — Issue #4626 (C1 of #4620)
+# ---------------------------------------------------------------------------
+#
+# Everything above describes ONE partition: the caller's active/attributed tenant.
+# That is what enforcement reads and it stays exactly as it was. The two models
+# below answer the different question #4620 was filed for — "how much have MY
+# agents spent, everywhere they run" — for a person whose runs execute outside the
+# tenant their session is in.
+#
+# The mechanics, from `docs/design-notes/4620-cross-org-person-budgets.md`:
+# `budget_usage` is uniquely keyed `(org_id, entity_type, entity_id, …)`, the
+# tracker writes every `root_user` row into the run's *attributed* tenant (#4132),
+# and the `root_user` key is a canonical `users.id` that the webhook resolver looks
+# up org-free. So the same person's spend is spread across partitions under keys
+# that already match — the read is a widened `org_id` predicate, not an
+# identity-stitching project (note §0.1).
+#
+# Two things make that widening safe rather than a tenant leak, and both are
+# structural rather than a reviewer's care:
+#
+#   * The partition list is derived SERVER-SIDE from `tenant_memberships` (plus the
+#     shadow-user `users.org_id` fallback), never from a request parameter. This
+#     model appears only on the `/me` router, which accepts no scope parameter at
+#     all (note §7.3).
+#   * Only settled dollar TOTALS cross. No run detail, and never to anyone but the
+#     person themselves — explicitly NOT to their home-org admin, whose reach stops
+#     at their own partition (note §7.2).
+
+
+class PerOrgLine(BaseModel):
+    """One tenant's settled spend for the caller — both ledgers — for this period.
+
+    **Widened by #4396.** This line used to carry cloud (``root_user``) spend only,
+    because the person figure it fed was cloud-only. The operator ruling of
+    2026-09-05 made the person's limit govern their TOTAL spend, so the line now
+    reports ``direct_spend_usd`` beside ``cloud_spend_usd``: the components of the
+    fused total, kept separate so a reader can add them up and audit the headline.
+
+    **The two figures cannot double-count each other.** They come from rows that are
+    disjoint by ``entity_type`` and by key namespace — ``user`` rows are keyed by
+    Cognito sub, ``root_user`` rows by canonical ``users.id`` — and ``budget_usage``
+    is uniquely keyed including ``entity_type``. Summing one of each sums each dollar
+    once (the #4322 discipline satisfied, not bypassed).
+
+    ``cap_usd`` is the cloud-agent cap **that tenant** authored for this person, if
+    any. It is reported per line rather than folded into a single number because each
+    one is independently authoritative: an org's own ``root_user`` cap governs spend
+    inside that org and nothing else, and that layer is unchanged by #4620 and by
+    #4396 (note §3.1). A ``null`` cap on a line with real spend is the
+    mis-partitioned-cap signature the issue is about — the spend is accruing where no
+    ceiling was authored.
+    """
+
+    org_id: str = Field(description="The tenant this line's ledger rows live in. One of the caller's own member tenants, derived server-side.")
+    org_name: str = Field(
+        description=(
+            "Display name from `organizations.name`, falling back to `org_id` when "
+            "the row is unreadable. Server-supplied so two surfaces cannot word one "
+            "tenant differently."
+        )
+    )
+    cloud_spend_usd: str = Field(
+        description=(
+            "Settled `root_user` spend in this tenant for this period at 6dp — the "
+            "agent runs the caller triggered here. Read with the same full 5-filter "
+            "predicate as every other figure here. A true `0.000000` when no usage "
+            "row exists — a measurement, not a fallback."
+        )
+    )
+    direct_spend_usd: str = Field(
+        description=(
+            "Settled `user` spend in this tenant for this period at 6dp — the "
+            "caller's own direct, interactive use (#4396). Keyed by Cognito sub, so "
+            "it is a DIFFERENT row from `cloud_spend_usd` and adding the two counts "
+            "each dollar once. A true `0.000000` when no usage row exists. Governed "
+            "by this tenant's own `user` cap, not by `cap_usd` below."
+        )
+    )
+    cap_usd: str | None = Field(
+        description=(
+            "The cloud-agent (`root_user`) cap THIS tenant authored for the caller, "
+            "at 2dp, or `null` when it authored none. Not clamped across tenants: "
+            "each org's cap governs only spend executing inside it. It governs "
+            "`cloud_spend_usd` only — `direct_spend_usd` answers to this tenant's "
+            "`user` cap, which `lines`/`binding` render for the active partition."
+        )
+    )
+    is_active_partition: bool = Field(
+        description=(
+            "`true` for the tenant the caller's session is attributed to — the one "
+            "partition `lines`/`binding` above describe. Present so a client can "
+            "show 'this workspace' without re-deriving it from the token."
+        )
+    )
+
+
+class PersonEnvelope(BaseModel):
+    """The caller's ONE number: everything they spent, everywhere — **and it is enforced**.
+
+    Issue #4626, note §7.1, **fused and made load-bearing by #4396**.
+
+    **What changed, and why it matters to anyone reading a figure from here.** This
+    started as an informational cloud-agent-only total: no cap existed to compare it
+    against, so it deliberately carried no denominator. Both halves of that premise
+    are gone. The operator ruling of 2026-09-05 (thread on #4669/#4685) is that **a
+    person's limit governs their TOTAL spend — direct use plus cloud agents, across
+    all GitHub orgs — and they see ONE number tracked against it.** So:
+
+    * ``spend_usd`` is now ``direct + cloud``, summed across every member partition.
+    * ``BudgetEnforcementService._check_person_budget`` enforces against **this exact
+      figure**, via the same ``_read_person_partition_spend`` that composes it. The
+      displayed number IS the enforced number — not two derivations that agree today.
+
+    **There is still no cap field here, and the reason has inverted rather than
+    lapsed.** Before, a denominator would have advertised a ceiling nothing enforced.
+    Now the ceiling is real but it lives on ``GET /me/budget/person-cap``, which is
+    the one authoring-and-reading surface for it; restating it here would put one
+    ceiling on two surfaces that can disagree. ``person_cap_routes.py`` refuses to
+    return spend for the mirror-image reason. One figure, one home, each.
+
+    **How the fused total avoids the #4322 double-count.** The two ledgers are
+    disjoint by construction, not by a filter applied after the fact:
+
+    * ``entity_type="user"`` rows are keyed by **Cognito sub** (direct traffic);
+      ``entity_type="root_user"`` rows by **canonical ``users.id``** (chains the
+      person triggered). ``budget_usage`` is uniquely keyed including
+      ``entity_type``, so these are different rows holding different dollars.
+    * A direct request writes only the ``user`` row — the tracker's ``!= user_id``
+      gate suppresses the ``root_user`` row exactly when the root IS the caller.
+    * A hosted run's ``user`` row is keyed by the shared **worker** identity, never
+      by this person's sub, so it cannot enter the direct half.
+    * ``org``/``team``/``department`` rows are never read here at all: those are
+      shared ancestors, not this person's spend.
+
+    **``service:``-qualified principals are excluded** (#4344): the key list is built
+    from ``users`` primary keys and their subs, neither of which can carry the
+    qualifier, so an unattended CI trigger is kept out of a human's personal envelope
+    structurally rather than by a filter that could be dropped.
+
+    Like every figure on this surface it is a **lower bound**:
+    ``freshness.cost_backfill_lag`` applies to it, which is also why the enforcement
+    layer's overshoot bound exists (``docs/budget-ratelimit.md``).
+    """
+
+    anchor: str = Field(
+        description=(
+            "The cross-org identity this total was fused on — `github:<numeric id>` "
+            "when a GitHub identity is linked, else `users:<canonical id>`. The "
+            "GitHub numeric id is the anchor because one person can hold a "
+            "DIFFERENT `users.id` per tenant (note §3.3), so summing by canonical "
+            "id alone under-reports for exactly the multi-org population this "
+            "figure exists for."
+        )
+    )
+    spend_usd: str = Field(
+        description=(
+            "The caller's ONE total at 6dp: the exact sum of every "
+            "`per_org[].direct_spend_usd` AND `per_org[].cloud_spend_usd` across all "
+            "their member tenants (#4396). This is the figure the personal spending "
+            "limit is ENFORCED against — the cap itself is on "
+            "`GET /me/budget/person-cap`. A LOWER BOUND like every figure here: "
+            "`freshness.cost_backfill_lag` applies to this total too, which is why "
+            "enforcement documents an overshoot bound."
+        )
+    )
+    cloud_spend_usd: str = Field(
+        description=(
+            "The cloud-agent (`root_user`) component of `spend_usd` at 6dp — the "
+            "agent runs the caller triggered, everywhere. Reported so the fused total "
+            "is auditable: this plus `direct_spend_usd` equals `spend_usd` exactly."
+        )
+    )
+    direct_spend_usd: str = Field(
+        description=(
+            "The direct-use (`user`) component of `spend_usd` at 6dp — the caller's "
+            "own interactive traffic, everywhere. A different row namespace from "
+            "`cloud_spend_usd`, so the two sum without re-counting a dollar."
+        )
+    )
+    partition_count: int = Field(
+        description=(
+            "How many tenants contributed to `spend_usd`. Present so a client can "
+            "say 'across N workspaces' rather than implying the figure is "
+            "single-tenant, and so a caller can tell 'one partition, genuinely $0' "
+            "from 'several partitions, genuinely $0'."
+        )
+    )
+    is_budget: Literal[False] = Field(
+        default=False,
+        description=(
+            "Always `false`, and typed so it cannot be anything else. It means THIS "
+            "OBJECT carries no denominator — not that the figure is ungoverned. Since "
+            "#4396 a personal limit IS enforced against `spend_usd`; the cap is served "
+            "by `GET /me/budget/person-cap` and a client renders the two together. The "
+            "field stays `false` so no bar can be bound to a ceiling this payload does "
+            "not contain, which is what keeps the two surfaces from disagreeing."
+        ),
+    )
+    note: str = Field(
+        description=("Plain-language statement of what the figure covers and what governs it, for surfaces that render it with a caption.")
+    )
+
+
 class MyBudgetResponse(BaseModel):
     """The signed-in caller's own cap, settled spend and headroom for one period.
 
@@ -441,6 +653,37 @@ class MyBudgetResponse(BaseModel):
             "there is nothing to combine (fewer than two per-person lines). The "
             "fused per-person ENVELOPE, with a real cap, is #4396 and is "
             "deliberately not built here."
+        ),
+    )
+
+    # -----------------------------------------------------------------------
+    # Cross-org person view — Issue #4626 (C1 of #4620)
+    # -----------------------------------------------------------------------
+
+    per_org: list[PerOrgLine] = Field(
+        default_factory=list,
+        description=(
+            "The caller's settled cloud-agent spend PER member tenant, active "
+            "partition first. Everything above this field describes ONE partition "
+            "(the attributed tenant enforcement reads); this describes all of them, "
+            "because a person whose runs execute outside their session's tenant sees "
+            "`$0` above while real dollars accrue elsewhere (#4620). Empty when the "
+            "caller's canonical identity did not resolve — never a fabricated "
+            "single-tenant `$0` line."
+        ),
+    )
+
+    person_envelope: PersonEnvelope | None = Field(
+        default=None,
+        description=(
+            "The cross-org sum of `per_org[].cloud_spend_usd`, INFORMATIONAL ONLY — "
+            "no cap governs it and no ledger row equals it, so it carries no "
+            "denominator field by design (see `PersonEnvelope`). `None` when there "
+            "are no per-org lines to sum, i.e. when the caller's identity did not "
+            "resolve. Present even for a single partition, unlike "
+            "`combined_informational`: 'this is your total everywhere' is a distinct, "
+            "useful claim when the count is one, and a client that hid it would show "
+            "nothing to the person whose spend has not yet crossed a boundary."
         ),
     )
 
@@ -845,3 +1088,437 @@ class ManagedScopeRunsResponse(BaseModel):
 
     entity_type: str = Field(description="The target's entity type, echoed from the request path after allow-list validation.")
     entity_id: str = Field(description="The target's id, echoed from the request path.")
+
+
+class MisPartitionedCapRow(BaseModel):
+    """One ``root_user`` cap that has never accrued in its own partition — #4627.
+
+    Design note ``4620-cross-org-person-budgets.md`` §8.2. The row describes a cap
+    the operator authored, in the partition they authored it in, that no settled
+    ``budget_usage`` row has ever matched. That is the mis-partitioned signature:
+    the cap's key and the accrual's key are the *same string*, and only ``org_id``
+    differs (§2), so the cap displays, accrues nothing, and stops nothing.
+
+    **Every field describes the caller's OWN partition, except one boolean.** §7.2
+    of the note draws the disclosure line precisely: a foreign org's dollar totals
+    are that org's cost data and must not reach an admin of an unrelated tenant on
+    the basis that a person is shared. So there is no foreign ``org_id`` here, no
+    foreign spend figure and no foreign run detail — only
+    ``accrues_elsewhere``, which says *whether* a matching accrual exists somewhere
+    the caller cannot see. A bare boolean is not a total; it is the minimum needed
+    to tell "authored in the wrong partition" from "authored correctly and quiet",
+    and without it the report is a list of maybes nobody can act on.
+
+    ``accrues_elsewhere=false`` is deliberately still reported rather than
+    filtered out. §8.2: "a dormant cap is not proof of misconfiguration (a person
+    may simply not have run yet), which is exactly why this reports rather than
+    migrates." Suppressing those rows would make the report *look* authoritative
+    while hiding the cap that is about to become mis-partitioned the moment its
+    owner runs somewhere else.
+    """
+
+    org_id: str = Field(description="The partition the cap was authored in — always the caller's own resolved partition, never a foreign one.")
+    entity_id: str = Field(
+        description=(
+            "The cap's key: a canonical `users.id`, possibly `service:`-qualified "
+            "(#4344). Echoed as stored, because it is the string that has to match "
+            "an accrual for the cap to ever bind."
+        )
+    )
+    display_name: str | None = Field(
+        default=None,
+        description=(
+            "The person's name or email, resolved org-scoped from `users`. `null` "
+            "for a `service:`-qualified principal, which has no `users` row by "
+            "design — the caller renders the raw id, the honest label for an "
+            "automation."
+        ),
+    )
+    principal_kind: PrincipalKind = Field(
+        description=(
+            "`human` or `service`, from the `service:` id qualifier (#4344). A "
+            "`service`-rooted cap is an unattended trigger, not a person, and a "
+            "report that renders one as a colleague makes the operator chase the "
+            "wrong fix."
+        )
+    )
+    period_type: str = Field(description="The cap's period type, echoed from the row. Part of the predicate that found no matching accrual.")
+    cap_usd: str = Field(
+        description=("The cap as authored, at 2dp (contract rule 1). The RAW row, not the platform-clamped effective cap — see the module comment.")
+    )
+    enforcement_mode: str = Field(
+        description=("`soft` or `hard`, echoed from the row. A `hard` cap that can never match is the more alarming case of the two.")
+    )
+    accrues_elsewhere: bool = Field(
+        description=(
+            "`true` when a settled `root_user` accrual for the SAME person exists "
+            "in a partition other than this one — the cap can never match, and "
+            "this is the operator's confirmed defect. `false` means no accrual "
+            "exists anywhere yet: the cap is merely dormant, which §8.2 says is "
+            "not proof of misconfiguration. A boolean, never a figure: a foreign "
+            "org's dollars do not cross this surface (§7.2)."
+        )
+    )
+
+
+class MisPartitionedCapReport(BaseModel):
+    """The mis-partitioned ``root_user`` cap report — #4627, note §8.2.
+
+    **Read-only and detection-only.** Nothing here mutates a cap, and no endpoint
+    on this router does either: §8.1 rules that existing caps stay exactly where
+    they are, because moving one silently changes what stops a workload. The
+    remedy is the operator's, in two steps (§8.3); this report is what tells them
+    which caps need it.
+
+    ``rows`` is ordered with ``accrues_elsewhere=true`` first, so the confirmed
+    defects are what an operator sees without scrolling, then by ``entity_id`` and
+    ``period_type`` for a stable order across calls.
+    """
+
+    org_id: str = Field(description="The partition reported on, resolved SERVER-SIDE from `tenant_memberships`. Never read from a request parameter.")
+    rows: list[MisPartitionedCapRow] = Field(
+        default_factory=list,
+        description=(
+            "The `root_user` caps in this partition with no matching settled "
+            "accrual, confirmed cross-partition cases first. An empty list means "
+            "every `root_user` cap here has accrued at least once — it never means "
+            "the check could not run, which is a `503`."
+        ),
+    )
+    total_row_count: int = Field(
+        description=("`len(rows)`. The report is not paginated: `root_user` caps are per-person and one partition's set is small.")
+    )
+    accrues_elsewhere_count: int = Field(
+        description=(
+            "How many rows are CONFIRMED mis-partitioned (`accrues_elsewhere=true`). The number an operator acts on; the rest are dormant caps."
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# The person-level cap — Issue #4629 (#4620 · C3)
+# ---------------------------------------------------------------------------
+#
+# Design note `docs/design-notes/4620-cross-org-person-budgets.md` §4.
+#
+# Everything above is keyed on a tenant. These two models are the first budget
+# shapes in this module that are NOT: a person-level cap is stored partition-free
+# in `person_budget_configs`, keyed on the person's cross-org anchor, because a
+# person's runs execute in whichever tenant the work is in (#4620).
+#
+# Money is still a JSON string at the cap column's own precision (contract rule 1),
+# and "no cap authored" is still not "a cap of $0" (rule 2) — expressed here as a
+# `null` `cap` object rather than a zeroed one.
+#
+# What is deliberately NOT on these models:
+#
+# * **No spend, headroom, utilisation or band.** This unit is storage and authoring
+#   only. Rendering the cap against a cross-org denominator is C1 (#4626), which
+#   adds `person_envelope` to `GET /me/budget`; putting a second, separately-derived
+#   spend figure here is how the two surfaces come to disagree about the same
+#   dollars (the #4322 read/write asymmetry class).
+# * **No `enforcement_mode` on the REQUEST.** The person layer is informational in
+#   this unit and `soft` is the only value the API writes. `hard` requires the §5.7
+#   ruling and lands with C4 (#4630). Accepting the field now would let a client
+#   author a cap that claims to stop spend while nothing reads it.
+
+
+class PersonCapRequest(BaseModel):
+    """Author (or re-author) a person's own platform-wide spend limit — C3.
+
+    One field, on purpose. ``period_type`` is in the path, the anchor is derived
+    server-side (or, for a platform admin, taken from the path and validated), and
+    ``enforcement_mode`` is not client-settable in this unit — see the section
+    comment above. A request body that cannot name a target cannot author a cap for
+    somebody else, which is the same structural-scoping argument ``me_routes.py``
+    makes for the read path.
+
+    ``gt=0`` matches ``BudgetCreateRequest`` (``src/shared/schemas/budget.py``): a
+    limit of exactly zero would be indistinguishable in every downstream reader
+    from "no limit authored", and a negative one has no meaning at all. Someone
+    who wants no ceiling deletes the row.
+    """
+
+    budget_amount_usd: Decimal = Field(
+        gt=0,
+        le=Decimal("99999999.99"),
+        decimal_places=2,
+        description=(
+            "The person's total spend ceiling for one calendar period, across every "
+            "organization. 2dp, matching the `NUMERIC(10,2)` column; `le` is that "
+            "column's maximum — without it an over-range amount passes validation "
+            "and dies in Postgres as a numeric-field overflow, which the routes' "
+            "fault mapping would misreport as a retryable 503 backend failure "
+            "(and SQLite-backed tests would never catch, since SQLite ignores "
+            "NUMERIC precision). Must be > 0 — removing a limit is a DELETE, not "
+            "a `0`."
+        ),
+    )
+
+
+class PersonCapResponse(BaseModel):
+    """A person's platform-wide limit, or the explicit absence of one — C3.
+
+    ``cap_usd`` is ``None`` exactly when no row exists, and the caller is told so
+    by ``cap_status`` rather than having to infer it from a zero (contract rule 2,
+    applied to this table).
+
+    ``enforcement_mode`` is on the wire even though it is not settable, because a
+    client MUST be able to tell an informational limit from an enforcing one. When
+    C4 (#4630) makes `hard` reachable, the same field carries it and no client
+    needs a new one — and until then, a surface reading this cannot claim spend
+    will be stopped.
+    """
+
+    person_anchor: str = Field(
+        description=(
+            "The cross-org person key this limit is stored against, "
+            "`github:<numeric_user_id>`. Deliberately NOT a `users.id`: a person "
+            "onboarded into two orgs has two of those, so a cap keyed on one would "
+            "miss their spend in the other."
+        )
+    )
+    period_type: Literal["daily", "weekly", "monthly"] = Field(
+        description="The calendar period the limit applies to. Run/chain caps are not calendar periods and have no person-level equivalent."
+    )
+    cap_usd: str | None = Field(
+        description="The authored limit at 2dp, or `null` when none is authored. `null` is NOT `0.00` — see `cap_status`.",
+    )
+    cap_status: CapStatus = Field(
+        description="`capped` when a limit row exists for this person and period, `uncapped` when none does.",
+    )
+    enforcement_mode: str | None = Field(
+        description=(
+            "`hard` — every write since C4 (#4630): the limit DENIES attributed "
+            "agent requests across every organization once the settled cross-org "
+            "total passes it. `soft` — a row authored before C4, still "
+            "informational until re-saved (nothing is denied). `null` when "
+            "uncapped. A client MUST render `soft` as not-enforcing and `hard` as "
+            "enforcing; claiming either the other way is the screen/behavior "
+            "disagreement #4620 exists to close."
+        ),
+    )
+    updated_at: str | None = Field(
+        description="ISO-8601 instant the limit was last authored, or `null` when uncapped.",
+    )
+    source: PersonLimitSource | None = Field(
+        default=None,
+        description=(
+            "WHERE the reported limit comes from (#4690), and therefore who can "
+            "change it. `own` — an individual row this person authored; they may "
+            "lower it freely. `admin` — an individual row a platform admin "
+            "authored for them. `team_default` / `org_default` / `platform_default` "
+            "— no individual row exists and a DEFAULT rule governs them; the "
+            "number is a ceiling they may set themselves BELOW but not above. "
+            "`null` only when `cap_status` is `uncapped`, i.e. no rule of any kind "
+            "applies. A client that renders a default as if it were the person's "
+            "own limit invites them to raise it and collect a 422."
+        ),
+    )
+    source_label: str | None = Field(
+        default=None,
+        description=(
+            "The same provenance in prose, ready to show a person — e.g. `your own "
+            "limit`, `platform default`, `org default for acme-corp`. Composed "
+            "server-side so this string, the 402 denial text and the 422 ceiling "
+            "rejection cannot describe the same rule differently. `null` when "
+            "uncapped."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT person limits at platform/org/team scope — Issue #4690 (D1)
+# ---------------------------------------------------------------------------
+#
+# `PersonCapRequest`/`PersonCapResponse` above are about ONE person's row. These two
+# are about a RULE — "$1,000/month each, unless we say otherwise" — that governs
+# every current and future member of a scope. The distinction is why they are
+# separate models rather than an optional `scope` field on the pair above: the
+# target of a default is a scope, not a person, and a model that could express
+# either would put an anchor and a scope in one field.
+#
+# The scope itself is NOT in the body. It is in the path (`platform`, `org:<id>`,
+# `team:<org>:<team>`), so the request model has nothing to name — the same
+# structural-scoping argument the self-service cap routes make.
+
+
+class PersonDefaultRequest(BaseModel):
+    """Author (or re-author) the default person limit for one scope and period — #4690.
+
+    One field, matching ``PersonCapRequest`` exactly: the scope is in the path, the
+    period is a query parameter, and ``enforcement_mode`` is not client-settable (a
+    default that silently does not enforce is the #4511 inert-cap class at platform
+    scale, so ``hard`` is the only value written).
+
+    The constraints are ``PersonCapRequest``'s, deliberately identical because the
+    two columns are identical ``NUMERIC(10,2)``: a default a client could express but
+    an individual row could not would be a ceiling nobody could comply with.
+    """
+
+    budget_amount_usd: Decimal = Field(
+        gt=0,
+        le=Decimal("99999999.99"),
+        decimal_places=2,
+        description=(
+            "The default total spend ceiling, per person, for one calendar period "
+            "across every organization. Applies to everybody in the scope who has "
+            "no individual limit and no tighter-scoped default. 2dp, matching the "
+            "`NUMERIC(10,2)` column; `le` is that column's maximum (see "
+            "`PersonCapRequest` for why an unbounded value would surface as a "
+            "misleading 503). Must be > 0 — removing a default is a DELETE, not a "
+            "`0`, which would be a real ceiling of zero dollars applied to "
+            "everybody in the scope."
+        ),
+    )
+
+
+class PersonDefaultResponse(BaseModel):
+    """A scope's default person limit, or the explicit absence of one — #4690.
+
+    Same two contract rules as every other cap shape here: money is a string at the
+    column's precision (rule 1), and "no default authored" is a distinct
+    ``cap_status`` rather than a ``0.00`` (rule 2) — a zeroed default would read as
+    "nobody in this scope may spend anything", which is the opposite of what an
+    absent rule means.
+
+    No spend and no member count: this is the authoring surface for a rule. How many
+    people it currently governs, and what they have spent, is the admin/person UI
+    (#4691) reading the existing cross-org figures — deriving a second copy here is
+    the #4322 class.
+    """
+
+    scope_type: Literal["platform", "org", "team"] = Field(
+        description=(
+            "Which rung this default sits on. The ladder is individual row > team default > org default > platform default, tightest scope first."
+        )
+    )
+    scope_id_org: str | None = Field(
+        description="The organization this default is scoped to, or `null` on the platform rung.",
+    )
+    scope_id_team: str | None = Field(
+        description=(
+            "The team this default is scoped to, `null` on every rung but `team`. "
+            "Always accompanied by `scope_id_org`, because a team id is unique only "
+            "inside its own organization."
+        ),
+    )
+    period_type: Literal["daily", "weekly", "monthly"] = Field(
+        description="The calendar period the default applies to. Run/chain caps are not calendar periods and have no person-level equivalent."
+    )
+    cap_usd: str | None = Field(
+        description="The authored default at 2dp, or `null` when this scope and period have none. `null` is NOT `0.00` — see `cap_status`.",
+    )
+    cap_status: CapStatus = Field(
+        description="`capped` when a default rule exists for this scope and period, `uncapped` when none does.",
+    )
+    enforcement_mode: str | None = Field(
+        description=(
+            "`hard` for every default (#4690): the rule DENIES once a governed "
+            "person's settled cross-org total passes it. `null` when uncapped. "
+            "Unlike an individual row there is no `soft` case — no generation of "
+            "these rows was ever promised to be informational."
+        ),
+    )
+    updated_at: str | None = Field(
+        description="ISO-8601 instant the default was last authored, or `null` when none is authored.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Member spend-against-limit, list-shaped — Issue #4847 (T2b)
+# ---------------------------------------------------------------------------
+#
+# The admin console's Members panel renders one row per person: this month's spend,
+# the limit that applies to them, and which rung of the ladder that limit came from.
+# Every other surface answering that question answers it for ONE person
+# (`/budget/person-cap/{anchor}`) or for the caller (`/me/budget/person-cap`), so a
+# panel listing thirty members had no read to make but thirty of them.
+#
+# Deliberately READ-ONLY and deliberately composed from the SHARED resolvers
+# (`resolve_applicable_person_limits`, `read_person_partition_spend`) rather than from
+# queries of its own. That is the standing rule in `person_ledger.py`: the displayed
+# number IS the enforced number, and a second summation is how a dashboard and a 402
+# come to disagree about whether somebody is over their limit. There is no new budget
+# logic here — only an existing figure, per member, in one response.
+
+
+class MemberBudgetResponse(BaseModel):
+    """One member's month spend against the limit that governs them — #4847.
+
+    Both money fields are strings at their column's precision (contract rule 1), and
+    each is rendered at the precision of the column it came from, not a shared one:
+    ``spend_usd`` is ``NUMERIC(14,6)`` and ``limit_usd`` is ``NUMERIC(10,2)``.
+
+    ``limit_usd`` is ``None`` exactly when nothing governs this person for the period
+    — no individual row and no default at any rung — and ``limit_status`` says so
+    (contract rule 2). A ``0.00`` here would render as somebody who may spend
+    nothing, which is the opposite of what an absent rule means, and it is the
+    difference between a usage bar the panel must not draw and one showing 0%.
+    """
+
+    user_id: str = Field(
+        description=(
+            "The canonical `users.id`. The column the membership routes and the "
+            "person-scoped rule resolvers both key on, so a client can join this row "
+            "to a membership row without re-deriving an identity."
+        )
+    )
+    person_anchor: str | None = Field(
+        description=(
+            "The cross-org person key the individual limit would be stored against, "
+            "or `null` for a member with no linked identity to anchor one to. `null` "
+            "is a legitimate permanent state (email/invite onboarding), never an "
+            "error: such a member can hold no individual row, but a DEFAULT still "
+            "governs them — skipping the ladder's top rung is not skipping the ladder."
+        )
+    )
+    spend_usd: str = Field(
+        description=(
+            "Settled spend for this period in THIS organization, at 6dp. Scoped to "
+            "the org in the path, not the person's cross-org total: this is an "
+            "org-admin-facing panel and the figure is read per partition. A true "
+            "`0.000000` when the person has no settled row — a measurement, not a "
+            "fallback."
+        )
+    )
+    limit_usd: str | None = Field(
+        description=(
+            "The limit that GOVERNS this person for the period, at 2dp, or `null` when nothing does. `null` is NOT `0.00` — see `limit_status`."
+        ),
+    )
+    limit_status: CapStatus = Field(
+        description="`capped` when any rule governs this person for the period, `uncapped` when none does at any rung.",
+    )
+    source: PersonLimitSource | None = Field(
+        description=(
+            "Which rung supplied `limit_usd` — the same values, with the same "
+            "meanings, as `PersonCapResponse.source`. `null` only when "
+            "`limit_status` is `uncapped`. Reported so the panel can label the "
+            "number's provenance (`individual limit` / `team default` / `org "
+            "default`) instead of implying every figure was set for that one person."
+        ),
+    )
+    source_label: str | None = Field(
+        description=(
+            "The same provenance in prose, composed server-side so this panel, the "
+            "402 text and the person's own screen name the rung identically. "
+            "`null` when uncapped."
+        ),
+    )
+
+
+class MemberBudgetListResponse(BaseModel):
+    """Month spend and applicable limit for a page of an organization's members — #4847."""
+
+    items: list[MemberBudgetResponse]
+    total: int
+    page: int
+    page_size: int
+    has_more: bool
+    period_type: Literal["daily", "weekly", "monthly"] = Field(
+        description="The calendar period every row was resolved for, echoed back so a client cannot mislabel the column it renders.",
+    )
+    period_start: str = Field(
+        description="ISO-8601 date the period began — the `period_start` the spend rows were read at, so the figure is reproducible.",
+    )

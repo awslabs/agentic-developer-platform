@@ -93,3 +93,16 @@ def test_domain_skill_overrides_core_of_same_name(tmp_path: Path) -> None:
     staged = stage / "skills" / "dup" / "SKILL.md"
     assert "domain-version" in staged.read_text()
     assert "core-version" not in staged.read_text()
+
+
+def test_real_shared_policy_is_packaged(tmp_path: Path) -> None:
+    import shutil
+
+    source = tmp_path / "source"
+    stage = tmp_path / "stage"
+    originals = HERE.parents[1] / "rules/personas"
+    shutil.copytree(originals, source / "agent-factory/personas")
+    result = _run_stage(source, stage)
+    assert result.returncode == 0, result.stderr
+    policy = Path("shared/human-communication.md")
+    assert (stage / "personas" / policy).read_bytes() == (originals / policy).read_bytes()

@@ -49,6 +49,21 @@ the artifact, which the agent authored and could therefore have named any tenant
 in. The gateway compares the declared org against its own resolved one and rejects
 a mismatch, so a forged value would be refused there too; overwriting it here means
 the request the worker sends is *correct*, not merely caught.
+
+Issue #4597 adds ``X-Agent-RunId``, and it is what makes that comparison *pass* for
+a real tenant. The gateway resolves this pod as the shared ``scaledjob-worker``
+registry entry, whose ``org_id`` is the literal ``__platform__`` — so before #4597
+the gateway's "own resolved one" was never the run's tenant and every real-tenant
+registration was refused with a 422. The header carries the run's envelope
+``message_id``, which is the partition key of the ``webhook-events`` row
+webhook-ingress wrote at ingress; the gateway reads the tenant off that row.
+
+Note what this header is and is not. It is a **reference** to a row the server
+wrote, not an assertion of identity or of tenant — the worker is not trusted to
+name its own tenant, and the ``X-Agent-OrgId`` attribution header is deliberately
+NOT what the gateway reads (it is caller-influenced, and the #4132 invariant
+forbids it gating access). It is signed as part of the SigV4 request rather than
+appended afterwards, so it cannot be rewritten in flight.
 """
 
 from __future__ import annotations
@@ -196,11 +211,25 @@ def register_loop_proposal(*, work_dir: Path, issue: int, timeout: int = _TIMEOU
         # from the engine would name the document, not the missing envelope field.
         raise EngineRegistrationError("no ADP_TENANT_ID in env; refusing to register a plan with no tenant")
 
+    # Issue #4597: the run this registration is on behalf of. `ADP_MESSAGE_ID` is the
+    # envelope `message_id` (exported during bootstrap, long before this runs), which
+    # is the `event_id` partition key of the run's own `webhook-events` row — the row
+    # the gateway reads the owning tenant off. NOT the SQS MessageId and not the KEDA
+    # pod name, both of which are also called some spelling of "run id" and neither of
+    # which the gateway can resolve.
+    run_id = os.environ.get("ADP_MESSAGE_ID", "").strip()
+    if not run_id:
+        # Reported here rather than sent blank, for the same reason as the tenant
+        # above: the gateway's refusal would name the header, and an operator reading
+        # the closing comment needs to know the *pod* had nothing to send.
+        raise EngineRegistrationError("no ADP_MESSAGE_ID in env; refusing to register a plan with no run to bind it to")
+
     document = _load_document(proposal_artifact_path(work_dir, issue), tenant_id=tenant_id, intent_ref=str(issue))
 
     url = f"{endpoint_base}{_DRAFT_PATH}"
     data = json.dumps(document).encode("utf-8")
-    headers = _sigv4_sign_request("POST", url, {"Content-Type": "application/json"}, data)
+    # Inside the signed header set, deliberately — see the module docstring.
+    headers = _sigv4_sign_request("POST", url, {"Content-Type": "application/json", "X-Agent-RunId": run_id}, data)
 
     logger.info(
         "Registering draft plan: flow=%s nodes=%s edges=%s intent=%s",
@@ -238,19 +267,49 @@ def _success_note(result: dict[str, Any]) -> str:
     rather than spelled here. The human reading this comment types that string
     back, and a copy of it in the worker could drift from the parser in the
     gateway — leaving a human following a working instruction that does nothing.
+
+    **The command goes in a fenced block, not inline backticks (#4599).** This note
+    is posted on every successful registration, and an inline `@agent-engine accept`
+    used to be read by the tick as a live command: marked pending, parsed, refused
+    (this comment's author is a bot with no `PLAN_APPROVE`), and answered with
+    "this command cannot be applied by this account". Every registration produced
+    that reply — the feature's own success message triggering the feature. A fence
+    is ignored by the parser's code-awareness rule while staying copy-pasteable,
+    which is the property the human actually needs from this line.
+
+    **The label is "Flow", and the id is a link when the gateway gives us one
+    (#4885).** It said "Plan" over a `flow_id`, directly above a line promising the
+    thing was "visible in the graph UI" — with no address for that UI anywhere in
+    the comment. The one artifact the reader needed, they had to already know how to
+    find, and the label pointed at the wrong noun while they looked. `flow_url` is
+    composed by the gateway (`draft_routes._flow_url`) because only it knows the
+    user-facing origin: this worker's `ADP_GATEWAY_ENDPOINT` is the API Gateway
+    invoke URL, and pasting that would hand an operator a link to the machine plane.
+    When the gateway sends no URL the id still prints bare — a missing link is a
+    degraded comment, never a missing plan.
     """
     accept_command = result.get("accept_command") or "@agent-engine accept"
     already = result.get("already_registered")
 
+    flow_id = result.get("flow_id")
+    flow_url = result.get("flow_url")
+    # A Markdown link only for an absolute URL. A relative one resolves against
+    # github.com and 404s, which reads as a broken feature rather than an absent link.
+    flow_ref = f"[`{flow_id}`]({flow_url})" if flow_url else f"`{flow_id}`"
+
     lines = [
         "### Delivery loop registered with the orchestration engine",
         "",
-        f"**Plan**: `{result.get('flow_id')}` (v{result.get('plan_version')}) — "
+        f"**Flow**: {flow_ref} (v{result.get('plan_version')}) — "
         f"{result.get('nodes_created')} nodes, {result.get('edges_created')} edges",
         "**State**: `draft` — the plan is visible in the graph UI and executes nothing.",
         f"**Acceptance gate**: `{result.get('acceptance_gate_address')}`",
         "",
-        f"Reply `{accept_command}` to start execution.",
+        "Reply with the following to start execution:",
+        "",
+        "```",
+        accept_command,
+        "```",
     ]
     if already:
         lines.extend(["", "_This document was already registered; the existing plan is unchanged._"])

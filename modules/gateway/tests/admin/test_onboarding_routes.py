@@ -465,6 +465,11 @@ class TestUserEndpoints:
     @pytest.mark.asyncio
     async def test_remove_user(self, test_app, mock_admin_service, mock_access_control, admin_user):
         """Test removing a user."""
+        from src.admin.service import UserAuthzState
+
+        mock_admin_service.get_user_authz_state = AsyncMock(
+            return_value=UserAuthzState(user_id="user-123", org_id="test-org", cognito_sub="sub-123", users_role="member", membership_role="member")
+        )
         mock_admin_service.remove_user = AsyncMock(return_value=True)
 
         test_app.dependency_overrides[get_admin_service] = lambda: mock_admin_service

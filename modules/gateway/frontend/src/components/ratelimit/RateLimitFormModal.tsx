@@ -47,11 +47,27 @@ export function RateLimitFormModal({
     tpm: null,
     concurrentRequests: null,
   });
+  /**
+   * The org partition this rate limit is WRITTEN to — Issue #4948.
+   *
+   * Not always `orgId`: the entity picker now lists every org the caller administers,
+   * and a limit for another org's team must land in THAT org's partition. The limiter
+   * loads rows by `(org_id, entity_type, entity_id)`, so posting a `sophos-it` team to
+   * the caller's own partition would store a row that reads back as configured and is
+   * never matched — the #4511 inert-config class one dimension over.
+   *
+   * Seeded from and reset to `orgId`, so a single-org admin's behaviour is unchanged.
+   */
+  const [scopeOrgId, setScopeOrgId] = useState(orgId);
 
   const isEditMode = !!editData;
 
   // Reset form when modal opens/closes or editData changes
   useEffect(() => {
+    // Reopening the form must not inherit the org picked during the last create
+    // (#4948) — that would silently author the next limit in a partition the
+    // operator is no longer looking at.
+    setScopeOrgId(orgId);
     if (editData) {
       setFormData(editData);
     } else {
@@ -63,7 +79,7 @@ export function RateLimitFormModal({
         concurrentRequests: null,
       });
     }
-  }, [editData, isOpen]);
+  }, [editData, isOpen, orgId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,7 +106,9 @@ export function RateLimitFormModal({
         });
         toast.success('Rate limit updated successfully');
       } else {
-        await createRatelimit(orgId, {
+        // `scopeOrgId`, NOT `orgId` (#4948): the partition must be the org the entity
+        // belongs to, or the row matches nothing at request time.
+        await createRatelimit(scopeOrgId, {
           entity_type: formData.entityType,
           entity_id: formData.entityId,
           rpm: formData.rpm,
@@ -157,6 +175,11 @@ export function RateLimitFormModal({
             entityId={formData.entityId}
             onEntityTypeChange={(entityType) => setFormData((prev) => ({ ...prev, entityType, entityId: '' }))}
             onEntityIdChange={(entityId) => setFormData((prev) => ({ ...prev, entityId }))}
+            // Issue #4948: redirect the WRITE to the org the operator picked. Passing
+            // this is what makes the org picker appear at all — the component withholds
+            // it from consumers that cannot honour it, so the affordance and the
+            // correct partition ship together or not at all.
+            onScopeOrgChange={setScopeOrgId}
             disabled={false}
           />
         )}

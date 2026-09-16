@@ -5,10 +5,15 @@ route existed the button pointed at `/api/cli/bg-auth.sh`, which nothing served
 (and its PowerShell sibling had no source file at all), so both downloads were
 dead links.
 
-Two files are serveable: the Cognito auth helper `bg-cognito-auth.sh`, and
+Five files are serveable: the `adp` CLI and its `install.sh` (Issue #4852 — the
+one-line install path, where install.sh fetches the rest from this same route),
+the Cognito auth helper `bg-cognito-auth.sh` that `adp` wraps, and
 `bg-gateway-proxy.py` — the localhost auth proxy its `serve` subcommand starts
 for Codex. `serve` requires the two to sit side by side, so serving only the
-helper left the documented Codex flow unfinishable (Issue #4156).
+helper left the documented Codex flow unfinishable (Issue #4156). The domain
+helpers `adp-bedrock.py` and `adp-aws.py` provide scriptable destination setup,
+routing and personal AWS account connection through the same authenticated APIs
+as the UI. Only their static code is served here.
 
 Two deliberate design points:
 
@@ -47,12 +52,26 @@ _CLI_DIR = _GATEWAY_ROOT / "cli"
 # so a user following cli/README.md §"Using Codex: zero-touch auth with serve"
 # needs both files — offering only the helper is a dead end (Issue #4156).
 #
+# `install.sh` and `adp` are the one-line install path (Issue #4852): install.sh
+# is what `curl … | sh` pipes, and it fetches `adp` (plus the two files above)
+# from this same route. `adp update` re-pulls install.sh from here too, which is
+# what replaces the old manual re-download. Neither file contains a secret, so
+# both keep this route's public-content property.
+#
 # Deliberately absent:
 #   bg-auth.sh   — legacy SigV4 helper, deprecated (cli/README.md)
 #   bg-auth.ps1  — never existed in the repo; PowerShell parity is a non-goal
 ALLOWED_SCRIPTS: dict[str, Path] = {
+    "adp": (_CLI_DIR / "adp").resolve(),
+    "adp_common.py": (_CLI_DIR / "adp_common.py").resolve(),
+    "adp-admin.py": (_CLI_DIR / "adp-admin.py").resolve(),
+    "install.sh": (_CLI_DIR / "install.sh").resolve(),
     "bg-cognito-auth.sh": (_CLI_DIR / "bg-cognito-auth.sh").resolve(),
     "bg-gateway-proxy.py": (_CLI_DIR / "bg-gateway-proxy.py").resolve(),
+    "adp-bedrock.py": (_CLI_DIR / "adp-bedrock.py").resolve(),
+    "adp-aws.py": (_CLI_DIR / "adp-aws.py").resolve(),
+    "adp-github.py": (_CLI_DIR / "adp-github.py").resolve(),
+    "adp-github-admin.py": (_CLI_DIR / "adp-github-admin.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
@@ -61,8 +80,16 @@ PYTHON_SCRIPT_MEDIA_TYPE = "text/x-python"
 # Per-script media type. Keyed off the same allowlisted names, so an entry added
 # above without one falls back to the shell type rather than 500-ing.
 SCRIPT_MEDIA_TYPES: dict[str, str] = {
+    "adp": SHELL_SCRIPT_MEDIA_TYPE,
+    "adp_common.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "install.sh": SHELL_SCRIPT_MEDIA_TYPE,
     "bg-cognito-auth.sh": SHELL_SCRIPT_MEDIA_TYPE,
     "bg-gateway-proxy.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-bedrock.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-aws.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-github.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-github-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }
 
 
@@ -70,12 +97,13 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "/{script_name}",
     summary="Download a CLI helper script",
     description="""
-    Serve a CLI helper script as a file attachment (Issues #4146, #4156).
+    Serve a CLI helper script as a file attachment (Issues #4146, #4156, #4852).
 
     Public and unauthenticated by design: the /setup page downloads via
-    `window.open`, which cannot attach an Authorization header. The serveable
-    files are `bg-cognito-auth.sh` and `bg-gateway-proxy.py`, neither of which
-    contains secrets.
+    `window.open`, which cannot attach an Authorization header — and the
+    documented `curl … | sh` install line sends no header either. The serveable
+    files are `adp`, `install.sh`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py`,
+    `adp-bedrock.py` and `adp-aws.py`, none of which contains secrets.
 
     `script_name` is matched against an explicit allowlist — it is never
     joined onto a filesystem path — so traversal attempts return 404.

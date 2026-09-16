@@ -61,8 +61,13 @@ _ACCEPTED_FORMS = "a Cognito sub, a canonical ADP user id, or a Cognito username
 _SERVICE_PRINCIPAL_QUALIFIER = "service:"
 
 
-async def resolve_canonical_user_id(db: AsyncSession, cognito_sub: str) -> str:
-    """Resolve a Cognito sub to the canonical ADP user_id (``users.id``).
+async def resolve_canonical_user_id(db: AsyncSession, cognito_sub: str, *, org_id: str | None = None) -> str:
+    """Resolve a login to its canonical ADP user_id (``users.id``).
+
+    With ``org_id``, resolve the account in that workspace, including verified
+    org-placement links. A user's login account and workspace account may have
+    different IDs; activity must use the same workspace identity as dispatch.
+    No match falls back to the raw subject, never another workspace's account.
 
     Args:
         db: Async database session. MUST be a session bound to the gateway DB —
@@ -71,6 +76,8 @@ async def resolve_canonical_user_id(db: AsyncSession, cognito_sub: str) -> str:
             and degrades to the raw sub (see #2213 follow-up).
         cognito_sub: The ``sub`` claim from the Cognito JWT (i.e.
             ``TokenContext.user_id``).
+        org_id: Optional authoritative workspace from the authenticated context.
+            When supplied, resolve only its local account or proven membership.
 
     Returns:
         The canonical ``users.id`` UUID if a matching row exists, otherwise
@@ -78,7 +85,15 @@ async def resolve_canonical_user_id(db: AsyncSession, cognito_sub: str) -> str:
         identities, or if the ``users`` table is unreachable on this session).
     """
     try:
-        canonical = await db.scalar(select(User.id).where(User.cognito_sub == cognito_sub))
+        query = select(User.id).where(User.cognito_sub == cognito_sub)
+        if org_id is not None:
+            query = query.where(User.org_id == org_id)
+        canonical = await db.scalar(query)
+        if canonical is None and org_id is not None:
+            from src.shared.identity.workspaces import workspace_user
+
+            user = await workspace_user(db, cognito_sub, org_id)
+            canonical = user.id if user is not None else None
     except SQLAlchemyError:
         # Defense-in-depth: a wrong-DB session (no ``users`` table) or a transient
         # DB error must not 500 the caller. Degrade to the raw sub — the same
@@ -157,7 +172,7 @@ async def resolve_user_entity_id(db: AsyncSession, org_id: str, supplied_id: str
         UnresolvableUserEntityError: 422; nothing is persisted.
     """
     user_row = await _resolve_user_row(db, org_id, supplied_id)
-    return _require_sub(user_row, supplied_id)
+    return await _require_sub(db, user_row, supplied_id)
 
 
 async def resolve_root_user_entity_id(db: AsyncSession, org_id: str, supplied_id: str) -> str:
@@ -251,6 +266,12 @@ async def _resolve_user_row(db: AsyncSession, org_id: str, supplied_id: str) -> 
     if user_row is not None:
         return user_row
 
+    from src.shared.identity.workspaces import workspace_user
+
+    user_row = await workspace_user(db, candidate, org_id)
+    if user_row is not None and user_row.org_id == org_id:
+        return user_row
+
     # 3. Cognito username of the form GitHub_<github_user_id>.
     if candidate.lower().startswith(_GITHUB_USERNAME_PREFIX):
         github_user_id = candidate[len(_GITHUB_USERNAME_PREFIX) :]
@@ -305,7 +326,7 @@ async def _resolve_via_github_identity(db: AsyncSession, org_id: str, github_use
     return user_row
 
 
-def _require_sub(user_row: User, supplied_id: str) -> str:
+async def _require_sub(db: AsyncSession, user_row: User, supplied_id: str) -> str:
     """Return the row's ``cognito_sub``, or raise if it has none.
 
     ``users.cognito_sub`` is nullable (shadow users, invited-but-never-logged-in
@@ -314,9 +335,12 @@ def _require_sub(user_row: User, supplied_id: str) -> str:
     422 is the honest answer. Deliberately NOT applied on the ``root_user`` path,
     where the canonical id is the key and always exists (#4536).
     """
-    if not user_row.cognito_sub:
+    from src.shared.identity.workspaces import login_subject_for_user
+
+    subject = await login_subject_for_user(db, user_row)
+    if not subject:
         raise UnresolvableUserEntityError(
             supplied_id,
             "the user has not signed in yet, so they have no identity the budget engine can match",
         )
-    return user_row.cognito_sub
+    return subject

@@ -22,7 +22,60 @@ import {
   formatCost,
   formatCostFigure,
   formatRunCost,
+  formatWireMoney,
 } from '@/utils/cost';
+
+describe('formatWireMoney — the budget surface formatter (#4685)', () => {
+  // Consolidates four private `formatMoney` copies that disagreed on exactly these
+  // cases. Each test below is one of those disagreements, and each was invisible to
+  // the component tests because every file exercised only its own copy.
+
+  it('renders a plain amount at 2dp', () => {
+    expect(formatWireMoney('412.800000')).toBe('$412.80');
+    expect(formatWireMoney('600.00')).toBe('$600.00');
+  });
+
+  it('renders an empty string as absence, NOT $0.00', () => {
+    // `Number('')` is 0, not NaN. Copies that guarded with `isNaN` alone turned a
+    // missing figure into a verified zero — the defect the budget EPIC exists to end.
+    expect(formatWireMoney('')).toBe(NO_DATA_INDICATOR);
+    expect(formatWireMoney('   ')).toBe(NO_DATA_INDICATOR);
+  });
+
+  it('renders null and undefined as absence', () => {
+    expect(formatWireMoney(null)).toBe(NO_DATA_INDICATOR);
+    expect(formatWireMoney(undefined)).toBe(NO_DATA_INDICATOR);
+  });
+
+  it('renders an unparseable value as absence rather than $NaN', () => {
+    expect(formatWireMoney('not-a-number')).toBe(NO_DATA_INDICATOR);
+    expect(formatWireMoney('Infinity')).toBe(NO_DATA_INDICATOR);
+  });
+
+  it('keeps sub-cent spend visible instead of flattening it to $0.00', () => {
+    // Per-request costs are genuinely sub-cent. `$0.00` for real spend is the same
+    // "absence looks like zero" confusion arriving from the other direction.
+    expect(formatWireMoney('0.004500')).toBe('$0.0045');
+    expect(formatWireMoney('0.000100')).toBe('$0.0001');
+  });
+
+  it('renders a measured zero as $0.00', () => {
+    // A real zero is honest news and must not become an em dash.
+    expect(formatWireMoney('0')).toBe('$0.00');
+    expect(formatWireMoney('0.000000')).toBe('$0.00');
+  });
+
+  it('places the sign outside the currency symbol', () => {
+    // Headroom goes negative when settled spend passes a cap.
+    expect(formatWireMoney('-50.000000')).toBe('-$50.00');
+  });
+
+  it('applies the sign AFTER rounding, so a rounded-away negative is not "-$0.00"', () => {
+    // -0.004 rounds to 0 at 2dp; the copies that took the sign from the input printed
+    // "-$0.00", which reads as a debt of nothing.
+    expect(formatWireMoney('-0.0000001')).toBe('$0.00');
+  });
+});
 
 describe('formatCost — absence is never a number', () => {
   it('renders null as a non-currency indicator, NOT $0.00', () => {

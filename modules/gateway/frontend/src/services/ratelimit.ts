@@ -13,6 +13,17 @@ import type { EntityType } from '@/types';
 export interface RateLimitListItem {
   entityType: EntityType;
   entityId: string;
+  /** Name of the org/department/team this limit targets, when it resolves (#4948). */
+  entityDisplayName?: string | null;
+  /**
+   * The entity id matches no org/department/team in this org — Issue #4948.
+   *
+   * Such a limit is stored, reads back as configured, and is never applied (it usually
+   * names a Cognito group left behind by the old picker, or a renamed/deleted entity).
+   * Surfaced so the table can flag the row; the row is never hidden, because it is a
+   * control somebody believes is in force.
+   */
+  entityUnresolved?: boolean;
   rpm: number | null;
   tpm: number | null;
   concurrentRequests: number | null;
@@ -54,6 +65,8 @@ export async function getRatelimits(
     items: Array<{
       entity_type: string;
       entity_id: string;
+      entity_display_name?: string | null;
+      entity_unresolved?: boolean;
       rpm: number | null;
       tpm: number | null;
       concurrent_requests: number | null;
@@ -147,6 +160,8 @@ export async function deleteRatelimit(
 function transformRateLimitListItem(data: {
   entity_type: string;
   entity_id: string;
+  entity_display_name?: string | null;
+  entity_unresolved?: boolean;
   rpm: number | null;
   tpm: number | null;
   concurrent_requests: number | null;
@@ -155,6 +170,11 @@ function transformRateLimitListItem(data: {
   return {
     entityType: data.entity_type as EntityType,
     entityId: data.entity_id,
+    entityDisplayName: data.entity_display_name ?? null,
+    // Defaults to false, never true: a server that does not send the field has not told
+    // us the row is broken, and guessing "unresolved" would flag every healthy limit
+    // during a rollout where the API is a version behind.
+    entityUnresolved: data.entity_unresolved ?? false,
     rpm: data.rpm,
     tpm: data.tpm,
     concurrentRequests: data.concurrent_requests,

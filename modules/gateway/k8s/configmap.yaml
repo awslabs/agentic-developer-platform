@@ -46,6 +46,9 @@ data:
 
   # Cognito OAuth Configuration
   BG_COGNITO_USER_POOL_ID: "__COGNITO_USER_POOL_ID__"
+  # CLI app client for web CLI login (/auth/cli). Empty until the Terraform
+  # that creates the client applies — endpoints answer 503 until then.
+  BG_COGNITO_CLI_CLIENT_ID: "__COGNITO_CLI_CLIENT_ID__"
   BG_COGNITO_CLIENT_ID: "__COGNITO_CLIENT_ID__"
   BG_COGNITO_DOMAIN: "__COGNITO_DOMAIN__"
 
@@ -209,6 +212,19 @@ data:
   # Kill switch: set BG_MANTLE_ENABLED "false" and redeploy; route returns 503.
   BG_MANTLE_ENABLED: "true"
   BG_MANTLE_REGION: "us-east-1"
+  # AWS Bedrock's OpenAI-compatible endpoint (same host family as native
+  # bedrock-runtime). Replaces the earlier preview host bedrock-mantle.*.api.aws,
+  # which never served newer models (gpt-6-astra → 404). {region} is substituted.
+  BG_MANTLE_BASE_URL: "https://bedrock-runtime.{region}.amazonaws.com"
+  # bedrock-runtime serves the flagship OpenAI families ONLY via inference
+  # profiles, so the route rewrites the forwarded body's model to "<prefix>.<model>"
+  # (openai.gpt-6-astra → us.openai.gpt-6-astra). Must match the geo of
+  # BG_MANTLE_REGION (us|eu|apac|global). Set "" to disable the rewrite. Bare
+  # caller ids stay unchanged.
+  BG_MANTLE_INFERENCE_PROFILE_PREFIX: "us"
+  # On-demand OpenAI models (bare id, no inference profile) — exempted from the
+  # prefix rewrite above. gpt-oss is on-demand; gpt-5.6/gpt-6 are profile-only.
+  BG_MANTLE_ON_DEMAND_MODELS: "openai.gpt-oss*"
 
   # =============================================================================
   # Credential-authorization binding (EPIC #3172, S9 #3182).
@@ -242,6 +258,37 @@ data:
   # per-request via get_settings(), so no image rebuild is needed.
   # =============================================================================
   BG_ENFORCE_ORG_ASSIGNMENT: "false"
+
+  # =============================================================================
+  # Per-principal Bedrock account routing — SHADOW MODE (Issue #4743, #4692)
+  # =============================================================================
+  # When "true", the resolution ladder (user > team > org > platform) runs on the
+  # settlement path and its answer is recorded in usage_logs.bedrock_account_id.
+  # It does NOT change where any request goes: by the time it runs the call has
+  # already been signed and sent with the gateway's ambient IRSA credentials, the
+  # same as before. Enforcement is #4744.
+  #
+  # Leave "true". The captured column is the evidence #4744 is gated on — an
+  # operator has to be able to see what routing WOULD do before being asked to
+  # let it happen — and with zero mappings authored a 60s existence gate makes it
+  # cost zero queries per model call. Set the SSM param
+  # /adp/{env}/gateway/bedrock-routing-shadow-mode to "false" +
+  # `kubectl rollout restart` to stop observing; read per-request via
+  # get_settings(), so no image rebuild is needed.
+  #
+  # PLATFORM_BEDROCK_ACCOUNT_ID is the account the gateway's own IRSA credentials
+  # belong to — the answer for the platform rung, i.e. every call today. It is
+  # substituted by gateway-deploy.yml rather than discovered at runtime, because a
+  # live sts:get_caller_identity on the settlement path would add a network hop to
+  # every request that resolves to platform (before any mapping exists, all of
+  # them). If this is ever left EMPTY the platform rung still resolves but the
+  # column stays NULL — which reads as "not captured" and makes shadow mode
+  # silently unobservable, so it is wired here deliberately rather than defaulted.
+  # =============================================================================
+  BG_BEDROCK_ROUTING_SHADOW_MODE: "__BEDROCK_ROUTING_SHADOW_MODE__"
+  BG_PLATFORM_BEDROCK_ACCOUNT_ID: "__PLATFORM_BEDROCK_ACCOUNT_ID__"
+
+  # Saved Bedrock account mappings are always enforced. There is no rollout toggle.
 
   # =============================================================================
   # Budget enforcement fail mode (Issue #4075)
@@ -279,3 +326,70 @@ data:
   IDENTITY_INDEX_TABLE: "adp-__ENVIRONMENT__-identity-index"
   USER_IDENTITY_INDEX_TABLE: "adp-__ENVIRONMENT__-user-identity-index"
   USER_IDENTITY_INDEX_V2_WRITE: "true"
+
+  # =============================================================================
+  # Live agent run control (Issue #3960)
+  # =============================================================================
+  # The authenticated control path: gateway proxy -> in-pod control listener. All
+  # four verbs (pause/resume/steer/abort) are UNSUPPORTED in this story — an
+  # authorized caller on a live run gets 501 — so turning this on does not make any
+  # control action work. What it turns on is the route surface, the ping/state read
+  # path, and the capability report (all verbs false).
+  #
+  # Read directly via os.environ in activity/control_service.py, NOT BG_-prefixed,
+  # matching the sibling activity settings (AGENT_RUN_LOGS_BUCKET,
+  # WEBHOOK_EVENTS_TABLE) rather than the Pydantic settings model.
+  #
+  # The flag itself is NOT here — it lives in k8s/deployment.yaml as the
+  # __FEATURE_AGENT_CONTROL_ENABLED__ placeholder, rendered per environment by
+  # gateway-deploy.yml from /adp/<env>/gateway/feature-agent-control (default
+  # "false"), exactly like FEATURE_ORCHESTRATION_ENGINE_ENABLED (#4209 / D-R20).
+  #
+  # This file is applied verbatim to whichever environment the workflow targets, so
+  # a literal here would arm EVERY environment at once. It also matters for how the
+  # flag gets turned on: the one legitimate "true" is an operator-created isolated
+  # fixture (evaluation #3967), and that has to be an `aws ssm put-parameter`
+  # against one environment — not an edit to a committed file that the next deploy
+  # of every other environment would pick up.
+  #
+  # The reader is STRICT (features/routes.py::_is_enabled_strict): absent or any
+  # value other than "true" means off. Note the worker reads its own
+  # FEATURE_AGENT_CONTROL_ENABLED byte-exactly and independently — neither this
+  # namespace nor the gateway's copy can start a listener in an agent pod.
+
+  # The single port the gateway dials and the worker binds. It must equal
+  # var.agent_control_port in modules/agent-factory/webhook-ingress/infra — the same
+  # value is also the only port the control-listener ingress NetworkPolicy admits,
+  # so a mismatch here is not a fallback: every control request becomes a 409
+  # "unavailable" while the pod sits there listening on the other port.
+  AGENT_CONTROL_PORT: "8770"
+
+  # Comma-separated CIDRs the gateway will dial a control listener inside. This is
+  # the SSRF boundary for a proxy that, unlike every other outbound path here,
+  # deliberately targets PRIVATE addresses — so the usual "reject private IPs"
+  # validator (internal/credential_routes.py) is the mirror image of what is needed
+  # and must not be reused.
+  #
+  # FAIL-CLOSED: empty or unset denies every control request (409, "not
+  # configured"). That is why this is not defaulted to a convenient wide range —
+  # an operator who forgets it gets a clear misconfiguration rather than a gateway
+  # willing to dial any private address, including link-local metadata.
+  #
+  # Substituted by gateway-deploy.yml from the cluster's pod CIDR. Loopback,
+  # unspecified, multicast, reserved, link-local/IMDS and global addresses are
+  # rejected in code regardless of what is listed here.
+  AGENT_CONTROL_CLUSTER_POD_CIDRS: "__AGENT_CONTROL_CLUSTER_POD_CIDRS__"
+  AGENT_AUTHORITY_ENABLED: "__AGENT_AUTHORITY_ENABLED__"
+  ADP_WORK_CLAIMS_ENABLED: "__ADP_WORK_CLAIMS_ENABLED__"
+  ADP_WORK_CLAIM_PRODUCER_ROLES: "__ADP_WORK_CLAIM_PRODUCER_ROLES__"
+  AGENT_AUTHORITY_TABLE: "__AGENT_AUTHORITY_TABLE__"
+  WEBHOOK_EVENTS_TABLE: "__WEBHOOK_EVENTS_TABLE__"
+  AGENT_DISPATCH_QUEUE_URL: "__AGENT_DISPATCH_QUEUE_URL__"
+  BG_ORCH_DISPATCH_REPO: "__BG_ORCH_DISPATCH_REPO__"
+  AGENT_WORKER_IMAGE_DIGESTS: "__AGENT_WORKER_IMAGE_DIGESTS__"
+  AGENT_CONTROL_ENVELOPE_KEY_ID: "__AGENT_AUTHORITY_KEY_ID__"
+  # Disabled until the original worker principal is isolated from all platform
+  # Kubernetes access through the approved scoped rollout. Checked on each mint.
+  AGENT_TASK_SOURCE_ROLE_ARN: "__AGENT_TASK_SOURCE_ROLE_ARN__"
+  AGENT_TASK_SOURCE_EKS_CLUSTER: "__AGENT_TASK_SOURCE_EKS_CLUSTER__"
+  AGENT_TASK_SOURCE_ISOLATION_CONFIRMED: "__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__"

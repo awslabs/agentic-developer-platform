@@ -37,6 +37,18 @@ Generating implementation for [Unit Name] based on functional design.
 - Database: [From architecture]
 - Testing: [Framework]
 
+## Branch Checkpoint Strategy
+- Branch: [Task branch]
+- First useful checkpoint: [Concrete milestone]
+- Later checkpoints: [Concrete milestones]
+- Cadence: About every 15 minutes at safe boundaries while changes accumulate,
+  and before long validation; inspect, selectively stage, commit, push and verify
+  the remote SHA before reporting a checkpoint.
+- Visibility: Share branch/commit links; do not create draft PRs. Report completed scope,
+  remaining work, and checks passed/failed/not run.
+- Readiness: Checkpoints remain incomplete until validation and applicable
+  AI-DLC approvals are satisfied; they do not trigger review or the next wave.
+
 ---
 
 ## File Generation Checklist
@@ -189,6 +201,11 @@ curl -X GET http://localhost:3000/api/[endpoint]
 ```
 
 ## Step 6: Create Pull Request
+Complete the agreed implementation, integration, tests and documentation and run
+the required pre-submit checks, then open a ready PR. Do not create draft PRs.
+Reuse an existing PR; mark an existing draft ready only after the same checks.
+Branch checkpoints do not trigger Steps 7–8.
+
 @agent-developer creates PR:
 - Title: `[Unit] Implement [Unit Name]`
 - Body: Reference to design docs, summary of changes
@@ -196,12 +213,13 @@ curl -X GET http://localhost:3000/api/[endpoint]
 
 ## Step 7: Update Project Board
 - Update unit issue status → Review
-- Assign @agent-reviewer for code review
-- Update blocked_by if this unblocks other units
+- Keep dependent units blocked until their required merge or acceptance milestone
 
 ## Step 8: Trigger Review
-- Add `agent-reviewer` label to PR
-- @agent-reviewer conducts code review
+- Opening the ready PR (or marking an existing draft ready) triggers review on
+  agent branches. Check for an active review before dispatching another.
+- If automatic dispatch is unavailable, use `adp-trigger --persona reviewer --issue <N>`
+  once for the completed PR; do not add deprecated agent labels.
 
 ---
 

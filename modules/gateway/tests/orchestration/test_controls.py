@@ -67,6 +67,10 @@ from src.shared.schemas.auth import TokenContext
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
 FLOW_SLUG = "delivery-loop"
+# A syntactically valid command id, so the #3960 control-body schema validates and
+# the request reaches the verb gate. A malformed one is a legitimate 400 and would
+# mask whichever refusal the seam tests mean to assert.
+COMMAND_ID = "3f8c1d64-1c1e-4a5f-9b2a-77c0d3a1b2e5"
 USER_ID = "cognito-sub-approver"
 ACTOR_ROLE = "org_admin"
 
@@ -686,14 +690,151 @@ class TestRO3fDeclaredSeam:
     Asserted rather than left to a docstring because the failure mode is the
     dangerous direction: a control that *appears* to pause a run and does not
     means an operator stops watching a run that is still burning budget.
+
+    Issue #3960 moved these routes onto the shared
+    ``activity/control_service.py`` gate, so the *reason* a verb is refused now
+    depends on how far the caller gets: an unknown or unauthorized run is refused
+    at the authorization step (404, existence-hiding) before the verb is ever
+    considered, and only a caller authorized for a real live run reaches the verb
+    gate and its 501. Both are refusals, which is what R-O3f requires; the tests
+    below assert each one at its own layer rather than expecting a blanket 501,
+    because a route that answered 501 *before* authorizing would be confirming
+    that another tenant's run exists.
+
+    The full status-ordering matrix lives in
+    ``tests/activity/test_control_proxy.py``, which drives this same service
+    through both adapters. These cover the seam specifically.
     """
 
-    @pytest.mark.parametrize("action", ["pause", "steer", "abort"])
-    def test_run_controls_return_not_implemented(self, app_with_router, action):
-        response = client_for(app_with_router).post(f"/orchestration/runs/run-abc/{action}")
+    @staticmethod
+    def _with_control_service(app, service):
+        from src.orchestration.controls import get_run_control_service
+
+        app.dependency_overrides[get_run_control_service] = lambda: service
+        return app
+
+    @staticmethod
+    def _body(action: str) -> dict:
+        """A minimally valid command body. Steer needs an instruction."""
+        body: dict = {"command_id": COMMAND_ID}
+        if action == "steer":
+            body["instruction"] = "prefer the smaller refactor"
+        return body
+
+    @pytest.mark.parametrize("action", ["pause", "resume", "steer", "abort"])
+    def test_unknown_run_is_refused_without_confirming_it_exists(self, app_with_router, action):
+        """No run row → 404, and deliberately not 501.
+
+        This is the case the pre-#3960 test exercised (it posted a made-up id),
+        and the answer changed on purpose. 501 here would be a verb-existence
+        oracle: it would tell an unauthenticated-for-this-run caller that the
+        gate got past lookup, which is exactly what the identical-404 rule for
+        unknown / cross-tenant / non-owner exists to prevent.
+
+        A *valid* body is sent so the request reaches the authorization gate.
+        Since review finding F1 these routes validate bodies like the activity
+        adapter does, so a bodyless POST is now a legitimate 400 — which would
+        mask the 404 this test exists to assert.
+        """
+        # Model an absent row explicitly; this unit test must not read the
+        # developer's real DynamoDB table or depend on an active AWS session.
+        from unittest.mock import MagicMock
+
+        from src.activity.control_service import ControlService
+        from src.orchestration.controls import get_run_control_service
+
+        table = MagicMock()
+        table.query.return_value = {"Items": []}
+        app_with_router.dependency_overrides[get_run_control_service] = lambda: ControlService(table=table)
+        response = client_for(app_with_router).post(f"/orchestration/runs/run-abc/{action}", json=self._body(action))
+
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
+
+    @pytest.mark.parametrize("action", ["pause", "resume", "steer", "abort"])
+    def test_a_malformed_body_is_400_before_the_run_is_looked_up(self, app_with_router, action):
+        """F1: body validation reaches this adapter, and it reaches it first.
+
+        Two properties in one assertion. That the 400 happens at all is the
+        finding — these routes declared no body parameter, so the size cap, the
+        `extra="forbid"` override rejection and the UUID check ran only on the
+        activity adapter. That it happens *before* lookup is why 400 outranking
+        404 is not an oracle: the answer is identical for a run that exists, one
+        that belongs to another tenant, and one that does not exist, so it
+        distinguishes nothing about the run. It is the same ordering W1-05 pins
+        on the activity adapter (400 outranks even 501).
+        """
+        response = client_for(app_with_router).post(f"/orchestration/runs/run-abc/{action}", json={"command_id": "not-a-uuid"})
+
+        assert response.status_code == 400
+
+    @pytest.mark.parametrize("field", ["actor", "target", "token", "control_address"])
+    def test_override_attempts_are_rejected_loudly_on_this_adapter_too(self, app_with_router, field):
+        """The fields a caller sends to try to override attribution or destination.
+
+        Dropping them silently returns success to the attempt, so the caller
+        believes the override took effect (AC-S7). Asserted here specifically
+        because this is the adapter where the check was missing.
+        """
+        response = client_for(app_with_router).post(
+            "/orchestration/runs/run-abc/pause",
+            json={"command_id": COMMAND_ID, field: "injected"},
+        )
+
+        assert response.status_code == 400
+
+    @pytest.mark.parametrize("action", ["pause", "resume", "steer", "abort"])
+    def test_an_authorized_live_run_reaches_the_verb_gate_and_is_refused(self, app_with_router, action):
+        """The seam's real assertion: authorized, live, still not implemented.
+
+        Uses a stub service that authorizes successfully so the request reaches
+        the verb gate — the only way to prove the 501 is the *verb* being
+        unsupported rather than a lookup failing earlier and returning a refusal
+        that happens to look like one.
+        """
+        from unittest.mock import MagicMock
+
+        from src.activity.control_service import ControlError, ControlService
+
+        service = MagicMock(spec=ControlService)
+        service.authorize_command.side_effect = ControlError(501, f"control action '{action}' is not implemented")
+
+        app = self._with_control_service(app_with_router, service)
+        body = {"command_id": COMMAND_ID}
+        if action == "steer":
+            body["instruction"] = "prefer the smaller refactor"
+        response = client_for(app).post(f"/orchestration/runs/run-abc/{action}", json=body)
 
         assert response.status_code == 501
         assert "not implemented" in response.json()["detail"].lower()
+        service.authorize_command.assert_called_once()
+
+    def test_no_verb_is_advertised_as_supported(self):
+        """The single source of truth behind every 501 above.
+
+        If a later story adds a verb to this set without implementing the
+        transport, these routes stop answering 501 and start reporting outcomes
+        they cannot deliver — so the seam is pinned at the constant, not only at
+        the status code.
+        """
+        from src.activity.control_service import SUPPORTED_ACTIONS
+
+        assert SUPPORTED_ACTIONS == frozenset(), (
+            "A control verb was marked supported. Issue #3960 ships the authenticated path with every verb unsupported; "
+            "implementing one requires the transport and the state contract in the same change."
+        )
+
+    @pytest.mark.parametrize("action", ["pause", "resume", "steer", "abort"])
+    def test_all_four_verbs_are_routed(self, app_with_router, action):
+        """A missing route would 405/404 at the router, not reach the gate.
+
+        Parametrized over all four because ``resume`` was absent from the
+        original seam test, and an unrouted verb is indistinguishable from a
+        refused one if only the status code is checked.
+        """
+        routes = {(r.path, m) for r in app_with_router.routes for m in getattr(r, "methods", set())}
+
+        assert (f"/orchestration/runs/{{run_id}}/{action}", "POST") in routes
 
 
 class TestDecisionsReadApi:

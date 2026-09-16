@@ -28,11 +28,14 @@ from .auth_service import AuthService
 from .middleware import get_current_user_context
 from .schemas import ServiceAccountCreate, ServiceAccountListResponse, ServiceAccountResponse, ServiceAccountUpdate
 from .service_account_service import ServiceAccountService
+from .workspaces import router as workspace_router
 
 logger = logging.getLogger(__name__)
 
 # Create router with prefix and tags
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+router.include_router(workspace_router)
 
 # Issue #4145: Prefix-free router for well-known discovery documents.
 # The main `router` above carries a "/auth" prefix, and the CLI helper
@@ -238,6 +241,7 @@ async def cognito_config() -> dict:
     return {
         "user_pool_id": settings.cognito_user_pool_id,
         "client_id": settings.cognito_client_id,
+        "cli_client_id": settings.cognito_cli_client_id,
         "identity_pool_id": "",
         "region": settings.aws_region,
     }

@@ -109,7 +109,9 @@ class InvocationItem(BaseModel):
         description=(
             "Static enum naming the spend cap that ended this run (paired with "
             "the 'budget_stopped' status) — 'run_cap_exceeded', "
-            "'chain_cap_exceeded', or 'hierarchy_cap_exceeded'. Separate from "
+            "'chain_cap_exceeded', 'root_user_cap_exceeded', "
+            "'person_cap_exceeded' (#4630: the person's own platform-wide "
+            "limit), or 'hierarchy_cap_exceeded'. Separate from "
             "'error_message' because a cap firing is the control working, not a "
             "fault. Null for every other status."
         ),

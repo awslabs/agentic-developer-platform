@@ -293,10 +293,12 @@ class TestFailureMetric:
 
 
 class TestSigV4Mode:
+    @pytest.mark.parametrize("endpoint_suffix", ["", "/", "/dev", "/dev/"])
     @patch("lib.provenance_client.urlopen")
     @patch("lib.provenance_client._sigv4_sign_request")
-    def test_posts_with_sigv4_headers(self, mock_sign, mock_urlopen, monkeypatch):
-        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://api-gw.example.com")
+    def test_posts_with_sigv4_headers(self, mock_sign, mock_urlopen, monkeypatch, endpoint_suffix):
+        gateway_endpoint = "https://api-gw.example.com" + endpoint_suffix
+        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", gateway_endpoint)
 
         mock_sign.return_value = {
             "Content-Type": "application/json",
@@ -311,9 +313,11 @@ class TestSigV4Mode:
         mock_sign.assert_called_once()
         call_args = mock_sign.call_args
         assert call_args[0][0] == "POST"
-        assert "/agent/internal/v1/provenance" in call_args[0][1]
+        expected_url = f"{gateway_endpoint.rstrip('/')}/internal/v1/provenance"
+        assert call_args[0][1] == expected_url
 
         req = mock_urlopen.call_args[0][0]
+        assert req.full_url == expected_url
         assert "AWS4-HMAC-SHA256" in req.get_header("Authorization")
         assert req.get_header("X-internal-api-key") is None
 

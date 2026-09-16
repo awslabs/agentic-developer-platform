@@ -169,6 +169,23 @@ resource "aws_iam_role_policy" "broker_auth_codes" {
         ]
         Resource = [var.dynamodb_kms_key_arn]
       }
+      ] : [],
+      # Issue #4849: read the membership-eligibility projection (member_org_ids on
+      # the identity-index rows). GetItem only — the gateway API is the sole writer.
+      # ARNs arrive as a variable, not a cross-module reference: the tables live in
+      # the gateway root module, and this module is already ON the documented
+      # cloudfront -> api_gateway -> github_auth_broker -> cloudfront dependency
+      # loop (modules/gateway/infra/main.tf:723-736), so reaching back into the
+      # root from here is exactly what closes it.
+      # Conditional because an empty Resource list is a malformed policy, not an
+      # empty grant.
+      length(var.identity_index_table_arns) > 0 ? [
+        {
+          Sid      = "IdentityIndexProjectionRead"
+          Effect   = "Allow"
+          Action   = ["dynamodb:GetItem"]
+          Resource = var.identity_index_table_arns
+        }
     ] : [])
   })
 }
@@ -206,6 +223,15 @@ resource "aws_lambda_function" "broker" {
       GITHUB_TOKEN_SECRET_ARN  = var.github_token_secret_arn
       AUTH_CODE_TABLE          = aws_dynamodb_table.auth_codes.name
       LOG_LEVEL                = "INFO"
+
+      # Issue #4849: membership-eligibility projection tables (shadow-mode read).
+      # Env var and code ship together by construction here — this apply sets the
+      # vars and github-auth-broker-deploy.yml ships the code that reads them; the
+      # read is inert (log-only) so the ordering cannot cause a login outage the
+      # way the ALLOWLIST_MODE / ALLOW_OPEN_SIGNUP split did (CLAUDE.md).
+      IDENTITY_INDEX_TABLE        = var.identity_index_table_name
+      USER_IDENTITY_INDEX_TABLE   = var.user_identity_index_table_name
+      USER_IDENTITY_INDEX_V2_READ = var.user_identity_index_v2_read
     }
   }
 

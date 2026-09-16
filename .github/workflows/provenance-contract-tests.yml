@@ -47,6 +47,9 @@ on:
       # ANY source change can introduce the regression it exists to catch. A
       # narrow filter would let a new unwrapped site merge without running it.
       - 'modules/agent-factory/agent/src/**'
+      # Developer checkpoint plan and readiness instructions used by the worker
+      - 'modules/agent-factory/rules/personas/developer.md'
+      - 'modules/agent-factory/rules/phases/construction/code-generation.md'
       # This workflow
       - '.github/workflows/provenance-contract-tests.yml'
     branches:
@@ -116,6 +119,14 @@ jobs:
       - name: Assert the Node runtime builds the golden payload
         working-directory: modules/agent-factory/agent
         run: npx jest src/lib/provenanceClient.test.ts
+
+      - name: Assert developer checkpoint cadence, spill composition and review readiness
+        working-directory: modules/agent-factory/agent
+        run: >-
+          npx jest src/developer-checkpoints.test.ts
+          src/agent-worker-presubmit-checks.test.ts
+          src/agent-worker-prompt-order.test.ts
+          src/utils/spill/spill.test.ts
 
   agent-trust-boundary:
     name: Agent Trust Boundary Contracts

@@ -253,7 +253,14 @@ _CACHE_PREFIX = "runbind"
 # runs. The attribute is written at ingress (webhook-ingress
 # ``lambda/common/webhook_events.py``) and advanced on every transition by the
 # worker's status updater (``agent-worker-image/lib/invocation_status.py``).
-_PROJECTION = "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, status, arrived_at"
+# ``status`` is a DynamoDB RESERVED KEYWORD: used raw in a ProjectionExpression
+# it makes EVERY Query throw ValidationException, which the fault handler
+# dutifully degraded to "no binding" — so no lookup ever completed, no run was
+# ever bound, and no attribution ever published, silently, in every environment
+# (found live during the #4591 smoke). It must travel through the ``#status``
+# alias in _PROJECTION_NAMES below.
+_PROJECTION = "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, #status, arrived_at"
+_PROJECTION_NAMES = {"#status": "status"}
 
 # The two principal kinds ``root_human_id`` can name. Issue #4337 D4: DERIVED from
 # the row's ``is_human_rooted`` flag, never a new column and never a value any
@@ -286,6 +293,9 @@ class RunBinding:
     # ``verify_row_matches_caller``'s admissibility checks reads it — a row does
     # not become bindable or unbindable by claiming a principal kind.
     is_human_rooted: bool | None = None
+    # Only the protected worker middleware supplies an accepted engine flow.
+    # Legacy capability lookups must never infer this from an asserted header.
+    flow_id: str | None = None
 
     @property
     def root_principal_type(self) -> str:
@@ -431,7 +441,7 @@ class RunBindingResolver:
         except Exception as exc:
             logger.warning(f"Run-binding cache write failed (continuing): {exc}")
 
-    def _query_row(self, run_id: str) -> dict | None:
+    def _query_row(self, run_id: str, *, consistent: bool = False) -> dict | None:
         """Fetch the latest ``webhook-events`` row for ``run_id``.
 
         ``Query``, not ``GetItem``: the table has a COMPOSITE key (``event_id``
@@ -452,11 +462,19 @@ class RunBindingResolver:
         response = self._get_table().query(
             KeyConditionExpression=Key("event_id").eq(run_id),
             ProjectionExpression=_PROJECTION,
+            ExpressionAttributeNames=_PROJECTION_NAMES,
             ScanIndexForward=False,  # descending arrived_at -> latest first
             Limit=1,
+            ConsistentRead=consistent,
         )
         items = response.get("Items", [])
         return items[0] if items else None
+
+    async def read_current(self, run_id: str) -> dict | None:
+        """Read current lifecycle/owner authority without the budget cache."""
+        import asyncio
+
+        return await asyncio.to_thread(self._query_row, run_id, consistent=True)
 
     async def resolve(self, run_id: str) -> dict | None:
         """Resolve the registry row for ``run_id``, cache-first.

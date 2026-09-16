@@ -271,17 +271,29 @@ export default function OrgDashboard() {
         )}
       </Tabs>
 
-      {/* Issue #2984: Org settings — approval policy toggle */}
-      {canManageUsers() && orgDetail?.memberApprovalPolicy && (
+      {/* Issue #2984: Org settings — approval policy toggle.
+          Issue #4929: `memberApprovalPolicy` is absent on an org read from the canonical
+          identity route, which does not carry the field. Absence is NOT "no policy" — the
+          org has one, we just did not receive it — so the section renders an explicit note
+          instead of disappearing. Silently dropping it is the #3675 symptom: a panel that
+          looks fully loaded while a real setting is missing from it. */}
+      {canManageUsers() && orgDetail && (
         <div className="space-y-3">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
             Organization Settings
           </h2>
-          <ApprovalPolicyToggle
-            orgId={orgId!}
-            currentPolicy={orgDetail.memberApprovalPolicy as 'auto_approve_org_members' | 'require_admin_approval'}
-            canManage={canManageUsers()}
-          />
+          {orgDetail.memberApprovalPolicy ? (
+            <ApprovalPolicyToggle
+              orgId={orgId!}
+              currentPolicy={orgDetail.memberApprovalPolicy as 'auto_approve_org_members' | 'require_admin_approval'}
+              canManage={canManageUsers()}
+            />
+          ) : (
+            <p className="text-sm italic text-gray-500 dark:text-gray-400">
+              Member approval policy not provided for this organization — it was not included
+              in the response, so it cannot be shown or changed here.
+            </p>
+          )}
         </div>
       )}
     </div>

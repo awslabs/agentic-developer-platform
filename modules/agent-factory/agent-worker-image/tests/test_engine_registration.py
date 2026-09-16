@@ -42,6 +42,9 @@ from lib.engine_registration import (  # noqa: E402
 ISSUE = 4528
 TENANT = "org-alpha"
 ENDPOINT = "https://api-gw.example.com"
+# The run's envelope `message_id` (Issue #4597) — the `event_id` PK of the run's
+# `webhook-events` row, which is what the gateway resolves the owning tenant from.
+RUN_ID = "evt-run-4597"
 
 # What the gateway returns on a successful registration (`DraftRegisteredResponse`).
 GATEWAY_OK = {
@@ -54,22 +57,44 @@ GATEWAY_OK = {
     "already_registered": False,
     "acceptance_gate_address": "loop/epic-1/wave-1/accept",
     "accept_command": "@agent-engine accept",
+    # Composed server-side (#4885) — the worker knows only the API Gateway invoke
+    # URL, so it cannot build a user-facing link itself.
+    "flow_url": "https://gateway.example.com/flows/flow-abc123",
 }
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """A pod-like environment: endpoint and tenant present, kill switch unset."""
+    """A pod-like environment: endpoint, tenant and run id present, kill switch unset.
+
+    `ADP_MESSAGE_ID` is set explicitly (Issue #4597) rather than inherited. It is
+    genuinely present in a real pod and in an agent's own shell, so leaving it to the
+    ambient environment makes this whole module pass locally and fail in CI — which
+    is exactly what happened when the run-id header was added.
+    """
     monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", ENDPOINT)
     monkeypatch.setenv("ADP_TENANT_ID", TENANT)
+    monkeypatch.setenv("ADP_MESSAGE_ID", RUN_ID)
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.delenv(DISABLED_ENV, raising=False)
 
 
 @pytest.fixture(autouse=True)
 def _no_real_signing():
-    """Never reach botocore. Signing is not what these tests are about."""
-    with patch("lib.engine_registration._sigv4_sign_request", return_value={"Content-Type": "application/json", "Authorization": "AWS4-x"}):
+    """Never reach botocore. Signing is not what these tests are about.
+
+    Echoes the headers it was given plus an `Authorization`, which is what the real
+    `_sigv4_sign_request` does (botocore's `add_auth` mutates the request's existing
+    header set). The previous stub returned a fixed dict, silently dropping every
+    header the caller passed — so an assertion about a header the worker sends could
+    not distinguish "not sent" from "eaten by the stub". Issue #4597 added such a
+    header, and this is what makes it testable.
+    """
+
+    def _echo(_method, _url, headers, _data):
+        return {**headers, "Authorization": "AWS4-x"}
+
+    with patch("lib.engine_registration._sigv4_sign_request", side_effect=_echo):
         yield
 
 
@@ -161,7 +186,10 @@ class TestFailSoft:
     def assert_is_warning(self, note: str) -> None:
         assert note.startswith("### ⚠️ Delivery loop not registered")
         assert "remain" in note and "source of truth" in note
-        assert "Reply `@agent-engine accept`" not in note
+        # No accept instruction in any form: a registration that did not happen has
+        # nothing to accept. Matched on the command itself rather than the sentence
+        # around it, so the #4599 reformat cannot make this assertion vacuous.
+        assert "@agent-engine accept" not in note
 
     def test_malformed_json_warns(self, tmp_path):
         write_proposal(tmp_path, "{not json at all")
@@ -304,10 +332,95 @@ class TestTenantIsAlwaysServerResolved:
         assert "/internal/" not in request.full_url
 
 
+class TestRunIdHeader:
+    """Issue #4597: the run reference that lets the gateway establish the tenant.
+
+    The pod is resolved as the shared `scaledjob-worker` registry entry, whose
+    `org_id` is `__platform__` — no real tenant. So the gateway derives the owning
+    tenant from the run's ingress row instead, and this header is how the request
+    names that row. Without it every real-tenant registration is refused.
+    """
+
+    def sent_headers(self, urlopen: MagicMock) -> dict:
+        """Header names lowercased: urllib title-cases what it stores, and the
+        assertions here are about the wire name, not about urllib's casing."""
+        return {name.lower(): value for name, value in urlopen.call_args[0][0].header_items()}
+
+    def test_the_run_id_is_sent_under_the_platforms_header_name(self, tmp_path):
+        """`X-Agent-RunId` — one word, matching `proxy/routes.py`'s `x-agent-runid`.
+
+        The spelling is the contract. `X-Agent-Run-Id` is a different header and the
+        gateway does not read it, so a hyphenation drift here refuses every
+        registration while looking correct in a diff.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))) as urlopen:
+            register_loop_proposal(work_dir=tmp_path, issue=ISSUE)
+
+        assert self.sent_headers(urlopen)["x-agent-runid"] == RUN_ID
+
+    def test_the_run_id_is_inside_the_signed_header_set(self, tmp_path):
+        """Signed, not appended after signing, so it cannot be rewritten in flight.
+
+        Asserted on what is handed to the signer: a header added to the request after
+        `_sigv4_sign_request` returns would still arrive, and would still work, which
+        is precisely why the weaker arrangement needs a test to stay out.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration._sigv4_sign_request", return_value={"Authorization": "AWS4-x"}) as signer:
+            with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
+                register_loop_proposal(work_dir=tmp_path, issue=ISSUE)
+
+        signed_headers = signer.call_args[0][2]
+        assert signed_headers["X-Agent-RunId"] == RUN_ID
+
+    def test_the_worker_sends_no_org_header(self, tmp_path):
+        """The tenant is NOT asserted. `X-Agent-OrgId` is caller-influenced and the
+        #4132 invariant forbids it gating access, so the worker must not start
+        sending it here and invite the gateway to read it."""
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))) as urlopen:
+            register_loop_proposal(work_dir=tmp_path, issue=ISSUE)
+
+        assert "x-agent-orgid" not in self.sent_headers(urlopen)
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_a_missing_run_id_warns_and_sends_nothing(self, monkeypatch, tmp_path, value):
+        """Reported here rather than sent blank, for the same reason as the tenant.
+
+        The gateway's refusal would name the header; an operator reading the closing
+        comment needs to know the *pod* had nothing to send. And it stays fail-soft: a
+        warning note, never a raise.
+        """
+        monkeypatch.setenv("ADP_MESSAGE_ID", value)
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen") as urlopen:
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        urlopen.assert_not_called()
+        assert "ADP_MESSAGE_ID" in note
+        assert note.startswith("### ⚠️")
+
+    def test_an_absent_run_id_env_var_warns_and_sends_nothing(self, monkeypatch, tmp_path):
+        """Unset, not merely blank — the shape a pod that never exported it has."""
+        monkeypatch.delenv("ADP_MESSAGE_ID", raising=False)
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen") as urlopen:
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        urlopen.assert_not_called()
+        assert "ADP_MESSAGE_ID" in note
+
+
 class TestSuccessNote:
     """What the human reads, and the one command they type."""
 
-    def test_success_note_names_the_plan_and_the_accept_command(self, tmp_path):
+    def test_success_note_names_the_flow_and_the_accept_command(self, tmp_path):
         write_proposal(tmp_path, valid_document())
 
         with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
@@ -315,10 +428,82 @@ class TestSuccessNote:
 
         assert "flow-abc123" in note
         assert "loop/epic-1/wave-1/accept" in note
-        assert "Reply `@agent-engine accept` to start execution." in note
+        assert "@agent-engine accept" in note
         # The plan must be described as executing nothing — this is the promise the
         # whole story rests on.
         assert "draft" in note and "executes nothing" in note
+
+    def test_the_id_is_labelled_flow_not_plan(self, tmp_path):
+        """#4885: the value is a `flow_id`, so calling it a "Plan" misdirects.
+
+        The reader is being sent to find this thing in the graph UI, where it is
+        addressed as a flow. A plan is the versioned document attached to it — a
+        different noun that also appears in this note, as `v1`.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "**Flow**:" in note
+        assert "**Plan**:" not in note
+
+    def test_the_flow_id_links_to_the_gateway_url(self, tmp_path):
+        """The note promises the plan is "visible in the graph UI"; this is the address.
+
+        Without it the reader had to already know how to reach the UI in order to
+        follow an instruction telling them it was there.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "[`flow-abc123`](https://gateway.example.com/flows/flow-abc123)" in note
+
+    def test_the_url_is_taken_from_the_gateway_not_composed_here(self, tmp_path):
+        """Only the gateway knows the user-facing origin.
+
+        This worker holds `ADP_GATEWAY_ENDPOINT`, the API Gateway invoke URL — the
+        machine plane. Composing a link from it would send an operator somewhere they
+        cannot use. So the URL is whatever the response said, verbatim.
+        """
+        write_proposal(tmp_path, valid_document())
+        response = {**GATEWAY_OK, "flow_url": "https://adp.internal.example/flows/flow-abc123"}
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(response))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "(https://adp.internal.example/flows/flow-abc123)" in note
+        assert ENDPOINT not in note
+
+    @pytest.mark.parametrize("missing", [None, ""])
+    def test_without_a_url_the_id_is_still_printed_bare(self, tmp_path, missing):
+        """A missing link degrades the comment; it must never lose the plan.
+
+        `flow_url` is `None` when `BG_GATEWAY_BASE_URL` is unset on the gateway, and
+        absent entirely if this worker image is newer than the gateway it calls. Both
+        are ordinary rollout states, not failures.
+        """
+        write_proposal(tmp_path, valid_document())
+        response = {**GATEWAY_OK, "flow_url": missing}
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(response))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "`flow-abc123`" in note
+        assert "](" not in note, "a falsy flow_url produced a link anyway"
+
+    def test_a_response_with_no_flow_url_key_at_all_still_succeeds(self, tmp_path):
+        """An older gateway does not send the field. Registration still worked."""
+        write_proposal(tmp_path, valid_document())
+        response = {key: value for key, value in GATEWAY_OK.items() if key != "flow_url"}
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(response))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "**Flow**: `flow-abc123`" in note
+        assert "@agent-engine accept" in note
 
     def test_the_accept_command_is_quoted_from_the_gateway_not_hardcoded(self, tmp_path):
         """If the parser's wording changes, the comment follows it automatically."""
@@ -328,7 +513,30 @@ class TestSuccessNote:
         with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(response))):
             note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
 
-        assert "Reply `@agent-engine approve-plan` to start execution." in note
+        assert "@agent-engine approve-plan" in note
+
+    def test_the_command_is_fenced_not_inline(self, tmp_path):
+        """Issue #4599: this note must not trigger the bridge it is announcing.
+
+        It posts on every successful registration, and it used to quote the command
+        in inline backticks — which the tick read as a live command: marked pending,
+        parsed, refused (a bot has no `PLAN_APPROVE`) and answered on the thread with
+        "this command cannot be applied by this account". Every registration produced
+        that reply, so the feature's own success message was the noise source.
+
+        A fenced block is ignored by the parser's code-awareness rule while staying
+        copy-pasteable — the property the human actually needs from this line. The
+        assertion is on the fence rather than on "no inline span anywhere" because
+        other fields in this note (`flow_id`, the gate address) are legitimately
+        inline-quoted; it is the COMMAND that must not be.
+        """
+        write_proposal(tmp_path, valid_document())
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))):
+            note = draft_registration_note(work_dir=tmp_path, issue=ISSUE)
+
+        assert "```\n@agent-engine accept\n```" in note
+        assert "`@agent-engine accept`" not in note.replace("```\n@agent-engine accept\n```", "")
 
     def test_an_idempotent_retry_says_so(self, tmp_path):
         """A fail-soft retry must not read as a second plan having been created."""

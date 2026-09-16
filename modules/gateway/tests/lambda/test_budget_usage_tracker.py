@@ -37,6 +37,58 @@ from root_principal import (  # noqa: E402
 )
 
 
+def _bundled_rate_source():
+    """A real `RateSourceState` over the bundled snapshot, for ledger-shape tests.
+
+    Issue #4969: `process_chat_log` used to take a flat `{model_id: {input, output}}`
+    dict, and the tests below passed `MODEL_PRICING` for it. It now takes the rate
+    rows of a pricing generation, because a flat table keyed on model id alone
+    cannot express geography, service tier, context tier or cache rates.
+
+    These tests are about which LEDGER ROWS get written and what they hold, not
+    about rate correctness, so they want a rate source that simply works. The
+    bootstrap state is exactly that and it needs no database. Their models are
+    curated non-OpenAI (Claude), whose rates this change deliberately preserves, so
+    the costs they assert are unchanged from before — which is the point: a
+    regression in the non-OpenAI ledger would show up here.
+    """
+    from pricing_policy.storage import V2RateCache
+
+    return V2RateCache().state(monotonic=0.0, now_iso="2026-09-12T00:00:00+00:00")
+
+
+def _settled_cost(log: dict) -> Decimal:
+    """The cost `process_chat_log` will settle `log` at, via the same seam it uses.
+
+    The ledger-shape tests below need *a* cost to assert their arithmetic against
+    (one hop vs. six, one row vs. two). They used to compute it with
+    `calculate_cost(..., MODEL_PRICING)` — the retired flat-table helper. That
+    expectation agrees with the handler today only because these fixtures use
+    curated Claude models whose rates are deliberately preserved; the moment a
+    rate moved, the expectation would move with the *old* table and the tests
+    would fail for a reason that has nothing to do with the ledger shape they
+    exist to protect.
+
+    Going through `settle_chat_log` instead means expectation and handler read the
+    same rates from the same source, so these tests keep testing row arithmetic
+    and leave rate correctness to the pricing_policy suites.
+    """
+    handler_mod = load_handler("budget-usage-tracker")
+    parsed = handler_mod.parse_chat_log(log)
+    assert parsed is not None, "the fixture must be a log the handler accepts"
+
+    source = _bundled_rate_source()
+    return handler_mod.settle_chat_log(
+        parsed,
+        chat_log=log,
+        rows=source.rows,
+        snapshot=handler_mod.compatibility_snapshot(),
+        generation_id=source.generation_id,
+        pointer_revision=source.pointer_revision,
+        source_reasons=source.reasons,
+    ).cost
+
+
 class TestResolveModelId:
     """Tests for cross-region inference profile model ID resolution."""
 
@@ -397,7 +449,7 @@ class TestBridgeCostToUsageLogs:
         sql_call = mock_cursor.execute.call_args
         assert "UPDATE usage_logs" in sql_call[0][0]
         # Issue #1616: params now include chat_log_s3_key (None when not provided)
-        assert sql_call[0][1] == (0.0105, None, "req-123")
+        assert sql_call[0][1] == (Decimal("0.0105"), None, "req-123")
 
     def test_bridge_no_matching_row(self):
         """Test that bridge returns False when no matching row found."""
@@ -453,7 +505,7 @@ class TestBridgeCostToUsageLogs:
         assert "chat_log_s3_key" in sql_call[0][0]
         assert "COALESCE" in sql_call[0][0]
         # Params: (cost, s3_key, request_id)
-        assert sql_call[0][1] == (0.05, "acme/user-1/2026/06/19/req-456.json", "req-456")
+        assert sql_call[0][1] == (Decimal("0.05"), "acme/user-1/2026/06/19/req-456.json", "req-456")
 
     def test_bridge_s3_key_none_when_not_provided(self):
         """Issue #1616: When chat_log_s3_key not provided, passes None."""
@@ -472,7 +524,7 @@ class TestBridgeCostToUsageLogs:
         assert result is True
         sql_call = mock_cursor.execute.call_args
         # Params: (cost, None, request_id)
-        assert sql_call[0][1] == (0.03, None, "req-789")
+        assert sql_call[0][1] == (Decimal("0.03"), None, "req-789")
 
 
 @pytest.mark.skipif(
@@ -549,7 +601,7 @@ class TestTransactionIsolation:
 
         mock_cursor.execute = tracking_execute
 
-        handler_mod.process_chat_log(mock_conn, self._chat_log(), handler_mod.MODEL_PRICING, chat_log_s3_key="k.json")
+        handler_mod.process_chat_log(mock_conn, self._chat_log(), _bundled_rate_source(), chat_log_s3_key="k.json")
 
         assert "bridge" in calls and "upsert" in calls
         # A commit must sit between the bridge and the first upsert.
@@ -589,7 +641,7 @@ class TestTransactionIsolation:
 
         with (
             patch.object(handler_mod, "get_db_connection", return_value=cm),
-            patch.object(handler_mod, "get_pricing_table", return_value=handler_mod.MODEL_PRICING),
+            patch.object(handler_mod, "get_rate_source", return_value=_bundled_rate_source()),
             patch.object(handler_mod.s3_client, "get_object", side_effect=fake_get_object),
             patch.object(handler_mod, "process_chat_log", side_effect=fake_process),
         ):
@@ -712,7 +764,7 @@ class TestRootHumanEntityTypeContract:
         handler_mod = load_handler("budget-usage-tracker")
         conn = _LedgerConn()
 
-        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id="users-id-alice"), MODEL_PRICING)
+        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id="users-id-alice"), _bundled_rate_source())
 
         written = {k[0] for k in conn.cursor_obj.rows if k[1] == "users-id-alice"}
         assert written == {EntityType.ROOT_USER.value}
@@ -755,7 +807,7 @@ class TestOrganizationEntityTypeContract:
         handler_mod = load_handler("budget-usage-tracker")
         conn = _LedgerConn()
 
-        handler_mod.process_chat_log(conn, _chat_log_4300(), MODEL_PRICING)
+        handler_mod.process_chat_log(conn, _chat_log_4300(), _bundled_rate_source())
 
         written = {k[0] for k in conn.cursor_obj.rows if k[1] == "org-acme"}
         assert written == {EntityType.ORGANIZATION.value}
@@ -774,7 +826,7 @@ class TestOrganizationEntityTypeContract:
         handler_mod.process_chat_log(
             conn,
             _chat_log_4300(root_human_id="users-id-alice", team_id="team-7", account_type="service", agent_id="agent-9"),
-            MODEL_PRICING,
+            _bundled_rate_source(),
         )
 
         assert "organization" not in _entity_types(conn)
@@ -792,9 +844,9 @@ class TestOrganizationEntityTypeContract:
         conn = _LedgerConn()
 
         log = _chat_log_4300()
-        handler_mod.process_chat_log(conn, log, MODEL_PRICING)
+        handler_mod.process_chat_log(conn, log, _bundled_rate_source())
 
-        expected = calculate_cost(resolve_model_id(log["model"]), 1000, 500, MODEL_PRICING)
+        expected = _settled_cost(log)
         assert expected > 0  # a zero cost would make the assertion below vacuous
         row = conn.cursor_obj.rows[(EntityType.ORGANIZATION.value, "org-acme", "daily")]
         assert row["cost"] == expected
@@ -807,7 +859,7 @@ class TestOrganizationEntityTypeContract:
         handler_mod = load_handler("budget-usage-tracker")
         conn = _LedgerConn()
 
-        handler_mod.process_chat_log(conn, _chat_log_4300(), MODEL_PRICING)
+        handler_mod.process_chat_log(conn, _chat_log_4300(), _bundled_rate_source())
 
         periods = {k[2] for k in conn.cursor_obj.rows if k[0] == EntityType.ORGANIZATION.value}
         assert periods == {"daily", "weekly", "monthly"}
@@ -823,7 +875,7 @@ class TestOrganizationEntityTypeContract:
         handler_mod.process_chat_log(
             conn,
             _chat_log_4300(root_human_id="users-id-alice", team_id="team-7", account_type="service", agent_id="agent-9"),
-            MODEL_PRICING,
+            _bundled_rate_source(),
         )
 
         assert _entity_types(conn) == {
@@ -842,7 +894,7 @@ class TestRootHumanLedgerRows:
         handler_mod = load_handler("budget-usage-tracker")
         conn = _LedgerConn()
 
-        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id="users-id-alice"), MODEL_PRICING)
+        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id="users-id-alice"), _bundled_rate_source())
 
         periods = {k[2] for k in conn.cursor_obj.rows if k[0] == "root_user"}
         assert periods == {"daily", "weekly", "monthly"}
@@ -858,14 +910,9 @@ class TestRootHumanLedgerRows:
         conn = _LedgerConn()
 
         log = _chat_log_4300(root_human_id="users-id-alice")
-        handler_mod.process_chat_log(conn, log, MODEL_PRICING)
+        handler_mod.process_chat_log(conn, log, _bundled_rate_source())
 
-        expected = calculate_cost(
-            resolve_model_id(log["model"]),
-            1000,
-            500,
-            MODEL_PRICING,
-        )
+        expected = _settled_cost(log)
         assert expected > 0  # a zero cost would make the assertion below vacuous
         row = conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]
         assert row["cost"] == expected
@@ -881,10 +928,10 @@ class TestRootHumanLedgerRows:
         handler_mod = load_handler("budget-usage-tracker")
 
         without = _LedgerConn()
-        handler_mod.process_chat_log(without, _chat_log_4300(), MODEL_PRICING)
+        handler_mod.process_chat_log(without, _chat_log_4300(), _bundled_rate_source())
 
         with_root = _LedgerConn()
-        handler_mod.process_chat_log(with_root, _chat_log_4300(root_human_id="users-id-alice"), MODEL_PRICING)
+        handler_mod.process_chat_log(with_root, _chat_log_4300(root_human_id="users-id-alice"), _bundled_rate_source())
 
         # #4322 relabelled the org line "organization" -> "org"; the entity id it
         # is keyed on is unchanged, and so is the invariant under test here.
@@ -907,10 +954,10 @@ class TestRootHumanLedgerRows:
             handler_mod.process_chat_log(
                 conn,
                 _chat_log_4300(root_human_id="users-id-alice", user_id=f"cognito-sub-agent-{i}", request_id=f"req-{i}"),
-                MODEL_PRICING,
+                _bundled_rate_source(),
             )
 
-        one = calculate_cost(resolve_model_id(_chat_log_4300()["model"]), 1000, 500, MODEL_PRICING)
+        one = _settled_cost(_chat_log_4300())
         human = conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]
         assert human["requests"] == 6
         assert human["cost"] == one * 6
@@ -933,7 +980,7 @@ class TestRootHumanAbsent:
         handler_mod = load_handler("budget-usage-tracker")
         conn = _LedgerConn()
 
-        handler_mod.process_chat_log(conn, _chat_log_4300(), MODEL_PRICING)
+        handler_mod.process_chat_log(conn, _chat_log_4300(), _bundled_rate_source())
 
         # "org", not "organization", since #4322.
         assert _entity_types(conn) == {"user", "org"}
@@ -957,7 +1004,7 @@ class TestRootHumanAbsent:
         handler_mod = load_handler("budget-usage-tracker")
         conn = _LedgerConn()
 
-        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id=empty), MODEL_PRICING)
+        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id=empty), _bundled_rate_source())
 
         assert "root_user" not in _entity_types(conn)
         assert not [k for k in conn.cursor_obj.rows if k[1] == ""]
@@ -971,7 +1018,7 @@ class TestRootHumanAbsent:
         handler_mod.process_chat_log(
             conn,
             _chat_log_4300(root_human_id="users-id-alice", account_type="service", agent_id="agent-uuid-7"),
-            MODEL_PRICING,
+            _bundled_rate_source(),
         )
 
         assert {"agent", "root_user"} <= _entity_types(conn)
@@ -1013,7 +1060,7 @@ class TestRootIsCallerWritesNoRootUserRow:
         handler_mod.process_chat_log(
             conn,
             _chat_log_4300(root_human_id=f"service:{_SERVICE_ROOTED_KEY}", user_id=_SERVICE_ROOTED_KEY),
-            MODEL_PRICING,
+            _bundled_rate_source(),
         )
 
         assert "root_user" not in _entity_types(conn)
@@ -1030,7 +1077,7 @@ class TestRootIsCallerWritesNoRootUserRow:
         handler_mod.process_chat_log(
             conn,
             _chat_log_4300(root_human_id="users-id-alice", user_id="users-id-alice"),
-            MODEL_PRICING,
+            _bundled_rate_source(),
         )
 
         assert "root_user" not in _entity_types(conn)
@@ -1046,9 +1093,9 @@ class TestRootIsCallerWritesNoRootUserRow:
         conn = _LedgerConn()
 
         log = _chat_log_4300(root_human_id=f"service:{_SERVICE_ROOTED_KEY}", user_id=_SERVICE_ROOTED_KEY)
-        handler_mod.process_chat_log(conn, log, MODEL_PRICING)
+        handler_mod.process_chat_log(conn, log, _bundled_rate_source())
 
-        expected = calculate_cost(resolve_model_id(log["model"]), 1000, 500, MODEL_PRICING)
+        expected = _settled_cost(log)
         assert expected > 0  # a zero cost would make the assertions below vacuous
 
         # The principal's total across every row naming it is ONE cost, not two.
@@ -1077,7 +1124,7 @@ class TestRootIsCallerWritesNoRootUserRow:
                 user_id=_SERVICE_ROOTED_KEY,
                 team_id="team-7",
             ),
-            MODEL_PRICING,
+            _bundled_rate_source(),
         )
 
         assert _entity_types(conn) == {"user", "org", "team"}
@@ -1099,7 +1146,7 @@ class TestRootIsNotCallerStillWritesRootUserRow:
         handler_mod.process_chat_log(
             conn,
             _chat_log_4300(root_human_id="users-id-alice", user_id="worker-sa"),
-            MODEL_PRICING,
+            _bundled_rate_source(),
         )
 
         assert conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]["requests"] == 1
@@ -1118,7 +1165,7 @@ class TestRootIsNotCallerStillWritesRootUserRow:
         handler_mod.process_chat_log(
             conn,
             _chat_log_4300(root_human_id="service:root-key", user_id="a-different-caller"),
-            MODEL_PRICING,
+            _bundled_rate_source(),
         )
 
         assert ("root_user", "service:root-key", "daily") in conn.cursor_obj.rows
@@ -1136,7 +1183,7 @@ class TestRootIsNotCallerStillWritesRootUserRow:
         handler_mod.process_chat_log(
             conn,
             _chat_log_4300(root_human_id="tenant:alice", user_id="alice"),
-            MODEL_PRICING,
+            _bundled_rate_source(),
         )
 
         assert conn.cursor_obj.rows[("root_user", "tenant:alice", "daily")]["requests"] == 1

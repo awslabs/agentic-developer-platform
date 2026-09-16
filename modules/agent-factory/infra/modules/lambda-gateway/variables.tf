@@ -42,6 +42,16 @@ variable "sessions_table_arn" {
   type = string
 }
 
+variable "dynamodb_kms_key_arn" {
+  description = "ARN of the agent-factory KMS key encrypting sessions and artifacts (distinct from the gateway identity-index key)."
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-zA-Z0-9-]+$", var.dynamodb_kms_key_arn))
+    error_message = "The sessions/artifacts encryption key ARN must be supplied; an empty or wildcard KMS grant is not valid."
+  }
+}
+
 variable "ws_api_endpoint" {
   type    = string
   default = ""

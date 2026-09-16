@@ -1521,3 +1521,114 @@ class TestAdminServiceMyChats:
         )
 
         assert result is None  # Should not find it
+
+
+class TestCreateBudgetAdvisory:
+    """The mis-partitioned-cap ADVISORY on the create path (#4669).
+
+    A `root_user` cap authored where the person's spend does not bill is inert
+    (#4620); the create response now says so — count only, never which foreign
+    workspaces or their figures (§7.2), and never a refusal.
+    """
+
+    GITHUB_USER_ID = "31513556"
+    CANONICAL_ID = "user-cloud-operator"
+
+    @pytest.fixture
+    async def github_member(self, db_session: AsyncSession, sample_organizations: list[Organization]) -> User:
+        from src.shared.models.vault import UserIdentity
+
+        user = User(
+            id=self.CANONICAL_ID,
+            org_id="org-001",
+            team_id="team-001",
+            email="cloud@test.com",
+            name="Cloud Operator",
+            cognito_sub="8a41f2c0-1b7d-4e5a-9c33-000000000042",
+        )
+        db_session.add(user)
+        await db_session.flush()
+        db_session.add(
+            UserIdentity(
+                id="identity-cloud-operator",
+                org_id="org-001",
+                team_id="team-001",
+                user_id=self.CANONICAL_ID,
+                provider="github",
+                provider_user_id=self.GITHUB_USER_ID,
+                provider_username="cloud-operator",
+                verification_method="oauth",
+            )
+        )
+        await db_session.commit()
+        return user
+
+    def _request(self, entity_type: str = "root_user", entity_id: str = CANONICAL_ID):
+        from decimal import Decimal
+
+        from src.admin.schemas import BudgetCreateRequest
+
+        return BudgetCreateRequest(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            period_type="monthly",
+            budget_amount_usd=Decimal("250.00"),
+            enforcement_mode="hard",
+        )
+
+    async def _seed_foreign_accrual(self, db_session: AsyncSession, org_id: str = "org-002") -> None:
+        from datetime import date
+        from decimal import Decimal
+
+        from src.shared.models.budget import BudgetUsage
+
+        db_session.add(
+            BudgetUsage(
+                org_id=org_id,
+                entity_type="root_user",
+                entity_id=self.CANONICAL_ID,
+                period_type="monthly",
+                period_start=date.today().replace(day=1),
+                total_cost_usd=Decimal("12.34"),
+                total_tokens=1000,
+            )
+        )
+        await db_session.commit()
+
+    @pytest.mark.asyncio
+    async def test_foreign_accrual_yields_a_count_only_advisory(self, admin_service: AdminService, github_member: User, db_session: AsyncSession):
+        await self._seed_foreign_accrual(db_session)
+
+        result = await admin_service.create_budget("org-001", self._request())
+
+        assert result.advisory is not None
+        assert "1 other workspace" in result.advisory
+        # §7.2: the count, never the identity or the figure of the foreign side.
+        assert "org-002" not in result.advisory
+        assert "12.34" not in result.advisory
+
+    @pytest.mark.asyncio
+    async def test_no_foreign_accrual_yields_no_advisory(self, admin_service: AdminService, github_member: User):
+        result = await admin_service.create_budget("org-001", self._request())
+        assert result.advisory is None
+
+    @pytest.mark.asyncio
+    async def test_non_root_user_caps_never_carry_an_advisory(self, admin_service: AdminService, github_member: User, db_session: AsyncSession):
+        await self._seed_foreign_accrual(db_session)
+        result = await admin_service.create_budget("org-001", self._request(entity_type="team", entity_id="platform-team"))
+        assert result.advisory is None
+
+    @pytest.mark.asyncio
+    async def test_advisory_failure_never_fails_the_create(self, admin_service: AdminService, github_member: User, monkeypatch):
+        """The cap is committed before the advisory is computed; a broken read
+        must degrade to 'no advice', never to an error on a successful write."""
+        import src.budget.person_accrual as person_accrual
+
+        async def boom(*a, **k):
+            raise RuntimeError("ledger unreadable")
+
+        monkeypatch.setattr(person_accrual, "count_foreign_accrual_partitions", boom)
+
+        result = await admin_service.create_budget("org-001", self._request())
+        assert result.entity_type == "root_user"
+        assert result.advisory is None

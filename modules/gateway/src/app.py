@@ -1,6 +1,7 @@
+import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from importlib import import_module
 
 from fastapi import Depends, FastAPI, Request
@@ -8,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.admin.middleware import create_request_logging_middleware
+from src.agentauth.model_identity import AgentModelIdentityMiddleware
 from src.auth.approval_middleware import ApprovalEnforcementMiddleware  # Issue #4144: gate spend on approval
 from src.auth.dependencies import require_admin  # Issue #1424: for agent-context indexing admin router guard
 from src.auth.middleware import TokenContextMiddleware
@@ -24,18 +26,35 @@ logger = logging.getLogger("bedrockgateway")
 
 UNIT_MODULES = [
     "src.auth.routes",
+    "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
+    "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
     "src.auth.aws_connect_routes",  # Issue #562: self-serve AWS account connect
     "src.internal.routes",  # Issue #446: internal service-to-service endpoints
     "src.internal.credential_routes",  # Issue #136: credential delivery paths
     "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path
+    "src.internal.task_credentials",  # Existing customer trust principal, restricted task session
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
+    "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
+    "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
+    # #5028 (AC4): the worker's own status/registration writes, moved off the
+    # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
+    # derives the row key from the protected execution record.
+    "src.agentauth.registration_routes",
+    "src.agentauth.service_authority",  # Human-only standing service delegation; never on the internal plane.
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",
+    "src.admin.identity.recovery_routes",  # Native Cognito recovery: no legacy /api prefix.
     "src.admin.connections.routes",  # Issue #465: GitHub App install + connections
+    # Issue #4842: platform-admin attach/detach of an ORG's GitHub connection.
+    # Separate from src.admin.connections.routes on purpose — that router is the
+    # self-serve path (a user installs the App and it binds to their own tenant);
+    # this one lets a platform admin bind a named installation to any named org,
+    # which is a different actor with different authorization.
+    "src.admin.org_connections.routes",
     "src.admin.tenants.routes",  # Issue #2954: Multi-org-to-tenant linking (rule 3)
     "src.admin.onboarding.handler",  # Issue #538: Self-serve onboarding flow
     "src.pool.routes",
@@ -53,6 +72,44 @@ UNIT_MODULES = [
     # from tenant_memberships. Deliberately NOT added to src.budget.routes, whose
     # unscoped entity_type/entity_id pattern is open IDOR #4384 (NFR-1).
     "src.budget.managed_scope_routes",
+    # Issue #4627: mis-partitioned person-cap report
+    # (GET /budget/reports/mis-partitioned-caps). A FOURTH budget router, and
+    # separate for a mechanical reason on top of the same IDOR-hygiene one: it
+    # cannot be a route on managed_scope_routes because that router's
+    # /{entity_type}/{entity_id} pattern would shadow a literal sibling path and
+    # answer a valid report request with a 422. Read-only and detection-only —
+    # design note 4620-cross-org-person-budgets.md §8.2 rules out mutation.
+    "src.budget.report_routes",
+    # Issue #4629 (#4620 · C3): person-level cap authoring
+    # (PUT /me/budget/person-cap, PUT /budget/person-cap/{anchor}). A FOURTH
+    # budget router, separate again for a different reason from the other three:
+    # it is the only one that WRITES, and what it writes is partition-free, so its
+    # authoring rule is unlike theirs — the person themselves or a platform admin
+    # may author, an org admin may NOT (§4.2; an org admin authoring a cap that
+    # spans tenants they cannot see is the authority inversion the #4620 ruling
+    # forbids). Not in me_routes, which documents itself read-only; not in
+    # src.budget.routes, whose unscoped entity_type/entity_id pattern is open
+    # IDOR #4384.
+    "src.budget.person_cap_routes",
+    "src.budget.overview_routes",
+    # Issue #4745 (#4692 · R4): the Bedrock account-routing authoring API — the
+    # platform-admin surface over R2's mapping/destination tables. Every route is
+    # `require_platform_admin`, org admins included (design ruling 4, §6.5): a mapping
+    # decides whose AWS account is BILLED for a principal's model calls, and a
+    # user-rung mapping names a person who may work in several tenants. Registered
+    # here, not under src.admin.routes, because that module's authoring rules are
+    # partition-scoped and this one's deliberately are not.
+    "src.admin.bedrock_routing.routes",
+    # Issue #4746 (#4692 · R5): the SELF-service half of the same tables — a person
+    # pointing their own Bedrock traffic at one of their own connected AWS accounts
+    # (`/me/bedrock-routing/selection`, §6.4). A separate module from the router above
+    # precisely because that one is platform-admin-only on every route, asserted against
+    # its own source; these routes are deliberately callable by an ordinary member, and
+    # the authz is the SHAPE of the path — no target parameter at any position, anchor
+    # derived from the token — not a check inside the handler. Writes the same user-rung
+    # row, and refuses to overwrite one a platform admin authored (§1.4 "admin wins",
+    # which with one row per scope can only be enforced at write time).
+    "src.admin.bedrock_routing.self_routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
@@ -98,6 +155,7 @@ async def lifespan(app: FastAPI):
             # Import all models so Base.metadata knows about them
             import src.admin.models  # noqa: F401
             import src.shared.models.audit  # noqa: F401  # Issue #446
+            import src.shared.models.bedrock_routing  # noqa: F401  # Issue #4743
             import src.shared.models.budget  # noqa: F401
             import src.shared.models.organization  # noqa: F401
             import src.shared.models.usage  # noqa: F401
@@ -138,14 +196,37 @@ async def lifespan(app: FastAPI):
 
             base_url = settings.mantle_base_url.replace("{region}", settings.mantle_region)
             auth = make_mantle_auth(settings.mantle_region)
-            set_mantle_service(MantlePassthroughService(auth, base_url))
+            set_mantle_service(
+                MantlePassthroughService(
+                    auth,
+                    base_url,
+                    inference_profile_prefix=settings.mantle_inference_profile_prefix,
+                    on_demand_models=settings.mantle_on_demand_models,
+                )
+            )
             logger.info("Mantle passthrough service initialized", extra={"auth_mode": "sigv4"})
         else:
             logger.info("Mantle passthrough disabled (BG_MANTLE_ENABLED not set)")
     except Exception as e:
         logger.error(f"Failed to initialize mantle passthrough service: {e}")
 
-    yield
+    from src.budget.pricing_decisions import maintain_pricing_cache, refresh_pricing_cache
+
+    # The shared refresh boundary caps reads at five seconds and records failure.
+    await refresh_pricing_cache()
+    pricing_task = asyncio.create_task(maintain_pricing_cache(), name="pricing_cache_refresh")
+    from src.orchestration.work_admission import maintain_work_claims
+
+    claims_task = asyncio.create_task(maintain_work_claims(), name="work_claim_cleanup")
+    try:
+        yield
+    finally:
+        pricing_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await pricing_task
+        claims_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await claims_task
 
     # Issue #144: Shutdown tracing on app shutdown
     shutdown_tracing()
@@ -220,6 +301,10 @@ def create_app() -> FastAPI:
     if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() == "true":
         app.add_middleware(BudgetEnforcementMiddleware)
         logger.info("Budget enforcement middleware enabled")
+
+    # Execute after token-context authentication and before budget resolution.
+    # Protected workers cannot fall back to a caller-selected run capability.
+    app.add_middleware(AgentModelIdentityMiddleware)
 
     # Issue #4144: approval (org-assignment) enforcement. Added AFTER budget/rate-limit
     # and BEFORE TokenContextMiddleware, so at runtime it executes after token_context is

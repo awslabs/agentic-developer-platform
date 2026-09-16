@@ -9,7 +9,7 @@
  * happily while the forbidden import sat there.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, within, act } from '@testing-library/react';
+import { render, screen, waitFor, within, act, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { readFileSync } from 'node:fs';
@@ -182,10 +182,11 @@ describe('AC-2: parallel work renders as distinct branches', () => {
     renderGraph();
 
     const wave = await screen.findByTestId('wave-epic-1-wave-1');
-    expect(wave).toHaveAttribute('data-branch-count', '2');
+    expect(within(wave).getByText('Parallel paths · 2 steps')).toBeVisible();
+    expect(within(wave).getAllByTestId(/^stage-/)).toHaveLength(1);
   });
 
-  it('collapses a chained wave into ONE branch', async () => {
+  it('renders chained steps in successive dependency groups', async () => {
     // The discriminator for AC-2: sharing a wave is not sufficient for
     // concurrency. These two are sequenced by an edge, so rendering them side by
     // side would claim parallelism the engine will not deliver.
@@ -197,7 +198,8 @@ describe('AC-2: parallel work renders as distinct branches', () => {
     renderGraph();
 
     const wave = await screen.findByTestId('wave-epic-1-wave-1');
-    expect(wave).toHaveAttribute('data-branch-count', '1');
+    expect(within(wave).queryByText(/Parallel paths/)).not.toBeInTheDocument();
+    expect(within(wave).getAllByTestId(/^stage-/)).toHaveLength(2);
   });
 
   it('renders a three-way fan-out as three branches', async () => {
@@ -209,7 +211,7 @@ describe('AC-2: parallel work renders as distinct branches', () => {
     renderGraph();
 
     const wave = await screen.findByTestId('wave-epic-1-wave-1');
-    expect(wave).toHaveAttribute('data-branch-count', '3');
+    expect(within(wave).getByText('Parallel paths · 3 steps')).toBeVisible();
   });
 
   it('separates waves within an EPIC and EPICs from each other', async () => {
@@ -419,7 +421,7 @@ describe('taxonomy: containers group, runs are detail', () => {
     const epic = await screen.findByTestId('epic-epic-1');
     expect(epic).toHaveAttribute('data-container', 'epic');
     expect(screen.getByTestId('wave-epic-1-wave-1')).toHaveAttribute('data-container', 'wave');
-    // A container is not executable: no display state, and not interactive.
+    // Expanding a container does not execute anything.
     expect(epic).not.toHaveAttribute('data-display-state');
     expect(epic.tagName).toBe('SECTION');
   });
@@ -743,4 +745,96 @@ describe('the nine→five projection covers every engine state', () => {
     const { engineStateToDisplayState } = await import('@/utils/nodeState');
     expect(engineStateToDisplayState('some_future_state' as NodeEngineState)).toBeNull();
   });
+});
+
+
+it('separates stories from controls and explains a persisted change request', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [
+    makeNode({ node_ref: 'story-1' }),
+    makeNode({ node_ref: 'story-2', wave_ref: 'wave-2' }),
+    makeNode({ node_ref: 'old-story', state: 'superseded' }),
+    makeNode({ node_ref: 'gate', kind: 'gate', state: 'rejected_at_gate',
+      last_gate_decision: { action: 'changes_requested', reason: '[input-path=dashboard] Clarify the migration plan', created_at: '2026-09-14T00:00:00Z' } }),
+    makeNode({ node_ref: 'eval', kind: 'eval' }),
+  ] }));
+  renderGraph();
+  expect(await screen.findByText('2 stories across 2 waves')).toBeInTheDocument();
+  expect(screen.getByText('1 approval gate · 1 evaluation')).toBeInTheDocument();
+  expect(screen.getByRole('alert')).toHaveTextContent('does not start an agent to revise the plan');
+  expect(screen.getByTestId('gate-feedback')).toHaveTextContent('Clarify the migration plan');
+  expect(screen.getByTestId('gate-feedback')).not.toHaveTextContent('input-path');
+  expect(screen.getByTestId('node-old-story')).not.toBeVisible();
+  expect(screen.getByText(/Superseded steps \(1\)/)).toBeVisible();
+});
+
+it('explains a change request submitted without a note through the old dashboard', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [
+    makeNode({ node_ref: 'gate', kind: 'gate', state: 'rejected_at_gate',
+      last_gate_decision: { action: 'changes_requested', reason: '[input-path=dashboard]', created_at: '2026-09-14T00:02:07Z' } }),
+  ] }));
+  renderGraph();
+  expect(await screen.findByText('No change description was provided.')).toBeVisible();
+  expect(screen.getByTestId('gate-feedback')).not.toHaveTextContent('input-path');
+});
+
+
+it('opens the first unfinished wave and supports collapse and expand all', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [
+    makeNode({ node_ref: 'done', wave_ref: 'wave-1', state: 'passed' }),
+    makeNode({ node_ref: 'current', wave_ref: 'wave-2' }),
+    makeNode({ node_ref: 'future', wave_ref: 'wave-3' }),
+  ] }));
+  renderGraph();
+  const done = await screen.findByTestId('wave-epic-1-wave-1');
+  const current = screen.getByTestId('wave-epic-1-wave-2');
+  const future = screen.getByTestId('wave-epic-1-wave-3');
+  expect(within(done).getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+  expect(within(current).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
+  expect(within(future).getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.getByTestId('node-future')).not.toBeVisible();
+  fireEvent.click(within(current).getByRole('button'));
+  expect(screen.getByTestId('node-current')).not.toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Expand all waves' }));
+  expect(screen.getByTestId('node-future')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse all waves' }));
+  expect(screen.getByTestId('node-future')).not.toBeVisible();
+});
+
+it('keeps later waves open when they need review or attention', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [
+    makeNode({ node_ref: 'first' }),
+    makeNode({ node_ref: 'problem', wave_ref: 'wave-2', state: 'rejected_at_gate' }),
+  ] }));
+  renderGraph();
+  expect(await screen.findByTestId('node-problem')).toBeVisible();
+});
+
+it('preserves a collapsed wave through background refresh', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    renderGraph();
+    const wave = await screen.findByTestId('wave-epic-1-wave-1');
+    fireEvent.click(within(wave).getByRole('button'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mockGetFlowGraph.mock.calls.length).toBeGreaterThan(1);
+    expect(within(wave).getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('node-story-a')).not.toBeVisible();
+  } finally { vi.useRealTimers(); }
+});
+
+it('shows shared-gate fan-out and fan-in as separate groups', async () => {
+  const gate = makeNode({ node_ref: 'start', kind: 'gate' });
+  const a = makeNode({ node_ref: 'a' });
+  const b = makeNode({ node_ref: 'b' });
+  const review = makeNode({ node_ref: 'review', kind: 'eval' });
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [review, a, gate, b], edges: [
+    { from_node_id: gate.id, to_node_id: a.id }, { from_node_id: gate.id, to_node_id: b.id },
+    { from_node_id: a.id, to_node_id: review.id }, { from_node_id: b.id, to_node_id: review.id },
+  ] }));
+  renderGraph();
+  const parallel = await screen.findByTestId('stage-epic-1-wave-1-1');
+  expect(within(parallel).getByTestId('node-a')).toBeVisible();
+  expect(within(parallel).getByTestId('node-b')).toBeVisible();
+  expect(within(parallel).queryByTestId('node-review')).not.toBeInTheDocument();
+  expect(screen.getByTestId('node-blocked-by-review')).toHaveTextContent('Waiting on 2 steps');
 });

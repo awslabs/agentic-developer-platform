@@ -33,7 +33,7 @@ _BROKERED_TOKEN = "ghs_brokered_from_gateway"
 # back FROM the gatekeeper rather than from a vault read, because the run still
 # needs it for the bot commit identity and for GH_APP_ID.
 _BROKERED_APP_ID = "99001"
-_BROKER_RESULT = (_BROKERED_TOKEN, _BROKERED_APP_ID)
+_BROKER_RESULT = (_BROKERED_TOKEN, _BROKERED_APP_ID, "2099-01-01T00:00:00Z")
 _INSTALLATION_ID = SAMPLE_ENVELOPE["source_ref"]["installation_id"]
 _REPO = SAMPLE_ENVELOPE["source_ref"]["repo"]
 
@@ -41,6 +41,10 @@ _REPO = SAMPLE_ENVELOPE["source_ref"]["repo"]
 def _prepare(monkeypatch, tmp_path, entrypoint, *, broker: str | None):
     monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setattr(entrypoint, "BootstrapLogger", MagicMock())
+    monkeypatch.setattr(entrypoint, "_start_sigv4_proxy", MagicMock())
+    monkeypatch.setattr(entrypoint, "update_invocation_status", MagicMock())
+    monkeypatch.setattr(entrypoint, "_write_outbound_correlation", MagicMock())
     if broker is None:
         monkeypatch.delenv("ADP_GH_TOKEN_BROKER_ENABLED", raising=False)
     else:
@@ -72,6 +76,10 @@ class TestFlagParsing:
         from entrypoint import _gh_token_broker_enabled
 
         assert _gh_token_broker_enabled({"ADP_GH_TOKEN_BROKER_ENABLED": value}) is False
+
+    def test_authority_forces_broker_even_when_optional_flag_is_disabled(self):
+        from entrypoint import _gh_token_broker_enabled
+        assert _gh_token_broker_enabled({"ADP_AGENT_AUTHORITY_ENABLED": "true", "ADP_GH_TOKEN_BROKER_ENABLED": "false"})
 
     def test_absent_disables(self):
         """Default off: an environment that has never heard of this flag is unchanged."""
@@ -118,6 +126,7 @@ class TestBrokerModeKeyNotExported:
         # debugging by hand) would reach the agent and make the flag silently
         # ineffective. The invariant must hold regardless of how the pod env was
         # populated.
+        monkeypatch.setenv("GH_APP_KEY", "inherited-key-alias")
         monkeypatch.setenv("GH_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nambient\n-----END RSA PRIVATE KEY-----")
         mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-broker-1")
         mock_broker.return_value = _BROKER_RESULT
@@ -128,6 +137,7 @@ class TestBrokerModeKeyNotExported:
         main()
 
         agent_env = _agent_env(mock_subprocess_run)
+        assert "GH_APP_KEY" not in agent_env
         assert "GH_APP_PRIVATE_KEY" not in agent_env, (
             "the whole point of #4272: a prompt-injected agent must not be able to "
             "read the platform App key out of its own environment"
@@ -186,6 +196,8 @@ class TestBrokerModeKeyNotExported:
         # canInitTokenManager() requires it in BOTH modes, so an empty value is the
         # identical silent 1-hour death. It is public, so the gatekeeper returns it
         # rather than the pod reading the vault for it.
+        assert agent_env["GH_APP_TOKEN"] == _BROKERED_TOKEN
+        assert agent_env["GH_APP_TOKEN_EXPIRES_AT"] == "2099-01-01T00:00:00Z"
         assert agent_env["GH_APP_ID"] == _BROKERED_APP_ID
 
     @patch("entrypoint._receive_one_message")
@@ -370,17 +382,18 @@ class TestBrokerFailureIsLoud:
         client.is_configured = True
         client.github_installation_token.return_value = {
             "token": _BROKERED_TOKEN,
-            "expires_at": "2026-08-27T16:45:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
             "app_id": _BROKERED_APP_ID,
         }
 
-        token, app_id = _broker_installation_token(
+        token, app_id, expires_at = _broker_installation_token(
             installation_id=_INSTALLATION_ID,
             repo_owner="acme-corp",
             repo_name="flagship-app",
             cred_client=client,
         )
 
+        assert expires_at == "2099-01-01T00:00:00Z"
         assert token == _BROKERED_TOKEN
         # The public App ID comes back from the gatekeeper: the pod no longer reads
         # the vault, but still needs it for GH_APP_ID and the bot commit identity.
@@ -443,3 +456,34 @@ class TestFlagOffIsUnchanged:
         assert "ADP_GH_TOKEN_BROKER_ENABLED" not in agent_env
         mock_broker.assert_not_called()
         mock_mint.assert_called_once()
+
+
+@pytest.mark.parametrize("expires_at", ["", "invalid", "2000-01-01T00:00:00Z", "2099-01-01T00:00:00"])
+def test_bootstrap_refuses_unknown_or_expired_provider_token(expires_at):
+    from entrypoint import _broker_installation_token
+    client = MagicMock()
+    client.github_installation_token.return_value = {"token": "fixture", "app_id": "1", "expires_at": expires_at}
+    with pytest.raises(RuntimeError, match="unusable token or expiry"):
+        _broker_installation_token(installation_id=1, repo_owner="acme", repo_name="repo", cred_client=client)
+
+
+@patch("entrypoint.boto3.client")
+def test_protected_bootstrap_removes_shared_gateway_and_door_credentials(client, monkeypatch):
+    import os
+    from entrypoint import _load_door_api_key
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+    for key in ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY"):
+        monkeypatch.setenv(key, "must-not-reach-agent")
+    _load_door_api_key("us-east-1")
+    assert all(key not in os.environ for key in ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY"))
+    client.assert_not_called()
+
+
+@patch("lib.marker_signing.boto3.client")
+def test_protected_worker_never_loads_or_reuses_a_shared_signing_key(client, monkeypatch):
+    from lib import marker_signing
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setattr(marker_signing, "_signing_key", b"cached-legacy-key")
+    monkeypatch.setattr(marker_signing, "_key_loaded", True)
+    assert marker_signing.compute_signature("correlation", "victim", "true", "other-run", "1") is None
+    client.assert_not_called()

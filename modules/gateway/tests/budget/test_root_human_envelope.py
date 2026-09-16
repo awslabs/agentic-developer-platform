@@ -40,11 +40,20 @@ Harness notes (inherited from ``test_run_spend_cap.py``, the #4187 suite):
   never a ``MagicMock`` — a fully-patched config asserts a guarantee it never
   exercised (the #4046 trap).
 * ``budget_run_cap_enabled`` / ``budget_run_binding_mode=enforce`` are ON here
-  because the root-human value rides #4187's server-side binding: the envelope is
-  inert until #4187 is flipped to enforce. That gate is asserted by
-  ``TestDependencyGate``.
+  so the #4187 run/chain assertions in this suite stay meaningful. Attribution
+  itself no longer depends on either (Issue #4591 review): ``TestDependencyGate``
+  asserts the envelope attributes and enforces on the SHIPPED defaults.
+
+  Issue #4591: the ``enforce`` half of that config is no longer load-bearing for
+  attribution — a VERIFIED binding publishes the root human in shadow mode too,
+  because attribution labels spend rather than denying it, and gating it on the
+  rollout flag left every per-person cloud-agent budget accruing nothing in the
+  shipped default. This suite keeps ``enforce`` set so its #4187 run/chain
+  assertions stay meaningful; the shadow-mode behaviour is
+  ``test_shadow_mode_attribution.py``.
 """
 
+import ast
 import json
 import re
 from datetime import UTC, datetime, timedelta
@@ -1278,16 +1287,26 @@ class TestPeriodRollover:
 
 
 class TestDependencyGate:
-    """The envelope is inert until #4187's binding is flipped to enforce."""
+    """Attribution has NO dependency gate; only the run/chain caps have one.
+
+    Issue #4591 (review): attribution used to be starved by TWO flags — the
+    binding MODE (shadow discarded the verified binding) and the run-cap FEATURE
+    flag (``budget_run_cap_enabled`` ships ``False`` and no environment plumbs
+    it, so gating on it made the shadow fix a silent no-op everywhere). Both
+    couplings are removed: a verified binding always attributes, and an authored
+    per-person cap (a number a human typed into Budget Management, on a settled
+    ledger) enforces as ordinary hierarchy enforcement. Only the platform-default
+    run/chain caps keep their gate: ``budget_run_cap_enabled`` AND mode=enforce.
+    """
 
     @pytest.mark.asyncio
-    async def test_shipped_defaults_do_not_enforce_the_envelope(self, redis_client, clock):
-        """With the shipped defaults (disabled / shadow), nothing is denied.
+    async def test_shipped_defaults_attribute_and_enforce_the_authored_envelope(self, redis_client, clock):
+        """With the SHIPPED defaults, an authored cap accrues and denies.
 
-        The root-human value rides #4187's server-side binding, which withholds
-        the binding in shadow mode. That coupling is deliberate and is the
-        rollout gate for this feature — asserted so it cannot regress into
-        enforcing before #4187 does.
+        This is the deploy-day contract #4536 promises: the operator who typed a
+        cap gets a cap, without hunting for a feature flag nothing documents.
+        The denial is hierarchy enforcement under ``budget_check_enabled`` — the
+        run/chain platform caps stay off (asserted via the reservation targets).
         """
         ledger = _Ledger(budgets={(EntityType.ROOT_USER.value, HUMAN): "0.01"})
         service = _service(redis_client, clock, _chain_registry({"evt-1": "svc-agent-1"}))
@@ -1295,15 +1314,35 @@ class TestDependencyGate:
         assert shipped.budget_run_cap_enabled is False
         assert shipped.budget_run_binding_mode == "shadow"
 
+        context = _agent_context("svc-agent-1")
         harness = await _drive(
             service,
             ledger,
             shipped,
-            context=_agent_context("svc-agent-1"),
+            context=context,
+            run_id="evt-1",
+            request_id="req-1",
+        )
+        assert harness.status == 402, "an authored cap must enforce on shipped defaults"
+        assert context.attributed_user_id == HUMAN
+        assert context._run_scope_reservations == [], "run/chain caps stay feature-gated"
+
+    @pytest.mark.asyncio
+    async def test_shipped_defaults_admit_when_no_cap_is_authored(self, redis_client, clock):
+        """The premise: it is the authored CAP that denies, not the defaults."""
+        service = _service(redis_client, clock, _chain_registry({"evt-1": "svc-agent-1"}))
+        context = _agent_context("svc-agent-1")
+
+        harness = await _drive(
+            service,
+            _Ledger(budgets={}),
+            BudgetConfig(),
+            context=context,
             run_id="evt-1",
             request_id="req-1",
         )
         assert harness.status == 200
+        assert context.attributed_user_id == HUMAN, "attribution must flow with the run-cap feature off"
 
 
 class TestEntityTypeContract:
@@ -1326,12 +1365,13 @@ class TestChatLogWriteSites:
     """T17: every chat-log write site must carry the attribution forward.
 
     The settled ledger is fed exclusively by chat logs. ``proxy/routes.py`` has
-    four write sites — streaming and non-streaming, on both the Bedrock and the
-    Mantle path — and a request that lands on a site which drops the field is
+    nine write sites across the native, Messages and compatibility routes,
+    including the completed-usage failure helper.
+    A request that lands on a site which drops the field is
     metered with no root-human row at all. That failure is invisible: the request
     succeeds, the reservation is released on completion, and the human's settled
     floor simply never rises, so the cap they are supposed to be under silently
-    never binds for traffic on that path. Threading three of four is the same bug
+    never binds for traffic on that path. Threading only some sites is the same bug
     as threading none, just harder to notice.
     """
 
@@ -1339,30 +1379,42 @@ class TestChatLogWriteSites:
     def _routes_source() -> str:
         return (Path(__file__).resolve().parents[2] / "src" / "proxy" / "routes.py").read_text()
 
-    def test_all_four_write_sites_pass_the_attribution(self):
-        source = self._routes_source()
+    def test_all_write_sites_pass_the_attribution(self):
+        tree = ast.parse(self._routes_source())
+        helper = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_pricing_log_args")
+        payload = next(node.value for node in ast.walk(helper) if isinstance(node, ast.Return))
+        helper_fields = {key.value: value for key, value in zip(payload.keys, payload.values, strict=True)}
+        assert ast.unparse(helper_fields["root_human_id"]) == "context.attributed_user_id"
 
-        # Locate the calls rather than trusting a global count: `root_human_id=`
-        # appearing four times anywhere in the file would also satisfy a naive
-        # assertion while leaving one call site bare.
-        call_starts = [m.start() for m in re.finditer(r"(log_chat_async|create_streaming_logging_wrapper)\(", source)]
-        # Exclude the import line, which is not a call.
-        call_starts = [i for i in call_starts if "import" not in source[source.rfind("\n", 0, i) : i]]
-        assert len(call_starts) == 4, f"expected 4 chat-log write sites, found {len(call_starts)}"
-
-        for start in call_starts:
-            # The call's own argument list: up to the next blank-line-delimited
-            # statement boundary, which is well past the closing paren.
-            body = source[start : start + 1200]
-            end = body.find("\n        )")
-            args = body[: end if end > 0 else len(body)]
-            line_no = source[:start].count("\n") + 1
-            assert "root_human_id=" in args, f"chat-log write site at routes.py:{line_no} drops root_human_id"
-            # Must come off the server-resolved context field, not a header or a
-            # request-body value the caller controls.
-            assert "root_human_id=context.attributed_user_id" in args, (
-                f"chat-log write site at routes.py:{line_no} sets root_human_id from something other than the server-resolved context"
-            )
+        sites = 0
+        for route in (node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)):
+            for call in (node for node in ast.walk(route) if isinstance(node, ast.Call)):
+                name = call.func.attr if isinstance(call.func, ast.Attribute) else getattr(call.func, "id", None)
+                if name not in ("log_chat_async", "create_streaming_logging_wrapper"):
+                    continue
+                sites += 1
+                keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+                if "root_human_id" in keywords:
+                    assert ast.unparse(keywords["root_human_id"]) == "context.attributed_user_id", route.name
+                else:
+                    # Expanded arguments must come from the verified helper in
+                    # this route, using the server-resolved context.
+                    if isinstance(keywords[None], ast.Call):
+                        assignment = keywords[None]
+                        assert ast.unparse(assignment.func) == "_pricing_log_args", route.name
+                        assert ast.unparse(assignment.args[1]) == "context", route.name
+                        continue
+                    assert ast.unparse(keywords[None]) == "log_args", route.name
+                    assignments = [
+                        node.value
+                        for node in ast.walk(route)
+                        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "log_args" for target in node.targets)
+                    ]
+                    assert len(assignments) == 1, route.name
+                    assignment = assignments[0]
+                    assert isinstance(assignment, ast.Call) and ast.unparse(assignment.func) == "_pricing_log_args", route.name
+                    assert ast.unparse(assignment.args[1]) == "context", route.name
+        assert sites == 9, f"expected 9 chat-log write sites, found {sites}"
 
     def test_the_logging_service_accepts_and_persists_the_field(self):
         """The parameter has to survive the whole call chain, not just the entry.

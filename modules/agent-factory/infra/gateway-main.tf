@@ -51,6 +51,7 @@ module "gateway_lambda" {
   response_queue_arn    = module.gateway_sqs.response_queue_arn
   sessions_table_name   = module.gateway_sessions.table_name
   sessions_table_arn    = module.gateway_sessions.table_arn
+  dynamodb_kms_key_arn  = aws_kms_key.dynamodb.arn
   artifacts_bucket_arn  = aws_s3_bucket.chat_artifacts.arn
   artifacts_bucket_name = aws_s3_bucket.chat_artifacts.id
   artifacts_table_arn   = aws_dynamodb_table.chat_artifacts.arn
@@ -143,6 +144,10 @@ module "gateway_apigw" {
   authorizer_lambda_function_name = local.authorizer_function_name
   cloudwatch_kms_key_arn          = aws_kms_key.cloudwatch.arn
   tags                            = { Component = "agent-gateway" }
+
+  # Close the AWS-assigned hostname once ws.<zone> is published. See the variable
+  # for why this is the only control a WEBSOCKET API can carry.
+  disable_execute_api_endpoint = var.disable_execute_api_endpoint
 }
 
 # --- Gateway Agents Namespace ---

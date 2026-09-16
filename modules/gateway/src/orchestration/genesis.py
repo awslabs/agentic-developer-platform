@@ -246,15 +246,7 @@ async def resolve_engine_genesis(
         )
         raise GenesisRefusedError(f"decision {decision_id!r} carries no actor_id; there is no human to root the chain in")
 
-    logger.info(
-        "orchestration genesis: resolved decision_id=%s kind=%s flow=%s org=%s",
-        decision_id,
-        decision.kind,
-        decision.flow_id,
-        org_id,
-    )
-
-    return EngineGenesis(
+    genesis = EngineGenesis(
         root_human_id=decision.actor_id,
         root_human_role=decision.actor_role,
         decision_id=decision.id,
@@ -262,3 +254,50 @@ async def resolve_engine_genesis(
         org_id=decision.org_id,
         kind=decision.kind,
     )
+
+    # Observability only (issue #4321). This log is a PROJECTION of the object
+    # above, never a source of authority: it is emitted from the resolved
+    # `genesis`, after resolution, so a reader cannot see a human root here that
+    # the authority object did not assert. Anything needing the root human must
+    # read `EngineGenesis`; a log line (or anything derived from one) is not an
+    # authority path.
+    #
+    # Two audiences, one call, which is why the fields appear twice:
+    #  - `extra=` keys become TOP-LEVEL JSON keys under the deployed
+    #    `StructuredJsonFormatter` (`src/shared/logging.py`), which is what makes
+    #    them queryable in CloudWatch Insights rather than trapped in a string.
+    #  - the message text repeats the stable `engine_genesis` token and the flag
+    #    because JSON renders the field as `"is_human_rooted": true`, so an
+    #    operator grepping `is_human_rooted=true` would match nothing without it.
+    #
+    # `root_human_id` is a STRUCTURED FIELD ONLY and deliberately absent from the
+    # message text. It is the opaque internal identity already on the decision
+    # row; no email, profile or credential data is logged. The refusal branches
+    # above stay as they are — a refusal names its reason and never echoes the
+    # approver, so it cannot become an oracle for who approved what.
+    logger.info(
+        "orchestration genesis: resolved decision_id=%s kind=%s flow=%s org=%s event=engine_genesis is_human_rooted=%s",
+        decision_id,
+        decision.kind,
+        decision.flow_id,
+        org_id,
+        # Rendered lowercase to match both the JSON boolean and the operator grep,
+        # and read off the object rather than hardcoded so the text cannot claim a
+        # human root the authority object did not assert.
+        str(genesis.is_human_rooted).lower(),
+        extra={
+            "event": "engine_genesis",
+            "decision_id": genesis.decision_id,
+            "kind": genesis.kind,
+            "flow_id": genesis.flow_id,
+            # Note: `StructuredJsonFormatter` also injects `org_id` from its
+            # request contextvar when one is set, which wins over this key. Both
+            # describe the same tenant — resolution is org-filtered in SQL — so
+            # the emitted value is correct either way.
+            "org_id": genesis.org_id,
+            "is_human_rooted": genesis.is_human_rooted,
+            "root_human_id": genesis.root_human_id,
+        },
+    )
+
+    return genesis

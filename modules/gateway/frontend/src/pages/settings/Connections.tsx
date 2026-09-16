@@ -12,6 +12,7 @@
  * the app status.
  */
 
+import { switchWorkspace } from "@/services/workspaces";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useToast } from "@/contexts/ToastContext";
@@ -29,7 +30,6 @@ import {
   rotateGitHubAppKey,
   startGitHubAppRegistration,
   startGitHubInstall,
-  switchTenant,
   type AppStatusResponse,
   type GitHubConnectionItem,
   type PlatformVerification,
@@ -308,9 +308,7 @@ export default function Connections() {
 
   const handleSwitchTenant = async (tenantId: string) => {
     try {
-      await switchTenant(tenantId);
-      toast.success("Switched workspace. Refreshing connections…");
-      await loadConnections();
+      await switchWorkspace(tenantId);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to switch workspace";
@@ -350,10 +348,8 @@ export default function Connections() {
   const handleSwitchBack = async () => {
     if (!switchBanner) return;
     try {
-      await switchTenant(switchBanner.switchedFrom);
+      await switchWorkspace(switchBanner.switchedFrom);
       setSwitchBanner(null);
-      toast.success("Switched back. Refreshing connections…");
-      await loadConnections();
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to switch workspace";
@@ -386,7 +382,7 @@ export default function Connections() {
         >
           <p className="text-sm font-medium text-green-800 dark:text-green-200">
             <strong>{switchBanner.installed}</strong> connected &mdash;
-            you&rsquo;re now working in this workspace.
+            select this organization above to start working in it.
           </p>
           <div className="flex items-center gap-2">
             <button

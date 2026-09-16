@@ -453,3 +453,39 @@ class TestErrorHandling:
         client = GatewayCredentialClient()
         with pytest.raises(GatewayCredentialError, match="Cannot reach gateway"):
             client.assume_role(user_id="u", agent_id="a", task_id="t")
+
+
+class TestAuthorityBrokerIdentity:
+    def test_current_proofs_are_signed_on_every_request(self, monkeypatch, tmp_path):
+        from unittest.mock import MagicMock, patch
+        from lib.gateway_credential_client import GatewayCredentialClient
+        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gateway.example.test/dev")
+        for variable, name in (("ADP_RUN_CREDENTIAL_FILE", "run"), ("ADP_WORKLOAD_TOKEN_FILE", "pod")):
+            monkeypatch.setenv(variable, str(tmp_path / name))
+            (tmp_path / name).write_text(name + "-proof")
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"ok":true}'
+        with patch("lib.gateway_credential_client._sigv4_sign_request", side_effect=lambda method, url, headers, data: headers) as signer, patch("lib.gateway_credential_client.build_opener") as opener:
+            opener.return_value.open.return_value = response
+            client = GatewayCredentialClient()
+            for epoch in (1, 2):
+                (tmp_path / "run").write_text(f"run-proof-{epoch}")
+                assert client._make_request("https://gateway.example.test/dev/internal/v1/credential-assume-role", {}) == {"ok": True}
+                assert signer.call_args.args[2]["X-Adp-Run-Credential"] == f"run-proof-{epoch}"
+                assert signer.call_args.args[2]["X-Adp-Workload-Token"] == "pod-proof"
+            assert opener.call_count == 2
+
+    def test_missing_proof_or_legacy_transport_never_sends(self, monkeypatch):
+        from unittest.mock import patch
+        from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
+        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gateway.example.test")
+        monkeypatch.delenv("ADP_RUN_CREDENTIAL_FILE", raising=False)
+        with patch("lib.gateway_credential_client._sigv4_sign_request") as signer:
+            with pytest.raises(GatewayCredentialError, match="identity unavailable"):
+                GatewayCredentialClient()._make_request("https://gateway.example.test/internal/v1/credential-assume-role", {})
+            monkeypatch.delenv("ADP_GATEWAY_ENDPOINT")
+            with pytest.raises(GatewayCredentialError, match="HTTPS and SigV4"):
+                GatewayCredentialClient(gateway_url="https://legacy.example.test", api_key="legacy")._make_request("https://legacy.example.test/internal/v1/credential-assume-role", {})
+            signer.assert_not_called()

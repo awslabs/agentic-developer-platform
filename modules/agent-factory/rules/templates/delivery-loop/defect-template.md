@@ -9,7 +9,9 @@
 
 ```markdown
 ## Description
-[WAVE_LABEL] evaluation check [N] failed: [one-line summary of what broke].
+[User workflow] fails in [environment]: [observed effect and what remains usable].
+This blocks [capability] in [WAVE_LABEL]; [owner] must [next action].
+Evidence: evaluation check [N] in #[EVAL_NUMBER].
 
 **Failing check command**:
 ```bash
@@ -33,7 +35,7 @@
 - **Cost / quota footprint**: no new resources; fix is code-only.
 
 ## Design
-Root-cause hypothesis: [brief analysis of why the check failed — what the
+Distinguish observed facts from uncertainty. Root-cause hypothesis: [brief analysis of why the check failed — what the
 owning story's implementation got wrong or missed].
 
 **Files to modify**: [list from owning story's Design section]

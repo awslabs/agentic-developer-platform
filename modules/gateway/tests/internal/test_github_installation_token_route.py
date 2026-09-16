@@ -25,6 +25,7 @@ Coverage, in order of what actually protects the tenant boundary:
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,7 +52,7 @@ _FOREIGN_INSTALLATION = 555002
 
 _INVOCATION_ID = "evt-abc-123"
 
-_GITHUB_EXPIRES_AT = "2026-08-27T16:45:00Z"
+_GITHUB_EXPIRES_AT = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +349,7 @@ class TestMintHappyPath:
 
         assert resp.status_code == 200, resp.text
         payload = resp.json()
+        assert resp.headers["cache-control"] == "no-store"
         assert payload["token"] == "ghs_brokered_token"
         assert payload["expires_at"] == _GITHUB_EXPIRES_AT
         # The App ID is public (only the private key is secret) and the worker still

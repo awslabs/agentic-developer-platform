@@ -493,6 +493,325 @@ class TestAllowlistGate:
         assert handler._check_allowlist("insider", "gh-token") is None
 
 
+def _fake_membership_reader(verdict=None, exc=None):
+    """Stand in for lambda/shared/membership_eligibility, imported lazily by the handler."""
+    fake = MagicMock()
+    fake.ELIGIBLE = "eligible"
+    fake.NOT_ELIGIBLE = "not_eligible"
+    fake.UNAVAILABLE = "unavailable"
+    if exc is not None:
+        fake.check_platform_membership.side_effect = exc
+    else:
+        fake.check_platform_membership.return_value = verdict
+    return fake
+
+
+class TestPlatformAllowlistMode:
+    """Issue #4844: ALLOWLIST_MODE=platform decides from platform membership.
+
+    Eligibility stops being "is this person in the allowed GitHub org?" and becomes
+    "does this GitHub identity resolve to a user holding at least one platform org
+    membership?". GitHub still proves *who* you are; it no longer decides whether
+    you belong.
+
+    Every failure mode denies. This is the broker — the sole enforcement point for
+    GitHub sign-in (#3986) — so a fail-open bug here is a platform-wide
+    authorization hole, and a spurious-deny bug is a platform-wide login outage.
+    """
+
+    _ID = "20402445"
+
+    def _check(self, verdict=None, exc=None, github_id=None):
+        import handler
+
+        handler.ALLOWLIST_MODE = "platform"
+        reader = _fake_membership_reader(verdict, exc)
+        with patch.dict("sys.modules", {"membership_eligibility": reader}):
+            result = handler._check_allowlist("octocat", "gh-token", self._ID if github_id is None else github_id)
+        return result, reader
+
+    def test_membership_holder_is_allowed(self):
+        """The mode's whole purpose: a platform member signs in."""
+        result, _ = self._check(verdict="eligible")
+        assert result is None
+
+    def test_no_membership_is_denied(self):
+        result, _ = self._check(verdict="not_eligible")
+        assert result == "not_authorized"
+
+    def test_unavailable_source_denies_with_a_distinct_code(self):
+        """Fail-CLOSED, and attributably so.
+
+        An unavailable membership source must deny rather than fall through to
+        another mode. The code differs from not_authorized so an operator can tell
+        "the projection table is unreachable" from "this user is genuinely not a
+        member" — collapsing them is the ambiguity #3986 was filed to fix.
+        """
+        result, _ = self._check(verdict="unavailable")
+        assert result == "membership_check_unavailable"
+
+    def test_raising_read_denies(self):
+        """A raising read denies rather than being swallowed.
+
+        #4849's shadow wrapper swallows exceptions on purpose — right while the
+        verdict was inert, fail-OPEN once it is authoritative.
+        """
+        result, _ = self._check(exc=RuntimeError("ddb down"))
+        assert result == "membership_check_unavailable"
+
+    def test_missing_shared_reader_denies(self):
+        """ImportError denies: the mode cannot be enforced, so it must not look enforced.
+
+        Guards the packaging contract — deploy-broker.sh and the broker deploy
+        workflow each copy lambda/shared/membership_eligibility.py in flat beside
+        the handler. If that step is ever dropped, sign-in must fail closed rather
+        than admit everyone.
+        """
+        import handler
+
+        handler.ALLOWLIST_MODE = "platform"
+        with patch.dict("sys.modules", {"membership_eligibility": None}):
+            assert handler._check_allowlist("octocat", "gh-token", self._ID) == "membership_check_unavailable"
+
+    def test_unrecognised_verdict_denies(self):
+        """A verdict this code does not know is "not proven", i.e. denied."""
+        result, _ = self._check(verdict="something_new")
+        assert result == "membership_check_unavailable"
+
+    def test_lookup_uses_the_github_id_not_the_login(self):
+        """The projection is id-keyed: GitHub logins are renameable, ids are not."""
+        _, reader = self._check(verdict="eligible")
+        reader.check_platform_membership.assert_called_once_with(self._ID)
+
+    def test_empty_github_id_is_passed_through_and_denied(self):
+        """With no id there is nothing to look up, and the reader denies it.
+
+        The handler does not silently substitute the login: that would look up the
+        wrong user instead of failing.
+        """
+        reader = _fake_membership_reader("not_eligible")
+        import handler
+
+        handler.ALLOWLIST_MODE = "platform"
+        with patch.dict("sys.modules", {"membership_eligibility": reader}):
+            assert handler._check_allowlist("octocat", "gh-token", "") == "not_authorized"
+        reader.check_platform_membership.assert_called_once_with("")
+
+    @patch("handler.check_org_membership", return_value="denied")
+    def test_github_org_membership_is_irrelevant_in_this_mode(self, mock_check_org):
+        """A platform member with NO GitHub org relationship is allowed.
+
+        This is the admin-created-org case the mode exists for, and the assertion
+        that GitHub is no longer the authority: the org check must not even run.
+        """
+        result, _ = self._check(verdict="eligible")
+        assert result is None
+        mock_check_org.assert_not_called()
+
+    def test_shadow_logging_is_skipped_in_this_mode(self):
+        """The #4849 shadow read must not double the DDB call once it is the real one.
+
+        Cognito's synchronous trigger budget is 5s and non-negotiable; a duplicate
+        read inside it buys nothing but latency, and its "would_agree" line could
+        only ever say True.
+        """
+        import handler
+
+        handler.ALLOWLIST_MODE = "platform"
+        reader = _fake_membership_reader("eligible")
+        with patch.dict("sys.modules", {"membership_eligibility": reader}):
+            handler._log_membership_eligibility_shadow(self._ID, "octocat", None)
+        reader.check_platform_membership.assert_not_called()
+
+    def test_shadow_logging_still_runs_in_org_mode(self):
+        """...but the shadow read stays live for the modes it was built to measure."""
+        import handler
+
+        handler.ALLOWLIST_MODE = "org"
+        reader = _fake_membership_reader("eligible")
+        with patch.dict("sys.modules", {"membership_eligibility": reader}):
+            handler._log_membership_eligibility_shadow(self._ID, "octocat", None)
+        reader.check_platform_membership.assert_called_once_with(self._ID)
+
+
+class TestPlatformModeBehaviouralGate:
+    """Issue #4844: the gate test that matters, driven through the real callback.
+
+    The issue is explicit that a parity matrix over the pre-signup trigger proves
+    nothing about live sign-in, because that trigger never fires for this flow —
+    ``admin_create_user`` does not raise ``PreSignUp_ExternalProvider``. So these
+    tests drive ``_handle_callback`` end-to-end with only the GitHub/Cognito edges
+    stubbed, and assert on what the user actually gets: a session, or a redirect
+    carrying an error.
+
+    The load-bearing assertion is ``provision_and_authenticate`` — a denied user
+    must not get a Cognito account provisioned, not merely be redirected.
+    """
+
+    _USER = {
+        "id": 20402445,
+        "login": "octocat",
+        "email": "octocat@example.com",
+        "name": "Octo Cat",
+        "avatar_url": "https://example.invalid/a.png",
+    }
+
+    def _run(self, verdict, mock_provision, mock_get_user, mock_exchange):
+        import handler
+
+        handler.ALLOWLIST_MODE = "platform"
+        mock_exchange.return_value = "gh-token"
+        mock_get_user.return_value = dict(self._USER)
+        mock_provision.return_value = {
+            "access_token": "access-tok",
+            "id_token": "id-tok",
+            "refresh_token": "refresh-tok",
+            "expires_in": 3600,
+        }
+        handler._github_oauth_creds = {"client_id": "test-client-id", "client_secret": "test-secret-123"}
+        state = _make_valid_state("test-secret-123")
+        event = {
+            "rawPath": "/callback",
+            "requestContext": {"http": {"method": "GET"}},
+            "queryStringParameters": {"code": "gh-code", "state": state},
+            "cookies": [f"gh_oauth_state={state}"],
+        }
+        reader = _fake_membership_reader(verdict)
+        with patch.dict("sys.modules", {"membership_eligibility": reader}):
+            return handler.handler(event, None), reader
+
+    @patch("handler.provision_and_authenticate")
+    @patch("handler.get_github_user")
+    @patch("handler.exchange_code_for_token")
+    def test_membership_holder_signs_in(self, mock_exchange, mock_get_user, mock_provision, mock_secrets):
+        """A user holding a platform membership gets a session, with no GitHub org check."""
+        response, reader = self._run("eligible", mock_provision, mock_get_user, mock_exchange)
+
+        assert response["statusCode"] == 302
+        location = response["headers"]["Location"]
+        assert "error" not in location
+        mock_provision.assert_called_once()
+        # Looked up by numeric id, as a string.
+        reader.check_platform_membership.assert_called_once_with(str(self._USER["id"]))
+
+    @patch("handler.provision_and_authenticate")
+    @patch("handler.get_github_user")
+    @patch("handler.exchange_code_for_token")
+    def test_membershipless_user_is_refused_and_not_provisioned(self, mock_exchange, mock_get_user, mock_provision, mock_secrets):
+        """A GitHub user with no platform membership is refused before provisioning.
+
+        The provisioning assertion is the real one: a denial that still created the
+        Cognito account would leave a usable account behind and make the gate
+        cosmetic.
+        """
+        response, _ = self._run("not_eligible", mock_provision, mock_get_user, mock_exchange)
+
+        assert response["statusCode"] == 302
+        assert "error=not_authorized" in response["headers"]["Location"]
+        mock_provision.assert_not_called()
+
+    @patch("handler.provision_and_authenticate")
+    @patch("handler.get_github_user")
+    @patch("handler.exchange_code_for_token")
+    def test_unavailable_source_refuses_and_does_not_provision(self, mock_exchange, mock_get_user, mock_provision, mock_secrets):
+        """Fail-closed end to end: an unreadable projection denies the sign-in."""
+        response, _ = self._run("unavailable", mock_provision, mock_get_user, mock_exchange)
+
+        assert response["statusCode"] == 302
+        assert "error=membership_check_unavailable" in response["headers"]["Location"]
+        mock_provision.assert_not_called()
+
+
+class TestOrgModeLoginCanary:
+    """Issue #4844: the eternal login canary — org mode is untouched by this change.
+
+    Adding a mode to the most outage-prone surface in this platform's history has
+    exactly one hard requirement: every environment, all of which are on ``org`` or
+    ``open`` today, must behave bit-identically. Driven through the real callback
+    rather than the predicate, because that is what a user experiences.
+    """
+
+    _USER = {
+        "id": 20402445,
+        "login": "insider",
+        "email": "insider@example.com",
+        "name": "In Sider",
+        "avatar_url": "https://example.invalid/a.png",
+    }
+
+    def _run(self, mode, mock_provision, mock_get_user, mock_exchange, *, allow_open=False):
+        import handler
+
+        handler.ALLOWLIST_MODE = mode
+        handler.ALLOW_OPEN_SIGNUP = allow_open
+        mock_exchange.return_value = "gh-token"
+        mock_get_user.return_value = dict(self._USER)
+        mock_provision.return_value = {"access_token": "a", "id_token": "i", "refresh_token": "r", "expires_in": 3600}
+        handler._github_oauth_creds = {"client_id": "test-client-id", "client_secret": "test-secret-123"}
+        state = _make_valid_state("test-secret-123")
+        event = {
+            "rawPath": "/callback",
+            "requestContext": {"http": {"method": "GET"}},
+            "queryStringParameters": {"code": "gh-code", "state": state},
+            "cookies": [f"gh_oauth_state={state}"],
+        }
+        return handler.handler(event, None)
+
+    @patch("handler.check_org_membership", return_value="allowed")
+    @patch("handler.provision_and_authenticate")
+    @patch("handler.get_github_user")
+    @patch("handler.exchange_code_for_token")
+    def test_org_member_still_signs_in(self, mock_exchange, mock_get_user, mock_provision, mock_check_org, mock_secrets):
+        """The canary: an in-org user signs in exactly as before #4844."""
+        response = self._run("org", mock_provision, mock_get_user, mock_exchange)
+
+        assert response["statusCode"] == 302
+        assert "error" not in response["headers"]["Location"]
+        mock_provision.assert_called_once()
+        mock_check_org.assert_called_once()
+
+    @patch("handler.check_org_membership", return_value="denied")
+    @patch("handler.provision_and_authenticate")
+    @patch("handler.get_github_user")
+    @patch("handler.exchange_code_for_token")
+    def test_org_non_member_still_denied(self, mock_exchange, mock_get_user, mock_provision, mock_check_org, mock_secrets):
+        response = self._run("org", mock_provision, mock_get_user, mock_exchange)
+
+        assert "error=not_authorized" in response["headers"]["Location"]
+        mock_provision.assert_not_called()
+
+    @patch("handler.provision_and_authenticate")
+    @patch("handler.get_github_user")
+    @patch("handler.exchange_code_for_token")
+    def test_open_mode_with_flag_still_signs_in(self, mock_exchange, mock_get_user, mock_provision, mock_secrets):
+        """dev runs mode=open today; #4844 must not disturb it."""
+        response = self._run("open", mock_provision, mock_get_user, mock_exchange, allow_open=True)
+
+        assert "error" not in response["headers"]["Location"]
+        mock_provision.assert_called_once()
+
+    @patch("handler.provision_and_authenticate")
+    @patch("handler.get_github_user")
+    @patch("handler.exchange_code_for_token")
+    def test_org_mode_does_not_consult_the_membership_projection(self, mock_exchange, mock_get_user, mock_provision, mock_secrets):
+        """org mode's DECISION never depends on the projection.
+
+        The #4849 shadow read still runs in org mode (asserted in
+        TestPlatformAllowlistMode), so this pins the thing that matters: whatever
+        the projection says, an org member is allowed and a non-member is denied.
+        A projection that reads NOT_ELIGIBLE must not leak into an org-mode denial.
+        """
+        import handler
+
+        reader = _fake_membership_reader("not_eligible")
+        with patch.dict("sys.modules", {"membership_eligibility": reader}):
+            with patch.object(handler, "check_org_membership", return_value="allowed"):
+                response = self._run("org", mock_provision, mock_get_user, mock_exchange)
+
+        assert "error" not in response["headers"]["Location"]
+        mock_provision.assert_called_once()
+
+
 class TestUsernameFormat:
     """Test that the username format is GitHub_<numeric-id>."""
 

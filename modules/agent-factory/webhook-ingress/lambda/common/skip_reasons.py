@@ -39,6 +39,9 @@ LABEL_UNMAPPED = "label_unmapped"
 #: PR head branch does not match ``agent/issue-*``, so no reviewer is due.
 PR_BRANCH_NOT_AGENT = "pr_branch_not_agent"
 
+#: Draft PRs are incomplete; review starts only once the author marks them ready.
+PR_DRAFT = "pr_draft"
+
 #: Bot-sent ``pull_request.synchronize`` — suppressed so an agent pushing fix
 #: commits to its own PR branch cannot spawn a fresh reviewer each time (#1696).
 BOT_SYNCHRONIZE_DEDUP = "bot_synchronize_dedup"
@@ -56,6 +59,12 @@ INSTALLATION_EVENT = "installation_event"
 
 #: The event type / action pair has no handler at all (e.g. ``check_run``).
 EVENT_TYPE_UNHANDLED = "event_type_unhandled"
+
+#: ``issue_comment`` action other than ``created`` (e.g. ``edited``) from a bot
+#: sender — most commonly the agent editing its own status comment in place.
+#: Distinguished from EVENT_TYPE_UNHANDLED so webhook-delivery logs read as
+#: "the agent's own comment activity, ignored" rather than an unexplained no-op.
+BOT_COMMENT_ACTION_UNHANDLED = "bot_comment_action_unhandled"
 
 #: ``@agent-engine <command>`` comment (#4527). Addressed to the orchestration
 #: engine, not to a persona, so this Lambda spawns NO pod and enqueues nothing:

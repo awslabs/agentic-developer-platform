@@ -5,6 +5,14 @@ description = "Multi-tenant SaaS proxy for Amazon Bedrock"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi==0.136.3",
+    # anyio is transitive (fastapi→starlette) but MUST be pinned: the Docker build
+    # installs with bare `pip install .` (uv.lock is not consulted), and the OTel
+    # operator injects /otel-auto-instrumentation-python ahead of site-packages with
+    # its own old typing_extensions.py. anyio releases newer than this import names
+    # (typing_extensions.sentinel) absent from that shadow copy, which crash-loops
+    # the pod at import (gateway deploy outage, 2026-09-07). Keep in sync with
+    # uv.lock so the image runs what CI tested.
+    "anyio==4.12.1",
     "uvicorn==0.34.0",
     "sqlalchemy[asyncio]==2.0.46",
     "asyncpg==0.30.0",
@@ -44,6 +52,16 @@ dev = [
     "pytest-timeout==2.3.1",
     "aiosqlite>=0.20.0",
     "psycopg2-binary>=2.9.9",
+    # Issue #4969: a real PostgreSQL 16 server for tests/migrations/. The V2
+    # pricing schema is built out of NUMERIC(14,10), JSONB, identity columns,
+    # plpgsql triggers, SELECT ... FOR UPDATE and the 42P01/42703 error codes the
+    # feature-detecting readers key on — none of which SQLite has, so a SQLite run
+    # would report green while testing none of the behavior that matters. Ships a
+    # self-contained binary: no Docker, no root, no host port.
+    # Marker: pgserver publishes wheels for <=3.12 only. CI's Test job runs 3.12,
+    # so these tests execute there; on a 3.13 interpreter the fixtures skip
+    # (importorskip) rather than fail.
+    "pgserver>=0.1.4; python_version < '3.13'",
 ]
 # Issue #20: Playwright browser tests for frontend smoke testing
 browser = [
@@ -106,13 +124,22 @@ markers = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "pricing_policy*"]
+
+# Issue #4969: the rate snapshots are data, not code, so setuptools would omit
+# them from an installed/built distribution and `load_snapshot()` would raise
+# FileNotFoundError at runtime while working fine from a source checkout.
+[tool.setuptools.package-data]
+pricing_policy = ["snapshots/*.json"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/cli/conftest.py" = ["N802", "E501"]
 # N802: BaseHTTPRequestHandler dispatches on do_GET/do_POST/... — the mixedCase
 # names are the stdlib's contract, not ours (Issue #4154 mock upstream gateway).
 "tests/cli/test_bg_cognito_auth_serve.py" = ["N802"]
+"tests/cli/test_bg_cognito_auth_login_web.py" = ["N802"]
+"tests/cli/test_adp_update.py" = ["N802"]
+"tests/cli/test_adp_install.py" = ["N802"]
 # E402: pytestmark must appear before project imports for pytest collection;
 # this is a deliberate pattern across all e2e test files.
 "tests/e2e/test_*.py" = ["E402"]

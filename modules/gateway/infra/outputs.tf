@@ -198,6 +198,20 @@ output "pricing_refresh_lambda_name" {
   value       = var.enable_chat_logging ? module.budget_lambda[0].pricing_refresh_lambda_name : ""
 }
 
+output "pricing_refresh_operations" {
+  description = "Pricing rollout/inspection resources; null when chat logging is disabled."
+  value = var.enable_chat_logging ? {
+    function_name           = module.budget_lambda[0].pricing_refresh_lambda_name
+    tracker_function_name   = module.budget_lambda[0].usage_tracker_lambda_name
+    schedule_rule_name      = module.budget_lambda[0].pricing_refresh_schedule_rule_name
+    schedule_rule_arn       = module.budget_lambda[0].pricing_refresh_schedule_rule_arn
+    delivery_failure_queue  = module.budget_lambda[0].pricing_delivery_failure_queue
+    execution_failure_queue = module.budget_lambda[0].pricing_execution_failure_queue
+    alarm_topic_arns        = module.budget_lambda[0].pricing_alarm_topic_arns
+    alarm_inbox             = module.budget_lambda[0].pricing_alarm_inbox
+  } : null
+}
+
 # =============================================================================
 # API Gateway Outputs (Issue #236)
 # =============================================================================
@@ -276,4 +290,26 @@ output "rds_instance_address" {
 output "rds_instance_id" {
   description = "RDS instance ID (used as bootstrap job trigger)"
   value       = module.rds.db_instance_id
+}
+
+# =============================================================================
+# Orchestration tick (Issue #4203) — cross-state wiring for command attribution
+# =============================================================================
+
+# Issue #4539. The engine-command signing key lives in the webhook-ingress state,
+# which grants exactly two principals decrypt on its dedicated CMK: the signer (its
+# own webhook Lambda) and the VERIFIER — this state's orchestration tick.
+#
+# That state cannot read gateway state, so it takes the verifier's role ARN as an
+# input (`engine_command_verifier_role_arn`) and names it in the key policy. This
+# output is the supported source for that value. Without it an operator wiring the
+# two states has to read the ARN out of the console or construct it by hand, and a
+# key policy that names the wrong role is a real grant to the wrong identity.
+#
+# The reverse direction is `orchestration_engine_command_signing_key_secret_arn` on
+# this state, set from the webhook state's output. Both are ARNs; the key value never
+# crosses a state boundary. Integration owned by #5195/#5210.
+output "orchestration_tick_role_arn" {
+  description = "IAM role ARN of the orchestration tick Lambda — the engine-command attribution VERIFIER. Pass to the webhook-ingress state's engine_command_verifier_role_arn to grant it read access to the signing keyring and decrypt on that keyring's CMK (issue #4539). Empty when the tick is not enabled."
+  value       = var.enable_orchestration_tick ? module.orchestration_tick[0].tick_role_arn : ""
 }

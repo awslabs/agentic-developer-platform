@@ -138,6 +138,9 @@ async def seeded(db_engine):
 def cognito_env():
     """Pool id present + a mock boto3 client, so the sync path is exercised."""
     mock_client = MagicMock()
+    mock_client.list_users.return_value = {
+        "Users": [{"Username": "sub-target", "Attributes": [{"Name": "sub", "Value": "sub-target"}, {"Name": "custom:org_id", "Value": "org-001"}]}]
+    }
     with (
         patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=False),
         patch("boto3.client", return_value=mock_client),
@@ -443,22 +446,16 @@ class TestCognitoSyncIsBestEffort:
         assert kwargs["Username"] == "sub-target"
         attrs = {a["Name"]: a["Value"] for a in kwargs["UserAttributes"]}
         assert attrs["custom:role"] == "dept_admin"
-        assert attrs["custom:org_id"] == "org-001"
+        assert attrs == {"custom:role": "dept_admin"}
 
-    async def test_github_username_fallback_is_used(self, db_engine, seeded):
-        """A GitHub-provisioned user's Cognito username is ``GitHub_<id>``, not the
-        sub, so the update by sub raises UserNotFoundException and must fall back to
-        a ListUsers-by-sub lookup. Reusing the extracted helper is what gets this
-        right; an inline re-implementation passes mocked tests and fails in dev."""
-        from botocore.exceptions import ClientError
-
-        not_found = ClientError(
-            {"Error": {"Code": "UserNotFoundException", "Message": "User does not exist."}},
-            "AdminUpdateUserAttributes",
-        )
+    async def test_github_username_is_resolved_before_writing(self, db_engine, seeded):
+        """Use the exact-sub lookup's actual username, checking its selected org."""
         mock_client = MagicMock()
-        mock_client.admin_update_user_attributes.side_effect = [not_found, None]
-        mock_client.list_users.return_value = {"Users": [{"Username": "GitHub_20402445"}]}
+        mock_client.list_users.return_value = {
+            "Users": [
+                {"Username": "GitHub_20402445", "Attributes": [{"Name": "sub", "Value": "sub-target"}, {"Name": "custom:org_id", "Value": "org-001"}]}
+            ]
+        }
 
         with (
             patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=False),
@@ -473,7 +470,7 @@ class TestCognitoSyncIsBestEffort:
         assert resp.status_code == 200
         mock_client.list_users.assert_called_once()
         assert mock_client.list_users.call_args.kwargs["Filter"] == 'sub = "sub-target"'
-        assert mock_client.admin_update_user_attributes.call_count == 2
+        assert mock_client.admin_update_user_attributes.call_count == 1
         assert mock_client.admin_update_user_attributes.call_args.kwargs["Username"] == "GitHub_20402445"
 
 

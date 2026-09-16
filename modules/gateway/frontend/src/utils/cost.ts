@@ -130,6 +130,81 @@ export function formatRunCost(amountUsd: number | null | undefined, status?: str
 }
 
 /**
+ * Format a money value that arrived as a **wire string** (issue #4685).
+ *
+ * Distinct from `formatAmount`/`formatCost` above, which take a `number`: money on
+ * the budget wire is a string at the column's own precision (caps `NUMERIC(10,2)`,
+ * spend `NUMERIC(14,6)`) precisely so sub-cent digits survive JSON, and a
+ * number-typed entry point is where that precision quietly dies. Parsing happens
+ * here, for display only — nothing downstream compares a rounded figure to a cap.
+ *
+ * This is the single copy. There were four byte-divergent private ones
+ * (`BudgetLines`, `PerOrgSpend`, `PersonSpendingLimit`, `pages/BudgetSpend`) and
+ * they disagreed on the cases that matter: two rendered `''` as `$0.00` (because
+ * `Number('')` is `0`, not `NaN`), two rendered `'-0.004'` as `-$0.00`, and two
+ * flattened real sub-cent spend to `$0.00` on the very rows whose purpose is
+ * disproving a `$0` reading.
+ *
+ * The contract, in the order the branches run:
+ *
+ * 1. `null`/`undefined`/blank → `NO_DATA_INDICATOR`. **Never `$0.00`** — this is
+ *    called on `cap_usd`/`remaining_usd`, legitimately `null` on an uncapped line,
+ *    and "no cap configured" must not read as "no money left".
+ * 2. non-finite (`NaN`, `'Infinity'`, `'1e999'`) → `NO_DATA_INDICATOR`. An
+ *    `isNaN` check alone passes `Infinity` and renders `$Infinity`.
+ * 3. non-zero below a cent → **4dp**, so `'0.000412'` is not reported as `$0.00`.
+ *    Real per-request costs are genuinely sub-cent, and flattening them to `$0.00`
+ *    on the very rows whose purpose is disproving a `$0` reading is self-defeating.
+ * 4. otherwise 2dp.
+ *
+ * In both money branches the sign is taken from the value **as rounded for display**,
+ * never from the input. Otherwise a magnitude too small to survive its own precision
+ * renders as a signed zero — `'-0.00000001'` as `-$0.0000` — which reads as a debt of
+ * nothing and is the only way this function can print a minus sign it cannot justify.
+ */
+/**
+ * Parse a wire money string to a number, or `null` when it is not a measurement.
+ *
+ * The single definition of "readable" for wire money (review fix on #4686):
+ * consumers that need the numeric value — a progress-bar position, an
+ * unreadable-figure caveat — must gate on THIS, not on `== null`, or an empty
+ * string (`Number('') === 0`) renders "we could not read your spend" and "0% of
+ * your limit used" on the same card.
+ */
+export function parseWireMoney(value: string | null | undefined): number | null {
+  if (value == null || value.trim() === '') return null;
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return null;
+  // `toFixed` switches to exponential notation at 1e21 and float precision is
+  // garbage long before that; no real money reaches 1e15. Beyond it the value is
+  // corruption, not currency — unreadable, never `'$1e+21'`.
+  if (Math.abs(amount) >= 1e15) return null;
+  return amount;
+}
+
+export function formatWireMoney(value: string | null | undefined): string {
+  const amount = parseWireMoney(value);
+  if (amount == null) return NO_DATA_INDICATOR;
+  // Sub-cent is decided on the ROUNDED value (review fix on #4686): '0.00999' is
+  // one cent after rounding and must render '$0.01' — deciding on the raw value
+  // produced two spellings of the same cent ('$0.0100' vs '$0.01'). NOTE: this
+  // deliberately differs from `formatAmount` above, which takes an already-numeric
+  // per-token cost and keeps 4dp precision for values this function would call
+  // zero; the two serve different columns and must not be merged blindly.
+  const rounded2 = Number(amount.toFixed(2));
+  if (rounded2 !== 0 || amount === 0) {
+    const sign = rounded2 < 0 ? '-' : '';
+    return `${sign}$${Math.abs(rounded2).toFixed(2)}`;
+  }
+  // Rounds to zero at 2dp but is not zero: show 4dp so real sub-cent spend never
+  // reads as `$0.00` — unless even 4dp carries no figure.
+  const rounded4 = Number(amount.toFixed(4));
+  if (rounded4 === 0) return '$0.00';
+  const sign = rounded4 < 0 ? '-' : '';
+  return `${sign}$${Math.abs(rounded4).toFixed(4)}`;
+}
+
+/**
  * Human-readable explanation for an `unknown` figure.
  *
  * A bare `'—'` with no explanation reads as a UI bug, so every `unknown` gets a

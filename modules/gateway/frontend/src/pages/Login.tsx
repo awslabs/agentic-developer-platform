@@ -7,10 +7,12 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   buildLoginUrl,
   buildGitHubLoginUrl,
   fetchLoginOptions,
+  storePostLoginRedirect,
 } from '@/services/auth';
 import { isCognitoConfigured } from '@/config/cognito';
 import { Spinner } from '@/components/ui/Spinner';
@@ -18,6 +20,10 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 
 export default function Login() {
+  const location = useLocation();
+  const apiUrl = new URL(import.meta.env.VITE_API_URL || '/api', window.location.origin).href.replace(/\/$/, '');
+  const shellQuote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+  const installCommand = `curl -fsSL ${shellQuote(`${apiUrl}/cli/install.sh`)} | sh -s -- --gateway-url ${shellQuote(apiUrl)}`;
   const [error, setError] = useState<string | null>(null);
   const [isRedirecting, setIsRedirecting] = useState(false);
   // Issue #2746: null = still loading (render enabled, no disabled-flash);
@@ -30,11 +36,25 @@ export default function Login() {
   // redirect_uri_mismatch is the ONLY observable signal that the GitHub App's
   // callback URL has drifted (GitHub exposes no API to read it), so it gets a
   // specific, actionable message instead of a generic failure.
+  // Deep-link preservation: ProtectedRoute sends us the page the user was
+  // trying to reach (e.g. /cli-auth?code=... from `login --web`). Both sign-in
+  // paths leave the SPA for an external provider, so persist it in
+  // sessionStorage for AuthCallback to restore — router state does not survive
+  // the round-trip.
+  useEffect(() => {
+    const from = (location.state as { from?: { pathname?: string; search?: string } } | null)?.from;
+    if (from?.pathname && from.pathname !== '/') {
+      storePostLoginRedirect(`${from.pathname}${from.search ?? ''}`);
+    }
+  }, [location.state]);
+
   useEffect(() => {
     const brokerError = new URLSearchParams(window.location.search).get('error');
     if (!brokerError) return;
     setError(
-      brokerError === 'redirect_uri_mismatch'
+      brokerError === 'workspace_refresh_required'
+        ? 'Please sign in again to finish switching organizations.'
+        : brokerError === 'redirect_uri_mismatch'
         ? 'GitHub rejected the sign-in because the App’s configured callback URL does not match this deployment. A platform administrator can fix this in Settings → Connections (“Re-validate config” shows the expected callback URL).'
         : `Sign-in failed: ${brokerError}`
     );
@@ -173,6 +193,14 @@ export default function Login() {
       >
         Sign in with Email
       </Button>
+
+      <details className="mt-6 text-sm text-gray-600 dark:text-gray-300">
+        <summary className="cursor-pointer font-medium">Install the ADP CLI</summary>
+        <p className="mt-3">Download without signing in. Run this command in your terminal:</p>
+        <pre className="mt-2 overflow-x-auto rounded bg-gray-100 p-3 text-xs dark:bg-gray-800" data-testid="cli-install-command">{installCommand}</pre>
+        <p className="mt-2">Developers: run <code>adp login</code>.</p>
+        <p className="mt-2">First-time administrator: run <code>adp admin setup</code> and sign in with your Cognito username and password.</p>
+      </details>
 
       <div className="mt-6 text-center">
         <p className="text-sm text-gray-500 dark:text-gray-400">

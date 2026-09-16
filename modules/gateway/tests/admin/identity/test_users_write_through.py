@@ -18,7 +18,10 @@ from src.shared.models.organization import Organization, User
 @pytest.fixture
 def mock_cognito_sync():
     mock = AsyncMock()
-    mock.create_user_and_invite = AsyncMock(return_value={"Username": "test@test.com"})
+    mock.create_user_and_invite = AsyncMock(
+        side_effect=lambda **kw: {"Username": kw["email"], "Attributes": [{"Name": "sub", "Value": "sub-" + kw["email"]}]}
+    )
+    mock.ensure_user_group = AsyncMock()
     mock.delete_user = AsyncMock(return_value=True)
     return mock
 
@@ -149,7 +152,7 @@ class TestUsersWriteThrough:
         deleted = await svc.delete_user("wt-org", user.id)
         assert deleted is True
 
-        mock_identity_writer.delete_all_user_identities.assert_awaited_once_with(["gh-del1", "sl-del2"])
+        mock_identity_writer.delete_all_user_identities.assert_awaited_once_with(["sl-del2"])
 
     @pytest.mark.asyncio
     async def test_delete_user_no_identities_skips_ddb(self, db_session: AsyncSession, mock_cognito_sync, mock_identity_writer, seeded_org):

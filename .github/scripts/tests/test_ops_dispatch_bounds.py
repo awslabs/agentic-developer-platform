@@ -67,6 +67,7 @@ ITEMS = [5101, 5102, 5103]
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_TESTS_WORKFLOW = REPO_ROOT / ".github/workflows/script-tests.yml"
+NIGHTLY_WORKFLOW = REPO_ROOT / ".github/workflows/security-agent-nightly.yml"
 EVENTBRIDGE_TF = (
     REPO_ROOT / "modules/agent-factory/webhook-ingress/infra/eventbridge.tf"
 )
@@ -1479,4 +1480,215 @@ class TestScriptTestsPin:
         the assertion is decorative."""
         assert (
             "modules/agent-factory/webhook-ingress/infra/eventbridge.tf" in workflow
+        )
+
+
+# --------------------------------------------------------------------------
+# the caller -- #4598, §8 items 6-9
+# --------------------------------------------------------------------------
+
+
+class TestNightlyWiring:
+    """The scripts above are only reachable if something CALLS them.
+
+    U11 shipped the dispatch machinery and its tests; every gate before this
+    class exercises the module in isolation. None of them fails when nothing
+    invokes it -- so until #4598 the whole unit could be dead code and this suite
+    would stay green. These gates bind the module to its caller.
+
+    The asymmetry below is the substance, not an omission: `root-dispatch` MUST be
+    a step in the nightly, and `dispatch-items` / `transition` MUST NOT be. The
+    two transports are not interchangeable (#4559 §1). A GitHub Actions runner
+    cannot originate a chain -- `adp-trigger` and `/agent/trigger` are both closed
+    to root-minting -- so the root has to be `put-events`. And the per-item hops
+    cannot run here: `adp-trigger` is installed only in the agent-worker image,
+    and its client hard-requires ADP_CORRELATION_ID / ADP_MESSAGE_ID /
+    ADP_CHAIN_DEPTH / ADP_TRIGGER_ENDPOINT from the pod environment, which a
+    runner does not have. They belong to the `operations` run the root starts.
+
+    So a workflow step calling `dispatch-items` is not a harmless extra: it fails
+    every night, and the obvious "fix" -- switching the per-item hops to
+    `put-events` -- silently mints a fresh root per item at `chain_depth=0`,
+    disabling the depth cap and the loop guard and unlinking the night in lineage.
+    That is the regression this class exists to catch, and it is invisible to
+    every other test in the file.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def workflow() -> dict:
+        yaml = pytest.importorskip("yaml", reason="PyYAML required to parse workflows")
+        return yaml.safe_load(NIGHTLY_WORKFLOW.read_text(encoding="utf-8"))
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def run_steps(workflow) -> list[dict]:
+        """Every shell step in the nightly, across all jobs.
+
+        Collected workflow-wide rather than from one job by name: the property is
+        "the nightly does/does not invoke this command anywhere", and a job-scoped
+        search would pass if a later unit moved the call into a job this fixture
+        did not know to look at.
+        """
+        return [
+            step
+            for job in workflow["jobs"].values()
+            for step in job["steps"]
+            if step.get("run")
+        ]
+
+    def _steps_invoking(self, run_steps, script: str, subcommand: str) -> list[dict]:
+        return [
+            step
+            for step in run_steps
+            if script in step["run"] and subcommand in step["run"]
+        ]
+
+    # -- the root dispatch IS wired (item 7) -------------------------------
+
+    def test_the_nightly_emits_the_root_dispatch(self, run_steps):
+        """Item 7. Without this the pipeline U8-U11 built stops at "filed a plan"
+        and the drive-to-merge step never runs -- the gap #4598 closes."""
+        steps = self._steps_invoking(run_steps, "ops_dispatch.py", "root-dispatch")
+        assert len(steps) == 1, (
+            "expected exactly one step invoking `ops_dispatch.py root-dispatch`; "
+            f"found {len(steps)}. Two would mint two roots for one night"
+        )
+
+    def test_the_root_dispatch_passes_a_real_issue_number(self, run_steps):
+        """#4559 §7.2: this path attaches an agent to an EXISTING issue and cannot
+        create one. The worker runs `gh issue view $ISSUE_NUMBER` at startup, so an
+        empty number does not degrade -- it kills the run before it does anything."""
+        body = self._steps_invoking(run_steps, "ops_dispatch.py", "root-dispatch")[0][
+            "run"
+        ]
+        assert "--issue-number" in body
+        assert "--run-date" in body, "the night's identity is its date"
+        assert "--marker-dir" in body, (
+            "without the per-date marker the emit is not idempotent, and a retried "
+            "night mints a second root (the envelope's dedup_key deduplicates "
+            "nothing -- §7.3)"
+        )
+
+    def test_the_plan_is_filed_before_it_is_dispatched(self, run_steps):
+        """Item 6, as an ORDER assertion. The number passed above has to come from
+        somewhere; a dispatch that precedes the filing names an issue that does not
+        exist yet."""
+        names = [step["run"] for step in run_steps]
+        plan = next(i for i, r in enumerate(names) if "join_barrier.py" in r)
+        dispatch = next(i for i, r in enumerate(names) if "root-dispatch" in r)
+        assert plan < dispatch, (
+            "the night's plan must be filed before the root event carrying its "
+            "number is emitted (#4559 §8 items 6 then 7)"
+        )
+
+    def test_the_root_dispatch_does_not_pass_the_pinned_identity_fields(
+        self, run_steps
+    ):
+        """#4559 §5: persona, service_identity and the target repo are Terraform
+        literals in the rule's InputTransformer, and that transformer is the
+        primary control on this path because `events:PutEvents` cannot be scoped to
+        an event source. A workflow that supplied any of them would hand a
+        compromised runner the choice -- a privilege escalation, not a style slip.
+        """
+        body = self._steps_invoking(run_steps, "ops_dispatch.py", "root-dispatch")[0][
+            "run"
+        ]
+        for forbidden in ("--persona", "--service-identity", "--repo"):
+            assert forbidden not in body, (
+                f"the root dispatch step passes {forbidden}, which belongs only in "
+                "the rule's InputTransformer as a Terraform literal (§5)"
+            )
+
+    # -- the in-night hops are NOT wired here (item 9) ---------------------
+
+    @pytest.mark.parametrize("subcommand", ["dispatch-items", "status"])
+    def test_the_nightly_does_not_run_the_in_night_hops(self, run_steps, subcommand):
+        """Item 9: every hop inside the night is an `adp-trigger` from the
+        operations run, not a CI step. `adp-trigger` is absent from the ARC runner
+        image and its client exits 2 without the pod's lineage env, so a step here
+        fails on every run."""
+        steps = self._steps_invoking(run_steps, "ops_dispatch.py", subcommand)
+        assert steps == [], (
+            f"the nightly invokes `ops_dispatch.py {subcommand}`, which cannot work "
+            "on a GitHub Actions runner: it dispatches via `adp-trigger`, which is "
+            "installed only in the agent-worker image and requires the pod's "
+            "ADP_CORRELATION_ID / ADP_MESSAGE_ID / ADP_CHAIN_DEPTH / "
+            "ADP_TRIGGER_ENDPOINT. This runs inside the dispatched operations run"
+        )
+
+    def test_the_nightly_does_not_run_the_stuck_tracker(self, run_steps):
+        """Same boundary, other script. The tracker applies transitions for items
+        the delivery role is driving; the nightly job has exited long before any
+        item reaches a terminal state, so a `transition` call here could only ever
+        record a state nothing had reached."""
+        for subcommand in ("transition", "sweep"):
+            steps = self._steps_invoking(
+                run_steps, "ops_stuck_tracker.py", subcommand
+            )
+            assert steps == [], (
+                f"the nightly invokes `ops_stuck_tracker.py {subcommand}`; item "
+                "state is tracked by the delivery role during the night, not by "
+                "the CI job that handed the plan off"
+            )
+
+    def test_no_workflow_step_dispatches_by_mention_or_label(self, run_steps):
+        """The two prohibited paths, asserted at the CALLER as well as in the
+        module. The module-level gates above prove `ops_dispatch.py` contains no
+        such path; they say nothing about a workflow step doing it directly with
+        `gh issue comment` or `gh issue edit --add-label agent-*`, which dispatches
+        at write time and bypasses the sequencing entirely (#3626)."""
+        for step in run_steps:
+            assert not re.search(r"@agent-", step["run"]), (
+                f"step {step.get('name')!r} contains an `@agent-` mention, which "
+                "dispatches an agent at write time"
+            )
+            assert not re.search(r"--add-label\s+[\"']?agent-", step["run"]), (
+                f"step {step.get('name')!r} adds an `agent-*` label, which is the "
+                "other prohibited dispatch path"
+            )
+
+    # -- the wiring lands INERT (item 8) ----------------------------------
+
+    def test_the_nightly_still_has_no_schedule_key(self, workflow):
+        """#4598 is explicit that arming the cron is a separate, deliberate step:
+        it needs a measured run duration and a window that does not collide with
+        the three other nightly suites on the same shared dev environment."""
+        # PyYAML follows YAML 1.1, where the bare key `on` is boolean True.
+        triggers = workflow.get("on", workflow.get(True))
+        assert triggers is not None, "the workflow declares no triggers at all"
+        assert "schedule" not in triggers, (
+            "wiring the dispatch must not also arm the cron -- see the header of "
+            "security-agent-nightly.yml"
+        )
+
+    def test_the_eventbridge_rule_is_still_disabled(self):
+        """The other half of "lands inert". With the rule off, the emit above
+        matches nothing and starts no run, so this wiring is unreachable until
+        someone enables it deliberately -- after the `events:PutEvents` grant is
+        applied (§8 items 8 and 10)."""
+        tfvars = (
+            REPO_ROOT
+            / "modules/agent-factory/webhook-ingress/infra/terraform.tfvars"
+        ).read_text(encoding="utf-8")
+        assert re.search(
+            r"^enable_eventbridge_security_agent_rule\s*=\s*false\s*$",
+            tfvars,
+            re.MULTILINE,
+        ), (
+            "enable_eventbridge_security_agent_rule is no longer false; #4598 wires "
+            "the caller and must leave the rule disabled. Arming it is a separate "
+            "step, and the IAM events:PutEvents grant must be applied first"
+        )
+
+    def test_the_nightly_is_a_watched_artifact_of_this_suite(self):
+        """This class asserts against the nightly's steps. If that file can change
+        without re-running this gate, every assertion above is decorative -- the
+        same reason the EventBridge Terraform is pinned."""
+        workflow = SCRIPT_TESTS_WORKFLOW.read_text(encoding="utf-8")
+        assert (
+            workflow.count("- '.github/workflows/security-agent-nightly.yml'") == 2
+        ), (
+            "the nightly must be in BOTH paths filters: a pull_request-only "
+            "trigger never attaches a check-run to a main commit"
         )

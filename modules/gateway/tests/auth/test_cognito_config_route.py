@@ -32,6 +32,7 @@ def _settings(**overrides) -> Settings:
     base = {
         "cognito_user_pool_id": "us-east-1_abc123XYZ",
         "cognito_client_id": "1h57kf5cpq17m0eml12EXAMPLE",
+        "cognito_cli_client_id": "cli-public-client",
         "aws_region": "us-east-1",
     }
     base.update(overrides)
@@ -48,6 +49,7 @@ class TestCognitoConfigRoute:
         assert resp.json() == {
             "user_pool_id": "us-east-1_abc123XYZ",
             "client_id": "1h57kf5cpq17m0eml12EXAMPLE",
+            "cli_client_id": "cli-public-client",
             "identity_pool_id": "",
             "region": "us-east-1",
         }
@@ -89,7 +91,7 @@ class TestCognitoConfigRoute:
             resp = client.get(ROUTE)
 
         body = resp.json()
-        assert set(body) == {"user_pool_id", "client_id", "identity_pool_id", "region"}
+        assert set(body) == {"user_pool_id", "client_id", "cli_client_id", "identity_pool_id", "region"}
         lowered = resp.text.lower()
         for forbidden in ("secret", "password", "email", "sub", "token"):
             assert forbidden not in lowered

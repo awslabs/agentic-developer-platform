@@ -166,14 +166,29 @@ else
   fi
 
   # 2b. Resolve the OAuth callback URL the broker must advertise as redirect_uri
-  #     (handler.py uses CALLBACK_URL). It's the gateway API GW invoke URL +
-  #     /auth/github/callback. Terraform initializes broker CALLBACK_URL="" with
-  #     ignore_changes, expecting it set post-deploy — so we set it here.
-  #     This SAME value must be the app's "Callback URL" on GitHub.
+  #     (handler.py uses CALLBACK_URL). Terraform initializes broker
+  #     CALLBACK_URL="" with ignore_changes, expecting it set post-deploy — so we
+  #     set it here. This SAME value must be the app's "Callback URL" on GitHub.
+  #
+  #     Prefer the published broker URL over the API Gateway invoke URL. That
+  #     parameter already accounts for the broker being served through
+  #     CloudFront, and gateway-infra keeps it in lockstep with the broker's own
+  #     CALLBACK_URL — the two are a matched pair, because the OAuth state cookie
+  #     is host-scoped and a mismatch fails every login with missing_state. It is
+  #     also the only correct source once the broker is delivered by its own
+  #     function URL, where the API Gateway does not serve /auth/github at all.
+  #     The API Gateway fallback remains for a deployment whose broker is still
+  #     reachable only on the API.
   if [ -z "${CALLBACK_URL:-}" ]; then
-    APIGW_URL=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
+    BROKER_URL=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/github-auth-broker-url" \
       --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-    [ -n "$APIGW_URL" ] && CALLBACK_URL="${APIGW_URL}/auth/github/callback"
+    if [ -n "$BROKER_URL" ] && [ "$BROKER_URL" != "None" ]; then
+      CALLBACK_URL="${BROKER_URL%/}/callback"
+    else
+      APIGW_URL=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
+        --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+      [ -n "$APIGW_URL" ] && [ "$APIGW_URL" != "None" ] && CALLBACK_URL="${APIGW_URL}/auth/github/callback"
+    fi
   fi
   if [ -n "${CALLBACK_URL:-}" ]; then
     ok "OAuth callback URL: $CALLBACK_URL"
@@ -181,7 +196,7 @@ else
   else
     # Issue #4016: critical — the broker cannot complete an OAuth exchange
     # without a redirect_uri, so login is broken. Was a warning.
-    record_failure "Could not resolve callback URL (SSM /adp/${ENVIRONMENT}/gateway/apigw-invoke-url empty) — login will fail until the broker CALLBACK_URL + the app's Callback URL are set."
+    record_failure "Could not resolve callback URL (both SSM /adp/${ENVIRONMENT}/gateway/github-auth-broker-url and /adp/${ENVIRONMENT}/gateway/apigw-invoke-url are empty) — login will fail until the broker CALLBACK_URL + the app's Callback URL are set."
   fi
 
   # 2c. The broker reads GITHUB_CLIENT_ID + CALLBACK_URL from its env (neither is

@@ -90,6 +90,8 @@ class IdentityIndexWriter:
         provider: str = "github",
         provider_username: str | None = None,
         member_org_ids: list[str] | None = None,
+        user_kind: str | None = None,
+        bot_kind: str | None = None,
     ) -> bool:
         """Write a channel_user entry to DDB for a single identity.
 
@@ -109,6 +111,11 @@ class IdentityIndexWriter:
         When member_org_ids IS provided, uses PutItem (full overwrite) to set
         the complete state including memberships.
 
+        Issue #780: Optional user_kind/bot_kind mark this identity as a known
+        bot (e.g. the platform GitHub App's own bot user) rather than a human.
+        Read by the webhook Lambda's identity_resolver to route bot senders
+        through the loop guards instead of the default human path.
+
         Returns True if the OLD-table write succeeded, False if exhausted retries.
         """
         logger.info(
@@ -124,6 +131,8 @@ class IdentityIndexWriter:
             extra_attrs: dict[str, str | None] = {
                 "user_id": user_id,
                 "provider_username": provider_username,
+                "user_kind": user_kind,
+                "bot_kind": bot_kind,
             }
             old_success = await self._client.put_identity(
                 identity_type=GITHUB_USER_TYPE,
@@ -139,6 +148,8 @@ class IdentityIndexWriter:
                 user_id=user_id,
                 org_id=org_id,
                 provider_username=provider_username,
+                user_kind=user_kind,
+                bot_kind=bot_kind,
             )
 
         if not old_success:
@@ -155,6 +166,8 @@ class IdentityIndexWriter:
                         org_id=org_id,
                         provider_username=provider_username,
                         member_org_ids=member_org_ids,
+                        user_kind=user_kind,
+                        bot_kind=bot_kind,
                     )
                 else:
                     new_success = await self._user_identity_client.update_user_core_attrs(
@@ -163,6 +176,8 @@ class IdentityIndexWriter:
                         user_id=user_id,
                         org_id=org_id,
                         provider_username=provider_username,
+                        user_kind=user_kind,
+                        bot_kind=bot_kind,
                     )
                 if not new_success:
                     logger.warning(

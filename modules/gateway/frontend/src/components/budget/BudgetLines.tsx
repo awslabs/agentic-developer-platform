@@ -1,5 +1,5 @@
 /**
- * The per-line envelope and the combined informational total — Issue #4402 (U-5).
+ * The per-line envelope rows and the band badge — Issue #4402 (U-5).
  *
  * This file is where the EPIC's central rule is rendered: **each line is checked
  * against its own cap, and no two lines are ever added into something presented as a
@@ -10,35 +10,19 @@
  * governed by nothing — the screen would say "exhausted" while enforcement stopped
  * nothing. The fused envelope *with* a real cap is #4396 and is deliberately not here.
  *
- * Hence `CombinedTotal` below renders **no progress bar and no `x / y` denominator**.
- * That is not stylistic restraint: `CombinedInformational` carries no cap field on the
- * wire at all, so there is no denominator available to render even by accident.
+ * **`CombinedTotal` is gone (#4685).** It rendered the direct+cloud sum as a bare
+ * informational figure, correctly captioned as governed by nothing — and that was exactly
+ * the problem the #4669 ruling closed: it sat at the top of `/budget` competing with three
+ * other spend figures, and no reader could tell which one governed them. The page now
+ * presents two figures, each against the cap that actually governs it (`SpendTiles.tsx`),
+ * so a third ungoverned total has no place to be. `combined_informational` remains on the
+ * wire and is simply not rendered.
  */
 
-import { Card } from '@/components/ui';
 import { describeBand, formatUtilization } from '@/utils/budgetBand';
 import { SERVICE_PRINCIPAL_QUALIFIER } from '@/types/budget';
-import type { BudgetLine, CombinedInformational } from '@/types/budget';
-
-/**
- * Render a wire money string for display.
- *
- * Money arrives as a string at the column's own precision (caps 2dp, spend/headroom
- * 6dp) so sub-cent digits survive JSON. Display rounds to cents — but only for
- * display, and only after `Number` has parsed the full-precision value, so nothing
- * downstream compares a rounded figure against a cap.
- *
- * A malformed or absent value renders an em dash, never `$0.00`: this function is
- * called on `cap_usd`/`remaining_usd`, both of which are legitimately `null` on an
- * uncapped line, and "no cap configured" must not read as "no money left".
- */
-function formatMoney(value: string | null | undefined): string {
-  if (value == null) return '—';
-  const amount = Number(value);
-  if (Number.isNaN(amount)) return '—';
-  const sign = amount < 0 ? '-' : '';
-  return `${sign}$${Math.abs(amount).toFixed(2)}`;
-}
+import { formatWireMoney } from '@/utils/cost';
+import type { BudgetLine } from '@/types/budget';
 
 /** True when a line's root principal is an unattended trigger rather than a person. */
 function isServicePrincipal(line: BudgetLine): boolean {
@@ -147,19 +131,19 @@ export function BudgetLineRow({ line }: { line: BudgetLine }) {
       <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-sm">
         <div>
           <dt className="text-gray-500 dark:text-gray-400">Spend</dt>
-          <dd className="font-mono text-gray-900 dark:text-white">{formatMoney(line.spend_usd)}</dd>
+          <dd className="font-mono text-gray-900 dark:text-white">{formatWireMoney(line.spend_usd)}</dd>
         </div>
         <div>
           <dt className="text-gray-500 dark:text-gray-400">Cap</dt>
           {/* "No cap set" is a distinct statement from "$0.00". A $0 cap is a real
               cap that nothing costing money can pass; an uncapped line has none. */}
-          <dd className="font-mono text-gray-900 dark:text-white">{uncapped ? 'No cap set' : formatMoney(line.cap_usd)}</dd>
+          <dd className="font-mono text-gray-900 dark:text-white">{uncapped ? 'No cap set' : formatWireMoney(line.cap_usd)}</dd>
         </div>
         <div>
           <dt className="text-gray-500 dark:text-gray-400">Headroom</dt>
           {/* Headroom may be negative — settled spend can pass a cap. It is shown as
               the true position rather than clamped to a flat "$0.00 left". */}
-          <dd className="font-mono text-gray-900 dark:text-white">{uncapped ? '—' : formatMoney(line.remaining_usd)}</dd>
+          <dd className="font-mono text-gray-900 dark:text-white">{uncapped ? '—' : formatWireMoney(line.remaining_usd)}</dd>
         </div>
         <div>
           <dt className="text-gray-500 dark:text-gray-400">Used</dt>
@@ -170,46 +154,24 @@ export function BudgetLineRow({ line }: { line: BudgetLine }) {
   );
 }
 
-/**
- * The direct+cloud dollar total — **informational, and never presented as a budget**.
- *
- * Deliberately absent from this component, and each absence is a requirement:
- *
- * - **no `role="progressbar"`** — a bar implies a ceiling, and no cap governs this
- *   number;
- * - **no `x / y` denominator** — there is no `y`; the wire carries no cap field here;
- * - **no band, no headroom, no utilisation** — all of them presuppose a cap.
- *
- * What it does carry is the server's own `note`, so the caption saying this is not a
- * budget is worded once, server-side, rather than re-invented per surface.
- */
-export function CombinedTotal({ combined }: { combined: CombinedInformational }) {
-  return (
-    <div className="pt-4 space-y-1" data-testid="combined-informational">
-      <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Combined direct + cloud spend</p>
-      <p className="text-2xl font-bold font-mono text-gray-900 dark:text-white" data-testid="combined-total-amount">
-        {formatMoney(combined.spend_usd)}
-      </p>
-      <p className="text-xs text-gray-500 dark:text-gray-400">{combined.note}</p>
-    </div>
-  );
-}
-
 export interface BudgetLinesProps {
   lines: BudgetLine[];
-  combined: CombinedInformational | null;
 }
 
 /**
- * The caller's per-person lines, each with its own cap, plus the combined total.
+ * The caller's per-person lines, each with its own cap.
  *
  * `lines` arrives most-specific-first and is rendered in that order. Shared ancestors
- * (team/department/org) are not in it even when one of them binds — when one does it
- * appears as the headline instead, which is the screen's job, not this component's.
+ * (team/department/org) are not in it even when one of them binds.
+ *
+ * **Not mounted by `/budget` since #4685** — the two tiles are that page's whole spend
+ * surface. Retained as the canonical rendering of a separately-capped line (including the
+ * `service:`-principal affordance from #4402 criterion 10, which has no other home) rather
+ * than deleted along with the widgets the ruling named; see the PR for the follow-up.
  */
-export function BudgetLines({ lines, combined }: BudgetLinesProps) {
+export function BudgetLines({ lines }: BudgetLinesProps) {
   return (
-    <Card>
+    <div>
       <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Your budget lines</h2>
       <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
         Each line has its own cap and is checked separately — they are not added together into a single budget.
@@ -226,8 +188,6 @@ export function BudgetLines({ lines, combined }: BudgetLinesProps) {
           ))}
         </div>
       )}
-
-      {combined && <CombinedTotal combined={combined} />}
-    </Card>
+    </div>
   );
 }

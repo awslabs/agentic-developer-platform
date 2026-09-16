@@ -104,6 +104,7 @@ describe('ConnectAws Page', () => {
       expect(mockWindowOpen).toHaveBeenCalledWith(
         expect.stringContaining('console.aws.amazon.com'),
         '_blank',
+        'noopener,noreferrer',
       );
     });
 

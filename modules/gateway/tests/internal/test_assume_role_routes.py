@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -32,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from src.internal.assume_role_routes import get_secrets_manager, router
+from src.orchestration.models import OrchestrationAcceptedPlan  # noqa: F401 — register before fixture create_all
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import Base
@@ -179,6 +181,89 @@ def _mock_sts_response():
 
 
 class TestAssumeRoleHappyPath:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("authority_kind", ["human_event", "gate_decision"])
+    async def test_protected_worker_preserves_existing_customer_role_delivery_without_execution_policy(self, db, monkeypatch, authority_kind):
+        """Protected authentication must preserve user-created deployment roles.
+
+        The real broker dependency and STS service run here. The external pod
+        verifier, event store, Secrets Manager and STS response are test doubles.
+        No session policy or permissions boundary is attached to the customer
+        session; the configured external ID, duration, tags and region survive.
+        """
+        from src.agentauth.broker_identity import verify_broker_worker
+        from src.agentauth.grants import AuthorityReference, DelegatedGrant
+        from src.internal.auth_deps import verify_internal_or_irsa
+
+        await _seed_aws_role_credential(db)
+        grant = DelegatedGrant(
+            grant_id="grant:customer-deploy:1",
+            tenant_id="org-test",
+            principal="customer-deploy#1",
+            authority=AuthorityReference(authority_kind, "human-deployment-approval", "user-alice", "org-test"),
+            allowed_actions=frozenset(),
+            flow_id="existing-flow-without-policy",
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+        execution = {"arrived_at": {"S": "2026-09-15T10:00:00Z"}}
+        event_client = MagicMock()
+        event_client.get_item.return_value = {"Item": {"authorized_user_id": {"S": "user-alice"}}}
+        caller = SimpleNamespace(tenant_id="org-test", invocation_id="customer-deploy", principal="customer-deploy#1")
+        runtime = SimpleNamespace(
+            authenticate=lambda *_: (None, caller, None, grant),
+            validate_flow=AsyncMock(),
+            store=SimpleNamespace(_read=lambda *_: execution, client=event_client),
+        )
+
+        class SessionContext:
+            async def __aenter__(self):
+                return db
+
+            async def __aexit__(self, *_):
+                pass
+
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+        monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
+        monkeypatch.setattr("src.shared.database.get_session_factory", lambda: SessionContext)
+        mock_sm = MagicMock()
+        mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
+        client = _make_app(db, mock_sm)
+        client.app.dependency_overrides[verify_internal_or_irsa] = verify_broker_worker
+        with (
+            patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
+            patch(
+                "src.internal.assume_role_routes.resolve_credential_binding",
+                return_value=SimpleNamespace(
+                    resolved_user_id="user-alice",
+                    from_registry=True,
+                    drift_detected=False,
+                ),
+            ),
+            patch("src.internal.sts_assume_service.boto3") as mock_boto3,
+        ):
+            mock_boto3.client.return_value.assume_role.return_value = _mock_sts_response()
+            response = client.post(
+                "/internal/v1/credential-assume-role",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "operations",
+                    "task_id": "deploy-task",
+                    "service": "aws",
+                    "label": "prod",
+                    "invocation_id": "customer-deploy",
+                },
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["profile_name"] == "adp-aws-prod"
+        assert response.json()["region"] == "us-west-2"
+        call = mock_boto3.client.return_value.assume_role.call_args.kwargs
+        assert call["RoleArn"] == "arn:aws:iam::123456789012:role/ADPDeployAgent"
+        assert call["ExternalId"] == "adp-dev-hosted-agent"
+        assert call["DurationSeconds"] == 1800
+        assert {tag["Key"]: tag["Value"] for tag in call["Tags"]}["adp:user_id"] == "user-alice"
+        assert "Policy" not in call and "PolicyArns" not in call
+        runtime.validate_flow.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_valid_request_returns_temp_credentials(self, db):
         await _seed_aws_role_credential(db)

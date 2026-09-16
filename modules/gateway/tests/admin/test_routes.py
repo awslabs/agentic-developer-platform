@@ -92,28 +92,51 @@ def client(app, mock_admin_service, mock_access_control, platform_admin_user):
 class TestOrganizationEndpoints:
     """Tests for organization endpoints."""
 
-    def test_create_organization(self, client, mock_admin_service):
-        """Test POST /admin/organizations."""
-        mock_admin_service.create_organization = AsyncMock(
-            return_value=OrganizationResponse(
-                id="org-new",
-                name="New Org",
-                aws_accounts=["123456789012"],
-                role_mappings={},
-                settings={},
-                created_at=datetime.now(UTC),
-            )
-        )
+    def test_create_organization_is_gone(self, client, mock_admin_service):
+        """Issue #4842 (D4=Option A): POST /admin/organizations is deprecated → 410.
 
+        Two org-create routes existed with different semantics, and this was the
+        lesser one: it wrote an ``organizations`` row and nothing else, so the
+        tenant it produced had no default department, no default team and no
+        channel mapping — an org that looks created and cannot route a webhook.
+        410 rather than a silent redirect, because the canonical route takes a
+        different request shape and quietly rewriting a caller's request would
+        substitute a 422 for a clear "this endpoint is gone" answer.
+        """
         response = client.post(
             "/admin/organizations",
             json={"name": "New Org", "aws_accounts": ["123456789012"]},
         )
 
-        assert response.status_code == 201
-        data = response.json()
-        assert data["name"] == "New Org"
-        assert data["id"] == "org-new"
+        assert response.status_code == 410
+        assert "/api/admin/identity/organizations" in response.json()["detail"]
+        # Gone means gone: the service must not have been reached at all, or the
+        # route would still be minting tenants while reporting that it cannot.
+        mock_admin_service.create_organization.assert_not_called()
+
+    def test_create_organization_gone_still_requires_auth(self, app, mock_admin_service, mock_access_control):
+        """The tombstone keeps the auth gate the live route had (#4915 review L1).
+
+        The retired handler must not become the one unauthenticated route on the
+        admin router: an anonymous caller gets 401/403, not a 410 that names the
+        canonical internal route path. Built without the get_current_user
+        override the shared ``client`` fixture installs.
+        """
+
+        async def override_admin_service():
+            return mock_admin_service
+
+        async def override_access_control():
+            return mock_access_control
+
+        app.dependency_overrides[get_admin_service] = override_admin_service
+        app.dependency_overrides[get_access_control] = override_access_control
+        anonymous = TestClient(app)
+
+        response = anonymous.post("/admin/organizations", json={"name": "New Org"})
+
+        assert response.status_code in (401, 403)
+        assert response.status_code != 410
 
     def test_list_organizations(self, client, mock_admin_service):
         """Test GET /admin/organizations."""
@@ -629,14 +652,22 @@ class TestRateLimitListCreateDeleteEndpoints:
 class TestValidation:
     """Tests for request validation."""
 
-    def test_create_organization_invalid_name(self, client, mock_admin_service):
-        """Test POST /admin/organizations with empty name."""
+    def test_create_organization_is_gone_regardless_of_body(self, client, mock_admin_service):
+        """Issue #4842: the 410 wins over body validation on the deprecated route.
+
+        This previously asserted 422 for an empty name. The route now takes no body
+        at all, so a malformed one cannot produce a validation error — and that is
+        the better answer: telling a caller their ``name`` is invalid on an endpoint
+        that no longer exists would send them off fixing the wrong thing. The
+        equivalent empty-name coverage now lives against the canonical route in
+        ``tests/admin/identity/test_organizations_create_error_mapping.py``.
+        """
         response = client.post(
             "/admin/organizations",
-            json={"name": ""},  # Empty name
+            json={"name": ""},  # Empty name — would have been a 422
         )
 
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 410
 
     def test_add_pool_account_invalid_account_id(self, client, mock_admin_service):
         """Test POST /admin/pool/accounts with invalid account ID."""

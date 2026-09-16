@@ -28,9 +28,14 @@ on:
       - '.github/scripts/normalize_security_findings.py'
       - '.github/scripts/dedup_security_findings.py'
       - '.github/scripts/triage_group_findings.py'
+      - '.github/scripts/author_grouping_plan.py'
+      - '.github/scripts/security_traceability.py'
+      - '.github/scripts/processed_runs.py'
       - '.github/scripts/join_barrier.py'
       - '.github/scripts/ops_dispatch.py'
       - '.github/scripts/ops_stuck_tracker.py'
+      - '.github/scripts/finalize_security_report.py'
+      - '.github/scripts/verify_scoped_plan.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -55,6 +60,19 @@ on:
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
+      # The workflow the scoped-plan guard suite asserts against (#5006). The
+      # suite asserts by content that the scope input is a `type: choice`, that
+      # the -target address is a hardcoded literal, that the apply consumes the
+      # saved plan, and that the destroy gate survives on both paths. Listed so
+      # an edit re-runs the gate that guards it — otherwise those assertions
+      # only hold for the commit that introduced them.
+      - '.github/workflows/platform-infra-apply.yml'
+      - 'platform/infra/modules/eks/main.tf'
+      # The cross-module tag agreement for the shared CI runner access entry is
+      # asserted against BOTH declarations, so an edit to either side must
+      # re-run the gate. No workflow here runs `terraform test`, so the tftest
+      # beside the module is not merge-blocking and this is the real gate.
+      - 'modules/agent-factory/infra/main.tf'
       # This workflow
       - '.github/workflows/script-tests.yml'
   pull_request:
@@ -74,9 +92,14 @@ on:
       - '.github/scripts/normalize_security_findings.py'
       - '.github/scripts/dedup_security_findings.py'
       - '.github/scripts/triage_group_findings.py'
+      - '.github/scripts/author_grouping_plan.py'
+      - '.github/scripts/security_traceability.py'
+      - '.github/scripts/processed_runs.py'
       - '.github/scripts/join_barrier.py'
       - '.github/scripts/ops_dispatch.py'
       - '.github/scripts/ops_stuck_tracker.py'
+      - '.github/scripts/finalize_security_report.py'
+      - '.github/scripts/verify_scoped_plan.py'
       # Artifacts the securityagent preflight suite asserts against (#4443)
       - '.github/workflows/security-agent-nightly.yml'
       - 'platform/infra/policies/securityagent-nightly-policy.json'
@@ -101,6 +124,19 @@ on:
       # Artifacts the profile suite asserts against
       - '.github/security/security-agent-profile.json'
       - '.github/security/security-agent-profile.schema.json'
+      # The workflow the scoped-plan guard suite asserts against (#5006). The
+      # suite asserts by content that the scope input is a `type: choice`, that
+      # the -target address is a hardcoded literal, that the apply consumes the
+      # saved plan, and that the destroy gate survives on both paths. Listed so
+      # an edit re-runs the gate that guards it — otherwise those assertions
+      # only hold for the commit that introduced them.
+      - '.github/workflows/platform-infra-apply.yml'
+      - 'platform/infra/modules/eks/main.tf'
+      # The cross-module tag agreement for the shared CI runner access entry is
+      # asserted against BOTH declarations, so an edit to either side must
+      # re-run the gate. No workflow here runs `terraform test`, so the tftest
+      # beside the module is not merge-blocking and this is the real gate.
+      - 'modules/agent-factory/infra/main.tf'
       # This workflow
       - '.github/workflows/script-tests.yml'
     branches:
@@ -148,6 +184,12 @@ jobs:
             tests/test_assert_findings_bucket_private.py \
             tests/test_security_agent_dedup.py \
             tests/test_triage_grouping.py \
+            tests/test_author_grouping_plan.py \
+            tests/test_security_traceability.py \
+            tests/test_processed_runs.py \
             tests/test_join_barrier.py \
             tests/test_ops_dispatch_bounds.py \
+            tests/test_nightly_triage_wiring.py \
+            tests/test_report_finalization.py \
+            tests/test_verify_scoped_plan.py \
             -v --tb=short --timeout=60

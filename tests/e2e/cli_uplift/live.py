@@ -1,0 +1,893 @@
+"""Wires the stage helpers each stage needs, live by default.
+
+`stages.py` asks for capabilities ("run this worker on that instance", "is the
+GitHub fixture real?"). This module supplies them from the ports, and is the one
+place a test substitutes a double. The default is always the live implementation:
+a harness that quietly no-ops when a dependency is absent reports success for work
+it never performed, which is the failure this whole evaluation exists to catch.
+
+`wire()` returns a plain dict, so an offline test can override one capability
+(say, `run_worker`) and leave the rest live-shaped without reimplementing the
+stage logic it is trying to exercise.
+"""
+
+from __future__ import annotations
+
+import json
+import shlex
+import time
+from urllib.parse import quote
+
+from . import bundle, config
+from . import ports as ports_module
+
+
+def _identity(aws, cfg):
+    """Resolve each account's identity from a session that actually belongs to it.
+
+    The platform identity is the runner's own session. The destination identity
+    must come from an assumed role in the destination account: re-reading the
+    runner's identity would report the platform account under a destination label
+    and preflight's cross-account check would pass without cross-account access
+    existing. Absent a role to assume, this raises rather than substituting the
+    session at hand.
+    """
+    sessions = {}
+
+    def resolve(which):
+        if which == "platform":
+            return aws.call("sts", "get_caller_identity")
+        role_arn = cfg.get("destination_role_arn") or cfg.get("provisioner_role_arn")
+        if not role_arn:
+            raise ports_module.PortError(
+                "No destination role is configured; the destination account identity "
+                "cannot be proven from the runner's own session"
+            )
+        if which not in sessions:
+            sessions[which] = aws.assume(role_arn, f"cli-uplift-eval-{which}")
+        return sessions[which].call("sts", "get_caller_identity")
+
+    return resolve
+
+
+def _deployed_revision(aws, http, cfg):
+    """What revision the gateway is actually running, from trusted evidence.
+
+    The run must be bound to the deployment it evaluated, or a green result says
+    nothing about which code produced it. The obvious source is `/health`, and the
+    preflight stage used to REQUIRE a revision there — but the product's `/health`
+    returns `{"status": "healthy"}` and always has (`modules/gateway/src/app.py`).
+    So every live run would have aborted in preflight with "reports no revision",
+    and no amount of harness work could have fixed it.
+
+    Making a new public health-metadata API a prerequisite is the wrong fix (and
+    the reviewer ruled it out): the deployment already publishes this, privately
+    and more trustworthily than an unauthenticated endpoint could. `gateway-deploy`
+    stamps the EKS deployment with `adp-gateway:<sha>` and pins the orchestration
+    engine Lambda to the digest of that same tag, asserting the two are equal
+    before it reports success. Resolving the Lambda's image digest back to its ECR
+    tags therefore yields the revision under an IAM-authorized read that the
+    gateway itself cannot influence.
+
+    Order of preference:
+
+    1. `/health` reporting a revision, if a future deployment ever does. Cheapest,
+       and it observes the exact process serving the run.
+    2. The deployment evidence above.
+
+    Both are accepted; neither is invented. If neither answers, the caller fails
+    the run — an unbound result must never be published as acceptance.
+    """
+    engine = cfg.get("engine_function") or DEFAULT_ENGINE_FUNCTION.format(
+        environment=cfg.get("environment") or "dev"
+    )
+
+    def resolve(record=None):
+        note = record if record is not None else {}
+        try:
+            _, health = http.get(cfg["gateway_url"].rstrip("/") + "/health", expect=200)
+        except ports_module.PortError:
+            health = None
+        served = str(
+            (health or {}).get("revision")
+            or (health or {}).get("git_sha")
+            or (health or {}).get("version")
+            or ""
+        ).strip()
+        if served:
+            note["revision_source"] = "gateway_health"
+            return served
+
+        # The engine Lambda and the EKS deployment are pinned to one digest by the
+        # deploy workflow, which verifies the equality before reporting success.
+        image = str(
+            aws.call("lambda", "get_function", FunctionName=engine)
+            .get("Code", {})
+            .get("ResolvedImageUri")
+            or ""
+        )
+        if "@" not in image:
+            raise ports_module.PortError(
+                f"The deployment evidence ({engine}) reports no pinned image digest, "
+                "and /health reports no revision; the run cannot be bound to a "
+                "deployed revision"
+            )
+        repository = image.split("/")[-1].split("@")[0]
+        digest = image.split("@", 1)[1]
+        tags = (
+            aws.call(
+                "ecr",
+                "describe_images",
+                repositoryName=repository,
+                imageIds=[{"imageDigest": digest}],
+            ).get("imageDetails")
+            or [{}]
+        )[0].get("imageTags") or []
+        revisions = [tag for tag in tags if REVISION_TAG.match(str(tag))]
+        if len(revisions) != 1:
+            raise ports_module.PortError(
+                f"The deployed image {digest[:19]}… carries {len(revisions)} "
+                "commit-shaped tags; exactly one is required to bind the run to a "
+                "revision"
+            )
+        note["revision_source"] = "deployment_image_tag"
+        note["revision_evidence"] = {"function": engine, "image_digest": digest}
+        return revisions[0]
+
+    return resolve
+
+
+# The image tag `gateway-deploy.yml` stamps is `github.sha`, so a 40-hex tag is
+# the revision. `latest` and any other moving tag are deliberately not accepted.
+REVISION_TAG = config.REVISION
+DEFAULT_ENGINE_FUNCTION = "adp-{environment}-orchestration-tick"
+
+
+def _wait_online(aws, *, attempts=36, sleep=time.sleep):
+    def wait(instance_id):
+        for _ in range(attempts):
+            found = (
+                aws.call(
+                    "ssm",
+                    "describe_instance_information",
+                    Filters=[{"Key": "InstanceIds", "Values": [instance_id]}],
+                ).get("InstanceInformationList")
+                or []
+            )
+            if found and found[0].get("PingStatus") == "Online":
+                return True
+            sleep(5)
+        return False
+
+    return wait
+
+
+def _install_bundle(ssm, aws, cfg):
+    """Deliver the checked-in remote scripts to the instance, once per run.
+
+    R1: the harness used to invoke `/home/ec2-user/adp-eval/worker.py`, which
+    nothing ever created — cloud-init made the directory and stopped. Every remote
+    path therefore ran a file that did not exist. This is the missing half: the
+    reviewed scripts are packaged, uploaded, verified by digest on the instance,
+    extracted, and self-checked before any stage depends on one.
+
+    The transfer reuses the mechanism the pinned #5173 harness already runs in this
+    same private subnet (tar.gz to S3, `aws s3 cp`, `sha256sum -c`, extract, run as
+    ec2-user) rather than inventing a new one.
+    """
+    installed = {}
+
+    def install(instance_id, evaluation_id, manifest=None):
+        if installed.get("instance") == instance_id:
+            return installed["result"]
+        bucket = cfg.get("state_bucket")
+        if not bucket:
+            raise ports_module.PortError(
+                "No state_bucket is configured, so the remote scripts cannot be "
+                "delivered to the instance; set CLI_UPLIFT_EVAL_STATE_BUCKET"
+            )
+        payload = bundle.archive()
+        expected = bundle.digest(payload)
+        # Intent before mutation: the object is this run's to delete either way.
+        key = bundle.object_key(evaluation_id)
+        if manifest is not None:
+            manifest.record("s3_object", f"{bucket}/{key}", detail={"bundle": True})
+        bundle.upload(
+            aws,
+            bucket,
+            evaluation_id,
+            kms_key_id=cfg.get("state_kms_key_id"),
+            data=payload,
+        )
+        result = ssm.run(
+            instance_id,
+            bundle.install_commands(bucket, key, expected, region=cfg["region"]),
+            purpose="install-bundle",
+            timeout=min(int(cfg.get("timeout_seconds", 240)) * 2, 600),
+        )
+        if result.get("Status") != "Success":
+            raise ports_module.PortError(
+                "The remote script bundle did not install on the instance "
+                f"(SSM status {result.get('Status')}); no journey could have run"
+            )
+        installed.update(
+            instance=instance_id,
+            result={"digest": expected, "purposes": list(bundle.purposes())},
+        )
+        return installed["result"]
+
+    return install
+
+
+def _run_worker(ssm, cfg, install):
+    """Run one dispatcher purpose on the instance and return its evidence.
+
+    The payload goes via a file written by SSM rather than an argv string so a
+    fixture reference never lands in a process listing, and it runs as ec2-user so
+    it cannot read root-only material.
+
+    `bundle.require_purpose()` is checked BEFORE the command is sent, so a purpose
+    with no shipped script names the module a developer must write instead of
+    failing as a remote ImportError — or, as before, silently invoking a path that
+    was never delivered.
+    """
+
+    def run(instance_id, purpose, payload):
+        bundle.require_purpose(purpose)
+        install(instance_id, payload.get("evaluation_id") or "")
+        remote = f"{bundle.REMOTE_DIR}/{purpose}.json"
+        commands = [
+            "set -eu",
+            "umask 077",
+            f"cat > {shlex.quote(remote)} <<'EOF_PAYLOAD'\n"
+            f"{json.dumps(payload)}\nEOF_PAYLOAD",
+            f"chown ec2-user:ec2-user {shlex.quote(remote)}",
+            "runuser -l ec2-user -c "
+            + shlex.quote(
+                f"python3 {bundle.DISPATCHER} {purpose} {shlex.quote(remote)}"
+            ),
+            # Removed even on success: the payload names a fixture secret.
+            f"rm -f {shlex.quote(remote)}",
+        ]
+        _, document = ssm.json_result(
+            instance_id,
+            commands,
+            purpose=purpose,
+            timeout=min(int(cfg.get("timeout_seconds", 240)) * 3, 900),
+        )
+        return document
+
+    return run
+
+
+def _worker_config(cfg):
+    def build(_cfg, ctx, mode):
+        return {
+            "instance_id": ctx["document"].get("instance_id"),
+            "evaluation_id": ctx["evaluation_id"],
+            "platform_account": str(cfg["platform_account"]),
+            "destination_account": str(cfg["destination_account"]),
+            "region": cfg["region"],
+            "gateway_url": cfg["gateway_url"],
+            "sts_endpoint": cfg["sts_endpoint"],
+            "secrets_endpoint": cfg["secrets_endpoint"],
+            "connection_name": f"{ctx['evaluation_id']}-{mode}",
+            "stack_name": f"{ctx['evaluation_id']}-{mode}",
+            "role_name": f"{ctx['evaluation_id']}-{mode}-role",
+            "credential_secret": cfg.get("credential_secret_name", ""),
+            "session_key": "admin",
+            # R3: the provisioner binding, validated in config as a role ARN in
+            # the destination account. Absent, the journey fails naming it rather
+            # than falling back to the instance's own identity.
+            "provisioner_arn": cfg.get("provisioner_role_arn", ""),
+            "absent_connection_id": "00000000-0000-4000-8000-000000000000",
+        }
+
+    return build
+
+
+def _journey(ssm, cfg, install, journeys=None):
+    """Resolve a case's purpose to a callable that runs it on the instance.
+
+    Returns None only for a purpose with no shipped script — which the stage
+    reports as an implementation gap naming the module to write. That is a real
+    absence, not a wiring hole: `bundle.purposes()` is read from the dispatcher
+    registry that ships, so "registered" and "runnable" cannot disagree.
+
+    `journeys` still allows an explicit override for a test, but the default is
+    live rather than absent.
+    """
+    if journeys is not None:
+        return (journeys or {}).get if isinstance(journeys, dict) else journeys
+    worker = _run_worker(ssm, cfg, install)
+    available = set(bundle.purposes())
+
+    def resolve(purpose):
+        if purpose not in available:
+            return None
+
+        def drive(instance_id, ctx):
+            return worker(instance_id, purpose, _journey_payload(cfg, ctx))
+
+        return drive
+
+    return resolve
+
+
+def _journey_payload(cfg, ctx):
+    """What a journey script needs, derived from the run's own state.
+
+    `expected_hashes` comes from preflight, which derived it from the revision
+    under test — never re-read from the download the instance is about to make.
+    The session established by install/auth is carried forward so a routing or
+    inference journey does not log in again and turn a login failure into a
+    routing failure.
+
+    Every key any shipped script reads is supplied here, including the ones with
+    on-instance defaults. That is deliberate: `personal_inference` hard-requires
+    `claude_model`, `test_user_id` and `effective_destination_account`, and an
+    absent key would have failed the journey with a KeyError attributed to
+    inference rather than to a payload this function never assembled. The bounds
+    are passed explicitly too, so a run's timeouts come from its validated config
+    instead of a constant buried in a remote module.
+    """
+    session = ctx["document"].get("session") or {}
+    correlation = ctx.get("correlation") or {}
+    return {
+        "instance_id": ctx["document"].get("instance_id"),
+        "evaluation_id": ctx["evaluation_id"],
+        "platform_account": str(cfg["platform_account"]),
+        "destination_account": str(cfg["destination_account"]),
+        "region": cfg["region"],
+        "gateway_url": cfg["gateway_url"],
+        "sts_endpoint": cfg["sts_endpoint"],
+        "secrets_endpoint": cfg["secrets_endpoint"],
+        "credential_secret": cfg.get("credential_secret_name", ""),
+        "provisioner_arn": cfg.get("provisioner_role_arn", ""),
+        "expected_hashes": ctx.get("expected_hashes")
+        or (ctx["preflight"] or {}).get("served_cli_hashes")
+        or {},
+        "cli_path": session.get("cli_path", ""),
+        "access_token": session.get("access_token", ""),
+        "id_token": session.get("id_token", ""),
+        "refresh_token": session.get("refresh_token", ""),
+        "session_expires_at": session.get("expires_at", 0),
+        "test_user": session.get("username", ""),
+        # The gateway's own id for that identity, which is what the usage log keys
+        # on. install_auth reads it from `/auth/cli/admin-session`; the username is
+        # the fallback only because a pool can be configured to make them equal.
+        "test_user_id": session.get("user_id") or session.get("username", ""),
+        "org_id": session.get("org_id", ""),
+        "destination_label": f"{ctx['evaluation_id']}-dest",
+        "unprovisioned_label": f"{ctx['evaluation_id']}-unprov",
+        "handoff_label": f"{ctx['evaluation_id']}-handoff",
+        "claude_version": cfg.get("claude_version", ""),
+        "codex_version": cfg.get("codex_version", ""),
+        "claude_model": cfg["claude_model"],
+        # The account the routing rule E06 left in place actually points at, as
+        # read back from the product. E08 compares it against the configured
+        # destination and refuses to grade cross-account inference if they differ,
+        # so it must be E06's observation and never a copy of the config.
+        "effective_destination_account": correlation.get(
+            "bedrock_destination_account", ""
+        ),
+        # The proxy `adp codex` starts. Off the 9191 default so a listener left by
+        # an earlier attempt on this instance cannot be mistaken for ours.
+        "proxy_port": int(cfg["proxy_port"]),
+        "usage_wait_seconds": int(cfg["usage_wait_seconds"]),
+        "cloudtrail_wait_seconds": int(cfg["cloudtrail_wait_seconds"]),
+        "inference_timeout_seconds": int(cfg["inference_timeout_seconds"]),
+        # Where a script that installs from a staged copy finds it. The scripts that
+        # install from the served release ignore this.
+        "source_dir": bundle.REMOTE_DIR + "/release",
+        # E13's own connection, and an id that belongs to nobody. The name carries
+        # the evaluation id so cleanup can find the row even if the create call's
+        # response never arrived, and so it cannot collide with E04/E05's.
+        "connection_name": f"{ctx['evaluation_id']}-parity",
+        "absent_connection_id": "00000000-0000-4000-8000-000000000000",
+        # The browser's declared wire types, read from the git object store at the
+        # revision under test rather than from the deployment. E13 refuses to run
+        # without them: checking only the CLI consumer would report a pass on a
+        # response the UI cannot render, which is the whole property under test.
+        "ui_contracts": ctx.get("ui_contracts") or {},
+    }
+
+
+def _github_available(cfg):
+    """Whether an ISOLATED GitHub fixture genuinely exists.
+
+    Config naming a fixture is necessary but not sufficient — the point of the
+    check is that an operator has actually created a dedicated App/org/repo. With
+    no way to prove it from here, this returns False so the GitHub cases block
+    rather than being assumed. Pointing at a shared App is never an answer: a
+    reset would break real users.
+    """
+
+    def check():
+        github = cfg.get("github") or {}
+        if not (github.get("org") and github.get("repo")):
+            return False
+        return bool(github.get("app_fixture") or github.get("existing_app_fixture"))
+
+    return check
+
+
+def _hosted_available(cfg):
+    def check():
+        return bool(cfg.get("hosted_tasks_queue_url") and cfg.get("websocket_url"))
+
+    return check
+
+
+def _sessions(aws, cfg):
+    """Resolve a session that actually belongs to a given account, cached.
+
+    R7: every deleter used to close over the platform session, so deleting the
+    destination account's CloudFormation stack sent platform credentials at
+    `605440105851` — AccessDenied at best, and the stack left standing while the
+    run reported a clean sweep. The account a resource lives in decides which
+    session deletes it, and if no role can reach that account this raises rather
+    than falling back to the session at hand.
+    """
+    cache = {}
+
+    def resolve(account=None):
+        account = str(account or cfg["platform_account"])
+        if account == str(cfg["platform_account"]):
+            return aws
+        if account not in cache:
+            role_arn = cfg.get("destination_role_arn") or cfg.get(
+                "provisioner_role_arn"
+            )
+            if not role_arn:
+                raise ports_module.PortError(
+                    f"No role is configured for account {account}; its resources "
+                    "cannot be deleted with the platform session and must not be "
+                    "reported as cleaned"
+                )
+            if f":{account}:" not in role_arn:
+                raise ports_module.PortError(
+                    f"The configured destination role does not belong to account "
+                    f"{account}; refusing to delete its resources with another "
+                    "account's credentials"
+                )
+            cache[account] = aws.assume(role_arn, f"cli-uplift-eval-cleanup-{account}")
+        return cache[account]
+
+    return resolve
+
+
+def _deleters(aws, cfg, http=None):
+    """Live deletions, keyed by resource kind, scoped to the resource's account.
+
+    Every kind the manifest can hold must appear, because `cleanup.sweep()` treats
+    an unregistered kind as a FAILURE rather than a skip — a leak that reports
+    clean is the outcome the issue forbids. There is deliberately no queue-purging
+    deleter and no `sqs_queue` kind.
+
+    Each deleter WAITS for completion and then VERIFIES absence. A delete API that
+    returns 200 only means the request was accepted: CloudFormation deletion is
+    asynchronous and can end in DELETE_FAILED, which would otherwise be recorded as
+    a successful cleanup.
+    """
+    session_for = _sessions(aws, cfg)
+    wait_seconds = int(cfg.get("cleanup_wait_seconds", 120))
+
+    def _absent(call, *, retries=None, interval=5):
+        """Poll until a describe call reports the resource gone."""
+        attempts = max(
+            1, (retries if retries is not None else wait_seconds // interval)
+        )
+        for remaining in range(attempts, 0, -1):
+            if call():
+                return True
+            if remaining > 1:
+                time.sleep(interval)
+        return False
+
+    def terminate(instance_id, *, account=None, region=None):
+        scoped = session_for(account)
+        scoped.call("ec2", "terminate_instances", InstanceIds=[instance_id])
+
+        def gone():
+            found = (
+                scoped.call("ec2", "describe_instances", InstanceIds=[instance_id]).get(
+                    "Reservations"
+                )
+                or [{}]
+            )[0].get("Instances") or [{}]
+            return (found[0].get("State") or {}).get("Name") == "terminated"
+
+        if not _absent(gone):
+            raise ports_module.PortError(
+                f"Instance {instance_id} did not reach terminated state"
+            )
+
+    def delete_stack(name, *, account=None, region=None):
+        # The destination account's stack, deleted with the destination account's
+        # own credentials. This is the R7 case exactly.
+        scoped = session_for(account)
+        scoped.call("cloudformation", "delete_stack", StackName=name)
+
+        def gone():
+            try:
+                stacks = (
+                    scoped.call(
+                        "cloudformation", "describe_stacks", StackName=name
+                    ).get("Stacks")
+                    or []
+                )
+            except ports_module.PortError:
+                # Describe by name fails once the stack is fully deleted.
+                return True
+            status = (stacks or [{}])[0].get("StackStatus") or ""
+            if status.endswith("_FAILED"):
+                raise ports_module.PortError(
+                    f"Stack {name} ended in {status}; it still exists in account "
+                    f"{account or cfg['platform_account']}"
+                )
+            return status == "DELETE_COMPLETE"
+
+        if not _absent(gone):
+            raise ports_module.PortError(f"Stack {name} was still deleting")
+
+    def delete_role(name, *, account=None, region=None):
+        scoped = session_for(account)
+        for policy in (
+            scoped.call("iam", "list_attached_role_policies", RoleName=name).get(
+                "AttachedPolicies"
+            )
+            or []
+        ):
+            scoped.call(
+                "iam",
+                "detach_role_policy",
+                RoleName=name,
+                PolicyArn=policy["PolicyArn"],
+            )
+        for policy in (
+            scoped.call("iam", "list_role_policies", RoleName=name).get("PolicyNames")
+            or []
+        ):
+            scoped.call("iam", "delete_role_policy", RoleName=name, PolicyName=policy)
+        scoped.call("iam", "delete_role", RoleName=name)
+
+        def gone():
+            try:
+                scoped.call("iam", "get_role", RoleName=name)
+            except ports_module.PortError:
+                return True
+            return False
+
+        if not _absent(gone, retries=3):
+            raise ports_module.PortError(f"Role {name} still exists after deletion")
+
+    def delete_profile(name, *, account=None, region=None):
+        session_for(account).call(
+            "iam", "delete_instance_profile", InstanceProfileName=name
+        )
+
+    def delete_security_group(group_id, *, account=None, region=None):
+        session_for(account).call("ec2", "delete_security_group", GroupId=group_id)
+
+    def delete_secret(secret_id, *, account=None, region=None):
+        session_for(account).call(
+            "secretsmanager",
+            "delete_secret",
+            SecretId=secret_id,
+            ForceDeleteWithoutRecovery=True,
+        )
+
+    def delete_cognito_user(spec, *, account=None, region=None):
+        pool, _, username = str(spec).partition("/")
+        session_for(account).call(
+            "cognito-idp", "admin_delete_user", UserPoolId=pool, Username=username
+        )
+
+    def delete_s3_object(spec, *, account=None, region=None):
+        bucket, _, key = str(spec).partition("/")
+        scoped = session_for(account)
+        scoped.call("s3", "delete_object", Bucket=bucket, Key=key)
+        try:
+            scoped.call("s3", "head_object", Bucket=bucket, Key=key)
+        except ports_module.PortError as exc:
+            if str(exc).endswith((": 404", ": NoSuchKey", ": NotFound")):
+                return
+            raise
+        raise ports_module.PortError(
+            "The evaluation bundle still exists after deletion"
+        )
+
+    def unsupported(kind):
+        def refuse(identifier, *, account=None, region=None):
+            # Explicit failure, so the run reports a leak instead of hiding one.
+            raise ports_module.PortError(
+                f"No live deleter for {kind}; {identifier} must be removed by its owner"
+            )
+
+        return refuse
+
+    def delete_destination(http, session):
+        """Remove a Bedrock destination E06 registered, as far as the product allows.
+
+        Two steps, because a destination cannot be removed while a rule names it:
+
+        1. Delete every routing rule pointing at it
+           (`DELETE /admin/bedrock-routing/mappings/{scope}`), which is safe by
+           design — a scope with no rule falls through to the next rung.
+        2. Delete the destination row itself
+           (`DELETE /admin/bedrock-routing/connection-links/{id}`).
+
+        Step 2 only exists for a destination created by `POST /connection-links`,
+        which requires a matching `bedrock_connection_grants` row. A destination
+        registered through `adp admin bedrock connect` (`POST /destinations`, source
+        `new_account`) has no grant, so that route answers 404 and **the product has
+        no endpoint that deletes it**. That is a real gap, not a harness one, so this
+        raises and names it: the run reports the row as an outstanding leak with the
+        operator action needed, rather than treating a 404 as "already gone" and
+        reporting a clean sweep over a registry row that is still there and still
+        routable.
+
+        The rule deletions in step 1 still happen, so the run never leaves a live
+        routing rule pointing at an evaluation destination — which is the part that
+        would actually affect traffic.
+        """
+
+        def delete(identifier, *, account=None, region=None):
+            token = (session() or {}).get("access_token") or ""
+            if not token:
+                raise ports_module.PortError(
+                    f"No authenticated session is available to remove destination "
+                    f"{identifier}; it must be removed by its owner"
+                )
+            base = cfg["gateway_url"].rstrip("/") + "/admin/bedrock-routing"
+            status, listing = http.get(base + "/destinations", token=token, expect=None)
+            if status != 200:
+                raise ports_module.PortError(
+                    f"The destinations API returned HTTP {status}; ownership of "
+                    f"{identifier} could not be established"
+                )
+            rows = listing if isinstance(listing, list) else []
+            found = next(
+                (row for row in rows if str(row.get("id")) == str(identifier)), None
+            )
+            if found is None:
+                return  # already gone: the desired end state
+
+            # Ownership: only a destination labelled for THIS run may be touched.
+            prefix = (session() or {}).get("prefix") or ""
+            label = str(found.get("label") or "")
+            if not prefix or prefix not in label:
+                raise ports_module.PortError(
+                    f"Destination {identifier} is not labelled for this run; refusing "
+                    "to remove a destination this evaluation did not create"
+                )
+
+            # Step 1: drop every rule naming it, so no traffic can route here and
+            # the unlink below is not refused with a 409.
+            status, mappings = http.get(base + "/mappings", token=token, expect=None)
+            if status != 200:
+                raise ports_module.PortError(
+                    f"The mappings API returned HTTP {status}; the routing rules for "
+                    f"{identifier} could not be removed"
+                )
+            for row in mappings if isinstance(mappings, list) else []:
+                if str(row.get("destination_id")) != str(identifier):
+                    continue
+                scope = row.get("scope")
+                if not scope:
+                    raise ports_module.PortError(
+                        f"A routing rule for {identifier} reports no scope; it cannot "
+                        "be removed by this run"
+                    )
+                rule_status, _ = http.request(
+                    f"{base}/mappings/{quote(str(scope), safe='')}",
+                    method="DELETE",
+                    token=token,
+                    expect=None,
+                )
+                if rule_status not in (200, 202, 204, 404):
+                    raise ports_module.PortError(
+                        f"Removing the routing rule {scope!r} returned HTTP "
+                        f"{rule_status}; destination {identifier} is still in use"
+                    )
+
+            # Step 2: the destination row itself, where the product supports it.
+            unlink_status, _ = http.request(
+                f"{base}/connection-links/{quote(str(identifier), safe='')}",
+                method="DELETE",
+                token=token,
+                expect=None,
+            )
+            if unlink_status == 404:
+                raise ports_module.PortError(
+                    f"Destination {identifier} was registered through `adp admin "
+                    "bedrock connect`, and the gateway has no endpoint that deletes "
+                    "such a row (DELETE /connection-links requires a connection "
+                    "grant). Its routing rules were removed, so no traffic reaches "
+                    "it, but the registry row must be removed by a platform admin"
+                )
+            if unlink_status not in (200, 202, 204):
+                raise ports_module.PortError(
+                    f"Removing destination {identifier} returned HTTP {unlink_status}"
+                )
+            # A 2xx is a request, not a proof. Confirm it is actually gone.
+            status, listing = http.get(base + "/destinations", token=token, expect=None)
+            rows = listing if isinstance(listing, list) else []
+            if any(str(row.get("id")) == str(identifier) for row in rows):
+                raise ports_module.PortError(
+                    f"Destination {identifier} is still registered after deletion"
+                )
+
+        return delete
+
+    def delete_connection(http, session):
+        """R8: authenticated, ownership-checked deletion of an ADP connection.
+
+        A successful journey disconnects through the product's own CLI and the
+        stage marks the record deleted, so this only runs for a worker that was
+        interrupted mid-journey — previously an unconditional raise, which made
+        cleanup fail for exactly the runs that had succeeded.
+
+        Ownership is checked against the live API before deleting: the connection
+        must exist, and its name must carry this run's evaluation ID. A connection
+        that is already gone is a success; someone else's is never touched.
+        """
+
+        def delete(identifier, *, account=None, region=None):
+            token = (session() or {}).get("access_token") or ""
+            if not token:
+                raise ports_module.PortError(
+                    f"No authenticated session is available to delete connection "
+                    f"{identifier}; it must be removed by its owner"
+                )
+            base = cfg["gateway_url"].rstrip("/")
+            status, payload = http.get(
+                f"{base}/aws/connections", token=token, expect=None
+            )
+            if status == 404:
+                return
+            if status != 200:
+                raise ports_module.PortError(
+                    f"The connections API returned HTTP {status}; ownership of "
+                    f"{identifier} could not be established"
+                )
+            rows = (
+                (payload or {}).get("connections") or (payload or {}).get("items") or []
+            )
+            found = next(
+                (row for row in rows if str(row.get("id")) == str(identifier)), None
+            )
+            if found is None:
+                return  # already gone: the desired end state
+            prefix = (session() or {}).get("prefix") or ""
+            name = str(found.get("name") or found.get("connection_name") or "")
+            if prefix and prefix not in name:
+                raise ports_module.PortError(
+                    f"Connection {identifier} is not named for this run; refusing to "
+                    "delete a connection this evaluation did not create"
+                )
+            delete_status, _ = http.request(
+                f"{base}/aws/connections/{identifier}",
+                method="DELETE",
+                token=token,
+                expect=None,
+            )
+            if delete_status not in (200, 202, 204, 404):
+                raise ports_module.PortError(
+                    f"Deleting connection {identifier} returned HTTP {delete_status}"
+                )
+            # A 2xx is a request, not a proof. Confirm it is actually gone.
+            status, payload = http.get(
+                f"{base}/aws/connections", token=token, expect=None
+            )
+            rows = (
+                (payload or {}).get("connections") or (payload or {}).get("items") or []
+            )
+            if any(str(row.get("id")) == str(identifier) for row in rows):
+                raise ports_module.PortError(
+                    f"Connection {identifier} is still present after deletion"
+                )
+
+        return delete
+
+    def build(_cfg, ctx=None):
+        session = (
+            (lambda: (ctx["document"].get("session") or {}))
+            if ctx is not None
+            else (lambda: {})
+        )
+        return {
+            "ec2_instance": terminate,
+            "cloudformation_stack": delete_stack,
+            "iam_role": delete_role,
+            "iam_instance_profile": delete_profile,
+            "security_group": delete_security_group,
+            "secret": delete_secret,
+            "cognito_user": delete_cognito_user,
+            "s3_object": delete_s3_object,
+            # An ADP connection is normally removed by the product's own
+            # disconnect path inside the worker. A record still pending here means
+            # the worker was interrupted, so this deletes it through the API with
+            # the run's own session and an ownership check.
+            "adp_connection": delete_connection(http, session),
+            # A registered Bedrock destination. Its routing rules are always
+            # removed; the registry row itself only where the gateway exposes a
+            # delete for it. See `delete_destination` — the residual case is a
+            # product gap and is reported as an outstanding resource, not swallowed.
+            "bedrock_destination": delete_destination(http, session),
+            # A GitHub App is never deleted by automation: it is either a reused
+            # fixture (preserved by design) or it needs an owner's action.
+            "github_app": unsupported("github_app"),
+        }
+
+    return build
+
+
+def wire(cfg, supplied=None, *, journeys=None):
+    """Return the capability mapping the stages consume.
+
+    `supplied` overrides individual entries — that is the offline seam. Anything
+    not overridden is live.
+    """
+    supplied = dict(supplied or {})
+    base = ports_module.default_ports(cfg)
+    aws = supplied.get("aws") or base["aws"]
+    http = supplied.get("http") or base["http"]
+    ssm = supplied.get("ssm") or ports_module.SsmPort(aws)
+    install = _install_bundle(ssm, aws, cfg)
+
+    resolved = {
+        "aws": aws,
+        "http": http,
+        "ssm": ssm,
+        "identity": _identity(aws, cfg),
+        # The revision the results bind to, from trusted deployment evidence
+        # rather than from a public health field the product does not publish.
+        "deployed_revision": _deployed_revision(aws, http, cfg),
+        "wait_online": _wait_online(aws),
+        "ssm_reachable": lambda: True,
+        "install_bundle": install,
+        "run_worker": _run_worker(ssm, cfg, install),
+        "worker_config": _worker_config(cfg),
+        "github_available": _github_available(cfg),
+        "hosted_available": _hosted_available(cfg),
+        "harness_auth_helper": _read_harness_helper,
+        "deleters": _deleters(aws, cfg, http),
+        # R1: journeys are the SAME transport as every other remote step. There is
+        # no separate driver layer to leave unpopulated: a case's purpose either
+        # has a shipped script (`bundle.purposes()`) or `require_purpose()` names
+        # the module that must be written. The old resolver defaulted to
+        # `lambda _purpose: None`, so nine cases reported "no driver registered"
+        # while the mapping looked wired.
+        "journey": _journey(ssm, cfg, install, journeys),
+    }
+    resolved.update(
+        {
+            key: value
+            for key, value in supplied.items()
+            if key not in ("aws", "http", "ssm")
+        }
+    )
+    return resolved
+
+
+def _read_harness_helper():
+    """Read the assembled harness's CLI auth helper for the isolation check."""
+    import os
+    from pathlib import Path
+
+    root = os.environ.get("HARNESS_ROOT")
+    if not root:
+        raise ports_module.PortError(
+            "HARNESS_ROOT is not set; the pinned harness was not assembled"
+        )
+    path = Path(root) / config.CLI_AUTH_HELPER
+    if not path.exists():
+        raise ports_module.PortError(
+            f"The assembled harness has no {config.CLI_AUTH_HELPER}"
+        )
+    return path.read_text()
+
+
+__all__ = ["wire"]

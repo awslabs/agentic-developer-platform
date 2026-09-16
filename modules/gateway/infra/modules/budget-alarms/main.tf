@@ -122,3 +122,40 @@ resource "aws_cloudwatch_metric_alarm" "budget_check_denying" {
     Name = "${var.name_prefix}-budget-check-denying"
   })
 }
+
+# The person-level cap layer (Issue #4630) is CONTAINED: a fault in it skips the
+# person cap and leaves every other verdict standing, deliberately outside the
+# grace window (escalation there fails closed for the whole check, and a
+# person-layer-only fault — e.g. its migration missing in an environment — must
+# never be able to down all inference). Containment without a page is how hard
+# person caps go silently unenforced platform-wide and get discovered from a
+# bill, so the skip emits a DEDICATED metric this alarm watches. Dimensioned on
+# Environment only, deliberately: it must fire for every fault class.
+resource "aws_cloudwatch_metric_alarm" "person_budget_layer_skipped" {
+  alarm_name          = "${var.name_prefix}-person-budget-layer-skipped"
+  alarm_description   = <<-EOT
+    The person-level budget layer faulted and was SKIPPED. Every other budget
+    verdict (org hierarchy, run/chain caps) still applies, but person-level
+    caps — including hard ones users believe are stopping their agents — are
+    NOT being enforced while this fires. Common cause: the person_budget_configs
+    migration (034) has not run in this environment. Fix the fault; there is no
+    grace window on this path by design.
+  EOT
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "PersonBudgetLayerSkipped"
+  namespace           = var.metric_namespace
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_actions
+
+  dimensions = {
+    Environment = var.environment
+  }
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name_prefix}-person-budget-layer-skipped"
+  })
+}

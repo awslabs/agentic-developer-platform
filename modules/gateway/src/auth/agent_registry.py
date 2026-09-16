@@ -41,6 +41,7 @@ class AgentRegistryEntry(TypedDict):
     team_id: str
     owner: str
     scope: str
+    requires_run_identity: bool
     budget_config_id: str
     allowed_models: list[str]
     # Issue #4131 (grant step): the credential scopes this agent has actually
@@ -113,6 +114,7 @@ class AgentRegistryService:
             team_id=item.get("team_id", {}).get("S", ""),
             owner=item.get("owner", {}).get("S", ""),
             scope=item.get("scope", {}).get("S", ""),
+            requires_run_identity=item.get("requires_run_identity", {}).get("BOOL", False),
             budget_config_id=item.get("budget_config_id", {}).get("S", ""),
             allowed_models=item.get("allowed_models", {}).get("SS", []),
             credential_scopes=item.get("credential_scopes", {}).get("SS", []),
@@ -264,6 +266,9 @@ def agent_entry_to_token_context(entry: AgentRegistryEntry) -> TokenContext:
         # internal plane with no way to distinguish an internal principal from
         # any other registered agent.
         scope=entry.get("scope", ""),
+        # Preserve enforcement for protected entries seeded before this field
+        # existed. Disabling the gateway rollout flag must not downgrade them.
+        requires_run_identity=entry.get("requires_run_identity", False) or entry.get("agent_id") == "authority-worker",
         # Issue #4131 (grant step): carry the registry-granted credential scopes
         # so credential routes can authorize against them server-side instead of
         # trusting a caller-supplied header. Nothing reads this yet — the

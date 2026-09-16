@@ -123,26 +123,15 @@ re-presents these fields to obtain anything. The authoritative record is the
 envelope fields are attribution for the run's audit trail, not a credential.**
 
 --------------------------------------------------------------------------------
-Scope: story nodes only, and the gate is stricter than "has an issue"
+Scope: stories and evaluations require complete issue routing
 --------------------------------------------------------------------------------
 
-The ruling asks this issue to decide explicitly whether dispatch is
-story-nodes-only or whether materialising an issue is part of dispatch. It is
-**story-nodes-only**, and the reason is a hard constraint rather than a
-preference: the agent worker's `parse_envelope`
-(`agent-worker-image/entrypoint.py`) requires `source_ref.installation_id`,
-`source_ref.repo` and `source_ref.issue`. `OrchestrationNode` stores only
-`issue_ref` — an issue *number* — and carries no repo and no installation. A node
-cannot yield a complete `source_ref` from graph state alone.
+Stories and evaluations dispatch to existing GitHub issues. A dispatch requires
+an issue number, exactly one tenant installation and a configured repository.
+Evaluations use the operations persona; gates are presented by the tick and
+never consume a worker. Missing configuration leaves a node ready and reports
+it as undispatchable. Dispatch does not create issues or invent test results.
 
-So a node is dispatchable only when it is a story node, has an `issue_ref` that
-parses as an issue number, sits in an org with exactly one GitHub installation,
-and the target repository is configured. Anything else is counted as
-`undispatchable` and left in `ready` — **never** published as a malformed envelope,
-because the worker would reject that *after* the node had already committed to
-`running`, which is the invisible-dispatch failure again by a different route.
-Materialising issues for gate/eval nodes is out of scope; those advance by other
-means.
 """
 
 from __future__ import annotations
@@ -151,7 +140,9 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -161,8 +152,9 @@ from src.shared.models.organization import Organization
 
 from .dispatch import DispatchStatus, dispatch_node
 from .genesis import APPROVAL_DECISION_KINDS, EngineGenesis, GenesisRefusedError, resolve_engine_genesis
-from .models import NodeKind, OrchestrationDecision, OrchestrationNode
-from .state import NodeState
+from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
+from .policy_admission import authorize_node_dispatch
+from .state import ActorKind, NodeState
 
 logger = logging.getLogger("bedrockgateway.orchestration.dispatch_pass")
 
@@ -178,7 +170,84 @@ __all__ = [
     # dispatchability by the same rule dispatch enforces. See its docstring.
     "resolve_installation_id",
     "run_dispatch_pass",
+    # Exported for the same reason, and for the same caller (#4334): the issue
+    # routing rule below is the SECOND precondition dispatch enforces, and the
+    # route must report it by calling this rather than restating it.
+    "RoutingBlocker",
+    "issue_number_for_dispatch",
+    "node_requires_issue_routing",
+    "routing_blocker_for_node",
 ]
+
+
+class RoutingBlocker(StrEnum):
+    """Why one node's issue routing cannot produce a dispatch.
+
+    A closed vocabulary with stable ids rather than prose, so the submission
+    report can name a cause a client keys off while the human-readable detail
+    stays free to be reworded. Ordered as dispatch checks them.
+
+    `MISSING_ISSUE_REF` and `MALFORMED_ISSUE_REF` are deliberately distinct even
+    though dispatch refuses both: they need different fixes. The first means
+    nobody has materialised the node's issue yet; the second means an issue
+    reference exists but is not an issue number, which is an authoring error in
+    the plan document and will not resolve itself.
+    """
+
+    MISSING_ISSUE_REF = "missing_issue_ref"
+    MALFORMED_ISSUE_REF = "malformed_issue_ref"
+
+
+def node_requires_issue_routing(kind: str) -> bool:
+    """Whether a node of this kind must carry a routable issue to dispatch.
+
+    Story and evaluation nodes dispatch to an existing GitHub issue; gates are
+    presented by the tick and never consume a worker, so a gate with no
+    `issue_ref` is correct rather than blocked. This mirrors the kind filter
+    `_fetch_ready_nodes` applies in SQL, and exists so the route can apply the
+    same scope without reimplementing that predicate — a route that flagged
+    gates would report a healthy plan as blocked.
+    """
+    return kind in (NodeKind.STORY.value, NodeKind.EVAL.value)
+
+
+def issue_number_for_dispatch(issue_ref: str | None) -> int | None:
+    """The positive issue number `issue_ref` denotes, or None if there isn't one.
+
+    The single parse of a node's issue reference. Accepts a bare number and a
+    `#`-prefixed one; rejects anything else, including zero and negatives, since
+    `source_ref.issue` must address a real issue.
+
+    Module-public and shared with the flow-creation route for the same reason
+    `resolve_installation_id` is — see its docstring. This one matters more, not
+    less: it is checked FIRST by dispatch, so a route that knew only about the
+    installation rule could report a plan dispatchable that dispatch refuses
+    before it ever looks at the installation.
+    """
+    if not issue_ref:
+        return None
+    try:
+        issue = int(str(issue_ref).lstrip("#"))
+    except ValueError:
+        return None
+    return issue if issue > 0 else None
+
+
+def routing_blocker_for_node(*, kind: str, issue_ref: str | None) -> RoutingBlocker | None:
+    """The issue-routing blocker for one node, or None if it is routable.
+
+    Pure: no session, no network, no environment. That is what lets the
+    submission route call it on nodes it already holds without a second query,
+    and what lets one test assert the route's verdict and the dispatch guard
+    agree on the same node rather than merely look similar.
+    """
+    if not node_requires_issue_routing(kind):
+        return None
+    if not issue_ref:
+        return RoutingBlocker.MISSING_ISSUE_REF
+    if issue_number_for_dispatch(issue_ref) is None:
+        return RoutingBlocker.MALFORMED_ISSUE_REF
+    return None
 
 
 # Environment variables, stamped in by Terraform. Read from the environment and
@@ -202,6 +271,13 @@ DEFAULT_MAX_DISPATCHES_PER_TICK = 10
 # work. Configurable, but NOT per-node: persona is not authority (R-O5d), so
 # nothing downstream may read it as such.
 DEFAULT_PERSONA = "developer"
+EVALUATION_PERSONA = "operations"
+
+
+def attempt_run_id(node_id: str, attempt: int) -> str:
+    """Stable identity for one engine attempt; retries get distinct ids."""
+    return "orch:" + str(uuid5(NAMESPACE_URL, f"adp:orchestration:{node_id}:{attempt}"))
+
 
 # SQS caps both FIFO key fields at 128 characters.
 _MAX_SQS_KEY_LEN = 128
@@ -347,6 +423,9 @@ class PendingPublish:
     envelope: dict[str, Any]
     group_id: str
     deduplication_id: str
+    genesis: EngineGenesis | None = None
+    node_attempt: int = 0
+    node_kind: str = NodeKind.STORY.value
 
 
 @dataclass
@@ -374,6 +453,16 @@ class DispatchPassReport:
     transitions_rejected: int = 0
     # A concurrent pass dispatched the node first. Normal overlap, not a failure.
     lost_races: int = 0
+    # Refused by the flow's accepted execution policy (#5128). Deliberately NOT
+    # folded into `undispatchable`: that counter means "this node could not produce a
+    # valid envelope", a defect to fix, while this means "the envelope was fine and
+    # the owner's policy did not authorize it" — working as intended. Merging them
+    # would make a correctly-enforced boundary look like a malformed graph.
+    #
+    # It is also not an `error`: a policy refusal must not make the pass unsuccessful,
+    # or every tick would report failure for as long as a policy legitimately
+    # withheld an action.
+    policy_blocked: int = 0
     errors: int = 0
     # True when the per-tick cap stopped the pass early. Work is delayed, not
     # dropped — but "we ran out of budget" must never read as "there was nothing
@@ -384,6 +473,11 @@ class DispatchPassReport:
     enabled: bool = True
     pending: list[PendingPublish] = field(default_factory=list)
     per_org: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Typed `DenyReason` value -> count, for the pass's own observability. A dict
+    # rather than a counter field per reason because #5128's reason vocabulary is
+    # owned by `execution_policy` and read by #5122; mirroring it as dataclass fields
+    # here would guarantee the two drift.
+    policy_block_reasons: dict[str, int] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:
@@ -407,6 +501,7 @@ class DispatchPassReport:
                 "publish_failed": 0,
                 "transitions_rejected": 0,
                 "lost_races": 0,
+                "policy_blocked": 0,
                 "errors": 0,
             },
         )
@@ -418,9 +513,9 @@ class DispatchPassReport:
 
 
 async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[OrchestrationNode]:
-    """The `ready` story nodes this pass may dispatch, ordered by id.
+    """The `ready` execution nodes this pass may dispatch, ordered by id.
 
-    Story nodes only, filtered in SQL rather than skipped in Python — see the
+    Story and evaluation nodes, filtered in SQL rather than skipped in Python — see the
     scope section of the module docstring. `org_id` is read off each row and used
     as the tenant for everything downstream, so it comes from this query's own
     context and never from a message (the issue's tenant-isolation requirement).
@@ -433,10 +528,12 @@ async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[Orche
         select(OrchestrationNode)
         .where(
             OrchestrationNode.state == NodeState.READY.value,
-            OrchestrationNode.kind == NodeKind.STORY.value,
+            OrchestrationNode.kind.in_([NodeKind.STORY.value, NodeKind.EVAL.value]),
         )
         .order_by(OrchestrationNode.id)
         .limit(limit)
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
     )
     return list((await session.execute(stmt)).scalars().all())
 
@@ -508,6 +605,8 @@ def _build_envelope(
     installation_id: int,
     issue: int,
     config: DispatchPassConfig,
+    user_id: str,
+    cognito_sub: str,
 ) -> dict[str, Any]:
     """Build the agent envelope explicitly. No `spawn_persona` (hazard 4).
 
@@ -524,14 +623,19 @@ def _build_envelope(
     rather than a settable field, so there is nothing here that could claim
     human-rootedness without a resolved approval row behind it.
     """
+    run_id = attempt_run_id(node.id, node.attempts)
+    persona = EVALUATION_PERSONA if node.kind == NodeKind.EVAL.value else config.persona
     return {
         "version": _ENVELOPE_VERSION,
+        "message_id": run_id,
+        "actor": {"user_id": user_id, "org_id": genesis.org_id},
+        "cognito_sub": cognito_sub,
         # The engine is its own channel. Not "github": nothing here came from a
         # GitHub event, and labelling it so would make an engine dispatch
         # indistinguishable from a webhook trigger in every downstream log.
         "channel": "orchestration",
         "tenant_id": genesis.org_id,
-        "persona": config.persona,
+        "persona": persona,
         "source_ref": {
             "installation_id": installation_id,
             "repo": config.repo,
@@ -540,10 +644,11 @@ def _build_envelope(
         "intent": {
             "trigger": "engine_dispatch",
             "label": None,
-            "persona": config.persona,
+            "persona": persona,
         },
         "correlation": {
-            "root_human_id": genesis.root_human_id,
+            "correlation_id": run_id,
+            "root_human_id": user_id,
             "is_human_rooted": genesis.is_human_rooted,
             "chain_depth": 0,
         },
@@ -555,18 +660,20 @@ def _build_envelope(
             "flow_id": genesis.flow_id,
             "graph_address": graph_address,
             "root_decision_id": genesis.decision_id,
+            "attempt": node.attempts,
         },
         "payload": {},
         "arrived_at": utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 
-async def _dispatch_one(
+async def _dispatch_one_unclaimed(
     session: AsyncSession,
     node: OrchestrationNode,
     *,
     config: DispatchPassConfig,
     report: DispatchPassReport,
+    repository_id: int | None = None,
 ) -> None:
     """Resolve genesis, dispatch, and queue the envelope for publication.
 
@@ -576,6 +683,12 @@ async def _dispatch_one(
     reject the message after the node had already committed to running, which is
     the invisible-dispatch failure by another route.
     """
+    # READY may predate an amendment that added a prerequisite. Recheck under
+    # the candidate row lock before dispatching against the current topology.
+    from .tick import _predecessor_states, _unsatisfied
+
+    if _unsatisfied(await _predecessor_states(session, org_id=node.org_id, node_id=node.id)):
+        return
     org_id = node.org_id
     observed_attempts = node.attempts
 
@@ -590,18 +703,27 @@ async def _dispatch_one(
         report.record(org_id, "undispatchable")
         return
 
-    if not node.issue_ref:
-        # Story nodes are expected to carry an issue. One that does not has
-        # nothing for an agent to act on, and materialising an issue is out of
-        # scope (see the module docstring).
-        logger.warning("orchestration dispatch: story node %s has no issue_ref — not dispatching", node.id)
+    # The issue-routing rule, evaluated by the shared predicate rather than
+    # restated here (#4334). An execution node without a routable issue has
+    # nothing for an agent to act on, and materialising an issue is out of scope
+    # (see the module docstring). The submission route calls the same function,
+    # so what it reports and what this refuses cannot drift.
+    blocker = routing_blocker_for_node(kind=node.kind, issue_ref=node.issue_ref)
+    if blocker is RoutingBlocker.MISSING_ISSUE_REF:
+        logger.warning("orchestration dispatch: execution node %s has no issue_ref — not dispatching", node.id)
+        report.record(org_id, "undispatchable")
+        return
+    if blocker is RoutingBlocker.MALFORMED_ISSUE_REF:
+        logger.error("orchestration dispatch: node %s has issue_ref=%r which is not an issue number — not dispatching", node.id, node.issue_ref)
         report.record(org_id, "undispatchable")
         return
 
-    try:
-        issue = int(str(node.issue_ref).lstrip("#"))
-    except ValueError:
-        logger.error("orchestration dispatch: node %s has issue_ref=%r which is not an issue number — not dispatching", node.id, node.issue_ref)
+    issue = issue_number_for_dispatch(node.issue_ref)
+    if issue is None:
+        # Unreachable: `routing_blocker_for_node` returned None for an execution
+        # node, which means the reference parses. Guarded so a future change to
+        # either function cannot silently produce a `source_ref` with no issue.
+        logger.error("orchestration dispatch: node %s issue_ref=%r did not resolve to an issue number — not dispatching", node.id, node.issue_ref)
         report.record(org_id, "undispatchable")
         return
 
@@ -641,6 +763,48 @@ async def _dispatch_one(
         report.record(org_id, "genesis_refused")
         return
 
+    # Resolve both namespaces from the attributed approver, within this tenant.
+    # The worker/vault and root ledger use users.id; personal context uses sub.
+    from src.shared.identity.resolver import resolve_root_user_entity_id, resolve_user_entity_id
+
+    user_id = await resolve_root_user_entity_id(session, org_id, genesis.root_human_id)
+    cognito_sub = await resolve_user_entity_id(session, org_id, user_id)
+
+    # --- Policy admission (#5128): the last check before the node commits to
+    # running. Placed here deliberately, after genesis and before `dispatch_node`:
+    # a refusal must leave the node in `ready` with nothing published, exactly like
+    # a genesis refusal. Checking after `dispatch_node` would mean the node had
+    # already moved to `running` and incremented `attempts` for work that was never
+    # admitted, burning an attempt against the policy's own limit.
+    #
+    # A flow with no accepted policy permits here, preserving legacy semantics.
+    admission = await authorize_node_dispatch(
+        session,
+        node=node,
+        # The canonical `users.id` of the attributed approver, resolved server-side
+        # above. The membership lookups are keyed on this namespace.
+        principal_user_id=user_id,
+        target_repository=config.repo,
+        installation_resolved=True,
+        provider_repository_id=repository_id,
+        expected_invocation_id=attempt_run_id(node.id, node.attempts + 1),
+    )
+    if not admission.permitted:
+        # `reason` is a typed `DenyReason` (#5122 renders these), so it is logged as
+        # its own field rather than folded into prose a consumer would have to parse.
+        logger.warning(
+            "orchestration dispatch: node %s refused by execution policy reason=%s detail=%s — not dispatching",
+            node.id,
+            admission.reason.value if admission.reason else "",
+            admission.detail,
+        )
+        report.record(org_id, "policy_blocked")
+        if admission.reason is not None:
+            # Which reason, kept out of the counter set: `record` writes named
+            # fields, and the typed reasons are an open vocabulary that #5122 owns.
+            report.policy_block_reasons[admission.reason.value] = report.policy_block_reasons.get(admission.reason.value, 0) + 1
+        return
+
     outcome = await dispatch_node(session, node, genesis)
 
     if outcome.status is DispatchStatus.REJECTED:
@@ -669,7 +833,37 @@ async def _dispatch_one(
         installation_id=installation_id,
         issue=issue,
         config=config,
+        user_id=user_id,
+        cognito_sub=cognito_sub,
     )
+    if repository_id is not None:
+        envelope["source_ref"]["provider_repository_id"] = repository_id
+        envelope["work_claim_required"] = True
+
+    session.add(
+        OrchestrationDecision(
+            org_id=org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            kind=DecisionKind.NODE_DISPATCHED.value,
+            actor_id="system:orchestration-dispatch",
+            actor_role="engine",
+            actor_kind=ActorKind.SERVICE.value,
+            from_state=NodeState.READY.value,
+            to_state=NodeState.RUNNING.value,
+            reason=json.dumps(
+                {
+                    "run_id": envelope["message_id"],
+                    "attempt": node.attempts,
+                    "arrived_at": envelope["arrived_at"],
+                    "repo": config.repo,
+                    "issue": issue,
+                    "root_decision_id": genesis.decision_id,
+                }
+            ),
+        )
+    )
+    await session.flush()
 
     # Queued, not sent. The send happens in `publish_pending` after the caller
     # commits — see the module docstring on commit-then-publish.
@@ -677,6 +871,9 @@ async def _dispatch_one(
         PendingPublish(
             node_id=run.node_id,
             org_id=org_id,
+            genesis=genesis,
+            node_attempt=observed_attempts + 1,
+            node_kind=node.kind,
             envelope=envelope,
             group_id=message_group_id(org_id=org_id, node_id=run.node_id),
             deduplication_id=message_deduplication_id(
@@ -700,13 +897,52 @@ async def _dispatch_one(
     )
 
 
+class _AdmissionUnusedError(Exception):
+    """Roll back an ownership reservation when no dispatch was produced."""
+
+
+async def _dispatch_one(session, node, *, config, report) -> None:
+    from .work_admission import admit, enabled, require_authority, resolve_repository_id
+    from .work_claims import ClaimOwner, OwnerKind, WorkClaimError
+
+    if not enabled() or not config.configured:
+        await _dispatch_one_unclaimed(session, node, config=config, report=report)
+        return
+    before = len(report.pending)
+    node_id, org_id = node.id, node.org_id
+    try:
+        require_authority()
+        installation = await resolve_installation_id(session, org_id=node.org_id)
+        if installation is None:
+            raise WorkClaimError("installation_unresolved", "Ownership requires a tenant installation.")
+        repository_id = await resolve_repository_id(org_id=node.org_id, installation_id=installation, repo=config.repo)
+        issue = int(str(node.issue_ref).lstrip("#"))
+        async with session.begin_nested():
+            await admit(
+                session,
+                org_id=node.org_id,
+                repository_id=repository_id,
+                issue=issue,
+                owner=ClaimOwner(OwnerKind.ENGINE_FLOW, node.flow_id),
+                invocation_id=attempt_run_id(node.id, node.attempts + 1),
+            )
+            await _dispatch_one_unclaimed(session, node, config=config, report=report, repository_id=repository_id)
+            if len(report.pending) == before:
+                raise _AdmissionUnusedError()
+    except _AdmissionUnusedError:
+        return
+    except WorkClaimError as exc:
+        report.record(org_id, "undispatchable")
+        logger.warning("orchestration ownership refused node=%s reason=%s", node_id, exc.code)
+
+
 async def run_dispatch_pass(
     session: AsyncSession,
     config: DispatchPassConfig | None = None,
 ) -> DispatchPassReport:
     """The database half of dispatch. **Commits nothing.**
 
-    Selects `ready` story nodes up to the per-tick cap, resolves each one's human
+    Selects `ready` execution nodes up to the per-tick cap, resolves each one's human
     root from a real approval row, and moves it to `running`. The envelopes it
     intends to publish are returned on the report; the caller must commit and then
     call :func:`publish_pending`.
@@ -736,31 +972,28 @@ async def run_dispatch_pass(
         )
 
     try:
-        # One extra row is fetched so "there was more work" is distinguishable
-        # from "that was all of it" — the cap has to be reported, not inferred.
-        candidates = await _fetch_ready_nodes(session, limit=cfg.max_dispatches_per_tick + 1)
+        # Look beyond the dispatch cap so a few misconfigured nodes do not
+        # consume all execution slots. Both the scan and actual sends are bounded.
+        candidates = await _fetch_ready_nodes(session, limit=max(100, cfg.max_dispatches_per_tick + 1))
     except Exception:
         logger.exception("orchestration dispatch: failed to fetch ready nodes")
         report.errors += 1
         return report
 
-    if len(candidates) > cfg.max_dispatches_per_tick:
-        report.capped = True
-        candidates = candidates[: cfg.max_dispatches_per_tick]
-        logger.warning(
-            "orchestration dispatch: per-tick cap of %d reached; remaining ready nodes wait for the next tick",
-            cfg.max_dispatches_per_tick,
-        )
-
     for node in candidates:
-        report.record(node.org_id, "nodes_examined")
+        if report.dispatched >= cfg.max_dispatches_per_tick:
+            report.capped = True
+            break
+        node_id, org_id = node.id, node.org_id
+        report.record(org_id, "nodes_examined")
         try:
-            await _dispatch_one(session, node, config=cfg, report=report)
+            async with session.begin_nested():
+                await _dispatch_one(session, node, config=cfg, report=report)
         except Exception:
             # Per-node containment, matching `run_tick`: log, count, force
             # non-success, keep going.
-            logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node.id, node.org_id)
-            report.record(node.org_id, "errors")
+            logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node_id, org_id)
+            report.record(org_id, "errors")
 
     return report
 
@@ -770,6 +1003,7 @@ def publish_pending(
     config: DispatchPassConfig | None = None,
     *,
     client: SQSClient | None = None,
+    run_store: Any | None = None,
 ) -> DispatchPassReport:
     """Send the committed dispatches. Call this **after** the caller commits.
 
@@ -798,7 +1032,18 @@ def publish_pending(
     sqs = client if client is not None else _get_sqs_client(cfg.aws_region)
 
     for pending in report.pending:
-        body = json.dumps(pending.envelope, default=str)
+        envelope = pending.envelope
+        protected = os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+        if protected:
+            try:
+                from src.agentauth.engine import get_engine_authority_writer
+
+                envelope = get_engine_authority_writer().provision(pending)
+            except Exception:
+                logger.error("orchestration dispatch: protected authority unavailable for node %s; no message sent", pending.node_id)
+                report.record(pending.org_id, "publish_failed")
+                continue
+        body = json.dumps(envelope, default=str)
         if len(body.encode("utf-8")) > MAX_SQS_MESSAGE_BYTES:
             # The engine's envelope carries no raw webhook payload, so this is not
             # reachable with today's shape. Refusing rather than truncating is
@@ -809,6 +1054,13 @@ def publish_pending(
             continue
 
         try:
+            if not protected:
+                from .run_store import EngineRunStore
+
+                store = run_store if run_store is not None else EngineRunStore.from_env()
+                store.register(envelope)
+            # Protected dispatch already wrote this same reporting row together
+            # with the execution/grant in one conditional DynamoDB transaction.
             response = sqs.send_message(
                 QueueUrl=cfg.queue_url,
                 MessageBody=body,

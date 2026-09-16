@@ -44,7 +44,9 @@ def _sigv4_sign_request(method: str, url: str, headers: dict, data: bytes | None
     import botocore.session
 
     session = botocore.session.get_session()
-    credentials = session.get_credentials()
+    from adp_trigger.transport_identity import gateway_signing_region, worker_credentials
+
+    credentials = worker_credentials(session)
     if credentials is None:
         raise RuntimeError("No AWS credentials available for SigV4 signing")
     credentials = credentials.get_frozen_credentials()
@@ -56,7 +58,7 @@ def _sigv4_sign_request(method: str, url: str, headers: dict, data: bytes | None
         data=data,
     )
 
-    region = os.environ.get("AWS_REGION", "us-east-1")
+    region = gateway_signing_region(url)
     signer = botocore.auth.SigV4Auth(credentials, "execute-api", region)
     signer.add_auth(aws_request)
 
@@ -170,7 +172,9 @@ def post_provenance(
     use_sigv4 = bool(gateway_endpoint)
 
     if use_sigv4:
-        base_url = gateway_endpoint + "/agent"
+        # Internal APIs use /internal/{proxy+}. Adding /agent routes them to
+        # the edge ALB, which deliberately denies /internal/* (#5136, #4010).
+        base_url = gateway_endpoint
     elif gateway_url and api_key:
         base_url = gateway_url
     else:

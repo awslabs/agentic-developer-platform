@@ -1,0 +1,195 @@
+name: Superplane Domain CI
+
+# Offline test gate for the Superplane domain app (Issue #5037, EPIC #4910).
+#
+# Created by U1 rather than by the unit that owns Terraform and rollout (U3), because
+# U12, U2 and U8 declare this lane as a required check and U12 is in wave 1. A lane owned
+# by a wave-2 unit would be a wave-1 required check produced after the checks that need
+# it. Creating a lane is not taking release ownership: U2 keeps the pinned image builds
+# and U3 keeps Terraform, rollout and migrations.
+#
+# This workflow builds no image, deploys nothing and has no AWS identity. It is lint plus
+# unit tests over a source directory. The live acceptance of this module (R1 acc. 4 —
+# resources absent from AWS after the undeploy phase runs) is a separate, credentialed,
+# operator-initiated run against a named account, and it is explicitly deferred: it needs
+# an account/environment and a cleanup owner, neither of which is resolved. A CI job that
+# took a deploy credential to prove a directory lints would have a far larger blast radius
+# than the thing it verifies.
+#
+# Runner choice is what makes that credential claim true, and it is deliberate (#5198
+# review). This lane runs on a GitHub-hosted runner, unlike most workflows in this repo,
+# which use the in-cluster `arc-runner-org`. ARC runner pods carry an ambient IRSA
+# identity: their service account is annotated `eks.amazonaws.com/role-arn`
+# (modules/agent-factory/infra/modules/arc-runner/main.tf), so the EKS pod-identity
+# webhook injects AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE into every container and
+# every step runs as adp-<env>-agent-runner-role whether or not the job asks for it. See
+# security-agent-nightly.yml, which relies on exactly that. Omitting
+# `configure-aws-credentials` therefore does NOT make an ARC job credential-free.
+#
+# So a hosted runner is not a stylistic preference here: it is the only way this lane's
+# "no account" property is enforceable rather than aspirational, and it is why the guard
+# at the end of this job can assert the absence of credentials and be right. These tests
+# need no AWS — they monkeypatch environment variables and read files as text — so there
+# is nothing to lose by having no identity, and a real reduction in blast radius: no
+# credential is exposed to a pull_request-triggered job to prove a directory lints.
+#
+# The module is a skeleton today, so the Python job tolerates "no tests yet" — but only
+# for the domain module, and it says so in the log. It does NOT use --passWithNoTests
+# semantics for the gateway-side registration suites: those exist now, and a PR that
+# deleted them must fail rather than pass on an empty glob.
+
+on:
+  pull_request:
+    # Pinned to main, matching all 22 sibling `pull_request` lanes. Without this the lane
+    # also fires for PRs targeting arbitrary branches (#5198 review).
+    branches: [main]
+    paths:
+      # The module this lane gates.
+      - 'modules/domain-apps/superplane/**'
+      # The lane itself, so a change to it is checked by it.
+      - '.github/workflows/superplane-domain-ci.yml'
+      # The central registration lists. These live OUTSIDE the module directory, which is
+      # the entire reason they get missed (R1 acc. 3) — so a PR touching any of them has
+      # to be able to run the suites that assert the registration is complete and paired.
+      - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/undeploy.sh'
+      - 'platform/scripts/undeploy-phases.sh'
+      - '.github/workflows/undeploy.yml'
+      - 'docs/adp-platform-deployment/deployment-manifest.md'
+      # The feature gate's four surfaces. Read as text by the registration suite, so an
+      # edit to one without the others must be able to trigger it.
+      - 'modules/gateway/src/features/routes.py'
+      - 'modules/gateway/frontend/src/services/features.ts'
+      - 'modules/gateway/frontend/src/App.tsx'
+      - 'modules/gateway/frontend/src/components/Navigation.tsx'
+      - 'modules/gateway/frontend/src/components/next/journeys.ts'
+      # The suites themselves.
+      - 'modules/gateway/tests/features/test_superplane_flag.py'
+      - 'modules/gateway/tests/features/test_superplane_registration.py'
+      - 'modules/gateway/tests/features/test_superplane_deploy_scope.py'
+      - 'modules/gateway/tests/e2e/test_superplane_route_gated.py'
+  workflow_dispatch:
+
+# No `permissions: id-token` — this lane must never be able to assume an AWS role.
+permissions:
+  contents: read
+
+concurrency:
+  group: superplane-domain-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  superplane-domain-tests:
+    # Required-check name for U12/U2/U8. Renaming a job silently removes a required check
+    # rather than failing, so treat this string as a contract.
+    name: Superplane domain tests
+    # GitHub-hosted, NOT arc-runner-org — see the runner note in the header. An ARC runner
+    # would give this job ambient IRSA credentials, which is both unnecessary for lint plus
+    # unit tests and incompatible with the credential guard at the end of this job.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/gateway/pyproject.toml
+
+      - name: Install gateway dependencies
+        working-directory: modules/gateway
+        # The registration suites import the gateway's feature module, so they need its
+        # dependency set. The domain module has none of its own yet.
+        run: pip install -e ".[dev]"
+
+      - name: Lint the domain module
+        run: |
+          set -euo pipefail
+          # Only lint if there is Python to lint — the module is a skeleton today, and
+          # `ruff check` on a directory with no .py files exits 0 anyway, but being
+          # explicit keeps the log honest about what ran.
+          if find modules/domain-apps/superplane -name '*.py' -print -quit | grep -q .; then
+            ruff check modules/domain-apps/superplane/
+            ruff format --check modules/domain-apps/superplane/
+          else
+            echo "No Python in modules/domain-apps/superplane/ yet — skipping lint."
+          fi
+
+      - name: Lint the gateway-side gate and its suites
+        working-directory: modules/gateway
+        run: |
+          set -euo pipefail
+          ruff check \
+            src/features/routes.py \
+            tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_registration.py \
+            tests/features/test_superplane_deploy_scope.py \
+            tests/e2e/test_superplane_route_gated.py
+          ruff format --check \
+            src/features/routes.py \
+            tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_registration.py \
+            tests/features/test_superplane_deploy_scope.py \
+            tests/e2e/test_superplane_route_gated.py
+
+      - name: Run domain module tests
+        run: |
+          set -euo pipefail
+          # Tolerates an empty module (skeleton state) but reports which case it hit, so
+          # "no tests ran" never reads the same as "tests passed" in the log.
+          if find modules/domain-apps/superplane/tests -name 'test_*.py' -print -quit | grep -q .; then
+            python3 -m pytest modules/domain-apps/superplane/tests/ -v --tb=short
+          else
+            echo "No tests in modules/domain-apps/superplane/tests/ yet — nothing to run."
+          fi
+
+      - name: Run gate and registration tests
+        working-directory: modules/gateway
+        # Pinned BY NAME, not by directory glob. A PR that deleted one of these files
+        # would pass a directory-wide invocation, because "no tests" and "all tests
+        # passed" are the same exit code to a glob — and these four suites are the only
+        # checks that the gate defaults off and that all five central lists are paired.
+        #
+        # test_superplane_deploy_scope.py EXECUTES deploy-all.sh against stubbed tooling
+        # (#5198 review): it asserts which phases actually run and which are skipped
+        # under each scope flag, which a text assertion cannot do. It belongs in this
+        # lane and not a credentialed one precisely because it must never reach AWS —
+        # the harness asserts `aws` resolves to its own stub and strips every AWS_* var
+        # from the child environment, so it is offline by construction.
+        run: |
+          python3 -m pytest \
+            tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_registration.py \
+            tests/features/test_superplane_deploy_scope.py \
+            tests/e2e/test_superplane_route_gated.py \
+            -v --tb=short
+
+      - name: Verify no AWS credentials were configured
+        # A guard on the lane's own premise, and one that can actually hold: on a
+        # GitHub-hosted runner there is no ambient identity, so an AWS credential here
+        # could only come from somebody adding one. If that happens this fails and says
+        # why the lane exists without one, rather than the lane quietly becoming a
+        # credentialed job.
+        #
+        # This step is why `runs-on` matters. On arc-runner-org it failed on every run
+        # (#5198 review): the pod-identity webhook injects AWS_ROLE_ARN and
+        # AWS_WEB_IDENTITY_TOKEN_FILE into every container, so the condition below was
+        # unsatisfiable there. Moving the runner is what made the assertion true; do not
+        # move it back and weaken the assertion instead.
+        run: |
+          set -euo pipefail
+          FOUND=""
+          for var in AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ACCESS_KEY_ID \
+                     AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+                     AWS_CONTAINER_CREDENTIALS_FULL_URI \
+                     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI; do
+            if [ -n "${!var:-}" ]; then
+              FOUND="${FOUND} ${var}"
+            fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "::error::AWS credentials are present in this job (set:${FOUND}). superplane-domain-ci.yml is an offline lane: lint plus unit tests, no account, no image, no deploy. If a step needs AWS, it does not belong in this lane."
+            exit 1
+          fi
+          echo "Confirmed: no AWS credentials in this job's environment."

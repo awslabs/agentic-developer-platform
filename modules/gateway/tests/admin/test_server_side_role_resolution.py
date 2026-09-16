@@ -202,13 +202,8 @@ class TestDbBackedRoleResolution:
 
         assert role == AdminRole.MEMBER
 
-    async def test_active_row_wins_over_token_org_id(self, db_session: AsyncSession):
-        """Role and scope must both come from the active membership row.
-
-        After switch-tenant the token still carries the previous org_id until
-        refresh. Resolving role against one tenant and org_id against another is
-        the split-brain the design calls out.
-        """
+    async def test_token_org_pins_role_despite_another_active_workspace(self, db_session: AsyncSession):
+        """Role and scope use the token org until refresh, across sessions too."""
         await seed_org(db_session, "org-stale")
         await seed_org(db_session, "org-active")
         await seed_user(db_session, pg_id="pg-user-4", cognito_sub="sub-4", org_id="org-stale")
@@ -219,6 +214,9 @@ class TestDbBackedRoleResolution:
         ac = AccessControl(db=db_session)
         role, org_id, _ = await ac.get_user_role(make_context("sub-4", "org-stale"))
 
+        assert org_id == "org-stale"
+        assert role == AdminRole.MEMBER
+        role, org_id, _ = await ac.get_user_role(make_context("sub-4", "org-active"))
         assert role == AdminRole.ORG_ADMIN
         assert org_id == "org-active"
 

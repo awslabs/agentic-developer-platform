@@ -1,18 +1,29 @@
 """Admin service for organization CRUD, pool management, and configuration."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, timedelta
+from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.cognito_claims import sync_cognito_role_claims
 from src.admin.cognito_service import CognitoService, CognitoServiceError
 from src.admin.config import get_admin_config
-from src.admin.exceptions import PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
+from src.admin.exceptions import MemberRemovalConflictError, PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
 from src.admin.installations.guards import assert_new_installation_ids_claimable_by
-from src.admin.memberships import is_admin_level_role, set_membership_role, upsert_tenant_membership
+from src.admin.memberships import (
+    is_admin_level_role,
+    project_member_org_ids,
+    set_membership_role,
+    upsert_tenant_membership,
+)
+
+if TYPE_CHECKING:
+    from src.admin.identity.identity_index_writer import IdentityIndexWriter
 from src.admin.schemas import (
     BudgetConfigResponse,
     BudgetConfigUpdateRequest,
@@ -32,17 +43,28 @@ from src.admin.schemas import (
     RateLimitListItem,
     RateLimitListResponse,
 )
+from src.shared.exceptions import ConflictError
 from src.shared.identity import resolve_root_user_entity_id, resolve_user_entity_id
 from src.shared.interfaces.budget import IBudgetService
 from src.shared.interfaces.ratelimit import IRateLimitService
 from src.shared.models.budget import BudgetConfig, BudgetUsage
 from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import Department, Organization, ServiceAccount, Team, User
+from src.shared.models.organization import (
+    CREATED_VIA_OPERATOR,
+    Department,
+    Organization,
+    ServiceAccount,
+    Team,
+    TeamMembership,
+    User,
+)
 from src.shared.models.usage import BedrockPoolAccount, RateLimitConfig
+from src.shared.models.vault import UserCredential, UserIdentity
 from src.shared.schemas.admin import (
     DepartmentCreateRequest,
     DepartmentResponse,
     DepartmentUpdateRequest,
+    PlatformUserResponse,
     ServiceAccountCreateRequest,
     ServiceAccountResponse,
     TeamCreateRequest,
@@ -131,6 +153,11 @@ class AdminService:
             settings=request.settings,
             github_installation_ids=request.github_installation_ids,
             cognito_client_ids=request.cognito_client_ids,
+            # Issue #4842 (R6=a): stamped, not inherited. A platform admin
+            # provisioned this tenant, which is exactly what CREATED_VIA_OPERATOR
+            # means, so the row is trusted BY INTENT rather than because the
+            # column default happens to be a trusted value.
+            created_via=CREATED_VIA_OPERATOR,
         )
 
         self.db.add(org)
@@ -388,8 +415,22 @@ class AdminService:
         github_ids = list(org.github_installation_ids or [])
         cognito_ids = list(org.cognito_client_ids or [])
 
-        await self.db.delete(org)
-        await self.db.commit()
+        try:
+            # ORM delete(org) nulls the non-null TenantMembership backref FK,
+            # even when its collection is unloaded. Use the existing database
+            # cascades; this deliberately does not delete users or their data.
+            await self.db.execute(delete(Organization).where(Organization.id == org_id))
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            # Only a real PostgreSQL FK refusal is a dependency conflict. Do
+            # not disguise an unrelated integrity defect as an operator error.
+            if getattr(exc.orig, "sqlstate", None) != "23503":
+                raise
+            raise ConflictError(
+                "This organization has related records that prevent permanent deletion. "
+                "Use the organization archive operation to retain them. No changes were saved."
+            ) from exc
 
         # Best-effort cleanup of identity-index entries
         if self.identity_index:
@@ -1089,6 +1130,57 @@ class AdminService:
             updated_at=team.updated_at,
         )
 
+    async def list_org_teams(
+        self,
+        org_id: str,
+        page: int = 1,
+        page_size: int | None = None,
+    ) -> tuple[list[TeamResponse], int]:
+        """List every team in an org, across all departments (Issue #4840).
+
+        The sibling :meth:`list_teams` is department-scoped, which is the wrong shape
+        for the team pickers in the membership UI (T2a/T2b): assigning a user to a
+        second team means choosing from every team in the org, and a caller should
+        not have to enumerate departments and fan out to build that list.
+
+        Args:
+            org_id: Organization ID
+            page: Page number (1-indexed)
+            page_size: Items per page
+
+        Returns:
+            Tuple of (list of teams, total count)
+        """
+        if page_size is None:
+            page_size = self.config.default_page_size
+
+        page_size = min(page_size, self.config.max_page_size)
+        offset = (page - 1) * page_size
+
+        count_query = select(func.count()).select_from(Team).where(Team.org_id == org_id)
+        total_result = await self.db.execute(count_query)
+        total = total_result.scalar_one()
+
+        query = select(Team).where(Team.org_id == org_id).offset(offset).limit(page_size).order_by(Team.name)
+        result = await self.db.execute(query)
+        teams = result.scalars().all()
+
+        return (
+            [
+                TeamResponse(
+                    id=team.id,
+                    org_id=team.org_id,
+                    department_id=team.department_id,
+                    name=team.name,
+                    description=team.description,
+                    created_at=team.created_at,
+                    updated_at=team.updated_at,
+                )
+                for team in teams
+            ],
+            total,
+        )
+
     async def list_teams(
         self,
         org_id: str,
@@ -1242,32 +1334,24 @@ class AdminService:
         if not team:
             raise ResourceNotFoundError("Team", team_id)
 
-        # Check for existing user with same email in org
+        # Use the same durable provisioning and immutable-subject linking as
+        # the identity API. Username is not a Cognito sub, and a failed AWS
+        # write must not silently become a successful local-only user.
+        if cognito_service:
+            from src.admin.identity.cognito_sync import CognitoSyncService
+            from src.admin.identity.schemas import UserCreateRequest as IdentityUserCreateRequest
+            from src.admin.identity.users_service import UsersService
+
+            created = await UsersService(self.db, cognito_sync=CognitoSyncService(cognito_service)).create_user(
+                org_id,
+                IdentityUserCreateRequest(email=request.email, team_id=team_id, name=request.name, role=request.role),
+            )
+            return UserResponse(**created.model_dump())
+
+        # Legacy database-only mode retains its existing conflict behavior.
         existing = await self.db.execute(select(User).where(User.org_id == org_id, User.email == request.email))
         if existing.scalar_one_or_none():
             raise ResourceConflictError("User", "email", request.email)
-
-        cognito_sub = None
-        cognito_username = None
-
-        # Create user in Cognito if service provided
-        if cognito_service:
-            try:
-                cognito_user = cognito_service.create_user(
-                    email=request.email,
-                    org_id=org_id,
-                    dept_id=team.department_id,
-                    team_id=team_id,
-                    name=request.name,
-                    role=request.role,
-                )
-                cognito_sub = cognito_user.get("Username")
-                cognito_username = request.email
-
-                # Add user to org group
-                cognito_service.add_user_to_group(request.email, f"org-{org_id}")
-            except CognitoServiceError:
-                pass  # Continue without Cognito, will create local user
 
         user = User(
             org_id=org_id,
@@ -1275,8 +1359,8 @@ class AdminService:
             email=request.email,
             name=request.name,
             role=request.role,
-            cognito_sub=cognito_sub,
-            cognito_username=cognito_username,
+            cognito_sub=None,
+            cognito_username=None,
         )
 
         self.db.add(user)
@@ -1286,7 +1370,8 @@ class AdminService:
         # tenant_memberships row that now carries that authority (#3987/#3998) —
         # same transaction as the users row. The role-assignment ceiling is
         # enforced by the caller (routes.py::add_user -> require_assignable_role).
-        if is_admin_level_role(request.role):
+        wrote_membership = is_admin_level_role(request.role)
+        if wrote_membership:
             await upsert_tenant_membership(
                 self.db,
                 user_id=user.id,
@@ -1297,6 +1382,11 @@ class AdminService:
 
         await self.db.commit()
         await self.db.refresh(user)
+
+        # Issue #4849: project the new membership to the DDB identity rows. This
+        # path wrote a membership but never projected it.
+        if wrote_membership:
+            await project_member_org_ids(self.db, user_id=user.id)
 
         return UserResponse(
             id=user.id,
@@ -1353,6 +1443,15 @@ class AdminService:
         """
         List all users in an organization with pagination.
 
+        ``github_username`` is carried for the members panel's person label (Issue
+        #4847), read from ``user_identities`` as a correlated scalar subquery for the
+        reason ``list_platform_users`` documents at length: the unique index there is
+        per (provider, provider_user_id, org_id), so one user CAN hold two GitHub rows
+        and a LEFT JOIN would emit that person twice — inflating ``total`` and shifting
+        every page boundary. It is the same subquery, kept as its own expression rather
+        than shared, because that method applies no tenant filter by design and this one
+        must (``User.org_id == org_id``).
+
         Args:
             org_id: Organization ID
             page: Page number (1-indexed)
@@ -1367,15 +1466,29 @@ class AdminService:
         page_size = min(page_size, self.config.max_page_size)
         offset = (page - 1) * page_size
 
+        github_username = (
+            select(UserIdentity.provider_username)
+            .where(
+                UserIdentity.user_id == User.id,
+                func.lower(UserIdentity.provider) == "github",
+            )
+            .order_by(UserIdentity.created_at)
+            .limit(1)
+            .correlate(User)
+            .scalar_subquery()
+        )
+
         # Get total count
         count_query = select(func.count()).select_from(User).where(User.org_id == org_id)
         total_result = await self.db.execute(count_query)
         total = total_result.scalar_one()
 
         # Get paginated results
-        query = select(User).where(User.org_id == org_id).offset(offset).limit(page_size).order_by(User.email)
+        query = (
+            select(User, github_username.label("github_username")).where(User.org_id == org_id).offset(offset).limit(page_size).order_by(User.email)
+        )
         result = await self.db.execute(query)
-        users = result.scalars().all()
+        rows = result.all()
 
         return (
             [
@@ -1388,10 +1501,103 @@ class AdminService:
                     cognito_sub=user.cognito_sub,
                     cognito_username=user.cognito_username,
                     role=user.role,
+                    github_username=linked_username,
                     created_at=user.created_at,
                     updated_at=user.updated_at,
                 )
-                for user in users
+                for user, linked_username in rows
+            ],
+            total,
+        )
+
+    async def list_platform_users(
+        self,
+        q: str | None = None,
+        page: int = 1,
+        page_size: int | None = None,
+    ) -> tuple[list[PlatformUserResponse], int]:
+        """Every member of the platform, paginated and searchable (Issue #4827).
+
+        Exists because every other member listing in this API is per-org
+        (``list_users_org``, ``list_cognito_users``) while a platform admin authoring a
+        person-scoped rule may legitimately name **any** user in **any** org. Scoping
+        this to the caller's own org would hide exactly the targets that authority
+        covers, and the operator would be back to typing a UUID they cannot know.
+
+        The route is what restricts this to platform admins. This method assumes that
+        check already ran — it applies no tenant filter of its own, by design.
+
+        **No filtering by kind.** Shadow and bot rows are listed alongside humans
+        because ``bedrock_routing.service.require_scope_exists`` accepts any ``users``
+        row, and a picker that omitted rows the server accepts would recreate the very
+        gap this issue closes — a valid target with no way to select it.
+
+        ``github_username`` comes from ``user_identities``, the same table
+        ``getMemberGithubUserId`` reads (#4687): it is the bridge that is actually
+        populated for GitHub-onboarded members, whereas ``users.cognito_username`` is
+        only written on the admin-invite path. Read as a **correlated scalar subquery**
+        rather than a LEFT JOIN on purpose: the unique index on ``user_identities`` is
+        per (provider, provider_user_id, org_id), so one user *can* carry two GitHub
+        rows, and a join would emit that person twice — inflating ``total``, shifting
+        every page boundary, and offering the same option twice in the picker.
+
+        Args:
+            q: Case-insensitive substring match over email, display name, and GitHub
+                username. Omitted/blank returns the unfiltered first page.
+            page: Page number (1-indexed).
+            page_size: Items per page, capped at the admin config maximum.
+
+        Returns:
+            Tuple of (list of members, total matching count).
+        """
+        if page_size is None:
+            page_size = self.config.default_page_size
+
+        page_size = min(page_size, self.config.max_page_size)
+        offset = (page - 1) * page_size
+
+        github_username = (
+            select(UserIdentity.provider_username)
+            .where(
+                UserIdentity.user_id == User.id,
+                func.lower(UserIdentity.provider) == "github",
+            )
+            .order_by(UserIdentity.created_at)
+            .limit(1)
+            .correlate(User)
+            .scalar_subquery()
+        )
+
+        filters = []
+        if q and q.strip():
+            pattern = f"%{q.strip()}%"
+            filters.append(
+                or_(
+                    User.email.ilike(pattern),
+                    User.name.ilike(pattern),
+                    github_username.ilike(pattern),
+                )
+            )
+
+        count_query = select(func.count()).select_from(User).where(*filters)
+        total = (await self.db.execute(count_query)).scalar_one()
+
+        # Ordered by email — a stable, total ordering. Without one, two requests for
+        # the same page can return different rows and a member becomes unreachable
+        # through the picker without anything on screen saying so.
+        query = select(User, github_username.label("github_username")).where(*filters).order_by(User.email).offset(offset).limit(page_size)
+        rows = (await self.db.execute(query)).all()
+
+        return (
+            [
+                PlatformUserResponse(
+                    id=user.id,
+                    org_id=user.org_id,
+                    email=user.email,
+                    name=user.name,
+                    github_username=linked_username,
+                )
+                for user, linked_username in rows
             ],
             total,
         )
@@ -1485,10 +1691,12 @@ class AdminService:
             )
         ).scalar_one_or_none()
 
+        from src.shared.identity.workspaces import login_subject_for_user
+
         return UserAuthzState(
             user_id=user.id,
             org_id=user.org_id,
-            cognito_sub=user.cognito_sub,
+            cognito_sub=await login_subject_for_user(self.db, user),
             users_role=user.role,
             membership_role=membership.role if membership else None,
         )
@@ -1546,6 +1754,7 @@ class AdminService:
         if not user:
             raise ResourceNotFoundError("User", user_id)
 
+        previous_role = user.role
         if request.name is not None:
             user.name = request.name
 
@@ -1561,16 +1770,41 @@ class AdminService:
         await self.db.commit()
         await self.db.refresh(user)
 
-        # Post-commit, best-effort: the authority is already durable.
-        if request.role is not None and user.cognito_sub:
-            sync_cognito_role_claims(
-                cognito_sub=user.cognito_sub,
-                org_id=org_id,
-                role=request.role,
-                team_id=user.team_id or "",
-                metric_namespace="ADP/Admin",
-                metric_prefix="UserRoleUpdate",
-            )
+        # Issue #4849: a role change can *create* the membership row (when the
+        # user had none in this tenant), so the org list can change here too.
+        if request.role is not None:
+            await project_member_org_ids(self.db, user_id=user.id)
+
+        # Post-commit, best-effort. Serialize the claims cache write against
+        # workspace selection, including secondary native-Cognito placements.
+        if request.role is not None:
+            from src.shared.identity.workspaces import login_subject_for_user, login_user, memberships_for_login
+
+            subject = await login_subject_for_user(self.db, user)
+            login = await login_user(self.db, subject) if subject else None
+            if login:
+                await self.db.execute(select(User.id).where(User.id == login.id).with_for_update())
+                workspace_roles = None
+                if previous_role in {"platform_admin", "admin"}:
+                    from src.admin.config import membership_role_to_admin_role
+
+                    _, memberships = await memberships_for_login(self.db, subject)
+                    workspace_roles = {
+                        org: membership_role_to_admin_role(pair[1].role if pair[1] else "member").value for org, pair in memberships.items()
+                    }
+                await asyncio.to_thread(
+                    sync_cognito_role_claims,
+                    cognito_sub=subject,
+                    org_id=org_id,
+                    role=request.role,
+                    team_id=user.team_id or "",
+                    metric_namespace="ADP/Admin",
+                    metric_prefix="UserRoleUpdate",
+                    only_if_current_org=True,
+                    previous_role=previous_role,
+                    workspace_roles=workspace_roles,
+                )
+                await self.db.commit()
 
         return UserResponse(
             id=user.id,
@@ -1590,11 +1824,13 @@ class AdminService:
         org_id: str,
         user_id: str,
         cognito_service: CognitoService | None = None,
+        identity_writer: "IdentityIndexWriter | None" = None,
     ) -> bool:
         """
         Remove a user.
 
-        Deletes user from Cognito (if service provided) and database.
+        Delete the org-local account and its owned rows atomically. Refresh the
+        sign-in projection and remove an unshared Cognito login only after commit.
 
         Args:
             org_id: Organization ID
@@ -1607,21 +1843,84 @@ class AdminService:
         Raises:
             ResourceNotFoundError: If user not found
         """
-        result = await self.db.execute(select(User).where(User.id == user_id, User.org_id == org_id))
+        result = await self.db.execute(select(User).where(User.id == user_id, User.org_id == org_id).with_for_update())
         user = result.scalar_one_or_none()
 
         if not user:
             raise ResourceNotFoundError("User", user_id)
 
-        # Delete from Cognito if service provided
-        if cognito_service and user.cognito_username:
+        if await self.db.scalar(
+            select(TenantMembership.id).where(TenantMembership.user_id == user_id, TenantMembership.tenant_id != org_id).limit(1)
+        ):
+            raise MemberRemovalConflictError(
+                "This account also holds membership in another organization. Remove those memberships before deleting this account."
+            )
+
+        github_ids = set(
+            (
+                await self.db.execute(select(UserIdentity.provider_user_id).where(UserIdentity.user_id == user_id, UserIdentity.provider == "github"))
+            ).scalars()
+        )
+        username = user.cognito_username
+        if user.cognito_sub:
+            from src.shared.identity.workspaces import PLACEMENT_VERIFICATION
+
+            linked_membership = await self.db.scalar(
+                select(TenantMembership.id)
+                .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
+                .where(
+                    UserIdentity.provider == "cognito",
+                    UserIdentity.provider_user_id == user.cognito_sub,
+                    UserIdentity.verification_method == PLACEMENT_VERIFICATION,
+                    TenantMembership.user_id != user_id,
+                )
+                .limit(1)
+            )
+            if linked_membership:
+                raise MemberRemovalConflictError(
+                    "This account owns the sign-in used by another organization. "
+                    "Remove its other organization memberships before deleting this account."
+                )
+        if (user.cognito_sub or username) and github_ids:
+            shared_login = await self.db.scalar(
+                select(TenantMembership.id)
+                .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
+                .where(
+                    UserIdentity.provider == "github",
+                    UserIdentity.provider_user_id.in_(github_ids),
+                    TenantMembership.user_id != user_id,
+                )
+                .limit(1)
+            )
+            if shared_login:
+                raise MemberRemovalConflictError(
+                    "This account owns the sign-in used by another organization. "
+                    "Remove its other organization memberships before deleting this account."
+                )
+
+        try:
+            # ORM delete(User) tries to NULL the non-null backref foreign keys.
+            # Delete the owned rows explicitly, then the scoped user, so the
+            # operation also works on SQLite installations without FK cascades.
+            for model in (TeamMembership, TenantMembership, UserIdentity, UserCredential):
+                await self.db.execute(delete(model).where(model.user_id == user_id))
+            await self.db.execute(delete(User).where(User.id == user_id, User.org_id == org_id))
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise MemberRemovalConflictError(
+                "This member has related records that must be retained and cannot be deleted. No membership changes were saved."
+            ) from exc
+
+        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=github_ids, writer=identity_writer)
+
+        # Never remove the login for a database deletion that rolled back.
+        if cognito_service and username:
             try:
-                cognito_service.delete_user(username=user.cognito_username)
+                cognito_service.delete_user(username=username)
             except CognitoServiceError:
                 pass  # Non-critical
 
-        await self.db.delete(user)
-        await self.db.commit()
         return True
 
     # Service Account Management
@@ -1836,6 +2135,8 @@ class AdminService:
         root_user_display_names = await self._resolve_root_user_display_names(
             org_id, [c.entity_id for c in budget_configs if c.entity_type == "root_user"]
         )
+        # Issue #4948: name the tenancy entities, and learn which ones no longer exist.
+        tenancy_names = await self._resolve_tenancy_entities(org_id, [(c.entity_type, c.entity_id) for c in budget_configs])
         if user_entity_ids and cognito_service:
             try:
                 cognito_users, _ = cognito_service.list_users_by_org(org_id)
@@ -1885,16 +2186,23 @@ class AdminService:
             # keyed in different namespaces, so each reads its own map — a shared
             # lookup would silently show one person's name against another's row.
             display_name = None
+            # Issue #4948: `False` for every kind this check does not apply to, so a
+            # person-scoped row is never flagged by a lookup that was never run for it.
+            unresolved = False
             if config.entity_type == "user":
                 display_name = user_display_names.get(config.entity_id)
             elif config.entity_type == "root_user":
                 display_name = root_user_display_names.get(config.entity_id)
+            elif config.entity_type in ("org", "department", "team"):
+                display_name = tenancy_names.get((config.entity_type, config.entity_id))
+                unresolved = display_name is None
 
             items.append(
                 BudgetListItem(
                     entity_type=config.entity_type,
                     entity_id=config.entity_id,
                     entity_display_name=display_name,
+                    entity_unresolved=unresolved,
                     period_type=config.period_type,
                     budget_amount_usd=config.budget_amount_usd,
                     enforcement_mode=config.enforcement_mode,
@@ -1911,6 +2219,57 @@ class AdminService:
             page_size=page_size,
             has_more=(page * page_size) < total,
         )
+
+    async def _resolve_tenancy_entities(self, org_id: str, keys: list[tuple[str, str]]) -> dict[tuple[str, str], str]:
+        """Resolve org/department/team config keys to their tenancy row's name.
+
+        Issue #4948. Returns a map keyed by ``(entity_type, entity_id)`` holding the
+        display name of the row each key points at. A key that is ABSENT from the
+        result has no such row in this org — which is the only signal available for
+        "this config governs nobody", and the reason the list surfaces it (see
+        ``entity_unresolved``) instead of silently rendering a bare id that looks
+        exactly like a working one.
+
+        Why the caller must not treat absence as "delete it": the entity may have been
+        renamed away, deleted, or — the case that made this issue — authored from the
+        old Cognito-sourced picker, which stored a Cognito *group name* where the
+        column holds a ``teams.id``. Those rows are real spend controls someone
+        believed they had set, so they are flagged for an operator to fix, never
+        hidden. Hiding them reproduces #4511 with the evidence removed.
+
+        Scoped to ``org_id`` in every query: a department or team id from another
+        tenant must read as unresolved here, not borrow that tenant's name.
+        """
+        wanted: dict[str, set[str]] = {"org": set(), "department": set(), "team": set()}
+        for entity_type, entity_id in keys:
+            if entity_type in wanted:
+                wanted[entity_type].add(entity_id)
+
+        resolved: dict[tuple[str, str], str] = {}
+
+        if wanted["org"]:
+            # An org-level config resolves only when its entity id IS the partition it
+            # is stored in. Enforcement fills both columns from the same
+            # `attributed_org_id`, so an `org` row naming a DIFFERENT org than its own
+            # partition can never be matched however real that other org is — the
+            # partition trap this issue's org picker had to be built around. Looking it
+            # up in `organizations` by id alone would resolve it to a name and make an
+            # unmatchable row read as healthy.
+            rows = await self.db.execute(select(Organization).where(Organization.id.in_(wanted["org"] & {org_id})))
+            for org in rows.scalars().all():
+                resolved[("org", org.id)] = org.name or org.id
+
+        if wanted["department"]:
+            rows = await self.db.execute(select(Department).where(Department.org_id == org_id, Department.id.in_(wanted["department"])))
+            for dept in rows.scalars().all():
+                resolved[("department", dept.id)] = dept.name or dept.id
+
+        if wanted["team"]:
+            rows = await self.db.execute(select(Team).where(Team.org_id == org_id, Team.id.in_(wanted["team"])))
+            for team in rows.scalars().all():
+                resolved[("team", team.id)] = team.name or team.id
+
+        return resolved
 
     async def _resolve_root_user_display_names(self, org_id: str, entity_ids: list[str]) -> dict[str, str]:
         """Map canonical ``users.id`` budget keys to a human-readable name.
@@ -2018,6 +2377,61 @@ class AdminService:
             budget_amount_usd=budget.budget_amount_usd,
             enforcement_mode=budget.enforcement_mode,
             updated_at=budget.updated_at,
+            # Deliberately computed AFTER the commit: the cap exists either way, and
+            # an advisory is a sentence about a write that already happened.
+            advisory=await self._mis_partitioned_cap_advisory(org_id, budget.entity_type, budget.entity_id),
+        )
+
+    async def _mis_partitioned_cap_advisory(self, org_id: str, entity_type: str, entity_id: str) -> str | None:
+        """Warn when a cloud-agent cap was authored where the person's spend does not land.
+
+        Issue #4669. Only `root_user` caps can have this defect: they are keyed by
+        canonical `users.id` and a person can hold a different one per tenant, so the
+        cap and the accrual can end up in different partitions (#4620). Every other
+        entity type is scoped to the partition it was written in by construction.
+
+        **Never raises, and never blocks.** Two independent reasons, and both are
+        requirements rather than caution:
+
+        - The budget is already committed. Letting this read fail the request would
+          report a successful create as an error, and the operator would author it
+          again — reaching a 409 for a row they were told did not exist.
+        - The check reads a foreign tenant's ledger. A cross-tenant read must not be
+          able to veto a write inside this tenant, so its failure mode is "no advice",
+          never "no cap".
+
+        `except Exception` rather than a fault tuple for exactly that reason: the
+        distinction between an outage and a code defect matters to the log, not to the
+        caller — every outcome here is still a 201 with the cap in place.
+        """
+        if entity_type != "root_user":
+            return None
+
+        # Local import, matching `budget_helper.py` and the `src.budget.utils` import
+        # above: importing `src.budget` at module scope pulls in
+        # `src.budget.__init__` -> routes -> `src.auth`. `person_accrual` is a leaf
+        # module precisely so this import stays cheap (#4669).
+        from src.budget.person_accrual import count_foreign_accrual_partitions
+
+        try:
+            partitions = await count_foreign_accrual_partitions(self.db, org_id, entity_id)
+        except Exception:
+            logger.warning(
+                "Could not check where cloud-agent spend accrues for the budget just created; returning it without an advisory",
+                exc_info=True,
+            )
+            return None
+
+        if partitions == 0:
+            return None
+
+        # The COUNT only — never which workspaces, never their figures. The author is
+        # an admin of this tenant with no authority to learn the others (design note
+        # `4620-cross-org-person-budgets.md` §7.2).
+        workspaces = "workspace" if partitions == 1 else "workspaces"
+        return (
+            f"This person's agent spend currently accrues in {partitions} other {workspaces}, not here. "
+            "This cap governs only the spend that bills to this workspace, so it may never be reached."
         )
 
     async def delete_budget(self, org_id: str, entity_type: str, entity_id: str, period_type: str) -> bool:
@@ -2099,10 +2513,19 @@ class AdminService:
         result = await self.db.execute(query)
         configs = result.scalars().all()
 
+        # Issue #4948: name the tenancy entities, and flag the ones that resolve to
+        # nothing in this org — a limit on a stale or wrong-namespace id is silently
+        # not in force, and the list is where an operator can see that.
+        tenancy_names = await self._resolve_tenancy_entities(org_id, [(c.entity_type, c.entity_id) for c in configs])
+
         items = [
             RateLimitListItem(
                 entity_type=config.entity_type,
                 entity_id=config.entity_id,
+                entity_display_name=tenancy_names.get((config.entity_type, config.entity_id)),
+                entity_unresolved=(
+                    config.entity_type in ("org", "department", "team") and (config.entity_type, config.entity_id) not in tenancy_names
+                ),
                 rpm=config.rpm,
                 tpm=config.tpm,
                 concurrent_requests=config.concurrent_requests,

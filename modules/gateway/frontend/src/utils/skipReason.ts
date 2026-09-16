@@ -40,6 +40,7 @@ const SKIP_REASON_TEXT: Record<string, string> = {
     'A bot dispatch arrived without correlation context, so its chain could not be established.',
   label_unmapped: 'The label applied here is not mapped to any agent persona.',
   pr_branch_not_agent: 'This pull request is not on an agent branch, so no agent owns it.',
+  pr_draft: 'This pull request is a draft. Review starts after the author marks it ready.',
   bot_synchronize_dedup:
     'A bot pushed to this branch — ignored to avoid re-running on the agent’s own commits.',
   no_aidlc_label: 'This issue does not carry an AIDLC label, so no agent was selected.',
@@ -47,6 +48,8 @@ const SKIP_REASON_TEXT: Record<string, string> = {
   installation_event:
     'This was a GitHub App installation event — bookkeeping only, no agent work implied.',
   event_type_unhandled: 'This webhook event type has no agent behaviour attached to it.',
+  bot_comment_action_unhandled:
+    'The agent edited or removed its own comment — ignored, no agent behaviour attached to this action.',
 
   // --- spawn_persona guards (block_reason strings, reused verbatim) ----------
   invalid_installation_id:

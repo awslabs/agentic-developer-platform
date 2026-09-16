@@ -426,6 +426,17 @@ assignment you already hold.
   "org_id": "",
   "spec_revision": "issue-<N>-r1",
   "intent_ref": "<N>",
+  "description": "<the intent issue's plain-terms opening, one or two sentences, <=500 chars>",
+  "design_history": {
+    "scope": "<auto | poc | workshop — the scope this loop actually ran under>",
+    "stages": [
+      {"name": "intent-capture", "state": "approved", "approved_at": "<ISO-8601 UTC of the approval>"},
+      {"name": "reverse-engineering", "state": "skipped"},
+      {"name": "requirements-analysis", "state": "approved", "approved_at": "<ISO-8601 UTC>"},
+      {"name": "delivery-planning", "state": "approved", "approved_at": "<ISO-8601 UTC>"},
+      {"name": "loop-proposal", "state": "open"}
+    ]
+  },
   "nodes": [
     {"address": "<flow_slug>/epic-<EPIC>/wave-<K>/<node-ref>",
      "kind": "story", "title": "<story title>", "issue_ref": "<story issue number>"},
@@ -459,6 +470,33 @@ assignment you already hold.
    hand-declared gate suppresses that default, so declare one only deliberately.
 7. **The edge set MUST be acyclic**, and every endpoint MUST resolve to a declared
    node.
+8. **`description` and `design_history` are OPTIONAL, and omitting them is always
+   allowed. Never guess either one.** They are how the flows list explains what this
+   loop is *for* and which design gates ran (#4885), and you are the only party that
+   knows — nothing downstream reconstructs them, by design. Omit a field, or a single
+   stage entry, whenever you do not know the answer: a missing value renders as
+   "not recorded", while a plausible invented one renders as a real record of a gate
+   that may never have happened, and it looks authoritative. Specifically:
+   - **`description`** is the intent issue's `## The problem in plain terms`
+     opening, compressed to one or two sentences and **at most 500 characters**.
+     Over-length is **rejected, not truncated** — write a shorter one. No file paths,
+     no issue numbers, no jargon: it is read by people scanning a list of loops.
+   - **`design_history.scope`** is the scope this loop genuinely ran under, not the
+     one that was requested if they differ.
+   - **`stages[].name`** is one of exactly `intent-capture`, `reverse-engineering`,
+     `requirements-analysis`, `delivery-planning`, `loop-proposal`. Any other value
+     is refused. List a stage at most once.
+   - **`stages[].state`** is one of `approved`, `open`, `skipped`, `not_reached`, and
+     **`skipped` and `not_reached` mean different things — do not use them
+     interchangeably.** `skipped` means the scope decided this stage never runs (a
+     `poc` scope records `reverse-engineering` as **`skipped`**, never
+     `not_reached`). `not_reached` means it *will* run and the loop has not got there
+     yet. Rendering the first as the second shows an operator work that is never
+     coming.
+   - **`approved_at`** is required on an `approved` stage and forbidden on every
+     other state. Use the ISO-8601 UTC timestamp of the actual gate approval; if you
+     cannot establish it, record the stage as `open` or leave it out rather than
+     inventing a time.
 
 **Validate before committing** — the same rules the engine enforces, run locally:
 
@@ -485,9 +523,15 @@ two-wave document): `aidlc/spaces/issue-4120/construction/loop-proposal/example-
 **What happens after you commit it:** the worker's finish path finds this file,
 fills in `org_id`, and POSTs it to the gateway, which stores it as an **inert
 draft** — visible in the graph UI, executing nothing. The run's closing comment
-names the plan id and the one command a human types to make it live. If the file
+links the flow and names the one command a human types to make it live. If the file
 is absent, registration is silently skipped and the loop stays markdown-only, so
 omitting it is a silent regression rather than a visible error.
+
+Whatever you put in `description` and `design_history` is what an operator reads on
+the flows list before deciding whether to accept the plan — the description as the
+loop's one-line purpose, the stage record as the strip showing which design gates
+were approved, skipped, or still open. A flow that carries neither still registers
+and still runs; its card simply says nothing about where it came from.
 
 ### Step 8: Materialize delivery loop (on loop-proposal approval)
 
@@ -550,7 +594,15 @@ fi
 1. Create evaluation issues FIRST (orchestrators reference eval issue numbers)
 2. Create orchestrator issues SECOND
 3. Link ALL as native sub-issues of the EPIC
-4. Kick off execution LAST: dispatch the **wave-1 ORCHESTRATOR issue** via
+4. When `ADP_AGENT_AUTHORITY_ENABLED=true`, bind EACH wave's materialized
+   issues to the approved engine graph before kickoff:
+   `adp-trigger bind-wave --repo <OWNER/REPO> --epic epic-<EPIC_NUMBER> --wave wave-<K> --orchestrator <ORCH_NUMBER> --evaluation <EVAL_NUMBER>`.
+   Use the exact epic/wave addresses from the accepted proposal. The gateway
+   verifies the existing human approval and native parent links. A refusal means
+   execution must wait for the missing approved assignment; issue creation or
+   a GitHub comment cannot substitute for engine approval. Identical binding
+   retries are safe. This command does not launch a run.
+5. Kick off execution LAST: dispatch the **wave-1 ORCHESTRATOR issue** via
    `adp-trigger --persona operations --issue <WAVE_1_ORCH_NUMBER> --reason "kick off delivery loop"`.
    Do NOT post an `@agent-operations` comment — a bot-authored mention does not
    reliably dispatch and breaks correlation lineage. `adp-trigger` stamps lineage
@@ -593,31 +645,44 @@ GraphQL mutation as Step 6).
 ### Step 9: Post completion summary
 
 After all issues are created and linked (stories + delivery loop), post a
-summary comment on the originating AIDLC issue:
+summary comment on the originating AIDLC issue using the layout below. Preserve
+the EPIC link, verified counts and wave-to-story mapping when keeping prose
+concise; general presentation guidance does not remove these fields. Count
+actual issues, including existing issues adopted on a re-run. If emission is
+partial, show created versus planned counts and the missing work. Keep issue
+creation, accepted dispatch and observed worker startup as distinct states.
 
 ```markdown
-## Issue Emitter Complete
+## Delivery plan prepared: <capability>
 
-**EPIC**: #<epic-number> — <title>
-**Children created**: <N> story sub-issues
-**Delivery loop**: <M> orchestrator issues + <M> evaluation issues
+<What this plan will enable. State whether issues were created, execution was
+submitted, or a worker was observed running. Put blockers beside that status.>
 
-| Wave | Orchestrator | Evaluation | Stories |
-|------|-------------|------------|---------|
-| 1 | #<orch-1> | #<eval-1> | #<s1>, #<s2> |
-| 2 | #<orch-2> | #<eval-2> | #<s3>, #<s4> |
-| ... | ... | ... | ... |
+**EPIC**: [#<number> — <title>](<issue URL>)
+**Story issues**: <verified count> · **Orchestrators**: <verified count> · **Evaluations**: <verified count>
+**Artifact revision**: [<SHA>](<published artifact URL>)
 
-All children pass five-section lint. Validation gates are deterministic
-(named test files + CI checks + coverage thresholds).
-Emission lint: ✅ CI-apply-path | ✅ account-explicit | ✅ version-pins | ✅ hotfix-protocol | ✅ api-contract-check
+**Next**: <owner and action, with a link. If dispatch was accepted but worker
+startup was not observed, say so. Do not infer execution from issue creation.>
 
-The AIDLC inception audit trail is committed on branch `<branch>` under
-`aidlc/` / `aidlc-docs/`.
+| Wave and capability | Story issues | Orchestrator | Evaluation | Current state |
+|---------------------|--------------|--------------|------------|---------------|
+| <meaningful name> | <linked story issues> | <link> | <link> | <observed state> |
 
-**Next**: the delivery loop is self-driving. The operations persona has been
-dispatched on orchestrator #<orch-1> (Wave 1); it will dispatch stories in
-dependency order and advance waves as evaluations close green.
+### Validation and remaining holds
+
+| Check | Result | Evidence / remaining action |
+|-------|--------|-----------------------------|
+| Five-section story format and native links | <actual result> | <evidence or missing work> |
+| Emission lint — <rule number and name; one row per Step 7d rule> | <PASS/FAIL/NOT RUN/N/A> | <evidence or applicability reason> |
+| Machine proposal validation | <actual result> | <validator result and revision> |
+
+<Remaining holds and what each blocks. Lint verifies the plan; planned live
+evaluation checks have not passed merely because their definitions pass lint.>
+
+**Evidence**: <artifact revision link, created issue links, actual lint results
+and dispatch response/run link. Name incomplete or failed checks.>
+
 ```
 
 ## Error handling

@@ -685,6 +685,7 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
         team_id=claims.team_id or "",
         department_id=claims.department_id or "",
         account_type=account_type,
+        cognito_username=claims.username or "",
         is_admin=is_admin,
         expires_at=datetime.fromtimestamp(claims.exp, UTC),
     )

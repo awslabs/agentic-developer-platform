@@ -77,6 +77,7 @@ def gate_env(monkeypatch):
     monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "")
     monkeypatch.setenv("SLACK_BOT_USER_ID", "")
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", "adp-dev-webhook-events")
     monkeypatch.setenv("GH_APP_SECRET_PREFIX", f"adp/{CONFIGURED_ORG}/gh-app-ops")
     # Ownership layer off by default — enabled per-test via _enable_ownership().
     monkeypatch.delenv("IDENTITY_INDEX_TABLE", raising=False)
@@ -91,6 +92,12 @@ def aws(gate_env):
             TableName=SESSIONS_TABLE,
             KeySchema=[{"AttributeName": "session_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "session_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        ddb.create_table(
+            TableName="adp-dev-webhook-events",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         sqs = boto3.client("sqs", region_name="us-east-1")
@@ -132,7 +139,7 @@ def _load_handler(classification: dict, monkeypatch):
     """
     for mod in ("handler", "classifier", "channels", "channels.base",
                 "channels.webchat", "channels.slack", "github_dispatch",
-                "installation_resolver"):
+                "installation_resolver", "invocation_logger"):
         sys.modules.pop(mod, None)
 
     import github_dispatch
@@ -212,7 +219,7 @@ def _enable_ownership(monkeypatch, org_to_installation: dict):
 
 def _send(handler, *, repo: str, org_id: str | None, session: str):
     """Deliver a webchat message whose classification targets `repo`."""
-    claims = {"sub": f"user-{session}", "email": f"{session}@example.com"}
+    claims = {"sub": f"user-{session}", "email": f"{session}@example.com", "custom:tenant_id": "test-tenant"}
     if org_id is not None:
         claims["custom:org_id"] = org_id
     return handler.lambda_handler(

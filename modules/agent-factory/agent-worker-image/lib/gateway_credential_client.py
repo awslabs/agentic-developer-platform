@@ -20,11 +20,39 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 logger = logging.getLogger(__name__)
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _worker_identity_headers() -> dict[str, str]:
+    headers = {}
+    for variable, header in (
+        ("ADP_RUN_CREDENTIAL_FILE", "X-Adp-Run-Credential"),
+        ("ADP_WORKLOAD_TOKEN_FILE", "X-Adp-Workload-Token"),
+    ):
+        try:
+            fd = os.open(os.environ[variable], os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    raise ValueError("not a file")
+                raw = source.read(16387)
+            token = raw.decode("ascii").rstrip("\r\n")
+            if not token or len(token) > 16384 or any(ord(c) < 33 or ord(c) > 126 for c in token):
+                raise ValueError("invalid token")
+            headers[header] = token
+        except (OSError, KeyError, ValueError):
+            raise GatewayCredentialError("Worker identity unavailable") from None
+    return headers
 
 
 def _sigv4_sign_request(method: str, url: str, headers: dict, data: bytes | None) -> dict:
@@ -34,7 +62,9 @@ def _sigv4_sign_request(method: str, url: str, headers: dict, data: bytes | None
     import botocore.session
 
     session = botocore.session.get_session()
-    credentials = session.get_credentials()
+    from adp_trigger.transport_identity import gateway_signing_region, worker_credentials
+
+    credentials = worker_credentials(session)
     if credentials is None:
         raise GatewayCredentialError("No AWS credentials available for SigV4 signing")
     credentials = credentials.get_frozen_credentials()
@@ -46,7 +76,7 @@ def _sigv4_sign_request(method: str, url: str, headers: dict, data: bytes | None
         data=data,
     )
 
-    region = os.environ.get("AWS_REGION", "us-east-1")
+    region = gateway_signing_region(url)
     signer = botocore.auth.SigV4Auth(credentials, "execute-api", region)
     signer.add_auth(aws_request)
 
@@ -110,6 +140,13 @@ class GatewayCredentialClient:
         if extra_headers:
             headers.update(extra_headers)
 
+        authority = os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+        if authority:
+            url = urlparse(endpoint)
+            if not self._use_sigv4 or url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment:
+                raise GatewayCredentialError("Worker credential broker requires HTTPS and SigV4")
+            headers.update(_worker_identity_headers())
+
         data = json.dumps(payload).encode("utf-8")
 
         if self._use_sigv4:
@@ -120,17 +157,19 @@ class GatewayCredentialClient:
         req = Request(endpoint, data=data, headers=headers, method="POST")
 
         try:
-            with urlopen(req, timeout=self._timeout) as resp:
+            opener = build_opener(_NoRedirect()).open if authority else urlopen
+            with opener(req, timeout=self._timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except HTTPError as exc:
-            error_body = exc.read().decode("utf-8") if exc.fp else ""
             raise GatewayCredentialError(
-                f"Gateway returned HTTP {exc.code}: {error_body}"
-            ) from exc
+                f"Gateway returned HTTP {exc.code}"
+            ) from None
         except URLError as exc:
             raise GatewayCredentialError(
-                f"Cannot reach gateway at {self._base_url}: {exc.reason}"
-            ) from exc
+                "Cannot reach gateway"
+            ) from None
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise GatewayCredentialError("Credential gateway returned invalid JSON") from None
 
     def raw_read(
         self,

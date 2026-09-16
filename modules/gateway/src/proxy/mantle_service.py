@@ -8,6 +8,12 @@ This is a **passthrough, not a translation** — the request body is forwarded
 byte-for-byte and the response (including streaming chunks) is returned verbatim.
 It intentionally does NOT touch ``format_translator.py``.
 
+The one exception is the ``model`` field: bedrock-runtime's OpenAI path serves
+models only via cross-region inference profiles, so the forwarded body's model
+id is prefixed with the configured geo prefix (``openai.gpt-6-astra`` →
+``us.openai.gpt-6-astra``) before signing. The caller's bare id is preserved for
+metering/pricing. See ``_apply_inference_profile``.
+
 Governance handled here:
 - **Metering**: the Responses-API ``usage`` block is extracted and written to
   ``usage_logs`` via the same ``UsageService`` the Bedrock proxy uses.
@@ -23,19 +29,32 @@ mantle models).
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+from urllib.parse import urlparse
+from uuid import uuid4
 
+import boto3
 import httpx
 
+from pricing_policy import RoutingEvidence, normalize_billing_model_id
+from pricing_policy.policy import MissingUsageError, geography_from_model_prefix
 from src.budget.enforcement_service import reconcile_budget_reservation
-from src.budget.pricing import pricing_service
-from src.proxy.mantle_auth import MantleAuth
+from src.budget.pricing_decisions import price_completed_usage
+from src.chat_logging.service import ChatLoggingService
+from src.proxy.bedrock_enforcement import RoutingDecision, resolve_routing_decision
+from src.proxy.mantle_auth import MantleAuth, SigV4MantleAuth
 from src.proxy.service import _current_client_tool
 from src.shared.database import get_session_factory
+from src.shared.exceptions import BedrockGatewayError
 from src.shared.schemas.auth import TokenContext
 from src.usage.service import UsageService
 
@@ -47,6 +66,26 @@ MANTLE_RESPONSES_PATH = "/openai/v1/responses"
 # Model-family dimension recorded on usage_logs.model for OpenAI-model traffic
 # so metering can distinguish it from Claude/Bedrock rows.
 USAGE_MODEL_FAMILY = "openai"
+
+
+@dataclass(frozen=True)
+class RoutedMantleRequest:
+    """Per-request signing state; never mutate the shared service's signer."""
+
+    auth: MantleAuth = field(repr=False)
+    base_url: str
+    inference_profile_prefix: str
+    decision: RoutingDecision = field(repr=False)
+
+    @property
+    def upstream_url(self) -> str:
+        return self.base_url + MANTLE_RESPONSES_PATH
+
+
+# Bedrock cross-region inference-profile geo prefixes. A model id already starting
+# with one of these is a fully-qualified inference profile — the route must NOT
+# prefix it again (that would produce e.g. "us.us.openai.*").
+_GEO_PREFIXES = ("us.", "eu.", "apac.", "in.", "global.", "us-gov.")
 
 # Safety valve for the per-stream partial-line buffer (issue #2828). A well-formed
 # `response.completed` event is well under this; if a line ever exceeds it (e.g. a
@@ -63,7 +102,7 @@ class MantleResponse:
     content: bytes
     media_type: str = "application/json"
     # Token usage extracted from the Responses-API `usage` block (best-effort).
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 class MantleUpstreamError(Exception):
@@ -88,6 +127,14 @@ class MantleUpstreamError(Exception):
         self.media_type = media_type
 
 
+class _CapturedUsage(dict):
+    """Usage remains a mapping; routing evidence is server metadata, not tokens."""
+
+    def __init__(self, usage, routing):
+        super().__init__(usage)
+        self.routing = routing
+
+
 class _StreamUsageSniffer:
     """Stateful, per-stream sniffer for the Responses-API ``usage`` block (#2828).
 
@@ -104,8 +151,14 @@ class _StreamUsageSniffer:
     """
 
     def __init__(self) -> None:
-        self.usage: dict[str, int] = {}
+        self.usage: dict[str, Any] = {}
         self._buffer = b""
+        self.metadata: dict[str, str] = {}
+
+    def finish(self) -> None:
+        if self._buffer:
+            self._parse_line(self._buffer)
+            self._buffer = b""
 
     def feed(self, chunk: bytes) -> None:
         """Consume one upstream chunk, updating ``usage`` from any complete lines."""
@@ -138,6 +191,10 @@ class _StreamUsageSniffer:
             found = data.get("usage")
             if found is None and isinstance(data.get("response"), dict):
                 found = data["response"].get("usage")
+            if data.get("type") in (None, "response.completed", "response.incomplete", "response.failed"):
+                response = data.get("response", data)
+                if isinstance(response, dict):
+                    self.metadata.update(MantlePassthroughService._response_metadata(response))
             parsed = MantlePassthroughService._usage_from_dict(found)
             if parsed:
                 self.usage.update(parsed)
@@ -161,19 +218,67 @@ class MantlePassthroughService:
         auth: MantleAuth,
         base_url: str,
         *,
+        inference_profile_prefix: str = "",
+        on_demand_models: str = "",
         http_client: httpx.AsyncClient | None = None,
         timeout: float = 120.0,
     ) -> None:
         self._auth = auth
         self._base_url = base_url.rstrip("/")
+        self._inference_profile_prefix = inference_profile_prefix.strip().rstrip(".")
+        # Glob patterns of models invoked on-demand with the BARE id (no inference
+        # profile exists for them) — these must NOT be geo-prefixed.
+        self._on_demand_patterns = [p.strip() for p in on_demand_models.split(",") if p.strip()]
         self._timeout = timeout
         self._http_client = http_client
+        self._chat_logger: ChatLoggingService | None = None
 
     @property
     def upstream_url(self) -> str:
         return f"{self._base_url}{MANTLE_RESPONSES_PATH}"
 
-    def _headers(self, body: bytes) -> dict[str, str]:
+    def _apply_inference_profile(self, body: bytes, *, prefix: str | None = None) -> bytes:
+        """Rewrite the forwarded body's ``model`` to its inference-profile id.
+
+        bedrock-runtime's OpenAI path serves models ONLY via cross-region
+        inference profiles (bare ``openai.gpt-6-astra`` → 400 "on-demand
+        throughput isn't supported"), so the byte-for-byte passthrough would
+        fail for every caller using a bare id. To keep the caller-facing id
+        stable — Codex and the setup UI keep emitting ``openai.gpt-6-astra`` —
+        we prefix ONLY the forwarded body's model with the configured geo prefix
+        (``openai.gpt-6-astra`` → ``us.openai.gpt-6-astra``). The bare id the
+        caller sent is still what the route passes to metering/pricing, so this
+        rewrite is invisible to usage_logs, the allowlist, and cost lookup.
+
+        Returns the body unchanged when: no prefix is configured, the body is not
+        JSON/​is empty, there is no string ``model``, the model is already a
+        fully-qualified inference profile (already carries a geo prefix), or the
+        model is an on-demand model (matches an ``on_demand_models`` glob) — those
+        are invoked with the bare id and have no inference profile, so prefixing
+        them would produce an invalid id. This is the one point where the
+        passthrough re-serializes the body; the signature is computed over these
+        returned bytes, so callers sign what they forward.
+        """
+        prefix = self._inference_profile_prefix if prefix is None else prefix
+        if not prefix:
+            return body
+        try:
+            data = json.loads(body) if body else None
+        except (json.JSONDecodeError, ValueError):
+            return body
+        if not isinstance(data, dict):
+            return body
+        model = data.get("model")
+        if not isinstance(model, str) or not model:
+            return body
+        if model.startswith(_GEO_PREFIXES):
+            return body
+        if any(fnmatch.fnmatch(model, pat) for pat in self._on_demand_patterns):
+            return body
+        data["model"] = f"{prefix}.{model}"
+        return json.dumps(data).encode()
+
+    def _headers(self, body: bytes, routed: RoutedMantleRequest | None = None) -> dict[str, str]:
         """Build outbound headers, SigV4-signing the exact body bytes.
 
         The signature is computed over ``body`` and the upstream URL, so callers
@@ -182,11 +287,37 @@ class MantlePassthroughService:
         X-Amz-Security-Token) are sensitive — never log them.
         """
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        headers.update(self._auth.sign("POST", self.upstream_url, body))
+        auth = routed.auth if routed else self._auth
+        url = routed.upstream_url if routed else self.upstream_url
+        headers.update(auth.sign("POST", url, body))
         return headers
 
     def _client(self) -> httpx.AsyncClient:
         return self._http_client or httpx.AsyncClient(timeout=self._timeout)
+
+    def _routed_request(self, decision: RoutingDecision) -> RoutedMantleRequest:
+        credentials = decision.credentials
+        if credentials is None:
+            return RoutedMantleRequest(self._auth, self._base_url, self._inference_profile_prefix, decision)
+        region = credentials.region
+        parsed = urlparse(self._base_url)
+        match = re.fullmatch(r"(bedrock-runtime|bedrock-mantle)\.[a-z0-9-]+\.(amazonaws\.com(?:\.cn)?|api\.aws)", parsed.hostname or "")
+        if parsed.scheme != "https" or match is None or parsed.username or parsed.password:
+            raise BedrockGatewayError(
+                "bedrock_routing_endpoint_unavailable", "The configured OpenAI endpoint does not support AWS account routing.", 503
+            )
+        suffix = "api.aws" if match.group(1) == "bedrock-mantle" else "amazonaws.com.cn" if region.startswith("cn-") else "amazonaws.com"
+        base_url = parsed._replace(netloc=f"{match.group(1)}.{region}.{suffix}").geturl()
+        auth = SigV4MantleAuth(region, session=boto3.Session(region_name=region, **credentials.as_boto3_kwargs()))
+        # Bare model IDs use the destination geography. Explicit model/profile
+        # IDs are preserved by _apply_inference_profile and validated upstream.
+        prefix = self._inference_profile_prefix
+        if prefix and prefix != "global":
+            if region.startswith("us-gov-"):
+                prefix = "us-gov"
+            else:
+                prefix = {"us": "us", "eu": "eu", "ap": "apac"}.get(region.split("-")[0], prefix)
+        return RoutedMantleRequest(auth, base_url, prefix, decision)
 
     async def create_response(
         self,
@@ -212,9 +343,15 @@ class MantlePassthroughService:
             A ``MantleResponse`` for non-streaming calls, or an async byte
             iterator that yields upstream chunks verbatim for streaming calls.
         """
+        # Forward the profile-qualified body (bedrock-runtime needs it); keep the
+        # caller's bare `model` for metering/pricing/logging (passed through below).
+        request_id = request_id or str(uuid4())
+        decision = await resolve_routing_decision(context, agent_run_id=agent_run_id)
+        routed = self._routed_request(decision)
+        upstream_body = self._apply_inference_profile(body, prefix=routed.inference_profile_prefix)
         if stream:
-            return await self._stream(body, context, model=model, request_id=request_id, agent_run_id=agent_run_id)
-        return await self._invoke(body, context, model=model, request_id=request_id, agent_run_id=agent_run_id)
+            return await self._stream(upstream_body, context, model=model, request_id=request_id, agent_run_id=agent_run_id, routed=routed)
+        return await self._invoke(upstream_body, context, model=model, request_id=request_id, agent_run_id=agent_run_id, routed=routed)
 
     async def _invoke(
         self,
@@ -224,19 +361,22 @@ class MantlePassthroughService:
         model: str,
         request_id: str | None,
         agent_run_id: str | None,
+        routed: RoutedMantleRequest,
     ) -> MantleResponse:
         start = time.monotonic()
         status_code = 502
-        usage: dict[str, int] = {}
-        headers = self._headers(body)
+        usage: dict[str, Any] = {}
+        metadata: dict[str, str] = {}
+        headers = self._headers(body, routed)
         client = self._client()
         try:
-            resp = await client.post(self.upstream_url, content=body, headers=headers)
+            resp = await client.post(routed.upstream_url, content=body, headers=headers)
             status_code = resp.status_code
             content = resp.content
             # Only extract usage on success bodies; upstream errors pass through untouched.
             if 200 <= status_code < 300:
                 usage = self._extract_usage(content)
+                metadata = self._response_metadata_from_bytes(content)
             return MantleResponse(
                 status_code=status_code,
                 content=content,
@@ -247,7 +387,16 @@ class MantlePassthroughService:
             if self._http_client is None:
                 await client.aclose()
             latency_ms = (time.monotonic() - start) * 1000
-            await self._log_usage(context, model, usage, int(latency_ms), status_code, request_id, agent_run_id)
+            await self._log_usage(
+                context,
+                model,
+                self._capture_usage(usage, body, model, metadata, base_url=routed.base_url),
+                int(latency_ms),
+                status_code,
+                request_id,
+                agent_run_id,
+                routing_decision=routed.decision,
+            )
 
     async def _stream(
         self,
@@ -257,9 +406,10 @@ class MantlePassthroughService:
         model: str,
         request_id: str | None,
         agent_run_id: str | None,
+        routed: RoutedMantleRequest,
     ) -> AsyncIterator[bytes]:
         start = time.monotonic()
-        headers = self._headers(body)
+        headers = self._headers(body, routed)
         client = self._client()
         owns_client = self._http_client is None
 
@@ -271,7 +421,7 @@ class MantlePassthroughService:
         # stream. Connecting here lets the route return the real upstream
         # status, and guarantees the failure is logged (#3897).
         try:
-            upstream_request = client.build_request("POST", self.upstream_url, content=body, headers=headers)
+            upstream_request = client.build_request("POST", routed.upstream_url, content=body, headers=headers)
             resp = await client.send(upstream_request, stream=True)
         except httpx.HTTPError as exc:
             if owns_client:
@@ -284,7 +434,7 @@ class MantlePassthroughService:
                 request_id,
                 latency_ms,
             )
-            await self._log_usage(context, model, {}, latency_ms, 502, request_id, agent_run_id)
+            await self._log_usage(context, model, {}, latency_ms, 502, request_id, agent_run_id, routing_decision=routed.decision)
             raise MantleUpstreamError(
                 502,
                 json.dumps({"error": "mantle_upstream_unreachable", "message": str(exc)}).encode(),
@@ -305,7 +455,7 @@ class MantlePassthroughService:
                 latency_ms,
                 error_body[:512].decode("utf-8", errors="replace"),
             )
-            await self._log_usage(context, model, {}, latency_ms, status_code, request_id, agent_run_id)
+            await self._log_usage(context, model, {}, latency_ms, status_code, request_id, agent_run_id, routing_decision=routed.decision)
             raise MantleUpstreamError(
                 status_code,
                 error_body,
@@ -324,6 +474,7 @@ class MantlePassthroughService:
                     sniffer.feed(chunk)
                     yield chunk
             finally:
+                sniffer.finish()
                 await resp.aclose()
                 if owns_client:
                     await client.aclose()
@@ -335,7 +486,16 @@ class MantlePassthroughService:
                     request_id,
                     int(latency_ms),
                 )
-                await self._log_usage(context, model, sniffer.usage, int(latency_ms), status_code, request_id, agent_run_id)
+                await self._log_usage(
+                    context,
+                    model,
+                    self._capture_usage(sniffer.usage, body, model, sniffer.metadata, base_url=routed.base_url),
+                    int(latency_ms),
+                    status_code,
+                    request_id,
+                    agent_run_id,
+                    routing_decision=routed.decision,
+                )
 
         return _passthrough()
 
@@ -344,7 +504,7 @@ class MantlePassthroughService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_usage(content: bytes) -> dict[str, int]:
+    def _extract_usage(content: bytes) -> dict[str, Any]:
         """Extract token counts from a non-streaming Responses-API body.
 
         The Responses API returns ``usage: {input_tokens, output_tokens, ...}``.
@@ -357,18 +517,59 @@ class MantlePassthroughService:
         return MantlePassthroughService._usage_from_dict(data.get("usage") if isinstance(data, dict) else None)
 
     @staticmethod
-    def _usage_from_dict(found: object) -> dict[str, int]:
+    def _usage_from_dict(found: object) -> dict[str, Any]:
         """Normalize a Responses-API usage object into input/output token counts."""
         if not isinstance(found, dict):
             return {}
-        usage: dict[str, int] = {}
-        input_tokens = found.get("input_tokens")
-        output_tokens = found.get("output_tokens")
-        if input_tokens is not None:
-            usage["input_tokens"] = int(input_tokens)
-        if output_tokens is not None:
-            usage["output_tokens"] = int(output_tokens)
-        return usage
+        # Keep invalid and absent counters as evidence; policy validation, not
+        # int() coercion, decides whether they can be billed.
+        return {
+            name: found[name]
+            for name in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens_details")
+            if name in found
+        }
+
+    @staticmethod
+    def _response_metadata(response: dict[str, Any]) -> dict[str, str]:
+        return {name: response[name] for name in ("service_tier", "execution_region") if isinstance(response.get(name), str)}
+
+    @staticmethod
+    def _response_metadata_from_bytes(content: bytes) -> dict[str, str]:
+        try:
+            response = json.loads(content)
+            return MantlePassthroughService._response_metadata(response) if isinstance(response, dict) else {}
+        except (ValueError, UnicodeError):
+            return {}
+
+    def _capture_usage(self, usage, forwarded_body, original_model, metadata, *, base_url=None):
+        try:
+            forwarded = json.loads(forwarded_body)
+            forwarded = forwarded if isinstance(forwarded, dict) else {}
+        except (ValueError, UnicodeError):
+            forwarded = {}
+        forwarded_model = forwarded.get("model", original_model)
+        forwarded_model = forwarded_model if isinstance(forwarded_model, str) else original_model
+        host = urlparse(base_url or self._base_url).hostname
+        matched = re.fullmatch(r"bedrock-(?:mantle|runtime)\.([a-z]{2}(?:-[a-z]+)+-\d)\.(?:api\.aws|amazonaws\.com(?:\.cn)?)", host or "")
+        region = matched.group(1) if matched else None
+        geography = geography_from_model_prefix(forwarded_model)
+        if geography is None and region is not None and forwarded_model.startswith("openai."):
+            geography = "in_region"
+        if region and region.startswith("us-gov-") and geography is not None:
+            geography = "govcloud"
+        requested_tier = forwarded.get("service_tier")
+        evidence = RoutingEvidence(
+            original_model_id=original_model,
+            billing_model_id=normalize_billing_model_id(original_model),
+            forwarded_model_id=forwarded_model,
+            endpoint_host=host,
+            endpoint_region=region,
+            execution_region=metadata.get("execution_region"),
+            geography=geography,
+            requested_service_tier=requested_tier if isinstance(requested_tier, str) else None,
+            served_service_tier_raw=metadata.get("service_tier"),
+        )
+        return _CapturedUsage(usage, evidence)
 
     # ------------------------------------------------------------------
     # Metering
@@ -378,11 +579,13 @@ class MantlePassthroughService:
         self,
         context: TokenContext,
         model: str,
-        usage: dict[str, int],
+        usage: dict[str, Any],
         latency_ms: int,
         status_code: int,
         request_id: str | None,
         agent_run_id: str | None,
+        *,
+        routing_decision: RoutingDecision | None = None,
     ) -> None:
         """Write a usage_logs row for this passthrough call.
 
@@ -400,9 +603,44 @@ class MantlePassthroughService:
         here too. Wiring only the Bedrock path would leave client_tool NULL on
         100% of OpenAI passthrough rows — indistinguishable from "not captured",
         so a future breakdown would under-report this route with nothing saying so.
+
+        The account is taken from the decision used before signing. Never
+        resolve it again after the request: rules may have changed meanwhile.
         """
-        input_tokens = usage.get("input_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0)
+        decision = None
+        request_id = request_id or str(uuid4())
+        try:
+            evidence = getattr(usage, "routing", None) or self._capture_usage(usage, b"{}", model, {}).routing
+            decision = await price_completed_usage(
+                request_id=request_id,
+                org_id=context.attributed_org_id,
+                raw_usage=usage,
+                evidence=evidence,
+                session_factory=get_session_factory(),
+            )
+        except MissingUsageError:
+            logger.warning("Mantle response has absent or invalid usage; no settlement emitted", extra={"request_id": request_id, "model": model})
+        except Exception as exc:
+            # Session acquisition can fail before the helper's own guarded read.
+            # Build from retained state without allowing a DB outage to lose spend.
+            try:
+                from pricing_policy import normalize_usage
+                from src.budget.pricing_decisions import decision_from_state
+                from src.budget.pricing_v2_reader import cached_rate_state, record_connection_failure
+
+                record_connection_failure(exc)
+                decision = decision_from_state(
+                    request_id=request_id,
+                    org_id=context.attributed_org_id,
+                    usage=normalize_usage(usage, api_format="openai"),
+                    evidence=evidence,
+                    state=cached_rate_state(),
+                )
+            except Exception:
+                logger.exception("Failed to create Mantle pricing decision", extra={"request_id": request_id, "model": model})
+        input_tokens = decision.usage["uncached_input_tokens"] if decision else 0
+        output_tokens = decision.usage["output_tokens"] if decision else 0
+        cost_usd = decision.ledger_cost if decision else Decimal("0")
 
         await reconcile_budget_reservation(
             context=context,
@@ -410,13 +648,54 @@ class MantlePassthroughService:
             model_id=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            actual_cost_usd=cost_usd,
+            usage_known=decision is not None,
         )
+
+        # Budget & Spend reads budget_usage, not usage_logs. Only the S3 event
+        # consumed by budget-usage-tracker settles that ledger; writing the row
+        # below alone leaves Codex spend invisible once its reservation expires.
+        # Emit once from this common streaming/non-streaming completion hook.
+        # Usage-only payload: no prompt, response text, or credentials are needed
+        # for settlement. Missing usage is not a measured zero.
+        if decision is not None:
+            try:
+                if self._chat_logger is None:
+                    self._chat_logger = ChatLoggingService()
+                self._chat_logger.log_chat_async(
+                    request_id=request_id or str(uuid4()),
+                    timestamp=datetime.now(UTC),
+                    org_id=context.attributed_org_id,
+                    user_id=context.user_id,
+                    team_id=context.team_id,
+                    root_human_id=context.attributed_user_id,
+                    account_type="service" if context.account_type == "service" else "human",
+                    model=model,
+                    api_format="openai",
+                    latency_ms=latency_ms,
+                    request_body={},
+                    response_body={
+                        "model": model,
+                        "usage": {
+                            "input_tokens": decision.usage["total_input_tokens"],
+                            "output_tokens": output_tokens,
+                            "cache_read_input_tokens": decision.usage["cache_read_input_tokens"]
+                            if decision.usage["raw"]["cache_read_input_tokens"] is not None
+                            else None,
+                            "cache_creation_input_tokens": decision.usage["cache_creation_input_tokens"]
+                            if decision.usage["raw"]["cache_creation_input_tokens"] is not None
+                            else None,
+                        },
+                    },
+                    pricing_decision=decision.to_dict(),
+                )
+            except Exception as exc:  # noqa: BLE001 - settlement must not break the proxy or usage logging
+                logger.warning("Failed to schedule mantle budget settlement", extra={"error": str(exc), "model": model})
 
         try:
             # Issue #2792: compute real cost via the shared pricing table instead
             # of the previous hardcoded 0.0. Unknown models fall back to the
             # table's conservative "default" pricing (same as the Bedrock proxy).
-            cost_usd = float(pricing_service.calculate_cost(model, input_tokens, output_tokens))
             session_factory = get_session_factory()
             async with session_factory() as session:
                 usage_service = UsageService(session)
@@ -426,6 +705,12 @@ class MantlePassthroughService:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cost_usd=cost_usd,
+                    cache_read_input_tokens=decision.usage["cache_read_input_tokens"]
+                    if decision and decision.usage["raw"]["cache_read_input_tokens"] is not None
+                    else None,
+                    cache_creation_input_tokens=decision.usage["cache_creation_input_tokens"]
+                    if decision and decision.usage["raw"]["cache_creation_input_tokens"] is not None
+                    else None,
                     latency_ms=latency_ms,
                     status_code=status_code,
                     request_id=request_id,
@@ -433,6 +718,7 @@ class MantlePassthroughService:
                     # Issue #4398: already normalised (or None) by the route
                     # dependency; None persists as NULL = "not captured".
                     client_tool=_current_client_tool.get(),
+                    bedrock_account_id=routing_decision.target.account_id if routing_decision and routing_decision.target else None,
                 )
         except Exception as exc:  # noqa: BLE001 - metering must not break the proxy
             logger.warning("Failed to write mantle usage_logs row", extra={"error": str(exc), "model": model})

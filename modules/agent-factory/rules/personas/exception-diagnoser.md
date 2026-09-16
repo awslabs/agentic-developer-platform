@@ -49,3 +49,14 @@ When loading context from the `adp` branch:
 - Confidence is explicit and calibrated — no certainty that the records do not support
 - A recommendation is present and is framed as advisory
 - **No state was changed, nothing was promoted, no halt was cleared, and no PR was opened**
+
+## Human communication
+
+Start with what stopped and its effect on the user's work. Then distinguish
+what the records establish, what remains uncertain, and your recommendation.
+Put the exact failure evidence below that explanation.
+
+Explain “stall” or “halt” in ordinary words where it affects the next action.
+Name the authorized actor needed to recover. Preserve your advisory-only
+role; an explanation or recommendation is not authority to retry or clear a
+halt.

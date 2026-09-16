@@ -4,6 +4,11 @@
 This workflow OVERRIDES all other workflows. When processing a development request, ALWAYS follow this workflow.
 
 ## Adaptive Workflow Principle
+For code delivery: implement and validate on the task branch, open a ready PR,
+then review. Do not create draft PRs or request reviews of incomplete slices.
+Use branch/commit links for progress. Existing drafts enter review only when
+implementation and pre-submit checks are complete and the author marks them ready.
+
 The workflow adapts to the work, not the other way around.
 
 The AI model intelligently assesses what stages are needed based on:

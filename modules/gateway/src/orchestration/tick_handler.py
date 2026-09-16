@@ -170,6 +170,16 @@ def _emit_metrics(report: TickReport) -> None:
                     }
                 )
 
+        result_report = getattr(report, "result_report", None)
+        if result_report is not None:
+            metric_data.extend(
+                [
+                    {"MetricName": "ResultsExamined", "Value": result_report.examined, "Unit": "Count"},
+                    {"MetricName": "ResultsAdvanced", "Value": result_report.advanced, "Unit": "Count"},
+                    {"MetricName": "ResultErrors", "Value": result_report.errors, "Unit": "Count"},
+                ]
+            )
+
         # Stall/halt counters (issue #4211). Emitted in the same call rather than
         # from a second client so a CloudWatch failure cannot leave the tick's
         # numbers landing while detection's silently do not.
@@ -260,6 +270,16 @@ def _emit_metrics(report: TickReport) -> None:
                     {"MetricName": "CommandsRead", "Value": engine_command_report.commands_read, "Unit": "Count"},
                     {"MetricName": "CommandsApplied", "Value": engine_command_report.commands_applied, "Unit": "Count"},
                     {"MetricName": "CommandsRefused", "Value": engine_command_report.commands_refused, "Unit": "Count"},
+                    # Issue #4539. Alarm-worthy and deliberately its own metric, not
+                    # folded into `CommandsRefused`: a refusal is a real command the
+                    # platform declined, whereas a quarantine is a row that never
+                    # established it came from a verified delivery. One number for
+                    # both would let a forgery attempt hide inside ordinary
+                    # permission refusals.
+                    {"MetricName": "CommandsQuarantined", "Value": engine_command_report.commands_quarantined, "Unit": "Count"},
+                    # A row that could not be sealed off is re-verified every wake.
+                    # Nothing is applied, but the loop is permanent, so it is visible.
+                    {"MetricName": "CommandQuarantinesFailed", "Value": engine_command_report.quarantines_failed, "Unit": "Count"},
                     {"MetricName": "CommandConsumesFailed", "Value": engine_command_report.consumes_failed, "Unit": "Count"},
                     {"MetricName": "CommandAcksPosted", "Value": engine_command_report.acks_posted, "Unit": "Count"},
                     {"MetricName": "CommandAcksFailed", "Value": engine_command_report.acks_failed, "Unit": "Count"},
@@ -274,6 +294,8 @@ def _emit_metrics(report: TickReport) -> None:
                     ("CommandsRead", "commands_read"),
                     ("CommandsApplied", "commands_applied"),
                     ("CommandsRefused", "commands_refused"),
+                    ("CommandsQuarantined", "commands_quarantined"),
+                    ("CommandQuarantinesFailed", "quarantines_failed"),
                     ("CommandConsumesFailed", "consumes_failed"),
                     ("CommandAcksPosted", "acks_posted"),
                     ("CommandAcksFailed", "acks_failed"),
@@ -287,6 +309,24 @@ def _emit_metrics(report: TickReport) -> None:
                             "Dimensions": dimensions,
                         }
                     )
+
+            # Issue #4539: the sanitized failure reason as a dimension. Every reason
+            # is drawn from `command_attribution`'s bounded REASON_* set — never from
+            # row content — so cardinality is fixed and no attacker-chosen text can
+            # reach CloudWatch. This is the dimension that distinguishes "the signing
+            # key is not seeded in this environment" (every row
+            # `no_verification_key`, an operator problem) from "somebody is writing
+            # rows directly" (`invalid_signature`, an incident). Both are the same
+            # number in `CommandsQuarantined` and need opposite responses.
+            for reason, count in engine_command_report.quarantine_reasons.items():
+                metric_data.append(
+                    {
+                        "MetricName": "CommandsQuarantined",
+                        "Value": count,
+                        "Unit": "Count",
+                        "Dimensions": [{"Name": "AttributionFailureReason", "Value": reason}],
+                    }
+                )
 
         # PutMetricData caps at 1000 datums per call.
         for start in range(0, len(metric_data), 1000):
@@ -351,7 +391,11 @@ async def _run() -> TickReport:
             # fail-closed and never raises — with the engine flag off this is an
             # immediate, silent no-op that reads nothing (#4527).
             engine_command_report = await run_engine_command_pass(session)
+            from .results import observe_results
+
+            result_report = await observe_results(session)
             report = await run_tick(session)
+            report.errors += result_report.errors
             # `from_env` reads `ORCH_DEFECT_CYCLE_BOUND` and never raises — a bad
             # value degrades to the default bound rather than failing the tick
             # (#4403). Read per invocation, so retuning the knob takes effect on the
@@ -384,6 +428,7 @@ async def _run() -> TickReport:
         setattr(report, _STALL_REPORT_ATTR, stall_report)
         setattr(report, _DISPATCH_REPORT_ATTR, dispatch_report)
         setattr(report, _ENGINE_COMMAND_REPORT_ATTR, engine_command_report)
+        setattr(report, "result_report", result_report)
         return report
 
 
@@ -481,6 +526,15 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
                 "commands_capped": engine_command_report.capped,
                 "commands_enabled": engine_command_report.enabled,
             }
+        )
+
+    result_report = getattr(report, "result_report", None)
+    if result_report is not None:
+        summary.update(
+            results_examined=result_report.examined,
+            results_advanced=result_report.advanced,
+            results_waiting=result_report.waiting,
+            result_errors=result_report.errors,
         )
 
     # Unconditional, single-line, machine-greppable. This is the line that proves

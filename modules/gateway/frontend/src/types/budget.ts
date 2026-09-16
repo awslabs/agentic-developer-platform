@@ -158,6 +158,92 @@ export interface CombinedInformational {
 }
 
 /**
+ * One member tenant's settled spend for the caller — Issue #4626 (C1 of #4620).
+ *
+ * Transcribed from `PerOrgLine` in `src/budget/schemas.py`. Carries **both** of the
+ * caller's person-grain ledgers since #4396: `cloud_spend_usd` (their agents) and
+ * `direct_spend_usd` (their own interactive use). The two are separate fields rather
+ * than one pre-added figure because they are keyed in different namespaces — cloud by
+ * canonical `users.id`, direct by Cognito sub — and a caller who wants the total has
+ * `person_envelope.spend_usd`, which is the one the server enforces against.
+ */
+export interface PerOrgLine {
+  /** The tenant this line's ledger rows live in. Derived server-side from the caller's memberships. */
+  org_id: string;
+  /** Display name from `organizations.name`, falling back to `org_id`. Server-supplied. */
+  org_name: string;
+  /** Settled `root_user` (cloud-agent) spend in this tenant for this period at 6dp. A true `'0.000000'` when no usage row exists. */
+  cloud_spend_usd?: string;
+  /**
+   * Settled `user` (direct, interactive) spend in this tenant for this period at 6dp,
+   * added by #4396. A true `'0.000000'` when no usage row exists. Disjoint from
+   * `cloud_spend_usd` by ledger key, so the two may be added; adding either to an
+   * org-grain figure is the #4322 double-count family.
+   */
+  direct_spend_usd?: string;
+  /**
+   * The cloud-agent cap **this tenant** authored for the caller, at 2dp, or `null` when
+   * it authored none. Governs `cloud_spend_usd` only — a per-org `root_user` row — not
+   * the line's total, and not the personal limit (`GET /me/budget/person-cap`). Not
+   * clamped across tenants: each org's cap governs only spend executing inside it. A
+   * `null` cap on a line with real spend is the mis-partitioned-cap signature #4620 was
+   * filed for, so it must not render as `$0.00`.
+   */
+  cap_usd: string | null;
+  /** `true` for the tenant the caller's session is attributed to — the one partition `lines`/`binding` describe. */
+  is_active_partition: boolean;
+}
+
+/**
+ * The caller's cross-org TOTAL spend — direct + cloud, and the figure their personal
+ * limit is enforced against (Issue #4396).
+ *
+ * Transcribed from `PersonEnvelope` in `src/budget/schemas.py` (Issue #4626, design
+ * note §7.1; widened by #4396). Originally the cloud-agent-only total that read `$0` on
+ * the operator's own page while real dollars accrued in another tenant. Per the
+ * operator ruling of 2026-09-05 it is now **one number**: everything the person spent,
+ * their own interactive use plus the agents they triggered, across every workspace they
+ * belong to — and the server enforces their personal limit against exactly this figure.
+ *
+ * **There is still no `cap_usd`, `remaining_usd`, `utilization_pct` or `band` field**,
+ * and that is deliberate rather than left over. The ceiling is real now, but it has one
+ * home: `GET /me/budget/person-cap`. Restating it here would give the UI two sources for
+ * one limit that can disagree (#4322), and the absent fields keep a progress bar from
+ * being bound to a denominator this payload does not carry. A client that wants the
+ * `x / y` reading fetches the cap and renders the two together.
+ */
+export interface PersonEnvelope {
+  /**
+   * The cross-org identity the total was fused on — `github:<numeric id>` when a GitHub
+   * identity is linked, else `users:<canonical id>`. One person can hold a different
+   * `users.id` per tenant, so summing by canonical id alone under-reports for exactly
+   * the multi-org population this figure exists for.
+   */
+  anchor: string;
+  /**
+   * The person's TOTAL: `cloud_spend_usd + direct_spend_usd` at 6dp, i.e. the exact sum
+   * of both components of every `per_org[]` line. This is the figure the personal limit
+   * denies against, so it is the one to render as the headline. Still a LOWER BOUND —
+   * `freshness.cost_backfill_lag` applies to it like every other settled figure.
+   */
+  spend_usd: string;
+  /** The agent half of `spend_usd` at 6dp: settled `root_user` rows across all partitions. */
+  cloud_spend_usd?: string;
+  /** The interactive half of `spend_usd` at 6dp: settled `user` rows across all partitions. */
+  direct_spend_usd?: string;
+  /** How many tenants contributed to `spend_usd`. Distinguishes "one partition, genuinely $0" from "several, genuinely $0". */
+  partition_count: number;
+  /**
+   * Always `false`, and typed so it cannot be anything else. It means THIS OBJECT
+   * carries no denominator — not that the figure is ungoverned. Since #4396 a personal
+   * limit IS enforced against `spend_usd`; the cap comes from the person-cap endpoint.
+   */
+  is_budget: false;
+  /** Plain-language statement of what the figure covers and what governs it, for rendering as a caption. */
+  note: string;
+}
+
+/**
  * How complete the settled figures are.
  *
  * **An object, not a boolean** — matching the wire exactly. Flattening it to
@@ -221,6 +307,35 @@ export interface BudgetEnvelopeResponse {
   /** `null` when there is nothing to combine (fewer than two per-person lines). */
   combined_informational: CombinedInformational | null;
 
+  /**
+   * The caller's settled spend PER member tenant — cloud and direct, active partition
+   * first — Issue #4626 (C1 of #4620), both components since #4396.
+   *
+   * Everything above this field describes ONE partition (the attributed tenant
+   * enforcement reads); this describes all of them, because a person whose runs execute
+   * outside their session's tenant sees `$0` above while real dollars accrue elsewhere.
+   * Empty when the caller's canonical identity did not resolve — never a fabricated
+   * single-tenant `$0` line.
+   *
+   * **Optional here, though the backend always sends it** (a `default_factory=list`
+   * field): a response predating #4640 omits it entirely, and that must render the
+   * screen exactly as it rendered before rather than throwing on `.map`.
+   */
+  per_org?: PerOrgLine[];
+
+  /**
+   * The caller's cross-org TOTAL — the sum of both components of every `per_org[]` line,
+   * and since #4396 the figure their personal limit is enforced against. It still
+   * carries no denominator field: the cap has one home (`GET /me/budget/person-cap`).
+   * See `PersonEnvelope`.
+   *
+   * `null` when there are no per-org lines to sum, i.e. when the caller's identity did
+   * not resolve. Present even for a single partition, unlike `combined_informational`:
+   * "this is your total everywhere" is a distinct, useful claim when the count is one.
+   * `undefined` on a response predating #4640.
+   */
+  person_envelope?: PersonEnvelope | null;
+
   /** ALWAYS present and never `null`, so it needs no null guard. */
   freshness: Freshness;
 }
@@ -272,4 +387,186 @@ export interface BudgetRunsResponse {
   next_cursor: string | null;
   period: BudgetPeriod;
   identity_status: IdentityStatus;
+}
+
+// ---------------------------------------------------------------------------
+// The person-level cap — Issue #4629 (#4620 · C3)
+// ---------------------------------------------------------------------------
+//
+// A person's own ceiling on their total agent spend, across EVERY organization.
+// Distinct from every type above, which describes a cap belonging to one org:
+// this one belongs to a person and has no org at all, which is exactly why it can
+// express "my total" when the org-scoped ones cannot (#4620).
+//
+// **Enforcing since C4 (#4630).** Every save writes `enforcement_mode: 'hard'`:
+// the limit DENIES attributed agent requests across every organization once the
+// settled cross-org total passes it. Rows authored before C4 remain `'soft'`
+// (reported, nothing denied) until re-saved. Copy rendering these types must
+// track the mode: a `soft` row must not threaten a stop it cannot deliver, and a
+// `hard` row must not stay silent about the stop it WILL — either direction is
+// the screen/behavior disagreement #4620 exists to close.
+//
+// Deliberately absent: spend, headroom, utilisation and band. Those need a
+// cross-org denominator, which is #4626. A spend figure derived alongside this cap
+// would be a second accumulator of the same dollars.
+
+/**
+ * The caller's (or, for a platform admin, a named person's) platform-wide limit.
+ * `GET|PUT /me/budget/person-cap`, `GET|PUT /budget/person-cap/{anchor}`.
+ */
+export interface PersonCapResponse {
+  /**
+   * The cross-org person key the limit is stored against, `github:<numeric_id>`.
+   * Not a `users.id`: a person onboarded into two orgs has two of those, so a cap
+   * keyed on one would miss their spend in the other.
+   */
+  person_anchor: string;
+  period_type: BudgetPeriodType;
+  /** The authored limit at 2dp, or `null` when none is set. `null` is NOT `'0.00'`. */
+  cap_usd: string | null;
+  /** `capped` when a limit exists, `uncapped` when none does — read this, never a zero. */
+  cap_status: CapStatus;
+  /**
+   * `'hard'` — the limit DENIES the person's agent runs across every org (#4630).
+   * `'soft'` — informational only, the C3-era mode: the figure is reported and
+   * nothing is blocked. `null` when uncapped.
+   *
+   * Read it; never assume either. A surface must not tell the user their spend
+   * will be stopped while this is `'soft'`, and must not stay silent about it
+   * while it is `'hard'`. Both mistakes are the same one.
+   */
+  enforcement_mode: string | null;
+  /**
+   * Which rung of the #4690 ladder supplied the number: `own` (a pre-ruling
+   * self-authored row), `admin` (a platform admin authored an individual row),
+   * `team_default` / `org_default` / `platform_default` (no individual row; a
+   * scope-wide rule governs). `null` when uncapped.
+   */
+  source: 'own' | 'admin' | 'team_default' | 'org_default' | 'platform_default' | null;
+  /**
+   * The server-composed human sentence naming that provenance (e.g. "org default
+   * for acme"). Render it verbatim — only the ladder resolver knows which rung
+   * won, and recomputing the label client-side is how it drifts from the rung
+   * actually enforced (#4511).
+   */
+  source_label: string | null;
+  /**
+   * ISO-8601 instant the limit was last authored, or `null` when uncapped — and
+   * `null` on default rungs, whose timestamps are withheld from person-facing
+   * surfaces on purpose.
+   */
+  updated_at: string | null;
+}
+
+/**
+ * The body for authoring a limit.
+ *
+ * One field, used only by the platform-admin write (`setPersonCapFor`) — the
+ * self-service write routes were removed by the #4690 ruling. The target person
+ * rides in the URL, not the body, and nothing here sets `enforcement_mode`,
+ * which is not client-settable: admin-authored rows are always enforced (#4630),
+ * so a mode parameter would only add a way to author a cap that does nothing.
+ *
+ * A string, not a number: money crosses the wire at the column's precision, and a
+ * JS number would round `0.1 + 0.2`-style. Removing a limit is a DELETE, never a
+ * `'0'` — `'0'` is a real ceiling of zero dollars and the server rejects it.
+ */
+export interface PersonCapRequest {
+  budget_amount_usd: string;
+}
+
+// ---------------------------------------------------------------------------
+// DEFAULT person limits — the scope rules. Issue #4690 (D1), rendered by #4691 (D2).
+//
+// The rung above these is the individual row (`PersonCapResponse`); these are the
+// population-wide rules that govern everybody in a scope who has no row of their
+// own. The full ladder, tightest first:
+//
+//     individual row > team default > org default > platform default
+//
+// Two properties of that ladder shape the copy on every surface reading these types:
+//
+//   1. **Removing a default is not "making the scope unlimited".** Deleting a team
+//      rule leaves that team governed by their org's rule, or the platform's. Only
+//      deleting the LAST applicable rule restores unlimited, and only for people
+//      with no individual row. A confirmation that promises otherwise is wrong.
+//   2. **A default is only ever `hard`.** The route writes `hard` unconditionally
+//      (a default that silently did not enforce is the #4511 inert-cap class at
+//      platform scale), so — unlike `PersonCapResponse`, whose `soft` rows are a
+//      real C3-era legacy — there is no informational mode to render here.
+// ---------------------------------------------------------------------------
+
+/**
+ * Which rung of the ladder a default sits on.
+ *
+ * `'department'` is deliberately absent: it is a #4691 non-goal, and the server's
+ * `_parse_scope` accepts exactly these three forms.
+ */
+export type PersonDefaultScopeType = 'platform' | 'org' | 'team';
+
+/**
+ * One scope addressed for a default-limit read or write.
+ *
+ * A discriminated-ish record rather than a pre-built path string, so the ids stay
+ * separate values until `personDefaultScopePath` encodes them — a caller that
+ * concatenated its own `team:a:b` could not be type-checked for the missing-org
+ * mistake below.
+ *
+ * `org` is required for both the `org` and `team` forms. That is not redundancy:
+ * a `teams.id` is unique only inside its own organization (the table carries
+ * `TenantMixin`), so a team scope naming only the team would be a rule that could
+ * govern a same-id team in an unrelated tenant.
+ */
+export interface PersonDefaultScope {
+  scope_type: PersonDefaultScopeType;
+  /** The GitHub org id — required for `org` and `team`, absent on `platform`. */
+  org?: string;
+  /** The team id — required for `team`, absent otherwise. Always paired with `org`. */
+  team?: string;
+}
+
+/**
+ * A scope's default person limit, or the explicit absence of one.
+ * `GET|PUT /budget/person-default/{scope}`.
+ *
+ * Transcribed from `PersonDefaultResponse` in `src/budget/schemas.py` — snake_case
+ * kept verbatim so the two stay diffable (the `personCap.ts` convention).
+ *
+ * **This is the rule authored FOR this exact scope, not the rule that would apply
+ * to a member of it.** A team with no team-scoped rule reads `uncapped` here even
+ * when a platform default governs everybody in it. Conflating the two would make a
+ * deletion look like a no-op, which is why the server keeps them apart; a surface
+ * that "helpfully" fell back to the broader rung would undo that.
+ */
+export interface PersonDefaultResponse {
+  scope_type: PersonDefaultScopeType;
+  /** The org this rule is scoped to, or `null` on the platform rung. */
+  scope_id_org: string | null;
+  /** The team this rule is scoped to, `null` on every rung but `team`. */
+  scope_id_team: string | null;
+  period_type: BudgetPeriodType;
+  /** The authored default at 2dp, or `null` when this scope+period has none. NOT `'0.00'`. */
+  cap_usd: string | null;
+  /** `capped` when a rule exists for this scope and period, `uncapped` when none does. */
+  cap_status: CapStatus;
+  /** `'hard'` for every stored default (see note 2 above); `null` when uncapped. */
+  enforcement_mode: string | null;
+  /** ISO-8601 instant the rule was last authored, or `null` when uncapped. */
+  updated_at: string | null;
+}
+
+/**
+ * The body for authoring a default.
+ *
+ * Identical to `PersonCapRequest` by design — the columns are the same
+ * `NUMERIC(10,2)`, and a default a client could express but an individual row could
+ * not would be a ceiling nobody could comply with.
+ *
+ * The scope rides in the URL and the period in a query parameter. Nothing here sets
+ * `enforcement_mode`: it is not client-settable. Removing a rule is a DELETE, never
+ * a `'0'` — `'0'` is a real ceiling of zero dollars applied to everybody in the
+ * scope, and the server rejects it.
+ */
+export interface PersonDefaultRequest {
+  budget_amount_usd: string;
 }

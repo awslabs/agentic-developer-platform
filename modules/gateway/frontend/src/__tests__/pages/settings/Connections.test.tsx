@@ -22,8 +22,10 @@ vi.mock('@/services/connections', () => ({
   rotateGitHubAppKey: vi.fn(),
   disconnectGitHubApp: vi.fn(),
   registerManualGitHubApp: vi.fn(),
-  switchTenant: vi.fn(),
 }));
+
+vi.mock('@/services/workspaces', () => ({ switchWorkspace: vi.fn() }));
+import { switchWorkspace } from '@/services/workspaces';
 
 // Connections calls useAuth() to read the current user (free-tier banner gating)
 // and hasRole for platform_admin check. Mock both.
@@ -217,6 +219,13 @@ describe('Connections Page', () => {
     });
   });
 
+  it('uses the full workspace transition for the installation callback switch-back', async () => {
+    vi.mocked(switchWorkspace).mockResolvedValue();
+    renderConnections(['/settings/connections?success=1&installed=SOPHOS-IT&switched_from=home']);
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch back' }));
+    expect(switchWorkspace).toHaveBeenCalledWith('home');
+  });
+
   describe('Connection card rendering', () => {
     const mockConnection = {
       provider: 'github',
@@ -231,6 +240,15 @@ describe('Connections Page', () => {
 
     beforeEach(() => {
       mockListConnections.mockResolvedValue({ connections: [mockConnection] });
+    });
+
+    it('uses the full token transition from a GitHub workspace card', async () => {
+      mockListConnections.mockResolvedValue({ connections: [{ ...mockConnection, tenant_id: 'work', tenant_name: 'SOPHOS-IT', is_active_tenant: false }] });
+      vi.mocked(switchWorkspace).mockResolvedValue();
+      renderConnections();
+      await userEvent.click(await screen.findByRole('button', { name: 'Switch to this workspace' }));
+      expect(switchWorkspace).toHaveBeenCalledWith('work');
+      expect(mockListConnections).toHaveBeenCalledTimes(1);
     });
 
     it('renders org name and installation ID', async () => {

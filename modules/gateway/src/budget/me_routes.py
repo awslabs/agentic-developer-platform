@@ -60,13 +60,40 @@ from src.activity.service import ActivityService
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.identity import resolve_canonical_user_id
-from src.shared.models.budget import BudgetConfig, BudgetUsage
+from src.shared.models.budget import BudgetConfig
+from src.shared.models.organization import Organization
 from src.shared.models.usage import UsageLog
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import EntityType, PeriodType
 
 from .config import budget_config
 from .enforcement_service import _INFRASTRUCTURE_FAULTS
+
+# The shared person-ledger primitives live in `person_ledger.py` (review fix on
+# #4689); re-bound under their historical underscore names so internal call sites
+# and existing tests are unaffected. Kept as ONE import with noqa: ruff's unused-
+# import autofix must not strip re-exports.
+from .person_ledger import (  # noqa: F401
+    read_person_partition_spend as _read_person_partition_spend,
+)
+from .person_ledger import (
+    read_settled_spend as _read_settled_spend,
+)
+from .person_ledger import (
+    resolve_member_partitions as _resolve_member_partitions,
+)
+from .person_ledger import (
+    resolve_person_identity as _resolve_person_identity,
+)
+from .person_ledger import (
+    resolve_person_subs as _resolve_person_subs,
+)
+
+# The shared person-ledger primitives moved to `person_ledger.py` (review fix on
+# #4689): they are consumed by BOTH this read surface and the enforcement layer,
+# and underscore-privates of a routes module carry no stability contract for a
+# second consumer. Re-bound under their historical names so internal call sites
+# and existing tests are unaffected.
 from .schemas import (
     CAP_PLACES,
     SERVICE_PRINCIPAL_QUALIFIER,
@@ -81,6 +108,8 @@ from .schemas import (
     Freshness,
     MyBudgetResponse,
     MyBudgetRunsResponse,
+    PerOrgLine,
+    PersonEnvelope,
     PrincipalKind,
     RunAttribution,
     format_money,
@@ -490,45 +519,6 @@ def _combined_informational(lines: list[BudgetLine]) -> CombinedInformational | 
     )
 
 
-async def _read_settled_spend(
-    db: AsyncSession,
-    org_id: str,
-    entity_type: EntityType,
-    entity_id: str,
-    period_type: PeriodType,
-    period_start: date,
-) -> Decimal:
-    """Read settled spend with the full 5-filter predicate.
-
-    ``(org_id, entity_type, entity_id, period_type, period_start)`` — byte-for-byte
-    the predicate ``_check_entity_budget`` uses (``enforcement_service.py:1053-1064``),
-    which is what makes the endpoint's figure equal the one enforcement compares
-    against (FR-1.3). It is also the table's unique constraint, so this reads at
-    most one row.
-
-    Dropping any single filter changes the meaning: without ``entity_type`` it
-    sums a user's direct spend together with their cloud-agent spend and the
-    org total, over-reporting several times over and raising a false "over
-    budget" alarm (#4328). There is deliberately no ``SUM`` here at all.
-
-    A missing row is a true ``0`` — this period has no settled spend yet. That is
-    a measurement, distinct from a failed read, which propagates as an
-    infrastructure fault and becomes a ``503``.
-    """
-    usage = await db.scalar(
-        select(BudgetUsage).where(
-            and_(
-                BudgetUsage.org_id == org_id,
-                BudgetUsage.entity_type == entity_type.value,
-                BudgetUsage.entity_id == entity_id,
-                BudgetUsage.period_type == period_type.value,
-                BudgetUsage.period_start == period_start,
-            )
-        )
-    )
-    return usage.total_cost_usd if usage else Decimal("0")
-
-
 async def _read_cap(
     db: AsyncSession,
     org_id: str,
@@ -553,6 +543,247 @@ async def _read_cap(
             )
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-org person view — Issue #4626 (C1 of #4620)
+# ---------------------------------------------------------------------------
+#
+# Everything above reads ONE partition, and that is correct for the figures
+# enforcement compares against (#4132). This section answers the different
+# question: how much have this person's agents spent *everywhere they run*.
+#
+# Implements `docs/design-notes/4620-cross-org-person-budgets.md` §7.1/§7.3 and the
+# §3.3 caveat. Three properties are load-bearing and each is a test:
+#
+#   1. The partition list is derived SERVER-SIDE from `tenant_memberships`, unioned
+#      with `users.org_id` for the shadow-user gap. Never from a request parameter —
+#      this router accepts no scope parameter at all, which is what makes a widened
+#      `org_id` predicate a self-scope read rather than #4384's IDOR one table over.
+#   2. The person is resolved through `user_identities.provider_user_id`, NOT by
+#      canonical id alone. `users` carries `TenantMixin` and `user_identities` is
+#      unique per `(provider, provider_user_id, org_id)` since migration 021, so one
+#      GitHub account legitimately holds a DIFFERENT `users.id` per tenant (pinned
+#      by `tests/shared/test_resolve_root_user_entity_id.py::
+#      test_shared_github_account_resolves_per_tenant`). Summing by canonical id
+#      alone under-reports for exactly the multi-org population this ships for.
+#   3. Every dollar figure stays a single 5-filter row read via the UNCHANGED
+#      `_read_settled_spend`/`_read_cap`. Totalling happens in Python over
+#      `Decimal`, never as a SQL aggregate — same discipline as
+#      `_combined_informational`, and the same reason (T33 / #4328).
+#
+# Only settled totals leave this surface: no run detail crosses a tenant boundary
+# under any circumstances, and nothing here is reachable by anyone but the person
+# themselves (note §7.2 — explicitly NOT their home-org admin).
+#
+# ---------------------------------------------------------------------------
+# The FUSED person envelope — Issue #4396
+# ---------------------------------------------------------------------------
+#
+# Until #4396 this section read `root_user` rows ONLY, and the person figure was
+# cloud-agent spend alone. The operator ruling of 2026-09-05 (thread on #4669/#4685)
+# changed what the number means: **a person's limit governs their TOTAL spend —
+# direct use plus cloud agents, across every GitHub org — and the person sees ONE
+# number tracked against it.** So this section now reads BOTH person-scoped ledgers
+# and `person_envelope.spend_usd` is their sum.
+#
+# **Why this is not the double-count it looks like, and why the read side is where
+# the fix belongs.** A person's spend already lands in two id namespaces, and they
+# are DISJOINT BY CONSTRUCTION (#4300, #4322):
+#
+#     entity_type="user"       keyed by Cognito sub        <- direct, interactive
+#     entity_type="root_user"  keyed by canonical users.id <- chains they triggered
+#
+# `budget_usage` is uniquely keyed on `(org_id, entity_type, entity_id, period_type,
+# period_start)`, so a `user` row and a `root_user` row are different rows holding
+# different dollars. Summing one of each is summing each dollar ONCE. That is the
+# whole reason the original issue body's option B — writing a *third* `root_user`
+# row for direct callers — was dropped: it would have put the same dollar on two
+# rows and then required an offsetting skip to take it back off.
+#
+# **S-4 is reconciled by construction rather than by a new gate**, and this is the
+# subtle part worth stating rather than trusting:
+#
+#   * A DIRECT human request writes only `(user, sub)`. The tracker's `!= user_id`
+#     gate (`lambda/budget-usage-tracker/handler.py:495`) suppresses the `root_user`
+#     row precisely when the root principal IS the caller, which is every direct
+#     request. So no `root_user` row exists to be double-read.
+#   * A HOSTED agent run writes `(user, <worker identity>)` and
+#     `(root_user, <person's users.id>)`. The `user` row is keyed by the shared
+#     worker's identity — never one of THIS person's subs — so it is invisible to
+#     the direct half of this read. Only the `root_user` row is the person's.
+#   * A signed-in human replaying a live run's `X-Agent-RunId` is already excluded
+#     upstream by the #4591 IAM-only attribution guard, so they cannot be debited
+#     as both themselves and the run's root human.
+#
+# The consequence: the two halves of this sum are disjoint in every path, which is
+# what makes the fused figure a true total rather than an inflated one. The
+# equality-skip at `enforcement_service.py:437` is therefore deliberately LEFT
+# ALONE — it suppresses a second *reservation* against one party inside one
+# request, which is a different concern from what this settled-ledger read sums,
+# and relaxing it would reintroduce exactly the 2x debit its comment describes.
+#
+# The direct half is keyed by Cognito sub, so it needs the person's subs — a
+# PROJECTION of the same `person_user_ids` fusion (`_resolve_person_subs`), never a
+# second, independently-derived notion of "the same person". A third fusion here is
+# the #4511 class: an enforcement layer reading a different person key than the one
+# spend settles under is an inert cap.
+
+
+async def _read_person_org_line(
+    db: AsyncSession,
+    org_id: str,
+    person_user_ids: list[str],
+    person_subs: list[str],
+    period_type: PeriodType,
+    period_start: date,
+    *,
+    is_active: bool,
+) -> PerOrgLine:
+    """Read one tenant's cap and settled spend — both ledgers — for this person.
+
+    Reuses ``_read_person_partition_spend``/``_read_cap`` unchanged, so every dollar
+    here comes from the same full 5-filter predicate enforcement compares against —
+    the cross-org read is a *widened key set*, not a relaxed predicate (§7.1).
+
+    Summing across the person's fused ids cannot double-count: the ids are distinct
+    ``users`` primary keys, so they address disjoint rows of a table uniquely keyed
+    on ``entity_id``. Nor can the two *ledgers* double-count each other — they are
+    disjoint by ``entity_type`` and by key namespace; see the section header for why
+    that holds on every write path (#4396).
+
+    **``cloud`` and ``direct`` are reported as separate fields, and the line's cap
+    governs the cloud figure only.** A tenant's ``root_user`` cap is a ceiling on
+    chains the person triggered inside it and nothing else; the direct figure is
+    governed by that tenant's ``user`` cap, which ``lines``/``binding`` above already
+    render for the active partition. Presenting them separately is what keeps the
+    fused headline auditable — a reader can add the components up and get the total.
+
+    The cap is the **first** one found across the fused ids rather than a sum: a cap
+    is a ceiling this tenant authored on this person, and two ids belonging to one
+    person do not add their ceilings together. Deterministic because
+    ``person_user_ids`` is sorted, and in practice at most one id has a row in any
+    given tenant — a cap is authored against the ``users.id`` that tenant knows.
+    """
+    cloud, direct = await _read_person_partition_spend(db, org_id, person_user_ids, person_subs, period_type, period_start)
+
+    cap_row: BudgetConfig | None = None
+    for entity_id in person_user_ids:
+        if cap_row is None:
+            cap_row = await _read_cap(db, org_id, EntityType.ROOT_USER, entity_id, period_type)
+
+    org_name = await db.scalar(select(Organization.name).where(Organization.id == org_id))
+
+    return PerOrgLine(
+        org_id=org_id,
+        # Falling back to the id rather than to a blank or "Unknown": the id is what
+        # an operator greps for, and an org row can legitimately be missing on the
+        # shadow-user path where the partition came from `users.org_id`.
+        org_name=org_name or org_id,
+        cloud_spend_usd=format_money(cloud, SPEND_PLACES),
+        direct_spend_usd=format_money(direct, SPEND_PLACES),
+        # The EFFECTIVE cap, clamped by the platform ceiling for the same reason
+        # every other cap on this surface is: reporting the raw row advertises
+        # headroom enforcement may not honour (FR-1.4).
+        cap_usd=format_money(_resolve_effective_period_cap(cap_row.budget_amount_usd), CAP_PLACES) if cap_row is not None else None,
+        is_active_partition=is_active,
+    )
+
+
+def _person_envelope(anchor: str, per_org: list[PerOrgLine], period_type: PeriodType) -> PersonEnvelope | None:
+    """Sum the per-org lines into the person's ONE total (§7.1, widened by #4396).
+
+    **This figure is now governed.** Before #4396 it was cloud-agent spend only and
+    carried no denominator, because no person-level cap existed to compare it
+    against. Both halves of that changed: ``person_budget_configs`` ships (#4629) and
+    ``_check_person_budget`` enforces against **this exact total** (#4630 widened by
+    #4396). So the number here is the number that stops the person.
+
+    **The type still carries no cap field, and that is still deliberate.** The cap
+    lives on ``GET /me/budget/person-cap``, whose response the client renders as this
+    figure's denominator. Duplicating it here would put the same ceiling on two
+    surfaces that can disagree — the #4322 family applied to caps rather than
+    dollars — and ``person_cap_routes.py`` is explicit that no second spend figure
+    may be derived there for the mirror-image reason.
+
+    The total is ``cloud + direct`` per partition. The two are disjoint by
+    ``entity_type`` and by key namespace, so each dollar enters exactly once; see the
+    section header for why that holds on every write path.
+
+    Accumulated with an explicit ``Decimal`` loop, never a SQL aggregate or the
+    builtin whose name T33 forbids anywhere in this module: sub-cent precision must
+    survive (``NUMERIC(14,6)``), and every ledger figure must stay a single
+    5-filter row read.
+
+    ``None`` only when there are no lines at all — i.e. the caller's identity did
+    not resolve. Unlike ``_combined_informational`` a single line is NOT suppressed:
+    "this is your total across every workspace" is a distinct and useful claim when
+    the count is one, and suppressing it would show nothing to the person whose
+    spend has not yet crossed a boundary.
+    """
+    if not per_org:
+        return None
+
+    cloud_total = Decimal("0")
+    direct_total = Decimal("0")
+    for line in per_org:
+        cloud_total += Decimal(line.cloud_spend_usd)
+        direct_total += Decimal(line.direct_spend_usd)
+
+    return PersonEnvelope(
+        anchor=anchor,
+        spend_usd=format_money(cloud_total + direct_total, SPEND_PLACES),
+        cloud_spend_usd=format_money(cloud_total, SPEND_PLACES),
+        direct_spend_usd=format_money(direct_total, SPEND_PLACES),
+        partition_count=len(per_org),
+        note=(
+            "Everything you have spent — your own direct use plus the agent runs you "
+            "triggered — across every GitHub org you belong to. This is the figure a "
+            f"personal spending limit for the {period_type.value} period is enforced "
+            "against; a limit on another period is checked against that period's own "
+            "total."
+        ),
+    )
+
+
+async def _cross_org_person_view(
+    db: AsyncSession,
+    canonical_user_id: str,
+    active_org_id: str,
+    period_type: PeriodType,
+    period_start: date,
+) -> tuple[list[PerOrgLine], PersonEnvelope | None]:
+    """Compose ``per_org[]`` and the fused ``person_envelope`` (§7.1, widened by #4396).
+
+    The active partition is listed first so the lines agree with the single-partition
+    figures rendered beside them; the rest follow in the sorted order
+    ``_resolve_member_partitions`` returns, which keeps the response stable across
+    requests.
+
+    Every member partition is listed, including ones with a true ``$0`` — that is the
+    note's own operator walkthrough (``aws-e $X``, ``pranavsharma1000 $0``), and it is
+    what makes the mis-partition visible: a tenant holding the cap with no spend
+    beside a tenant holding the spend with no cap is the entire diagnosis, and it is
+    only legible when both lines are present.
+
+    Raises:
+        Whatever the underlying reads raise. Deliberately not caught here — the route
+        calls this inside the same ``try`` as every other ledger read, so a failure
+        becomes a ``503`` rather than a silent ``$0`` cross-org total, which would be
+        the exact defect #4620 reports dressed up as a successful response.
+    """
+    anchor, person_user_ids = await _resolve_person_identity(db, canonical_user_id)
+    # The direct half's keys (#4396): a projection of the SAME fusion, resolved once
+    # here rather than per partition — the subs do not vary by tenant.
+    person_subs = await _resolve_person_subs(db, person_user_ids)
+    partitions = await _resolve_member_partitions(db, person_user_ids, active_org_id)
+
+    per_org = [
+        await _read_person_org_line(db, org_id, person_user_ids, person_subs, period_type, period_start, is_active=org_id == active_org_id)
+        for org_id in sorted(partitions, key=lambda org_id: (org_id != active_org_id, org_id))
+    ]
+
+    return per_org, _person_envelope(anchor, per_org, period_type)
 
 
 async def _has_pending_cost_backfill(
@@ -669,6 +900,20 @@ async def get_my_budget(
     ``combined_informational`` (the direct+cloud dollar total, which no cap
     governs and which carries no denominator field so no bar can be bound to it).
 
+    **The cross-org person view** (#4626, C1 of #4620). Everything described above
+    is ONE partition — the caller's attributed tenant, which is what enforcement
+    reads. That is a real gap for a person whose runs execute elsewhere: their page
+    says ``$0`` while dollars accrue in another tenant's partition. So the response
+    also carries ``per_org`` — their settled cloud-agent spend per member tenant,
+    each with that tenant's own cap — and ``person_envelope``, the cross-org sum.
+
+    The envelope is **informational**: it carries no cap, no headroom and no band,
+    because no person-level cap table exists yet and whether one may deny is an open
+    ruling (design note §5.7). Self-scope only, on the same structural basis as
+    everything else here — the partition list is derived server-side from
+    ``tenant_memberships`` and the endpoint accepts no scope parameter, so a home-org
+    admin has no way to reach another tenant's totals through this surface (§7.2).
+
     **Settlement completeness** (#4477, NFR-5). Every spend figure here is a
     *settled* total and settlement is asynchronous, so the response also carries
     ``freshness.cost_backfill_lag`` — ``true`` when the caller has recent requests
@@ -745,6 +990,24 @@ async def get_my_budget(
                 binding = (remaining, entity_type, spend, cap_row)
                 binding_line = line
 
+        # The cross-org person view (#4626). Gated on a RESOLVED canonical id, which
+        # is also what keeps `service:` principals out structurally rather than by a
+        # filter: `_resolve_root_principal` returns `None` for a service-account
+        # caller, and the fused key list is built from `users` primary keys, which
+        # can never carry the qualifier (#4344).
+        #
+        # `None` produces no lines and no envelope — deliberately not an empty
+        # single-partition `$0` line, which would assert a measurement that was
+        # never taken. `identity_status` already tells the client which case it is.
+        #
+        # Inside the same `try` as every other ledger read: a failed cross-org read
+        # must become a 503, never a $0 cross-org total, which is the very defect
+        # #4620 reports.
+        per_org: list[PerOrgLine] = []
+        person_envelope: PersonEnvelope | None = None
+        if canonical_user_id:
+            per_org, person_envelope = await _cross_org_person_view(db, canonical_user_id, org_id, resolved_period, period_start)
+
         # Inside the same `try` on purpose: a failure to determine settlement
         # completeness degrades identically to a failed ledger read (503), rather
         # than defaulting to "settled" and telling the caller their figures are
@@ -795,6 +1058,12 @@ async def get_my_budget(
             binding=None,
             lines=lines,
             combined_informational=combined,
+            # Present on the uncapped path too, and this is the path the operator's
+            # own scenario lands on: no cap in the partition their session is in,
+            # while their agents spend in another (#4620). Omitting the cross-org
+            # view here would leave exactly the affected person seeing nothing.
+            per_org=per_org,
+            person_envelope=person_envelope,
             # Present on the uncapped path too. A caller with no cap still reads
             # this screen to see what they have spent, and that figure is exactly
             # as incomplete as a capped caller's — so the caveat is exactly as
@@ -829,6 +1098,12 @@ async def get_my_budget(
         binding=binding_line,
         lines=lines,
         combined_informational=combined,
+        # Additive to the headline, never part of it (#4626). The cross-org total is
+        # governed by no cap, so it cannot bind and it cannot be summed into
+        # `spend_usd` above — that would make the headline a figure no ledger row
+        # holds and no cap enforces, the same defect FR-2.3 forbids one scope up.
+        per_org=per_org,
+        person_envelope=person_envelope,
         # The caveat matters most here: this is the path where a cap is in play, so
         # an understated `spend_usd` reads as headroom the caller does not have.
         freshness=freshness,

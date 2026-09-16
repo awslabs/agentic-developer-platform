@@ -37,6 +37,7 @@ from src.auth.magic_link import (
 from src.shared.config import get_settings
 from src.shared.models.vault import MagicLinkNonce
 
+from .bot_identity import seed_bot_identity
 from .github_app_provider import get_github_app_provider
 from .github_client import GitHubAppClient
 from .schemas import (
@@ -676,6 +677,19 @@ async def install_callback(
         org_id=resolved_org_id,
     )
 
+    # Seed the platform App's own bot identity so the webhook Lambda
+    # recognizes its sender (e.g. the agent editing its own status comment)
+    # instead of 403'ing as unknown_user. Best-effort — never blocks install.
+    app_slug = get_github_app_provider().get_slug()
+    if app_slug:
+        await seed_bot_identity(
+            installation_id=installation_id,
+            org_id=resolved_org_id,
+            app_slug=app_slug,
+            github_client=github_client,
+            db=db,
+        )
+
     # Issue #4016: the verification card must reflect the install immediately,
     # not after the 60s TTL — an operator who just installed and clicks through
     # to Settings would otherwise see stale reds for work that just succeeded.
@@ -1005,6 +1019,18 @@ async def _handle_no_nonce_install(
                 org_id=resolved_org_id,
             )
 
+            # Same best-effort bot-identity seed as the nonce path (install_callback) —
+            # see its call site for why this matters.
+            app_slug = get_github_app_provider().get_slug()
+            if app_slug:
+                await seed_bot_identity(
+                    installation_id=installation_id,
+                    org_id=resolved_org_id,
+                    app_slug=app_slug,
+                    github_client=github_client,
+                    db=db,
+                )
+
     # -----------------------------------------------------------------------
     # Issue #4016 (🔴-3): report the OUTCOME, not the fact that we ran.
     #
@@ -1284,6 +1310,13 @@ async def _create_installer_membership(
             user_id,
             tenant_id,
         )
+        # Issue #4849: still refresh the projection. Nothing was written here, so
+        # this is a pure read of already-committed state — and a reinstall is the
+        # one recurring event that can heal a user whose membership predates
+        # consistent write-through, or whose projection write previously failed.
+        from src.admin.memberships import project_member_org_ids
+
+        await project_member_org_ids(db, user_id=user_id)
         return
 
     # Determine is_active: only if user has NO memberships at all
@@ -1315,40 +1348,14 @@ async def _create_installer_membership(
         is_active,
     )
 
-    # Issue #3134: Write-through member_org_ids to DDB identity rows.
-    # After creating the membership, update the user's DDB rows so the
+    # Issue #3134: Write-through member_org_ids to DDB identity rows so the
     # webhook Lambda can enforce trigger_policy without a gateway call.
-    try:
-        from sqlalchemy import select as sa_select
+    # Issue #4849: consolidated into admin/memberships.py — see that helper for
+    # the wipe-safety, is_active and multi-identity semantics. Runs post-commit
+    # (above) by design.
+    from src.admin.memberships import project_member_org_ids
 
-        from src.admin.identity.identity_index_writer import IdentityIndexWriter
-        from src.shared.models.vault import UserIdentity
-
-        # Collect all org_ids the user has memberships for
-        all_memberships_stmt = sa_select(TenantMembership.tenant_id).where(
-            TenantMembership.user_id == user_id,
-        )
-        all_memberships = (await db.execute(all_memberships_stmt)).scalars().all()
-        member_org_ids = list(all_memberships)
-
-        # Find the user's GitHub provider_user_id for the DDB update
-        identity_stmt = sa_select(UserIdentity).where(
-            UserIdentity.user_id == user_id,
-            UserIdentity.provider == "github",
-        )
-        github_identity = (await db.execute(identity_stmt)).scalar_one_or_none()
-        if github_identity and github_identity.provider_user_id:
-            writer = IdentityIndexWriter()
-            await writer.update_user_membership_orgs(
-                provider_user_id=github_identity.provider_user_id,
-                member_org_ids=member_org_ids,
-                provider="github",
-            )
-    except Exception:
-        logger.exception(
-            "install-callback: failed to update member_org_ids for user=%s (non-fatal)",
-            user_id,
-        )
+    await project_member_org_ids(db, user_id=user_id)
 
 
 async def _auto_switch_active_tenant(
@@ -1568,6 +1575,7 @@ async def _compute_connection_verification(
     installation_id: int,
     org_id: str | None,
     record_present: bool,
+    repositories_live: bool | None = None,
 ) -> ConnectionVerification:
     """Compute the per-connection verification block (Issue #4016).
 
@@ -1595,6 +1603,9 @@ async def _compute_connection_verification(
         tenant_secret_seeded=tenant_secret,
         identity_index_row=forward,
         reverse_identity_row=reverse,
+        # Issue #5184: passed in by the caller, which is the only place that
+        # knows whether the repository list it served came from GitHub.
+        repositories_live=repositories_live,
     )
 
 
@@ -2384,6 +2395,10 @@ async def list_connections(
             github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
 
     connections: list[GitHubConnectionItem] = []
+    # Issue #5184: installation_id → whether its repository list came from a live
+    # GitHub read. Collected here and merged into the verification blocks below,
+    # which are computed in one gather after the loop.
+    repositories_live_by_install: dict[int, bool] = {}
     for mapping in mappings:
         md = mapping.install_metadata or {}
         install_id = int(md.get("installation_id") or 0)
@@ -2403,6 +2418,10 @@ async def list_connections(
         # Issue #2983: Live repo-list read from GitHub with 60s TTL cache.
         # Falls back to stored metadata on failure.
         repositories = await _fetch_live_repos(install_id, github_client)
+        # Issue #5184: remember WHICH of the two we served. None here means the
+        # live read failed, and a snapshot must not be presented as proof of
+        # current access to a specific repository.
+        repositories_live_by_install[install_id] = repositories is not None
         if repositories is None:
             # Graceful degradation — use the stored snapshot.
             repositories = md.get("repositories") or []
@@ -2488,6 +2507,9 @@ async def list_connections(
                 installation_id=c.installation_id,
                 org_id=c.tenant_id or caller_org_id,
                 record_present=c.installation_id in known_install_ids,
+                # Absent for an orphan entry: no repository read was attempted
+                # for it at all, which is None rather than False.
+                repositories_live=repositories_live_by_install.get(c.installation_id),
             )
             for c in connections
         ),
@@ -2503,7 +2525,12 @@ async def list_connections(
                 conn.installation_id,
                 verification,
             )
-            conn.verification = ConnectionVerification()
+            # Issue #5184: the repository-list provenance is known independently
+            # of these checks (it was decided when the list was fetched above),
+            # so it survives their failure rather than degrading to unknown.
+            conn.verification = ConnectionVerification(
+                repositories_live=repositories_live_by_install.get(conn.installation_id),
+            )
 
     # 🔴-2: platform checks read deployment-global singletons, so they go only
     # to callers who can manage connections.

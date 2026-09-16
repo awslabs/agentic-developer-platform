@@ -112,3 +112,9 @@ variable "agent_ws_public_url" {
     error_message = "agent_ws_public_url must start with wss:// — the frontend uses it as a WebSocket URL verbatim."
   }
 }
+
+variable "disable_execute_api_endpoint" {
+  type        = bool
+  description = "Disable the AWS-assigned execute-api hostname on the chat WebSocket API so it answers only on its published custom domain. A WEBSOCKET API supports neither a resource policy nor a WAF web ACL, so that hostname carries no network-layer restriction at all. Default false (the AWS default); set true wherever a custom domain such as ws.<zone> is in use."
+  default     = false
+}

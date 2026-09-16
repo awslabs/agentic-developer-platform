@@ -41,8 +41,10 @@ from dedup_security_findings import (
     refresh_baseline,
     serialize_baseline,
     validate_baseline,
+    workflow_stage,
 )
 from normalize_security_findings import (
+    SOURCES,
     NormalizationError,
     extract_findings,
     is_actionable,
@@ -55,7 +57,13 @@ from normalize_security_findings import (
     prose_signature,
     source_of,
 )
-from security_agent_ledger import build_shard, load_schema
+from security_agent_ledger import (
+    build_shard,
+    load_schema,
+    load_shards,
+    merge_shards,
+    validate_shard,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_TESTS_WORKFLOW = REPO_ROOT / ".github/workflows/script-tests.yml"
@@ -824,16 +832,141 @@ def test_smoke_running_twice_over_the_same_fixture_yields_zero_new(tmp_path):
     assert second["nothing_to_file"] is True
 
 
-def test_the_cli_writes_ledger_fields_when_asked(tmp_path):
+def test_the_cli_writes_a_ledger_shard_when_asked(tmp_path):
+    """The shard is written wrapped, under a name derived from its stage id.
+
+    Read back off disk and revalidated: `build_shard` validates on the way out,
+    but what every downstream reader consumes is these BYTES, and the defect this
+    replaced was precisely a file whose contents no reader accepted.
+    """
     raw = write_raw(tmp_path, [raw_finding()])
-    fields_path = tmp_path / "fields.json"
+    ledger = tmp_path / "ledger"
     assert main([
         "diff", "--findings", str(raw), "--baseline", str(tmp_path / "absent.json"),
-        "--output", str(tmp_path / "out.json"), "--ledger-fields", str(fields_path),
+        "--output", str(tmp_path / "out.json"), "--ledger-dir", str(ledger),
+        "--source", "code-review", "--generated-at", "2026-08-30T02:38:00Z",
         "--run-date", "2026-08-30", "--profile", str(PROFILE_PATH),
     ]) == 0
-    fields = json.loads(fields_path.read_text(encoding="utf-8"))
-    assert set(fields) == {"identified_raw", "identified_new_after_dedup", "new_finding_ids"}
+
+    shard = json.loads(
+        (ledger / "shard-workflow.code-review.json").read_text(encoding="utf-8")
+    )
+    validate_shard(shard, load_schema())
+    assert shard["stage"] == "workflow.code-review"
+    assert shard["stage_type"] == "workflow"
+    assert shard["run_date"] == "2026-08-30"
+    assert shard["generated_at"] == "2026-08-30T02:38:00Z"
+    assert set(shard["fields"]) == {
+        "identified_raw", "identified_new_after_dedup", "new_finding_ids",
+    }
+
+
+def test_the_written_shard_is_accepted_by_the_ledger_reader(tmp_path):
+    """The acceptance test: the shard goes into U2's real directory reader, which
+    validates every shard's envelope and raises on the first missing field."""
+    raw = write_raw(tmp_path, [raw_finding()])
+    ledger = tmp_path / "ledger"
+    assert main([
+        "diff", "--findings", str(raw), "--baseline", str(tmp_path / "absent.json"),
+        "--output", str(tmp_path / "out.json"), "--ledger-dir", str(ledger),
+        "--source", "pentest", "--generated-at", "2026-08-30T02:38:00Z",
+        "--run-date", "2026-08-30", "--profile", str(PROFILE_PATH),
+    ]) == 0
+    assert [s["stage"] for s in load_shards(ledger)] == ["workflow.pentest"]
+
+
+def test_the_two_halves_write_distinct_shards_into_one_directory(tmp_path):
+    """`workflow.<source>`, per the ledger schema's own description: the halves
+    run CONCURRENTLY into one prefix, and the schema merges `identified_raw` with
+    `sum` precisely because each reports its own. A shared bare `workflow` id
+    would have the second half to finish overwrite the first's counts."""
+    raw = write_raw(tmp_path, [raw_finding()])
+    ledger = tmp_path / "ledger"
+    for source in SOURCES:
+        assert main([
+            "diff", "--findings", str(raw), "--baseline", str(tmp_path / "absent.json"),
+            "--output", str(tmp_path / f"out.{source}.json"), "--ledger-dir", str(ledger),
+            "--source", source, "--generated-at", "2026-08-30T02:38:00Z",
+            "--run-date", "2026-08-30", "--profile", str(PROFILE_PATH),
+        ]) == 0
+
+    assert sorted(p.name for p in ledger.iterdir()) == [
+        "shard-workflow.code-review.json",
+        "shard-workflow.pentest.json",
+    ], "one half overwrote the other's counts"
+    # Both merge cleanly, which is what `sum` over two distinct stage ids means.
+    assert merge_shards(load_shards(ledger))["fields"]["identified_raw"] == 2
+
+
+def test_a_shard_cannot_be_written_under_an_undeclared_source():
+    with pytest.raises(DedupError, match="is not one of"):
+        workflow_stage("nmap")
+
+
+def test_the_shard_stage_is_never_a_bare_workflow():
+    for source in SOURCES:
+        assert workflow_stage(source) != "workflow"
+        assert workflow_stage(source).startswith("workflow.")
+
+
+def test_writing_a_shard_needs_a_source_and_a_timestamp(tmp_path, capsys):
+    """Both are required with `--ledger-dir`: without the source the two halves
+    cannot be told apart, and without the timestamp a re-run is not reproducible."""
+    raw = write_raw(tmp_path, [raw_finding()])
+    ledger = tmp_path / "ledger"
+    assert main([
+        "diff", "--findings", str(raw), "--baseline", str(tmp_path / "absent.json"),
+        "--output", str(tmp_path / "out.json"), "--ledger-dir", str(ledger),
+        "--run-date", "2026-08-30", "--profile", str(PROFILE_PATH),
+    ]) == 1
+    assert "--ledger-dir needs --source and --generated-at" in capsys.readouterr().err
+    assert not ledger.exists()
+
+
+def test_a_shard_cannot_be_written_without_a_run_date(tmp_path, capsys):
+    """`run_date` is what places the shard under tonight's prefix. A document with
+    no `runDate` and no `--run-date` leaves it None, and a shard under the wrong
+    night's prefix is a night whose counts silently belong to another run."""
+    raw = tmp_path / "raw.json"
+    raw.write_text(json.dumps({"findings": [raw_finding()]}), encoding="utf-8")
+    assert main([
+        "diff", "--findings", str(raw), "--baseline", str(tmp_path / "absent.json"),
+        "--output", str(tmp_path / "out.json"), "--ledger-dir", str(tmp_path / "ledger"),
+        "--source", "code-review", "--generated-at", "2026-08-30T02:38:00Z",
+        "--profile", str(PROFILE_PATH),
+    ]) == 1
+    assert "without a run date" in capsys.readouterr().err
+
+
+def test_the_quiet_night_still_writes_a_valid_shard(tmp_path):
+    """The common night must be recordable, and recorded as zeros rather than as
+    an absent shard a reader cannot distinguish from a stage that never ran."""
+    raw = write_raw(tmp_path, [])
+    ledger = tmp_path / "ledger"
+    assert main([
+        "diff", "--findings", str(raw), "--baseline", str(tmp_path / "absent.json"),
+        "--output", str(tmp_path / "out.json"), "--ledger-dir", str(ledger),
+        "--source", "code-review", "--generated-at", "2026-08-30T02:38:00Z",
+        "--run-date", "2026-08-30", "--profile", str(PROFILE_PATH),
+    ]) == 0
+    shard = load_shards(ledger)[0]
+    assert shard["fields"]["identified_new_after_dedup"] == 0
+    assert shard["fields"]["new_finding_ids"] == []
+
+
+def test_the_shard_is_byte_reproducible_across_a_rerun(tmp_path):
+    """FR-C30: same inputs and same caller-supplied timestamp, same bytes."""
+    raw = write_raw(tmp_path, [raw_finding()])
+    for name in ("a", "b"):
+        assert main([
+            "diff", "--findings", str(raw), "--baseline", str(tmp_path / "absent.json"),
+            "--output", str(tmp_path / f"out.{name}.json"),
+            "--ledger-dir", str(tmp_path / name),
+            "--source", "code-review", "--generated-at", "2026-08-30T02:38:00Z",
+            "--run-date", "2026-08-30", "--profile", str(PROFILE_PATH),
+        ]) == 0
+    shard = "shard-workflow.code-review.json"
+    assert (tmp_path / "a" / shard).read_bytes() == (tmp_path / "b" / shard).read_bytes()
 
 
 def test_the_cli_log_carries_counts_but_no_prose(tmp_path, capsys):
@@ -940,18 +1073,59 @@ def test_security_scan_workflow_is_byte_identical_to_main():
     _assert_unchanged_vs_main(".github/workflows/security-scan.yml")
 
 
+def _assert_dedup_workflow_scope(changed: set[str]):
+    """The unit's scope restriction applies when its implementation changes.
+
+    Unrelated PRs also run Script Tests. They must be able to maintain other
+    workflows (for example AIDLC reminders) without changing this unit's policy.
+    """
+    unit_paths = {
+        ".github/scripts/dedup_security_findings.py",
+        ".github/scripts/normalize_security_findings.py",
+    }
+    if changed.isdisjoint(unit_paths):
+        return
+    workflows = {p for p in changed if p.startswith(".github/workflows/")}
+    allowed = {
+        ".github/workflows/security-agent-nightly.yml",
+        ".github/workflows/script-tests.yml",
+    }
+    assert workflows <= allowed, (
+        f"unexpected workflow changes alongside the dedup unit: {sorted(workflows - allowed)}"
+    )
+
+
 def test_this_unit_touches_no_workflow_but_the_test_binding():
-    """The only workflow this unit may modify is Script Tests, to pin its own
-    suite. Anything else is an out-of-scope change to a relied-upon pipeline."""
+    """Dedup implementation changes must stay within the unit's pipeline scope.
+
+    The separate security-scan byte-identity and private-findings checks still
+    run for every PR; unrelated workflow edits do not bypass those protections.
+    """
     ref = _main_ref()
     if ref is None:
         pytest.skip("no network and no local main ref; cannot compare against main")
-    completed = _git("diff", "--name-only", ref, "--", ".github/workflows/")
+    completed = _git("diff", "--name-only", ref, "--")
     assert completed.returncode == 0, f"git diff failed: {completed.stderr}"
-    changed = {line for line in completed.stdout.split() if line}
-    assert changed <= {".github/workflows/script-tests.yml"}, (
-        f"unexpected workflow changes: {sorted(changed - {'.github/workflows/script-tests.yml'})}"
-    )
+    _assert_dedup_workflow_scope(set(completed.stdout.splitlines()))
+
+
+def test_unrelated_workflow_maintenance_is_outside_the_dedup_units_scope():
+    _assert_dedup_workflow_scope({".github/workflows/aidlc-gate-nudge.yml"})
+
+
+@pytest.mark.parametrize("unit", ["dedup_security_findings.py", "normalize_security_findings.py"])
+@pytest.mark.parametrize("workflow", ["security-scan.yml", "aidlc-gate-nudge.yml"])
+def test_dedup_changes_still_reject_out_of_scope_workflow_edits(unit, workflow):
+    with pytest.raises(AssertionError, match="unexpected workflow changes"):
+        _assert_dedup_workflow_scope({f".github/scripts/{unit}", f".github/workflows/{workflow}"})
+
+
+def test_dedup_changes_can_update_their_own_workflow_bindings():
+    _assert_dedup_workflow_scope({
+        ".github/scripts/dedup_security_findings.py",
+        ".github/workflows/security-agent-nightly.yml",
+        ".github/workflows/script-tests.yml",
+    })
 
 
 def test_no_public_artifact_upload_path_exists_for_findings():

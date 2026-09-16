@@ -24,7 +24,6 @@ Test groups map to the issue's Validation list:
 
 import contextvars
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 from typing import Annotated
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -45,6 +44,7 @@ from src.proxy.client_tool import (
 from src.proxy.routes import set_client_tool_from_header
 from src.proxy.service import _current_client_tool
 from src.shared.schemas.auth import TokenContext
+from tests.proxy.pricing_fixtures import price_fixture_usage
 
 
 @pytest.fixture(autouse=True)
@@ -467,13 +467,13 @@ class TestCapturePersistsOnCostRecord:
         _CapturingUsageService.calls = []
         _current_client_tool.set(CLIENT_TOOL_CODEX_CLI)
 
-        service = MantlePassthroughService.__new__(MantlePassthroughService)
+        service = MantlePassthroughService(MagicMock(), "https://bedrock-mantle.us-east-1.api.aws")
 
         with (
             patch("src.proxy.mantle_service.get_session_factory", self._session_factory),
             patch("src.proxy.mantle_service.UsageService", _CapturingUsageService),
             patch("src.proxy.mantle_service.reconcile_budget_reservation", AsyncMock()),
-            patch("src.proxy.mantle_service.pricing_service", SimpleNamespace(calculate_cost=lambda *a: 0.001)),
+            patch("src.proxy.mantle_service.price_completed_usage", AsyncMock(side_effect=price_fixture_usage)),
         ):
             await service._log_usage(
                 context=_token_context(),

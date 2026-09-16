@@ -30,6 +30,24 @@ PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEFAULT_PROXY_PORT=9191
 
+# Cross-process refresh lock (Issue #4837)
+#
+# Claude Code (via apiKeyHelper) and the Codex proxy (via `serve`) both call
+# this script's `token`/`refresh` in separate processes against the SAME
+# token file. With refresh-token rotation enabled on the CLI Cognito client,
+# each successful refresh invalidates the previous refresh token — so two
+# uncoordinated refreshes leave whichever one loses the race holding a dead
+# credential ("invalid token"), and a non-atomic write can corrupt the file
+# outright. This lock makes refresh single-flight per machine.
+#
+# mkdir is the lock primitive because it is atomic on POSIX and, unlike
+# flock(1), ships on macOS. A crashed holder leaves the dir behind, so it is
+# treated as stale (and broken) once older than LOCK_STALE_SECONDS.
+LOCK_DIR="${CONFIG_DIR}/refresh.lock"
+LOCK_STALE_SECONDS=30
+LOCK_MAX_WAIT_SECONDS=20
+_LOCK_HELD=0
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -109,6 +127,12 @@ save_config() {
     local client_id="$3"
     local identity_pool_id="$4"
     local region="$5"
+    # Optional: "gateway" means refresh through the gateway's /auth/cli/refresh
+    # endpoint instead of calling Cognito directly. Set by `login --web`, whose
+    # CLI app client has refresh-token rotation on — a rotating client can only
+    # be refreshed via the admin API, which the user has no AWS creds for, so the
+    # gateway does it server-side (Issue #4837 follow-up). Empty = direct Cognito.
+    local refresh_via="${6:-}"
 
     cat > "${CONFIG_FILE}" << EOF
 {
@@ -116,7 +140,8 @@ save_config() {
     "user_pool_id": "${user_pool_id}",
     "client_id": "${client_id}",
     "identity_pool_id": "${identity_pool_id}",
-    "region": "${region}"
+    "region": "${region}",
+    "refresh_via": "${refresh_via}"
 }
 EOF
     chmod 600 "${CONFIG_FILE}"
@@ -135,9 +160,59 @@ load_config() {
     CLIENT_ID=$(jq -r '.client_id' "${CONFIG_FILE}")
     IDENTITY_POOL_ID=$(jq -r '.identity_pool_id' "${CONFIG_FILE}")
     REGION=$(jq -r '.region' "${CONFIG_FILE}")
+    REFRESH_VIA=$(jq -r '.refresh_via // empty' "${CONFIG_FILE}")
 }
 
 # Save tokens
+# Age in seconds of the lock directory, or empty if it does not exist.
+# Portable across macOS (stat -f %m) and Linux (stat -c %Y).
+_lock_age_seconds() {
+    local mtime now
+    if mtime=$(stat -f %m "${LOCK_DIR}" 2>/dev/null); then
+        :
+    elif mtime=$(stat -c %Y "${LOCK_DIR}" 2>/dev/null); then
+        :
+    else
+        return 1
+    fi
+    now=$(date +%s)
+    echo $((now - mtime))
+}
+
+# Acquire the machine-wide refresh lock, waiting up to LOCK_MAX_WAIT_SECONDS.
+# Returns non-zero if it cannot be taken. Releases automatically on process
+# exit or interrupt so a Ctrl-C'd `token`/`refresh` never wedges the next one.
+_acquire_refresh_lock() {
+    mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
+    local waited=0
+    while :; do
+        if mkdir "${LOCK_DIR}" 2>/dev/null; then
+            _LOCK_HELD=1
+            trap _release_refresh_lock EXIT INT TERM
+            return 0
+        fi
+        # Reclaim a lock abandoned by a crashed process.
+        local age
+        age=$(_lock_age_seconds || true)
+        if [ -n "${age}" ] && [ "${age}" -ge "${LOCK_STALE_SECONDS}" ]; then
+            rmdir "${LOCK_DIR}" 2>/dev/null || rm -rf "${LOCK_DIR}" 2>/dev/null || true
+            continue
+        fi
+        if [ "${waited}" -ge "${LOCK_MAX_WAIT_SECONDS}" ]; then
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
+_release_refresh_lock() {
+    if [ "${_LOCK_HELD}" = "1" ]; then
+        rmdir "${LOCK_DIR}" 2>/dev/null || rm -rf "${LOCK_DIR}" 2>/dev/null || true
+        _LOCK_HELD=0
+    fi
+}
+
 save_tokens() {
     local id_token="$1"
     local access_token="$2"
@@ -146,7 +221,16 @@ save_tokens() {
 
     local expires_at=$(($(date +%s) + expires_in))
 
-    cat > "${TOKEN_FILE}" << EOF
+    # Write-then-rename so a reader (or a concurrent writer) never sees a
+    # half-written token file. mktemp in the same directory keeps the mv on
+    # one filesystem, where rename(2) is atomic.
+    mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
+    local tmp
+    tmp=$(mktemp "${TOKEN_FILE}.XXXXXX") || {
+        print_error "Failed to create a temporary token file in ${CONFIG_DIR}."
+        return 1
+    }
+    cat > "${tmp}" << EOF
 {
     "id_token": "${id_token}",
     "access_token": "${access_token}",
@@ -154,7 +238,8 @@ save_tokens() {
     "expires_at": ${expires_at}
 }
 EOF
-    chmod 600 "${TOKEN_FILE}"
+    chmod 600 "${tmp}"
+    mv -f "${tmp}" "${TOKEN_FILE}"
 }
 
 # Load tokens
@@ -313,8 +398,17 @@ authenticate_user() {
     return 0
 }
 
-# Refresh tokens using refresh token
+# Refresh tokens using refresh token.
+#
+# Pass --if-needed to skip the refresh when the token on disk is still valid
+# (used by the auto-refresh path in `token`); without it the refresh is
+# unconditional (the explicit `refresh` command). Either way the work runs
+# under the machine-wide lock so concurrent callers cannot rotate the refresh
+# token out from under each other (Issue #4837).
 refresh_tokens() {
+    local if_needed=0
+    [ "${1:-}" = "--if-needed" ] && if_needed=1
+
     load_config
 
     if ! load_tokens; then
@@ -322,46 +416,136 @@ refresh_tokens() {
         return 1
     fi
 
+    if ! _acquire_refresh_lock; then
+        print_error "Could not acquire the refresh lock within ${LOCK_MAX_WAIT_SECONDS}s."
+        print_warning "Another refresh may be stuck — remove ${LOCK_DIR} if no other session is running."
+        return 1
+    fi
+
+    # Re-read under the lock: a process that held it before us may have already
+    # rotated the token while we waited. Reusing our now-stale in-memory refresh
+    # token would fail, so adopt whatever is on disk before deciding.
+    load_tokens
+    if [ "${if_needed}" = "1" ]; then
+        local now
+        now=$(date +%s)
+        if [ -n "${EXPIRES_AT}" ] && [ "${EXPIRES_AT}" != "null" ] && [ "${now}" -lt "$((EXPIRES_AT - 300))" ]; then
+            _release_refresh_lock
+            return 0  # Another process already refreshed; nothing to do.
+        fi
+    fi
+
     print_info "Refreshing tokens..."
 
-    local auth_result
-    if _use_admin_auth; then
-        auth_result=$(aws cognito-idp admin-initiate-auth \
-            --auth-flow REFRESH_TOKEN_AUTH \
-            --user-pool-id "${USER_POOL_ID}" \
-            --client-id "${CLIENT_ID}" \
-            --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
-            --region "${REGION}" \
-            2>&1) || {
-            print_error "Token refresh failed: ${auth_result}"
+    local id_token access_token expires_in new_refresh_token
+
+    if [ "${REFRESH_VIA:-}" = "gateway" ]; then
+        # Rotation-enabled CLI client (login --web): only the admin API can
+        # refresh it, and the user holds no AWS creds — so the gateway does the
+        # refresh server-side with its own task role. The refresh token in the
+        # POST body is the sole credential, exactly like Cognito's own endpoint.
+        if [ -z "${GATEWAY_URL}" ] || [ "${GATEWAY_URL}" = "null" ]; then
+            _release_refresh_lock
+            print_error "No gateway_url in config; cannot refresh."
+            print_warning "Run 'bg-cognito-auth.sh login --web' to sign in again."
             return 1
-        }
+        fi
+        # Retry TRANSIENT failures a few times before giving up. The refresh
+        # token rotates: the server may have already rotated it (issuing a new
+        # one) even when the response never reached us — a gateway pod rolling
+        # during a deploy, or a brief network drop. Re-presenting the SAME token
+        # is safe *within* Cognito's 60s rotation grace window: it returns the
+        # same freshly-rotated token instead of tripping reuse detection. So a
+        # quick retry lets an interrupted refresh self-heal instead of stranding
+        # the on-disk token (which would log the user out at the next refresh).
+        # The total backoff (2s + 4s) stays well inside the 60s grace. 401 is
+        # terminal (token genuinely dead/expired); other non-200s are not
+        # retried either — only the transient set below.
+        local resp http_code body attempt=0
+        local max_attempts=3
+        while :; do
+            attempt=$((attempt + 1))
+            resp=$(printf '{"refresh_token":"%s"}' "${REFRESH_TOKEN}" | curl -s -w '\n%{http_code}' \
+                -X POST "${GATEWAY_URL%/}/auth/cli/refresh" \
+                -H "Content-Type: application/json" --data @- 2>/dev/null) || resp=$'\n000'
+            http_code="${resp##*$'\n'}"
+            body="${resp%$'\n'*}"
+
+            case "${http_code}" in
+                000 | 408 | 425 | 429 | 500 | 502 | 503 | 504)
+                    if [ "${attempt}" -lt "${max_attempts}" ]; then
+                        sleep $((attempt * 2))
+                        continue
+                    fi
+                    ;;
+            esac
+            break
+        done
+
+        if [ "${http_code}" = "401" ]; then
+            # Terminal: the refresh token is dead/rotated-away. Retrying is futile.
+            _release_refresh_lock
+            print_error "Your CLI session has expired."
+            print_warning "Run 'bg-cognito-auth.sh login --web' to sign in again."
+            return 1
+        fi
+        if [ "${http_code}" != "200" ]; then
+            _release_refresh_lock
+            print_error "Token refresh failed (HTTP ${http_code})."
+            print_warning "Please run 'login --web' to re-authenticate."
+            return 1
+        fi
+
+        id_token=$(echo "${body}" | jq -r '.id_token // empty')
+        access_token=$(echo "${body}" | jq -r '.access_token // empty')
+        expires_in=$(echo "${body}" | jq -r '.expires_in // 3600')
+        new_refresh_token=$(echo "${body}" | jq -r '.refresh_token // empty')
     else
-        auth_result=$(aws cognito-idp initiate-auth \
-            --auth-flow REFRESH_TOKEN_AUTH \
-            --client-id "${CLIENT_ID}" \
-            --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
-            --region "${REGION}" \
-            2>&1) || {
+        local auth_result rc=0
+        if _use_admin_auth; then
+            auth_result=$(aws cognito-idp admin-initiate-auth \
+                --auth-flow REFRESH_TOKEN_AUTH \
+                --user-pool-id "${USER_POOL_ID}" \
+                --client-id "${CLIENT_ID}" \
+                --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
+                --region "${REGION}" \
+                2>&1) || rc=$?
+        else
+            auth_result=$(aws cognito-idp initiate-auth \
+                --auth-flow REFRESH_TOKEN_AUTH \
+                --client-id "${CLIENT_ID}" \
+                --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
+                --region "${REGION}" \
+                2>&1) || rc=$?
+        fi
+
+        if [ "${rc}" -ne 0 ]; then
+            _release_refresh_lock
             print_error "Token refresh failed: ${auth_result}"
             print_warning "Please run 'login' to re-authenticate."
             return 1
-        }
+        fi
+
+        id_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.IdToken')
+        access_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.AccessToken')
+        expires_in=$(echo "${auth_result}" | jq -r '.AuthenticationResult.ExpiresIn')
+        new_refresh_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.RefreshToken // empty')
     fi
 
-    local id_token access_token expires_in
-    id_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.IdToken')
-    access_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.AccessToken')
-    expires_in=$(echo "${auth_result}" | jq -r '.AuthenticationResult.ExpiresIn')
-
-    # Refresh token may or may not be returned
-    local new_refresh_token
-    new_refresh_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.RefreshToken // empty')
+    # Refresh token may or may not be returned (with rotation it always is).
     if [ -z "${new_refresh_token}" ]; then
         new_refresh_token="${REFRESH_TOKEN}"
     fi
 
+    if [ -z "${id_token}" ] || [ "${id_token}" = "null" ] || [ -z "${access_token}" ] || [ "${access_token}" = "null" ]; then
+        _release_refresh_lock
+        print_error "Refresh returned an incomplete token set."
+        print_warning "Please run 'login --web' to re-authenticate."
+        return 1
+    fi
+
     save_tokens "${id_token}" "${access_token}" "${new_refresh_token}" "${expires_in}"
+    _release_refresh_lock
     print_success "Tokens refreshed successfully!"
 
     return 0
@@ -739,9 +923,164 @@ cmd_import() {
 }
 
 # Refresh command
+# Web sign-in: device-authorization-style flow against the gateway's /auth/cli
+# endpoints. No credential is ever displayed or pasted — the browser approves,
+# the CLI polls, tokens arrive minted on the CLI-specific app client (short
+# refresh validity + rotation). This is the primary path for GitHub sign-ins;
+# `import` remains the fallback for headless machines, and `login` (password)
+# for native Cognito users.
+cmd_login_web() {
+    local gateway_url=""
+    local no_browser=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --web)
+                shift # the flag that routed us here
+                ;;
+            --gateway-url)
+                gateway_url="$2"
+                shift 2
+                ;;
+            --no-browser)
+                no_browser=1
+                shift
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    # Fall back to the stored gateway_url so re-login is just `login --web`.
+    if [ -z "${gateway_url}" ] && [ -f "${CONFIG_FILE}" ]; then
+        gateway_url=$(jq -r '.gateway_url // empty' "${CONFIG_FILE}")
+    fi
+    if [ -z "${gateway_url}" ]; then
+        print_error "Gateway URL is required (--gateway-url)"
+        exit 1
+    fi
+    gateway_url="${gateway_url%/}"
+
+    print_info "Starting web sign-in with ${gateway_url}..."
+    local start_response
+    start_response=$(curl -sf -X POST "${gateway_url}/auth/cli/start" \
+        -H "Content-Type: application/json" -d '{}' 2>/dev/null) || {
+        print_error "Could not start a web sign-in. Is the gateway reachable, and does it support web CLI login?"
+        print_info "Fallback: use 'import' (paste a refresh token from Settings) or 'login' (Cognito password)."
+        exit 1
+    }
+
+    local user_code device_code verification_path expires_in interval
+    user_code=$(echo "${start_response}" | jq -r '.user_code // empty')
+    device_code=$(echo "${start_response}" | jq -r '.device_code // empty')
+    verification_path=$(echo "${start_response}" | jq -r '.verification_path // empty')
+    expires_in=$(echo "${start_response}" | jq -r '.expires_in // 600')
+    interval=$(echo "${start_response}" | jq -r '.interval // 3')
+    if [ -z "${user_code}" ] || [ -z "${device_code}" ]; then
+        print_error "Gateway returned an unexpected response to /auth/cli/start."
+        exit 1
+    fi
+
+    # The dashboard shares the gateway origin; strip the API base path.
+    local verify_url="${gateway_url%/api}${verification_path}"
+
+    echo ""
+    echo "  Confirm this code in your browser:  ${user_code}"
+    echo "  ${verify_url}"
+    echo ""
+
+    if [ "${no_browser}" -eq 0 ]; then
+        if command -v open &> /dev/null; then
+            open "${verify_url}" 2>/dev/null || true
+        elif command -v xdg-open &> /dev/null; then
+            xdg-open "${verify_url}" 2>/dev/null || true
+        fi
+    fi
+    print_info "Waiting for approval (Ctrl-C to cancel)..."
+
+    local deadline=$(($(date +%s) + expires_in))
+    local consecutive_failures=0
+    while [ "$(date +%s)" -lt "${deadline}" ]; do
+        # device_code goes via stdin, not argv — argv is visible in `ps`.
+        local response http_code body
+        response=$(printf '{"device_code":"%s"}' "${device_code}" | curl -s -w '\n%{http_code}' \
+            -X POST "${gateway_url}/auth/cli/token" \
+            -H "Content-Type: application/json" --data @- 2>/dev/null) || response=$'\n000'
+        http_code="${response##*$'\n'}"
+        body="${response%$'\n'*}"
+
+        case "${http_code}" in
+            200)
+                local access_token id_token refresh_token token_expires_in client_id user_pool_id region
+                access_token=$(echo "${body}" | jq -r '.access_token // empty')
+                id_token=$(echo "${body}" | jq -r '.id_token // empty')
+                refresh_token=$(echo "${body}" | jq -r '.refresh_token // empty')
+                token_expires_in=$(echo "${body}" | jq -r '.expires_in // 3600')
+                client_id=$(echo "${body}" | jq -r '.client_id // empty')
+                user_pool_id=$(echo "${body}" | jq -r '.user_pool_id // empty')
+                region=$(echo "${body}" | jq -r '.region // "us-east-1"')
+                if [ -z "${access_token}" ] || [ -z "${refresh_token}" ] || [ -z "${client_id}" ]; then
+                    print_error "Gateway returned an incomplete token response."
+                    exit 1
+                fi
+                # client_id comes from the RESPONSE (the CLI app client), not
+                # from discovery — discovery advertises the SPA client, whose
+                # refresh tokens have a different lifetime and no rotation.
+                # refresh_via=gateway: this client rotates, so refresh must go
+                # through the gateway (the user has no AWS creds for the admin API).
+                save_config "${gateway_url}" "${user_pool_id}" "${client_id}" "" "${region}" "gateway"
+                save_tokens "${id_token}" "${access_token}" "${refresh_token}" "${token_expires_in}"
+                print_success "Signed in. Tokens saved to ${CONFIG_DIR}/ — refresh is automatic from here."
+                return 0
+                ;;
+            202)
+                consecutive_failures=0
+                sleep "${interval}"
+                ;;
+            403)
+                print_error "The sign-in was denied in the browser."
+                exit 1
+                ;;
+            410)
+                print_error "The sign-in request expired or was already used. Run 'login --web' again."
+                exit 1
+                ;;
+            *)
+                # Transient (network blip, pod restart, mint retry). Give up
+                # only after several in a row.
+                consecutive_failures=$((consecutive_failures + 1))
+                if [ "${consecutive_failures}" -ge 5 ]; then
+                    print_error "Gateway kept failing while polling (last HTTP ${http_code}). Try again."
+                    exit 1
+                fi
+                sleep "${interval}"
+                ;;
+        esac
+    done
+
+    print_error "Timed out waiting for browser approval. Run 'login --web' again."
+    exit 1
+}
+
 cmd_refresh() {
     if ! refresh_tokens; then
         exit 1
+    fi
+
+    # The web-login CLI client (refresh_via=gateway) deliberately holds NO AWS
+    # credentials — there is no Identity Pool to exchange against. Running the
+    # exchange on that path always fails with "Invalid length for parameter
+    # IdentityPoolId, value: 0" and makes `refresh` (and `adp refresh`) exit
+    # non-zero even though the token refresh above fully succeeded — which trips
+    # any health check or wrapper that keys off the exit code. Refreshing the
+    # gateway tokens IS the whole job here, so stop after it.
+    load_config
+    if [ "${REFRESH_VIA:-}" = "gateway" ] || [ -z "${IDENTITY_POOL_ID:-}" ] || [ "${IDENTITY_POOL_ID:-}" = "null" ]; then
+        print_success "Tokens refreshed successfully!"
+        return 0
     fi
 
     if ! exchange_for_aws_credentials; then
@@ -850,8 +1189,10 @@ cmd_token() {
     local expiry_with_buffer=$((EXPIRES_AT - buffer))
 
     if [ "${current_time}" -ge "${expiry_with_buffer}" ]; then
-        # Token expired or about to expire - try to refresh
-        if ! refresh_tokens >/dev/null 2>&1; then
+        # Token expired or about to expire - try to refresh. --if-needed makes
+        # this a no-op if a concurrent process (the Codex proxy, another Claude
+        # Code call) already refreshed while we waited on the lock (Issue #4837).
+        if ! refresh_tokens --if-needed >/dev/null 2>&1; then
             echo "Token expired. Run: bg-cognito-auth.sh login" >&2
             exit 1
         fi
@@ -968,6 +1309,7 @@ Usage:
 
 Commands:
     login       Authenticate with Cognito and obtain AWS credentials
+    login --web Sign in via the browser — approve once, no password, no copy-paste
     import      Seed the token store from a browser-login refresh token (no password)
     refresh     Refresh tokens and AWS credentials
     logout      Remove stored tokens and credentials
@@ -981,6 +1323,10 @@ Login Options:
     --client-id <id>          Cognito Client ID
     --identity-pool-id <id>   Cognito Identity Pool ID
     --region <region>         AWS region (default: us-east-1)
+
+Web Login Options (login --web):
+    --gateway-url <url>       Gateway URL (falls back to the stored one on re-login)
+    --no-browser              Print the approval URL instead of opening a browser
 
 Import Options (Issue #4145):
     --gateway-url <url>       Gateway URL (required)
@@ -1050,7 +1396,13 @@ main() {
 
     case "${command}" in
         login)
-            cmd_login "$@"
+            # `login --web` is the browser-approval flow (no password, no
+            # copy-paste); bare `login` remains the Cognito-password flow.
+            if [[ " $* " == *" --web "* ]]; then
+                cmd_login_web "$@"
+            else
+                cmd_login "$@"
+            fi
             ;;
         import)
             cmd_import "$@"

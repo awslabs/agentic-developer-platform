@@ -51,7 +51,6 @@ from src.orchestration.models import (
     DecisionKind,
     OrchestrationAcceptedPlan,
     OrchestrationDecision,
-    OrchestrationEdge,
     OrchestrationNode,
 )
 from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode
@@ -872,13 +871,15 @@ class TestEdgesAndFirstAmendment:
     @pytest.mark.asyncio
     async def test_new_edges_are_created_and_existing_ones_reused(self, session, approval, amender):
         original = await compile_original(session, approval)
-        edges_before = await count_rows(session, OrchestrationEdge)
+        edges_before = {e.id for e in await OrchestrationRepository(session).list_edges(org_id=ORG_A, flow_id=original.flow_id)}
 
         result = await amend_plan(session, original.flow_id, amended_proposal(), amender)
 
         # story-c -> eval is new; story-a -> eval and eval -> gate already exist.
         assert result.edges_created == 1
-        assert await count_rows(session, OrchestrationEdge) == edges_before + 1
+        edges_after = await OrchestrationRepository(session).list_edges(org_id=ORG_A, flow_id=original.flow_id)
+        assert len(edges_after) == 3
+        assert len(edges_before & {e.id for e in edges_after}) == 2
 
     @pytest.mark.asyncio
     async def test_amending_a_flow_with_no_plan_in_force(self, session, amender):

@@ -97,6 +97,7 @@ export interface User {
   // misleading "org admin" badge.
   role?: AdminRole;
   orgId?: string;
+  teamId?: string;
   deptId?: string;
   permissions: Permission[];
   createdAt: string;
@@ -168,6 +169,7 @@ export interface CognitoIdTokenPayload {
   name?: string;
   picture?: string;
   'cognito:username': string;
+  'cognito:groups'?: string[];
   'custom:org_id'?: string;
   'custom:department_id'?: string;
   'custom:team_id'?: string;
@@ -202,18 +204,41 @@ export interface Organization {
   id: string;
   name: string;
   awsAccounts: string[];
-  roleMappings: Record<string, string>;
+  // Issue #4929: OPTIONAL because only the DEPRECATED `/admin/organizations` route carries
+  // these two. The canonical `/api/admin/identity/organizations` response
+  // (`src/admin/identity/schemas.py` `OrganizationResponse`) has never sent either, so an
+  // org sourced from it genuinely does not have them — `undefined` here means "the route
+  // this org came from does not carry this", NOT "the org has none configured". Consumers
+  // must render that distinction rather than letting absence fall through as a blank value
+  // (see `pages/OrgDashboard.tsx`); the same R1 rule #4841 applies to
+  // `githubInstallationIds` below. Optionality is what makes the compiler enforce it.
+  roleMappings?: Record<string, string>;
   settings: Record<string, unknown>;
   // Issue #2984: Member approval policy for auto-join toggle
   memberApprovalPolicy?: string;
+  // Issue #4841: GitHub App installations attached to this org. Empty is a first-class,
+  // fully-functional state ("platform-native", ruling R1) — NOT a missing value.
+  githubInstallationIds?: string[];
   createdAt: string;
 }
 
-export interface OrganizationCreateRequest {
+/**
+ * Body for the CANONICAL org-create route — Issue #4841 (#4839 · T2a), ruling D4=A.
+ *
+ * The body of the DEPRECATED `POST /admin/organizations` (`OrganizationCreateRequest`)
+ * was removed with that route's #4842 retirement (410). The difference was not cosmetic:
+ * this route requires a caller-supplied `id` (`src/admin/identity/schemas.py`
+ * `OrganizationCreateRequest.id`, required, 1–255 chars) and the deprecated one generated
+ * a UUID.
+ *
+ * `plan`, `channels`, `aws_accounts` and `settings` all default server-side and are
+ * omitted here on purpose: this panel creates organizations **GitHub-free** (the whole
+ * point of T2a), so it has nothing to say about channels, and connection lifecycle is T3.
+ */
+export interface OrganizationCanonicalCreateRequest {
+  /** Caller-supplied, immutable after create. See `utils/orgIdentifier.ts`. */
+  id: string;
   name: string;
-  aws_accounts?: string[];
-  role_mappings?: Record<string, string>;
-  settings?: Record<string, unknown>;
 }
 
 export interface OrganizationUpdateRequest {
@@ -239,6 +264,41 @@ export interface Team {
   name: string;
   description?: string;
   createdAt: string;
+}
+
+// Team membership types — Issue #4840 (model + REST), consumed by #4847 (T2b).
+//
+// A person belongs to MANY teams, one of which is primary. Before this the frontend
+// had no membership representation at all: team membership was implicit in
+// `CognitoUser.teamId` — a single value, which cannot express the multi-team reality
+// this type exists for. `users.team_id` remains a *cache* that follows the primary;
+// the membership row is the truth, and the UI writes rows, never the pointer.
+export interface TeamMembership {
+  id: string;
+  /** The canonical `users.id` — the column the server's membership routes key on. */
+  userId: string;
+  teamId: string;
+  orgId: string;
+  /** Role WITHIN the team (`member` / `lead`) — distinct from the admin role. */
+  role: string;
+  /**
+   * At most one of a user's memberships per org is primary. The primary is what
+   * projects into the `custom:team_id` claim, and therefore the team whose budget
+   * and Bedrock routing rules the person follows.
+   */
+  isPrimary: boolean;
+  /** Provenance: `admin` for console writes, or a directory-sync tag. */
+  source: string;
+  externalId: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+/** One desired membership in a replace-set write. */
+export interface TeamMembershipInput {
+  teamId: string;
+  role?: string;
+  isPrimary?: boolean;
 }
 
 // Pool types
@@ -275,6 +335,23 @@ export interface Budget {
   enforcementMode: EnforcementMode;
   orgId: string;
   updatedAt: string;
+  /**
+   * An advisory sentence about the budget that was just created — **never a reason it
+   * was refused** (Issue #4669, surfaced by #4687).
+   *
+   * Populated only on create, and only for a cloud-agent (`root_user`) cap whose
+   * person's agent spend currently accrues in some other workspace: such a cap
+   * validates, displays, and will never see a dollar. The server returns it as a field
+   * on the `201` rather than a `4xx` on purpose — which workspace a person's runs bill
+   * to can change, and an admin may legitimately want the cap in place before it does.
+   *
+   * A surface rendering this MUST NOT treat it as a failure: the budget is already
+   * committed, so undoing or re-submitting on it would report a successful create as an
+   * error and drive the admin into a 409 for a row they were told did not exist.
+   *
+   * `undefined` on every other response, including updates.
+   */
+  advisory?: string | null;
 }
 
 export interface BudgetStatus {

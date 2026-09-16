@@ -9,11 +9,13 @@ For tests that require AWS credential validation, we create a mock aws CLI
 that returns fake successful responses.
 """
 
+import base64
 import json
 import os
 import stat
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,111 @@ def install_script(cli_dir: Path) -> Path:
 def bg_cognito_auth_script(cli_dir: Path) -> Path:
     """Return the path to bg-cognito-auth.sh script (Issue #4145)."""
     return cli_dir / "bg-cognito-auth.sh"
+
+
+ADP_GATEWAY_URL = "https://gw.example.com/api"
+
+
+def write_adp_config(home: Path, **extra: str) -> None:
+    """Seed ~/.bedrock-gateway/config.json the way install.sh/login would."""
+    config_dir = home / ".bedrock-gateway"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "config.json").write_text(json.dumps({"gateway_url": ADP_GATEWAY_URL, **extra}))
+
+
+def write_adp_session(home: Path, username: str = "github_alice", ttl: int = 3600) -> None:
+    """Seed a valid-looking token store (config + tokens), as `adp login` would.
+
+    The access token is a real (unsigned) JWT so `status` can decode the username
+    claim out of it — that decode is one of the things under test.
+    """
+    write_adp_config(home)
+
+    def b64(obj: dict[str, Any]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+
+    access_token = f"{b64({'alg': 'none'})}.{b64({'username': username, 'sub': 'sub-123'})}.sig"
+    (home / ".bedrock-gateway" / "tokens.json").write_text(
+        json.dumps(
+            {
+                "id_token": "id-token",
+                "access_token": access_token,
+                "refresh_token": "refresh-token",
+                "expires_at": int(time.time()) + ttl,
+            }
+        )
+    )
+
+
+@pytest.fixture
+def adp_script(cli_dir: Path) -> Path:
+    """Return the path to the `adp` wrapper (Issue #4852)."""
+    return cli_dir / "adp"
+
+
+@pytest.fixture
+def adp_home(tmp_path: Path) -> Path:
+    """Sandboxed HOME for `adp` runs (Issue #4852).
+
+    Every `adp` test needs this: the wrapper writes ~/.codex/config.toml and
+    ~/.claude/settings.json, and a test that leaked into the real home dir would
+    rewrite the developer's own tool configuration.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    return home
+
+
+@pytest.fixture
+def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
+    """An installed prefix holding `adp` + the two files it wraps.
+
+    Copies rather than symlinks: `adp` resolves its core helper and the proxy as
+    siblings of its own real path, so a symlink farm would not exercise the
+    layout install.sh actually produces.
+    """
+    bin_dir = tmp_path / "adp-bin"
+    bin_dir.mkdir()
+    for name in (
+        "adp",
+        "bg-cognito-auth.sh",
+        "bg-gateway-proxy.py",
+        "adp_common.py",
+        "adp-admin.py",
+        "adp-bedrock.py",
+        "adp-aws.py",
+        "adp-github.py",
+        "adp-github-admin.py",
+    ):
+        target = bin_dir / name
+        target.write_bytes((cli_dir / name).read_bytes())
+        target.chmod(0o755)
+    return bin_dir
+
+
+@pytest.fixture
+def run_adp(adp_bin: Path, adp_home: Path):
+    """Run the installed `adp` with a sandboxed HOME.
+
+    PATH deliberately does NOT contain the install dir: `adp` must resolve its
+    core helper as a sibling of itself, not via a PATH lookup that could find an
+    unrelated copy.
+    """
+
+    def _run(args: list[str], extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env["HOME"] = str(adp_home)
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(
+            ["bash", str(adp_bin / "adp"), *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+
+    return _run
 
 
 class MockGatewayHandler(BaseHTTPRequestHandler):
@@ -186,11 +293,13 @@ if [[ "$1" == "configure" && "$2" == "export-credentials" ]]; then
     exit 0
 fi
 
-# Issue #4145: Handle cognito-idp initiate-auth (REFRESH_TOKEN_AUTH).
+# Handle both public import and admin token refresh (REFRESH_TOKEN_AUTH).
+# Refresh prefers admin-initiate-auth when a pool id is configured; letting
+# that command fall through invokes real AWS with the fixture credentials.
 # Behaviour is driven by env vars so tests can force each failure mode:
 #   MOCK_COGNITO_RESULT=ok|notauthorized|other|no_tokens  (default: ok)
 #   MOCK_AWS_LOG=<path>  appends the full argv for assertions
-if [[ "$1" == "cognito-idp" && "$2" == "initiate-auth" ]]; then
+if [[ "$1" == "cognito-idp" && ( "$2" == "initiate-auth" || "$2" == "admin-initiate-auth" ) ]]; then
     if [[ -n "${MOCK_AWS_LOG:-}" ]]; then
         echo "$*" >> "${MOCK_AWS_LOG}"
     fi

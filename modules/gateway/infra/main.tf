@@ -237,6 +237,38 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
           "cognito-idp:AdminUpdateUserAttributes"
         ]
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
+      },
+      {
+        # Native identity lifecycle (#5010). Keep every write scoped to the
+        # gateway pool; GetGroup is needed for idempotent CreateGroup retries.
+        Sid    = "CognitoIdentityLifecycle"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminDeleteUser",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+          "cognito-idp:AdminListGroupsForUser",
+          "cognito-idp:CreateGroup",
+          "cognito-idp:GetGroup",
+          "cognito-idp:DeleteGroup"
+        ]
+        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
+      },
+      {
+        # Web CLI login (/auth/cli): mints tokens on the CLI app client the
+        # same way the github-auth-broker does — fresh random permanent
+        # password + admin auth. Only invoked after the signed-in browser
+        # user approves, and only for broker-provisioned GitHub_* users
+        # (who never hold a real password). Scoped to this pool only.
+        Sid    = "CognitoCliLoginMint"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminInitiateAuth",
+          "cognito-idp:AdminRespondToAuthChallenge"
+        ]
+        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
       }
     ]
   })
@@ -355,14 +387,20 @@ resource "aws_iam_role_policy" "gateway_comprehend_pii" {
 # upstream requests with SigV4 using the gateway pod's OWN IRSA credentials —
 # unlike the Claude proxy path, which assumes a cross-account pool role.
 #
-# bedrock-mantle is its OWN service (prefix "bedrock-mantle:"), not part of the
-# "bedrock:" service. The upstream inference call authorizes against
-# bedrock-mantle:CreateInference on the mantle project resource — NOT
-# bedrock:InvokeModel*. Spike #2703 missed this because it tested from a role
-# with AdministratorAccess attached, which masked the real required action;
-# the gateway pod's own role got 401 access_denied until this grant was added
-# (Issue #2817). The bedrock:InvokeModel* statement below is kept because the
-# mantle docs are ambiguous about whether some model paths still check it.
+# The route now targets AWS Bedrock's OpenAI-compatible endpoint on
+# bedrock-runtime.<region>.amazonaws.com (BG_MANTLE_BASE_URL), which authorizes
+# against the native bedrock:InvokeModel* actions on the inference profile and
+# its underlying foundation model — covered by the "MantleBedrockInvoke"
+# statement below (Resource "*"). No IAM change was needed for that migration.
+#
+# The earlier preview host bedrock-mantle.<region>.api.aws is its OWN service
+# (prefix "bedrock-mantle:") and authorized against bedrock-mantle:CreateInference
+# on the mantle project resource — NOT bedrock:InvokeModel*. Spike #2703 missed
+# this because it tested from a role with AdministratorAccess attached, which
+# masked the real required action; the gateway pod's own role got 401
+# access_denied until this grant was added (Issue #2817). The
+# "MantleCreateInference" statement below is now vestigial (the route no longer
+# calls that host) but is retained harmlessly for rollback to the preview host.
 resource "aws_iam_role_policy" "gateway_mantle_bedrock_invoke" {
   count = var.enable_mantle_passthrough ? 1 : 0
   name  = "${local.name_prefix}-policy-gateway-mantle-bedrock-invoke"
@@ -657,6 +695,8 @@ module "cognito" {
   access_token_validity  = var.cognito_access_token_validity
   refresh_token_validity = var.cognito_refresh_token_validity
   id_token_validity      = var.cognito_id_token_validity
+  # Web CLI login: short-lived, rotated refresh tokens for the CLI app client
+  cli_refresh_token_validity = var.cognito_cli_refresh_token_validity
 
   # Issue #60: Provision test users (admins group, test user, test admin)
   create_test_users = var.create_test_users
@@ -668,6 +708,35 @@ module "cognito" {
 
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
+
+  # Issue #4844: pass the allowlist configuration EXPLICITLY, from the same root
+  # variables that configure the broker. This block previously passed no
+  # pre_signup_* arguments at all, so the trigger ran the child module's defaults
+  # ("org" + an empty org list = deny-all if it ever fired) while the broker ran
+  # whatever the environment set — deny-vs-open divergence between two copies of
+  # one rule, in one environment. Introducing a new mode on top of unset defaults
+  # is the exact shape of the ALLOWLIST_MODE / ALLOW_OPEN_SIGNUP outage in
+  # CLAUDE.md, so the two copies are now configured together, in one deploy unit.
+  #
+  # This changes NO deployed behaviour today: pre-signup is not the live gate for
+  # GitHub sign-in (admin_create_user does not fire PreSignUp_ExternalProvider —
+  # see lambda/github-auth-broker/handler.py), so what it would have decided has
+  # never been consulted. It stops the two from drifting further.
+  pre_signup_allowlist_mode    = var.github_auth_allowlist_mode
+  pre_signup_allowed_orgs      = var.github_auth_allowed_orgs
+  pre_signup_allow_open_signup = var.github_auth_allow_open_signup
+
+  # Issue #4849: membership-eligibility projection read (shadow mode). Referencing
+  # the tables directly is safe HERE — they are resources of this root module, so
+  # this is root -> child, not the child -> root reference that would close the
+  # cloudfront/api_gateway/broker cycle documented elsewhere in this file.
+  identity_index_table_name      = aws_dynamodb_table.identity_index.name
+  user_identity_index_table_name = aws_dynamodb_table.user_identity_index.name
+  identity_index_table_arns = [
+    aws_dynamodb_table.identity_index.arn,
+    aws_dynamodb_table.user_identity_index.arn,
+  ]
+  user_identity_index_v2_read = var.user_identity_index_v2_read
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
@@ -942,6 +1011,12 @@ module "budget_lambda" {
   # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
   enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
 
+  pricing_refresh_timeout = var.pricing_refresh_timeout
+
+  # Existing topics are reused; empty input provisions the pricing SNS -> SQS
+  # operational inbox inside this module (no manual subscription confirmation).
+  alarm_actions = var.budget_alarm_sns_topic_arns
+
   # Ensure the psycopg2 layer zip is built+uploaded before this module's
   # aws_s3_object data source reads it.
   depends_on = [module.s3_chat_logs, module.rds, null_resource.build_psycopg2_layer]
@@ -1061,9 +1136,17 @@ module "orchestration_tick" {
   # All four default to empty/false, which leaves the bridge inert: the pass reads
   # nothing and reports `commands_enabled=false`.
   engine_enabled                = var.orchestration_engine_enabled
+  agent_authority_enabled       = var.orchestration_agent_authority_enabled
   webhook_events_table_name     = var.orchestration_webhook_events_table
   webhook_events_kms_key_arn    = var.orchestration_webhook_events_kms_key_arn
   github_app_secret_arn_pattern = var.orchestration_github_app_secret_arn_pattern
+
+  # Issue #4539: command attribution. The tick verifies the signature the webhook
+  # Lambda wrote before it trusts any authority field on the row. The secret belongs
+  # to the webhook-ingress state, so it arrives by ARN like the four above; empty
+  # leaves the verifier without a key, which quarantines every command rather than
+  # applying it unverified.
+  engine_command_signing_key_secret_arn = var.orchestration_engine_command_signing_key_secret_arn
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
@@ -1371,6 +1454,15 @@ resource "aws_ssm_parameter" "cognito_client_id" {
   tags = local.common_tags
 }
 
+resource "aws_ssm_parameter" "cognito_cli_client_id" {
+  name        = "/adp/${var.environment}/gateway/cognito-cli-client-id"
+  description = "Cognito app client ID for web CLI login (BG_COGNITO_CLI_CLIENT_ID)"
+  type        = "String"
+  value       = module.cognito.cli_client_id
+
+  tags = local.common_tags
+}
+
 resource "aws_ssm_parameter" "cognito_domain" {
   name        = "/adp/${var.environment}/gateway/cognito-domain"
   description = "Cognito hosted-UI domain prefix"
@@ -1556,6 +1648,17 @@ module "github_auth_broker" {
   # Issue #4133: encrypt the session-handoff code table with the existing
   # gateway DynamoDB CMK.
   dynamodb_kms_key_arn = aws_kms_key.dynamodb.arn
+
+  # Issue #4849: membership-eligibility projection read (shadow mode). Safe as a
+  # direct reference because the tables are root-module resources — the cycle
+  # documented above is about the *broker* module referencing back into the root.
+  identity_index_table_name      = aws_dynamodb_table.identity_index.name
+  user_identity_index_table_name = aws_dynamodb_table.user_identity_index.name
+  identity_index_table_arns = [
+    aws_dynamodb_table.identity_index.arn,
+    aws_dynamodb_table.user_identity_index.arn,
+  ]
+  user_identity_index_v2_read = var.user_identity_index_v2_read
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn

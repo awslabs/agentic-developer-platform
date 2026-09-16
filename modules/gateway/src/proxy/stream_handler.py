@@ -4,6 +4,7 @@ Handles Server-Sent Events (SSE) formatting and streaming for all API formats.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -12,8 +13,78 @@ from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from src.proxy.format_translator import FormatTranslator
+from src.shared.exceptions import BedrockGatewayError
 
 logger = logging.getLogger(__name__)
+
+# Interval between keep-alive frames injected into an otherwise-silent stream.
+# Must stay comfortably below CloudFront's ~60s origin idle timeout so a long
+# model "thinking" gap never lets that timer fire. 15s gives a 4x margin.
+DEFAULT_KEEPALIVE_INTERVAL_SECONDS = 15.0
+
+# An SSE comment line: any line starting with ':' is, per the SSE spec, ignored
+# by the client parser. Keeps the TCP connection warm without adding anything to
+# the response payload the client reconstructs. Used for text/event-stream
+# responses. (The binary AWS-eventstream path uses a Bedrock ``ping`` chunk frame
+# instead — see ``EVENTSTREAM_KEEPALIVE`` in ``eventstream_codec`` — because this
+# codec drops non-``data:`` SSE lines.)
+_SSE_KEEPALIVE = b": keep-alive\n\n"
+
+
+async def merge_with_keepalive(
+    source: AsyncIterator[bytes],
+    interval_seconds: float = DEFAULT_KEEPALIVE_INTERVAL_SECONDS,
+    keepalive: bytes = _SSE_KEEPALIVE,
+) -> AsyncIterator[bytes]:
+    """Relay ``source`` to the client, injecting a keep-alive during silence.
+
+    Why this exists: the human CLI reaches the gateway through CloudFront, whose
+    origin *response* (idle) timeout — ~60s on this distribution's VPC origin —
+    severs the connection if no bytes flow from the gateway for that long. Models
+    routinely pause longer than 60s mid-response during extended thinking or long
+    tool steps, so a quiet gap = CloudFront hangs up and the client shows
+    "Connection lost mid-response." Emitting a keep-alive every ``interval_seconds``
+    of silence keeps that idle timer from ever firing.
+
+    ``keepalive`` must be a no-op in the wire format being served: an SSE comment
+    (``: ...\\n\\n``) for ``text/event-stream`` responses, or a Bedrock ``ping``
+    chunk frame for the binary ``application/vnd.amazon.eventstream`` path. It is
+    only ever emitted BETWEEN complete upstream chunks — never spliced into the
+    middle of one — so the payload the client reconstructs is unchanged.
+
+    Real chunks and upstream exceptions pass through untouched; when the client
+    disconnects, the pending upstream read is cancelled and the source is closed
+    so the underlying Bedrock stream is released rather than leaked.
+    """
+    ait = source.__aiter__()
+    next_chunk: asyncio.Task[bytes] = asyncio.ensure_future(ait.__anext__())
+    try:
+        while True:
+            try:
+                # shield so wait_for's timeout cancellation does not kill the
+                # in-flight upstream read — we want to keep waiting on it across
+                # multiple keep-alive intervals.
+                chunk = await asyncio.wait_for(asyncio.shield(next_chunk), interval_seconds)
+            except TimeoutError:
+                yield keepalive
+                continue
+            except StopAsyncIteration:
+                break
+            yield chunk
+            next_chunk = asyncio.ensure_future(ait.__anext__())
+    finally:
+        # Release the upstream regardless of where we were parked. Cancelling the
+        # in-flight read covers a disconnect mid-read; explicitly closing the
+        # source covers a disconnect while parked between reads (at ``yield``),
+        # where the read task is already done and cancel is a no-op. Either way
+        # the underlying Bedrock stream is closed rather than leaked.
+        next_chunk.cancel()
+        with contextlib.suppress(BaseException):
+            await next_chunk
+        aclose = getattr(source, "aclose", None)
+        if aclose is not None:
+            with contextlib.suppress(BaseException):
+                await aclose()
 
 
 class StreamingError(Exception):
@@ -96,9 +167,16 @@ class StreamHandler:
         except asyncio.CancelledError:
             logger.info("Stream cancelled by client")
             raise
+        except BedrockGatewayError:
+            # Preserve mapped-account status, scope and remediation at the route.
+            raise
         except Exception as e:
             logger.error(f"Error during streaming: {e}")
             raise StreamingError(str(e), chunk_index)
+        finally:
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     async def stream_bedrock_response(
         self,
@@ -347,23 +425,3 @@ class StreamHandler:
                 usage["input_tokens"] = start_usage.get("input_tokens", 0)
 
         return "".join(content_parts), usage
-
-    def keep_alive_generator(
-        self,
-        interval_seconds: float = 15.0,
-    ) -> AsyncIterator[bytes]:
-        """Create a keep-alive generator for long-running streams.
-
-        Args:
-            interval_seconds: Interval between keep-alive messages
-
-        Yields:
-            Keep-alive comment bytes
-        """
-
-        async def _generate() -> AsyncIterator[bytes]:
-            while True:
-                await asyncio.sleep(interval_seconds)
-                yield b": keep-alive\n\n"
-
-        return _generate()

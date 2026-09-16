@@ -140,10 +140,9 @@ class TestUploadToken:
     def test_rejects_missing_identity(self, mocked_aws):
         handler = _import_handler()
 
-        # Persist connection claims WITHOUT sub
-        handler._persist_connection_claims("conn-123", {
-            "claims": {},
-        })
+        # Missing identity is rejected before it can be persisted.
+        with pytest.raises(handler.ConnectionClaimsError):
+            handler._persist_connection_claims("conn-123", {"claims": {}})
 
         event = _make_ws_event(
             {"action": "upload-token", "session_id": "sess-1", "filename": "f.txt"},

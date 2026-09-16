@@ -18,7 +18,10 @@ from src.shared.models.vault import UserIdentity
 @pytest.fixture
 def mock_cognito_sync():
     mock = AsyncMock()
-    mock.create_user_and_invite = AsyncMock(return_value={"Username": "alice@test.com"})
+    mock.create_user_and_invite = AsyncMock(
+        side_effect=lambda **kw: {"Username": kw["email"], "Attributes": [{"Name": "sub", "Value": "sub-" + kw["email"]}]}
+    )
+    mock.ensure_user_group = AsyncMock()
     mock.delete_user = AsyncMock(return_value=True)
     return mock
 
@@ -49,7 +52,7 @@ class TestUsersService:
     @pytest.mark.asyncio
     async def test_create_user_with_identities(self, db_session: AsyncSession, mock_cognito_sync, seeded_org):
         """POST creates user + identities in one transaction."""
-        svc = UsersService(db_session, cognito_sync=mock_cognito_sync)
+        svc = UsersService(db_session, cognito_sync=mock_cognito_sync, identity_writer=AsyncMock())
         req = UserCreateRequest(
             email="alice@test.com",
             name="Alice Test",
@@ -85,7 +88,7 @@ class TestUsersService:
     @pytest.mark.asyncio
     async def test_create_user_calls_cognito(self, db_session: AsyncSession, mock_cognito_sync, seeded_org):
         """POST triggers Cognito user creation + invite post-commit."""
-        svc = UsersService(db_session, cognito_sync=mock_cognito_sync)
+        svc = UsersService(db_session, cognito_sync=mock_cognito_sync, identity_writer=AsyncMock())
         req = UserCreateRequest(
             email="bob@test.com",
             name="Bob Test",
@@ -104,7 +107,7 @@ class TestUsersService:
     @pytest.mark.asyncio
     async def test_create_user_no_invite(self, db_session: AsyncSession, mock_cognito_sync, seeded_org):
         """send_invite=False suppresses Cognito invitation."""
-        svc = UsersService(db_session, cognito_sync=mock_cognito_sync)
+        svc = UsersService(db_session, cognito_sync=mock_cognito_sync, identity_writer=AsyncMock())
         req = UserCreateRequest(email="carol@test.com", send_invite=False)
 
         await svc.create_user("test-org", req)
@@ -115,7 +118,7 @@ class TestUsersService:
     @pytest.mark.asyncio
     async def test_list_users(self, db_session: AsyncSession, mock_cognito_sync, seeded_org):
         """LIST returns users for the org."""
-        svc = UsersService(db_session, cognito_sync=mock_cognito_sync)
+        svc = UsersService(db_session, cognito_sync=mock_cognito_sync, identity_writer=AsyncMock())
         await svc.create_user("test-org", UserCreateRequest(email="u1@test.com"))
         await svc.create_user("test-org", UserCreateRequest(email="u2@test.com"))
 
@@ -128,7 +131,7 @@ class TestUsersService:
     @pytest.mark.asyncio
     async def test_delete_user(self, db_session: AsyncSession, mock_cognito_sync, seeded_org):
         """DELETE removes user from DB and Cognito."""
-        svc = UsersService(db_session, cognito_sync=mock_cognito_sync)
+        svc = UsersService(db_session, cognito_sync=mock_cognito_sync, identity_writer=AsyncMock())
         result = await svc.create_user("test-org", UserCreateRequest(email="del@test.com"))
 
         deleted = await svc.delete_user("test-org", result.id)
@@ -144,6 +147,6 @@ class TestUsersService:
     @pytest.mark.asyncio
     async def test_delete_user_not_found(self, db_session: AsyncSession, mock_cognito_sync, seeded_org):
         """DELETE returns False for non-existent user."""
-        svc = UsersService(db_session, cognito_sync=mock_cognito_sync)
+        svc = UsersService(db_session, cognito_sync=mock_cognito_sync, identity_writer=AsyncMock())
         deleted = await svc.delete_user("test-org", "nonexistent-id")
         assert deleted is False

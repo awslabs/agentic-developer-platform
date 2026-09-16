@@ -344,6 +344,10 @@ const STATUS_OPTIONS = [
   { value: 'skipped', label: 'Skipped' },
   // Issue #4187: filterable so "what did the spend caps stop?" is one click.
   { value: 'budget_stopped', label: 'Budget stopped' },
+  // Issue #3964: filterable so "which runs did we stop on purpose?" is one click —
+  // the question an operator asks when reconciling a spike in ended runs against
+  // deliberate intervention rather than breakage (AC-A11).
+  { value: 'aborted', label: 'Aborted' },
 ];
 
 const CHANNEL_OPTIONS = [
@@ -455,6 +459,14 @@ export default function AgentActivity() {
   // Issue #3632: Deep-link — auto-open detail modal when ?id= param is present.
   // Fetches the invocation detail on mount; silently ignores 404/errors.
   useEffect(() => {
+    // Story cards link descendants through the authorized chain. A child may
+    // lack direct user attribution even though its parent belongs to the caller.
+    const deepLinkChain = searchParams.get('chain');
+    if (deepLinkChain) {
+      setActiveChainId(deepLinkChain);
+      setChainHighlightId(searchParams.get('highlight') || undefined);
+      return;
+    }
     const deepLinkId = searchParams.get('id');
     if (!deepLinkId) return;
 

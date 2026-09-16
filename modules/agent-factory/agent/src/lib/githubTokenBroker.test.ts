@@ -15,12 +15,16 @@
  *    in CI, as provenanceClient.test.ts established)
  */
 
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fetchBrokeredToken, isBrokerEnabled } from './githubTokenBroker';
+import * as identity from './runIdentity';
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
-const EXPIRES_AT = '2026-08-27T16:45:00Z';
+const EXPIRES_AT = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
 function okResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body } as Response;
@@ -39,6 +43,9 @@ const REQ = {
 describe('githubTokenBroker', () => {
   const ENV_KEYS = [
     'ADP_GH_TOKEN_BROKER_ENABLED',
+    'ADP_AGENT_AUTHORITY_ENABLED',
+    'ADP_RUN_CREDENTIAL_FILE',
+    'ADP_WORKLOAD_TOKEN_FILE',
     'ADP_GATEWAY_ENDPOINT',
     'ADP_MESSAGE_ID',
     'VAULT_GATEWAY_URL',
@@ -85,6 +92,43 @@ describe('githubTokenBroker', () => {
     jest.restoreAllMocks();
   });
 
+  it('signs both current worker proofs on initial mint and refresh, without redirects', async () => {
+    withFakeCredentials();
+    jest.spyOn(identity, 'workerAwsCredentialProvider').mockResolvedValue(async () => ({
+      accessKeyId: 'LOCAL_PLATFORM_KEY', secretAccessKey: 'LOCAL_PLATFORM_SECRET',
+    }));
+    const dir = mkdtempSync(join(tmpdir(), 'adp-broker-identity-'));
+    process.env.ADP_AGENT_AUTHORITY_ENABLED = 'true';
+    process.env.ADP_GATEWAY_ENDPOINT = 'https://api.example.test/dev';
+    process.env.ADP_RUN_CREDENTIAL_FILE = join(dir, 'credential');
+    process.env.ADP_WORKLOAD_TOKEN_FILE = join(dir, 'pod');
+    writeFileSync(process.env.ADP_WORKLOAD_TOKEN_FILE, 'pod-proof');
+    mockFetch.mockImplementation(async () => okResponse({ token: 'token', expires_at: EXPIRES_AT }));
+    try {
+      for (const epoch of [1, 2]) {
+        writeFileSync(process.env.ADP_RUN_CREDENTIAL_FILE, `run-credential-${epoch}`);
+        await fetchBrokeredToken(REQ);
+        const init = mockFetch.mock.calls.at(-1)![1];
+        expect(init.headers['X-Adp-Run-Credential']).toBe(`run-credential-${epoch}`);
+        expect(init.headers['X-Adp-Workload-Token']).toBe('pod-proof');
+        expect(init.headers.authorization).toContain('x-adp-run-credential;x-adp-workload-token');
+        expect(init.headers.authorization).toContain('Credential=LOCAL_PLATFORM_KEY/');
+        expect(init.redirect).toBe('error');
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('refuses authority broker requests with missing identity or legacy transport', async () => {
+    process.env.ADP_AGENT_AUTHORITY_ENABLED = 'true';
+    process.env.ADP_GATEWAY_ENDPOINT = 'https://api.example.test/dev';
+    await expect(fetchBrokeredToken(REQ)).rejects.toThrow('identity unavailable');
+    delete process.env.ADP_GATEWAY_ENDPOINT;
+    process.env.VAULT_GATEWAY_URL = 'https://legacy.example.test';
+    process.env.VAULT_INTERNAL_API_KEY = 'legacy';
+    await expect(fetchBrokeredToken(REQ)).rejects.toThrow('HTTPS and SigV4');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   describe('isBrokerEnabled', () => {
     it.each(['1', 'true', 'TRUE', 'yes'])('is true for %s', value => {
       expect(isBrokerEnabled({ ADP_GH_TOKEN_BROKER_ENABLED: value })).toBe(true);
@@ -123,6 +167,30 @@ describe('githubTokenBroker', () => {
 
       await expect(fetchBrokeredToken(REQ)).rejects.toThrow(/403/);
     });
+  });
+
+  it('forces broker mode for protected workers even when the optional broker flag is off', () => {
+    expect(isBrokerEnabled({ ADP_AGENT_AUTHORITY_ENABLED: 'true', ADP_GH_TOKEN_BROKER_ENABLED: 'false' })).toBe(true);
+  });
+
+  it('retries transient unavailability, but never retries authorization or logs the response body', async () => {
+    process.env.VAULT_GATEWAY_URL = 'https://gw.internal';
+    process.env.VAULT_INTERNAL_API_KEY = 'k';
+    mockFetch.mockResolvedValueOnce(errResponse(503, 'secret-from-provider'))
+      .mockResolvedValueOnce(okResponse({ token: 'refreshed', expires_at: EXPIRES_AT }));
+    expect((await fetchBrokeredToken(REQ)).token).toBe('refreshed');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    mockFetch.mockReset().mockResolvedValue(errResponse(403, 'secret-from-provider'));
+    await expect(fetchBrokeredToken(REQ)).rejects.toThrow('Gateway returned 403 minting installation token');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds retries when the gateway remains unavailable', async () => {
+    process.env.VAULT_GATEWAY_URL = 'https://gw.internal';
+    process.env.VAULT_INTERNAL_API_KEY = 'k';
+    mockFetch.mockRejectedValue(new Error('network error with credentials'));
+    await expect(fetchBrokeredToken(REQ)).rejects.toThrow('Gateway unavailable during token renewal');
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
   describe('request contract', () => {
@@ -268,6 +336,11 @@ describe('githubTokenBroker', () => {
       const result = await fetchBrokeredToken(REQ);
 
       expect(result.expiresAt.toISOString()).toBe(new Date(EXPIRES_AT).toISOString());
+    });
+
+    it('rejects an already expired token', async () => {
+      mockFetch.mockResolvedValue(okResponse({ token: 'expired', expires_at: new Date(Date.now() - 1000).toISOString() }));
+      await expect(fetchBrokeredToken(REQ)).rejects.toThrow('expired');
     });
 
     it('throws when expires_at is missing', async () => {

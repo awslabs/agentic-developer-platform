@@ -177,12 +177,12 @@ output "agent_scaledjob_namespace" {
 
 output "agent_scaledjob_role_arn" {
   description = "IAM role ARN for the agent ScaledJob service account (IRSA)"
-  value       = aws_iam_role.agent_scaledjob.arn
+  value       = local.agent_worker_role_arn
 }
 
 output "agent_scaledjob_sa_name" {
   description = "Service account name for the agent ScaledJob pods"
-  value       = kubernetes_service_account.agent_scaledjob_sa.metadata[0].name
+  value       = local.agent_worker_sa_name
 }
 
 # -----------------------------------------------------------------------------
@@ -220,4 +220,21 @@ output "otel_collector_role_arn" {
 output "agent_observability_dashboard_name" {
   description = "CloudWatch dashboard name for agent business/application observability (empty when disabled)"
   value       = var.enable_agent_otel ? aws_cloudwatch_dashboard.agent_observability[0].dashboard_name : ""
+}
+
+output "agent_authority_table" {
+  description = "DynamoDB agent-authority table name (#5028 protected authority store)"
+  value       = aws_dynamodb_table.agent_authority.name
+}
+
+# Read by the gateway as AGENT_AUTHORITY_TABLE. Via SSM rather than a hardcoded
+# name so the gateway cannot be pointed at another environment's authority table
+# by a stale default — see AUTHORITY_TABLE_ENV in
+# modules/gateway/src/agentauth/store.py.
+resource "aws_ssm_parameter" "agent_authority_table" {
+  name        = "/adp/${var.environment}/webhook-ingress/agent-authority-table"
+  description = "DynamoDB agent-authority table name (delegated agent authority store)"
+  type        = "SecureString"
+  key_id      = aws_kms_key.dynamodb.arn
+  value       = aws_dynamodb_table.agent_authority.name
 }

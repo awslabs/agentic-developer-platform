@@ -21,7 +21,16 @@ export type InvocationStatus =
   | 'skipped'
   // Issue #4187: a per-run or per-chain spend cap ended the run. Deliberately
   // not 'failed' — the run was stopped on purpose by a limit that was working.
-  | 'budget_stopped';
+  | 'budget_stopped'
+  // Issue #3964: an operator stopped the run on purpose and the worker confirmed
+  // the abort finalized. Terminal, and deliberately not 'failed' for the same
+  // reason `budget_stopped` is not: nothing went wrong.
+  //
+  // Only a confirmed ADP abort finalization carries this status. A provider's
+  // native interruption — an SDK cancellation, a dropped connection — is NOT this
+  // value; adapters normalize their own outcomes before anything is written, so
+  // the frontend never sees a provider string here.
+  | 'aborted';
 
 /**
  * Issue #4176: three-value liveness verdict, derived server-side.

@@ -499,6 +499,34 @@ describe('useAgUiEvents', () => {
     expect(msgs[msgs.length - 1].status).toBe('error');
   });
 
+  it('clears waiting state when ingest cannot restore connection identity', async () => {
+    const onMsg = vi.fn();
+    const conv = makeConversation();
+    const { result } = renderHook(() =>
+      useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    act(() => getLastWs().simulateOpen());
+    act(() => result.current.sendMessage('Hello'));
+    expect(result.current.isAwaitingReply).toBe(true);
+
+    const message = 'Chat could not restore your sign-in session. Please reconnect and retry.';
+    act(() => getLastWs().simulateMessage({
+      type: 'response',
+      status: 'failed',
+      code: 'connection_identity_unavailable',
+      content: message,
+      error: message,
+      // No task_id: identity failure happens before a task can be dispatched.
+    }));
+
+    expect(result.current.isAwaitingReply).toBe(false);
+    const msgs = onMsg.mock.calls[onMsg.mock.calls.length - 1][1] as ChatMessage[];
+    expect(msgs[msgs.length - 1].status).toBe('error');
+    expect(msgs[msgs.length - 1].errorReason).toBe(message);
+    expect(msgs[msgs.length - 1].content).toBe(message);
+  });
+
   it('handles legacy progress heartbeat frame', async () => {
     const onMsg = vi.fn();
     const conv = makeConversation();

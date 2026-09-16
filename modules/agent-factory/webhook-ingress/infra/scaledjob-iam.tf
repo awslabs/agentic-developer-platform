@@ -22,6 +22,51 @@
 # Issue: #346, #1204, #4028, #4130
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# The webhook-events write grant, and why it is conditional (#5028 AC4)
+# -----------------------------------------------------------------------------
+# This is the one grant in this policy that cannot be scoped correctly by IAM.
+# Every agent worker assumes THIS SINGLE ROLE, and the row it needs to write is
+# keyed (event_id, arrived_at) — both caller-supplied. So `UpdateItem` on
+# `table/adp-*-webhook-events` is unavoidably "any worker may write any run's
+# row", including another run's `control_address` and `control_token`, which
+# redirects that run's control channel to a listener of the writer's choosing.
+# No condition key fixes it: the row key is data, and "the run this pod is
+# actually executing" does not exist at the IAM layer.
+#
+# The fix is therefore to remove the grant, not narrow it. When
+# agent_authority_enabled is true the three writers
+# (agent-worker-image/lib/invocation_status.py: update_status,
+# register_control_endpoint, clear_control_endpoint) route through the gateway's
+# /internal/v1/agent/self routes instead, which authenticate the invocation and
+# attempt via the run credential + TokenReview-verified pod and derive the row
+# key from the protected authority table the worker cannot write. The gateway
+# holds the write grant in its place (iam.tf, WebhookEventsSelfWrite).
+#
+# Still granted when the flag is OFF, which is the default. The worker's gateway
+# path deliberately has no DynamoDB fallback, so removing this grant while the
+# flag is off would leave nothing writing the row at all and freeze every run's
+# status at webhook_received — the #1455 gate failure. Code and permission move
+# together, keyed off the same variable, so neither half can ship alone.
+#
+# correlation-pointers is a separate statement (DynamoDBTableMgmt) and is NOT
+# touched: its advisory lineage is not an authority input and its writers have
+# not moved. Authority-enabled roles also carry the explicit permissions
+# boundary in agent-authority-boundary.tf: omission alone is insufficient when
+# AdministratorAccess or another broad policy is attached to the worker role.
+locals {
+  agent_worker_events_write = var.agent_authority_enabled ? [] : [
+    {
+      Sid    = "DynamoDBWebhookEventsUpdate"
+      Effect = "Allow"
+      Action = [
+        "dynamodb:UpdateItem"
+      ]
+      Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-webhook-events"
+    }
+  ]
+}
+
 resource "aws_iam_role" "agent_scaledjob" {
   name = "${local.name_prefix}-agent-scaledjob-role"
 
@@ -65,13 +110,12 @@ resource "aws_iam_role" "agent_scaledjob" {
 # Size: ~2.2 KB — well within the inline policy limit.
 # =============================================================================
 
-resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
-  name = "agent-worker-scoped-permissions"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
+locals {
+  agent_worker_scoped_policy = {
     Version = "2012-10-17"
-    Statement = [
+    # concat, so the webhook-events write grant can be dropped entirely rather
+    # than narrowed in place (#5028 AC4 — see local.agent_worker_events_write).
+    Statement = concat(local.agent_worker_events_write, [
       {
         Sid    = "BedrockModelInvoke"
         Effect = "Allow"
@@ -119,14 +163,6 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
           "dynamodb:UpdateItem"
         ]
         Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-correlation-pointers"
-      },
-      {
-        Sid    = "DynamoDBWebhookEventsUpdate"
-        Effect = "Allow"
-        Action = [
-          "dynamodb:UpdateItem"
-        ]
-        Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-webhook-events"
       },
       {
         # The webhook-events (and correlation-pointers) tables are encrypted
@@ -180,14 +216,8 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         # names a group nobody writes to is the exact defect that was fixed
         # here, and it fails without any error surfacing anywhere.
         #
-        # CreateLogGroup and DescribeLogGroups were granted here historically
-        # but are called by nothing: the Node entrypoints only ever call
-        # CreateLogStream (agent/src/lib/logGroup.ts consumers), and
-        # CreateLogGroup is exercised solely by bootstrap_logger.py against the
-        # *bootstrap* group, which is granted separately below. Dropping them
-        # makes it structurally impossible for this group to hit the #4051
-        # ResourceAlreadyExistsException wedge, where a worker-created group
-        # collides with the TF resource and blocks every subsequent apply.
+        # Neither Node nor Python workers create log groups. Terraform owns
+        # the groups; workers create streams and append events only.
         #
         # PutRetentionPolicy is deliberately absent for the same reason as the
         # bootstrap grant: TF owns retention (14 days, this module's
@@ -212,42 +242,27 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         ]
       },
       {
-        # Durable bootstrap logging (issue #4028). The worker writes step-level
-        # Setup logs to /adp/<env>/agent-factory/bootstrap so bootstrap failures
-        # stay diagnosable after KEDA GCs the pod — the CloudWatchLogGroups grant
-        # above covers only the primary agent group, so every bootstrap write
-        # was denied and the logs existed on pod stdout only.
-        #
-        # An identical grant exists at agent-factory/infra/gateway-main.tf
-        # (#1690) but is attached to aws_iam_role.gateway_agent (SA "adp-agent"
-        # in the gateway namespace) — a different worker path. It has no effect
-        # on agent-scaledjob-sa, which is why this drifted unnoticed.
-        #
-        # CreateLogGroup is required even though the group is TF-managed
-        # (aws_cloudwatch_log_group.agent_bootstrap in cloudwatch.tf):
-        # bootstrap_logger.py:62-66 calls it unconditionally and re-raises
-        # anything other than ResourceAlreadyExistsException, which trips the
-        # outer handler at :85-88 and disables CloudWatch logging for the whole
-        # run. With the group present the call returns AlreadyExists, which the
-        # code swallows correctly.
-        #
-        # PutRetentionPolicy is deliberately NOT granted: the worker would force
-        # retentionInDays=7 on every run while TF declares 14 (this module's
-        # convention), producing permanent drift on retention_in_days. The
-        # worker's put_retention_policy call is individually wrapped in
-        # try/except ClientError: pass (bootstrap_logger.py:68-71), so denying
-        # it is a genuine no-op. TF owns retention.
+        # Terraform provisions this exact group. The worker only creates streams
+        # and appends events; bootstrap_logger.py never creates infrastructure.
         Sid    = "BootstrapLogging"
         Effect = "Allow"
         Action = [
-          "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
         Resource = [
-          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/adp/*/agent-factory/bootstrap",
-          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/adp/*/agent-factory/bootstrap:*"
+          aws_cloudwatch_log_group.agent_bootstrap.arn,
+          "${aws_cloudwatch_log_group.agent_bootstrap.arn}:*"
         ]
+      },
+      {
+        Sid      = "ProvenanceMetrics"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = { "cloudwatch:namespace" = "ADP/Provenance" }
+        }
       },
       {
         Sid    = "Multiple"
@@ -408,6 +423,12 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
           }
         }
       }
-    ]
-  })
+    ])
+  }
+}
+
+resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
+  name   = "agent-worker-scoped-permissions"
+  role   = aws_iam_role.agent_scaledjob.id
+  policy = jsonencode(local.agent_worker_scoped_policy)
 }

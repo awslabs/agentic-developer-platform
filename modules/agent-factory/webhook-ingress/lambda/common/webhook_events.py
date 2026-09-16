@@ -32,6 +32,9 @@ from typing import Any
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
+
+from common import command_signing
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +66,50 @@ ENGINE_COMMAND_STATUS_CONSUMED = "consumed"
 #: write fail.
 ENGINE_COMMAND_BODY_MAX_CHARS = 4000
 
+# --- Engine-command attribution signature (issue #4539) -----------------------
+# The row above is the delivery mechanism, which makes it the carrier of *who
+# asked for what, on which plan*. Those fields are ordinary mutable attributes:
+# GitHub's HMAC is verified on the DELIVERY and, before #4539, nothing carried
+# that verification forward, so anything able to write the row could choose the
+# acting identity and routing target of a human approval.
+#
+# These four attributes are that missing link. `common/command_signing.py` builds
+# a versioned canonical envelope over exactly the authority-and-routing tuple and
+# signs it under a DEDICATED key; the gateway tick refuses any marked row whose
+# signature does not reproduce, before it resolves an identity or uses a row field
+# for a side effect.
+#
+# The signed tuple is stored as the CANONICAL JSON STRING, not as a DynamoDB map.
+# A map would round-trip every number through `Decimal` (boto3's resource layer),
+# so `4539` would come back as `Decimal('4539')` and re-serialize as `4539.0` or
+# raise — silent numeric drift in the one value the signature must reproduce
+# byte-for-byte. A string is opaque to that conversion, and it is already exactly
+# the bytes that were signed.
+ENGINE_COMMAND_SIGNATURE_ATTR = "engine_command_signature"
+ENGINE_COMMAND_KEY_ID_ATTR = "engine_command_signing_key_id"
+ENGINE_COMMAND_SIGNED_PAYLOAD_ATTR = "engine_command_signed_payload"
+ENGINE_COMMAND_PROTOCOL_VERSION_ATTR = "engine_command_protocol_version"
+
+# Imported rather than re-declared: `command_signing` is in THIS deploy unit
+# (both are `common/`, zipped into the same artifact), so the two cannot drift.
+# Contrast `ENGINE_COMMAND_STATUS_*` above, which the gateway must re-declare
+# precisely because it is a different deploy unit and cannot import this file.
+ENGINE_COMMAND_PROTOCOL = command_signing.ENVELOPE_VERSION
+
 # Issue #4347: namespace/metric for a dropped row write. Namespace matches the
 # existing WebhookIngress metrics (metrics.py, correlation_store.py) so the
 # drop lands on the same dashboard as the rest of ingress observability.
 METRICS_NAMESPACE = "WebhookIngress"
 ROW_WRITE_DROPPED_METRIC = "WebhookEventRowWriteDropped"
+
+#: Issue #4539: emitted when a pending marker is written WITHOUT a signature.
+#: Such a row is refused and quarantined by the tick, which is the intended
+#: fail-visible behaviour — but the tick's refusal only says "this row was not
+#: signed", whereas this metric fires at the point that knows *why* (no key
+#: seeded, keyring malformed, oversize body). An environment that never seeded
+#: the key therefore shows up here on the first command instead of as a silent
+#: stream of refusals nobody can attribute.
+ENGINE_COMMAND_UNSIGNED_METRIC = "EngineCommandRowUnsigned"
 
 _cloudwatch = None
 
@@ -136,6 +178,39 @@ def _emit_row_write_dropped(status: str, error_kind: str) -> None:
         logger.debug("Failed to emit %s metric: %s", ROW_WRITE_DROPPED_METRIC, e)
 
 
+def _emit_engine_command_unsigned(reason: str) -> None:
+    """Emit ``EngineCommandRowUnsigned`` when a marker is written unsigned (#4539).
+
+    Signing failure deliberately does not block the webhook response and does not
+    drop the audit row — the row is written with its marker and without a
+    signature, and the tick refuses and quarantines it. That is the correct
+    fail-visible outcome, but the tick can only report "unsigned"; the cause is
+    known HERE (no key seeded, keyring malformed, body over the bound).
+
+    Reason values are a bounded set derived from the exception class name, never
+    payload content and never any part of the secret: an unbounded dimension would
+    both blow up CloudWatch cardinality and risk putting delivery content into
+    metric names.
+
+    Args:
+        reason: Short, bounded cause tag for the dimension.
+    """
+    try:
+        _get_cloudwatch().put_metric_data(
+            Namespace=METRICS_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": ENGINE_COMMAND_UNSIGNED_METRIC,
+                    "Dimensions": [{"Name": "Reason", "Value": reason or "unknown"}],
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        logger.debug("Failed to emit %s metric: %s", ENGINE_COMMAND_UNSIGNED_METRIC, e)
+
+
 class WebhookEventLogger:
     """Logs webhook events to DynamoDB for audit trail.
 
@@ -194,6 +269,13 @@ class WebhookEventLogger:
         engine_command: bool = False,
         comment_body: str | None = None,
         sender_github_id: str | None = None,
+        sender_is_bot: bool = False,
+        actor_kind: str | None = None,
+        actor_user_id: str | None = None,
+        engine_command_signature: str | None = None,
+        engine_command_signing_key_id: str | None = None,
+        engine_command_signed_payload: str | None = None,
+        create_only: bool = False,
     ) -> dict[str, Any]:
         """Record a webhook event in DynamoDB.
 
@@ -234,6 +316,9 @@ class WebhookEventLogger:
             authorized_user_id: Canonical user whose credentials this run
                 may access (#3174). Set at spawn from chain policy; empty
                 string means no vault access. Written but unread until S2.
+            actor_kind: Acting principal type, separate from human attribution.
+            actor_user_id: Actual acting principal, separate from human authority.
+            create_only: Preserve an existing invocation row on an ingress retry.
             engine_command: Issue #4527 — this delivery is an ``@agent-engine``
                 comment. Marks the row ``engine_command_status=pending`` so the
                 orchestration tick picks it up. Nothing else about the row
@@ -248,6 +333,39 @@ class WebhookEventLogger:
                 logins are renameable, so a login would let a renamed account
                 inherit another user's approvals. The tick resolves it to a
                 platform identity server-side and never trusts it as authority.
+            sender_is_bot: Issue #4599 — whether a bot or GitHub App authored the
+                comment. A FACT this component already knows (it gates persona
+                dispatch on the same signal) and the tick cannot recompute, because
+                only the body and the sender id reach the row — author-kind never
+                did. Carried, not parsed, so #4303's closed-routes constraint is
+                untouched: the Lambda still decides nothing about the command.
+
+                The tick reads it to skip replying to a bot's own comment. It is a
+                NOISE filter, not an authorization boundary — bot identities seed
+                with ``role="agent"``, which resolves to MEMBER and therefore lacks
+                ``PLAN_APPROVE``, so a bot command is refused on authority whether
+                or not this flag is present. Do not relax that RBAC because this
+                exists.
+            engine_command_signature: Issue #4539 — base64url HMAC-SHA256 over the
+                canonical authority envelope, produced by
+                ``common/command_signing.sign_command`` immediately after GitHub's
+                webhook signature verified. The tick recomputes it and refuses the
+                row if it does not reproduce, BEFORE resolving an identity or using
+                any row field for a side effect.
+            engine_command_signing_key_id: The keyring id the signature was
+                produced under, so a rotation has an explicit active/previous key
+                and the verifier can select material rather than guess. An unknown
+                or stale id fails closed.
+            engine_command_signed_payload: The exact canonical JSON the signature
+                covers, stored verbatim as a STRING. The verifier reconstructs the
+                signed bytes from THIS rather than from the row's other mutable
+                attributes, then cross-checks those attributes against it — which is
+                what makes a tampered mutable copy detectable instead of merely
+                inconsistent. Stored as a string, not a map, because boto3's
+                resource layer round-trips map numbers through ``Decimal`` and would
+                silently change the bytes.
+
+                All three arrive together or not at all: see the write block below.
 
         Returns:
             The DDB item that was written.
@@ -319,19 +437,85 @@ class WebhookEventLogger:
         # user whose credentials this run may access (ships dark until S2).
         if authorized_user_id:
             item["authorized_user_id"] = authorized_user_id
+        if actor_kind:
+            item["actor_kind"] = actor_kind
+        if actor_user_id:
+            item["actor_user_id"] = actor_user_id
         # Issue #4527: mark the row for the orchestration tick. The three
         # attributes are written together or not at all — a pending marker with no
         # body would make the tick wake up to a command it cannot parse, and a body
         # with no marker would never be found (the index is sparse on the marker).
+        # Issue #4599: `engine_command_sender_is_bot` joins that all-or-nothing set.
+        # Always written (not conditional on being true) so the tick can tell "this
+        # row predates the field" from "this row says the author was human" — an
+        # absent attribute defaulting to False is the safe read either way, but an
+        # always-present boolean is what makes the cross-side contract testable.
+        #
+        # Issue #4539: the attribution signature joins that same all-or-nothing set,
+        # in BOTH directions.
+        #
+        #   * No signature without a marker. A signature on an unmarked row is dead
+        #     weight the sparse index never surfaces, and writing one would suggest
+        #     a verified command exists where none does.
+        #   * No marker "half-signed". The signature, its key id, the protocol
+        #     version and the signed payload are written as a unit. A row carrying a
+        #     signature but no key id (or no payload) is unverifiable-but-
+        #     signed-looking, which is the single worst state available here: a
+        #     verifier that treated a missing key id as "use the active key" would
+        #     hand an attacker the choice of which key their forgery is checked
+        #     against.
+        #
+        # An UNSIGNED marker, by contrast, is a legitimate and expected state — it
+        # is what a signing failure produces, and the tick refuses and quarantines
+        # it. That path is fail-visible on purpose (metric below), because the
+        # alternative, dropping the row, would erase the audit record of a command
+        # somebody really did send.
         if engine_command:
             item["engine_command_status"] = ENGINE_COMMAND_STATUS_PENDING
             item["engine_command_body"] = (comment_body or "")[
                 :ENGINE_COMMAND_BODY_MAX_CHARS
             ]
             item["engine_command_sender_github_id"] = sender_github_id or ""
+            item["engine_command_sender_is_bot"] = bool(sender_is_bot)
+
+            signature = (engine_command_signature or "").strip()
+            key_id = (engine_command_signing_key_id or "").strip()
+            signed_payload = engine_command_signed_payload or ""
+            if signature and key_id and signed_payload:
+                item[ENGINE_COMMAND_SIGNATURE_ATTR] = signature
+                item[ENGINE_COMMAND_KEY_ID_ATTR] = key_id
+                item[ENGINE_COMMAND_SIGNED_PAYLOAD_ATTR] = signed_payload
+                item[ENGINE_COMMAND_PROTOCOL_VERSION_ATTR] = ENGINE_COMMAND_PROTOCOL
+            else:
+                # Partial input is treated as no signature at all, never as a
+                # partially trusted one. `incomplete` is distinguished from `absent`
+                # because they have different causes: absent means signing raised
+                # (no key, bad keyring, oversize body) and incomplete means a caller
+                # passed a subset, which is a code defect worth its own alarm.
+                reason = (
+                    "absent"
+                    if not (signature or key_id or signed_payload)
+                    else ("incomplete")
+                )
+                logger.error(
+                    "Engine command row %s written WITHOUT an attribution signature "
+                    "(%s); the orchestration tick will refuse and quarantine it. "
+                    "Check that the engine-command signing key is seeded for this "
+                    "environment.",
+                    event_id,
+                    reason,
+                )
+                _emit_engine_command_unsigned(reason)
 
         try:
-            self._table.put_item(Item=item)
+            self._table.put_item(
+                Item=item,
+                **(
+                    {"ConditionExpression": "attribute_not_exists(event_id)"}
+                    if create_only
+                    else {}
+                ),
+            )
             logger.info(
                 "Logged webhook event: event_id=%s tenant=%s user=%s status=%s",
                 event_id,
@@ -340,6 +524,16 @@ class WebhookEventLogger:
                 status,
             )
         except Exception as e:
+            if (
+                create_only
+                and isinstance(e, ClientError)
+                and e.response["Error"]["Code"] == "ConditionalCheckFailedException"
+            ):
+                return {
+                    "event_id": event_id,
+                    "arrived_at": arrived_at,
+                    "already_recorded": True,
+                }
             # Best-effort logging — never block the webhook response.
             # Issue #4347: but no longer SILENTLY. Under #4187 enforce this row is
             # the run's authorization record, so a dropped write means the run

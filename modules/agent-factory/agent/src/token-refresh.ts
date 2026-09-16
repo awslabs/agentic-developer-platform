@@ -6,7 +6,6 @@
  * before expiration to avoid authentication failures.
  */
 
-import { createAppAuth } from '@octokit/auth-app';
 import { execFileSync } from 'child_process';
 import { fetchBrokeredToken, isBrokerEnabled } from './lib/githubTokenBroker';
 import { TOKEN_FILE_PATH, writeTokenFile } from './lib/tokenFile';
@@ -60,6 +59,7 @@ export { TOKEN_FILE_PATH, writeTokenFile };
 
 let currentToken: TokenInfo | null = null;
 let config: TokenManagerConfig | null = null;
+let refreshInFlight: Promise<string> | null = null;
 
 /**
  * Can the token manager be initialised with the credentials in this environment?
@@ -79,6 +79,7 @@ let config: TokenManagerConfig | null = null;
  * @returns true when initTokenManager() will have a working refresh path.
  */
 export function canInitTokenManager(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.ADP_TOKEN_MODE === 'pat') return false;
   const appId = env.GH_APP_ID || '';
   const owner = env.REPO_OWNER || '';
   const installationId = env.GH_APP_INSTALLATION_ID || '';
@@ -103,7 +104,12 @@ export function canInitTokenManager(env: NodeJS.ProcessEnv = process.env): boole
  * Initialize the token manager with GitHub App credentials
  */
 export function initTokenManager(options: TokenManagerConfig): void {
-  const brokerMode = options.brokerMode ?? isBrokerEnabled();
+  if (process.env.ADP_TOKEN_MODE === 'pat') {
+    throw new Error('PAT execution cannot initialize GitHub App renewal');
+  }
+  if (refreshInFlight) throw new Error('Cannot reconfigure token manager during refresh');
+  currentToken = null;
+  const brokerMode = process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true' || (options.brokerMode ?? isBrokerEnabled());
   config = {
     ...options,
     brokerMode,
@@ -133,6 +139,7 @@ async function getInstallationId(): Promise<string> {
     throw new Error('Token manager not configured');
   }
 
+  const { createAppAuth } = await import('@octokit/auth-app');
   const auth = createAppAuth({
     appId: config.appId,
     privateKey: config.privateKey,
@@ -224,6 +231,7 @@ async function generateNewToken(): Promise<TokenInfo> {
 
   const installationId = await getInstallationId();
 
+  const { createAppAuth } = await import('@octokit/auth-app');
   const auth = createAppAuth({
     appId: config.appId,
     privateKey: config.privateKey,
@@ -265,39 +273,65 @@ export async function getToken(): Promise<string> {
     throw new Error('Token manager not initialized. Call initTokenManager() first.');
   }
 
-  if (needsRefresh()) {
-    currentToken = await generateNewToken();
-
-    // Update environment variables for child processes spawned by the runtime.
-    process.env.GH_TOKEN = currentToken.token;
-    process.env.GITHUB_TOKEN = currentToken.token;
-    process.env.GH_APP_TOKEN = currentToken.token;
-
-    // Write to token file so SDK subprocess GIT_ASKPASS/gh-wrapper read fresh
-    // tokens at command-execution time (issue #1469).
-    writeTokenFile(currentToken.token);
-  }
-
-  return currentToken!.token;
+  if (refreshInFlight) return refreshInFlight;
+  return needsRefresh() ? forceRefresh() : currentToken!.token;
 }
 
-/**
- * Force refresh the token regardless of expiry
- */
+/** Publish once for every concurrent caller, including forced refreshes. */
 export async function forceRefresh(): Promise<string> {
-  if (!config) {
-    throw new Error('Token manager not initialized');
+  if (!config) throw new Error('Token manager not initialized');
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const next = await generateNewToken();
+    if (!next.token || !Number.isFinite(next.expiresAt.getTime()) || next.expiresAt.getTime() <= Date.now()) {
+      throw new Error('GitHub token is expired or invalid');
+    }
+    publishToken(next);
+    return next.token;
+  })();
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
   }
+}
 
-  currentToken = await generateNewToken();
-  process.env.GH_TOKEN = currentToken.token;
-  process.env.GITHUB_TOKEN = currentToken.token;
-  process.env.GH_APP_TOKEN = currentToken.token;
+function publishToken(next: TokenInfo): void {
+  writeTokenFile(next.token);
+  currentToken = next;
+  process.env.GH_TOKEN = next.token;
+  process.env.GITHUB_TOKEN = next.token;
+  process.env.GH_APP_TOKEN = next.token;
+  process.env.GH_APP_TOKEN_EXPIRES_AT = next.expiresAt.toISOString();
+}
 
-  // Write to token file so SDK subprocess picks up fresh token (issue #1469).
-  writeTokenFile(currentToken.token);
+/** Use the same manager from posting helpers and the proactive refresh timer. */
+export async function getRuntimeGitHubToken(): Promise<string> {
+  if (process.env.ADP_TOKEN_MODE === 'pat') {
+    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+    if (!token) throw new Error('PAT credential unavailable; reconnect the GitHub credential');
+    return token;
+  }
+  if (!config) {
+    if (!canInitTokenManager()) throw new Error('GitHub renewal configuration unavailable');
+    initTokenManager({
+      appId: process.env.GH_APP_ID!,
+      privateKey: process.env.GH_APP_PRIVATE_KEY || process.env.GH_APP_KEY,
+      installationId: process.env.GH_APP_INSTALLATION_ID,
+      owner: process.env.REPO_OWNER || '',
+      repo: process.env.REPO_NAME,
+    });
+    adoptBootstrapToken();
+  }
+  return getToken();
+}
 
-  return currentToken.token;
+/** Unknown bootstrap expiry triggers a mint; it never becomes a guessed hour. */
+export function adoptBootstrapToken(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.ADP_TOKEN_MODE === 'pat' || !env.GH_APP_TOKEN || !env.GH_APP_TOKEN_EXPIRES_AT) return;
+  const expiresAt = new Date(env.GH_APP_TOKEN_EXPIRES_AT);
+  if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) return;
+  publishToken({ token: env.GH_APP_TOKEN, expiresAt, refreshedAt: new Date() });
 }
 
 /**
@@ -354,7 +388,7 @@ export function getTokenStatus(): {
 export async function execWithFreshToken(
   file: string,
   args: readonly string[],
-  opts?: { cwd?: string; env?: NodeJS.ProcessEnv }
+  opts?: { cwd?: string; env?: NodeJS.ProcessEnv; retryOnAuthFailure?: boolean }
 ): Promise<string> {
   // Ensure we have a fresh token
   await getToken();
@@ -376,8 +410,9 @@ export async function execWithFreshToken(
   } catch (error) {
     const err = error as { message?: string; stderr?: string };
 
-    // If we get a 401, try refreshing token and retrying once
-    if (err.message?.includes('401') || err.stderr?.includes('Bad credentials')) {
+    // Composite commands can write before a later request gets 401. Replay only
+    // when the caller explicitly declares the command safe to retry.
+    if (opts?.retryOnAuthFailure && (err.message?.includes('401') || err.stderr?.includes('Bad credentials'))) {
       console.log('[TokenManager] Got 401, forcing token refresh and retrying...');
       await forceRefresh();
 

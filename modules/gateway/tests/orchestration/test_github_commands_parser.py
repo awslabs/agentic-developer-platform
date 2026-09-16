@@ -12,6 +12,13 @@ module boundary. So they are enumerated:
 - **Blockquotes are not commands.** GitHub's "Quote reply" button is the single most
   likely way a command is accidentally re-issued, and quoting a halt would halt the
   plan again, attributed to whoever pressed the button.
+- **Code is not a command** (#4599). A backticked or fenced command name is how a
+  human writes *about* a command — in a doc, a table, a design note, or the bridge's
+  own success message. A separate rule from the blockquote one, and not implied by
+  it: this was the actual defect behind the maiden-voyage noise.
+- **The tag must be addressed, not described** (#4599). A word running into the tag
+  means prose. Weaker than "the tag must lead the comment" on purpose — that rule
+  would have dropped the `cc @agent-engine halt` form and looked like a dead engine.
 - **Only the first command counts.** "Apply every command we can find" turns one
   careless comment into several state changes.
 - **The tag is a token.** `@agent-engineering-team` in prose must not halt a plan.
@@ -224,6 +231,192 @@ class TestOnlyTheFirstCommandCounts:
         """
         body = "thanks @agent-engine\n@agent-engine halt"
         assert parse_engine_command(body).verb is CommandVerb.HALT
+
+
+class TestCodeIsNotACommand:
+    """Issue #4599: a backticked command is documentation, not an instruction.
+
+    This is the defect the issue was filed for, though not the one it described. The
+    verb anchor, the token match and the blockquote skip all shipped in #4527 and all
+    work; what was missing was any notion of Markdown code. Inside a code span the
+    tag IS still immediately followed by the verb, so every existing guard passes —
+    and a backticked command name is exactly how a human writes *about* a command in
+    a doc, a table or a design note. The false-trigger rate tracked how much the
+    feature was being documented.
+    """
+
+    def test_an_inline_span_in_prose_is_not_a_command(self):
+        """The maiden-voyage shape (#4589): a design note explaining the feature."""
+        body = "a human posts `@agent-engine accept` to approve the plan."
+        assert parse_engine_command(body) is None
+
+    def test_a_span_that_is_the_whole_line_is_not_a_command(self):
+        """No prose to disqualify it — the backticks alone must be enough.
+
+        Called out explicitly in the architect's review because a line-level rule
+        that only looked at surrounding prose would let this one through.
+        """
+        assert parse_engine_command("`@agent-engine accept`") is None
+
+    def test_a_table_cell_span_is_not_a_command(self):
+        """A docs table listing the commands must not issue every one of them."""
+        body = "| Command | Effect |\n|---|---|\n| `@agent-engine halt` | stop spend |"
+        assert parse_engine_command(body) is None
+
+    def test_a_bulleted_span_is_not_a_command(self):
+        assert parse_engine_command("- `@agent-engine resume` clears a halt") is None
+
+    def test_a_fenced_block_is_not_a_command(self):
+        body = "run this:\n```\n@agent-engine accept\n```"
+        assert parse_engine_command(body) is None
+
+    def test_a_fence_with_an_info_string_is_not_a_command(self):
+        body = "```text\n@agent-engine halt\n```"
+        assert parse_engine_command(body) is None
+
+    def test_a_tilde_fence_is_not_a_command(self):
+        """GitHub renders `~~~` as a fence too."""
+        assert parse_engine_command("~~~\n@agent-engine halt\n~~~") is None
+
+    def test_an_indented_fence_in_a_list_item_is_not_a_command(self):
+        body = "- example:\n  ```\n  @agent-engine accept\n  ```"
+        assert parse_engine_command(body) is None
+
+    def test_a_real_command_after_a_closed_fence_still_parses(self):
+        """Code-awareness must not swallow the rest of the comment.
+
+        The realistic shape: show the command in a block, then actually issue it.
+        """
+        body = "```\n@agent-engine halt\n```\n@agent-engine accept"
+        assert parse_engine_command(body).verb is CommandVerb.ACCEPT
+
+    def test_a_command_with_a_trailing_span_still_parses(self):
+        """Stripping spans must not drop the line they were on.
+
+        A real command that happens to cite a file is still a command, which is why
+        spans are removed from a line rather than disqualifying it.
+        """
+        command = parse_engine_command("@agent-engine halt — see `docs/runbook.md`")
+        assert command.verb is CommandVerb.HALT
+
+
+class TestUnclosedFencesFailSafe:
+    """Issue #4599: an unterminated fence swallows the rest of the body.
+
+    Load-bearing direction, not an accident of implementation. Bodies are truncated
+    at `ENGINE_COMMAND_BODY_MAX_CHARS` on the webhook side, which can cut a body
+    mid-fence and leave an opening ``` with no partner. If an unclosed fence were
+    treated as "not really a fence", truncation would become a way to smuggle a
+    command *out* of a code block: pad to the cap, open a fence, and the fence
+    silently stops applying.
+
+    Erring the other way can only lose a command written after an unterminated
+    fence — a body that renders as code on GitHub anyway, so the human cannot see
+    their command as a command either.
+    """
+
+    def test_a_command_after_an_unclosed_fence_is_not_a_command(self):
+        body = "here is how:\n```\n@agent-engine accept"
+        assert parse_engine_command(body) is None
+
+    def test_a_command_after_an_unclosed_tilde_fence_is_not_a_command(self):
+        assert parse_engine_command("docs:\n~~~\n@agent-engine halt") is None
+
+    def test_a_fence_of_the_other_character_does_not_close_a_block(self):
+        """A ``` inside a ~~~ block is content, exactly as Markdown renders it."""
+        body = "~~~\n```\n@agent-engine accept\n~~~"
+        assert parse_engine_command(body) is None
+
+
+class TestTheTagMustBeAddressedNotDescribed:
+    """Issue #4599: the address-only prefix rule.
+
+    Deliberately NOT the "leading token" rule the issue proposed. A bare-leading-
+    token requirement would reject `cc @agent-engine halt` (a form the parser's own
+    comment documents) and `no — @agent-engine halt` (a shipped, tested reply shape),
+    delivering row 1 of the issue's own blast-radius table: real human commands
+    silently ignored, making the engine look dead.
+
+    The discriminator is whether the sentence STOPS at the tag or flows through it.
+    """
+
+    def test_a_word_running_into_the_tag_is_prose(self):
+        assert parse_engine_command("the operator should @agent-engine halt the plan") is None
+
+    def test_describing_the_command_without_backticks_is_prose(self):
+        """Belt-and-braces with the code rule: prose is prose unquoted too."""
+        assert parse_engine_command("a human posts @agent-engine accept to approve") is None
+
+    def test_a_bare_command_parses(self):
+        assert parse_engine_command("@agent-engine accept").verb is CommandVerb.ACCEPT
+
+    def test_the_cc_form_parses(self):
+        """The documented address form. The regression guard for over-tightening."""
+        assert parse_engine_command("cc @agent-engine halt").verb is CommandVerb.HALT
+
+    def test_the_slash_cc_form_parses(self):
+        assert parse_engine_command("/cc @agent-engine halt").verb is CommandVerb.HALT
+
+    def test_leading_whitespace_parses(self):
+        assert parse_engine_command("   @agent-engine resume").verb is CommandVerb.RESUME
+
+    def test_a_bulleted_command_parses(self):
+        assert parse_engine_command("- @agent-engine accept").verb is CommandVerb.ACCEPT
+
+    def test_an_ordered_list_command_parses(self):
+        assert parse_engine_command("1. @agent-engine accept").verb is CommandVerb.ACCEPT
+
+    def test_another_mention_before_the_tag_parses(self):
+        assert parse_engine_command("@alice @agent-engine halt").verb is CommandVerb.HALT
+
+    def test_a_clause_boundary_before_the_tag_parses(self):
+        """Punctuation ends the preceding thought, so the tag begins a new one."""
+        assert parse_engine_command("no — @agent-engine halt").verb is CommandVerb.HALT
+        assert parse_engine_command("as discussed, @agent-engine accept").verb is CommandVerb.ACCEPT
+
+
+class TestTheRegistrationNoteIsNotACommand:
+    """Issue #4599: the bridge's own success message must not trigger the bridge.
+
+    The real source of the #4589 noise, and the reason it fired *repeatedly* rather
+    than occasionally: `engine_registration._success_note` posts on every successful
+    draft registration, and it quoted the accept command inline. Every registration
+    therefore produced a marked row, a parse, a refusal (the author is a bot with no
+    `PLAN_APPROVE`) and a "this command cannot be applied by this account" reply.
+
+    Pinned as a literal fixture rather than by importing the worker, because the
+    emitter lives in a different deploy unit (`agent-worker-image`) that this suite
+    cannot import. If that note's shape changes back to an inline span, this test is
+    what catches it.
+    """
+
+    _SUCCESS_NOTE = (
+        "### Delivery loop registered with the orchestration engine\n"
+        "\n"
+        "**Plan**: `flow-abc` (v1) — 12 nodes, 14 edges\n"
+        "**State**: `draft` — the plan is visible in the graph UI and executes nothing.\n"
+        "**Acceptance gate**: `gate/acceptance`\n"
+        "\n"
+        "Reply with the following to start execution:\n"
+        "\n"
+        "```\n"
+        "@agent-engine accept\n"
+        "```"
+    )
+
+    def test_the_success_note_does_not_parse_as_a_command(self):
+        assert parse_engine_command(self._SUCCESS_NOTE) is None
+
+    def test_the_old_inline_form_would_have_parsed(self):
+        """Proof the fixture above is actually testing something.
+
+        The pre-#4599 note said "Reply `@agent-engine accept` to start execution."
+        Both the code rule AND the address rule now reject it; this documents that
+        the old shape really was a live command, so nobody reads the test above as
+        vacuous.
+        """
+        old = "Reply `@agent-engine accept` to start execution."
+        assert parse_engine_command(old) is None
 
 
 class TestDegenerateInput:

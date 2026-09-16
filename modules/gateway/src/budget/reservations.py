@@ -78,7 +78,7 @@ _KEY_PREFIX = "budget:resv"
 # Check EVERY key's headroom before incrementing ANY of them.
 #
 # KEYS  = one reservation hash per (entity, period) budget being enforced
-# ARGV  = [request_id, amount, now, headroom_1, ttl_1, ... headroom_N, ttl_N]
+# ARGV = [request_id, amount, now, headroom_1, ttl_1, initialized_1, ...]
 #
 # Each hash maps request_id -> "<amount>:<deadline>". Storing the deadline
 # per-field (rather than relying on the key TTL) is what makes an abandoned
@@ -106,7 +106,16 @@ local now = tonumber(ARGV[3])
 -- Pass 1: verify every budget has room. No writes here, so a denial cannot
 -- leave a partial reservation behind.
 for i = 1, #KEYS do
-    local headroom = tonumber(ARGV[2 + (i * 2)])
+    local headroom = tonumber(ARGV[1 + (i * 3)])
+    local strict = ARGV[3 + (i * 3)] == '1'
+    if strict then
+        local anchor = redis.call('HGET', KEYS[i], '__initialized__')
+        if not anchor then return {-1, i} end
+        local sep = string.find(anchor, ':')
+        if not sep or tonumber(string.sub(anchor, 1, sep - 1)) ~= 0 or tonumber(string.sub(anchor, sep + 1)) <= now then
+            return {-1, i}
+        end
+    end
     local in_flight = 0
     local entries = redis.call('HGETALL', KEYS[i])
     for j = 1, #entries, 2 do
@@ -114,6 +123,10 @@ for i = 1, #KEYS do
         local sep = string.find(value, ':')
         local entry_amount = tonumber(string.sub(value, 1, sep - 1))
         local entry_deadline = tonumber(string.sub(value, sep + 1))
+        -- A policy accumulator cannot discard usage because a field expired.
+        -- Pending provider calls get a bounded observation window; a missing
+        -- receipt beyond it blocks further spend until reconciliation.
+        if strict and entry_deadline <= now then return {-1, i} end
         -- Skip this request's own prior reservation: a retry must replace it,
         -- not stack on top of it. Skip expired entries: their owner is gone.
         if field ~= request_id and entry_deadline > now then
@@ -127,7 +140,8 @@ end
 
 -- Pass 2: every budget had room, so commit to all of them.
 for i = 1, #KEYS do
-    local ttl = tonumber(ARGV[3 + (i * 2)])
+    local ttl = tonumber(ARGV[2 + (i * 3)])
+    local strict = ARGV[3 + (i * 3)] == '1'
     local deadline = now + ttl
     -- Prune expired fields opportunistically so the hash cannot grow without
     -- bound under sustained traffic on a long period (e.g. monthly).
@@ -140,6 +154,9 @@ for i = 1, #KEYS do
         end
     end
     redis.call('HSET', KEYS[i], request_id, amount .. ':' .. deadline)
+    if strict then
+        redis.call('HSET', KEYS[i], 'pending:' .. request_id, '0:' .. (now + 3660))
+    end
     redis.call('EXPIRE', KEYS[i], ttl)
 end
 
@@ -184,6 +201,7 @@ for i = 1, #KEYS do
         if tonumber(string.sub(existing, sep + 1)) > now then
             local ttl = tonumber(ARGV[3 + i])
             redis.call('HSET', KEYS[i], request_id, amount .. ':' .. (now + ttl))
+            redis.call('HDEL', KEYS[i], 'pending:' .. request_id)
             redis.call('EXPIRE', KEYS[i], ttl)
             adjusted = adjusted + 1
         else
@@ -222,6 +240,9 @@ class ReservationTarget:
     # (the budget-usage-tracker Lambda writes no run rows). Expiring it on the
     # short default would reset the run's spend to zero every two minutes.
     ttl_seconds: int | None = None
+    # Accepted-policy accumulators are initialized once before any work runs.
+    # Loss of that anchor or an unresolved provider receipt is unknown usage.
+    require_initialization: bool = False
 
     def key(self) -> str:
         """Redis key for this budget's in-flight reservations.
@@ -252,6 +273,12 @@ class ReservationOutcome:
 
     admitted: bool
     exhausted: ReservationTarget | None = None
+
+
+@dataclass(frozen=True)
+class ReservationSnapshot:
+    total_usd: Decimal
+    has_pending: bool
 
 
 class ReservationStore:
@@ -337,11 +364,12 @@ class ReservationStore:
 
         now = self._clock()
 
-        # Interleaved (headroom, ttl) per target — the Lua indexes them in pairs.
+        # Interleaved (headroom, ttl, initialization requirement) per target.
         per_target_args: list[str | int] = []
         for target in targets:
             per_target_args.append(str(target.headroom_usd))
             per_target_args.append(self._ttl_for(target))
+            per_target_args.append("1" if target.require_initialization else "0")
 
         try:
             client = await self._get_client()
@@ -362,12 +390,50 @@ class ReservationStore:
             logger.warning(f"Budget reservation unavailable, degrading to settled-ledger check: {exc}")
             return None
 
+        if int(result[0]) < 0:
+            return None
         admitted = bool(int(result[0]))
         if admitted:
             return ReservationOutcome(admitted=True)
 
         index = int(result[1])
         return ReservationOutcome(admitted=False, exhausted=targets[index - 1])
+
+    async def snapshot(self, target: ReservationTarget) -> ReservationSnapshot | None:
+        """Read an initialized policy accumulator; absence is never zero spend."""
+        try:
+            entries = await (await self._get_client()).hgetall(target.key())
+            now = self._clock()
+            anchor = entries.get("__initialized__")
+            if anchor is None:
+                return None
+            amount, deadline = anchor.split(":")
+            if Decimal(amount) != 0 or float(deadline) <= now:
+                return None
+            total = Decimal(0)
+            pending = False
+            for field, value in entries.items():
+                amount, deadline = value.split(":")
+                cost = Decimal(amount)
+                if not cost.is_finite() or cost < 0 or float(deadline) <= now:
+                    return None
+                total += cost
+                pending |= field.startswith("pending:")
+            return ReservationSnapshot(total, pending)
+        except Exception:
+            logger.warning("Policy budget snapshot unavailable")
+            return None
+
+    async def mark_unknown(self, request_id: str, target: ReservationTarget) -> None:
+        """Retain the reserved upper bound and block new spend until a receipt."""
+        try:
+            client = await self._get_client()
+            if await client.hexists(target.key(), request_id):
+                await client.hset(target.key(), f"pending:{request_id}", f"0:{self._clock()}")
+        except Exception:
+            # The existing reservation still accounts for the request. Its
+            # pending deadline will refuse future spend if this write was lost.
+            logger.warning("Policy usage remains unresolved")
 
     async def reconcile(
         self,

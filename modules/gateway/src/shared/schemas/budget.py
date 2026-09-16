@@ -64,6 +64,24 @@ class EntityType(str, Enum):
     # period: it has a settled Postgres ledger (the budget-usage-tracker Lambda
     # writes a "root_user" row), so it belongs in the hierarchy, not _scope_targets.
     ROOT_USER = "root_user"
+    # Issue #5128: one accepted delivery plan — a whole orchestration flow and every
+    # developer/reviewer/repair/evaluation run under it.
+    #
+    # Deliberately NOT a reuse of RUN or CHAIN, and the reason is the property this
+    # scope exists to provide. RUN is per-run, so each child of a fan-out gets its
+    # own fresh allowance. CHAIN keys on `correlation_id`, which the engine sets to a
+    # fresh per-attempt run id (`orchestration/dispatch_pass._build_envelope`), so
+    # every retry and every restart would start a new chain and a new allowance —
+    # which is the "child resets allowance" bug class the issue names, arriving by
+    # way of vocabulary reuse rather than by a coding mistake.
+    #
+    # The id is `flow:<flow_id>` from `orchestration/execution_policy.flow_budget_
+    # binding`, derived from a server-issued flow id that never changes, so the key
+    # is stable across gates, retries and restarts by construction. Like RUN/CHAIN
+    # it is LIFETIME-scoped (`PeriodType.RUN`) rather than per-calendar-period: a
+    # delivery is not a month, and rolling the allowance over on the 1st would hand a
+    # long-running flow a second full allowance it was never granted.
+    FLOW = "flow"
 
 
 class EnforcementMode(str, Enum):
@@ -104,7 +122,7 @@ class CostRecordRequest(BaseModel):
     model_name: str
     tokens_in: int = Field(ge=0)
     tokens_out: int = Field(ge=0)
-    request_cost_usd: Decimal | None = Field(None, decimal_places=4)
+    request_cost_usd: Decimal | None = Field(None, decimal_places=6)
 
 
 class BudgetUsageResponse(BaseModel):

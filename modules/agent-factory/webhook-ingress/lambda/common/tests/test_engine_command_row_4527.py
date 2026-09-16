@@ -15,6 +15,9 @@ deploy units, and these tests pin the parts of it that are load-bearing:
   not at all.
 * **The sender is numeric.** Logins are renameable; a renamed account inheriting
   another user's approvals is an authorization bug, not a display bug.
+* **Author-kind travels with it** (#4599). A fourth attribute, for the same reason
+  as the body: the tick cannot see the webhook payload, so anything it needs about
+  the comment has to be carried. Used to stay quiet at a bot's own comment.
 * **Ordinary rows are untouched.** Marking every webhook would defeat the sparse
   index and put 30 days of deliveries in front of the tick on every wake.
 """
@@ -238,6 +241,115 @@ class TestTheMarkedRow:
             )["Item"]["engine_command_status"]
             == ENGINE_COMMAND_STATUS_CONSUMED
         )
+
+
+class TestTheSenderIsBotFlag:
+    """Issue #4599 — author-kind is carried, because the tick cannot recompute it.
+
+    A fourth attribute on the same all-or-nothing set. The tick reads it to stay
+    quiet instead of posting "this command cannot be applied by this account" at a
+    bot's own comment — the #4589 noise. Author-kind is on the webhook payload here
+    and nowhere the tick can see it (only the body and the sender id ever reached
+    the row), so it must travel as a FACT on the row.
+
+    Carrying a fact, not a parse: this Lambda still decides nothing about the
+    command, so #4303's closed-routes constraint is untouched.
+
+    **This is the writer half of a cross-deploy-unit contract, and it ships first.**
+    The reader (`engine_commands._handle_row`) defaults an absent flag to "human",
+    so the ordering is safe in both directions — but the flag has to actually be
+    written for the guard to ever fire, which is what these tests pin.
+    """
+
+    @mock_aws
+    def test_a_bot_authored_command_records_it(self, aws_credentials):
+        _create_table()
+        item = _log(
+            WebhookEventLogger(table_name=TABLE),
+            event_id="delivery-engine-bot",
+            engine_command=True,
+            comment_body="@agent-engine accept",
+            sender_github_id="200",
+            sender_is_bot=True,
+        )
+
+        assert item["engine_command_sender_is_bot"] is True
+
+    @mock_aws
+    def test_a_human_authored_command_records_false(self, aws_credentials):
+        """Written even when false, so "human" and "row predates the field" differ.
+
+        An absent attribute is a safe read either way (the tick treats it as human),
+        but an always-present boolean is what makes the contract testable rather
+        than inferred.
+        """
+        _create_table()
+        item = _log(
+            WebhookEventLogger(table_name=TABLE),
+            event_id="delivery-engine-human",
+            engine_command=True,
+            comment_body="@agent-engine accept",
+            sender_github_id="100",
+            sender_is_bot=False,
+        )
+
+        assert item["engine_command_sender_is_bot"] is False
+
+    @mock_aws
+    def test_the_default_is_human(self, aws_credentials):
+        """Omitting the argument must not silently mark a human comment as a bot.
+
+        A default of True here would suppress every real command — the engine would
+        look dead, which is the failure mode the issue's blast-radius table names.
+        """
+        _create_table()
+        item = _log(
+            WebhookEventLogger(table_name=TABLE),
+            event_id="delivery-engine-default",
+            engine_command=True,
+            comment_body="@agent-engine halt",
+            sender_github_id="100",
+        )
+
+        assert item["engine_command_sender_is_bot"] is False
+
+    @mock_aws
+    def test_the_flag_is_durable_not_merely_returned(self, aws_credentials):
+        """Same reasoning as the body: the STORED item is the contract.
+
+        The tick reads DynamoDB, not this return value, so a flag that is only ever
+        in the returned dict would suppress nothing.
+        """
+        table = _create_table()
+        _log(
+            WebhookEventLogger(table_name=TABLE),
+            event_id="delivery-engine-bot-durable",
+            arrived_at="2026-09-01T19:58:00Z",
+            engine_command=True,
+            comment_body="@agent-engine accept",
+            sender_github_id="200",
+            sender_is_bot=True,
+        )
+
+        stored = table.get_item(
+            Key={
+                "event_id": "delivery-engine-bot-durable",
+                "arrived_at": "2026-09-01T19:58:00Z",
+            }
+        )["Item"]
+        assert stored["engine_command_sender_is_bot"] is True
+
+    @mock_aws
+    def test_an_ordinary_row_does_not_carry_the_flag(self, aws_credentials):
+        """It joins the engine set, so it must respect the same sparseness rule."""
+        _create_table()
+        item = _log(
+            WebhookEventLogger(table_name=TABLE),
+            event_id="delivery-ordinary-no-flag",
+            sender_is_bot=True,
+        )
+
+        assert "engine_command_sender_is_bot" not in item
 
 
 class TestOrdinaryRowsAreUnchanged:

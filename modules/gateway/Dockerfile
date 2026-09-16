@@ -37,6 +37,12 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY src/ src/
+# Issue #4969: the shared Bedrock pricing policy and its immutable rate snapshots.
+# src/budget and src/proxy import it at request time, and the migration seed in
+# alembic/ is validated against the same snapshot files, so the package (including
+# snapshots/*.json) must be present in the runtime image, not just installed as a
+# build-time dependency.
+COPY pricing_policy/ pricing_policy/
 COPY alembic/ alembic/
 COPY alembic.ini .
 # Issue #4146: the /setup page's Download button is served by GET /api/cli/{script_name}

@@ -75,7 +75,10 @@ class UpstreamHandler(BaseHTTPRequestHandler):
             self._send_sse()
         elif path == "/boom":
             self._send_bytes(503, b'{"error": "upstream_exploded", "detail": "gateway said no"}', "application/json")
-        elif path == "/echo":
+        elif path in ("/echo", "/openai/v1/echo"):
+            # /openai/v1/echo: an echo route under the OpenAI base path, for the
+            # model-normalization tests. Other unknown paths (e.g. /api/echo in
+            # the base-path test) must keep 404ing.
             payload = json.dumps(
                 {
                     "method": self.command,
@@ -541,6 +544,82 @@ class TestForwarding:
         assert echoed["method"] == "GET"
         assert echoed["authorization"] == f"Bearer {SEEDED_ACCESS_TOKEN}"
         _drain(proxy.process)
+
+
+# --------------------------------------------------------------------------
+# Model-name normalization (OpenAI route)
+# --------------------------------------------------------------------------
+
+
+class TestModelNormalization:
+    """Bare model slugs on the OpenAI route are prefixed for the gateway.
+
+    Codex's in-app model picker writes short slugs (``gpt-5.6-sol``) into
+    config.toml, but the gateway's OpenAI passthrough only serves models under
+    their prefixed ids (``openai.gpt-5.6-sol``). The proxy closes that gap so
+    switching models inside Codex does not 400 every subsequent request.
+    """
+
+    def _post_raw(self, url: str, raw: bytes) -> dict[str, Any]:
+        request = urllib.request.Request(
+            url,
+            data=raw,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - loopback test URL
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_bare_model_on_openai_route_is_prefixed(self, start_proxy, upstream: UpstreamGateway) -> None:
+        proxy = start_proxy(upstream.url)
+        status, echoed = _post_json(
+            f"{proxy.url}/openai/v1/echo",
+            {"model": "gpt-5.6-sol", "input": "hi", "stream": True},
+        )
+
+        assert status == 200
+        forwarded = json.loads(echoed["body"])
+        assert forwarded["model"] == "openai.gpt-5.6-sol"
+        # The rest of the payload rides along unchanged.
+        assert forwarded["input"] == "hi"
+        assert forwarded["stream"] is True
+        _drain(proxy.process)
+
+    def test_already_prefixed_model_passes_through_byte_for_byte(self, start_proxy, upstream: UpstreamGateway) -> None:
+        """No rewrite means no re-serialization: the exact client bytes arrive."""
+        proxy = start_proxy(upstream.url)
+        raw = b'{"model": "openai.gpt-5.6-sol",\n  "input": "hi"}'
+        echoed = self._post_raw(f"{proxy.url}/openai/v1/echo", raw)
+        assert echoed["body"].encode("utf-8") == raw
+        _drain(proxy.process)
+
+    def test_model_outside_openai_route_is_untouched(self, start_proxy, upstream: UpstreamGateway) -> None:
+        """Bedrock/Anthropic model ids must never be prefixed."""
+        proxy = start_proxy(upstream.url)
+        raw = b'{"model": "global.anthropic.claude-opus-4-6-v1"}'
+        echoed = self._post_raw(f"{proxy.url}/echo", raw)
+        assert echoed["body"].encode("utf-8") == raw
+        _drain(proxy.process)
+
+    def test_non_json_body_on_openai_route_passes_through(self, start_proxy, upstream: UpstreamGateway) -> None:
+        proxy = start_proxy(upstream.url)
+        raw = b"model=gpt-5.6-sol&not=json"
+        echoed = self._post_raw(f"{proxy.url}/openai/v1/echo", raw)
+        assert echoed["body"].encode("utf-8") == raw
+        _drain(proxy.process)
+
+    def test_rewrite_logs_model_names_but_never_the_prompt(self, start_proxy, upstream: UpstreamGateway) -> None:
+        """The rewrite log line names the model — and nothing else from the body."""
+        proxy = start_proxy(upstream.url)
+        status, _ = _post_json(
+            f"{proxy.url}/openai/v1/echo",
+            {"model": "gpt-5.6-sol", "input": "SENTINEL-PROMPT-CONTENT"},
+        )
+        assert status == 200
+
+        stdout, stderr = _drain(proxy.process)
+        assert "'gpt-5.6-sol' -> 'openai.gpt-5.6-sol'" in stderr
+        assert "SENTINEL-PROMPT-CONTENT" not in stdout + stderr
 
 
 # --------------------------------------------------------------------------

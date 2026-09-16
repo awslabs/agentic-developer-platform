@@ -55,32 +55,55 @@ resource "aws_security_group_rule" "lambda_to_rds" {
 # Lambda Deployment Package
 # =============================================================================
 
+# Issue #4969: the shared pricing policy package, vendored into BOTH Lambda zips.
+#
+# Enumerated with fileset() rather than one source block per file on purpose.
+# The hand-listed pattern below it has already shipped a Lambda that ImportErrors
+# on cold start when a module was added and not listed (see #4391), and this
+# package is worse for that failure mode: it carries snapshots/*.json data files
+# whose absence produces a FileNotFoundError only when a rate is actually looked
+# up. Globbing means adding a snapshot or a module cannot desync the archives.
+#
+# Both Lambdas and the gateway image must carry the same package: it is the single
+# source of pricing truth, and a version skew between the estimator and the
+# settlement path is the class of bug #4969 exists to remove.
+locals {
+  pricing_policy_dir = "${path.root}/../pricing_policy"
+  pricing_policy_files = concat(
+    tolist(fileset(local.pricing_policy_dir, "**/*.py")),
+    tolist(fileset(local.pricing_policy_dir, "snapshots/*.json")),
+  )
+  shared_lambda_dir   = "${path.root}/../lambda/shared"
+  shared_lambda_files = fileset(local.shared_lambda_dir, "*.py")
+}
+
 # Archive the usage tracker Lambda code
 data "archive_file" "usage_tracker" {
   type        = "zip"
   output_path = "${path.module}/usage_tracker.zip"
 
-  source {
-    content  = file("${path.root}/../lambda/budget-usage-tracker/handler.py")
-    filename = "handler.py"
+  dynamic "source" {
+    for_each = fileset("${path.root}/../lambda/budget-usage-tracker", "*.py")
+    content {
+      content  = file("${path.root}/../lambda/budget-usage-tracker/${source.value}")
+      filename = source.value
+    }
   }
 
-  source {
-    content  = file("${path.root}/../lambda/shared/db.py")
-    filename = "db.py"
+  dynamic "source" {
+    for_each = local.pricing_policy_files
+    content {
+      content  = file("${local.pricing_policy_dir}/${source.value}")
+      filename = "pricing_policy/${source.value}"
+    }
   }
 
-  source {
-    content  = file("${path.root}/../lambda/shared/pricing_fallback.py")
-    filename = "pricing_fallback.py"
-  }
-
-  # Issue #4391: the handler imports this at module scope. A shared module that
-  # is not listed here ships a Lambda that ImportErrors on cold start, which
-  # stops ALL budget metering — not just the fix it was added for.
-  source {
-    content  = file("${path.root}/../lambda/shared/root_principal.py")
-    filename = "root_principal.py"
+  dynamic "source" {
+    for_each = local.shared_lambda_files
+    content {
+      content  = file("${local.shared_lambda_dir}/${source.value}")
+      filename = source.value
+    }
   }
 }
 
@@ -89,19 +112,28 @@ data "archive_file" "pricing_refresh" {
   type        = "zip"
   output_path = "${path.module}/pricing_refresh.zip"
 
-  source {
-    content  = file("${path.root}/../lambda/pricing-refresh/handler.py")
-    filename = "handler.py"
+  dynamic "source" {
+    for_each = fileset("${path.root}/../lambda/pricing-refresh", "*.py")
+    content {
+      content  = file("${path.root}/../lambda/pricing-refresh/${source.value}")
+      filename = source.value
+    }
   }
 
-  source {
-    content  = file("${path.root}/../lambda/shared/db.py")
-    filename = "db.py"
+  dynamic "source" {
+    for_each = local.pricing_policy_files
+    content {
+      content  = file("${local.pricing_policy_dir}/${source.value}")
+      filename = "pricing_policy/${source.value}"
+    }
   }
 
-  source {
-    content  = file("${path.root}/../lambda/shared/pricing_fallback.py")
-    filename = "pricing_fallback.py"
+  dynamic "source" {
+    for_each = local.shared_lambda_files
+    content {
+      content  = file("${local.shared_lambda_dir}/${source.value}")
+      filename = source.value
+    }
   }
 }
 
@@ -240,7 +272,7 @@ resource "aws_s3_bucket_notification" "chat_logs" {
 
 resource "aws_lambda_function" "pricing_refresh" {
   function_name                  = "${var.name_prefix}-pricing-refresh"
-  description                    = "Refreshes model pricing from AWS Pricing API (Issue #234)"
+  description                    = "Publishes validated AWS Bedrock pricing generations from AWS catalogs and model cards"
   reserved_concurrent_executions = var.enable_reserved_concurrency ? 2 : -1
 
   filename         = data.archive_file.pricing_refresh.output_path
@@ -302,6 +334,14 @@ resource "aws_cloudwatch_event_rule" "pricing_refresh" {
   name                = "${var.name_prefix}-pricing-refresh-schedule"
   description         = "Triggers pricing refresh Lambda daily"
   schedule_expression = var.pricing_refresh_schedule
+  # Creation and corrective infra applies must not start publication before the
+  # matching code/schema are ready. The release verifier explicitly enables the
+  # rule after seed, code, notification and immediate-refresh checks pass.
+  state = "DISABLED"
+
+  lifecycle {
+    ignore_changes = [state]
+  }
 }
 
 # EventBridge Target for Pricing Refresh Lambda
@@ -309,6 +349,17 @@ resource "aws_cloudwatch_event_target" "pricing_refresh" {
   rule      = aws_cloudwatch_event_rule.pricing_refresh.name
   target_id = "${var.name_prefix}-pricing-refresh"
   arn       = aws_lambda_function.pricing_refresh.arn
+
+  retry_policy {
+    maximum_retry_attempts       = 2
+    maximum_event_age_in_seconds = 3600
+  }
+
+  dead_letter_config {
+    arn = aws_sqs_queue.pricing_delivery_failure.arn
+  }
+
+  depends_on = [aws_sqs_queue_policy.pricing_delivery_failure, aws_lambda_permission.pricing_refresh_eventbridge]
 }
 
 # EventBridge Permission for Pricing Refresh Lambda

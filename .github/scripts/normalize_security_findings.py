@@ -60,6 +60,13 @@ _SOURCE_BY_JOB_FIELD = (
     ("pentestJobId", "pentest"),
 )
 
+# The scanner vocabulary, derived from the mapping above rather than retyped:
+# this module decides what a `source` IS (`source_of`), so a downstream unit that
+# needs the closed set imports it instead of declaring a second one that can
+# disagree. `unknown` is deliberately absent -- it is `source_of`'s fallback for
+# an unrecognised document, never a scanner a stage may claim to be.
+SOURCES = tuple(source for _, source in _SOURCE_BY_JOB_FIELD)
+
 _WORD_RE = re.compile(r"[^a-z0-9]+")
 
 

@@ -22,6 +22,7 @@ fake below replaces. That is what lets these tests assert a write was *not*
 issued -- the strongest form of the idempotency and zero-findings claims.
 """
 
+import fnmatch
 import json
 import re
 import sys
@@ -34,7 +35,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import ensure_umbrella_epic as ue
 import triage_group_findings as tg
 from ensure_umbrella_epic import UMBRELLA_TITLE
-from security_agent_ledger import build_shard, load_schema, validate_shard
+from join_barrier import load_markers
+from security_agent_ledger import (
+    SHARD_NAME_TEMPLATE,
+    build_shard,
+    load_schema,
+    validate_shard,
+)
 from triage_group_findings import (
     DAILY_EPIC_TITLE_TEMPLATE,
     MAX_FINDINGS_PER_GROUP,
@@ -59,6 +66,7 @@ REPO = "aws-e/adp"
 UMBRELLA_NUM = 9001
 RUN_DATE = "2026-08-30"
 RUN_ID = "99830451698"
+GENERATED_AT = "2026-08-30T03:10:00Z"
 FINDINGS_URI = "s3://adp-dev-security-scans-000000000000/security-agent/runs/2026-08-30/"
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -83,17 +91,37 @@ class FakeGh:
     `link_sub_issue`, so the responses those functions need are the same.
     """
 
-    def __init__(self, *, issues=(), parent_of=None, next_number=9100):
+    def __init__(self, *, issues=(), parent_of=None, next_number=9100, labels=()):
         self.issues = list(issues)
         self.parent_of = dict(parent_of or {})
         self.calls: list[list[str]] = []
         self.writes: list[list[str]] = []
         self.created: list[dict] = []
+        # Labels that already exist in the repo. Empty by default, which is the
+        # state a fresh org is in -- the case that makes ensuring them necessary.
+        self.labels = set(labels)
+        self.created_labels: list[str] = []
         self._next_number = next_number
 
     def __call__(self, args: list[str]) -> tuple[int, str, str]:
         self.calls.append(args)
         joined = " ".join(args)
+
+        # Label create, matched before the lookup below: the POST targets
+        # `/labels` (no trailing name) and carries --method POST.
+        if "--method" in args and "POST" in args and "/labels" in joined:
+            self.writes.append(args)
+            name = next(
+                a.split("=", 1)[1] for a in args if a.startswith("name=")
+            )
+            self.labels.add(name)
+            self.created_labels.append(name)
+            return 0, "{}", ""
+
+        # Label lookup: rc 0 when it exists, non-zero (404) when it does not.
+        if "/labels/" in joined:
+            name = joined.split("/labels/", 1)[1].split()[0]
+            return (0, "{}", "") if name in self.labels else (1, "", "Not Found")
 
         if args[:2] == ["issue", "create"]:
             self.writes.append(args)
@@ -606,6 +634,182 @@ def test_story_labels_is_a_closed_list_of_exactly_the_story_label():
     assert story_labels() == ["story"]
 
 
+# --------------------------------------------------------------------------
+# Computed severity: a criticality on every filed issue, derived from the
+# findings, never authored by the model.
+# --------------------------------------------------------------------------
+
+
+def _fixture_severities() -> dict:
+    import security_traceability as st
+
+    return st.severity_by_finding(FINDINGS_FIXTURE, "code-review")
+
+
+def test_a_filed_issue_carries_a_severity_label_and_states_it_in_the_body(fake_gh):
+    """The cluster covering the one CRITICAL finding is filed CRITICAL; an
+    all-HIGH cluster is filed HIGH. Both the label and the body line come from the
+    findings' risk levels, so a reader can triage by criticality without opening
+    the issue and cannot be misled by a model that guessed."""
+    gh = fake_gh()
+    run_triage(
+        REPO,
+        plan=load_fixture_plan(),
+        new_findings=load_fixture_findings(),
+        findings_uri=FINDINGS_URI,
+        run_id=RUN_ID,
+        run_date=RUN_DATE,
+        severities=_fixture_severities(),
+    )
+    stories = [c for c in gh.created if "epic" not in c["labels"]]
+    assert stories, "no work items were filed"
+    for created in stories:
+        sev_labels = [lab for lab in created["labels"] if lab.startswith("severity:")]
+        assert len(sev_labels) == 1, "every filed issue carries exactly one severity label"
+        level = sev_labels[0].split(":", 1)[1].upper()
+        assert f"**Severity** — {level}" in created["body"]
+        # The story label is still present and nothing dispatches.
+        assert "story" in created["labels"]
+        assert not any(lab.startswith("agent-") for lab in created["labels"])
+    # The fixture's one CRITICAL finding produces exactly one critical issue.
+    assert sum("severity:critical" in c["labels"] for c in stories) == 1
+
+
+def test_the_severity_labels_are_created_before_an_issue_is_filed_with_one(fake_gh):
+    """`gh issue create --label` does NOT create a missing label, so filing with a
+    `severity:<level>` that does not exist fails -- and it fails AFTER the dated
+    parent was created, leaving a half-finished night. A fresh org has none of
+    these labels (`aws-e/adp` had none when this was written), so they are ensured
+    the same way `ensure_umbrella_epic.main` ensures `story`.
+
+    Order is the claim: every label a filed issue carries must already have been
+    created by an earlier call.
+    """
+    gh = fake_gh()  # no labels exist, which is the fresh-org state
+    run_triage(
+        REPO,
+        plan=load_fixture_plan(),
+        new_findings=load_fixture_findings(),
+        findings_uri=FINDINGS_URI,
+        run_id=RUN_ID,
+        run_date=RUN_DATE,
+        severities=_fixture_severities(),
+    )
+    # The night's two distinct severities were created, and nothing else was.
+    assert sorted(gh.created_labels) == ["severity:critical", "severity:high"]
+
+    creates = [i for i, call in enumerate(gh.calls) if call[:2] == ["issue", "create"]]
+    for index, call in enumerate(gh.calls):
+        if call[:2] != ["issue", "create"]:
+            continue
+        for label in (call[i + 1] for i, a in enumerate(call) if a == "--label"):
+            if not label.startswith("severity:"):
+                continue
+            made_at = next(
+                i for i, c in enumerate(gh.calls)
+                if "--method" in c and f"name={label}" in c
+            )
+            assert made_at < index, f"{label} was used before it was created"
+    assert creates, "no issues were filed"
+
+
+def test_an_existing_severity_label_is_not_recreated(fake_gh):
+    """Idempotent, so a second night cannot clobber a hand-tuned colour."""
+    gh = fake_gh(labels={"severity:critical", "severity:high"})
+    run_triage(
+        REPO,
+        plan=load_fixture_plan(),
+        new_findings=load_fixture_findings(),
+        findings_uri=FINDINGS_URI,
+        run_id=RUN_ID,
+        run_date=RUN_DATE,
+        severities=_fixture_severities(),
+    )
+    assert gh.created_labels == []
+
+
+def test_a_colour_is_declared_for_every_severity_in_the_vocabulary():
+    """A level with no colour would raise a KeyError mid-filing, after the parent
+    exists. Asserted against the traceability module's vocabulary so the two
+    cannot drift."""
+    import security_traceability as st
+
+    assert set(tg.SEVERITY_LABEL_COLORS) == set(st.SEVERITY_ORDER)
+
+
+def test_severity_in_the_body_is_the_first_impact_bullet_not_before_the_opening():
+    """The severity line must not break the 'plain-terms opening comes first'
+    lint — it lives inside Impact analysis, so the body still lints."""
+    body = render(a_group(), severity="HIGH")
+    assert "**Severity** — HIGH" in body
+    lint_body(body, load_banned_patterns())  # does not raise
+    assert body.lstrip().startswith(REQUIRED_SECTIONS[0])
+    # Severity sits under Impact analysis, above the "Who benefits" bullet.
+    assert body.index("**Severity**") > body.index("## Impact analysis")
+    assert body.index("**Severity**") < body.index("Who benefits")
+
+
+def test_a_body_without_a_computed_severity_omits_the_line_and_still_lints():
+    """Severity is optional so the plan-authoring gate and `validate` can render a
+    body with no findings document to derive it from."""
+    body = render(a_group())
+    assert "**Severity**" not in body
+    lint_body(body, load_banned_patterns())  # does not raise
+
+
+def test_a_group_covering_a_finding_with_no_severity_fails_the_filing(fake_gh):
+    """A plan/findings mismatch is a hard error on the filing path, not a silently
+    unlabelled issue on the run that files un-recallable documents."""
+    fake_gh()
+    severities = _fixture_severities()
+    severities.pop("f-42dca300")
+    with pytest.raises(TriageError, match="no severity"):
+        run_triage(
+            REPO,
+            plan=load_fixture_plan(),
+            new_findings=load_fixture_findings(),
+            findings_uri=FINDINGS_URI,
+            run_id=RUN_ID,
+            run_date=RUN_DATE,
+            severities=severities,
+        )
+
+
+def test_the_file_command_enriches_the_traceability_ledger_grouping_to_filed(fake_gh, tmp_path):
+    """The one file the whole feature exists for: written at grouping (finding ->
+    cluster, with severity), then enriched IN PLACE at filing (cluster -> issue),
+    and asserted to account for every finding exactly once before it persists."""
+    import security_traceability as st
+
+    # Stand up the grouping-stage ledger the author step would have written.
+    trace_path = tmp_path / "traceability.json"
+    severities = st.severity_by_finding(FINDINGS_FIXTURE, "code-review")
+    st.write_ledger(trace_path, st.build_grouping(load_fixture_plan(), severities, run_id=RUN_ID))
+
+    fake_gh()
+    rc = tg.main(
+        [
+            "file",
+            "--plan", str(PLAN_FIXTURE),
+            "--new-findings", str(FINDINGS_FIXTURE),
+            "--source", "code-review",
+            "--repo", REPO,
+            "--findings-uri", FINDINGS_URI,
+            "--run-id", RUN_ID,
+            "--run-date", RUN_DATE,
+            "--traceability", str(trace_path),
+        ]
+    )
+    assert rc == 0
+
+    filed = json.loads(trace_path.read_text())
+    assert filed["stage"] == "filed"
+    st.assert_fully_traced(filed)  # every one of the 12 findings reached a real issue
+    # The CRITICAL finding's row now points at a concrete issue number.
+    assert isinstance(filed["findings_index"]["f-42dca300"]["issue_number"], int)
+    assert filed["findings_index"]["f-42dca300"]["fix_status"] == "FILED"
+
+
 def test_nothing_in_this_module_dispatches(fake_gh):
     """The whole flow must issue no `adp-trigger` call and no dispatching label.
     Asserted over every recorded gh call, not by reading the source."""
@@ -907,6 +1111,156 @@ def test_ledger_fields_dedupes_findings_across_work_items():
 
 
 # --------------------------------------------------------------------------
+# The marker WRAPPER and the marker NAME (#4616).
+#
+# `ledger_fields` above returns the right field SET, and the tests above proved
+# it -- by wrapping it in `build_shard` themselves. That is exactly what shipped
+# the defect: the marker `_cmd_file` wrote was the bare field set, and the join
+# barrier validates every marker through U2's envelope and RAISES on a missing
+# field. The stage exited 0, landed an unreadable marker, and failed one job
+# later with "invalid shard" -- indistinguishable from a genuinely broken run.
+#
+# So these assert on the WRITTEN ARTIFACT, and nothing here supplies an envelope
+# on the writer's behalf.
+# --------------------------------------------------------------------------
+
+
+def test_the_written_marker_is_accepted_by_the_barrier_as_written(fake_gh, tmp_path):
+    """The acceptance test: U9's real output goes straight into U2's validator
+    and U10's loader, with no test-side wrapping in between."""
+    fake_gh()
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+
+    marker = out / "shard-triage.code-review.json"
+    shard = json.loads(marker.read_text(encoding="utf-8"))
+    validate_shard(shard, load_schema())
+
+    # And through the barrier's own reader, which is the code that actually
+    # rejected the old bare marker.
+    assert sorted(load_markers(out)) == ["code-review"]
+    assert load_markers(out)["code-review"]["fields"]["stories_created"] == 5
+
+
+def test_the_marker_carries_the_full_u2_envelope(fake_gh, tmp_path):
+    """Named field by field: `validate_shard` raises on the FIRST missing one, so
+    a single assertion cannot show the envelope is complete."""
+    fake_gh()
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+    shard = json.loads((out / "shard-triage.code-review.json").read_text(encoding="utf-8"))
+
+    assert shard["schema_version"] == "1"
+    assert shard["run_date"] == RUN_DATE
+    assert shard["stage"] == "triage.code-review"
+    assert shard["stage_type"] == "triage"
+    assert shard["generated_at"] == GENERATED_AT
+    assert isinstance(shard["fields"], dict)
+
+
+def test_the_marker_name_matches_the_delivery_jobs_glob(fake_gh, tmp_path):
+    """`security-agent-nightly.yml`'s deliver job decides whether there is
+    anything to join with `find -name 'shard-triage*.json'`. A marker outside that
+    glob leaves `joinable` false forever: the night hands off nothing, silently,
+    and no error is raised anywhere."""
+    fake_gh()
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+
+    written = sorted(p.name for p in out.iterdir())
+    assert written == ["shard-triage.code-review.json"]
+    assert fnmatch.fnmatch(written[0], "shard-triage*.json")
+    # The name is DERIVED from the stage id, not typed alongside it -- so the two
+    # cannot drift apart.
+    shard = json.loads((out / written[0]).read_text(encoding="utf-8"))
+    assert written[0] == SHARD_NAME_TEMPLATE.format(stage=shard["stage"])
+
+
+def test_each_scanner_writes_its_own_marker_under_its_own_name(fake_gh, tmp_path):
+    """U2's stage id is the concurrency boundary. The two grouping halves run
+    concurrently into the SAME ledger directory, so if they derived one name the
+    second to finish would silently overwrite the first's completion signal and
+    the barrier would wait forever on a pass that had already reported."""
+    # ONE directory for both passes, which is the arrangement that matters: the
+    # delivery job syncs every shard of the night into a single prefix, so two
+    # passes deriving one name is a lost completion signal, not a collision two
+    # separate temp dirs would have hidden.
+    out = tmp_path / "ledger"
+    for source in tg.SOURCES:
+        fake_gh()
+        args = _cli_args("file", ["--repo", REPO, *_marker_args(out)])
+        args[args.index("--source") + 1] = source
+        # The pentest plan/findings fixtures are the code-review ones relabelled:
+        # what is under test is the marker's identity, not the grouping.
+        args[args.index("--plan") + 1] = str(_relabelled(tmp_path, PLAN_FIXTURE, source))
+        args[args.index("--new-findings") + 1] = str(
+            _relabelled(tmp_path, FINDINGS_FIXTURE, source)
+        )
+        assert main(args) == 0
+
+    assert sorted(p.name for p in out.iterdir()) == [
+        "shard-triage.code-review.json",
+        "shard-triage.pentest.json",
+    ], "the second pass overwrote the first's completion marker"
+    # Both are attributable, so the barrier sees a complete join rather than
+    # waiting forever on a pass that already reported.
+    assert sorted(load_markers(out)) == ["code-review", "pentest"]
+
+
+def test_a_marker_cannot_be_written_under_an_undeclared_scanner():
+    with pytest.raises(TriageError, match="is not one of"):
+        tg.marker_stage("nmap")
+
+
+def test_the_marker_stage_is_never_a_bare_triage():
+    """A bare `triage` id is the shape the barrier rejects as unattributable, and
+    two passes sharing it would overwrite each other's key. It must be
+    unreachable from a declared source, not merely absent today."""
+    for source in tg.SOURCES:
+        assert tg.marker_stage(source) != "triage"
+        assert tg.marker_stage(source).startswith("triage.")
+
+
+def test_writing_a_marker_needs_a_timestamp_and_says_so_before_filing(
+    monkeypatch, tmp_path, capsys
+):
+    """`--generated-at` is required with `--ledger-dir`, and the refusal lands
+    BEFORE anything is filed: a marker this pass cannot write is a wiring bug,
+    and discovering it after the issues exist means the fixing retry runs against
+    GitHub state the first attempt created."""
+    gh = FakeGh(issues=[])
+    monkeypatch.setattr(ue, "_gh", gh)
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, "--ledger-dir", str(out)])) == 1
+    assert "--ledger-dir needs --generated-at" in capsys.readouterr().err
+    assert gh.calls == [], "the refusal must precede every GitHub write"
+    assert not out.exists()
+
+
+def test_a_malformed_timestamp_fails_in_this_stage_not_in_the_barrier(fake_gh, tmp_path, capsys):
+    """`build_shard` validates before writing, so an unusable timestamp is this
+    stage's named error rather than an unreadable marker the barrier is blamed
+    for one job later."""
+    fake_gh()
+    out = tmp_path / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out, "last tuesday")])) == 1
+    assert "::error title=Security findings triage::" in capsys.readouterr().err
+    assert not out.exists(), "an invalid marker must not be left on disk"
+
+
+def test_the_marker_is_byte_reproducible_across_a_rerun(fake_gh, tmp_path):
+    """FR-C30: the same night re-run with the same caller-supplied timestamp
+    rewrites the same bytes, so a retry is a no-op rather than a spurious diff.
+    This is why `--generated-at` is the caller's and not a clock read here."""
+    first, second = tmp_path / "a", tmp_path / "b"
+    for out in (first, second):
+        fake_gh()
+        assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+    name = "shard-triage.code-review.json"
+    assert (first / name).read_bytes() == (second / name).read_bytes()
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
@@ -921,6 +1275,28 @@ def _cli_args(command, extra=()):
         "--run-id", RUN_ID,
         *extra,
     ]
+
+
+def _marker_args(ledger_dir, generated_at=GENERATED_AT):
+    """The marker-writing flags. A DIRECTORY plus a caller-supplied timestamp --
+    the filename is U9's to derive, so no test names it on the command line."""
+    return ["--ledger-dir", str(ledger_dir), "--generated-at", generated_at]
+
+
+def _relabelled(tmp_path, fixture, source):
+    """Copy a `code-review` fixture across to another scanner.
+
+    `source` is stamped on the document AND on every finding, because
+    `load_new_findings` selects per-finding: relabelling only the envelope yields
+    a document that parses and matches nothing, which reads as a quiet night.
+    """
+    document = json.loads(fixture.read_text(encoding="utf-8"))
+    document["source"] = source
+    for finding in document.get("new_findings", []):
+        finding["source"] = source
+    out = tmp_path / f"{fixture.stem}.{source}.json"
+    out.write_text(json.dumps(document), encoding="utf-8")
+    return out
 
 
 def test_the_validate_subcommand_touches_no_github_state(monkeypatch, capsys):
@@ -940,11 +1316,15 @@ def test_the_validate_subcommand_fails_on_a_bad_plan(tmp_path, capsys):
     assert "::error title=Security findings triage::" in capsys.readouterr().err
 
 
-def test_the_file_subcommand_writes_the_ledger_fields(fake_gh, tmp_path, capsys):
+def test_the_file_subcommand_writes_the_ledger_shard(fake_gh, tmp_path, capsys):
+    """The marker is a full shard under a DERIVED name, into a directory that
+    need not already exist."""
     fake_gh()
-    out = tmp_path / "nested" / "ledger.json"
-    assert main(_cli_args("file", ["--repo", REPO, "--ledger-fields", str(out)])) == 0
-    assert json.loads(out.read_text(encoding="utf-8"))["stories_created"] == 5
+    out = tmp_path / "nested" / "ledger"
+    assert main(_cli_args("file", ["--repo", REPO, *_marker_args(out)])) == 0
+    shard = json.loads((out / "shard-triage.code-review.json").read_text(encoding="utf-8"))
+    assert shard["fields"]["stories_created"] == 5
+    assert shard["stage"] == "triage.code-review"
     assert "nothing_to_file=false" in capsys.readouterr().out
 
 
@@ -980,7 +1360,7 @@ def test_the_file_subcommand_on_a_zero_findings_night(monkeypatch, tmp_path, cap
 def test_the_file_subcommand_writes_a_completion_marker_on_a_quiet_night(
     monkeypatch, tmp_path, capsys
 ):
-    """The quiet path must still write its `--ledger-fields` marker.
+    """The quiet path must still write its completion marker.
 
     This is the assertion whose absence let the barrier bug ship: `_cmd_file`
     returned before the write, so a healthy scanner that found nothing left no
@@ -996,21 +1376,22 @@ def test_the_file_subcommand_writes_a_completion_marker_on_a_quiet_night(
     )
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps(a_plan([])), encoding="utf-8")
-    out = tmp_path / "nested" / "fields.json"
-    args = _cli_args("file", ["--repo", REPO, "--ledger-fields", str(out)])
+    out = tmp_path / "nested" / "ledger"
+    args = _cli_args("file", ["--repo", REPO, *_marker_args(out)])
     args[args.index("--plan") + 1] = str(plan)
     args[args.index("--new-findings") + 1] = str(findings)
 
     assert main(args) == 0
     assert gh.calls == [], "a quiet night must still touch no GitHub state"
-    assert out.exists(), "a quiet night left no completion marker"
-    fields = json.loads(out.read_text(encoding="utf-8"))
-    assert fields == {"stories_created": 0, "story_ids": [], "findings_covered": []}
+    marker = out / "shard-triage.code-review.json"
+    assert marker.exists(), "a quiet night left no completion marker"
 
-    # And the marker U9 emits must be a legal `triage` shard payload, since the
-    # barrier validates every marker through U2's schema before trusting it.
-    shard = build_shard(RUN_DATE, "triage.code-review", "2026-08-30T03:00:00Z", fields)
-    assert validate_shard(shard, load_schema())["fields"]["story_ids"] == []
+    # The marker U9 writes must be a shard the barrier ACCEPTS as written -- the
+    # whole envelope, read back off disk, not a payload a test wraps for it.
+    shard = json.loads(marker.read_text(encoding="utf-8"))
+    validate_shard(shard, load_schema())
+    assert shard["fields"] == {"stories_created": 0, "story_ids": [], "findings_covered": []}
+    assert "daily_epic" not in shard["fields"], "there is no dated EPIC on a quiet night"
 
 
 def test_an_unresolvable_run_date_is_an_error(tmp_path):
@@ -1108,27 +1489,29 @@ def test_architect_persona_authorizes_issue_authoring_for_this_flow():
     assert "#4290" in section, "the authorization must name the flow it applies to"
 
 
-def test_the_authorization_lives_in_the_same_section_as_the_comment_only_rule():
+def test_the_authorization_lives_in_the_same_section_as_the_assessment_rule():
     """The reconciliation must be reachable from the instruction it reconciles.
     An authorization filed in a distant section leaves a later reader choosing
     between two rules — which is the state this unit exists to end."""
     text = _persona_text()
     output_section = _section(text, "## Design review output — what to write")
-    assert "Post a single top-level comment on the issue." in output_section
+    assert "Deliver one assessment." in output_section
+    assert "the runtime publishes that response as the issue outcome" in output_section
+    assert "Do not also post a design-review comment with a tool." in output_section
     assert "### Authoring authorization" in output_section, (
-        "the authorization is not inside the section carrying the comment-only "
+        "the authorization is not inside the section carrying the assessment "
         "instruction, so the contradiction survives for a later reader"
     )
 
 
-def test_no_surviving_comment_only_contradiction():
-    """Every instruction that could read as "a comment is your ONLY output" must
+def test_no_surviving_assessment_only_contradiction():
+    """Every instruction that could read as "an assessment is your ONLY output" must
     be qualified by the authoring exception."""
     text = _persona_text()
     output_section = _section(text, "## Design review output — what to write")
-    comment_index = output_section.index("Post a single top-level comment on the issue.")
+    assessment_index = output_section.index("Deliver one assessment.")
     authorization_index = output_section.index("### Authoring authorization")
-    assert authorization_index > comment_index, "the qualification must follow the rule"
+    assert authorization_index > assessment_index, "the qualification must follow the rule"
     style = _section(text, "## Interaction style")
     assert "reviewing, not replacing" in style
     assert "Authoring authorization" in style, (
