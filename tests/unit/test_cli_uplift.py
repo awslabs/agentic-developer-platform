@@ -2134,6 +2134,10 @@ class FakeSsm:
         self.commands = []
         self.purposes_run = []
         self.payloads = {}
+        # The vault reference install_auth publishes, and how many times the
+        # orchestrator came back for it (production caches: exactly one read).
+        self.session_ref = (worker_evidence()["install_auth"]["session"])["session_ref"]
+        self.session_reads = 0
 
     # -- helpers over the real command text --------------------------------
 
@@ -2161,6 +2165,32 @@ class FakeSsm:
             "StandardOutputContent": json.dumps(
                 {"success": True, "purposes": sorted(bundle.purposes()), "problems": {}}
             ),
+        }
+
+    def _session_handoff(self, joined):
+        """Read back the private session vault install_auth left on the instance.
+
+        The API deleters (`adp_connection`, `bedrock_destination`) run AFTER the
+        instance is terminated, so they cannot resolve the session the way a
+        journey does; production reads the vault once over this same transport
+        while the instance is still up. Modelled here because without it the
+        deleters get no token, refuse to act, and the run reports a routing rule as
+        outstanding that it could in fact have removed.
+
+        The command really must be a read of THIS run's vault as ec2-user: a
+        deleter that shelled something else, or read a path the session document
+        did not name, fails here rather than silently working.
+        """
+        assert self.session_ref and self.session_ref in joined, (
+            "the session handoff did not read this run's session vault"
+        )
+        assert "runuser -l ec2-user" in joined, (
+            "the vault was read as the wrong user; it is 0600 and owned by ec2-user"
+        )
+        self.session_reads += 1
+        return {
+            "Status": "Success",
+            "StandardOutputContent": json.dumps({"access_token": "<token>"}),
         }
 
     def _register_side_effects(self, found, evidence):
@@ -2194,6 +2224,8 @@ class FakeSsm:
         self.commands.append(joined)
         if purpose == "install-bundle":
             return self._install(joined)
+        if purpose == "session_handoff":
+            return self._session_handoff(joined)
         found = self._find_purpose(joined)
         assert found, f"no dispatcher invocation in the {purpose!r} command"
         assert self.installed, (
@@ -3775,16 +3807,54 @@ def shipped_script(tmp_path, name):
     return module[name], module["common"]
 
 
+def seed_session_vault(work_dir, *, tokens=None):
+    """Write the private on-instance session vault install_auth would have left.
+
+    E13 and E14 both run AFTER install_auth on the real instance and read their
+    session out of that vault rather than out of the payload: the payload only
+    carries a reference, because `common.emit()` redacts every credential-shaped
+    value on its way off the instance and a payload carrying "tokens" carried the
+    literal string "<redacted>". So the offline harness has to establish the same
+    precondition — the same path, the same 0600 mode — or it would be testing a
+    handoff that production does not perform.
+
+    Returns the reference the payload carries.
+    """
+    work_dir = pathlib.Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    path = work_dir / "session.json"
+    path.write_text(
+        json.dumps(
+            tokens
+            if tokens is not None
+            else {
+                "access_token": "<token>",
+                "id_token": "<id>",
+                "refresh_token": "<refresh>",
+                "expires_at": NOW + 3600,
+            }
+        )
+    )
+    path.chmod(0o600)
+    return str(path)
+
+
 def shipped_update_rollback(tmp_path):
     return shipped_script(tmp_path, "update_rollback")
 
 
-def run_e14(tmp_path, *, revision=GOOD_REVISION, serve=None, overrides=None):
+def run_e14(
+    tmp_path, *, revision=GOOD_REVISION, serve=None, overrides=None, session=True
+):
     """Run the shipped E14 script end to end through its production entry point.
 
     `common.run_script` is the entry point the dispatcher calls, so the ownership
     assertion, the payload file and the always-emit-evidence contract are all
     exercised -- not just `execute`.
+
+    `session=False` withholds the vault install_auth would have written, which is
+    how the "E13-E14 ran without their dependency" case is expressed now that the
+    tokens are not payload fields that can be blanked.
     """
     script, common = shipped_update_rollback(tmp_path)
     server, gateway = local_release_server(tmp_path, revision, serve=serve)
@@ -3803,13 +3873,22 @@ def run_e14(tmp_path, *, revision=GOOD_REVISION, serve=None, overrides=None):
             "accountId": "879318057152",
         }
         payload = tmp_path / "payload.json"
+        work_dir = tmp_path / "adp-eval"
+        reference = (
+            seed_session_vault(work_dir) if session else str(work_dir / "session.json")
+        )
         document = {
             "instance_id": "i-0eval",
             "platform_account": "879318057152",
             "gateway_url": gateway,
             "region": "us-east-1",
             "sts_endpoint": "https://sts-fips.us-east-1.amazonaws.com",
-            "access_token": "<token>",
+            # A reference to the private on-instance vault, exactly as the
+            # orchestrator supplies it. The tokens themselves are NOT in the
+            # payload: evidence leaving the instance is redacted, so a session
+            # carried in the document arrived downstream as "<redacted>".
+            "session_ref": reference,
+            "work_dir": str(work_dir),
             "session_expires_at": NOW + 3600,
             "evaluation_id": EVAL_ID,
             "expected_hashes": release.manifest(revision),
@@ -4064,7 +4143,7 @@ def test_e14_without_a_session_refuses_rather_than_reporting_setup_failures(
     they would fail for a reason that has nothing to do with update or rollback.
     Saying so up front is what keeps the report honest about which case broke.
     """
-    code, _document = run_e14(tmp_path, overrides={"access_token": ""})
+    code, _document = run_e14(tmp_path, session=False)
     evidence = e14_evidence(capsys)
     assert code != 0
     assert "install_auth" in evidence["error"]
@@ -4313,12 +4392,52 @@ def test_a_fixture_identity_is_never_marked_as_this_runs_to_delete(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def destination_deleter(gateway, *, prefix=EVAL_ID, cfg=None):
+class VaultSsm:
+    """An instance that will read out its session vault, and nothing else.
+
+    The cleanup sweep terminates the instance FIRST (it holds the ENI), so the API
+    deleters that run after it cannot resolve the session on-instance the way a
+    journey does. Production reads the vault once, lazily, over SSM before the
+    sweep reaches the instance. This double is that transport, and it is strict
+    about the purpose so a deleter that started running journeys would be caught.
+    """
+
+    def __init__(self, *, token="<token>", fail=False):
+        self.token = token
+        self.fail = fail
+        self.reads = []
+
+    def run(self, instance_id, commands, *, purpose, timeout=600):
+        raise AssertionError(f"the deleters must not run {purpose!r} on the instance")
+
+    def json_result(self, instance_id, commands, *, purpose, timeout=600):
+        assert purpose == "session_handoff", (
+            f"the deleters resolved their session under purpose {purpose!r}"
+        )
+        joined = "\n".join(commands)
+        self.reads.append((instance_id, joined))
+        if self.fail:
+            raise ports.PortError("the instance is gone")
+        return {"Status": "Success"}, {"access_token": self.token}
+
+
+def destination_deleter(gateway, *, prefix=EVAL_ID, cfg=None, ssm=None):
     """The production `bedrock_destination` deleter, over a modelled gateway."""
     cfg = config.validate(cfg or config_fixture())
     http = FakeHttp(gateway=gateway)
-    build = live.wire(cfg, {"aws": FakeAws(), "http": http})["deleters"]
-    ctx = {"document": {"session": {"access_token": "<token>", "prefix": prefix}}}
+    ssm = ssm if ssm is not None else VaultSsm()
+    build = live.wire(cfg, {"aws": FakeAws(), "http": http, "ssm": ssm})["deleters"]
+    # What the run document really holds after install_auth: a reference, never a
+    # token. The token lives in the on-instance vault and is fetched over `ssm`.
+    ctx = {
+        "document": {
+            "instance_id": "i-0eval",
+            "session": {
+                "session_ref": "/home/ec2-user/adp-eval/session.json",
+                "prefix": prefix,
+            },
+        }
+    }
     return build(cfg, ctx)["bedrock_destination"], http
 
 
@@ -4388,6 +4507,43 @@ def test_removing_a_destination_without_a_session_fails_rather_than_skipping():
         delete("dest-1")
     assert "must be removed by its owner" in str(raised.value)
     assert gateway.unlinked == []
+
+
+def test_a_vault_the_orchestrator_cannot_read_reports_the_resource_outstanding():
+    """The deleters run after the instance is gone; an unreadable vault is honest.
+
+    `cleanup.ORDER` terminates the instance first, so the vault read can genuinely
+    fail — and the only safe answer is the same as having no session at all: refuse
+    to act and report the resource as still present. Degrading to "assume removed"
+    would let a live routing rule to an evaluation account be reported as cleaned.
+    """
+    gateway = FakeGateway()
+    gateway.register("dest-1", label=f"{EVAL_ID}-dest", grant=True)
+    delete, _http = destination_deleter(gateway, ssm=VaultSsm(fail=True))
+    with pytest.raises(ports.PortError) as raised:
+        delete("dest-1")
+    assert "must be removed by its owner" in str(raised.value)
+    assert gateway.unlinked == []
+
+
+def test_the_session_token_the_deleters_use_never_reaches_the_run_document(tmp_path):
+    """The vault read is a side channel, not a write-back into published state.
+
+    The report, the JUnit file and the durable state store are all built from the
+    run document, so a token cached back into it would be published — the exact
+    failure the on-instance vault exists to prevent. Read once, held in the
+    deleters' closure, and absent from everything that leaves the orchestrator.
+    """
+    gateway = FakeGateway()
+    result = run_live_stages(
+        tmp_path, doubles=lambda cfg: live_doubles(cfg, gateway=gateway)
+    )
+    serialized = json.dumps(result.document)
+    assert "<token>" not in serialized and "<refresh>" not in serialized
+    assert "session.json" in serialized  # the reference is what got published
+
+    # And the orchestrator asked the instance for it exactly once, not per deleter.
+    assert result.ports["ssm"].session_reads == 1
 
 
 def test_a_full_run_removes_the_routing_rule_it_created_and_reports_the_row(tmp_path):
@@ -6283,7 +6439,9 @@ sys.exit(dispatcher.main(sys.argv[3:]))
 """
 
 
-def run_e13(tmp_path, *, state=None, overrides=None, revision=GOOD_REVISION):
+def run_e13(
+    tmp_path, *, state=None, overrides=None, revision=GOOD_REVISION, session=True
+):
     """Run the shipped E13 script the way the instance runs it: through dispatcher.
 
     In a SUBPROCESS, and not merely to satisfy `--disable-socket`. E13's whole
@@ -6333,6 +6491,12 @@ def run_e13(tmp_path, *, state=None, overrides=None, revision=GOOD_REVISION):
         )
         assert code == 0, "the release under test did not install"
 
+        # The precondition install_auth establishes on the real instance.
+        work_dir = tmp_path / "adp-eval"
+        reference = (
+            seed_session_vault(work_dir) if session else str(work_dir / "session.json")
+        )
+
         document = {
             "instance_id": "i-0eval",
             "platform_account": "879318057152",
@@ -6341,9 +6505,13 @@ def run_e13(tmp_path, *, state=None, overrides=None, revision=GOOD_REVISION):
             "region": "us-east-1",
             "sts_endpoint": "https://sts-fips.us-east-1.amazonaws.com",
             "secrets_endpoint": "https://secretsmanager-fips.us-east-1.amazonaws.com",
-            "access_token": "<token>",
-            "id_token": "<id>",
-            "refresh_token": "<refresh>",
+            # A reference to the private on-instance vault, exactly as the
+            # orchestrator supplies it in production. The tokens are NOT in the
+            # payload: anything credential-shaped in evidence is redacted on its way
+            # out of the instance, so a payload carrying "tokens" carried the literal
+            # string "<redacted>". Written above by `seed_session_vault`.
+            "session_ref": reference,
+            "work_dir": str(work_dir),
             "session_expires_at": NOW + 3600,
             "evaluation_id": EVAL_ID,
             "cli_path": str(prefix / "adp"),
