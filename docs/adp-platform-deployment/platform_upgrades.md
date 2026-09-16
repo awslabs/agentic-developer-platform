@@ -86,11 +86,11 @@ cluster and region before any apply; use `--skip-agent-context` when upgrading
 only the other components. Its application deploy runs with `--skip-terraform`
 so nested scripts cannot bypass the update gate.
 
-That's the whole happy path. The script plans everything first, applies only
-non-destructive changes, builds SHA-tagged images, rolls out the backend with
-mandatory health verification, and runs database migrations. A no-change
-convergence takes ~3–5 minutes; a real update takes ~15–30 minutes (dominated
-by CodeBuild image builds).
+The script plans each module before applying it, builds SHA-tagged images,
+rolls out the backend, runs database migrations on the intended release, and
+verifies health. CodeBuild image builds and the pricing-refresh drain window
+also run on repeat upgrades, so allow time for a full deployment even when
+Terraform has little or no drift.
 
 **What stops the run:** failed validation, protected integration changes, or
 unrecognized Terraform deletes/replacements. See §5 for the narrowly defined
@@ -125,9 +125,9 @@ message — nothing is touched.
 | Bootstrap (state bucket / lock table) | Creates if missing | **Skipped** — must already exist |
 | Bedrock model agreements | Runs | Skipped (slow, already done) |
 | Terraform applies | `-auto-approve` | **Plan-first with destroy gate** (§5) |
-| Image tag | `:latest` | **Source SHA** (`git rev-parse HEAD`) |
-| Backend rollout | Best-effort | **Mandatory** — script fails if rollout fails |
-| Database migrations | Not run | **Runs alembic** pre- and post-rollout (§6) |
+| Image tag | Source SHA | **Source SHA** (`git rev-parse HEAD`) |
+| Backend rollout | Mandatory | **Mandatory** — script fails if rollout fails |
+| Database migrations | Runs on the deployed release | **Runs alembic** on Ready replicas of the intended release (§6) |
 | Admin bootstrap | Seeds first admin | Skipped — admin already exists |
 | GitHub App prompt | Shown at end | Not shown — already configured |
 | Preflight | Full (~27 checks) | Partial (AWS auth + cluster reachability) |
@@ -141,7 +141,10 @@ like a live deployment:
 
 1. **State bucket exists** (`adp-terraform-state-<account-id>`)
 2. **EKS cluster is `ACTIVE`** (`adp-<env>-eks-cluster`)
-3. **`adp-gateway` namespace exists** (evidence of a prior gateway deploy)
+3. **Installed module scope is recovered** from Terraform state; the
+   `adp-gateway` namespace must be reachable when gateway is in scope
+4. **Original agent-context configuration is available** when that module is
+   in scope, and its cluster and region match the target
 
 Also verify yourself, before running:
 
@@ -205,9 +208,8 @@ admin bootstrap anyway.)
 # Gateway-only upgrade, no frontend rebuild (fastest meaningful update):
 ./platform/scripts/deploy-all.sh --update --gateway-only --skip-frontend
 
-# Convergence check — "is this account at parity with my checkout?"
-# A fully-converged account produces no-op plans, an alembic no-op, and a
-# digest-match fast-path restart. ~3-5 min:
+# Repeat a gateway upgrade to verify convergence (still rebuilds the image
+# and runs the pricing-refresh drain window):
 ./platform/scripts/deploy-all.sh --update --gateway-only --skip-frontend
 
 # After reviewing a refused plan and confirming every destroy is benign:
@@ -240,10 +242,12 @@ In update mode, every Terraform apply is replaced by a **plan-first gate**
 
 1. `terraform plan -detailed-exitcode -no-color` runs and the output is saved.
 2. **No changes** → apply is skipped (fast no-op).
-3. **Changes, zero destroys** → applied automatically. Update mode is
-   *plan-first but non-interactive* — you are not prompted for safe changes.
-4. **Any destroy** → the script **refuses and exits**, printing the destroy
-   lines and hints about known landmines.
+3. **Protected credential or identity changes** → the script refuses, even
+   with `--confirm-destructive`.
+4. **Other changes with no unrecognized deletes/replacements** → applied
+   automatically, including the narrowly defined routine replacements above.
+5. **Other deletes/replacements or removals from state** → the script refuses
+   unless explicitly authorized with `--confirm-destructive`.
 
 ### When the gate refuses
 
@@ -305,9 +309,10 @@ that mode. What changes on a very stale deployment is how risky it becomes:
   modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --update
   ```
 
-  Both inspect the saved plan's JSON actions and refuse deletes, replacements
-  in either action order, and removal from state. Failed plans or unreadable
-  plan JSON also stop the upgrade. The same saved plan is passed to apply.
+  Both inspect the saved plan's JSON actions and gate deletes, replacements
+  in either action order, and removal from state using the policy above.
+  Failed plans or unreadable plan JSON also stop the upgrade. The same saved
+  plan is passed to apply.
 
 - History note: the gate's destroy detection was broken (ANSI color codes
   defeated the grep) from its introduction until #3664 (2026-07-11). Runs
@@ -323,27 +328,21 @@ that mode. What changes on a very stale deployment is how risky it becomes:
 `adp-agent-gateway`, and `adp-agent-runtime`, and forwards that tag to
 CodeBuild. This guarantees Kubernetes sees a new image reference and actually
 rolls out — the classic `:latest`-push-no-rollout silent failure cannot happen.
-If the digest already matches (no code change), the script takes a
-`rollout restart` fast path instead of rebuilding.
+The script rebuilds images on repeat upgrades and forces a rollout restart
+when the deployment already references the intended tag.
 
 **Rollouts.** `kubectl rollout status` is mandatory — no `|| true`. A failed
-rollout fails the run. After rollout, a health check must pass
-(`/health` returns healthy) before the script continues.
+rollout fails the run. Before the upgrade reports success, the CDN's
+`/api/health` response must contain `{"status":"healthy"}`.
 
-**Migrations.** Alembic runs twice:
-- **Pre-rollout**: brings the DB to the head known to the *currently running*
-  image (usually a no-op).
-- **Post-rollout**: runs `alembic upgrade head` inside the **newest** gateway
-  pod (selected by creation timestamp, `-l app=bedrockgateway`) — this is the
-  step that applies migrations *introduced by the new code*, which the old
-  image did not contain.
+**Migrations and pricing.** Before gateway infrastructure changes, the script
+pauses pricing refresh and lets existing invocations drain. After rollout,
+`pricing-rollout.py migrate` requires Ready replicas of the exact intended
+image, runs `alembic upgrade head`, verifies the revision, and activates the
+pricing snapshot. Its `finalize` step verifies pricing refresh and re-enables
+the schedule. Failure stops the upgrade with refresh still disabled.
 
-> Note: the design doc's §3 originally specified migrations before rollout
-> only; the implementation corrected this to pre+post because a new revision's
-> migration files only exist inside the new image. The post-rollout step is
-> the load-bearing one.
-
-**Frontend.** Rebuilt (`npm ci && npm run build` with the correct
+**Frontend.** Rebuilt (`npm ci --include=dev && npm run build` with the correct
 `VITE_API_URL`), synced to S3, CloudFront invalidated — unless
 `--skip-frontend`.
 
@@ -378,10 +377,10 @@ curl -s "https://${CF_DOMAIN}/api/health"    # expect {"status":"healthy"}
 curl -s -o /dev/null -w "%{http_code}\n" "https://${CF_DOMAIN}/"
 ```
 
-**Idempotency check (optional but recommended after a big update):** re-run
-the same `--update` command. Expect no-op plans, alembic no-op, digest-match
-restart, healthy — in ~3–5 minutes. Churn on the second run indicates drift
-worth investigating.
+**Idempotency check (optional after a big update):** re-run the same `--update`
+command. Expect no schema changes, healthy rollouts, and a clean final gateway
+plan. Expired bootstrap Jobs and deployment artifacts can be recreated during
+the run; unexpected stateful changes still require investigation.
 
 **Agent-path smoke (if agents run against this account):** @-mention an agent
 on a trivial test issue and confirm webhook → worker job → PR. Watch the
