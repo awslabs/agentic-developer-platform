@@ -497,30 +497,22 @@ def _session(config, home):
     )
     config_file.chmod(0o600)
     tokens = directory / "tokens.json"
-    tokens.write_text(
-        json.dumps(
-            {
-                "access_token": config["access_token"],
-                "id_token": config.get("id_token", ""),
-                "refresh_token": config.get("refresh_token", ""),
-                "expires_at": config["session_expires_at"],
-            }
-        )
-    )
+    tokens.write_text(json.dumps(common.session_tokens(config)))
     tokens.chmod(0o600)
 
 
 def execute(config, evidence):
     os.umask(0o077)
-    require(
-        config.get("access_token"),
-        "api_parity needs the session install_auth established",
-    )
+    # Resolved from the private on-instance vault, not from the payload: the
+    # payload carries only a reference, because anything token-shaped in evidence
+    # is redacted on its way out of the instance. `load_session()` raises if the
+    # session did not survive the stage boundary, so a missing session is reported
+    # as that rather than as a parity defect.
+    token = common.load_session(config)["access_token"]
     require(
         config.get("cli_path"),
         "api_parity needs the CLI install_auth left on this instance",
     )
-    token = config["access_token"]
 
     with tempfile.TemporaryDirectory(prefix="adp-parity-") as temporary:
         home = Path(temporary)

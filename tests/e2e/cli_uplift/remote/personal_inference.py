@@ -55,16 +55,7 @@ def _session(config, home):
         )
     )
     tokens = directory / "tokens.json"
-    tokens.write_text(
-        json.dumps(
-            {
-                "access_token": config["access_token"],
-                "id_token": config.get("id_token", ""),
-                "refresh_token": config.get("refresh_token", ""),
-                "expires_at": config["session_expires_at"],
-            }
-        )
-    )
+    tokens.write_text(json.dumps(common.session_tokens(config)))
     tokens.chmod(0o600)
     (directory / "config.json").chmod(0o600)
 
@@ -86,7 +77,7 @@ def _usage_record(config, marker, *, after):
             + "&user_id="
             + config["test_user_id"]
             + "&limit=100",
-            config["access_token"],
+            common.load_session(config)["access_token"],
         )
         for row in (payload or {}).get("items") or []:
             timestamp = str(row.get("timestamp") or "")
@@ -236,10 +227,9 @@ def _codex(config, evidence, cli, env, home, marker):
 
 def execute(config, evidence):
     os.umask(0o077)
-    require(
-        config.get("access_token"),
-        "personal_inference needs the session established by install_auth",
-    )
+    # Fails loudly here if the session did not survive the stage boundary, before
+    # any model call can attribute that to routing or to inference.
+    common.load_session(config)
     require(
         config.get("effective_destination_account")
         == str(config["destination_account"]),

@@ -348,9 +348,15 @@ def _journey_payload(cfg, ctx):
         or (ctx["preflight"] or {}).get("served_cli_hashes")
         or {},
         "cli_path": session.get("cli_path", ""),
-        "access_token": session.get("access_token", ""),
-        "id_token": session.get("id_token", ""),
-        "refresh_token": session.get("refresh_token", ""),
+        # A reference, not the tokens. install_auth keeps the real session material
+        # in a private on-instance vault because the only channel out of the
+        # instance redacts credential-shaped values — so forwarding the "tokens"
+        # here used to forward the literal string "<redacted>". The journey
+        # resolves this with `common.load_session()`, which fails loudly when the
+        # session did not survive the stage boundary. `work_dir` travels with it so
+        # the journey can bound the reference to this run's own directory.
+        "session_ref": session.get("session_ref", ""),
+        "work_dir": bundle.REMOTE_DIR,
         "session_expires_at": session.get("expires_at", 0),
         "test_user": session.get("username", ""),
         # The gateway's own id for that identity, which is what the usage log keys
@@ -457,7 +463,40 @@ def _sessions(aws, cfg):
     return resolve
 
 
-def _deleters(aws, cfg, http=None):
+def _vault_token(ssm, instance_id, document):
+    """Read the session token off the instance, for the API deleters only.
+
+    The cleanup sweep runs from the orchestrator and terminates the instance
+    first, so the token cannot be resolved on-instance the way a journey resolves
+    it. It is read here over the same SSM transport, at most once per run, and is
+    never returned into the run document, the report or the durable state.
+
+    Returns "" rather than raising: the deleters treat an absent token as "refuse
+    to act and report the resource as outstanding", which is the correct, honest
+    outcome and strictly better than aborting the rest of the teardown.
+    """
+    reference = (document or {}).get("session_ref")
+    if not (ssm and instance_id and reference):
+        return ""
+    try:
+        _result, payload = ssm.json_result(
+            instance_id,
+            [
+                "set -eu",
+                # `cat` of a 0600 ec2-user file, as ec2-user. The value reaches the
+                # orchestrator over the SSM API and nothing writes it to disk here.
+                "runuser -l ec2-user -c "
+                + shlex.quote(f"cat {shlex.quote(reference)}"),
+            ],
+            purpose="session_handoff",
+            timeout=120,
+        )
+    except ports_module.PortError:
+        return ""
+    return (payload or {}).get("access_token") or ""
+
+
+def _deleters(aws, cfg, http=None, ssm=None):
     """Live deletions, keyed by resource kind, scoped to the resource's account.
 
     Every kind the manifest can hold must appear, because `cleanup.sweep()` treats
@@ -792,11 +831,35 @@ def _deleters(aws, cfg, http=None):
         return delete
 
     def build(_cfg, ctx=None):
-        session = (
-            (lambda: (ctx["document"].get("session") or {}))
-            if ctx is not None
-            else (lambda: {})
-        )
+        # The session the API deleters authenticate with.
+        #
+        # `cleanup.ORDER` terminates the instance FIRST (it holds the ENI), and
+        # `adp_connection`/`bedrock_destination` are deleted after that — so by the
+        # time those deleters run, the on-instance vault is gone with the instance.
+        # The token is therefore fetched ONCE, lazily, on the first deleter that
+        # needs it, and cached: at that point the sweep has not yet reached the
+        # instance, so the vault is still there. Nothing token-shaped is written
+        # back into the run document, which is what the report and durable state
+        # are built from.
+        cached = {}
+
+        def session():
+            if ctx is None:
+                return {}
+            document = ctx["document"].get("session") or {}
+            if not document:
+                return {}
+            if "access_token" not in cached:
+                # Non-secret fields come straight from the document; only the token
+                # needs the instance. A read that fails leaves the token absent, and
+                # the deleters already refuse to act without one rather than
+                # reporting a clean sweep over a resource they could not touch.
+                cached.update(document)
+                cached["access_token"] = _vault_token(
+                    ssm, ctx["document"].get("instance_id"), document
+                )
+            return cached
+
         return {
             "ec2_instance": terminate,
             "cloudformation_stack": delete_stack,
@@ -853,7 +916,9 @@ def wire(cfg, supplied=None, *, journeys=None):
         "github_available": _github_available(cfg),
         "hosted_available": _hosted_available(cfg),
         "harness_auth_helper": _read_harness_helper,
-        "deleters": _deleters(aws, cfg, http),
+        # `ssm` so the API deleters can resolve the session token off the instance
+        # before the sweep terminates it. See `_vault_token`.
+        "deleters": _deleters(aws, cfg, http, ssm),
         # R1: journeys are the SAME transport as every other remote step. There is
         # no separate driver layer to leave unpopulated: a case's purpose either
         # has a shipped script (`bundle.purposes()`) or `require_purpose()` names

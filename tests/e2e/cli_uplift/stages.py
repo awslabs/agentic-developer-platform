@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import shlex
 
-from . import cases, cleanup, contracts, preflight, release
+from . import bundle, cases, cleanup, contracts, preflight, release
 
 # Stages that must exist in any assembled mapping. `evidence` and `cleanup` are
 # included because a run that skips them cannot prove correlation or teardown.
@@ -42,7 +42,12 @@ REQUIRED_STAGES = (
 # Amazon Linux 2023, resolved through SSM public parameters rather than hardcoded.
 AMI_PARAMETER = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 
-WORK_DIR = "/home/ec2-user/adp-eval"
+# The run-owned 0700 directory on the instance. Aliased to the bundle's remote
+# directory rather than repeated as a second literal: the session vault lives here
+# and `live._journey_payload` must name the SAME directory the install stage
+# created, or a journey would bound its session reference against a path that does
+# not exist.
+WORK_DIR = bundle.REMOTE_DIR
 
 
 class StageError(RuntimeError):

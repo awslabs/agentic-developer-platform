@@ -112,8 +112,12 @@ def _effective(config, token):
 
 def execute(config, evidence):
     os.umask(0o077)
-    token = config.get("access_token") or ""
-    require(token, "bedrock_routing needs the session established by install_auth")
+    # From the private on-instance vault. The payload carries only a reference,
+    # since evidence leaving the instance is redacted; `load_session()` raises when
+    # the session did not survive the stage boundary rather than letting a
+    # placeholder be graded as a routing failure.
+    session = common.load_session(config)
+    token = session["access_token"]
 
     with tempfile.TemporaryDirectory(prefix="adp-bedrock-") as temporary:
         home = Path(temporary)
@@ -134,9 +138,9 @@ def execute(config, evidence):
             json.dumps(
                 {
                     "access_token": token,
-                    "id_token": config.get("id_token", ""),
-                    "refresh_token": config.get("refresh_token", ""),
-                    "expires_at": config["session_expires_at"],
+                    "id_token": session.get("id_token", ""),
+                    "refresh_token": session.get("refresh_token", ""),
+                    "expires_at": session.get("expires_at", 0),
                 }
             )
         )

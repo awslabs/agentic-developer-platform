@@ -335,19 +335,28 @@ def _session_document(config, evidence, prefix, home, work_dir):
     )
 
     login = evidence.get("login") or {}
-    evidence["session"] = {
-        "cli_path": str(binary),
-        "access_token": tokens["access_token"],
-        "id_token": tokens.get("id_token", ""),
-        "refresh_token": tokens.get("refresh_token", ""),
-        "expires_at": tokens.get("expires_at", 0),
-        "username": login.get("username", ""),
-        "user_id": login.get("user_id", ""),
-        "org_id": login.get("org_id", ""),
-        # Only set when the run CREATED the identity, because that is what makes
-        # it this run's to delete. A fixture identity must survive cleanup.
-        "created_username": config.get("created_username", ""),
-    }
+    # The tokens stay on the instance. Only a non-secret reference is exported,
+    # because `common.emit()` redacts every credential-shaped value on its way out
+    # — which previously turned this session into the literal string "<redacted>"
+    # and left every later journey authenticating with a truthy placeholder.
+    # See `common.save_session()` for why the vault is on-instance and not in S3.
+    evidence["session"] = common.save_session(
+        {
+            "cli_path": str(binary),
+            "access_token": tokens["access_token"],
+            "id_token": tokens.get("id_token", ""),
+            "refresh_token": tokens.get("refresh_token", ""),
+            "expires_at": tokens.get("expires_at", 0),
+            "username": login.get("username", ""),
+            "user_id": login.get("user_id", ""),
+            "org_id": login.get("org_id", ""),
+            # Only set when the run CREATED the identity, because that is what
+            # makes it this run's to delete. A fixture identity must survive
+            # cleanup.
+            "created_username": config.get("created_username", ""),
+        },
+        work_dir=work_dir,
+    )
 
 
 def _setup(config, evidence, cli):
@@ -427,12 +436,15 @@ def execute(config, evidence):
         if config.get("admin_setup_required", True):
             _setup(config, evidence, cli)
         evidence["session_token_present"] = bool(token)
+        # The run-owned durable directory the ec2 stage created, which is where
+        # both the preserved CLI and the session vault belong. `work_dir`, NOT
+        # `work_dir/cli`: `_session_document` appends "cli" itself, and the vault
+        # path a later journey is told to read is derived from this same value —
+        # so passing the CLI subdirectory here would put the vault somewhere no
+        # journey looks for it. Falls back to the journey's own temp directory only
+        # when no work_dir was supplied, which is a degraded single-journey run.
         _session_document(
-            config,
-            evidence,
-            prefix,
-            home,
-            config.get("work_dir") or str(Path(temporary) / "cli"),
+            config, evidence, prefix, home, config.get("work_dir") or temporary
         )
         evidence.update(stage="complete", success=True)
 
