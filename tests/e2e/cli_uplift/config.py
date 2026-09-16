@@ -313,11 +313,27 @@ def require_bindings(config, suites):
 
     selected = cases.resolve_suites(suites)
     required = []
+    destination_keys = ("destination_role_arn", "provisioner_role_arn")
     if any(cases.DESTINATION in case.requires for case in selected):
-        required.extend(("destination_role_arn", "provisioner_role_arn"))
+        required.extend(destination_keys)
     if any(case.id not in ("E01", "E15") for case in selected):
         required.append("credential_secret_name")
-    missing = [key for key in required if not config.get(key)]
+
+    # `full` is the only selection that can grant acceptance, and it must always
+    # produce a graded report: absent destination roles block E04-E08 (and, via
+    # the fixture gate, only those), leaving the rest of the matrix to run and
+    # `full_acceptance` false because BLOCKED is not PASSED. Aborting instead
+    # produced no report at all, so a fixture gap was indistinguishable from a
+    # harness crash and the cases that *were* runnable never ran.
+    #
+    # An explicitly named destination suite still refuses: the operator asked for
+    # exactly those cases, so "none of them can run" is the useful answer, not a
+    # report of nothing but blocks.
+    enforced = required
+    if cases.is_full(suites):
+        enforced = [key for key in required if key not in destination_keys]
+
+    missing = [key for key in enforced if not config.get(key)]
     require(
         not missing,
         "Config is missing the bindings this suite needs: "
@@ -445,7 +461,15 @@ def fixture_classes(config):
     """
     from . import cases
 
-    available = {cases.PLATFORM, cases.DESTINATION, cases.EC2, cases.COGNITO}
+    available = {cases.PLATFORM, cases.EC2, cases.COGNITO}
+    # The destination class is exactly "we hold a cross-account session", so it
+    # depends on both role bindings the same way SECOND_DESTINATION depends on
+    # its account. Claiming it unconditionally made the cross-account cases
+    # attempt a destination they had no way to reach: they failed on a missing
+    # ARN mid-journey instead of grading BLOCKED before any mutation, which is
+    # the distinction between "the fixture is absent" and "the product is broken".
+    if config.get("destination_role_arn") and config.get("provisioner_role_arn"):
+        available.add(cases.DESTINATION)
     if config.get("second_destination_account"):
         available.add(cases.SECOND_DESTINATION)
     github = config.get("github") or {}

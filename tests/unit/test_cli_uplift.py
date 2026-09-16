@@ -3072,6 +3072,11 @@ def test_a_run_with_no_destination_bindings_is_refused_before_any_state_exists(
     then died inside a journey with "No destination role is configured" — after a
     mutation, with the fixture password unreadable. The refusal has to happen
     before the lease, the state write and the instance.
+
+    Asserted on an explicitly named destination suite: the operator asked for
+    exactly the cross-account cases, so refusing is the useful answer. `full` is
+    deliberately different — see
+    test_full_still_runs_and_grades_when_only_the_destination_roles_are_absent.
     """
     state_dir = tmp_path / STATE
     with pytest.raises(config.ConfigError) as raised:
@@ -3079,6 +3084,8 @@ def test_a_run_with_no_destination_bindings_is_refused_before_any_state_exists(
             [
                 "--mode",
                 "start",
+                "--suite",
+                "personal-aws",
                 "--config",
                 write_config(
                     tmp_path,
@@ -3100,6 +3107,56 @@ def test_a_run_with_no_destination_bindings_is_refused_before_any_state_exists(
         assert key in message
     # No lease, no state file, nothing to clean up.
     assert not (state_dir / "state.json").exists()
+
+
+def test_full_still_runs_and_grades_when_only_the_destination_roles_are_absent():
+    """A `full` dispatch must always produce a graded report.
+
+    It previously raised at config validation, so the job died before launching
+    anything: no report, no matrix, and a fixture gap that looked identical to a
+    harness crash. The cases needing no destination — E01/E02/E03/E13/E14/E15 —
+    never ran even though nothing stopped them.
+
+    Blocking is not passing, so acceptance stays closed either way; the
+    difference is whether the run says which cases are blocked and on what.
+    """
+    cfg = config.validate(
+        config_fixture(destination_role_arn="", provisioner_role_arn="")
+    )
+    # Does not raise, and does not silently drop the secret requirement.
+    assert config.require_bindings(cfg, FULL) == config.BINDINGS
+
+    # The destination class is withheld, so exactly its cases block...
+    available = preflight.evaluate_fixtures(cfg)
+    assert cases.DESTINATION not in available
+    matrix = cases.new_matrix(FULL)
+    blocked = cases.block_missing_fixtures(matrix, available)
+    assert {"E04", "E05", "E06", "E07", "E08"} <= set(blocked)
+    assert blocked["E04"] == [cases.DESTINATION]
+
+    # ...and the operator is told what to create, not just that it is blocked.
+    absent = preflight.missing_fixture_report(cfg, available)
+    assert "destination_role_arn" in absent[cases.DESTINATION]["needs"]
+
+    # Acceptance remains closed: a blocked case can never read as passed.
+    status, reasons = cases.accept(matrix, FULL, stages={"preflight": "complete"})
+    assert status == cases.FAILED
+    assert any("blocked" in reason and "E04" in reason for reason in reasons)
+
+
+def test_a_named_destination_suite_still_refuses_rather_than_reporting_only_blocks():
+    """The full-run carve-out must not leak into an explicit selection.
+
+    `--suite personal-aws` with no destination roles can produce nothing but
+    blocked rows, so failing at config time is the honest and cheaper answer.
+    """
+    cfg = config.validate(
+        config_fixture(destination_role_arn="", provisioner_role_arn="")
+    )
+    for suites in (("personal-aws",), ("routing",), ("inference",)):
+        with pytest.raises(config.ConfigError) as raised:
+            config.require_bindings(cfg, suites)
+        assert "destination_role_arn" in str(raised.value)
 
 
 def test_the_harness_suite_alone_needs_no_destination_bindings(tmp_path):
@@ -7003,9 +7060,28 @@ def test_example_config_leaves_unestablished_fixtures_absent():
     available = preflight.evaluate_fixtures(resolved)
     assert cases.GITHUB_APP not in available
     assert cases.HOSTED not in available
+    # The example config binds no destination roles either, so the cross-account
+    # cases block alongside them rather than attempting a destination account
+    # they hold no session for.
+    assert cases.DESTINATION not in available
     matrix = cases.new_matrix(FULL)
     blocked = cases.block_missing_fixtures(matrix, available)
-    assert set(blocked) == {"E07", "E09", "E10", "E11", "E12"}
+    assert set(blocked) == {
+        "E04",
+        "E05",
+        "E06",
+        "E07",
+        "E08",
+        "E09",
+        "E10",
+        "E11",
+        "E12",
+    }
+    # The rest of the matrix stays runnable: one absent fixture class must not
+    # take down the cases that do not depend on it.
+    assert {
+        case_id for case_id, entry in matrix.items() if entry["status"] == cases.NOT_RUN
+    } == {"E01", "E02", "E03", "E13", "E14", "E15"}
 
 
 # --------------------------------------------------------------------------
