@@ -183,8 +183,8 @@ def extract_intent_with_reason(
     if event_type == "issues" and action == "labeled":
         return _handle_issue_labeled(payload)
 
-    # pull_request + opened|synchronize → reviewer persona (with guards)
-    if event_type == "pull_request" and action in ("opened", "synchronize"):
+    # Review completed PRs, including existing drafts marked ready by the author.
+    if event_type == "pull_request" and action in ("opened", "synchronize", "ready_for_review"):
         return _handle_pr_event(payload, action, sender)
 
     # issue_comment + created → chain-aware handler (Phase 2-c / issue #1696)
@@ -385,19 +385,21 @@ def _handle_issue_labeled(payload: dict) -> tuple[Intent | None, str | None]:
     return Intent(persona=persona, trigger="issue_labeled", label=label_name), None
 
 
-def _handle_pr_event(
-    payload: dict, action: str, sender: dict
-) -> tuple[Intent | None, str | None]:
-    """Handle pull_request opened/synchronize — assign reviewer persona.
+def _handle_pr_event(payload: dict, action: str, sender: dict) -> tuple[Intent | None, str | None]:
+    """Assign a reviewer only when an agent PR is ready for review.
 
     Issue #1696 guards:
     - Branch filter: only trigger for agent/issue-* branches
-    - Synchronize gate: bot senders only trigger on 'opened' (not synchronize)
+    - Synchronize gate: bot senders trigger on opened/ready, not synchronize,
       to prevent runaway reviewer spawning on every push
     """
+    pr = payload.get("pull_request", {})
+    if pr.get("draft", False):
+        return None, skip_reasons.PR_DRAFT
+
     # Branch filter: only trigger reviewer for agent PR branches (issue #1696).
     # Reproduces the behavior of the removed pr-review-trigger.yml.
-    head_ref = payload.get("pull_request", {}).get("head", {}).get("ref", "")
+    head_ref = pr.get("head", {}).get("ref", "")
     if not head_ref.startswith("agent/issue-"):
         logger.debug(
             "PR branch '%s' does not match agent/issue-* pattern — no reviewer trigger",
@@ -405,7 +407,7 @@ def _handle_pr_event(
         )
         return None, skip_reasons.PR_BRANCH_NOT_AGENT
 
-    # Synchronize gate: bot senders only trigger on 'opened' (issue #1696).
+    # Synchronize gate: bot senders trigger on opened/ready only (issue #1696).
     # Without this, every push to an agent PR branch (including the reviewer's
     # own fix commits) would spawn a NEW reviewer = runaway.
     if action == "synchronize" and _is_bot_sender(sender):

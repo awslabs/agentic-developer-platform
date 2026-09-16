@@ -10,10 +10,11 @@ export function developerCheckpointGuidance(agentType: string): string {
 
 For authorized implementation work, include a checkpoint strategy in the initial
 plan comment and any required code plan: target branch, first useful milestone,
-later milestones, approximately 15-minute cadence, and draft PR approach.
+later milestones, and approximately 15-minute cadence.
 Example: "On agent/issue-N, I will push the API contract first, then persistence
 and tests, checkpointing about every 15 minutes at safe boundaries and before
-long validation. I will link a draft PR and report checks still pending."
+long validation. I will share commit links and open a ready PR after completing
+the assignment and pre-submit checks."
 
 - Push the first coherent change, then checkpoint at meaningful milestones and
   about every 15 minutes at a safe tool boundary while changes accumulate. Push
@@ -29,17 +30,18 @@ long validation. I will link a draft PR and report checks still pending."
   refs/heads/<branch> versus git rev-parse HEAD). Only then call it a published
   checkpoint. Report the commit link, completed scope, remaining work and checks
   passed/failed/not run in a concise progress update on the designated issue.
-- Reuse an existing PR. Open an early draft PR after the first useful push only
-  when repository automation is known to keep drafts out of review/evaluation
-  and wave advancement. Record incomplete work and check status. If that behavior
-  is unknown, or policy disallows drafts or treats any PR as a handoff, publish
-  the branch/commit link instead and state that in the plan. A checkpoint does not mark the story done,
-  dispatch review/evaluation, advance a wave, merge, or bypass AI-DLC approvals.
+- Do not create draft PRs, including when older issue text asks for one. Share
+  branch/commit links while work is in progress. Open a ready PR only after the
+  agreed implementation, integration, tests and documentation are complete and
+  pre-submit checks pass, with any verified pre-existing failures documented.
+  Reuse an existing PR; if it is a draft, mark it ready only at that same point.
+  A checkpoint does not mark the story done, dispatch review/evaluation, advance
+  a wave, merge, or bypass AI-DLC approvals. Continue the assignment after pushing;
+  if blocked, report the blocker and remaining work without declaring completion.
 - If no new changes are ready, report progress and the reason instead of an empty
   commit. If publication fails, preserve local work and report the actual failure;
   do not claim a successful checkpoint or spend the run in an unbounded retry loop.
-- Before marking a PR ready for review, complete the pre-submit checks below and
-  document any pre-existing failures. Read-only tasks need no commits or draft PR.
+- Read-only tasks need no commits or PR.
 `;
 }
 
@@ -60,7 +62,8 @@ function checkpointReminder(agentType: string): HookCallback {
           'publish a coherent checkpoint at the next safe boundary, following the branch ' +
           'checkpoint strategy in your plan. Inspect and selectively stage the diff; verify ' +
           'the remote commit, then report the link, remaining work and check status. ' +
-          'Do not wait for full validation to publish draft progress. If there is no new ' +
+          'Share branch/commit links; do not create a PR until implementation and ' +
+          'pre-submit checks are complete. Continue the assignment after the checkpoint. If there is no new ' +
           'work, a writer is still active, or publication is blocked, report that instead. ' +
           'This reminder neither verifies a push nor authorizes implementation, review, ' +
           'wave advancement or any action past an approval gate.',

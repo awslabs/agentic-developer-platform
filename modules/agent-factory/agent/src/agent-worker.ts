@@ -1033,7 +1033,7 @@ Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
 ## Pre-submit checks (MANDATORY before requesting review)
 
-Before requesting review or marking a draft PR ready, run the linters and tests for the module(s) you touched. Incomplete branch checkpoints and draft PRs may be published before these finish, with their check status clearly stated. They are not a review handoff and do not relax merge gates.
+Do not create draft PRs, even if older task text requests one. Complete the agreed implementation, integration, tests and documentation, then run the linters and tests for the module(s) you touched before opening a ready PR or requesting review. Incomplete branch checkpoints may be pushed with check status disclosed; share commit links and continue working. Reuse any existing PR, marking an existing draft ready only after the same completion checks. Required CI still gates merge.
 
 ### Module → check commands
 
@@ -1073,7 +1073,13 @@ The steps below apply once the assigned review target is available.
    \`\`\`bash
    # PR_NUMBER is provided in your environment
    echo "Reviewing PR #\$PR_NUMBER against issue #\$ISSUE_NUMBER"
-   gh pr view \$PR_NUMBER --json title,body,files,additions,deletions
+   gh pr view \$PR_NUMBER --json title,body,state,isDraft,headRefOid,files,additions,deletions
+   \`\`\`
+   If the PR is a draft or is not open, stop before reviewing. Report that review
+   awaits a completed, open, ready PR; do not review partial slices or mark it ready
+   on the author's behalf. This also applies to manually dispatched reviews.
+   Record headRefOid as the revision being reviewed, then fetch its diff:
+   \`\`\`bash
    gh pr diff \$PR_NUMBER > /tmp/pr-diff.patch
    \`\`\`
 
