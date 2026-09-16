@@ -340,6 +340,21 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
           aws-region: us-east-1
           role-chaining: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && 'false' || 'true' }}
+          # The action tags the session by default, which needs `sts:TagSession`
+          # in ADDITION to `sts:AssumeRole`. The ARC runner role carries a
+          # permissions boundary (`adp-dev-agent-runner-boundary`) that allows
+          # `sts:AssumeRole` but NOT `sts:TagSession`, so every attempt failed 12
+          # times with "not authorized to perform: sts:TagSession" (runs
+          # 35081336556, 35081819775) even though the target role's trust policy
+          # permits it — a boundary caps the principal regardless of trust.
+          #
+          # Skipping the tags is the correct fix: that boundary is a shared
+          # guardrail on a role many workflows use, and widening it to let this
+          # evaluation pass would weaken an unrelated security control. The tags
+          # are audit metadata only; nothing here authorizes on them, and the
+          # session is still a distinct short-lived identity named by
+          # `role-session-name` and the run ID.
+          role-skip-session-tagging: true
           role-duration-seconds: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && '10800' || '3600' }}
           role-session-name: cli-uplift-eval-${{ github.run_id }}
 
@@ -551,6 +566,21 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
           aws-region: us-east-1
           role-chaining: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && 'false' || 'true' }}
+          # The action tags the session by default, which needs `sts:TagSession`
+          # in ADDITION to `sts:AssumeRole`. The ARC runner role carries a
+          # permissions boundary (`adp-dev-agent-runner-boundary`) that allows
+          # `sts:AssumeRole` but NOT `sts:TagSession`, so every attempt failed 12
+          # times with "not authorized to perform: sts:TagSession" (runs
+          # 35081336556, 35081819775) even though the target role's trust policy
+          # permits it — a boundary caps the principal regardless of trust.
+          #
+          # Skipping the tags is the correct fix: that boundary is a shared
+          # guardrail on a role many workflows use, and widening it to let this
+          # evaluation pass would weaken an unrelated security control. The tags
+          # are audit metadata only; nothing here authorizes on them, and the
+          # session is still a distinct short-lived identity named by
+          # `role-session-name` and the run ID.
+          role-skip-session-tagging: true
           role-session-name: cli-uplift-recover-${{ github.run_id }}
 
       - name: Assert the role resolved to the approved platform account

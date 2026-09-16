@@ -6776,6 +6776,11 @@ def test_ci_binds_a_scoped_role_and_chains_only_when_oidc_is_absent():
         assert "role-chaining" in auth["with"]
         # No static-key path anywhere.
         assert "aws-access-key-id" not in auth["with"]
+        # Session tagging must stay off: the ARC runner role's permissions
+        # boundary allows sts:AssumeRole but not sts:TagSession, so tagging fails
+        # the assume outright (runs 35081336556, 35081819775). Widening that
+        # shared boundary to re-enable tags would weaken an unrelated control.
+        assert auth["with"]["role-skip-session-tagging"] is True
     # A chained STS session is capped at one hour; asking for more hard-fails.
     evaluate_auth = next(
         s
