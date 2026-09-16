@@ -362,7 +362,12 @@ def _session_document(config, evidence, prefix, home, work_dir):
 def _setup(config, evidence, cli):
     """E03: accurate provider states, and a rerun that completes only the gaps."""
     evidence["stage"] = "setup"
-    dry = cli.json(["admin", "setup", "--dry-run"])
+    # Also `expected=None`: `adp admin setup --dry-run` maps a `pending` exit 4
+    # down to 0 deliberately, but it does NOT remap the `failed` exit 5. So a
+    # single failed provider would abort this journey on the exit code before
+    # E03 could report the accurate-state finding that IS its subject. The
+    # envelope is read either way.
+    dry = cli.json(["admin", "setup", "--dry-run"], expected=None)
     states = {
         step.get("name"): step.get("status")
         for step in ((dry.get("detail") or {}).get("steps") or [])
@@ -372,7 +377,7 @@ def _setup(config, evidence, cli):
     accurate = all(status in allowed for status in states.values())
 
     # A dry run must not have changed anything: the second dry run must agree.
-    again = cli.json(["admin", "setup", "--dry-run"])
+    again = cli.json(["admin", "setup", "--dry-run"], expected=None)
     repeat = {
         step.get("name"): step.get("status")
         for step in ((again.get("detail") or {}).get("steps") or [])
@@ -383,7 +388,21 @@ def _setup(config, evidence, cli):
 
     # The rerun-after-interruption property: running setup again must not
     # duplicate a provider entry or regress a configured provider to pending.
-    rerun = cli.json(["admin", "setup", "--yes"], expected=0)
+    #
+    # `expected=None`, not 0. `adp` exits 4 when any provider is `pending` and 5
+    # when one is `failed` — the documented envelope convention this class's own
+    # docstring describes ("the JSON envelope is the contract, not the exit
+    # code"). Demanding 0 here conflated "the command ran" with "every provider
+    # is fully configured", so E03 failed on an environment where bedrock and
+    # github are legitimately unprovisioned — reporting a harness expectation as
+    # a product defect. What E03 actually asserts is the shape of the rerun (no
+    # duplicated step, no regression), which is checked below and is independent
+    # of how much happens to be configured.
+    rerun = cli.json(["admin", "setup", "--yes"], expected=None)
+    require(
+        rerun.get("status") in ("configured", "verified", "pending"),
+        f"adp admin setup --yes reported {rerun.get('status')!r}; a rerun must not fail",
+    )
     steps = (rerun.get("detail") or {}).get("steps") or []
     names = [step.get("name") for step in steps]
     duplicates = sorted({name for name in names if names.count(name) > 1})

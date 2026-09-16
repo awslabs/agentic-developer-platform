@@ -7680,3 +7680,142 @@ sys.exit(dispatcher.main(["install_auth", sys.argv[2]]))
     finally:
         server.terminate()
         server.wait(timeout=5)
+
+
+# --------------------------------------------------------------------------
+# E03 reads the envelope, not the exit code
+#
+# `adp` exits 4 when any provider is `pending` and 5 when one is `failed` --
+# documented convention, and `common.Cli`'s own docstring says the envelope is
+# the contract. E03 nonetheless required exit 0 from `admin setup --yes`, so on
+# a dev environment where bedrock and github are legitimately unprovisioned the
+# case failed on a harness expectation and reported it as a product defect
+# (run 35101482739). These drive the SHIPPED `_setup` against a stub CLI that
+# reproduces the real exit codes.
+# --------------------------------------------------------------------------
+
+
+class ExitCodeCli:
+    """A `common.Cli` stand-in that returns real envelopes with real exit codes.
+
+    Deliberately enforces `expected` exactly as the shipped `Cli.run` does, so a
+    test here fails for the same reason the instance would.
+    """
+
+    def __init__(self, steps, *, rerun_status="pending"):
+        self.steps = steps
+        self.rerun_status = rerun_status
+        self.calls = []
+
+    def _envelope(self, args):
+        dry = "--dry-run" in args
+        status = (
+            "failed"
+            if any(s["status"] == "failed" for s in self.steps)
+            else "pending"
+            if any(s["status"] in ("pending", "unavailable") for s in self.steps)
+            else "configured"
+        )
+        if not dry:
+            status = self.rerun_status
+        code = 5 if status == "failed" else 4 if status == "pending" else 0
+        # `adp admin setup --dry-run` maps a pending 4 down to 0, but NOT a
+        # failed 5 -- mirrored from adp-admin.py:main.
+        if dry and code == 4:
+            code = 0
+        return code, {
+            "status": status,
+            "command": "admin setup",
+            "detail": {"steps": list(self.steps)},
+        }
+
+    def run(self, args, *, expected=0, **_kwargs):
+        self.calls.append(list(args))
+        code, payload = self._envelope(args)
+        if expected is not None and code != expected:
+            raise AssertionError(f"exited {code}, expected {expected}")
+        return code, payload
+
+    def json(self, args, *, expected=0, **kwargs):
+        return self.run(args, expected=expected, **kwargs)[1]
+
+
+def run_shipped_setup(tmp_path, cli):
+    script, _common = shipped_script(tmp_path, "install_auth")
+    evidence = {"transcript": [], "checks": []}
+    script._setup({}, evidence, cli)
+    return evidence
+
+
+def test_e03_accepts_a_pending_rerun_because_pending_exits_four(tmp_path):
+    """The exact dev shape: bedrock and github unprovisioned, so `--yes` exits 4.
+
+    E03's subject is the SHAPE of the rerun -- no duplicated step, no regression
+    -- which is independent of how much happens to be configured. Requiring exit
+    0 made an unprovisioned environment indistinguishable from a broken product.
+    """
+    cli = ExitCodeCli(
+        [
+            {"name": "bedrock", "title": "Model access", "status": "pending"},
+            {"name": "github", "title": "GitHub App", "status": "pending"},
+        ]
+    )
+    evidence = run_shipped_setup(tmp_path, cli)
+    assert evidence["setup"]["statuses_accurate"] is True
+    assert evidence["setup"]["dry_run_is_read_only"] is True
+    assert evidence["setup"]["rerun_completed_missing_only"] is True
+    assert evidence["setup"]["duplicates"] == []
+    assert ["admin", "setup", "--yes"] in cli.calls
+
+
+def test_e03_still_fails_a_rerun_that_regresses_a_configured_provider(tmp_path):
+    """The property E03 exists to protect must still fail. Not a blanket pass."""
+
+    # The rerun reports a previously-configured provider back as pending.
+    class Regressing(ExitCodeCli):
+        def _envelope(self, args):
+            code, payload = super()._envelope(args)
+            if "--dry-run" not in args:
+                payload["detail"]["steps"] = [
+                    {"name": "bedrock", "title": "Model access", "status": "pending"}
+                ]
+            return code, payload
+
+    regressing = Regressing(
+        [{"name": "bedrock", "title": "Model access", "status": "configured"}]
+    )
+    with pytest.raises(Exception, match="regressed"):
+        run_shipped_setup(tmp_path, regressing)
+
+
+def test_e03_still_fails_when_a_rerun_duplicates_a_provider_step(tmp_path):
+    """The other invariant: a rerun must not duplicate an entry."""
+
+    class Duplicating(ExitCodeCli):
+        def _envelope(self, args):
+            code, payload = super()._envelope(args)
+            if "--dry-run" not in args:
+                payload["detail"]["steps"] = self.steps + self.steps
+            return code, payload
+
+    cli = Duplicating(
+        [{"name": "bedrock", "title": "Model access", "status": "pending"}]
+    )
+    with pytest.raises(Exception, match="duplicated"):
+        run_shipped_setup(tmp_path, cli)
+
+
+def test_e03_surfaces_a_failed_provider_as_a_finding_not_an_exit_code_abort(tmp_path):
+    """A `failed` provider exits 5 even under --dry-run, since only 4 is remapped.
+
+    E03's job is to report that accurately, so it must reach its own assertions
+    rather than aborting on the exit code before it can.
+    """
+    cli = ExitCodeCli(
+        [{"name": "bedrock", "title": "Model access", "status": "failed"}],
+        rerun_status="failed",
+    )
+    with pytest.raises(Exception, match="must not fail"):
+        run_shipped_setup(tmp_path, cli)
+    # It got past both dry runs (exit 5) to the rerun, which is the point.
+    assert ["admin", "setup", "--yes"] in cli.calls
