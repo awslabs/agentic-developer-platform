@@ -2821,6 +2821,48 @@ def test_live_preflight_really_calls_the_gateway_and_aws(tmp_path):
     assert "cognito-idp.describe_user_pool" in operations
 
 
+def test_live_preflight_grades_a_full_run_when_the_destination_roles_are_absent(
+    tmp_path,
+):
+    """A `full` run must reach its cases when only the destination is unbound.
+
+    Preflight decided `destination_required` from matrix membership alone, so it
+    demanded a cross-account identity on behalf of E04-E08 — the very cases it
+    was about to block for lacking that access. `live._identity` raises PortError
+    without a role to assume, so preflight failed and all fifteen cases reported
+    NOT_RUN. This is the live-wiring half of the same defect as the config gate:
+    a fixture gap has to grade, not abort.
+    """
+    result = run_live_stages(
+        tmp_path,
+        destination_role_arn="",
+        provisioner_role_arn="",
+    )
+    document = result.document
+    # Preflight now completes rather than dying on an unreachable destination.
+    assert document["stages"]["preflight"] == "complete"
+    matrix = document["matrix"]
+
+    # Exactly the destination-dependent cases block, and they say why.
+    for case_id in ("E04", "E05", "E06", "E07", "E08"):
+        assert matrix[case_id]["status"] == cases.BLOCKED
+        assert cases.DESTINATION in matrix[case_id]["detail"]["missing_fixtures"]
+
+    # The cases needing no destination were reached instead of being collateral.
+    for case_id in ("E01", "E02", "E03", "E13", "E14"):
+        assert matrix[case_id]["status"] != cases.NOT_RUN
+
+    # No destination session was ever attempted: asking for one is what broke.
+    assert not result.ports["aws"].assumed
+
+    # And acceptance stays closed in the PUBLISHED report, because blocked is
+    # not passed. Asserted on the artifact an operator actually reads.
+    report_payload = json.loads((tmp_path / STATE / "out" / "report.json").read_text())
+    assert report_payload["full_acceptance"] is False
+    assert report_payload["status"] == cases.FAILED
+    assert any("blocked" in reason for reason in report_payload["reasons"])
+
+
 def test_live_preflight_rejects_a_revision_that_is_not_under_test(tmp_path):
     """The deployed revision must gate the run, live wiring included."""
     result = run_live_stages(

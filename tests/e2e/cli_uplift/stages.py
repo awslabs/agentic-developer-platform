@@ -25,7 +25,15 @@ from __future__ import annotations
 
 import shlex
 
-from . import bundle, cases, cleanup, contracts, preflight, release
+from . import (
+    bundle,
+    cases,
+    cleanup,
+    config as config_module,
+    contracts,
+    preflight,
+    release,
+)
 
 # Stages that must exist in any assembled mapping. `evidence` and `cleanup` are
 # included because a run that skips them cannot prove correlation or teardown.
@@ -77,7 +85,17 @@ def preflight_stage(cfg, ports):
 
         # Only cross-account scenarios require a destination session. Installing
         # and logging in must work before any Bedrock setup exists.
-        destination_required = any(
+        #
+        # Gated on the destination fixture actually being bound, not on matrix
+        # membership alone: when it is absent, these cases are blocked further
+        # down for lacking exactly this access, so proving it first aborted the
+        # run — a `full` dispatch died here rather than grading the cases that
+        # needed no destination at all. The block itself stays below, after the
+        # target checks, so a rejected deployment reports NOT_RUN and never
+        # attributes a fixture verdict to a target it refused.
+        destination_required = cases.DESTINATION in config_module.fixture_classes(
+            cfg
+        ) and any(
             cases.DESTINATION in cases.BY_ID[case_id].requires
             for case_id in ctx["matrix"]
         )
