@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Allow narrowly defined deployment replacements; protect existing integrations."""
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location("actions", Path(__file__).with_name("plan-delete-actions.py"))
+actions = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(actions)
+
+
+def routine(resource, module, account):
+    change = resource["change"]
+    before, after = change.get("before") or {}, change.get("after") or {}
+    order = change["actions"]
+    address = resource["address"]
+    if module in ("gateway", "gateway-alb-wire", "gateway-final"):
+        if address == "module.api_gateway[0].aws_api_gateway_deployment.main":
+            return (order == ["create", "delete"] and bool(before.get("rest_api_id"))
+                    and before["rest_api_id"] == after.get("rest_api_id"))
+        if address == "module.budget_lambda[0].aws_lambda_permission.usage_tracker_s3":
+            fixed = ("function_name", "action", "principal", "source_arn", "statement_id",
+                     "principal_org_id", "event_source_token", "function_url_auth_type", "invoked_via_function_url")
+            return (order in (["delete", "create"], ["create", "delete"])
+                    and all(before.get(k) == after.get(k) for k in fixed)
+                    # Older provider states store an omitted qualifier as "";
+                    # newer plans use null. Both invoke the unqualified function.
+                    and (before.get("qualifier") or None) == (after.get("qualifier") or None)
+                    and before.get("principal") == "s3.amazonaws.com"
+                    and before.get("action") == "lambda:InvokeFunction"
+                    and bool(before.get("function_name")) and bool(before.get("source_arn"))
+                    and not before.get("source_account") and after.get("source_account") == account
+                    and bool(account))
+    if module == "webhook-ingress" and address in (
+            "null_resource.keda_scaledjob", "null_resource.agent_warm_pool", "null_resource.agent_image_prepull[0]"):
+        old, new = before.get("triggers", {}), after.get("triggers", {})
+        return (order == ["delete", "create"]
+                and all(old.get(k) and old[k] == new.get(k) for k in ("namespace", "cluster_name", "cluster_region"))
+                and set(old) == set(new)
+                and set(new) <= {"namespace", "cluster_name", "cluster_region", "manifest_sha", "replicas"}
+                and bool(old.get("manifest_sha")) and bool(new.get("manifest_sha")))
+    return False
+
+
+def protected_change(resource):
+    change = resource["change"]
+    before, after = change.get("before"), change.get("after")
+    if not before or change["actions"] in (["no-op"], ["read"]):
+        return False
+    kind = resource.get("type", "")
+    if kind in ("aws_secretsmanager_secret", "aws_secretsmanager_secret_version"):
+        keys = ("name", "secret_id", "secret_string", "secret_binary")
+        return after is None or any(before.get(k) != after.get(k) for k in keys)
+    if kind == "aws_dynamodb_table_item":
+        item = before.get("item", "")
+        if any(key in item for key in ("github_installation_id", "org_installation")):
+            return before.get("item") != (after or {}).get("item")
+    if kind == "aws_dynamodb_table" and "identity" in before.get("name", ""):
+        return "delete" in change["actions"] or "forget" in change["actions"]
+    return False
+
+
+def evaluate(plan, module, account):
+    actions.deletions(plan)
+    allowed, blocked, protected = [], [], []
+    for resource in plan["resource_changes"]:
+        if protected_change(resource):
+            protected.append(resource["address"])
+        if set(resource["change"]["actions"]) & {"delete", "forget"}:
+            (allowed if routine(resource, module, account) else blocked).append(resource["address"])
+    return {"routine": allowed, "blocked": blocked, "protected": protected}
+
+
+if __name__ == "__main__":
+    try:
+        result = evaluate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3])
+        if result["protected"]:
+            sys.exit("Upgrade would change existing credentials or installation mappings: " + ", ".join(result["protected"]))
+        for address in result["routine"]:
+            print("Routine deployment replacement: " + address, file=sys.stderr)
+        print("\n".join(result["blocked"]))
+    except (ValueError, KeyError, TypeError, OSError, IndexError):
+        sys.exit("Cannot validate Terraform upgrade plan")

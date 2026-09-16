@@ -200,12 +200,10 @@ resource "null_resource" "agent_warm_pool" {
   }
 
   provisioner "local-exec" {
-    environment = {
-      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
-    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig "$KUBECONFIG" >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.agent_warm_pool_yaml}
 EOF
@@ -216,7 +214,12 @@ EOF
   provisioner "local-exec" {
     when       = destroy
     on_failure = continue
-    command    = "kubectl delete deployment agent-warm-pool -n ${self.triggers.namespace} --ignore-not-found && kubectl delete priorityclass adp-agent-overprovision --ignore-not-found || true"
+    command    = <<-CMD
+      set -e
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${self.triggers.cluster_name} --region ${self.triggers.cluster_region} --kubeconfig "$KUBECONFIG" >/dev/null
+      kubectl delete deployment agent-warm-pool -n ${self.triggers.namespace} --ignore-not-found && kubectl delete priorityclass adp-agent-overprovision --ignore-not-found || true
+    CMD
   }
 
   # Namespace must exist; RBAC must let the runner SA create the Deployment +
@@ -313,12 +316,10 @@ resource "null_resource" "agent_image_prepull" {
   }
 
   provisioner "local-exec" {
-    environment = {
-      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
-    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig "$KUBECONFIG" >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.agent_image_prepull_yaml}
 EOF
@@ -329,7 +330,12 @@ EOF
   provisioner "local-exec" {
     when       = destroy
     on_failure = continue
-    command    = "kubectl delete daemonset agent-image-prepull -n ${self.triggers.namespace} --ignore-not-found || true"
+    command    = <<-CMD
+      set -e
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${self.triggers.cluster_name} --region ${self.triggers.cluster_region} --kubeconfig "$KUBECONFIG" >/dev/null
+      kubectl delete daemonset agent-image-prepull -n ${self.triggers.namespace} --ignore-not-found || true
+    CMD
   }
 
   depends_on = [
