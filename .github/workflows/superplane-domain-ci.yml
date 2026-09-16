@@ -149,12 +149,16 @@ jobs:
       - name: Run domain module tests
         run: |
           set -euo pipefail
-          # Tolerates an empty module (skeleton state) but reports which case it hit, so
-          # "no tests ran" never reads the same as "tests passed" in the log.
-          if find modules/domain-apps/superplane/tests -name 'test_*.py' -print -quit | grep -q .; then
-            python3 -m pytest modules/domain-apps/superplane/tests/ -v --tb=short
+          # Scoped to the module ROOT, not modules/domain-apps/superplane/tests/ alone.
+          # The narrower glob silently skipped every suite a story placed outside that
+          # one directory: #5040 (U12) puts its baseline/parity suites in
+          # spike/tests/, and the guard below reported "nothing to run" while 115 tests
+          # sat uncollected — the precise failure this step's comment set out to avoid,
+          # since "no tests ran" and "tests passed" share an exit code.
+          if find modules/domain-apps/superplane -name 'test_*.py' -print -quit | grep -q .; then
+            python3 -m pytest modules/domain-apps/superplane/ -v --tb=short
           else
-            echo "No tests in modules/domain-apps/superplane/tests/ yet — nothing to run."
+            echo "No tests in modules/domain-apps/superplane/ yet — nothing to run."
           fi
 
       - name: Run MCP tool surface tests with coverage
