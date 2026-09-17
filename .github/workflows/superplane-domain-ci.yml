@@ -179,6 +179,29 @@ jobs:
             echo "No tests in modules/domain-apps/superplane/ yet — nothing to run."
           fi
 
+      - name: Run migration, placement and handover tests with coverage
+        # Pinned BY PATH and NOT tolerant of an empty glob, for the same reason as the
+        # MCP step below: #5061 (U19) names these three files, so "no tests found" here
+        # means a PR deleted one and must fail rather than pass silently.
+        #
+        # The step above already RUNS these files as part of the module-wide glob, but it
+        # has no --cov-fail-under, so it cannot enforce the >=90% the issue requires on the
+        # migration/placement/reconciliation logic. Coverage is scoped to `migration/`
+        # rather than the whole module because a module-wide percentage would let this
+        # package rot behind the aggregate.
+        #
+        # Nothing here touches AWS: the SkyPilot client, join transport and node resolver
+        # are Protocols with in-test fakes, which is what keeps this suite runnable on the
+        # credential-free GitHub-hosted runner this job deliberately uses.
+        run: |
+          set -euo pipefail
+          python3 -m pytest -v --tb=short \
+            modules/domain-apps/superplane/tests/test_skypilot_eks_integration.py \
+            modules/domain-apps/superplane/tests/test_skypilot_state_handover.py \
+            modules/domain-apps/superplane/tests/test_placement.py \
+            --cov=modules/domain-apps/superplane/migration \
+            --cov-report=term-missing --cov-fail-under=90
+
       - name: Run MCP tool surface tests with coverage
         # Pinned BY PATH and NOT tolerant of an empty glob, unlike the step above: these
         # tests exist as of #5038, so "no tests found" here means a PR deleted them and
