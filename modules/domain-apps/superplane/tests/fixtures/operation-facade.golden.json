@@ -1,0 +1,181 @@
+{
+  "$comment": [
+    "GOLDEN FIXTURE — the operation-facade envelope this adapter consumes.",
+    "Issue #5052 (U17a), EPIC #4910. R14, ADP half, acceptance 2 (logic half).",
+    "",
+    "READ THE PROVENANCE NOTE FIRST: ../../contracts/PROVISIONING-CONTRACT.md.",
+    "It states exactly which fields below are derived from something B published",
+    "and which are UNRESOLVED. This file is not a claim about B's contract.",
+    "",
+    "Why the split matters: the story requires fixtures derived from B's published",
+    "contract shape or a captured real response, never from the adapter's own",
+    "expected shape — because an adapter and a fixture built from the same",
+    "assumption agree with each other about a contract B never publishes, and the",
+    "agreement reads as verification.",
+    "",
+    "B has published: the three-field substrate (`name`, `version`, `owner`) that",
+    "is on every harness contract, and the routing rule that long-running work",
+    "which outlives a single call is a `job`. B has NOT published an operation",
+    "facade: `modules/harness/jobs/` does not exist and `job.schema.json` is not",
+    "written. So the envelope here is B's; the operation-specific payload fields",
+    "are marked unresolved rather than invented, and the adapter does not depend",
+    "on them.",
+    "",
+    "`test_provisioning_adapter.py` executes this file, per the executed-contract",
+    "convention of contracts/hitl-ticket/v1/. A fixture nothing executes prevents",
+    "nothing."
+  ],
+
+  "substrate": {
+    "$comment": "Derived from modules/harness/contracts/README.md: 'Three fields are present on *every* contract: name, version, owner. That's the minimum substrate the harness needs to register, dedupe, and route questions.' The README marks the JSON-Schema envelope aspirational and this substrate not.",
+    "name": "job",
+    "version": 1,
+    "owner": "harness/jobs"
+  },
+
+  "why_a_job_and_not_a_tool": {
+    "$comment": [
+      "From the README's decision tree, quoted: 'Long-running work that outlives a",
+      "single call? -> job.schema.json'. Workspace provisioning is exactly that,",
+      "which is why U17a initiates through an operation facade rather than calling",
+      "a synchronous tool verb. This entry records the routing decision and the",
+      "published sentence it follows from — it is not a field of any contract."
+    ],
+    "surface": "harness/jobs",
+    "published_state": "target — README table row only, no schema file, no implementation directory"
+  },
+
+  "unresolved_in_bs_published_contract": {
+    "$comment": [
+      "Fields the ADAPTER needs semantics for, that B has published nothing about.",
+      "Listed so the gap is visible in the artifact a reviewer reads, instead of",
+      "being silently filled in by whatever the adapter happened to assume.",
+      "",
+      "Each entry says what the adapter does in the absence of a published answer.",
+      "In every case the adapter's choice is the one that is safe to be wrong",
+      "about: it either refuses, or it reports the absence rather than assuming a",
+      "guarantee."
+    ],
+    "operation_id_format": {
+      "published": false,
+      "adapter_behaviour": "Treated as opaque. Required non-empty; never parsed for meaning. A format assumption would break on B's first real identifier."
+    },
+    "expiry_semantics": {
+      "published": false,
+      "adapter_behaviour": "OperationBinding.expires_at is optional. When present it is enforced against the receiver's clock; when absent, `unbounded_authority` reports the absence instead of treating unbounded as safe. Inventing a default TTL would either expire real operations early or claim a bound the facade does not offer."
+    },
+    "progress_state_vocabulary": {
+      "published": false,
+      "adapter_behaviour": "OperationState is this contract's own vocabulary, versioned under superplane_contracts v1, NOT a claim about B's wire values. A mapping layer belongs at the boundary when B publishes its states. UNKNOWN exists precisely so an unmappable value need not be rounded to a failure."
+    },
+    "cancellation_surface": {
+      "published": false,
+      "adapter_behaviour": "Not modelled. The binding carries operation_id as the handle a cancellation would use, and nothing more. Modelling a cancel call against an unpublished surface would be the adapter inventing B's contract, which is the specific thing this note exists to prevent."
+    },
+    "principal_resolution_mechanism": {
+      "published": false,
+      "adapter_behaviour": "The adapter requires a ResolvedPrincipal on the binding and refuses caller-supplied identity outright. HOW the facade resolves it is B's business and unobservable from here — which is a reason the live criterion stays open, not something a mock can settle."
+    }
+  },
+
+  "accepted_progress_reports": [
+    {
+      "$comment": "A successful provision. The only shape whose `establishes_provisioned` is true.",
+      "operation_id": "op-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+      "state": "succeeded",
+      "observed_at": "2026-09-16T12:00:00+00:00",
+      "detail": null
+    },
+    {
+      "$comment": "In flight. Terminal is false; nothing may be concluded about the provider.",
+      "operation_id": "op-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+      "state": "running",
+      "observed_at": "2026-09-16T12:00:00+00:00",
+      "detail": null
+    },
+    {
+      "$comment": "An outcome the facade could not determine. Terminal AND inconclusive — the case a consumer must not round to 'failed'. Carries a detail because the contract requires UNKNOWN to explain itself.",
+      "operation_id": "op-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+      "state": "unknown",
+      "observed_at": "2026-09-16T12:00:00+00:00",
+      "detail": "provider API timed out after the operation was dispatched; outcome not established"
+    }
+  ],
+
+  "rejected_variants": [
+    {
+      "$comment": "Not hypotheticals. Each shape below would compile, read plausibly in review, and silently weaken a guarantee the story names. They are why this file exists rather than prose alone.",
+      "why": "header"
+    },
+    {
+      "variant": "progress_without_operation_id",
+      "shape": {
+        "state": "succeeded",
+        "observed_at": "2026-09-16T12:00:00+00:00"
+      },
+      "why_rejected": "A report that does not name its operation could be about any concurrent one. With several provisions in flight, accepting it lets one operation's success be read as another's — the named-vs-positional failure the HITL contract also refuses."
+    },
+    {
+      "variant": "unknown_without_detail",
+      "shape": {
+        "operation_id": "op-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+        "state": "unknown",
+        "observed_at": "2026-09-16T12:00:00+00:00"
+      },
+      "why_rejected": "The least actionable report the contract can carry, and the one most likely to be rounded to 'failed' by whoever reads it. Requiring a detail forces the facade to say what is unresolved."
+    },
+    {
+      "variant": "naive_timestamp",
+      "shape": {
+        "operation_id": "op-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+        "state": "succeeded",
+        "observed_at": "2026-09-16T12:00:00"
+      },
+      "why_rejected": "A timestamp with no zone cannot be compared against a receiver's clock without guessing, and guessing produces an authorization that lapses hours early or late."
+    },
+    {
+      "variant": "binding_with_caller_supplied_principal",
+      "shape": {
+        "operation_id": "op-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+        "action": "provision",
+        "permission": "workspace:provision",
+        "parameters": { "org_id": "org-acme", "user_id": "user-42" }
+      },
+      "why_rejected": "The tenant becomes a field the requester fills in. Refused even when the value matches the bound principal: a path that reads the caller's value is one comparison away from honouring a mismatched one, and comparisons get reordered, cached or made conditional. Design section 6, lines 398-407."
+    },
+    {
+      "variant": "binding_authorizing_something_weaker",
+      "shape": {
+        "operation_id": "op-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+        "action": "provision",
+        "permission": "workspace:read",
+        "principal": { "subject": "principal-abc", "org_id": "org-acme", "workspace_id": "ws-w1" }
+      },
+      "why_rejected": "A read grant passed around as if it authorized provisioning. Refused at construction so it cannot travel, and re-checked by the adapter so the guarantee does not depend on validation staying in one place."
+    },
+    {
+      "variant": "adapter_reported_success",
+      "shape": {
+        "provider_returned": { "status": "ok" },
+        "adapter_status": "succeeded"
+      },
+      "why_rejected": "The two shapes the story forbids, together: an outcome read from an adapter-internal status field, and a provider's assertion about itself. Both are still true when the provider created nothing. Outcome comes from the facade's report or it is not outcome."
+    },
+    {
+      "variant": "credential_bearing_binding",
+      "shape": {
+        "operation_id": "op-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+        "credential": "<a secret value>",
+        "credential_endpoint": "POST /auth/credentials"
+      },
+      "why_rejected": "Not substitutable for B's contract, per repo-path-allocation.md. A direct read of a stored secret, an executor-minted long-lived credential, and the vault's credential-MANAGEMENT endpoints all lack the three properties that make the real thing safe: run binding, expiry, run-tied revocation. No field of this contract holds a credential, and the adapter module contains no secrets client."
+    }
+  ],
+
+  "what_this_fixture_does_not_establish": [
+    "That B's operation facade behaves this way. It does not exist to behave any way — modules/harness/jobs/ is absent.",
+    "That provisioning works. Every facade and provider in the test suite is a mock, asserted to be a mock.",
+    "R14 acceptance 2 (live). Per acceptance-split.md rule 2, mock success closes no live criterion. Still gated on: a named account/environment, B's facade built, spend authorization, and a named cleanup owner.",
+    "R14 acceptance 1. That is the absence of the workflow_dispatch call and its foreign-repo PAT, owned by U17b, upstream, and untouched here."
+  ]
+}
