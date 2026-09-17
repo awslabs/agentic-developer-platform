@@ -3679,7 +3679,8 @@ SAMPLE_GITLAB_ENVELOPE = {
             "project_path": "spike-group/test-project",
             "issue_iid": 7,
             "note_id": 100,
-            "gitlab_url": "http://gitlab.dev.adp.internal",
+            # Legacy/untrusted field: the worker must ignore this destination.
+            "gitlab_url": "https://untrusted.example",
         },
         "actor": {
             "username": "gitlab-user",
@@ -3809,6 +3810,11 @@ class TestGitLabProviderDetection:
 class TestHandleGitLabMention:
     """Issue #3436: Unit tests for the _handle_gitlab_mention function itself."""
 
+    @pytest.fixture(autouse=True)
+    def trusted_gitlab_url(self, monkeypatch):
+        """Workers receive the trusted URL from deployment-owned configuration."""
+        monkeypatch.setenv("GITLAB_URL", "http://gitlab.dev.adp.internal")
+
     @patch("entrypoint.boto3.client")
     @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
@@ -3819,12 +3825,9 @@ class TestHandleGitLabMention:
         mock_boto_client,
         monkeypatch,
     ):
-        """Full happy path: token read, ack posted, branch created, msg deleted.
-        URL resolved from envelope's payload.source.gitlab_url (primary).
-        Default branch resolved from project API."""
+        """Full happy path uses the trusted URL and completes all API calls."""
         from entrypoint import _handle_gitlab_mention
 
-        # No GITLAB_URL env var — URL comes from the envelope's gitlab_url field
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         # Mock Secrets Manager
@@ -4043,17 +4046,44 @@ class TestHandleGitLabMention:
     @patch("entrypoint.boto3.client")
     @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
-    def test_envelope_gitlab_url_takes_precedence_over_env(
+    def test_missing_trusted_gitlab_url_fails_before_token_read(
         self,
         mock_delete_msg,
         mock_urlopen,
         mock_boto_client,
         monkeypatch,
     ):
-        """Envelope's gitlab_url is primary; GITLAB_URL env var is fallback only."""
+        """No deployment-owned URL means no token read and no outbound call."""
         from entrypoint import _handle_gitlab_mention
 
-        monkeypatch.setenv("GITLAB_URL", "http://fallback-gitlab.internal")
+        monkeypatch.delenv("GITLAB_URL", raising=False)
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-no-url",
+        )
+
+        assert result == 1
+        mock_boto_client.assert_not_called()
+        mock_urlopen.assert_not_called()
+        mock_delete_msg.assert_called_once()
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_envelope_gitlab_url_is_ignored(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """An envelope URL cannot override deployment-owned configuration."""
+        from entrypoint import _handle_gitlab_mention
+
+        monkeypatch.setenv("GITLAB_URL", "http://trusted-gitlab.internal")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         mock_sm = MagicMock()
@@ -4091,22 +4121,23 @@ class TestHandleGitLabMention:
             "receipt-gl-env",
         )
 
-        # Verify the URL used is from envelope (gitlab.dev.adp.internal), not env var
+        # The sample envelope contains https://untrusted.example. Every request
+        # must instead use the deployment-owned URL.
         first_call_req = mock_urlopen.call_args_list[0][0][0]
-        assert "gitlab.dev.adp.internal" in first_call_req.full_url
-        assert "fallback-gitlab.internal" not in first_call_req.full_url
+        assert "trusted-gitlab.internal" in first_call_req.full_url
+        assert "untrusted.example" not in first_call_req.full_url
 
     @patch("entrypoint.boto3.client")
     @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
-    def test_env_var_used_when_envelope_gitlab_url_empty(
+    def test_configured_url_used_when_legacy_envelope_url_empty(
         self,
         mock_delete_msg,
         mock_urlopen,
         mock_boto_client,
         monkeypatch,
     ):
-        """GITLAB_URL env var is used when envelope's gitlab_url is empty."""
+        """Configured GITLAB_URL is independent of the legacy envelope field."""
         from entrypoint import _handle_gitlab_mention
 
         monkeypatch.setenv("GITLAB_URL", "http://override-gitlab.internal")

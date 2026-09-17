@@ -465,20 +465,24 @@ def _handle_gitlab_mention(
     source = payload.get("source", {})
     project_id = source.get("project_id")
     issue_iid = source.get("issue_iid")
-    # URL precedence: envelope field is primary (self-describing message);
-    # GITLAB_URL env var is an optional break-glass override only.
-    gitlab_url = source.get("gitlab_url", "") or os.environ.get("GITLAB_URL", "")
+    # Webhook fields are event data, not connection configuration. GITLAB_URL
+    # is injected from the deployment-owned /adp/<env>/gitlab/url SSM parameter.
+    gitlab_url = os.environ.get("GITLAB_URL", "").strip()
     persona = envelope.get("persona", "developer")
     correlation = envelope.get("correlation", {})
     correlation_id = correlation.get("correlation_id", "")
 
-    if not gitlab_url or not project_id or not issue_iid:
+    if not project_id or not issue_iid:
         logger.error(
-            "GitLab path: missing required fields (gitlab_url=%s, project_id=%s, issue_iid=%s)",
-            gitlab_url,
+            "GitLab path: missing required fields (project_id=%s, issue_iid=%s)",
             project_id,
             issue_iid,
         )
+        _delete_message(queue_url, region, receipt_handle)
+        return 1
+
+    if not gitlab_url:
+        logger.error("GitLab path: trusted GITLAB_URL is not configured")
         _delete_message(queue_url, region, receipt_handle)
         return 1
 

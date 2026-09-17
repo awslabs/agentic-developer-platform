@@ -120,6 +120,19 @@ class TestTokenValidation:
 
         assert result["statusCode"] == 401
 
+    def test_public_placeholder_token_is_never_accepted(self):
+        """The historical Terraform placeholder must fail closed."""
+        import gitlab.handler as h
+
+        with patch.object(
+            h,
+            "_resolve_webhook_secret",
+            return_value=h.PLACEHOLDER_WEBHOOK_SECRET,
+        ):
+            assert h._validate_token(
+                {"x-gitlab-token": h.PLACEHOLDER_WEBHOOK_SECRET}
+            ) is False
+
 
 class TestEventParsing:
     """Tests for event parsing and routing."""
@@ -261,6 +274,7 @@ class TestSQSMessage:
         assert pl["source"]["project_path"] == "group/repo"
         assert pl["source"]["issue_iid"] == 42
         assert pl["source"]["note_id"] == 789
+        assert "gitlab_url" not in pl["source"]
         assert pl["actor"]["username"] == "alice"
         assert pl["content"]["body"] == "@agent-developer please fix the login bug"
         assert pl["content"]["mention_target"] == "developer"
