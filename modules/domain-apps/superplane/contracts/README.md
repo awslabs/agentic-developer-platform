@@ -231,3 +231,25 @@ the tests and their generated fixtures.
 recovery worker (B); the reservation ledger (C); upstream handle persistence
 (U11c); the four Go controllers (U11b); any local Jobs, approval or budget
 authority, or scheduler of A's own.
+
+
+### Allocation membership in release evidence (U11)
+
+A release report requires `AllocationResources(allocation_id, resource_ids)` from
+B's authorized cleanup driver. The resource set comes from authoritative upstream
+allocation records (persisted by U11c), independently of the provider response;
+it must include compute, storage and network resources. Do not derive it from
+`observe_allocation()` or its returned keys. This is an input contract, not a new
+registry or ledger implemented by A; C still owns accounting changes.
+
+`release_allocation(..., allocation_resources=inventory)` checks the inventory's
+allocation ID before calling the provider. `assess_release(..., allocation=inventory)`
+requires every expected resource and rejects foreign or mismatched evidence as
+unresolved. Missing resources produce actionable findings and continuing exposure.
+The assessment also carries its allocation ID, so a teardown report cannot relabel
+another allocation's result. The caller must reconcile incomplete membership before
+claiming a clean release. Empty provider results do not imply an empty allocation.
+
+These checks enforce the supplied contract; they cannot attest to inventory provenance
+or live provider completeness. The real upstream registry and B's independent-lifetime
+cleanup driver remain required for R15 live acceptance.

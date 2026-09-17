@@ -102,20 +102,52 @@ class ReleaseState(str, Enum):
 
 
 @dataclass(frozen=True)
+class AllocationResources:
+    """Expected resource identifiers from the authoritative allocation record.
+
+    B's authorized cleanup driver supplies this inventory from the allocation
+    records persisted upstream by U11c, independently of the provider's response. A neither
+    constructs the inventory from observations nor owns its persistence. Provider
+    integration must include compute, storage and network resources in this set.
+    """
+
+    allocation_id: str
+    resource_ids: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.allocation_id, str) or not self.allocation_id.strip():
+            raise ContractViolation("allocation inventory requires an allocation id")
+        if (
+            not isinstance(self.resource_ids, frozenset)
+            or not self.resource_ids
+            or any(
+                not isinstance(name, str) or not name.strip()
+                for name in self.resource_ids
+            )
+        ):
+            raise ContractViolation(
+                "allocation inventory requires a non-empty frozen resource set"
+            )
+
+
+@dataclass(frozen=True)
 class ReleaseAssessment:
     """What provider observations establish about a release, and what they permit.
 
-    Built by `assess_release` from provider observations only. There is no
-    constructor path that takes a local status field, which is what makes "not an
-    internal status field" a property of the type rather than a review comment.
+    `assess_release` derives this from provider observations and independently
+    supplied allocation membership. Construction checks consistency, not the
+    provenance of those inputs; live provider proof remains a separate gate.
     """
 
     state: ReleaseState
     exposure: CostExposure
+    allocation_id: str
     unresolved_resources: tuple[str, ...] = ()
     reason: str = ""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.allocation_id, str) or not self.allocation_id.strip():
+            raise ContractViolation("release assessment requires an allocation id")
         if self.state is ReleaseState.RELEASED:
             if self.exposure is not CostExposure.NONE:
                 raise ContractViolation(
@@ -166,47 +198,56 @@ class ReleaseAssessment:
 
 def assess_release(
     observations: dict[str, ProviderObservation],
+    *,
+    allocation: AllocationResources,
 ) -> ReleaseAssessment:
-    """Assess a release from a provider re-check of each resource.
+    """Compare provider evidence with independently supplied allocation membership.
 
-    `observations` maps a resource identifier to what the provider said about it.
-    Every resource in the allocation must appear: the caller is asserting it
-    re-checked these, and an allocation's compute, storage and network are each
-    separately capable of surviving a release (R15 acceptance 1 names all three).
-
-    Precedence is deliberate — `UNKNOWN` outranks `PRESENT`. A confirmed-present
-    resource is a known quantity that C can price and an operator can delete. An
-    unconsultable one is not, and it is the case where a wrong reading is
-    unrecoverable, so it dominates the assessment.
-
-    An empty mapping refuses rather than reporting a clean release. "I checked
-    nothing" and "I checked everything and found nothing" are the same value in
-    an unguarded implementation, and the first must not be able to zero a bill.
+    The required inventory comes from the authorized allocation record, never
+    from observed keys. Missing, foreign, mismatched and UNKNOWN observations
+    retain unresolved exposure. An empty provider response cannot clear a
+    non-empty allocation. A reports the assessment; C owns accounting changes.
     """
-    if not observations:
-        raise ContractViolation(
-            "a release assessment requires at least one provider observation; "
-            "an empty re-check establishes nothing and cannot clear accounting"
-        )
+    if not isinstance(allocation, AllocationResources):
+        raise ContractViolation("release requires an allocation inventory")
+    if not isinstance(observations, dict):
+        raise ContractViolation("release requires an observation mapping")
 
+    if any(not isinstance(name, str) or not name.strip() for name in observations):
+        raise ContractViolation("observation keys must be resource identifiers")
+    if any(
+        not isinstance(observed, ProviderObservation)
+        or not isinstance(observed.presence, ProviderPresence)
+        for observed in observations.values()
+    ):
+        raise ContractViolation("release requires typed provider observations")
+
+    expected = allocation.resource_ids
+    observed_ids = set(observations)
     unknown = sorted(
-        name
-        for name, observed in observations.items()
-        if observed.presence is ProviderPresence.UNKNOWN
+        (expected - observed_ids)
+        | (observed_ids - expected)
+        | {
+            name
+            for name, observed in observations.items()
+            if observed.presence is ProviderPresence.UNKNOWN
+            or observed.queried_by != name
+        }
     )
     present = sorted(
         name
         for name, observed in observations.items()
-        if observed.presence is ProviderPresence.PRESENT
+        if observed.presence is ProviderPresence.PRESENT and name not in unknown
     )
 
     if unknown:
         return ReleaseAssessment(
+            allocation_id=allocation.allocation_id,
             state=ReleaseState.UNRESOLVED,
             exposure=CostExposure.UNRESOLVED,
             unresolved_resources=tuple(unknown + present),
             reason=(
-                f"the provider could not be consulted for {len(unknown)} "
+                f"provider evidence was unavailable or mismatched for {len(unknown)} "
                 "resource(s); the allocation is retained and reported, and "
                 "incurred cost is accrued as unresolved rather than zero"
             ),
@@ -214,6 +255,7 @@ def assess_release(
 
     if present:
         return ReleaseAssessment(
+            allocation_id=allocation.allocation_id,
             state=ReleaseState.RETAINED,
             exposure=CostExposure.ACTIVE,
             unresolved_resources=tuple(present),
@@ -224,6 +266,7 @@ def assess_release(
         )
 
     return ReleaseAssessment(
+        allocation_id=allocation.allocation_id,
         state=ReleaseState.RELEASED,
         exposure=CostExposure.NONE,
         reason=(

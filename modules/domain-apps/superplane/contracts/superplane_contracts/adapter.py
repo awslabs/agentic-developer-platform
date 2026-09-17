@@ -64,7 +64,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from .accounting import ReleaseAssessment, assess_release
+from .accounting import AllocationResources, ReleaseAssessment, assess_release
 from .handles import (
     CallDecision,
     CallOutcome,
@@ -320,7 +320,11 @@ class ProviderAdapter:
         return reconcile(request, observation)
 
     def release_allocation(
-        self, allocation_id: str, intent: ReleaseIntent
+        self,
+        allocation_id: str,
+        intent: ReleaseIntent,
+        *,
+        allocation_resources: AllocationResources,
     ) -> TeardownReport:
         """Re-check the provider, then report the truth with a non-zero result on failure.
 
@@ -329,36 +333,58 @@ class ProviderAdapter:
         during the re-check becomes an `UNKNOWN` observation and therefore an
         unresolved report — never a claim that cleanup succeeded.
         """
+        if (
+            not isinstance(allocation_resources, AllocationResources)
+            or allocation_resources.allocation_id != allocation_id
+        ):
+            raise ContractViolation(
+                "release inventory does not belong to this allocation"
+            )
+        if not self._authority.authority_for(allocation_id):
+            raise ContractViolation(
+                "release reporting requires B's active operation authority"
+            )
         credential_failure = False
         try:
             observations = self._provider.observe_allocation(allocation_id)
-        except PermissionError as exc:
+        except PermissionError:
             credential_failure = True
             observations = {
-                allocation_id: ProviderObservation(
+                name: ProviderObservation(
                     presence=ProviderPresence.UNKNOWN,
-                    queried_by=allocation_id,
-                    detail=f"credential failure during re-check: {exc}",
+                    queried_by=name,
+                    detail="credential failure during provider re-check",
                 )
+                for name in allocation_resources.resource_ids
             }
         except Exception as exc:
             observations = {
-                allocation_id: ProviderObservation(
+                name: ProviderObservation(
                     presence=ProviderPresence.UNKNOWN,
-                    queried_by=allocation_id,
+                    queried_by=name,
                     detail=f"provider re-check failed: {type(exc).__name__}",
                 )
+                for name in allocation_resources.resource_ids
             }
 
-        assessment: ReleaseAssessment = assess_release(observations)
+        assessment: ReleaseAssessment = assess_release(
+            observations, allocation=allocation_resources
+        )
         findings = tuple(
             Finding(
                 resource=name,
-                detail=observations[name].detail
-                or f"provider reports {observations[name].presence.value}",
+                detail=(
+                    "provider omitted an expected allocation resource"
+                    if name not in observations
+                    else "provider reported a resource outside the allocation inventory"
+                    if name not in allocation_resources.resource_ids
+                    else "provider observation identified a different resource"
+                    if observations[name].queried_by != name
+                    else observations[name].detail
+                    or f"provider reports {observations[name].presence.value}"
+                ),
             )
             for name in assessment.unresolved_resources
-            if name in observations
         )
         return TeardownReport(
             allocation_id=allocation_id,
@@ -378,6 +404,13 @@ class ProviderAdapter:
         The outcome is `AMBIGUOUS` by construction — that is exactly what an
         unreported operation is — so this always re-checks the provider.
         """
+        if (
+            record.handle.allocation_id != allocation_id
+            or record.handle.provider != self._provider_name
+        ):
+            raise ContractViolation(
+                "recorded handle does not belong to this allocation/provider"
+            )
         authority = self._authority.authority_for(allocation_id)
         if not authority:
             raise ContractViolation(

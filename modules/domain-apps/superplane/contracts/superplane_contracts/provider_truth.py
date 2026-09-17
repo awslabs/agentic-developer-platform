@@ -188,6 +188,8 @@ class TeardownReport:
     def __post_init__(self) -> None:
         if not self.allocation_id.strip():
             raise ContractViolation("allocation_id must be a non-empty string")
+        if self.assessment.allocation_id != self.allocation_id:
+            raise ContractViolation("release assessment belongs to another allocation")
         if self.reported_at is not None and self.reported_at.tzinfo is None:
             raise ContractViolation("reported_at must be timezone-aware")
         if self.credential_failure and self.assessment.may_mark_released:

@@ -121,6 +121,8 @@ class ProviderObservation:
     detail: str = ""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.presence, ProviderPresence):
+            raise ContractViolation("presence must be a ProviderPresence")
         if not isinstance(self.queried_by, str) or not self.queried_by.strip():
             raise ContractViolation("queried_by must be a non-empty string")
         if self.presence is ProviderPresence.PRESENT and not self.provider_state:
@@ -221,8 +223,8 @@ class ReconcileDecision:
 
         Both `UNRESOLVED` and `RECONCILED_EXISTS` are unresolved for accounting
         purposes: in the first the provider could not be consulted, and in the
-        second it confirmed a resource is still there. `accounting.py` consumes
-        exactly this to refuse premature release (R15 acceptance 7).
+        second it confirmed a resource is still there. The adapter exposes this
+        flag; `accounting.py` independently assesses allocation observations before permitting release (R15 acceptance 7).
         """
         return self.result in (
             ReconcileResult.UNRESOLVED,
@@ -244,6 +246,16 @@ def reconcile(
     call, so re-querying would add nothing. Only `AMBIGUOUS` needs the re-check.
     """
     handle = request.handle
+    if observation is not None and observation.queried_by not in {
+        handle.resource_name,
+        handle.idempotency_key,
+        handle.provider_reference,
+    }:
+        return ReconcileDecision(
+            result=ReconcileResult.UNRESOLVED,
+            handle=handle,
+            reason="provider observation does not identify the recorded operation",
+        )
 
     if request.outcome is CallOutcome.SUCCEEDED:
         return ReconcileDecision(

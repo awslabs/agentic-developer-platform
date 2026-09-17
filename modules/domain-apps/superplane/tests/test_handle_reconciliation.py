@@ -52,6 +52,7 @@ import _contracts_path  # noqa: F401  (imported for its sys.path side effect)
 import pytest
 from superplane_contracts import (
     MAX_EXIT_CODE,
+    AllocationResources,
     CallOutcome,
     ContractViolation,
     CostExposure,
@@ -900,7 +901,8 @@ class TestUnresolvedExposureBlocksRelease:
                     queried_by="node",
                     detail="DescribeInstances threw ThrottlingException",
                 )
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
         )
         assert assessment.state is ReleaseState.UNRESOLVED
         assert assessment.may_mark_released is False
@@ -914,7 +916,8 @@ class TestUnresolvedExposureBlocksRelease:
                     queried_by="volume",
                     detail="credential expired mid-teardown",
                 )
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"volume"})),
         )
         assert assessment.exposure is CostExposure.UNRESOLVED
         assert assessment.exposure is not CostExposure.NONE
@@ -935,7 +938,10 @@ class TestUnresolvedExposureBlocksRelease:
                 "subnet": ProviderObservation(
                     presence=ProviderPresence.ABSENT, queried_by="subnet"
                 ),
-            }
+            },
+            allocation=AllocationResources(
+                ALLOCATION, frozenset({"node", "volume", "subnet"})
+            ),
         )
         # Both the unconsultable and the confirmed-present resource are named; the
         # confirmed-absent one is not outstanding.
@@ -953,7 +959,8 @@ class TestUnresolvedExposureBlocksRelease:
                     queried_by="volume",
                     detail="API error",
                 ),
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"node", "volume"})),
         )
         assert assessment.state is ReleaseState.UNRESOLVED
         assert assessment.exposure is CostExposure.UNRESOLVED
@@ -964,7 +971,8 @@ class TestUnresolvedExposureBlocksRelease:
                 "node": observe_ec2(
                     RESPONSES["ec2"]["describe_instances_running"], "node"
                 )
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
         )
         assert assessment.state is ReleaseState.RETAINED
         assert assessment.exposure is CostExposure.ACTIVE
@@ -978,7 +986,8 @@ class TestUnresolvedExposureBlocksRelease:
                 "node": observe_ec2(
                     RESPONSES["ec2"]["describe_instances_shutting_down"], "node"
                 )
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
         )
         assert assessment.may_mark_released is False
 
@@ -988,10 +997,11 @@ class TestUnresolvedExposureBlocksRelease:
                 "node": observe_ec2(
                     RESPONSES["ec2"]["describe_instances_terminated"], "node"
                 ),
-                "cluster": observe_skypilot_status(
+                CLUSTER: observe_skypilot_status(
                     RESPONSES["skypilot"]["status_absent"], CLUSTER
                 ),
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"node", CLUSTER})),
         )
         assert assessment.state is ReleaseState.RELEASED
         assert assessment.exposure is CostExposure.NONE
@@ -1001,28 +1011,39 @@ class TestUnresolvedExposureBlocksRelease:
 
     def test_checking_nothing_is_not_a_clean_release(self) -> None:
         """Checking nothing and finding nothing must not be the same value."""
-        with pytest.raises(ContractViolation, match="empty re-check"):
-            assess_release({})
+        assessment = assess_release(
+            {}, allocation=AllocationResources(ALLOCATION, frozenset({"node"}))
+        )
+        assert assessment.state is ReleaseState.UNRESOLVED
+        assert assessment.unresolved_resources == ("node",)
 
     def test_the_two_claims_cannot_be_assembled_by_hand(self) -> None:
         """The guards close the constructor, not merely the factory."""
         with pytest.raises(ContractViolation, match="continuing cost"):
-            ReleaseAssessment(state=ReleaseState.RELEASED, exposure=CostExposure.ACTIVE)
+            ReleaseAssessment(
+                state=ReleaseState.RELEASED,
+                exposure=CostExposure.ACTIVE,
+                allocation_id=ALLOCATION,
+            )
         with pytest.raises(ContractViolation, match="unresolved resources"):
             ReleaseAssessment(
                 state=ReleaseState.RELEASED,
                 exposure=CostExposure.NONE,
                 unresolved_resources=("node",),
+                allocation_id=ALLOCATION,
             )
         with pytest.raises(ContractViolation, match="must name"):
             ReleaseAssessment(
-                state=ReleaseState.UNRESOLVED, exposure=CostExposure.UNRESOLVED
+                state=ReleaseState.UNRESOLVED,
+                exposure=CostExposure.UNRESOLVED,
+                allocation_id=ALLOCATION,
             )
         with pytest.raises(ContractViolation, match="zero cost exposure"):
             ReleaseAssessment(
                 state=ReleaseState.RETAINED,
                 exposure=CostExposure.NONE,
                 unresolved_resources=("node",),
+                allocation_id=ALLOCATION,
             )
 
 
@@ -1048,7 +1069,10 @@ class TestCleanupFailureIsReportedAsFailure:
                         queried_by="volume",
                         detail="API error",
                     ),
-                }
+                },
+                allocation=AllocationResources(
+                    ALLOCATION, frozenset({"node", "volume"})
+                ),
             ),
             intent=deliberate_intent(),
             findings=(
@@ -1068,7 +1092,8 @@ class TestCleanupFailureIsReportedAsFailure:
                     "node": observe_ec2(
                         RESPONSES["ec2"]["describe_instances_terminated"], "node"
                     )
-                }
+                },
+                allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
             ),
             intent=deliberate_intent(),
         )
@@ -1086,7 +1111,8 @@ class TestCleanupFailureIsReportedAsFailure:
                         queried_by="node",
                         detail="API error",
                     )
-                }
+                },
+                allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
             ),
             intent=deliberate_intent(),
         )
@@ -1106,7 +1132,8 @@ class TestCleanupFailureIsReportedAsFailure:
                     "node": observe_ec2(
                         RESPONSES["ec2"]["describe_instances_running"], "node"
                     )
-                }
+                },
+                allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
             ),
             intent=deliberate_intent(),
             findings=findings,
@@ -1125,7 +1152,8 @@ class TestCleanupFailureIsReportedAsFailure:
                         queried_by="node",
                         detail="credential expired",
                     )
-                }
+                },
+                allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
             ),
             intent=deliberate_intent(),
             credential_failure=True,
@@ -1140,7 +1168,8 @@ class TestCleanupFailureIsReportedAsFailure:
                 "node": observe_ec2(
                     RESPONSES["ec2"]["describe_instances_terminated"], "node"
                 )
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
         )
         with pytest.raises(ContractViolation, match="credential"):
             TeardownReport(
@@ -1156,7 +1185,8 @@ class TestCleanupFailureIsReportedAsFailure:
                 "node": observe_ec2(
                     RESPONSES["ec2"]["describe_instances_terminated"], "node"
                 )
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
         )
         with pytest.raises(ContractViolation, match="outstanding findings"):
             TeardownReport(
@@ -1172,7 +1202,8 @@ class TestCleanupFailureIsReportedAsFailure:
                 "node": observe_ec2(
                     RESPONSES["ec2"]["describe_instances_terminated"], "node"
                 )
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
         )
         with pytest.raises(ContractViolation, match="allocation_id"):
             TeardownReport(
@@ -1203,14 +1234,20 @@ class TestReleasePathReportsProviderTruth:
                 "node": observe_ec2(
                     RESPONSES["ec2"]["describe_instances_terminated"], "node"
                 ),
-                "cluster": observe_skypilot_status(
+                CLUSTER: observe_skypilot_status(
                     RESPONSES["skypilot"]["status_absent"], CLUSTER
                 ),
             }
         )
         adapter, _, _ = build_adapter(provider)
 
-        report = adapter.release_allocation(ALLOCATION, deliberate_intent())
+        report = adapter.release_allocation(
+            ALLOCATION,
+            deliberate_intent(),
+            allocation_resources=AllocationResources(
+                ALLOCATION, frozenset({"node", CLUSTER})
+            ),
+        )
 
         assert report.succeeded is True
         assert report.exit_code == 0
@@ -1231,7 +1268,13 @@ class TestReleasePathReportsProviderTruth:
         )
         adapter, _, _ = build_adapter(provider)
 
-        report = adapter.release_allocation(ALLOCATION, deliberate_intent())
+        report = adapter.release_allocation(
+            ALLOCATION,
+            deliberate_intent(),
+            allocation_resources=AllocationResources(
+                ALLOCATION, frozenset({"node", "volume"})
+            ),
+        )
 
         assert report.succeeded is False
         assert report.exit_code == 2
@@ -1244,7 +1287,11 @@ class TestReleasePathReportsProviderTruth:
         )
         adapter, _, _ = build_adapter(provider)
 
-        report = adapter.release_allocation(ALLOCATION, deliberate_intent())
+        report = adapter.release_allocation(
+            ALLOCATION,
+            deliberate_intent(),
+            allocation_resources=AllocationResources(ALLOCATION, frozenset({"node"})),
+        )
 
         assert report.credential_failure is True
         assert report.succeeded is False
@@ -1257,7 +1304,11 @@ class TestReleasePathReportsProviderTruth:
         )
         adapter, _, _ = build_adapter(provider)
 
-        report = adapter.release_allocation(ALLOCATION, deliberate_intent())
+        report = adapter.release_allocation(
+            ALLOCATION,
+            deliberate_intent(),
+            allocation_resources=AllocationResources(ALLOCATION, frozenset({"node"})),
+        )
 
         assert report.credential_failure is False
         assert report.assessment.state is ReleaseState.UNRESOLVED
@@ -1327,7 +1378,11 @@ class TestDeliberateRetirementVersusAccident:
         )
         adapter, _, _ = build_adapter(provider)
 
-        report = adapter.release_allocation(ALLOCATION, ReleaseIntent(deliberate=False))
+        report = adapter.release_allocation(
+            ALLOCATION,
+            ReleaseIntent(deliberate=False),
+            allocation_resources=AllocationResources(ALLOCATION, frozenset({"node"})),
+        )
 
         assert report.intent.recreation_expected is True
         assert report.succeeded is False
@@ -1380,7 +1435,8 @@ class TestScopeBoundaries:
                 "node": observe_ec2(
                     RESPONSES["ec2"]["describe_instances_running"], "node"
                 )
-            }
+            },
+            allocation=AllocationResources(ALLOCATION, frozenset({"node"})),
         )
         assert not hasattr(assessment, "balance")
         assert not hasattr(assessment, "spend_usd")
@@ -1391,3 +1447,230 @@ class TestScopeBoundaries:
         handle = make_handle()
         for absent in ("attempt", "attempt_id", "retries", "backoff"):
             assert not hasattr(handle, absent)
+
+
+@pytest.mark.parametrize("presence", [None, "absent", False, "invented"])
+def test_unrecognized_presence_cannot_clear_release(presence):
+    with pytest.raises(ContractViolation, match="presence"):
+        ProviderObservation(presence=presence, queried_by="resource")
+
+
+def test_untyped_observation_cannot_clear_release():
+    from types import SimpleNamespace
+
+    with pytest.raises(ContractViolation, match="typed"):
+        assess_release(
+            {"resource": SimpleNamespace(presence="absent")},
+            allocation=AllocationResources(ALLOCATION, frozenset({"resource"})),
+        )
+
+
+def test_other_resource_absence_cannot_authorize_a_retry():
+    handle = ProviderHandle(
+        OperationKind.PROVISION,
+        "provider",
+        "intended-resource",
+        "key",
+        "allocation",
+        "workspace",
+    )
+    request = ReconcileRequest(handle, CallOutcome.AMBIGUOUS, "mock-authority")
+    result = reconcile(
+        request, ProviderObservation(ProviderPresence.ABSENT, "different-resource")
+    )
+    assert result.result is ReconcileResult.UNRESOLVED
+    assert not result.may_repeat_operation
+
+
+def test_other_allocation_cannot_reconcile_a_recorded_handle():
+    from unittest.mock import Mock
+    from datetime import datetime, timezone
+
+    handle = ProviderHandle(
+        OperationKind.PROVISION,
+        "provider",
+        "resource",
+        "key",
+        "allocation-one",
+        "workspace",
+    )
+    authority, provider = Mock(), Mock()
+    adapter = ProviderAdapter(Mock(), provider, authority, "provider")
+    record = HandleRecord(handle, True, datetime.now(timezone.utc))
+    with pytest.raises(ContractViolation, match="allocation/provider"):
+        adapter.reconcile_recorded_handle(record, "allocation-two")
+    authority.authority_for.assert_not_called()
+    provider.observe.assert_not_called()
+
+
+def test_release_reporting_requires_active_authority():
+    from unittest.mock import Mock
+
+    authority, provider = Mock(), Mock()
+    authority.authority_for.return_value = None
+    adapter = ProviderAdapter(Mock(), provider, authority, "provider")
+    with pytest.raises(ContractViolation, match="authority"):
+        adapter.release_allocation(
+            "allocation",
+            None,
+            allocation_resources=AllocationResources("allocation", frozenset({"node"})),
+        )
+    provider.observe_allocation.assert_not_called()
+
+
+@pytest.mark.parametrize("presence", list(ProviderPresence))
+def test_release_never_uses_another_resources_observation(presence):
+    observation = ProviderObservation(
+        presence=presence,
+        queried_by="different-node",
+        provider_state="running" if presence is ProviderPresence.PRESENT else None,
+        detail="query unavailable" if presence is ProviderPresence.UNKNOWN else "",
+    )
+    provider = RecordedProviderClient(
+        allocation_response={"allocated-node": observation}
+    )
+    adapter, _, _ = build_adapter(provider)
+    report = adapter.release_allocation(
+        ALLOCATION,
+        deliberate_intent(),
+        allocation_resources=AllocationResources(
+            ALLOCATION, frozenset({"allocated-node"})
+        ),
+    )
+    assert report.assessment.state is ReleaseState.UNRESOLVED
+    assert report.assessment.exposure is CostExposure.UNRESOLVED
+    assert not report.assessment.may_mark_released
+    assert not report.assessment.may_return_reservation_unused
+    assert report.exit_code == 1
+    assert report.findings == (
+        Finding(
+            resource="allocated-node",
+            detail="provider observation identified a different resource",
+        ),
+    )
+
+
+def test_partial_release_retains_mismatched_and_present_resources_once():
+    assessment = assess_release(
+        {
+            "wrong-query": ProviderObservation(
+                presence=ProviderPresence.PRESENT,
+                queried_by="other-node",
+                provider_state="running",
+            ),
+            "present": ProviderObservation(
+                presence=ProviderPresence.PRESENT,
+                queried_by="present",
+                provider_state="running",
+            ),
+            "gone": ProviderObservation(
+                presence=ProviderPresence.ABSENT, queried_by="gone"
+            ),
+        },
+        allocation=AllocationResources(
+            ALLOCATION, frozenset({"wrong-query", "present", "gone"})
+        ),
+    )
+    assert assessment.state is ReleaseState.UNRESOLVED
+    assert set(assessment.unresolved_resources) == {"wrong-query", "present"}
+    assert len(assessment.unresolved_resources) == 2
+
+
+@pytest.mark.parametrize(
+    "returned",
+    [
+        {"foreign-node": ProviderObservation(ProviderPresence.ABSENT, "foreign-node")},
+        {"compute": ProviderObservation(ProviderPresence.ABSENT, "compute")},
+        {},
+    ],
+)
+def test_release_requires_the_complete_authoritative_allocation_inventory(returned):
+    inventory = AllocationResources(
+        ALLOCATION, frozenset({"compute", "volume", "network"})
+    )
+    provider = RecordedProviderClient(allocation_response=returned)
+    adapter, _, _ = build_adapter(provider)
+    report = adapter.release_allocation(
+        ALLOCATION, deliberate_intent(), allocation_resources=inventory
+    )
+    assert report.assessment.state is ReleaseState.UNRESOLVED
+    assert not report.assessment.may_return_reservation_unused
+    assert not report.succeeded and report.exit_code > 0
+    assert {finding.resource for finding in report.findings} >= {"volume", "network"}
+    assert len(report.findings) == len(report.assessment.unresolved_resources)
+
+
+def test_complete_allocation_absence_is_the_only_clearance_path():
+    inventory = AllocationResources(
+        ALLOCATION, frozenset({"compute", "volume", "network"})
+    )
+    provider = RecordedProviderClient(
+        allocation_response={
+            "compute": ProviderObservation(ProviderPresence.ABSENT, "compute"),
+            "volume": ProviderObservation(ProviderPresence.ABSENT, "volume"),
+            "network": ProviderObservation(ProviderPresence.ABSENT, "network"),
+        }
+    )
+    adapter, _, _ = build_adapter(provider)
+    report = adapter.release_allocation(
+        ALLOCATION, deliberate_intent(), allocation_resources=inventory
+    )
+    assert report.succeeded and report.exit_code == 0
+    assert report.assessment.allocation_id == ALLOCATION
+
+
+def test_foreign_inventory_is_refused_before_authority_or_provider_access():
+    from unittest.mock import Mock
+
+    authority, provider = Mock(), Mock()
+    adapter = ProviderAdapter(Mock(), provider, authority, PROVIDER)
+    with pytest.raises(ContractViolation, match="inventory"):
+        adapter.release_allocation(
+            ALLOCATION,
+            deliberate_intent(),
+            allocation_resources=AllocationResources(
+                "other-allocation", frozenset({"node"})
+            ),
+        )
+    authority.authority_for.assert_not_called()
+    provider.observe_allocation.assert_not_called()
+
+
+def test_release_report_cannot_relabel_another_allocations_assessment():
+    assessment = assess_release(
+        {"node": ProviderObservation(ProviderPresence.ABSENT, "node")},
+        allocation=AllocationResources("other-allocation", frozenset({"node"})),
+    )
+    with pytest.raises(ContractViolation, match="another allocation"):
+        TeardownReport(
+            allocation_id=ALLOCATION, assessment=assessment, intent=deliberate_intent()
+        )
+
+
+@pytest.mark.parametrize(
+    "resources", [None, "node", {"node"}, frozenset(), frozenset({""}), frozenset({1})]
+)
+def test_inventory_requires_explicit_immutable_resource_identifiers(resources):
+    with pytest.raises(ContractViolation, match="resource set"):
+        AllocationResources(ALLOCATION, resources)
+
+
+@pytest.mark.parametrize("allocation_id", [None, " ", 1])
+def test_inventory_requires_an_allocation_id(allocation_id):
+    with pytest.raises(ContractViolation, match="allocation id"):
+        AllocationResources(allocation_id, frozenset({"node"}))
+
+
+def test_untyped_inventory_and_malformed_observation_maps_are_refused():
+    with pytest.raises(ContractViolation, match="inventory"):
+        assess_release({}, allocation=None)
+    inventory = AllocationResources(ALLOCATION, frozenset({"node"}))
+    with pytest.raises(ContractViolation, match="mapping"):
+        assess_release([], allocation=inventory)
+    with pytest.raises(ContractViolation, match="resource identifiers"):
+        assess_release(
+            {None: ProviderObservation(ProviderPresence.ABSENT, "node")},
+            allocation=inventory,
+        )
+    with pytest.raises(ContractViolation, match="allocation id"):
+        ReleaseAssessment(ReleaseState.RELEASED, CostExposure.NONE, "")

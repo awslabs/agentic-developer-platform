@@ -46,6 +46,7 @@ The full rationale, including the specific upstream bugs each rule prevents, is 
 from __future__ import annotations
 
 from .accounting import (
+    AllocationResources,
     CostExposure,
     ReleaseAssessment,
     ReleaseState,
@@ -158,6 +159,7 @@ from .version import (
 )
 
 __all__ = [
+    "AllocationResources",
     "AUTH_HEADER",
     "AuthResult",
     "BudgetUsage",
