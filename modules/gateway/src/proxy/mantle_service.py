@@ -201,7 +201,9 @@ class _StreamUsageSniffer:
 
     def _parse_line(self, raw: bytes) -> None:
         try:
-            line = raw.decode("utf-8", errors="ignore").strip()
+            # Only an empty line dispatches an SSE event. Whitespace or an
+            # invalid UTF-8 byte must not manufacture a completion delimiter.
+            line = raw.decode("utf-8", errors="replace")
             if not line:
                 # A terminal data line is not delivered as an SSE event until
                 # the blank-line delimiter arrives. EOF mid-record is failure.

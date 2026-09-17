@@ -168,6 +168,15 @@ def test_eof_does_not_commit_an_unterminated_terminal_record():
     assert sniffer.terminal_event is None
 
 
+@pytest.mark.parametrize("line", [b" ", b"\t", b"\xff"])
+def test_nonempty_line_is_not_a_terminal_delimiter(line):
+    sniffer = _StreamUsageSniffer()
+    sniffer.feed(COMPLETED[:-1] + line + b"\n")
+    assert sniffer.terminal_event is None
+    sniffer.feed(b"\n")
+    assert sniffer.terminal_event == "response.completed"
+
+
 def test_stream_read_timeout_is_configurable_and_bounded(monkeypatch):
     monkeypatch.delenv("BG_MANTLE_STREAM_READ_TIMEOUT_SECONDS", raising=False)
     assert Settings().mantle_stream_read_timeout_seconds == 600
