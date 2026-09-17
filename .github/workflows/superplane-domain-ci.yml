@@ -8,30 +8,13 @@ name: Superplane Domain CI
 # it. Creating a lane is not taking release ownership: U2 keeps the pinned image builds
 # and U3 keeps Terraform, rollout and migrations.
 #
-# This workflow builds no image, deploys nothing and has no AWS identity. It is lint plus
-# unit tests over a source directory. The live acceptance of this module (R1 acc. 4 —
-# resources absent from AWS after the undeploy phase runs) is a separate, credentialed,
-# operator-initiated run against a named account, and it is explicitly deferred: it needs
-# an account/environment and a cleanup owner, neither of which is resolved. A CI job that
-# took a deploy credential to prove a directory lints would have a far larger blast radius
-# than the thing it verifies.
-#
-# Runner choice is what makes that credential claim true, and it is deliberate (#5198
-# review). This lane runs on a GitHub-hosted runner, unlike most workflows in this repo,
-# which use the in-cluster `arc-runner-org`. ARC runner pods carry an ambient IRSA
-# identity: their service account is annotated `eks.amazonaws.com/role-arn`
-# (modules/agent-factory/infra/modules/arc-runner/main.tf), so the EKS pod-identity
-# webhook injects AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE into every container and
-# every step runs as adp-<env>-agent-runner-role whether or not the job asks for it. See
-# security-agent-nightly.yml, which relies on exactly that. Omitting
-# `configure-aws-credentials` therefore does NOT make an ARC job credential-free.
-#
-# So a hosted runner is not a stylistic preference here: it is the only way this lane's
-# "no account" property is enforceable rather than aspirational, and it is why the guard
-# at the end of this job can assert the absence of credentials and be right. These tests
-# need no AWS — they monkeypatch environment variables and read files as text — so there
-# is nothing to lose by having no identity, and a real reduction in blast radius: no
-# credential is exposed to a pull_request-triggered job to prove a directory lints.
+# This workflow builds no image and deploys nothing. It uses the existing self-hosted
+# arc-runner-org pool, matching the other ADP workflows (owner instruction 2026-09-17).
+# ARC has an ambient platform identity. The test job clears AWS credential provider
+# inputs and uses an empty shared credentials file plus a region-only config so normal
+# SDK calls cannot obtain credentials. This is an offline test environment, not a
+# claim that the runner has no identity or that PR code is sandboxed from the host.
+# Live acceptance remains a separate explicitly authorized run.
 #
 # The module is a skeleton today, so the Python job tolerates "no tests yet" — but only
 # for the domain module, and it says so in the log. It does NOT use --passWithNoTests
@@ -83,7 +66,7 @@ on:
       - 'docs/agent-catalogue.md'
   workflow_dispatch:
 
-# No `permissions: id-token` — this lane must never be able to assume an AWS role.
+# No OIDC token permission: lint and unit tests do not need an AWS role.
 permissions:
   contents: read
 
@@ -96,10 +79,27 @@ jobs:
     # Required-check name for U12/U2/U8. Renaming a job silently removes a required check
     # rather than failing, so treat this string as a contract.
     name: Superplane domain tests
-    # GitHub-hosted, NOT arc-runner-org — see the runner note in the header. An ARC runner
-    # would give this job ambient IRSA credentials, which is both unnecessary for lint plus
-    # unit tests and incompatible with the credential guard at the end of this job.
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
+    # Tests use mocks. Disable normal AWS credential discovery in this job only;
+    # the ARC runner retains its platform identity and is not a security sandbox.
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container provider treats presence as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
     steps:
       - uses: actions/checkout@v7
 
@@ -192,7 +192,7 @@ jobs:
         #
         # Nothing here touches AWS: the SkyPilot client, join transport and node resolver
         # are Protocols with in-test fakes, which is what keeps this suite runnable on the
-        # credential-free GitHub-hosted runner this job deliberately uses.
+        # offline test environment this job configures on the existing ARC runner.
         run: |
           set -euo pipefail
           python3 -m pytest -v --tb=short \
@@ -270,17 +270,7 @@ jobs:
             -v --tb=short
 
       - name: Verify no AWS credentials were configured
-        # A guard on the lane's own premise, and one that can actually hold: on a
-        # GitHub-hosted runner there is no ambient identity, so an AWS credential here
-        # could only come from somebody adding one. If that happens this fails and says
-        # why the lane exists without one, rather than the lane quietly becoming a
-        # credentialed job.
-        #
-        # This step is why `runs-on` matters. On arc-runner-org it failed on every run
-        # (#5198 review): the pod-identity webhook injects AWS_ROLE_ARN and
-        # AWS_WEB_IDENTITY_TOKEN_FILE into every container, so the condition below was
-        # unsatisfiable there. Moving the runner is what made the assertion true; do not
-        # move it back and weaken the assertion instead.
+        # Verify the test process environment; the self-hosted runner itself retains IRSA.
         run: |
           set -euo pipefail
           FOUND=""
@@ -293,7 +283,15 @@ jobs:
             fi
           done
           if [ -n "$FOUND" ]; then
-            echo "::error::AWS credentials are present in this job (set:${FOUND}). superplane-domain-ci.yml is an offline lane: lint plus unit tests, no account, no image, no deploy. If a step needs AWS, it does not belong in this lane."
+            echo "::error::AWS credentials are present in this job (set:${FOUND}). superplane-domain-ci.yml is an offline lane: lint plus unit tests, no AWS calls, no image, no deploy. If a step needs AWS, it does not belong in this lane."
             exit 1
           fi
           echo "Confirmed: no AWS credentials in this job's environment."
+
+      - name: Verify the AWS SDK cannot discover credentials
+        run: |
+          python3 - <<'PYTHON'
+          import boto3
+          assert boto3.Session().get_credentials() is None, "Offline tests discovered AWS credentials"
+          print("Confirmed: AWS SDK credential discovery is disabled for this test job.")
+          PYTHON

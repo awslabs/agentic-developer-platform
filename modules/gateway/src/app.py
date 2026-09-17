@@ -205,6 +205,7 @@ async def lifespan(app: FastAPI):
                     base_url,
                     inference_profile_prefix=settings.mantle_inference_profile_prefix,
                     on_demand_models=settings.mantle_on_demand_models,
+                    stream_read_timeout=settings.mantle_stream_read_timeout_seconds,
                 )
             )
             logger.info("Mantle passthrough service initialized", extra={"auth_mode": "sigv4"})

@@ -121,6 +121,7 @@ module "runner_iam" {
   oidc_issuer       = local.oidc_issuer
   aws_region        = var.aws_region
   runner_namespace  = var.runner_namespace
+  runner_role_name  = var.runner_role_name
 
   security_scans_bucket_arn = try(data.terraform_remote_state.platform.outputs.security_scans_bucket_arn, "")
 }

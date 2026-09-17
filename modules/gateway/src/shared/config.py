@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -159,6 +159,9 @@ class Settings(BaseSettings):
     # mantle_inference_profile_prefix below, which restores the bare-id UX.
     mantle_base_url: str = "https://bedrock-runtime.{region}.amazonaws.com"
     mantle_region: str = "us-east-1"
+    # A thinking model can leave the upstream response body quiet for minutes.
+    # Downstream SSE keep-alives do not extend HTTPX's upstream read deadline.
+    mantle_stream_read_timeout_seconds: float = Field(default=600.0, gt=0, le=3600, allow_inf_nan=False)
     # Geo prefix for the cross-region inference profile the mantle route forwards
     # under. bedrock-runtime rejects bare foundation-model ids for the flagship
     # OpenAI families on this path ("Invocation ... with on-demand throughput isn't

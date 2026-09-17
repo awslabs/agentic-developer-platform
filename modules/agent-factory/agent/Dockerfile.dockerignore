@@ -1,0 +1,10 @@
+# Only copy source/build inputs; omit local packages and Terraform artifacts.
+**
+!agent/
+!agent/**
+agent/node_modules/
+agent/dist/
+agent/coverage/
+!rules/
+!rules/personas/
+!rules/personas/**

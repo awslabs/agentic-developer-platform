@@ -87,11 +87,17 @@ def broker_settings(variables):
 
 def factory_settings(state):
     result = {"enable_github_apps": False, "seed_agent_registry": False}
+    configured_org = output(state, "github_org")
+    if configured_org is not None:
+        result["github_org"] = configured_org
     prefix = output(state, "secrets_prefix", "")
     match = re.match(r"adp/([^/]+)/gh-app", prefix)
     if match:
         result["github_org"] = match[1]
     for resource, attrs in resources(state):
+        if (resource["type"] == "aws_iam_role" and resource["name"] == "runner"
+                and resource.get("module") == "module.runner_iam"):
+            result["runner_role_name"] = attrs["name"]
         if resource["type"] == "aws_dynamodb_table_item" and resource["name"] == "scaledjob_worker_agent":
             result["seed_agent_registry"] = True
         if resource["type"] == "kubernetes_secret" and resource.get("module", "").startswith("module.arc_runner"):
@@ -222,7 +228,7 @@ def prepare(args):
             gateway["frontend_acm_certificate_arn"] = attrs["viewer_certificate"][0]["acm_certificate_arn"]
     write_json(directory / "gateway.tfvars.json", gateway)
     factory = factory_settings(states.get("agent-factory", {}))
-    if "agent-factory" in states and not factory.get("github_org"):
+    if "agent-factory" in states and "github_org" not in factory:
         raise ValueError("Existing factory state has no organization; provide its original configuration before upgrading")
     factory.update(environment=args.environment, aws_region=args.region, gateway_deployed="gateway" in states,
                    enable_agent_context_rbac="agent-context" in states)
@@ -286,21 +292,68 @@ def open_access(args):
     raise ValueError("Timed out waiting for EKS access update")
 
 
+def prepare_factory(args):
+    """Prepare an additive factory install when an older deployment omitted it."""
+    directory = Path(args.directory)
+    before = json.loads((directory / "integration-before.json").read_text())
+    if aws("sts", "get-caller-identity")["Account"] != before["account"]:
+        raise ValueError("Factory installation account differs from upgrade account")
+    target = directory / "agent-factory.tfvars.json"
+    settings = json.loads(target.read_text())
+    if not settings.get("runner_role_name"):
+        # A legacy CodeBuild role can occupy the IRSA role's original name.
+        # Never import or repurpose an unowned role, even on a partial retry.
+        names = {role["RoleName"] for role in aws("iam", "list-roles")["Roles"]}
+        prefix = f"adp-{settings['environment']}-agent"
+        available = next((name for name in (f"{prefix}-runner-role", f"{prefix}-factory-runner-role")
+                          if name not in names), None)
+        if not available:
+            raise ValueError("Both factory runner role names are occupied outside factory state; refusing to adopt them")
+        settings["runner_role_name"] = available
+        print(f"Factory runner will use a new dedicated IAM role: {available}")
+    if "agent-factory" in before["modules"]:
+        write_json(target, settings)
+        return  # prepare already recovered the existing integration settings.
+    missing = {"gateway", "webhook-ingress"} - set(before["modules"])
+    if missing:
+        raise ValueError("Required agent-factory installation needs existing " + ", ".join(sorted(missing)) +
+                         "; restore those prerequisites before upgrading")
+    # Recover the legacy secret namespace from the existing environment, never
+    # from the repository's platform-account terraform.tfvars. This does not
+    # register an App or enable ARC; existing tenant Apps remain untouched.
+    allowed = before.get("broker_settings", {}).get("ALLOWED_ORGS", "").strip()
+    valid_org = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?"
+    if args.github_org and not re.fullmatch(valid_org, args.github_org):
+        raise ValueError("ADP_GITHUB_ORG must name a single valid GitHub organization")
+    org = args.github_org or (allowed if re.fullmatch(valid_org, allowed) else "")
+    settings.update(github_org=org, github_repo="", github_app_dev_installation_id="",
+                    enable_github_apps=False, seed_agent_registry=False,
+                    runner_namespace="arc-runners", gateway_deployed=True)
+    write_json(target, settings)
+    print("Required agent-factory is missing; the upgrade will install it through the saved-plan gate")
+
+
 def verify(args):
     directory = Path(args.directory)
     before = json.loads((directory / "integration-before.json").read_text())
     if aws("sts", "get-caller-identity")["Account"] != before["account"]:
         raise ValueError("Verification account differs from upgrade account")
     states = {name: json.loads((directory / f"{name}-before.tfstate").read_text()) for name in before["modules"]}
-    for name, expected in before.get("outputs", {}).items():
+    required = set(getattr(args, "require_module", []))
+    modules = set(before.get("outputs", {})) | required
+    for name in sorted(modules):
+        expected = before.get("outputs", {}).get(name, {})
         key = f"{before['environment']}/" + ("platform" if name == "platform" else "modules/" + name) + "/terraform.tfstate"
         target = directory / f"{name}-after.tfstate"
         aws("s3api", "get-object", "--bucket", f"adp-terraform-state-{before['account']}", "--key", key, str(target))
         target.chmod(0o600)
         current = json.loads(target.read_text())
+        if name in required and not list(resources(current)):
+            raise ValueError(f"Required module {name} has no deployed resources")
         for key, value in expected.items():
             if output(current, key) != value:
                 raise ValueError(f"Existing integration endpoint changed: {name}/{key}")
+        states[name] = current
     after = integration_snapshot(states, before["environment"])
     assert_integrations_preserved(before, after)
     if before["broker_function"]:
@@ -310,20 +363,24 @@ def verify(args):
                 raise ValueError(f"Existing GitHub broker setting changed: {key}")
     write_json(directory / "integration-verification.json", {"preserved": True, "secret_count": len(before["secrets"]),
                "installation_rows": sum(map(len, before["mappings"].values()))})
+    write_json(directory / "module-verification.json", {"required": sorted(required), "verified": sorted(modules)})
     print("Existing GitHub credentials, installation mappings and broker settings preserved")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "verify", "open-access"))
+    parser.add_argument("command", choices=("prepare", "verify", "open-access", "prepare-factory"))
     parser.add_argument("--directory", required=True)
     parser.add_argument("--account")
     parser.add_argument("--environment", default="dev")
     parser.add_argument("--region", default="us-east-1")
+    parser.add_argument("--github-org", default="")
+    parser.add_argument("--require-module", action="append", default=[],
+                        choices=("platform", "gateway", "webhook-ingress", "agent-factory", "agent-context"))
     args = parser.parse_args()
     os.environ["AWS_REGION"] = args.region
     os.environ["AWS_DEFAULT_REGION"] = args.region
-    {"prepare": prepare, "verify": verify, "open-access": open_access}[args.command](args)
+    {"prepare": prepare, "verify": verify, "open-access": open_access, "prepare-factory": prepare_factory}[args.command](args)
 
 
 if __name__ == "__main__":

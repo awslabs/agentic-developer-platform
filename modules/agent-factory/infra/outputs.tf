@@ -13,9 +13,14 @@ output "beads_s3_bucket" {
   value       = module.beads_state.s3_bucket_name
 }
 
+output "github_org" {
+  description = "Configured legacy GitHub organization, or empty before GitHub setup"
+  value       = var.github_org
+}
+
 output "secrets_prefix" {
   description = "Secrets Manager prefix for GitHub App credentials"
-  value       = var.enable_github_apps ? module.secrets[0].secrets_prefix : "adp/${var.github_org}/gh-app-"
+  value       = var.enable_github_apps ? module.secrets[0].secrets_prefix : (var.github_org != "" ? "adp/${var.github_org}/gh-app-" : "")
 }
 
 output "gateway_agent_role_arn" {

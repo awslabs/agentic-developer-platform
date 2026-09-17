@@ -15,6 +15,7 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-adp-gateway-agents}"
 ENVIRONMENT="${ENVIRONMENT:?ENVIRONMENT is required (e.g. dev)}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 AGENT_IMAGE="${AGENT_IMAGE:?AGENT_IMAGE is required (full ECR URI with tag)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,13 +58,12 @@ popd > /dev/null
 # and this module does not own it.
 APIGW_INVOKE_URL=$(aws ssm get-parameter \
   --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
-  --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+  --region "$AWS_REGION" --query 'Parameter.Value' --output text)
 if [ -n "${APIGW_INVOKE_URL}" ] && [ "${APIGW_INVOKE_URL}" != "None" ]; then
   SIGV4_PROXY_TARGET="${APIGW_INVOKE_URL}/agent"
 else
-  echo "[deploy-chat] WARN: /adp/${ENVIRONMENT}/gateway/apigw-invoke-url not found;" \
-       "leaving SIGV4_PROXY_TARGET empty (chat falls back to direct Bedrock)."
-  SIGV4_PROXY_TARGET=""
+  echo "[deploy-chat] Missing gateway API URL; refusing to deploy an unwired worker." >&2
+  exit 1
 fi
 
 echo "[deploy-chat] Wiring manifest placeholders:"
@@ -79,6 +79,7 @@ echo "  SIGV4_PROXY_TARGET=${SIGV4_PROXY_TARGET}"
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
 sed \
+  -e "s|REPLACE_WITH_AWS_REGION|${AWS_REGION}|g" \
   -e "s|REPLACE_WITH_CHAT_TASKS_FIFO_URL|${CHAT_TASKS_FIFO_URL}|g" \
   -e "s|REPLACE_WITH_CONTEXT_TABLE|${CONTEXT_TABLE}|g" \
   -e "s|REPLACE_WITH_ARTIFACTS_TABLE|${ARTIFACTS_TABLE}|g" \
@@ -101,6 +102,11 @@ kubectl get configmap chat-agent-config -n "${NAMESPACE}" -o name
 kubectl get triggerauthentication chat-agent-aws-auth -n "${NAMESPACE}" -o name
 kubectl get scaledjob chat-agent-worker -n "${NAMESPACE}" -o name
 kubectl get daemonset chat-agent-image-prepull -n "${NAMESPACE}" -o name
+kubectl wait --for=condition=Ready scaledjob/chat-agent-worker -n "$NAMESPACE" --timeout=300s
+LIVE_IMAGE=$(kubectl get scaledjob chat-agent-worker -n "$NAMESPACE" \
+  -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].image}')
+[ "$LIVE_IMAGE" = "$AGENT_IMAGE" ] || { echo "[deploy-chat] Wrong release image" >&2; exit 1; }
+kubectl rollout status daemonset/chat-agent-image-prepull -n "$NAMESPACE" --timeout=600s
 
 echo "[deploy-chat] Done. Tail events with:"
 echo "  kubectl get events -n ${NAMESPACE} --sort-by=.lastTimestamp | tail -20"

@@ -76,6 +76,14 @@ esac
 # before the phase under test. `cat` is a real binary here, so this consumes the input for
 # real rather than pretending to.
 _NOOP_STUB = "#!/usr/bin/env bash\ncat >/dev/null 2>&1 || true\nexit 0\n"
+_KUBECTL_STUB = """#!/usr/bin/env bash
+if [ "$1 $2 $3" = "get scaledjob agent-gateway-worker" ]; then
+  echo "111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway:0000000000000000000000000000000000000000"
+  exit 0
+fi
+cat >/dev/null 2>&1 || true
+exit 0
+"""
 _TERRAFORM_STUB = """#!/usr/bin/env bash
 if [ "$1 $2 $3" = "output -json redis_endpoint" ]; then
   echo '[{"address":"redis.example.internal"}]'
@@ -92,6 +100,7 @@ _SUB_SCRIPTS = {
     "platform/scripts/enable-bedrock-models.sh": "STUB-BEDROCK",
     "platform/scripts/wire-gateway-alb.sh": "STUB-WIRE-ALB",
     "platform/scripts/codebuild-run.sh": "STUB-CODEBUILD",
+    "platform/scripts/build-agent-factory-lambdas.sh": "STUB-BUILD-AGENT-FACTORY-LAMBDAS",
     "platform/scripts/empty-s3-buckets.sh": "STUB-EMPTY-S3",
     "platform/scripts/delete-ingress-and-wait.sh": "STUB-DELETE-INGRESS",
     "platform/scripts/force-delete-secrets.sh": "STUB-FORCE-DELETE-SECRETS",
@@ -100,6 +109,7 @@ _SUB_SCRIPTS = {
     "modules/gateway/scripts/deploy-frontend.sh": "STUB-DEPLOY-FRONTEND",
     "modules/gateway/scripts/apply-internal-plane-deny.sh": "STUB-INTERNAL-DENY",
     "modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh": "STUB-WEBHOOK-INGRESS",
+    "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh": "STUB-DEPLOY-CHAT-SCALEDJOB",
     # Invoked as `bash deploy.sh` after a cd into the module, so it is a relative path.
     "modules/agent-context/deploy.sh": "STUB-AGENT-CONTEXT-DEPLOY",
 }
@@ -156,7 +166,7 @@ def harness(tmp_path):
         ("git", _GIT_STUB),
         ("curl", _CURL_STUB),
         ("terraform", _TERRAFORM_STUB),
-        ("kubectl", _NOOP_STUB),
+        ("kubectl", _KUBECTL_STUB),
         ("npm", _NOOP_STUB),
         ("docker", _NOOP_STUB),
     ):
