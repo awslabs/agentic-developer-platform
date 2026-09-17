@@ -190,3 +190,28 @@ describe('story delivery stage', () => {
     expect(screen.getByText('Complete')).toBeVisible();
   });
 });
+
+
+describe('bound pull request evidence', () => {
+  const bound = {
+    repo: 'aws-e/adp', pr_number: 5293, url: 'https://github.com/aws-e/adp/pull/5293',
+    head_sha: 'abc1234', role: 'implementation' as const, state: 'active' as const,
+  };
+
+  it('shows the bound PR and refreshed hold without stale result prose', () => {
+    const view = render(card({ ...story, binding_hold: 'No pull request is registered.' }));
+    view.rerender(card({ ...story, bound_pull_request: bound,
+      binding_hold: 'The pull request needs an independent approving review.',
+      result_summary: 'No pull request is registered.' }));
+    expect(screen.getByRole('link', { name: 'Pull request #5293' })).toHaveAttribute('href', bound.url);
+    expect(screen.getByText('The pull request needs an independent approving review.')).toBeVisible();
+    expect(screen.queryByText('No pull request is registered.')).not.toBeInTheDocument();
+    expect(screen.getByTestId('node-u1')).toHaveAttribute('data-display-state', 'in_progress');
+  });
+
+  it('keeps the delivery PR accessible on a completed story', () => {
+    render(card({ ...story, state: 'passed', bound_pull_request: bound, binding_hold: null }));
+    expect(screen.getByRole('link', { name: 'Pull request #5293' })).toHaveAttribute('href', bound.url);
+    expect(screen.getByText('Merged — story complete')).toBeVisible();
+  });
+});

@@ -78,7 +78,10 @@ __all__ = [
     "OrchestrationEdge",
     "OrchestrationFlow",
     "OrchestrationNode",
+    "OrchestrationPullRequestBinding",
     "OrchestrationWorkClaim",
+    "BindingRole",
+    "BindingState",
     "ClaimState",
     "AppendOnlyViolationError",
 ]
@@ -114,6 +117,7 @@ class DecisionKind(StrEnum):
     NODE_DISPATCHED = "node_dispatched"  # Stable attempt/run binding
     RESULT_CHECKED = "result_checked"
     RESULT_OBSERVED = "result_observed"  # Evidence observed for the current attempt
+    PR_BINDING_CHANGED = "pr_binding_changed"  # Append-only binding revision/provenance
     GATE_REJECTED = "gate_rejected"  # A gate node was refused
     TRANSITION_REJECTED = "transition_rejected"  # An illegal transition attempt
     HALT_OVERRIDDEN = "halt_overridden"  # A human cleared a halt (R-Q9c)
@@ -167,6 +171,37 @@ class ClaimState(StrEnum):
 
     HELD = "held"  # An owner holds this issue; a competing claim is refused
     RELEASED = "released"  # No current owner; the next claim advances generation
+
+
+class BindingRole(StrEnum):
+    """What a bound pull request *is* to its story.
+
+    Two members because the reviewer-artifact PR is the single most dangerous
+    false positive in this whole path. A reviewer run pushes its transcript to the
+    same issue's branch family, so "a merged PR referencing this issue" is
+    satisfied by a PR that contains no implementation at all. Completing a story
+    on one would mark delivery done on the strength of a review log.
+
+    Only `IMPLEMENTATION` can complete a story — enforced in `pr_bindings.py`, not
+    by convention. Stored as `String(32)`, so a further member needs no DDL.
+    """
+
+    IMPLEMENTATION = "implementation"  # Carries the story's delivered code
+    REVIEWER_ARTIFACT = "reviewer_artifact"  # Review output only; completes nothing
+
+
+class BindingState(StrEnum):
+    """Whether this binding is the one reconciliation may read.
+
+    `SUPERSEDED` exists rather than deleting the row for the reason the work-claim
+    row survives release: an authorized replacement must retain provenance, and a
+    deleted row cannot explain who replaced what. It is also the fence — a
+    superseded binding is permanently incapable of completing the new scope, which
+    is what stops an old PR from finishing work it never did.
+    """
+
+    ACTIVE = "active"  # The current binding for its (node, attempt)
+    SUPERSEDED = "superseded"  # Replaced by an authorized later binding
 
 
 class AppendOnlyViolationError(RuntimeError):
@@ -516,6 +551,129 @@ class OrchestrationWorkClaim(Base, TenantMixin):
     # itself without joining the decision log.
     release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
+
+
+class OrchestrationPullRequestBinding(Base, TenantMixin):
+    """Which pull request implements which story (issue #5301).
+
+    ## What this row is for
+
+    Before it existed, the engine knew a story had been dispatched and knew a
+    worker had exited, but had no durable record of **which pull request carried
+    the work**. Completion therefore had to be inferred from the GitHub issue's
+    closure timeline (`results.GitHubEvidenceSource.merged_story`), which only
+    exists when the PR body used a closing keyword. A body saying `Issue #5049`
+    creates no closing event, so the story waited on evidence that would never
+    arrive while its implementation PR sat merged. This table is the missing
+    association, and reconciliation reads it directly.
+
+    GitHub issue closure remains a *projection* of delivery, never its sole
+    authority.
+
+    ## Why the provider's immutable ids and not `owner/name` + number
+
+    `provider_repository_id` and `provider_pr_node_id` are GitHub's own immutable
+    identifiers. The same reasoning as `OrchestrationWorkClaim`: every name-keyed
+    row is silently re-pointed by a repository rename or transfer, and a binding
+    that a rename can redirect is not an association. `provider_pr_node_id` is the
+    GraphQL node id, which survives even the number being re-used across a
+    transfer. `repo` and `pr_number` are carried alongside for display and for
+    composing provider queries — they are the *mutable* names, and nothing
+    authorizes off them.
+
+    ## What makes a binding trustworthy
+
+    Not the caller's claim. `node_id` / `attempt` are resolved server-side from the
+    `NODE_DISPATCHED` decision belonging to the registering run, so a caller can
+    only ever bind a PR to the story its own run was dispatched for. Title text,
+    branch naming and a plain `Issue #...` mention are discovery hints with no
+    authority anywhere in this path.
+
+    `head_sha` is the head the binding was registered against, and it is what makes
+    review/check evidence *falsifiable*: a new commit changes the head, and a
+    binding whose head has moved cannot inherit the eligibility its previous head
+    earned. Reconciliation compares provider truth against this column rather than
+    trusting that a recorded approval still describes the code.
+
+    ## What this row cannot do
+
+    It authorizes nothing. It records an association; completion still requires
+    provider-verified merge, green required checks and a non-author approving
+    review, none of which the registering agent can fabricate. That is why a run
+    may register its own binding under nothing more than its run credential
+    (`src/agentauth/pr_binding_routes.py`) rather than needing an admin permission
+    — which would have to be granted to `MEMBER` and so to every ordinary user in
+    every tenant.
+    """
+
+    __tablename__ = "orchestration_pr_bindings"
+    __table_args__ = (
+        # One binding per PR per tenant. THE idempotency invariant: a duplicated
+        # registration event, a retried request or a restarted tick must converge on
+        # one row rather than inserting a second binding for the same pull request.
+        # Enforced by the database because two concurrent registrations can both
+        # pass an application-level "is this already bound?" read.
+        Index(
+            "uq_orchestration_pr_bindings_pr",
+            "org_id",
+            "provider_repository_id",
+            "provider_pr_node_id",
+            unique=True,
+        ),
+        # Reconciliation's read path: the active binding for a node.
+        Index("ix_orchestration_pr_bindings_node_id", "org_id", "node_id", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+
+    # --- What story this implements. Server-resolved, never caller-asserted. ---
+    flow_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_flows.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_nodes.id", ondelete="CASCADE"), nullable=False)
+    # The attempt this binding was registered under. A retry increments the node's
+    # attempt counter, so this is what distinguishes "the PR for the current work"
+    # from "the PR for a superseded attempt" without deleting either.
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The run that registered it, for provenance and duplicate-event convergence.
+    run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # --- Immutable provider identity. See the class docstring. ---
+    provider_repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_pr_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Mutable display/query names. Nothing authorizes off these.
+    repo: Mapped[str] = mapped_column(String(255), nullable=False)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    # The head this binding describes. A change invalidates prior eligibility.
+    head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # Every mutation appends its full snapshot to orchestration_decisions. The
+    # revision fences a provider read against concurrent repair or replacement.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    accepted_scope: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default=BindingRole.IMPLEMENTATION.value)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default=BindingState.ACTIVE.value)
+
+    # --- Registration provenance: who established this association. ---
+    # Two columns for the same reason `OrchestrationDecision` carries three: a
+    # recovery performed by a human operator and a self-registration by a worker
+    # must be distinguishable after the fact, and `actor_id` alone cannot do it.
+    registered_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    registered_by_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Set on an attributed recovery of historical unbound work, NULL for an
+    # ordinary self-registration. Non-NULL is what marks a row as human-established
+    # rather than worker-observed, so a backfill can never be mistaken for a
+    # registration the delivering run made itself.
+    recovery_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Why this binding stopped being current, kept on the row so a superseded
+    # binding explains itself without joining the decision log.
+    superseded_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)

@@ -103,6 +103,15 @@ export interface GraphNode {
   execution_history?: StoryExecution | null;
   issue_url?: string | null;
   result_summary?: string | null;
+  bound_pull_request?: {
+    repo: string;
+    pr_number: number;
+    url: string;
+    head_sha: string;
+    role: 'implementation' | 'reviewer_artifact';
+    state: 'active' | 'superseded';
+  } | null;
+  binding_hold?: string | null;
   configuration_problem?: string | null;
   last_gate_decision?: {
     action: 'approved' | 'changes_requested';

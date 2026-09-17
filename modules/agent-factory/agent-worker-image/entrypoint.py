@@ -38,6 +38,8 @@ from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
 from lib.engine_registration import draft_registration_note
+from lib.pr_binding import BINDING_REQUIRED_ENV as PR_BINDING_REQUIRED_ENV
+from lib.pr_binding import binding_note as pr_binding_note
 from lib.invocation_completion import (
     InvocationCompletionError,
     is_delivery_completed,
@@ -1059,6 +1061,13 @@ def main() -> int:
     # tenant_id is already extracted above; expose it under the personal-context
     # name so the harness doesn't need to know about TENANT_ID vs ADP_TENANT_ID.
     os.environ["ADP_TENANT_ID"] = tenant_id
+
+    # Issue #5301: the engine marks a code-story dispatch as requiring its delivering
+    # pull request to be registered. Read from the trusted dispatch envelope only, and
+    # deliberately not defaulted on: a run that was never asked to bind (a webhook
+    # trigger, or a legacy dispatch) must keep its existing behaviour exactly.
+    if envelope.get("pr_binding_required") is True:
+        os.environ[PR_BINDING_REQUIRED_ENV] = "true"
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
@@ -2533,6 +2542,16 @@ def _register_authored_draft(persona: str, issue: int) -> str:
     return draft_registration_note(work_dir=WORK_DIR, issue=issue)
 
 
+def _join_notes(summary: str, *notes: str) -> str:
+    """Append whichever fail-soft notes were produced to the closing comment.
+
+    Each note is "" when it does not apply, so an unchanged path posts a byte-for-byte
+    unchanged comment. Kept as one helper because both PR paths append the same two
+    notes, and drifting them apart is how one path silently stops reporting.
+    """
+    return "\n\n".join([summary, *(note for note in notes if note)])
+
+
 def _outcome_report_link(meta: dict | None, repo: str, issue: int) -> str:
     """Reference the worker's single outcome report without trusting arbitrary URLs."""
     url = (meta or {}).get("outcome_comment_url")
@@ -2629,6 +2648,11 @@ def _handle_success(
             # entrypoint finds nothing left to push. Registration therefore has to
             # be wired here too, not only on the PR-creating path below.
             draft_note = _register_authored_draft(persona, issue)
+            # #5301: the agent opened its own PR during the run, so this is where that
+            # PR gets bound to its story. Registering only on the entrypoint-creates-PR
+            # path below would miss the common case entirely — the same gap #1723 had
+            # with the correlation marker.
+            binding_note = pr_binding_note(repo=repo, pr_number=self_pr, reviewer_artifact=persona == "reviewer")
             if self_pr:
                 git_outcome = f"PR #{self_pr} is open: https://github.com/{repo}/pull/{self_pr}."
             else:
@@ -2639,7 +2663,7 @@ def _handle_success(
                 issue,
                 message_id,
                 "completed",
-                f"{summary}\n\n{draft_note}" if draft_note else summary,
+                _join_notes(summary, draft_note, binding_note),
                 check_run_url,
             )
             update_invocation_status(
@@ -2725,6 +2749,11 @@ def _handle_success(
             # edit the PR body to prepend the marker if it isn't already there.
             _ensure_pr_body_marker(repo, existing_pr_number, branch)
         draft_note = _register_authored_draft(persona, issue)
+        # #5301: bind whichever PR carries this story's work. `transcript_only` pushes
+        # review transcripts and opens no PR, so there is nothing to bind; otherwise the
+        # PR is either the agent's own or the one just created on `branch`.
+        binding_pr = "" if transcript_only else (existing_pr_number or _find_open_pr(repo, branch))
+        binding_note = pr_binding_note(repo=repo, pr_number=binding_pr, reviewer_artifact=persona == "reviewer")
         if transcript_only:
             git_outcome = f"Review transcripts were pushed to `{branch}`; no PR was created for them."
         elif existing_pr_number:
@@ -2737,7 +2766,7 @@ def _handle_success(
             issue,
             message_id,
             "completed",
-            f"{summary}\n\n{draft_note}" if draft_note else summary,
+            _join_notes(summary, draft_note, binding_note),
             check_run_url,
         )
         update_invocation_status(

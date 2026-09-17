@@ -674,6 +674,7 @@ async def _dispatch_one_unclaimed(
     config: DispatchPassConfig,
     report: DispatchPassReport,
     repository_id: int | None = None,
+    work_claim_required: bool = False,
 ) -> None:
     """Resolve genesis, dispatch, and queue the envelope for publication.
 
@@ -736,6 +737,19 @@ async def _dispatch_one_unclaimed(
         )
         report.record(org_id, "undispatchable")
         return
+
+    # PR identity is required independently of optional work ownership claims.
+    # Resolve before dispatch so an unavailable provider cannot create an
+    # unregistrable run or silently label new work as legacy.
+    if node.kind == NodeKind.STORY.value and repository_id is None:
+        from .work_admission import resolve_repository_id
+
+        try:
+            repository_id = await resolve_repository_id(org_id=org_id, installation_id=installation_id, repo=config.repo)
+        except Exception:
+            logger.warning("orchestration PR binding: repository identity unavailable node=%s", node.id)
+            report.record(org_id, "undispatchable")
+            return
 
     # --- Genesis: resolved here, server-side, from a real approval row. ---
     decision_id = await _latest_approval_decision_id(session, org_id=org_id, flow_id=node.flow_id)
@@ -838,7 +852,22 @@ async def _dispatch_one_unclaimed(
     )
     if repository_id is not None:
         envelope["source_ref"]["provider_repository_id"] = repository_id
+    if work_claim_required:
         envelope["work_claim_required"] = True
+
+    # #5301: a story dispatch must produce a durable PR binding, and the marker is
+    # recorded on BOTH the envelope and the decision below.
+    #
+    # On the envelope, so the worker knows to register the PR it opens. On the
+    # decision, because that is what `results.binding_required` reads to decide
+    # whether a missing binding is a hold (this contract) or a fallback to the old
+    # issue-closure evidence (a legacy dispatch). Reading it from the run's own
+    # dispatch record is what makes the boundary deterministic rather than a
+    # deploy-time or wall-clock inference.
+    #
+    binding_required = node.kind == NodeKind.STORY.value
+    if binding_required:
+        envelope["pr_binding_required"] = True
 
     session.add(
         OrchestrationDecision(
@@ -859,6 +888,9 @@ async def _dispatch_one_unclaimed(
                     "repo": config.repo,
                     "issue": issue,
                     "root_decision_id": genesis.decision_id,
+                    "pr_binding_required": binding_required,
+                    "provider_repository_id": repository_id,
+                    "installation_id": installation_id,
                 }
             ),
         )
@@ -926,7 +958,7 @@ async def _dispatch_one(session, node, *, config, report) -> None:
                 owner=ClaimOwner(OwnerKind.ENGINE_FLOW, node.flow_id),
                 invocation_id=attempt_run_id(node.id, node.attempts + 1),
             )
-            await _dispatch_one_unclaimed(session, node, config=config, report=report, repository_id=repository_id)
+            await _dispatch_one_unclaimed(session, node, config=config, report=report, repository_id=repository_id, work_claim_required=True)
             if len(report.pending) == before:
                 raise _AdmissionUnusedError()
     except _AdmissionUnusedError:

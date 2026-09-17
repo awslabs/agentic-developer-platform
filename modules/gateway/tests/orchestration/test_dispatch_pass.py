@@ -1435,3 +1435,41 @@ async def test_unconfigured_evaluations_do_not_consume_the_dispatch_cap(session)
     assert report.undispatchable == 10
     assert report.dispatched == 1
     assert report.pending[0].node_id == story.id
+
+
+@pytest.fixture(autouse=True)
+def provider_repository_identity(monkeypatch):
+    """Dispatch resolves immutable GitHub identity even with work claims off."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=12345))
+
+
+async def test_new_story_requires_binding_without_enabling_work_claims(session, monkeypatch):
+    from src.orchestration.models import OrchestrationWorkClaim
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "false")
+    await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    envelope = report.pending[0].envelope
+    assert envelope["pr_binding_required"] is True
+    assert envelope["source_ref"]["provider_repository_id"] == 12345
+    assert not envelope.get("work_claim_required")
+    assert list((await session.scalars(select(OrchestrationWorkClaim))).all()) == []
+    dispatch = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one()
+    assert json.loads(dispatch.reason)["pr_binding_required"] is True
+
+
+async def test_missing_repository_identity_refuses_before_dispatch(session, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "false")
+    monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(side_effect=RuntimeError("provider unavailable")))
+    _, node, _ = await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    assert report.undispatchable == 1
+    assert report.dispatched == 0
+    assert not report.pending
+    assert node.state == "ready"
+    assert node.attempts == 0

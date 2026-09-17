@@ -395,6 +395,22 @@ class TestOrchestrationRouterIsOperatorPlane:
             # and reading it under a spend-read permission is the escalation the
             # sibling guard exists to stop.
             ("/orchestration/flows/{flow_id}", "GET"): "Permission.USAGE_READ",
+            # Issue #5301: attributed recovery of a *historically unbound* story —
+            # a human asserting which pull request delivered work that no run ever
+            # registered. PLAN_APPROVE and nothing weaker, for two reasons.
+            #
+            # It establishes the association that completion is then read from, so
+            # under a weaker permission it would be an indirect route to advancing
+            # accepted work without approval authority — the escalation this guard
+            # exists to stop. And it writes an attribution record (*who* established
+            # the binding), which is approval-record material by the same rule the
+            # sibling entries above state.
+            #
+            # A delivering run registering its OWN pull request is deliberately not
+            # here: that path carries no permission at all, because its authority is
+            # the run credential, which is strictly narrower. See
+            # `src/agentauth/pr_binding_routes.py`.
+            ("/orchestration/flows/{flow_id}/nodes/{node_id}/pull-request-recovery", "POST"): "Permission.PLAN_APPROVE",
         }
 
         actual_routes = set()

@@ -71,6 +71,22 @@ class Evidence:
         self.calls.append(kwargs)
         return "https://github.com/aws-e/adp/pull/9999" if self.merged else None
 
+    async def bound_pull_request(self, **kwargs):
+        from src.orchestration.pr_bindings import MergeEvidence
+
+        self.calls.append(kwargs)
+        return MergeEvidence(
+            merged=self.merged,
+            head_sha="a" * 40,
+            checks_successful=True,
+            provider_repository_id=12345,
+            provider_pr_node_id=f"PR_{kwargs['pr_number']}",
+            approved_by_non_author=True,
+            merge_commit_sha="b" * 40,
+            merged_at="2026-09-17T09:00:00Z" if self.merged else None,
+            url=f"https://github.com/{kwargs['repo']}/pull/{kwargs['pr_number']}",
+        )
+
 
 @pytest.fixture
 async def api(session, access, monkeypatch):
@@ -131,7 +147,24 @@ async def tick_dispatch(session, store):
     sqs = FakeSQS()
     publish_pending(report, dispatch_config(), client=sqs, run_store=store)
     assert report.publish_failed == 0
-    return [sqs.envelope(i) for i in range(len(sqs.calls))]
+    envelopes = [sqs.envelope(i) for i in range(len(sqs.calls))]
+    # Simulate the worker's registration boundary with provider-issued identity.
+    from src.orchestration.pr_bindings import PullRequestIdentity, register_binding, resolve_registration_target
+    from src.orchestration.state import ActorKind
+
+    for envelope in envelopes:
+        if envelope.get("pr_binding_required"):
+            target = await resolve_registration_target(session, run_id=envelope["message_id"])
+            number = int(target.node_id.replace("-", "")[:7], 16)
+            await register_binding(
+                session,
+                target=target,
+                actor_id=target.run_id,
+                actor_kind=ActorKind.SERVICE,
+                pr=PullRequestIdentity(12345, f"PR_{number}", "aws-e/adp", number, "a" * 40),
+            )
+    await session.commit()
+    return envelopes
 
 
 def finish(table, envelope, status="complete", **updates):
@@ -160,8 +193,12 @@ async def test_two_wave_flow_via_ui_controls(session, registrar, api):
     assert stalls.stalls_detected == 0
     assert await tick_dispatch(session, store) == []
     evidence.merged = True
-    await observe_results(session, run_store=store, evidence=evidence)
+    completed = await observe_results(session, run_store=store, evidence=evidence)
+    assert completed.advanced == 1
+    repeated = await observe_results(session, run_store=store, evidence=evidence)
+    assert repeated.advanced == 0
     (evaluation,) = await tick_dispatch(session, store)
+    assert await tick_dispatch(session, store) == []
     assert evaluation["persona"] == "operations"
     finish(table, evaluation)
     await observe_results(session, run_store=store, evidence=evidence)
@@ -513,3 +550,11 @@ async def test_amendment_rejects_new_prerequisite_for_started_work_atomically(se
     assert nodes["story-a"]["title"] == "Story A"
     assert "late-review" not in nodes
     assert await accepted_document(api, flow_id) == original
+
+
+@pytest.fixture(autouse=True)
+def provider_repository_identity(monkeypatch):
+    """Dispatch resolves immutable GitHub identity even with work claims off."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=12345))

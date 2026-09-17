@@ -54,7 +54,7 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -79,9 +79,19 @@ from src.orchestration.dispatch_pass import (
 )
 from src.orchestration.display_state import FlowStatus
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
-from src.orchestration.models import DecisionKind
+from src.orchestration.models import DecisionKind, NodeState
 from src.orchestration.node_activity import NodeActivity, StoryExecution, load_story_execution
 from src.orchestration.policy_admission import load_in_force_policy
+from src.orchestration.pr_bindings import (
+    BindingError,
+    BindingRefusal,
+    active_bindings_for_flow,
+    binding_summary,
+    completion_candidate,
+    hold_explanation,
+    recover_binding,
+)
+from src.orchestration.pr_identity import PrIdentityError, resolve_pr_identity
 from src.orchestration.proposal import LoopProposal, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
 from src.shared.database import get_db
@@ -460,6 +470,171 @@ async def create_flow(
         dispatchable=dispatchable,
         dispatch_blocked_reason=dispatch_blocked_reason,
         dispatch_blocked_causes=causes,
+    )
+
+
+class RecoverBindingRequest(BaseModel):
+    """An operator attesting which pull request delivered a historical story (#5301).
+
+    The operator names the PR and the basis for recovery. Immutable identity and
+    current head are verified against GitHub; optional identity assertions support
+    older callers and must agree with provider truth.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider_repository_id: int | None = Field(default=None, gt=0)
+    provider_pr_node_id: str | None = Field(default=None, min_length=1, max_length=255)
+    repo: str = Field(min_length=3, max_length=255, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    pr_number: int = Field(gt=0)
+    head_sha: str | None = Field(default=None, min_length=7, max_length=64, pattern=r"^[0-9a-fA-F]+$")
+    reason: str = Field(min_length=10, max_length=2000)
+    replaces_reason: str | None = Field(default=None, min_length=10, max_length=2000)
+
+
+class RecoverBindingResponse(BaseModel):
+    """The recovered association, plus whatever still stands between it and passing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    bound_pull_request: dict
+    # Non-None when the recovery alone does not make the story completable. Recording
+    # an association is not the same as satisfying the evidence, and conflating the
+    # two is how a backfill quietly becomes an approval.
+    remaining_hold: str | None = None
+
+
+@router.post("/flows/{flow_id}/nodes/{node_id}/pull-request-recovery", response_model=RecoverBindingResponse)
+async def recover_story_binding(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    node_id: Annotated[str, Path(min_length=1, max_length=36)],
+    body: RecoverBindingRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> RecoverBindingResponse:
+    """Attributed recovery of a story delivered before pull-request binding existed.
+
+    For the stories this issue's fix leaves stranded: their PR merged, but no binding
+    was ever registered because the contract did not exist when they ran, so
+    reconciliation now holds them with `NO_BINDING`.
+
+    Deliberately *not* automatic, and the alternatives were considered and refused.
+    Searching titles or branch names for a candidate and adopting it is what #5301
+    names as not-the-fix — it is a guess, and a guess that completes a story is worse
+    than a hold. So a named human with approval authority states which PR delivered
+    the work and why, and the row records both (`registered_by`,
+    `registered_by_kind=HUMAN`, `recovery_reason`).
+
+    Gated on `PLAN_APPROVE`, matching every other route here that changes what the
+    engine will act on. `USAGE_READ` would be wrong in the other direction: this is a
+    write that can let a story pass, so it belongs with approval authority rather
+    than with reads.
+
+    What it does **not** do: assert that the PR is merged, green or reviewed. The
+    recovery establishes only the association, and reconciliation then verifies the
+    same four requirements against the provider that a self-registered binding
+    faces. So this cannot complete a story whose evidence is missing — it returns the
+    remaining hold instead. That is what keeps the path from becoming a way to pass
+    work by asserting it.
+    """
+    await access.check_permission(
+        current_user,
+        Permission.PLAN_APPROVE,
+        target_org_id=current_user.org_id,
+    )
+
+    repo_reader = OrchestrationRepository(db)
+    # Org-filtered before any node read, so a cross-tenant flow_id cannot reach it,
+    # and 404 rather than 403 for the same reason `get_flow_graph` gives: a 403
+    # confirms the id exists somewhere.
+    flow = await repo_reader.get_flow(org_id=current_user.org_id, flow_id=flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail=f"no orchestration flow {flow_id!r} in this tenant")
+
+    node = await repo_reader.get_node(org_id=current_user.org_id, node_id=node_id)
+    if node is None or node.flow_id != flow.id or node.kind != "story":
+        raise HTTPException(status_code=404, detail="story not found in this flow")
+
+    # A historical dispatch may lack immutable IDs; preserve any authority it
+    # does contain instead of allowing recovery to silently change repository.
+    dispatch = {}
+    for decision in await repo_reader.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.node_id != node.id or decision.kind != DecisionKind.NODE_DISPATCHED.value:
+            continue
+        try:
+            detail = json.loads(decision.reason or "{}")
+        except (ValueError, TypeError):
+            continue
+        if isinstance(detail, dict) and detail.get("attempt") == node.attempts:
+            dispatch = detail
+    if dispatch.get("repo") and dispatch["repo"].lower() != body.repo.lower():
+        raise HTTPException(status_code=409, detail="pull request repository does not match the story dispatch")
+
+    installation_id = await resolve_installation_id(db, org_id=current_user.org_id)
+    if not installation_id:
+        # Without an installation the binding could never be verified against the
+        # provider, so recording it would produce a permanent hold with a confusing
+        # reason. Refused up front with the actual cause.
+        raise HTTPException(
+            status_code=409,
+            detail="this tenant has no usable GitHub installation, so a recovered binding could not be verified",
+        )
+
+    try:
+        identity = await resolve_pr_identity(org_id=current_user.org_id, installation_id=installation_id, repo=body.repo, pr_number=body.pr_number)
+    except PrIdentityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if (
+        (body.provider_repository_id is not None and body.provider_repository_id != identity.provider_repository_id)
+        or (body.provider_pr_node_id is not None and body.provider_pr_node_id != identity.provider_pr_node_id)
+        or (body.head_sha is not None and body.head_sha.lower() != identity.head_sha.lower())
+        or (dispatch.get("provider_repository_id") is not None and dispatch["provider_repository_id"] != identity.provider_repository_id)
+    ):
+        raise HTTPException(status_code=409, detail="pull request identity does not match GitHub or the story dispatch")
+
+    try:
+        binding = await recover_binding(
+            db,
+            org_id=current_user.org_id,
+            node_id=node_id,
+            pr=identity,
+            installation_id=installation_id,
+            actor_id=current_user.user_id,
+            reason=body.reason,
+            replaces_reason=body.replaces_reason,
+        )
+    except BindingError as exc:
+        # UNKNOWN_RUN here means "no such story in this tenant" — 404, and the same
+        # answer a cross-tenant node id gets, so neither reveals the other.
+        if exc.code in (BindingRefusal.UNKNOWN_RUN, BindingRefusal.NOT_A_STORY):
+            raise HTTPException(status_code=404, detail=exc.message) from exc
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+
+    if binding.flow_id != flow.id:
+        # The node exists in this tenant but under a different flow. Refused after
+        # the fact rather than trusting the path pair, so a mismatched flow_id cannot
+        # file a binding against a story the caller did not name.
+        raise HTTPException(status_code=404, detail=f"story {node_id!r} is not part of flow {flow_id!r}")
+
+    await db.commit()
+    logger.info(
+        "pr_binding_recovered flow=%s node=%s pr=%s#%s by=%s",
+        flow.id,
+        node_id,
+        body.repo,
+        body.pr_number,
+        current_user.user_id,
+    )
+
+    refusal = completion_candidate(binding)
+    return RecoverBindingResponse(
+        node_id=node_id,
+        bound_pull_request=binding_summary(binding),
+        remaining_hold=hold_explanation(refusal)
+        if refusal
+        else "Pull request registered; merge, checks and independent review verification are pending.",
     )
 
 
@@ -1071,6 +1246,19 @@ class GraphNodeResponse(BaseModel):
     # apart, and the contract requires them to look different — a stall means "go
     # find out why this is wedged", a failure means the work itself failed.
     stalled: bool
+    # The pull request bound to this story, and why it is not completing (#5301).
+    #
+    # Load-bearing for diagnosis, and the reason the original failure was expensive:
+    # a story in `awaiting_merge` said only "waiting for the issue to be completed by
+    # a merged pull request", which was true, unactionable, and describing something
+    # that could never happen. Surfacing the bound PR answers "which PR is this
+    # waiting on"; `binding_hold` answers "and what is missing" in terms an operator
+    # can act on.
+    #
+    # Both are None for a legacy dispatch, which has no binding and keeps the old
+    # generic message — so this never claims a binding exists where one does not.
+    bound_pull_request: dict | None = None
+    binding_hold: str | None = None
     cost: NodeCostResponse
     created_at: str
     updated_at: str | None
@@ -1193,6 +1381,10 @@ async def get_flow_graph(
         except (ValueError, TypeError):
             continue
 
+    # One query for every story's bound PR (#5301), so the journey view can say which
+    # pull request a waiting story is waiting on and what is missing from it.
+    bindings = await active_bindings_for_flow(db, org_id=current_user.org_id, flow_id=flow.id)
+
     # Keyed by address because that is what `get_flow_cost` returns them under.
     # Built once rather than searched per node: a linear scan inside the node loop
     # would make this quadratic in node count for no benefit.
@@ -1208,6 +1400,36 @@ async def get_flow_graph(
         result = result_summaries.get(node.id, {})
         if result.get("attempt") != node.attempts:
             result = {}
+        # Recovered historical and completed stories retain their delivery PR.
+        # Evidence is current only for the exact binding revision it observed.
+        bound_pull_request: dict | None = None
+        binding_hold: str | None = None
+        candidate = bindings.get(node.id)
+        has_current_binding = candidate is not None and not isinstance(candidate, BindingRefusal) and candidate.attempt == node.attempts
+        if has_current_binding:
+            bound_pull_request = binding_summary(candidate)
+        if (dispatch.get("pr_binding_required") or candidate is not None) and node.state in (NodeState.RUNNING.value, NodeState.AWAITING_MERGE.value):
+            if isinstance(candidate, BindingRefusal):
+                binding_hold = hold_explanation(candidate)
+            elif has_current_binding:
+                refusal = completion_candidate(candidate)
+                if refusal:
+                    binding_hold = hold_explanation(refusal)
+                else:
+                    observed_binding = result.get("binding") or {}
+                    current_observation = (
+                        isinstance(observed_binding, dict)
+                        and observed_binding.get("id") == candidate.id
+                        and observed_binding.get("revision") == candidate.revision
+                    )
+                    binding_hold = (
+                        result.get("evidence")
+                        if current_observation
+                        else "Pull request registered; merge, checks and independent review verification are pending."
+                    )
+            else:
+                binding_hold = hold_explanation(BindingRefusal.NO_BINDING)
+
         source_repo = dispatch.get("repo", "")
         source_issue = dispatch.get("issue")
         issue_url = (
@@ -1234,6 +1456,8 @@ async def get_flow_graph(
                     "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
                 ),
                 stalled=node.id in stalled_node_ids,
+                bound_pull_request=bound_pull_request,
+                binding_hold=binding_hold,
                 # `get_flow_cost` returns one entry per node passed in, so the
                 # fallback is unreachable today. It is UNKNOWN rather than a zero
                 # anyway: if that ever stops holding, the honest answer is "we do

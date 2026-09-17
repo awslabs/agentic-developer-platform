@@ -28,6 +28,13 @@ export function StoryJourney({ node }: { node: GraphNode }) {
           </li>
         ))}
       </ol>
+      {node.bound_pull_request && (
+        <a href={node.bound_pull_request.url} target="_blank" rel="noreferrer"
+          className="mt-2 inline-block text-xs text-blue-600 underline dark:text-blue-400">
+          Pull request #{node.bound_pull_request.pr_number}
+        </a>
+      )}
+      {node.binding_hold && <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">{node.binding_hold}</p>}
       {historyNote && <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{historyNote}</p>}
     </div>
   );

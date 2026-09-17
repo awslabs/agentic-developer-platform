@@ -43,6 +43,9 @@ UNIT_MODULES = [
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
     # derives the row key from the protected execution record.
     "src.agentauth.registration_routes",
+    # #5301: the delivering run binds its own implementation PR to its story,
+    # authenticated by the run credential rather than a self-declared run header.
+    "src.agentauth.pr_binding_routes",
     "src.agentauth.service_authority",  # Human-only standing service delegation; never on the internal plane.
     "src.proxy.routes",
     "src.admin.routes",
