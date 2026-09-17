@@ -1,23 +1,17 @@
 # `contracts/` — Superplane domain contracts
 
-Two units share this package, both under EPIC #4910:
+Versioned contracts for the Superplane domain app under EPIC #4910.
 
-| Unit | Issue | Requirement | What it adds |
-|---|---|---|---|
-| **U8** | #5043 | R11 | observation contracts: versioning, auth, scoping, leases |
-| **U11** | #5049 | R15 (A's half) | durable handles, reconciliation, provider-truth reporting |
+| Unit | Requirement | Contract |
+|---|---|---|
+| U8 (#5043) | R11 | Observations: `WIRE-SCHEMA.md` |
+| U7 (#5047) | R7 | Connections and bindings: `CONNECTION-CONTRACT.md` |
+| U11 (#5049) | R15 | Durable handles, reconciliation and provider-truth reporting |
 
-They sit together because U11's release reporting is the same kind of thing as
-U8's observation reporting: a statement about the world that must not be able to
-claim more than was observed. `WIRE-SCHEMA.md` is the normative field-by-field
-description of U8's wire form; this file is the orientation for both.
+Everything below the layout section describes the observation contracts unless it
+says otherwise; the connection contract's rules live in `CONNECTION-CONTRACT.md`.
 
-# U8 — observation contracts
-
-The versioned contracts through which controllers and monitors submit fleet-health
-and budget observations.
-
-## The problem this exists to fix
+## Observation contracts — the problem this exists to fix
 
 The only observation contract in the system today runs the *other* way and is
 unauthenticated. The controller POSTs to `/internal/heartbeat` with `Content-Type`
@@ -34,7 +28,8 @@ untouched here — the receiver, the route and the cutover are U15's, upstream.
 
 ```
 contracts/
-  WIRE-SCHEMA.md              <- normative: fields, headers, versioning rules
+  WIRE-SCHEMA.md              <- normative (U8): fields, headers, versioning rules
+  CONNECTION-CONTRACT.md      <- normative (U7): references, the two checks, rotation
   superplane_contracts/       <- import this
     version.py                <- version discipline (header + payload must agree)
     health.py                 <- CheckStatus, CheckResult, severity, aggregation
@@ -42,12 +37,21 @@ contracts/
     auth.py                   <- authentication + body signature
     scoping.py                <- per-workspace submit/read authorization
     leases.py                 <- reconcile leases with fence tokens
+    connections.py            <- U7: CredentialReference, VaultOwnership,
+                                 WorkspaceBinding, ValidationReport, rotate/disable
+    secrets.py                <- U7: inbound refusal of secret material + the ARN rule
+    emission.py               <- U7: allowlisted response bodies + log redaction
     handles.py                <- U11: provider-operation identity, recorded pre-call
     reconciliation.py         <- U11: what an ambiguous outcome actually was
     accounting.py             <- U11: no release/cost clearance while unresolved
     provider_truth.py         <- U11: teardown reports with a non-zero result
     adapter.py                <- U11: the record-then-call ordering, in one place
 ```
+
+The thin vault HTTP client that pairs with `connections.py` is **not** here — it
+ships in the tool surface at
+`../tools/superplane-mcp/superplane_mcp/vault_client.py`, beside the tests that
+gate it. `CONNECTION-CONTRACT.md` §8 records why.
 
 Tests live at the module level in `../tests/`, alongside the other Superplane
 suites, so the credential-free CI lane picks them up without a second collection
@@ -76,6 +80,8 @@ UTC clock. Tests pass a fixed clock; a submitter cannot choose the verification 
 
 ## What each criterion is held up by
 
+### R11 (U8) — observation
+
 | Criterion | Mechanism |
 |---|---|
 | Contracts + versioning | Version appears in header **and** payload and must agree. Disagreement is refused, not resolved; absence is refused, not defaulted. Checked before the credential is looked at. |
@@ -88,9 +94,27 @@ Three of those are properties that either hold by construction or decay silently
 so each is also asserted directly in the tests — including the severity ordering,
 so a future edit cannot quietly restore the current backwards one.
 
-## Two absences that are design decisions
+### R7 (U7) — provider connection
 
-Both are asserted by tests, because an absence nobody is watching gets filled in.
+Full rationale in `CONNECTION-CONTRACT.md`; this is the index.
+
+| Criterion | Mechanism |
+|---|---|
+| **acc. 1** — values reach only the vault | `assert_no_secret_material()` **refuses** a payload carrying a value (it does not scrub and accept — a scrubbed success makes the submitter believe a value was stored). `CredentialReference` refuses a value or an ARN at construction. |
+| **acc. 2** — ownership before acceptance | `authorize_delegation()` requires an ownership record **and** U9's `workspace:renew_credential`. `ownership=None` is a denial: an unanswered question is never permission. |
+| **acc. 3** — four separate readings | `ValidationReport` has `credential_valid`, `permissions_sufficient`, `quota_available` and `observed_capacity` with **no aggregate field**. `validated` excludes capacity; `observed_capacity=None` is not usable for admission. |
+| **acc. 4** — no value or ARN emitted | Response bodies are built from an **allowlist**, not a dict dump minus deletions. `SecretRedactingFilter` scrubs `record.msg` **and** `record.args`, and never drops a record. |
+| **acc. 5** — atomic rotation, honest disablement | `rotate()` requires a validated replacement and keeps the old key registered; revocation is a separate later call. `DISABLED` cannot be constructed without a limitation, and the limitation is in the response body. |
+
+**Two independent checks, two different parameter types.** `authorize_delegation()`
+takes a `VaultOwnership` and cannot see a binding; `authorize_use()` takes a
+`WorkspaceBinding` and cannot see ownership. Neither function's argument can answer
+the other's question, so passing one check cannot imply the other — and
+same-organization possession answers neither.
+
+## Absences that are design decisions
+
+All are asserted by tests, because an absence nobody is watching gets filled in.
 
 **No enforcement field on `BudgetUsage`.** No `budget_exceeded`, `limit`, `enforce`,
 `quota` or `blocked`. This contract reports observed spend and confers no budget
@@ -102,6 +126,16 @@ toward a second, local enforcement decision that could disagree with the real on
 withdraws the monitor's `reconcile_locks` write grant; a lease shape carrying any
 of those would quietly preserve the dependency the withdrawal removes.
 
+**No aggregate field on `ValidationReport`.** No `ok`, `healthy`, `ready`,
+`available`, `valid` or `usable`. Four readings about four different things; the one
+boolean somebody eventually wants is what makes a valid key read as available GPU
+capacity.
+
+**No combined rotate-and-revoke anywhere in U7.** Neither the contract nor the vault
+client exposes one. A single call that deleted before registering would, on failure
+halfway through, leave the connection pointing at nothing — an outage caused by the
+maintenance operation meant to prevent one.
+
 ## Running the tests
 
 ```bash
@@ -111,6 +145,11 @@ python3 -m pytest modules/domain-apps/superplane/tests/ -q
 # U8's smoke check: per-workspace scoping, both directions
 python3 -m pytest modules/domain-apps/superplane/tests/test_observation_scoping.py -q
 
+# U7's connection contract
+python3 -m pytest modules/domain-apps/superplane/tests/test_connection_contract.py -q
+
+# U7's vault client — run from the tool surface, where its coverage is gated
+python3 -m pytest modules/domain-apps/superplane/tools/superplane-mcp/tests/test_vault_client.py -q
 # U11's smoke check: handles, reconciliation and provider-truth reporting
 python3 -m pytest modules/domain-apps/superplane/tests/test_handle_reconciliation.py -q
 ```
@@ -118,16 +157,24 @@ python3 -m pytest modules/domain-apps/superplane/tests/test_handle_reconciliatio
 No AWS credentials, no network, no database. That is what lets this run in
 `superplane-domain-ci.yml`, which executes on `ubuntu-latest` with
 `contents: read` and asserts at the end of the job that no AWS credential
-environment variables are present.
+environment variables are present. The vault client's tests keep that true by
+injecting a transport (and, for the default transport, monkeypatching `urlopen`),
+so no test opens a socket.
 
 ## Scope boundary
 
 **In:** the contract types, their versioning, the authentication and scoping rules,
-the lease shape, the tests.
+the lease shape, U7's connection/binding rules and its thin vault HTTP client, the
+tests.
 
 **Out:** the receiving server, its routes and persistence (U15, upstream); budget
 enforcement (M6); any modification to `/internal/heartbeat`; withdrawal of the
-`reconcile_locks` grant (U15's criterion).
+`reconcile_locks` grant (U15's criterion); U7's domain routes and service logic
+(U7b) and its schema (U13b), both authored only; any change to the gateway's vault.
+
+**Not closed by U7:** R7 acceptances 6 and 7, the audited migration run. They need a
+named account and environment, authorized vault and KMS access, and a named cleanup
+owner — none resolved here.
 
 `events/` is the other directory the module layout table assigns to U8. It stays
 empty here: this unit is R11's contracts half, and no event schema is needed to

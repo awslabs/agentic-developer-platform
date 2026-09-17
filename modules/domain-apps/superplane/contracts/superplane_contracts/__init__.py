@@ -41,6 +41,9 @@ options. B remains a mocked dependency; R14 live acceptance stays open.
 
 The full rationale, including the specific upstream bugs each rule prevents, is in
 `contracts/README.md` and in each module's docstring.
+
+U7 adds provider-connection and workspace-binding contracts, credential rotation,
+disablement and secret guards. Its vault client uses the gateway HTTP boundary.
 """
 
 from __future__ import annotations
@@ -59,11 +62,12 @@ from .adapter import (
     ProviderAdapter,
     ProviderClient,
 )
+
 from .auth import (
     AUTH_HEADER,
+    AuthResult,
     SIGNATURE_HEADER,
     SUBMITTER_HEADER,
-    AuthResult,
     Submitter,
     SubmitterResolver,
     canonical_body,
@@ -71,6 +75,35 @@ from .auth import (
     verify_signature,
     verify_submission,
 )
+
+from .connections import (
+    ConnectionState,
+    ConnectionStatus,
+    CredentialReference,
+    DISABLEMENT_LIMITATION,
+    Decision,
+    RENEW_CREDENTIAL_PERMISSION,
+    RotationResult,
+    ValidationReport,
+    VaultOwnership,
+    WorkspaceBinding,
+    accept_connection_request,
+    activate,
+    authorize_delegation,
+    authorize_use,
+    disable,
+    rotate,
+)
+
+from .emission import (
+    PLACEHOLDER,
+    SecretRedactingFilter,
+    connection_response,
+    install_log_redaction,
+    scrub,
+    validation_response,
+)
+
 from .handles import (
     CallDecision,
     CallOutcome,
@@ -79,39 +112,64 @@ from .handles import (
     ProviderHandle,
     authorize_provider_call,
 )
+
 from .health import (
-    POSITIVE_DETAILS,
-    POSITIVE_STATUSES,
-    SEVERITY_RANK,
     CheckResult,
     CheckStatus,
     ContractViolation,
+    POSITIVE_DETAILS,
+    POSITIVE_STATUSES,
+    SEVERITY_RANK,
     aggregate_status,
     is_more_severe,
 )
+
 from .leases import (
     DEFAULT_LEASE_DURATION,
-    MAX_LEASE_DURATION,
     Lease,
     LeaseDecision,
     LeaseRequest,
+    MAX_LEASE_DURATION,
     authorize_release,
     grant,
     is_fenced_out,
 )
-from .observation import (
-    OBSERVATION_KINDS,
-    BudgetUsage,
-    ClusterRef,
-    Observation,
-)
+
+from .observation import BudgetUsage, ClusterRef, OBSERVATION_KINDS, Observation
+
 from .provider_truth import (
-    MAX_EXIT_CODE,
     Finding,
+    MAX_EXIT_CODE,
     RecreationDriver,
     ReleaseIntent,
     TeardownReport,
 )
+
+from .provisioning import (
+    FORBIDDEN_PARAMETER_KEYS,
+    FORBIDDEN_PARAMETER_PREFIXES,
+    INCONCLUSIVE_STATES,
+    OperationBinding,
+    OperationState,
+    PROVISION,
+    PROVISIONING_ACTIONS,
+    ProvisioningIntent,
+    ProvisioningProgress,
+    REQUIRED_PERMISSION,
+    ResolvedPrincipal,
+    TEARDOWN,
+    TERMINAL_STATES,
+    forbidden_parameters,
+)
+
+from .provisioning_adapter import (
+    OperationFacade,
+    ProvisioningAdapter,
+    ProvisioningProvider,
+    ProvisioningRefused,
+    summarize,
+)
+
 from .reconciliation import (
     ProviderObservation,
     ProviderPresence,
@@ -120,35 +178,17 @@ from .reconciliation import (
     ReconcileResult,
     reconcile,
 )
-from .provisioning import (
-    FORBIDDEN_PARAMETER_KEYS,
-    FORBIDDEN_PARAMETER_PREFIXES,
-    INCONCLUSIVE_STATES,
-    PROVISION,
-    PROVISIONING_ACTIONS,
-    REQUIRED_PERMISSION,
-    TEARDOWN,
-    TERMINAL_STATES,
-    OperationBinding,
-    OperationState,
-    ProvisioningIntent,
-    ProvisioningProgress,
-    ResolvedPrincipal,
-    forbidden_parameters,
+
+from .scoping import ScopeDecision, authorize_read, authorize_submit, visible_workspaces
+
+from .secrets import (
+    assert_no_secret_material,
+    find_secret_material,
+    key_names_secret,
+    looks_like_arn,
+    value_is_secret_shaped,
 )
-from .provisioning_adapter import (
-    OperationFacade,
-    ProvisioningAdapter,
-    ProvisioningProvider,
-    ProvisioningRefused,
-    summarize,
-)
-from .scoping import (
-    ScopeDecision,
-    authorize_read,
-    authorize_submit,
-    visible_workspaces,
-)
+
 from .version import (
     CONTRACT_VERSION,
     SUPPORTED_VERSIONS,
@@ -169,9 +209,14 @@ __all__ = [
     "CheckResult",
     "CheckStatus",
     "ClusterRef",
+    "ConnectionState",
+    "ConnectionStatus",
     "ContractViolation",
     "CostExposure",
+    "CredentialReference",
     "DEFAULT_LEASE_DURATION",
+    "DISABLEMENT_LIMITATION",
+    "Decision",
     "FORBIDDEN_PARAMETER_KEYS",
     "FORBIDDEN_PARAMETER_PREFIXES",
     "Finding",
@@ -191,6 +236,7 @@ __all__ = [
     "OperationKind",
     "OperationResult",
     "OperationState",
+    "PLACEHOLDER",
     "POSITIVE_DETAILS",
     "POSITIVE_STATUSES",
     "PROVISION",
@@ -205,6 +251,7 @@ __all__ = [
     "ProvisioningProgress",
     "ProvisioningProvider",
     "ProvisioningRefused",
+    "RENEW_CREDENTIAL_PERMISSION",
     "REQUIRED_PERMISSION",
     "ReconcileDecision",
     "ReconcileRequest",
@@ -214,11 +261,13 @@ __all__ = [
     "ReleaseIntent",
     "ReleaseState",
     "ResolvedPrincipal",
+    "RotationResult",
     "SEVERITY_RANK",
     "SIGNATURE_HEADER",
     "SUBMITTER_HEADER",
     "SUPPORTED_VERSIONS",
     "ScopeDecision",
+    "SecretRedactingFilter",
     "Submitter",
     "SubmitterResolver",
     "TEARDOWN",
@@ -226,22 +275,40 @@ __all__ = [
     "TeardownReport",
     "VERSION_FIELD",
     "VERSION_HEADER",
+    "ValidationReport",
+    "VaultOwnership",
     "VersionCheck",
+    "WorkspaceBinding",
+    "accept_connection_request",
+    "activate",
     "aggregate_status",
+    "assert_no_secret_material",
     "assess_release",
+    "authorize_delegation",
     "authorize_provider_call",
     "authorize_read",
     "authorize_release",
     "authorize_submit",
+    "authorize_use",
     "canonical_body",
     "check_version",
     "compute_signature",
+    "connection_response",
+    "disable",
+    "find_secret_material",
     "forbidden_parameters",
     "grant",
+    "install_log_redaction",
     "is_fenced_out",
     "is_more_severe",
+    "key_names_secret",
+    "looks_like_arn",
     "reconcile",
+    "rotate",
+    "scrub",
     "summarize",
+    "validation_response",
+    "value_is_secret_shaped",
     "verify_signature",
     "verify_submission",
     "visible_workspaces",

@@ -20,8 +20,33 @@ superplane-mcp/
     transports.py        <- thin shims (REST, MCP)
     contract.py          <- recorded MOCK of the domain contract
     redaction.py         <- secret boundary on the single way out
+    vault_client.py      <- U7: thin client over ADP's vault HTTP API
   tests/
 ```
+
+### `vault_client.py` — added by U7 (#5047, R7)
+
+The thin client through which a provider secret reaches ADP's vault, and the only
+place in the domain app that handles a secret value. It lives here rather than in
+`../../contracts/` because this lane gates the surface with
+`--cov=superplane_mcp --cov-fail-under=85` over this directory's `tests/` only:
+`--cov` on a package reports every module under it, so a suite placed elsewhere
+would leave this module at 0% and fail the gate while being fully tested.
+
+Two properties worth knowing before editing it:
+
+- **It consumes the vault over HTTP and imports no gateway internals.** Not a
+  convention — `tests/test_vault_client.py` walks the client's import graph and
+  fails on `vault_service`, `credential_resolver`, `src.auth`, `src.shared`,
+  `sqlalchemy`, `boto3` or `fastapi`. Importing any of those would put a second
+  process on the vault's storage, with its own ability to read a secret value; the
+  vault's boundary is the HTTP API so that the number of processes holding
+  `secretsmanager:GetSecretValue` stays at one.
+- **`resolve_exact()` is a recorded mock**, for the same reason `contract.py` is.
+  See `../../contracts/CONNECTION-CONTRACT.md` §8.
+
+Its rules — credential references, the two authorization checks, rotation and
+disablement — are normative in `../../contracts/CONNECTION-CONTRACT.md`.
 
 ## How the invariants are enforced
 
@@ -68,6 +93,14 @@ What is unavailable:
 in-memory data for HTTP calls against the generated client. Nothing above it
 changes.
 
+`vault_client.resolve_exact()` is a second recorded mock, added by U7 for a
+different missing dependency: the gateway's credential resolver has no
+exact-credential-binding API (`resolve()` matches by service and returns the first
+candidate; `scope_hint`/`strict` narrow a *scope*, not an identity), and the vault
+serves no `GET /auth/credentials/{id}`. Details in
+`../../contracts/CONNECTION-CONTRACT.md` §8. The tests assert the resolver still
+lacks that API, so the mock cannot outlive its justification unnoticed.
+
 ## Tests
 
 ```bash
@@ -75,3 +108,6 @@ cd modules/domain-apps/superplane/tools/superplane-mcp
 python3 -m pytest tests/ -q
 python3 -m pytest tests/ -q --cov=superplane_mcp --cov-report=term-missing   # >= 85% required
 ```
+
+No network: the vault client's tests inject a transport, and the default
+transport's tests monkeypatch `urlopen`.
