@@ -81,6 +81,9 @@ class Harness:
             text=True,
             timeout=30,
             env=environ,
+            # Non-zero is expected: several tests assert the wrapper propagates
+            # the real gh's exit status, so raising here would defeat them.
+            check=False,
         )
 
     def recorded_argv(self) -> list[str]:
@@ -311,8 +314,6 @@ def test_wrapper_source_has_no_dispatch_injection(gh: Harness):
     """
     source = WRAPPER.read_text(encoding="utf-8")
     # Only the explanatory comment may mention these; no executable use.
-    code = "\n".join(
-        line for line in source.splitlines() if not line.lstrip().startswith("#")
-    )
+    code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
     for retired in ("seed_trigger_pointer", "prepend_correlation_marker", "adp-dispatch"):
         assert retired not in code, f"{retired} reintroduced into gh-wrapper"
