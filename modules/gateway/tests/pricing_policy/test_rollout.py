@@ -190,9 +190,11 @@ def test_exec_failure_on_live_pod_is_not_retried(cli, args, monkeypatch):
 
 def test_pod_replacement_retry_is_bounded(cli, args, monkeypatch):
     calls = []
+
     def replaced(*parts, **kwargs):
         calls.append(parts)
         raise rollout.PodReplaced("replaced again")
+
     monkeypatch.setattr(rollout, "pod_command", replaced)
     with pytest.raises(rollout.PodReplaced):
         rollout.verify_seed(args, migrate=True)
