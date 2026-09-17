@@ -11,6 +11,7 @@ Target execution time: <300ms.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ logger.setLevel(logging.INFO)
 GITLAB_WEBHOOK_SECRET_ARN = os.environ.get("GITLAB_WEBHOOK_SECRET_ARN", "")
 SUBMIT_QUEUE_URL = os.environ.get("SUBMIT_QUEUE_URL", "")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
+PLACEHOLDER_WEBHOOK_SECRET = "PLACEHOLDER_REPLACE_WITH_ACTUAL_SECRET"
 
 # Cached webhook secret
 _webhook_secret: str | None = None
@@ -95,9 +97,12 @@ def _validate_token(headers: dict[str, str]) -> bool:
         logger.error("No GitLab webhook secret configured")
         return False
 
-    # Constant-time comparison to prevent timing attacks
-    import hmac
+    # Historical setup placeholders are not valid authentication values.
+    if hmac.compare_digest(secret, PLACEHOLDER_WEBHOOK_SECRET):
+        logger.error("GitLab webhook secret is still the insecure placeholder")
+        return False
 
+    # Constant-time comparison to prevent timing attacks
     return hmac.compare_digest(token, secret)
 
 
@@ -148,7 +153,6 @@ def _build_sqs_message(parsed_event) -> dict[str, Any]:
                 "project_path": parsed_event.project_path,
                 "issue_iid": parsed_event.issue_iid,
                 "note_id": parsed_event.note_id,
-                "gitlab_url": parsed_event.gitlab_url,
             },
             "actor": {
                 "username": parsed_event.author_username,

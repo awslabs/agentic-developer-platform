@@ -100,8 +100,9 @@ resource "aws_secretsmanager_secret_version" "marker_signing_key" {
 # =============================================================================
 # Secrets Manager — GitLab Webhook Secret (Issue #3324)
 # =============================================================================
-# Shared secret token for X-Gitlab-Token validation. The actual value is set
-# out-of-band (during GitLab webhook configuration in Admin → Group → Webhooks).
+# Shared secret token for X-Gitlab-Token validation. No placeholder value is
+# installed. Seed a high-entropy value out-of-band while configuring
+# Admin → Group → Webhooks.
 # =============================================================================
 
 resource "aws_secretsmanager_secret" "gitlab_webhook_secret" {
@@ -109,14 +110,4 @@ resource "aws_secretsmanager_secret" "gitlab_webhook_secret" {
   name        = "adp/${var.environment}/gitlab-webhook-secret"
   description = "GitLab webhook secret token for X-Gitlab-Token header validation"
   kms_key_id  = local.webhook_secrets_kms_key_arn
-}
-
-resource "aws_secretsmanager_secret_version" "gitlab_webhook_secret" {
-  count         = var.gitlab_webhook_enabled ? 1 : 0
-  secret_id     = aws_secretsmanager_secret.gitlab_webhook_secret[0].id
-  secret_string = "PLACEHOLDER_REPLACE_WITH_ACTUAL_SECRET"
-
-  lifecycle {
-    ignore_changes = [secret_string]
-  }
 }
