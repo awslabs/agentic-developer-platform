@@ -97,12 +97,26 @@ Agent dispatches flow through a **FIFO SQS queue** (`adp-dev-agent-submit.fifo`)
 
 ## Child stories: where the detail goes
 
-Each child story (not the orchestrator) carries the full five-section issue convention (Description / Impact / Design / Deployment / Validation — see `CLAUDE.md`). For build orchestration, each story's **Validation** should make the ownership split explicit:
+Each executable child uses the
+[developer issue template](../modules/agent-factory/rules/templates/developer-issue.md)
+and [authoring guide](../modules/agent-factory/rules/agents/issue-authoring.md).
+Keep the child body at most 8 KB, with deeper procedures linked at a revision.
 
-- **At-PR (developer agent owns):** the unit/integration tests that must be green before merge.
-- **Post-merge deploy → verify → smoke (orchestrator/ops agent owns):** the deploy verification + smoke test, because a developer agent **cannot** validate a deployment it didn't trigger — its job ends at a merged PR + green CI.
+Every child names its completion boundary and the owner of each phase:
 
-State the deployment target and credential method in deploy-gated stories (e.g. "verify against account `<id>` via `adp-cred assume --service aws --label <label>`").
+- **Before review:** developer implements the agreed scope and supplies results
+  for acceptance checks that can run before merge.
+- **After merge:** the named delivery owner deploys and supplies live evidence
+  when the issue requires it. That can be the same developer executor with
+  authorized access, or an explicit handoff to an operator/orchestrator. Do not
+  assume a developer's assignment always ends at merge.
+
+Keep live acceptance pending until observed. Main-only checks are post-merge
+criteria, not impossible pre-review gates. If this issue owns post-merge work,
+use a non-closing PR reference until the live criteria pass. State the target,
+credential method, unresolved prerequisites and their owners. Run-only evaluation
+issues use their specialized template; build-and-run issues permit implementation
+and in-scope repair under the issue's declared ownership.
 
 ---
 
@@ -126,6 +140,7 @@ State the deployment target and credential method in deploy-gated stories (e.g. 
 ---
 
 ## References
-- `CLAUDE.md` — the five-section issue-authoring convention and the `@mention`-not-labels rule.
+- `CLAUDE.md` — entry point to the canonical issue-authoring contract.
+- `modules/agent-factory/rules/core-workflow.md` — current agent-dispatch mechanism; older dispatch examples above describe historical behavior.
 - `modules/agent-factory/rules/agents/github-issue-hierarchy-guidelines.md` — native sub-issue hierarchy.
 - Bug #1864 — SQS message not deleted on completion → 6h FIFO redelivery (the queue-jam root cause).

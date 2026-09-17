@@ -3,7 +3,8 @@ name: aidlc-emit-issues
 description: >-
   Emit AIDLC inception artifacts as GitHub issues: one EPIC per intent, one child
   per AIDLC unit, natively sub-issue-linked, each in the repo's mandatory
-  five-section format with deterministic Validation gates. Delivery loop
+  plain-terms opening and five technical sections with deterministic acceptance.
+  Delivery loop
   generation is a two-stage protocol: Step 7 composes loop drafts as branch
   artifacts (invoked in Run A after delivery-planning approval); Step 8
   materializes the issues from approved drafts (invoked in Run B after
@@ -61,6 +62,11 @@ Read all inception artifacts listed above. Build a mental model of:
 Create ONE EPIC issue per intent with this structure:
 
 ```markdown
+## The problem in plain terms
+[Who needs what outcome and why, without implementation jargon.]
+
+**The fix in one line:** [Observable outcome.]
+
 ## Description
 [1-2 paragraphs: what the intent achieves and why it matters. Drawn from
 requirements + stories summary.]
@@ -78,7 +84,7 @@ Keep lean — deep design lives in committed `aidlc/` artifacts, linked not inli
 **Audit trail**: See committed `aidlc/` directory on branch `<branch-name>` for
 full inception artifacts (requirements, stories, design, delivery plan).
 
-## Child issues (units)
+### Child issues (units)
 
 | # | Unit | Stories | Depends on | Status |
 |---|------|---------|------------|--------|
@@ -90,50 +96,46 @@ full inception artifacts (requirements, stories, design, delivery plan).
 See child issues — each child specifies its own deployment.
 
 ## Validation
-- All child issues implemented and merged
+- All required child acceptance criteria met, including named post-merge checks
 - E2E smoke test: [concrete command or URL]
 - N of M sub-issues complete (tracked via native sub-issue roll-up)
 ```
 
 ### Step 3: Compose child issue bodies (one per AIDLC unit)
 
-For EACH unit in the unit-of-work document, compose a child issue body in the
-repo's **mandatory five-section format**. The mapping is:
+For EACH unit, use the canonical body at
+[developer-issue.md](../../rules/templates/developer-issue.md), following
+[issue-authoring.md](../../rules/agents/issue-authoring.md). In hosted execution,
+read `/app/rules/templates/developer-issue.md` and
+`/app/rules/agents/issue-authoring.md` if the source-tree paths are unavailable.
+Keep the plain-terms opening and five technical sections in order.
 
 | AIDLC artifact | Maps to child section |
 |----------------|----------------------|
-| Requirements + user stories (for this unit's stories) | `## Description` |
-| Requirements risk analysis + scope | `## Impact analysis` |
-| Application design (per-unit slice: files, API contracts, components) | `## Design` |
-| Delivery plan (what CI fires, deploy workflow) | `## Deployment` |
-| Quality-agent test strategy (per-unit) | `## Validation` |
+| Requirements + user stories | Plain-terms opening and Description: outcome, scope, owner and completion boundary |
+| Risk analysis + scope | Impact analysis: affected surfaces, failures and limits |
+| Application design | Design: verified reuse, contracts, configuration and unresolved prerequisites |
+| Delivery plan | Deployment: setup, rollout, recovery and phase owners |
+| Quality/test strategy | Validation: stable acceptance IDs, action, expected result, evidence and phase/owner |
 
 #### Deterministic Validation gates (CRITICAL)
 
-The `## Validation` section MUST contain **deterministic gates** — never
-judgment calls. Every child's Validation MUST include:
+Use one acceptance table. Each required row must specify what the check proves,
+how it is exercised and the evidence that establishes its result. Name relevant
+existing tests/CI checks or mark new test paths/commands as proposed deliverables.
+Coverage percentages alone are not acceptance; include a threshold only when
+justified by the issue or existing repository policy. Documentation-only changes
+need document/link checks, not an invented test file or service deployment.
 
-1. **At least one named test file** to create (full path):
-   - Example: `tests/unit/test_broker_auth.py`
-   - Example: `modules/gateway/tests/test_new_endpoint.py`
+For deployed behavior, name the live action, expected output, environment,
+fixture/evidence source and owner. Mark unresolved access as a prerequisite
+with a specific owner and blocked phase. Do not claim that live work can start
+just because implementation can start. Distinguish pre-review tests from
+post-merge checks; an enabling PR can be reviewed before its main-only live run.
 
-2. **At least one coverage threshold**:
-   - Example: "Coverage for `src/broker/` >= 85%"
-
-3. **At least one required CI check name**:
-   - Example: "CI check `gateway-tests` passes"
-   - Example: "CI check `ruff-lint` passes"
-
-4. **Concrete smoke test command or assertion**:
-   - Example: "`curl -s https://<domain>/api/health | jq .status` returns `ok`"
-
-**NEVER write**:
-- "Verify it works"
-- "Ensure the feature is functional"
-- "Test the integration"
-- "Confirm correct behavior"
-
-These are NOT deterministic — an agent will self-certify broken features.
+"Verify it works" without an action and expected result is not acceptance.
+Keep user-approved AIDLC decisions and existing approval gates; this author check
+adds no additional approval ceremony.
 
 #### Fixture provenance rule (cross-boundary stories)
 
@@ -158,17 +160,21 @@ Deep design detail stays in committed `aidlc/` artifacts — link, don't inline.
 Before posting EACH issue (EPIC or child), verify:
 
 **Section lint:**
-- [ ] All five section headers present: `## Description`, `## Impact analysis`, `## Design`, `## Deployment`, `## Validation`
-- [ ] No section is empty or contains only a placeholder
+- [ ] Plain-terms opening followed by Description, Impact analysis, Design, Deployment and Validation, all nonempty.
+- [ ] Outcome, scope, completion boundary, phase owners and verified reuse points are explicit.
+- [ ] Configurable inputs are distinguished from selected environment/example values.
 
 **Validation lint (children only):**
-- [ ] Contains at least one named test file path
-- [ ] Contains at least one CI check name
-- [ ] Contains NO judgment-call language ("verify", "ensure", "confirm correct")
-- [ ] Body is <= 8KB
+- [ ] Stable AC IDs each have action, expected result, evidence and phase/owner.
+- [ ] Existing commands/checks are verified; proposed deliverables are labelled proposed.
+- [ ] Relevant failure and compatibility cases are covered; inapplicable layers have a reason.
+- [ ] Dependencies/unverified access or facts name an owner, next action and blocked phase.
+- [ ] Body is <= 8KB; long procedures are linked at a published revision.
 
-**If lint fails:** revise the body until it passes. NEVER post a child with
-placeholder sections or non-deterministic validation.
+**If lint fails:** complete the missing authoring work before posting. If a
+material design decision remains unresolved, keep the dependent unit in planning
+and identify its decision owner. A bounded technical investigation may be an
+explicit first checkpoint; do not fill unknown facts with guesses.
 
 ### Step 5: Create the EPIC issue
 

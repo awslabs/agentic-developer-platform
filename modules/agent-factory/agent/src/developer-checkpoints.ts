@@ -8,13 +8,16 @@ export function developerCheckpointGuidance(agentType: string): string {
   return `
 ### Developer branch checkpoints
 
-For authorized implementation work, include a checkpoint strategy in the initial
-plan comment and any required code plan: target branch, first useful milestone,
-later milestones, and approximately 15-minute cadence.
-Example: "On agent/issue-N, I will push the API contract first, then persistence
-and tests, checkpointing about every 15 minutes at safe boundaries and before
-long validation. I will share commit links and open a ready PR after completing
-the assignment and pre-submit checks."
+For authorized implementation work, put the checkpoint strategy after the
+plain-language task understanding and logical approach in the initial
+plan comment and any required code plan. Include the target branch, first useful
+milestone, later milestones, and approximately 15-minute cadence.
+Example of the supporting checkpoint detail, after explaining the task and
+approach: "On agent/issue-N, I will first publish the change that saves an account
+connection, then the checks that the same user can list and remove it. I will
+checkpoint about every 15 minutes at safe boundaries and before long validation,
+share commit links, and open a ready PR after completing the assignment and
+pre-submit checks."
 
 - Push the first coherent change, then checkpoint at meaningful milestones and
   about every 15 minutes at a safe tool boundary while changes accumulate. Push

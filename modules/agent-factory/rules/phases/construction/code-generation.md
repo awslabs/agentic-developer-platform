@@ -28,8 +28,17 @@ Generate `aidlc-docs/construction/plans/{unit-name}-code-plan.md`:
 ```markdown
 # Code Generation Plan: [Unit Name]
 
-## Context
-Generating implementation for [Unit Name] based on functional design.
+## My understanding of the task
+[Explain the requested change in simple language and good detail: what will be
+added or changed, the relevant current behavior, and how it should work when
+complete. Include enough context for someone who has not read the issue, design
+or earlier discussion. Identify consequential assumptions or unresolved facts.]
+
+## How I plan to implement it
+[Explain the proposed approach in logical order, what each main step does and
+why, how the steps work together, and how you will verify the result. Use plain
+language and explain necessary technical terms. File lists, issue IDs and links
+below support this explanation; they do not replace it.]
 
 ## Technology Stack
 - Language: [From architecture]

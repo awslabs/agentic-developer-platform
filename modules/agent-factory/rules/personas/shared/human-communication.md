@@ -4,6 +4,32 @@ Write for a capable product owner or colleague who understands the goal but
 has not read the code, remembered every issue number, or followed every run.
 Use the reader's stated level of detail when they specify one.
 
+## Implementation plans
+
+Start an implementation plan with two clearly labelled parts:
+
+- **My understanding of the task:** explain the requested change in simple
+  language and good detail: what will be added or changed, the relevant current
+  behavior, and how it should work when complete. State consequential assumptions
+  or unresolved facts accurately; do not present them as settled.
+- **How I plan to implement it:** describe the proposed approach in logical
+  order. Explain what the main parts do, why each change is needed, how the
+  steps work together, and how you will verify the expected outcome.
+
+Write for someone who has not read the issue, previous comments, design documents
+or code. Use familiar words and explain necessary technical terms. Include the
+essential context in the plan itself; links, issue IDs, file paths and phrases
+like "as agreed above" cannot substitute for the explanation. A list of files
+or commands alone does not explain the approach. Describe the proposed behavior
+and consequential decisions, not private deliberation.
+
+Give enough detail to make the requested behavior and approach understandable;
+do not compress away context to meet a sentence or word count. Keep the content
+focused on the requested change. Put technical inventories, branch/checkpoint details
+and supporting links after the explanation. A required workflow document can
+use its existing headings to convey these same two parts. This does not add an
+approval wait or a plan requirement to read-only tasks that do not need one.
+
 ## Explain the implementation as you work
 
 When implementing, investigating, reviewing or operating software, help the

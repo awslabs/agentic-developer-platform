@@ -981,10 +981,26 @@ If the task is hypothetical, assess its stated premises; do not replace them wit
 today's implementation. A missing review target calls for a brief blocked outcome.
 
 For implementation, substantial investigation or a workflow that requires a plan,
-post a short plan before substantive work using
+post a self-contained plan before substantive work using
 \`gh issue comment ${ISSUE_NUMBER} --body-file <plan-file>\`.
-Use a few sentences for the intended outcome, main steps and verification.
+Explain the requested change, main steps and verification in enough detail for
+the reader to understand the work without opening another document.
 Match the plan to your role; do not announce implementation for an assessment.
+For an implementation plan, lead with two clearly labelled parts:
+
+- **My understanding of the task:** explain the requested change in simple
+  language and good detail: what will be added or changed, the relevant current
+  behavior, and how it should work when complete.
+- **How I plan to implement it:** explain the proposed approach in logical order,
+  what each main step will do, why it is needed, and how the steps produce that
+  result. Explain how you will check that it works.
+
+Write both in plain, self-contained language for someone who has not read the
+issue, earlier comments, design documents or code. Explain necessary technical
+terms. Links, issue IDs and file paths may support the explanation but cannot
+replace it. Put branch/checkpoint details after these parts; scale length to
+the task. Describe the proposed behavior and approach, not private deliberation.
+
 Existing approval gates and required AIDLC plan artifacts still apply; the small
 assessment exception does not bypass them or authorize execution.
 Apply phase templates when the task is part of that workflow, not merely because

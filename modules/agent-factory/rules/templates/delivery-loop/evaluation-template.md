@@ -5,6 +5,10 @@
 > HTTP status, resource existence, query output). NO judgment calls.
 > Reference: #3334, #3335, #3336 (Phase 0 GitLab CE evaluations).
 
+This is a **run-only** template for already implemented checks. For an assignment
+to build the harness, provision fixtures and fix/retry live tests, use
+[developer-issue.md](../developer-issue.md) and state that completion boundary.
+
 ---
 
 ```markdown
@@ -31,8 +35,8 @@ If any check fails:
    - The failing check's command + actual output
    - The owning story reference
 2. Attach the defect as a native sub-issue of [PHASE_EPIC_REF].
-3. Dispatch the developer persona on the DEFECT issue (single mention, on
-   the defect issue only — never re-mention merged stories).
+3. Dispatch the developer persona on the DEFECT issue using `adp-trigger`
+   (see core-workflow); do not dispatch on the merged story or evaluation.
 4. Re-run this evaluation after the defect PR merges + deploys.
 5. This issue closes ONLY when ALL checks pass in a single run.
 6. Post the passing transcript as a comment before closing.
