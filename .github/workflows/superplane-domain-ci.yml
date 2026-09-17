@@ -173,7 +173,8 @@ jobs:
           # sat uncollected — the precise failure this step's comment set out to avoid,
           # since "no tests ran" and "tests passed" share an exit code.
           if find modules/domain-apps/superplane -name 'test_*.py' -print -quit | grep -q .; then
-            python3 -m pytest modules/domain-apps/superplane/ -v --tb=short
+            # Real-environment acceptance runs separately with explicit target/evidence inputs.
+            python3 -m pytest modules/domain-apps/superplane/ -m "not superplane_live" -v --tb=short
           else
             echo "No tests in modules/domain-apps/superplane/ yet — nothing to run."
           fi
