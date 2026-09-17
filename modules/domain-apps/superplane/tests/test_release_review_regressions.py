@@ -86,10 +86,24 @@ def test_build_inputs_cannot_inject_workflow_environment(revision):
         ("superplane-platform-monitor", "monitor"),
     ],
 )
-@pytest.mark.parametrize("bad_input", [None, "repository", "revision", "source"])
+@pytest.mark.parametrize(
+    "bad_input", [None, "repository", "revision", "source", "context", "tag"]
+)
 def test_buildspec_runs_only_the_selected_domain_build(
     tmp_path, component, short, bad_input
 ):
+    """The build script builds one component from maintained source, and nothing else.
+
+    Updated for U22 (#5326): the build context is now an in-repository directory instead of a
+    `releases/source/` staging area with a `.superplane-revision` marker. The marker check is
+    replaced by checks on the thing itself — the maintained directory the lock names must
+    exist and contain a Dockerfile — which is strictly stronger, because a marker file only
+    ever asserted a revision rather than demonstrating the source was present.
+
+    Every `bad_input` variant asserts the script fails *before* touching AWS or Docker, so a
+    misconfigured lane cannot push a mislabelled image or authenticate against the wrong
+    account as a side effect of finding out it was misconfigured.
+    """
     spec_path = RELEASE / "buildspecs" / (short + ".yml")
     workflow = (
         ROOT / ".github/workflows" / ("superplane-" + short + "-build.yml")
@@ -100,11 +114,11 @@ def test_buildspec_runs_only_the_selected_domain_build(
     script = tmp_path / RELEASE / "build-image.sh"
     script.parent.mkdir(parents=True)
     shutil.copy(ROOT / RELEASE / "build-image.sh", script)
-    source = script.parent / "source"
-    context = source / "src" / component
+    # The maintained tree, laid out exactly as the transfer placed it: the build context is
+    # <module root>/src/<component>, a sibling of releases/ rather than a directory under it.
+    context = script.parent.parent / "src" / component
     context.mkdir(parents=True)
     (context / "Dockerfile").write_text("FROM scratch\n")
-    (source / ".superplane-revision").write_text("a" * 40)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     trace = tmp_path / "calls"
@@ -115,22 +129,34 @@ def test_buildspec_runs_only_the_selected_domain_build(
             'case "$*" in *get-login-password*) echo test-password;; login*) cat >/dev/null;; esac\n'
         )
         stub.chmod(0o755)
+    adp_commit = "c" * 40
     env = {
         "PATH": str(bindir) + ":" + os.defpath,
         "BUILD_TRACE": str(trace),
-        "UPSTREAM_REVISION": "a" * 40,
-        "UPSTREAM_PATH": "src/" + component,
+        # Provenance only — the script must not use this to fetch anything.
+        "ORIGIN_REPOSITORY": "https://github.com/aws-innovate/AISuperPlane",
+        "ORIGIN_REVISION": "a" * 40,
+        "SOURCE_PATH": "src/" + component,
         "ECR_REPO": "adp-" + component,
         "ACCOUNT_ID": "111122223333",
         "AWS_REGION": "us-east-1",
         "REGISTRY": "111122223333.dkr.ecr.us-east-1.amazonaws.com",
+        # The ADP commit, which is what identifies the built image after the transfer.
+        "IMAGE_TAG": adp_commit,
     }
     if bad_input == "repository":
         env["ECR_REPO"] = "adp-gateway"
     if bad_input == "revision":
-        env["UPSTREAM_REVISION"] = "b" * 40
+        env["ORIGIN_REVISION"] = "not-a-revision"
     if bad_input == "source":
-        (source / ".superplane-revision").unlink()
+        (context / "Dockerfile").unlink()
+    if bad_input == "context":
+        # A caller trying to redirect the build at a directory the lock does not name. The
+        # script recomputes the context from the module root, so this must be rejected rather
+        # than silently honoured — otherwise SOURCE_PATH stops being the source of truth.
+        env["SUPERPLANE_SOURCE_DIR"] = "/tmp/somewhere-else"
+    if bad_input == "tag":
+        env["IMAGE_TAG"] = "latest"
     result = subprocess.run(
         ["bash", "-c", command], cwd=tmp_path, env=env, capture_output=True, text=True
     )
@@ -140,14 +166,22 @@ def test_buildspec_runs_only_the_selected_domain_build(
     else:
         assert result.returncode == 0, result.stderr
         calls = trace.read_text()
+        # Tagged by the ADP commit; the origin revision rides along as a label. Both are
+        # asserted because collapsing them is the regression this guards.
         assert (
-            "docker build --label org.opencontainers.image.revision=" + "a" * 40
+            "docker push " + env["REGISTRY"] + "/" + env["ECR_REPO"] + ":" + adp_commit
             in calls
         )
+        assert "org.opencontainers.image.revision=" + adp_commit in calls
+        assert "com.adp.superplane.origin.revision=" + "a" * 40 in calls
         assert (
-            "docker push " + env["REGISTRY"] + "/" + env["ECR_REPO"] + ":" + "a" * 40
+            "org.opencontainers.image.source=modules/domain-apps/superplane/src/"
+            + component
             in calls
         )
+        # The origin revision must never become the tag: rebuilds from later ADP commits
+        # would collide on it, so "which build is running" would stop having an answer.
+        assert ":" + "a" * 40 not in calls
         assert all(
             token not in calls
             for token in (
@@ -156,5 +190,7 @@ def test_buildspec_runs_only_the_selected_domain_build(
                 "adp-gateway",
                 "create-project",
                 "update-project",
+                # The reference snapshot is evidence, not a build input.
+                "ai-super-plane",
             )
         )

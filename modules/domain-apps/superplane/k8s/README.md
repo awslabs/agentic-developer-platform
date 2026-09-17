@@ -8,14 +8,24 @@ Issue #5042 (U3), EPIC #4910.
 | Component | State | Why |
 |---|---|---|
 | SkyPilot API service | **Deployable** | `releases/superplane.lock.yaml` resolves `skypilot-api` to `sha256:de41a5c6…` (`berkeleyskypilot/skypilot:0.12.0`) |
-| `superplane-api` | Not deployable | `pending_images`, no digest, blocked by `source_access` |
+| `superplane-api` | Not deployable | `pending_images`, no digest — no build has run yet |
 | `superplane-controller` | Not deployable | same |
 | `superplane-platform-monitor` | Not deployable | same |
 
-Building the three application images needs read access to `aws-innovate/AISuperPlane`
-that ADP does not have. The rollout lane's preflight fails closed on any manifest
-referencing them — a placeholder digest would look authoritative and be believed, which is
-worse than a visibly floating tag.
+The three application images have no digest because none has been built. What changed with
+U22 (#5326) is *why*: their source used to be unreachable — a repository ADP cannot read —
+and is now maintained in this repository under `../src/`, so the build lanes can run. Source
+availability is not a digest, though, and this lane needs the digest.
+
+The rollout lane's preflight fails closed on any manifest referencing them — a placeholder
+digest would look authoritative and be believed, which is worse than a visibly floating tag.
+
+The transferred components ship their own upstream `deploy/` manifests. Those are **not**
+these manifests and are not applied by this lane: they carry upstream's account id and
+`:latest` image tags, and are inventoried as read-only evidence in
+`../src/TRANSFER-MANIFEST.md`. Reconciling what the accepted topology needs from them into
+this directory is U3's work, so that this lane keeps one reviewed source of manifests
+instead of two.
 
 Because three of four components are unbuildable, this lane is **dispatch-only**. A
 push-triggered rollout would be an automatic partial deploy.

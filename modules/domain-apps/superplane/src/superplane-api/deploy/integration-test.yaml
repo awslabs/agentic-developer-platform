@@ -1,0 +1,227 @@
+# ============================================================================
+# Superplane API Server — Integration Test Deployment
+# Deploys API server + PostgreSQL for end-to-end testing
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: superplane
+  labels:
+    app.kubernetes.io/part-of: superplane
+---
+# PostgreSQL for integration testing (in-cluster, NOT production Aurora)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: superplane
+data:
+  init.sql: |
+    -- Create superplane database and user
+    CREATE USER superplane WITH PASSWORD 'superplane';
+    CREATE DATABASE superplane OWNER superplane;
+    GRANT ALL PRIVILEGES ON DATABASE superplane TO superplane;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: superplane
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: superplane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: public.ecr.aws/docker/library/postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              value: superplane
+            - name: POSTGRES_PASSWORD
+              value: superplane
+            - name: POSTGRES_DB
+              value: superplane
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "superplane"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: init
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: superplane
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# API Server ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: superplane-api-config
+  namespace: superplane
+data:
+  APP_NAME: "superplane-api"
+  APP_VERSION: "0.1.0"
+  DEBUG: "true"
+  AWS_REGION: "us-east-1"
+  AWS_ACCOUNT_ID: "605440105851"
+  # WARNING: Wildcard CORS is acceptable for integration testing only.
+  # Production must use explicit origins.
+  CORS_ORIGINS: '["*"]'
+  JWT_ALGORITHM: "HS256"
+  JWT_EXPIRE_MINUTES: "60"
+  RATE_LIMIT_PER_MINUTE: "60"
+---
+# API Server Secrets (JWT key + DB URL)
+# NOTE: For integration testing only. Production uses AWS Secrets Manager / external-secrets.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: superplane-api-secrets
+  namespace: superplane
+type: Opaque
+stringData:
+  JWT_SECRET_KEY: "integration-test-secret-key-do-not-use-in-production"
+  DATABASE_URL: "postgresql+asyncpg://superplane:superplane@postgres.superplane.svc.cluster.local:5432/superplane"
+---
+# API Server ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: superplane-api
+  namespace: superplane
+  labels:
+    app.kubernetes.io/name: superplane-api
+    app.kubernetes.io/component: api-server
+    app.kubernetes.io/part-of: superplane
+---
+# API Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: superplane-api
+  namespace: superplane
+  labels:
+    app.kubernetes.io/name: superplane-api
+    app.kubernetes.io/component: api-server
+    app.kubernetes.io/part-of: superplane
+spec:
+  selector:
+    app.kubernetes.io/name: superplane-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+---
+# API Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: superplane-api
+  namespace: superplane
+  labels:
+    app.kubernetes.io/name: superplane-api
+    app.kubernetes.io/component: api-server
+    app.kubernetes.io/part-of: superplane
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: superplane-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: superplane-api
+        app.kubernetes.io/component: api-server
+        app.kubernetes.io/part-of: superplane
+    spec:
+      serviceAccountName: superplane-api
+      terminationGracePeriodSeconds: 30
+      # Wait for postgres to be ready
+      initContainers:
+        - name: wait-for-db
+          image: public.ecr.aws/docker/library/postgres:16-alpine
+          command: ['sh', '-c', 'until pg_isready -h postgres.superplane.svc.cluster.local -p 5432 -U superplane; do echo "Waiting for postgres..."; sleep 2; done']
+      containers:
+        - name: api
+          image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: superplane-api-config
+            - secretRef:
+                name: superplane-api-secrets
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

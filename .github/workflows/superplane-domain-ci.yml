@@ -16,10 +16,21 @@ name: Superplane Domain CI
 # claim that the runner has no identity or that PR code is sandboxed from the host.
 # Live acceptance remains a separate explicitly authorized run.
 #
-# The module is a skeleton today, so the Python job tolerates "no tests yet" — but only
-# for the domain module, and it says so in the log. It does NOT use --passWithNoTests
-# semantics for the gateway-side registration suites: those exist now, and a PR that
+# The module-wide test step tolerates "no tests yet" — but only for the domain module, and
+# it says so in the log. It does NOT use --passWithNoTests semantics for the gateway-side
+# registration suites, or for the transferred suites below: those exist now, and a PR that
 # deleted them must fail rather than pass on an empty glob.
+#
+# TRANSFERRED SOURCE (U22, #5326). This lane also runs the tests that came with the three
+# Superplane components ADP now maintains under `src/` — the API's pytest suite and the
+# controller's and platform monitor's Go suites. That is what makes the ownership transfer
+# real: the tests run here, on every PR, instead of in a repository ADP cannot read.
+#
+# They run in their own steps rather than under the module-wide glob because each component
+# has its own toolchain and dependency set, preserved byte-for-byte from the origin. The
+# module's `conftest.py` excludes `src/` from collection for the same reason, and `.ruff.toml`
+# excludes it from ADP's lint rules — lint only; this lane, its path filters and review all
+# still cover it.
 
 on:
   pull_request:
@@ -216,6 +227,90 @@ jobs:
           cd modules/domain-apps/superplane/tools/superplane-mcp
           python3 -m pytest tests/ -v --tb=short \
             --cov=superplane_mcp --cov-report=term-missing --cov-fail-under=85
+
+      - name: Run transferred Superplane API tests
+        # The tests that came WITH the transferred source (U22, #5326). This is the step that
+        # makes the ownership transfer real: ADP now runs the API's own 288-test suite on
+        # every PR, rather than pointing at a repository it cannot read and calling that
+        # coverage.
+        #
+        # Run from the component directory with its own dependency set, because that is the
+        # layout upstream wrote these tests for and the transfer preserved every file
+        # byte-for-byte. That is also why they are excluded from the module-wide glob above
+        # (conftest.py's `collect_ignore`): one uninstalled dependency in transferred code
+        # would otherwise abort COLLECTION and report zero results for the other ~1790 tests.
+        #
+        # WHY THE CONSTRAINTS FILE. `pyproject.toml` declares an unbounded
+        # `fastapi>=0.115.0`, so which FastAPI this lane installs depends on the day it runs
+        # — that alone makes it non-reproducible. Concretely, FastAPI 0.137.0 changed what
+        # `app.routes` contains (routers now appear as an `_IncludedRouter` entry rather than
+        # flattened `Route` objects), and one transferred test walks that list looking for
+        # `.path`, so it fails from 0.137.0 onward.
+        #
+        # The routes themselves still work — `app.openapi()` lists 43 paths and `GET /users`
+        # answers 401 rather than 404. This is a test coupled to a changed introspection API,
+        # NOT an app that stopped serving; the distinction is spelled out in
+        # releases/transfer-constraints.txt because the two look identical from the test
+        # output and have very different severity.
+        #
+        # Inherited either way, and pinned here rather than by editing the transferred
+        # pyproject, because byte-fidelity with the origin is what makes the transfer
+        # auditable.
+        #
+        # No AWS: the suite uses aiosqlite in-memory and fakes its clients, which is what
+        # keeps it runnable on this credential-free hosted runner.
+        working-directory: modules/domain-apps/superplane/src/superplane-api
+        run: |
+          set -euo pipefail
+          pip install -e ".[dev]" \
+            -c ../../releases/transfer-constraints.txt
+          # Pinned by directory, but NOT tolerant of an empty glob: these tests exist as of
+          # the transfer, so "no tests found" means a PR deleted them and must fail.
+          COUNT=$(python3 -m pytest tests/ --collect-only -q 2>/dev/null | tail -1)
+          echo "Collected: ${COUNT}"
+          python3 -m pytest tests/ -v --tb=short
+
+      - name: Set up Go for the transferred components
+        # Pinned to the version the transferred go.mod files declare (go 1.23.0), so the
+        # toolchain that judges this code is the one it was written against.
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+          cache-dependency-path: |
+            modules/domain-apps/superplane/src/superplane-controller/go.sum
+            modules/domain-apps/superplane/src/superplane-platform-monitor/go.sum
+
+      - name: Run transferred Superplane controller tests
+        # `go vet` before `go test` because a build-level mistake in transferred code should
+        # be reported as such rather than as a test failure. Both are scoped to this
+        # component: the controller and the monitor are separate modules with separate
+        # go.mod files, and a repo-wide `./...` would not reach either.
+        #
+        # `-count=1` disables Go's test cache, so a green result here always reflects this
+        # commit's code rather than a cached run of an earlier one.
+        #
+        # NOT RUN HERE, and deliberately so: `tests/e2e-controller-test.sh` drives a real
+        # cluster. It transferred with the component (executable bit preserved) and is
+        # inventoried in src/TRANSFER-MANIFEST.md, but it belongs to the credentialed live
+        # acceptance this lane exists to stay out of — running it would give this job the
+        # blast radius the header rules out. `go test ./...` does not pick it up.
+        working-directory: modules/domain-apps/superplane/src/superplane-controller
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go test ./... -count=1 -v
+
+      - name: Run transferred Superplane platform monitor tests
+        # Same NOT-RUN note: `tests/integration_test.go` carries `//go:build integration` and
+        # needs a real PostgreSQL via INTEGRATION_DATABASE_URL, so the default build excludes
+        # it and this lane does not pass `-tags=integration`. That exclusion is the file's own
+        # design, not a suppression added here — but it is stated so the green result is not
+        # read as covering it.
+        working-directory: modules/domain-apps/superplane/src/superplane-platform-monitor
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go test ./... -count=1 -v
 
       - name: Run domain skill tests
         # Skills may ship their own tests (the cyber pack's url-analysis skill does).

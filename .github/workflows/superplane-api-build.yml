@@ -1,38 +1,47 @@
 name: Superplane API Build
 
-# Builds the pinned Superplane API image — Issue #5041 (U2), EPIC #4910.
+# Builds the Superplane API image from maintained ADP source — Issue #5041 (U2), EPIC #4910.
+# Source ownership transferred by Issue #5326 (U22).
 #
-# Pattern copied from cyber-worker-build.yml (zip source -> S3 -> CodeBuild -> ECR), which
-# is the established image-build lane in this repo. Two things differ deliberately, and
-# both are the point of this story:
+# Pattern copied from cyber-worker-build.yml (zip source -> S3 -> CodeBuild -> ECR), which is
+# the established image-build lane in this repo. Two things differ deliberately:
 #
-# 1. THE REF COMES FROM THE LOCK, NOT FROM THIS FILE. The revision to build is read from
-#    modules/domain-apps/superplane/releases/superplane.lock.yaml by resolve_lock.py. No
-#    branch name, no `:latest`, no `github.sha` standing in for an upstream revision. An
-#    unchanged lock therefore yields identical inputs on every run (R2 acc. 3). If you find
-#    yourself adding a ref to this file, the lock has stopped being the mechanism.
+# 1. THE BUILD CONTEXT COMES FROM THE LOCK, NOT FROM THIS FILE. Which directory gets built is
+#    read from modules/domain-apps/superplane/releases/superplane.lock.yaml by
+#    resolve_lock.py. No branch name, no `:latest`, no path spelled out here. An unchanged
+#    lock therefore yields identical inputs on every run (R2 acc. 3). If you find yourself
+#    adding a ref or a hardcoded source path to this file, the lock has stopped being the
+#    mechanism.
 #
-# 2. IT FAILS CLOSED ON SOURCE ACCESS. Building this image needs read access to
-#    aws-innovate/AISuperPlane that ADP does not have. The resolve step exits 78 and says
-#    which mechanisms would fix it. This lane is NOT written as though
-#    `actions/checkout` of the upstream repository will work: the hosted token is scoped to
-#    this repository, so that checkout fails for everyone, and a lane built on it would
-#    report a confusing transient-looking error instead of a named missing grant.
+# 2. IT STILL DOES NOT REACH UPSTREAM. Before U22 this lane failed closed at the resolve step
+#    because building needed read access to aws-innovate/AISuperPlane that ADP does not have:
+#    the hosted token is scoped to this repository, so that checkout fails for everyone and a
+#    lane built on it would report a confusing transient-looking error instead of a named
+#    missing grant. U22 removed the need rather than obtaining the grant — the source is now
+#    maintained in this repository, so `actions/checkout@v7` of THIS repo is the whole source
+#    acquisition. The fail-closed branch below is retained for any component whose
+#    `source_access` is still unresolved.
 #
-# The read-only reference snapshot (planning branch, ai-super-plane/reference/) is NOT a
-# build input — building from it would ship evidence as a product and pin a stale revision.
-# tests/test_build_source_is_declared.py asserts this file references neither.
+# The read-only reference snapshot (planning branch, ai-super-plane/reference/) is NOT a build
+# input: it is evidence at upstream 5d543c95, and building from it would ship evidence as a
+# product and pin a stale revision. tests/test_build_source_is_declared.py asserts this file
+# references neither it nor an upstream checkout.
 #
-# The ECR push target and the digest write-back are present but gated behind the resolve
-# step. Source acquisition remains an explicit integration task after the grant;
-# the offline buildspec and source-directory contract are present and tested.
+# IMAGE TAGGING CHANGED WITH THE TRANSFER. The tag is the ADP commit, because that is now
+# what identifies what was built: the origin revision is frozen at the transfer point, so
+# tagging by it would make every later ADP fix overwrite the previous image under an
+# unchanged tag. The origin revision is preserved as an image LABEL instead (see
+# releases/build-image.sh), which keeps the provenance without pretending it is a version.
 
 on:
-  # Triggered by the lock, because the lock is what determines what gets built. Changing
-  # the pinned revision is the event that should cause a rebuild.
+  # Triggered by the lock AND by the maintained source, because after U22 either one can
+  # change what the image contains. Watching only the lock would mean a fix to the
+  # transferred code never produced a new image — the exact gap that makes an ADP-owned
+  # component drift from the image running in a cluster.
   push:
     branches: [main]
     paths:
+      - 'modules/domain-apps/superplane/src/superplane-api/**'
       - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
       - 'modules/domain-apps/superplane/releases/resolve_lock.py'
       - 'modules/domain-apps/superplane/releases/build-image.sh'
@@ -63,11 +72,12 @@ jobs:
       - name: Install PyYAML for the lock resolver
         run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
 
-      # ── 1. Resolve the build ref FROM THE LOCK ─────────────────────────
-      # Exit 78 means the lock is fine but the upstream access grant is missing. That is a
-      # deliberate stop with a named cause, so the log says what to obtain rather than
-      # leaving somebody to guess at a checkout failure.
-      - name: Resolve pinned revision from the release lock
+      # ── 1. Resolve the build context FROM THE LOCK ──────────────────────
+      # Exit 78 means the lock is fine but a source-access grant is missing. Unreachable for
+      # this component since U22 (its source_access is resolved), and retained because a
+      # component added in the not-yet-granted state must stop with a named cause rather
+      # than a checkout error that reads like a transient CI fault.
+      - name: Resolve build inputs from the release lock
         run: |
           set -euo pipefail
           set +e
@@ -79,15 +89,36 @@ jobs:
             {
               echo "### Superplane API build — blocked"
               echo ""
-              echo "The upstream source-access mechanism is unresolved, so there is no"
-              echo "authorized way to obtain the pinned revision. This is a missing access"
-              echo "grant, not a build failure. See \`source_access\` in"
+              echo "The source-access mechanism for this component is unresolved, so there is"
+              echo "no authorized way to obtain its source. This is a missing access grant,"
+              echo "not a build failure. See \`source_access\` in"
               echo "\`modules/domain-apps/superplane/releases/superplane.lock.yaml\`."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           [ "$RC" -eq 0 ] || exit "$RC"
           echo "$OUT" >> "$GITHUB_ENV"
+
+      # ── 2. Verify the maintained source is present in this checkout ─────
+      # The one place source is established, kept as an explicit step so it cannot be added
+      # ad hoc somewhere else. There is nothing to fetch: `actions/checkout` above already
+      # brought it, because U22 moved the code into this repository. What remains is proving
+      # the directory the LOCK names actually exists here — otherwise a lock entry renamed
+      # without moving the files would fail later, inside `docker build`, as a missing-file
+      # error that says nothing about the lock.
+      - name: Verify maintained source is present
+        run: |
+          set -euo pipefail
+          test -d "${SUPERPLANE_SOURCE_DIR}" || {
+            echo "::error::The lock names ${SUPERPLANE_SOURCE_DIR}, which is not in this checkout." >&2
+            echo "Maintained Superplane source lives in this repository (U22, #5326); update the lock's source_path or restore the directory." >&2
+            exit 1
+          }
+          test -f "${SUPERPLANE_SOURCE_DIR}/Dockerfile" || {
+            echo "::error::${SUPERPLANE_SOURCE_DIR} has no Dockerfile, so there is nothing to build." >&2
+            exit 1
+          }
+          echo "Building ${LOCK_IMAGE} from ${SUPERPLANE_SOURCE_DIR} (origin provenance: ${ORIGIN_REPOSITORY} @ ${ORIGIN_REVISION})."
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -106,19 +137,6 @@ jobs:
             rm -rf /tmp/awscli.zip /tmp/aws
           fi
           aws --version
-
-      # ── 2. Obtain the pinned upstream source ───────────────────────────
-      # Intentionally the only place that acquires source, and intentionally not written
-      # yet: the mechanism is unresolved, so writing one would be choosing an access grant
-      # this story does not get to choose. Unreachable today (the resolve step stops first).
-      - name: Fetch pinned upstream source
-        run: |
-          set -euo pipefail
-          echo "::error::No authorized mechanism to fetch ${UPSTREAM_REPOSITORY} at ${UPSTREAM_REVISION}."
-          echo "Record the granted mechanism in source_access and implement verified acquisition here."
-          echo "Stage the verified revision under modules/domain-apps/superplane/releases/source/,"
-          echo "with .superplane-revision recording the verified full commit before packaging."
-          exit 1
 
       # ── 3. Ensure CodeBuild project exists ─────────────────────────────
       - name: Ensure CodeBuild project
@@ -155,8 +173,8 @@ jobs:
             --service-role "$SERVICE_ROLE_ARN" > /dev/null
 
       # ── 4. Build via CodeBuild ─────────────────────────────────────────
-      # IMAGE_TAG is the pinned upstream revision, not github.sha: the tag should identify
-      # what was built, and github.sha identifies the ADP commit that triggered it.
+      # ORIGIN_* are passed for the provenance labels only; nothing in the build fetches
+      # them. IMAGE_TAG is github.sha — see the tagging note in the header.
       - name: Build image via CodeBuild
         id: build
         uses: ./.github/actions/codebuild-run
@@ -170,9 +188,11 @@ jobs:
             "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}"
             "name=REGISTRY,value=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
             "name=ECR_REPO,value=${{ env.ECR_REPO }}"
-            "name=UPSTREAM_REVISION,value=${{ env.UPSTREAM_REVISION }}"
-            "name=UPSTREAM_PATH,value=${{ env.UPSTREAM_PATH }}"
-            "name=IMAGE_TAG,value=${{ env.UPSTREAM_REVISION }}"
+            "name=ORIGIN_REPOSITORY,value=${{ env.ORIGIN_REPOSITORY }}"
+            "name=ORIGIN_REVISION,value=${{ env.ORIGIN_REVISION }}"
+            "name=SOURCE_PATH,value=${{ env.SOURCE_PATH }}"
+            "name=SUPERPLANE_SOURCE_DIR,value=${{ env.SUPERPLANE_SOURCE_DIR }}"
+            "name=IMAGE_TAG,value=${{ github.sha }}"
 
       # ── 5. Report the digest that was actually produced ────────────────
       # The digest is read back from ECR rather than assumed, so the value that reaches the
@@ -184,13 +204,15 @@ jobs:
           set -euo pipefail
           DIGEST=$(aws ecr describe-images \
             --repository-name "${ECR_REPO}" \
-            --image-ids "imageTag=${UPSTREAM_REVISION}" \
+            --image-ids "imageTag=${{ github.sha }}" \
             --region "${AWS_REGION}" \
             --query 'imageDetails[0].imageDigest' --output text)
           {
             echo "### Superplane API build"
             echo ""
-            echo "- **Upstream revision**: \`${UPSTREAM_REVISION}\`"
+            echo "- **Built from**: \`${SUPERPLANE_SOURCE_DIR}\` (maintained in this repository)"
+            echo "- **ADP commit**: \`${{ github.sha }}\`"
+            echo "- **Origin provenance**: \`${ORIGIN_REPOSITORY}\` @ \`${ORIGIN_REVISION}\`"
             echo "- **ECR repository**: \`${ECR_REPO}\`"
             echo "- **Digest**: \`${DIGEST}\`"
             echo ""

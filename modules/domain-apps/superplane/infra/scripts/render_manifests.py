@@ -38,10 +38,18 @@ renders successfully while silently dropping an identity. That is an error.
 
 But four of these values — the control-plane role ARN, both secret names and the control-plane
 namespace — belong to `superplane-api`, `superplane-controller` and `superplane-platform-monitor`,
-which `releases/superplane.lock.yaml` records as `pending_images` with no digest (blocked by
-`source_access`: building them needs read access to `aws-innovate/AISuperPlane` that ADP does
-not have). There are no manifests for them, so nothing consumes those values, and that is the
-honest state rather than drift.
+which `releases/superplane.lock.yaml` records as `pending_images` with no digest. There are no
+ADP manifests for them, so nothing consumes those values, and that is the honest state rather
+than drift.
+
+Why they are pending changed with U22 (#5326) while the rule below did not. It used to be
+"building them needs read access to `aws-innovate/AISuperPlane` that ADP does not have"; the
+source is now maintained in this repository under `src/`, so the blocker is simply that no
+build has run yet. The components' own upstream `deploy/` manifests transferred with them and
+are inventoried in `src/TRANSFER-MANIFEST.md`, but they are NOT rendered by this script and
+not applied: they carry upstream's account id and `:latest` tags, and reconciling them into
+ADP's topology is U3's work. Pointing this renderer at them would make a read-only inventory
+into a second live deploy path.
 
 So the rule is conditional on the lock: a value tied to a pending image may go unused and is
 reported; a value tied to a resolved image may not. This **arms itself** — the moment U2

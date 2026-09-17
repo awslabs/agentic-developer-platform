@@ -439,7 +439,45 @@ class TestUnavailableInputsAreRefusedByName:
         #5045 has to fix.
         """
         result = _contract()
-        assert "'006'" in result.stdout and "4 files" in result.stdout
+        assert "'006'" in result.stdout and "3 files" in result.stdout
+
+    def test_the_reported_counts_match_the_maintained_chain(self) -> None:
+        """The number in the refusal must be countable in the tree, not just plausible.
+
+        Added by U22 (#5326), which is the first point at which this was checkable: before
+        the source transfer the chain lived in a repository ADP could not read, so the lock's
+        count could only be taken on faith. It was wrong — recorded as four files declaring
+        ``'006'`` where three do. The four ``006_*.py`` filenames are real, but two of them
+        declare their full descriptive ids and only three collide on the bare ``'006'``.
+
+        That mattered because this count is rendered into the refusal an operator reads to
+        learn what U13 must repair, so an inflated number sends them hunting a fourth
+        conflicting file that does not exist. Deriving the assertion from the files means the
+        lock and the chain cannot drift apart again — including after U13 repairs it.
+        """
+        versions = MODULE_ROOT / "src" / "superplane-api" / "alembic" / "versions"
+        assert versions.is_dir(), (
+            "the maintained migration chain is missing; U22 transferred it here"
+        )
+        declared: dict[str, int] = {}
+        for path in sorted(versions.glob("*.py")):
+            match = re.search(
+                r'^revision(?:\s*:\s*str)?\s*=\s*["\']([^"\']+)["\']',
+                path.read_text(encoding="utf-8"),
+                re.M,
+            )
+            assert match, f"{path.name} declares no revision id"
+            declared[match.group(1)] = declared.get(match.group(1), 0) + 1
+
+        actual = {rid: n for rid, n in declared.items() if n > 1}
+        observed = yaml.safe_load(LOCK_FILE.read_text(encoding="utf-8"))["schema"][
+            "observed"
+        ]
+        assert observed["duplicate_revision_ids"] == actual, (
+            f"the lock records {observed['duplicate_revision_ids']} but the chain has "
+            f"{actual}"
+        )
+        assert observed["version_files"] == len(list(versions.glob("*.py")))
 
     def test_an_unverified_chain_is_refused_even_when_single_headed(
         self, tmp_path: Path
