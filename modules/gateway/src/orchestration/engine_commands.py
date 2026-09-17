@@ -98,8 +98,16 @@ What each verb does in v1
 ``replan: <text>``
     **Records and notifies only.** One ``REPLAN_REQUESTED`` row with
     ``to_state = NULL``, so the row is structurally incapable of moving anything.
-    Turning the request into an amended plan is the authoring loop, a separate
-    story; recording it is what stops the request being lost in a comment thread.
+    Turning the request into an amended plan is the authoring loop (#4529); recording
+    it is what stops the request being lost in a comment thread.
+``accept amendment <draft-id>``
+    Applies one **named** pending amendment authored by that loop, as the resolved
+    human, through `pending_amendments.accept_amendment` — which is `amend_plan` with
+    the human's context, not a second amendment implementation. Additive: plain
+    ``accept`` still answers a gate and can never select an amendment, and there is no
+    "latest" selector, because an unnamed accept would let a mistyped command apply a
+    plan nobody read. Checked before ``accept`` for the same reason the parser orders
+    its patterns that way.
 
 --------------------------------------------------------------------------------
 Ordering: commit, then consume, then acknowledge
@@ -159,6 +167,7 @@ from .adapters.github_comments import (
     _resolve_platform_identity,
     apply_gate_answer_for_context,
 )
+from .amend import AmendmentContext, FlowNotFoundError
 
 # Issue #4539's verifier. Same package, so this IS an ordinary import — unlike the
 # signer, which lives in the webhook-ingress Lambda zip and cannot be imported from
@@ -170,8 +179,19 @@ from .command_attribution import (
     VerifiedCommand,
     verify_row,
 )
+from .compile import ProposalRejectedError
 from .dispatch_pass import resolve_installation_id
 from .models import DecisionKind, NodeKind, OrchestrationFlow, OrchestrationNode
+
+# Issue #4529's store. The command pass is one of its two callers and holds no
+# amendment logic of its own: `accept_amendment` owns tenant/flow scope, the pending
+# check, the base version+hash comparison and the delegation to `amend_plan`.
+from .pending_amendments import (
+    AmendmentAcceptResult,
+    AmendmentConflictError,
+    AmendmentDraftNotFoundError,
+    accept_amendment,
+)
 from .repository import OrchestrationRepository
 from .state import ActorKind, NodeState, transition
 
@@ -735,6 +755,43 @@ async def _bulk_transition(
     return moved
 
 
+def _amendment_accepted_reply(outcome: AmendmentAcceptResult) -> str:
+    """What the commenter is told after an amendment lands.
+
+    The gate diff is named explicitly, because gate placement is the part of an
+    amendment whose consequences are not visible from a plan version number: a plan
+    that quietly dropped a gate reads exactly like one that did not, and the human who
+    accepted it is the last person who can notice.
+
+    A replay says so rather than reporting a fresh version, so a human who re-sent the
+    comment does not believe they amended the plan twice.
+    """
+    if outcome.replayed:
+        return f"amendment `{outcome.draft_id}` was already accepted; plan version {outcome.plan_version} is in force. Nothing further was applied."
+
+    parts = [f"amendment `{outcome.draft_id}` accepted."]
+    if outcome.superseded_version is not None:
+        parts.append(f"Plan version {outcome.superseded_version} superseded by version {outcome.plan_version}.")
+    else:
+        parts.append(f"Plan version {outcome.plan_version} is now in force.")
+
+    diff = outcome.gate_diff
+    if diff.changes_gating:
+        if diff.added:
+            parts.append(f"Gates added: {', '.join(f'`{address}`' for address in diff.added)}.")
+        if diff.removed:
+            # Said out loud and second-to-last, because a removed gate is a removed
+            # human decision point — the one change here that reduces oversight.
+            parts.append(f"Gates REMOVED: {', '.join(f'`{address}`' for address in diff.removed)}.")
+    else:
+        parts.append("Gate placement is unchanged.")
+
+    if outcome.superseded_draft_ids:
+        parts.append(f"{len(outcome.superseded_draft_ids)} other pending amendment(s) on this plan were superseded.")
+
+    return " ".join(parts)
+
+
 async def _apply_command(
     session: AsyncSession,
     *,
@@ -777,6 +834,64 @@ async def _apply_command(
             command.verb.value,
         )
         return False, _UNIFORM_REFUSAL
+
+    if command.verb is CommandVerb.ACCEPT_AMENDMENT:
+        # Checked BEFORE the `ACCEPT` branch, mirroring the parser's pattern order.
+        # `accept amendment <id>` and `accept` are different acts on the same plan —
+        # one replaces the plan, the other answers a gate on the plan being replaced —
+        # and there must be exactly one place where that distinction is decided.
+        if command.draft_ref is None:
+            # A recognised shape with nothing named. Refused rather than resolved:
+            # picking "the latest pending amendment" would make a mistyped id apply a
+            # plan the human never read, and this path is reachable by comment.
+            return False, (
+                "name the amendment to accept: `@agent-engine accept amendment <draft-id>`. "
+                "The draft id is in the comment the authoring agent posted."
+            )
+
+        actor = AmendmentContext(
+            org_id=org_id,
+            actor_id=context.user_id,
+            actor_role=actor_role,
+            # `actor_kind` is left at its HUMAN default. Correct here for the reason
+            # the module docstring gives: the acting identity was resolved from a
+            # linked account and `PLAN_APPROVE` was checked against it above. The
+            # engine is the transport, not the actor.
+            reason="accepted via @agent-engine comment",
+        )
+        try:
+            # `flow_id` is passed, so a draft belonging to another flow in the same
+            # tenant cannot be applied to the flow the human was commenting on.
+            outcome = await accept_amendment(session, draft_id=command.draft_ref, actor=actor, flow_id=flow_id)
+        except AmendmentDraftNotFoundError:
+            # Scoped to this tenant AND this flow before the lookup ran, so naming the
+            # id back leaks nothing an authorized approver on this plan could not
+            # already enumerate — and a uniform "cannot be applied by this account"
+            # would tell a human who mistyped a draft id that they lack permission.
+            return False, f"no pending amendment `{command.draft_ref}` on this plan."
+        except AmendmentConflictError as exc:
+            # Stale base, or already rejected/superseded. Nothing was written; the
+            # store's own wording carries the remediation.
+            return False, exc.message
+        except FlowNotFoundError:
+            return False, _UNIFORM_REFUSAL
+        except ProposalRejectedError as exc:
+            # Includes `TenantMismatchError`. The stored document no longer passes
+            # authoritative validation, so it is not acceptable — reported as a
+            # refusal rather than raised, so the row is still acked and consumed
+            # instead of being retried against the same document every wake.
+            logger.warning(
+                "orchestration engine commands: amendment %s on flow %s failed validation: %s",
+                command.draft_ref,
+                flow_id,
+                exc,
+            )
+            return False, (
+                f"amendment `{command.draft_ref}` no longer passes plan validation and cannot be accepted. "
+                "Comment `@agent-engine replan: <what should change>` to have it re-authored."
+            )
+
+        return True, _amendment_accepted_reply(outcome)
 
     if command.verb in (CommandVerb.ACCEPT, CommandVerb.APPROVE_GATE):
         gate = await _resolve_gate(session, org_id=org_id, flow_id=flow_id, gate_ref=command.gate_ref)

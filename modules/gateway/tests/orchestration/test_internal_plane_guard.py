@@ -564,6 +564,34 @@ class TestOrchestrationRouterIsOperatorPlane:
             # without a separate human approval, the permission must become
             # PLAN_APPROVE.
             "/orchestration/flows/drafts": "Permission.PLAN_DRAFT",
+            # Issue #4529: an authoring agent filing an AMENDMENT to an
+            # already-accepted plan as a pending draft. Same permission, and inert in
+            # a stronger sense than #4528's: registration writes no node, no edge, no
+            # decision, no work claim and no accepted-plan version — one row holding a
+            # proposal document, referenced by no graph query at all. There is
+            # therefore no filter anywhere whose omission could make it executable,
+            # which is asserted by row-counting in test_pending_amendments.py rather
+            # than by reading the implementation.
+            #
+            # It is worth being explicit about why PLAN_DRAFT is still right when the
+            # target is a plan of record rather than a new flow. The route cannot
+            # promote, and it cannot even *choose* what it proposes against: a
+            # required `request_id` must name an authoring assignment the server
+            # created from a verified human `replan:`, and the presented
+            # `X-Agent-RunId` must equal the `author_run_id` the server wrote on that
+            # assignment. So holding PLAN_DRAFT is necessary but NOT sufficient here —
+            # the server must also have commissioned this run for this request, and
+            # the flow comes from the assignment rather than from the path or the
+            # document (#4556). Acceptance is a separate, human-only act
+            # (`@agent-engine accept amendment <draft-id>`) that runs `amend_plan`
+            # under the accepting human's own context.
+            #
+            # The line that must not be crossed: **no acceptance endpoint may ever be
+            # added to this router.** Acceptance reads and writes the record of what a
+            # human approved, so it belongs on `routes.py` behind PLAN_APPROVE, and
+            # an agent-reachable accept — even one restricted to "drafts this agent
+            # authored" — is the self-approval the EPIC exists to prevent.
+            "/orchestration/flows/{flow_id}/amendments/drafts": "Permission.PLAN_DRAFT",
         }
 
         actual_paths = set()

@@ -74,7 +74,7 @@ ENGINE_TAG = "@agent-engine"
 
 
 class CommandVerb(StrEnum):
-    """The five commands v1 accepts.
+    """The commands the engine accepts.
 
     A closed enum rather than a free string because the verb selects which write
     path runs. A parser that could yield an unrecognised verb would push the
@@ -84,6 +84,12 @@ class CommandVerb(StrEnum):
     """
 
     ACCEPT = "accept"  # Accept the plan as it stands
+    # Accept ONE named pending amendment (#4529). A distinct verb, not a variant of
+    # ACCEPT with an optional argument, because it reaches a different write path
+    # with a different failure mode: it applies a whole replacement plan document.
+    # Making it distinct is what lets `engine_commands.py` keep plain `accept`
+    # behaviour byte-identical while adding this.
+    ACCEPT_AMENDMENT = "accept_amendment"
     APPROVE_GATE = "approve_gate"  # Approve one gate, addressed by its node ref
     HALT = "halt"  # Stop spending on this plan
     RESUME = "resume"  # Clear a halt or a failure and let work continue
@@ -105,6 +111,31 @@ _VERB_PATTERNS: tuple[tuple[re.Pattern[str], CommandVerb], ...] = (
     # `replan:` requires the colon. Without it, "we should replan this eventually"
     # in prose would record a replan request nobody made.
     (re.compile(r"\Areplan\s*:\s*(?P<text>.*)", re.IGNORECASE), CommandVerb.REPLAN),
+    # `accept amendment <draft-id>` (#4529), BEFORE the bare `accept` below — the
+    # ordering is the whole reason this list is longest-prefix-first, and here it is
+    # load-bearing rather than hypothetical. `\Aaccept\b` matches
+    # "accept amendment 1234" perfectly well, so a later position would make every
+    # amendment acceptance answer the acceptance GATE instead: a different write path,
+    # on the plan the human was trying to replace.
+    #
+    # The id is required and bounded to the `new_uuid()` shape used by
+    # `OrchestrationPendingAmendment.id` — hex and hyphens, 8–36 chars. Bounded here
+    # so no parse can hand the applier an argument it has to defend against, matching
+    # the gate-ref rule. It is NOT validated as a real draft id: existence, tenant and
+    # status are the applier's questions, and answering them here would leak which ids
+    # are real to anyone who can comment.
+    (
+        re.compile(r"\Aaccept\s+amendment\s+(?P<draft>[0-9a-f][0-9a-f-]{7,35})\b", re.IGNORECASE),
+        CommandVerb.ACCEPT_AMENDMENT,
+    ),
+    # `accept amendment` with no usable id, or a malformed one. Recognised as its OWN
+    # (unhandled) shape rather than left to fall through to the bare `accept` below,
+    # because falling through is the dangerous reading: the human asked to apply an
+    # amendment and would instead have answered the acceptance gate — a real state
+    # change they did not request, on the plan they were trying to replace. Yielding
+    # `ACCEPT_AMENDMENT` with `draft_ref=None` lets the applier say "name the draft"
+    # and do nothing.
+    (re.compile(r"\Aaccept\s+amendment\b", re.IGNORECASE), CommandVerb.ACCEPT_AMENDMENT),
     (re.compile(r"\Aaccept\b", re.IGNORECASE), CommandVerb.ACCEPT),
     (re.compile(r"\Ahalt\b", re.IGNORECASE), CommandVerb.HALT),
     (re.compile(r"\Aresume\b", re.IGNORECASE), CommandVerb.RESUME),
@@ -215,11 +246,17 @@ class EngineCommand:
             normalisation the graph does not use.
         text: The free text of a ``replan:``, capped and stripped. Empty for
             every other verb.
+        draft_ref: The pending amendment's id, for ``ACCEPT_AMENDMENT`` only.
+            ``None`` when the human wrote ``accept amendment`` without a usable id —
+            which the applier answers with "name the draft", never by picking one.
+            There is deliberately no "latest amendment" resolution anywhere: the only
+            way to accept a draft is to have read its id.
     """
 
     verb: CommandVerb
     gate_ref: str | None = None
     text: str = ""
+    draft_ref: str | None = None
 
 
 def _candidate_lines(body: str) -> list[str]:
@@ -319,6 +356,15 @@ def parse_engine_command(body: str | None) -> EngineCommand | None:
                 # ref representable instead of collapsing to the empty string,
                 # which would silently become "no gate specified".
                 return EngineCommand(verb=verb, gate_ref=match.group("gate").lstrip("0") or "0")
+
+            if verb is CommandVerb.ACCEPT_AMENDMENT:
+                # `.lower()` because draft ids are lowercase hex from `new_uuid()`
+                # and the pattern is case-insensitive, so an id typed back in mixed
+                # case must still address the same row rather than resolving to
+                # nothing. `groupdict().get` because the second, id-less pattern has
+                # no `draft` group at all — that shape yields None on purpose.
+                draft = match.groupdict().get("draft")
+                return EngineCommand(verb=verb, draft_ref=draft.lower() if draft else None)
 
             if verb is CommandVerb.REPLAN:
                 text = match.group("text").strip()[:REPLAN_TEXT_MAX_LEN]
