@@ -4,6 +4,60 @@ Wave evaluations #5067–#5070 remain open until their real-boundary criteria pa
 Offline tests, fixture matches, missing inputs and skipped tests do not establish
 live acceptance. Implementation stories own these checks; operations executes them.
 
+## U1: authenticated feature API observation
+
+`test_u1_features_live.py` implements the three **API** assertions under #5067's
+"Live frontend/API contract": the 12 named fields are boolean, `superplane` is
+false, and every field in the reviewed backend fixture is present. This is the
+API-check portion of #5288. Its fixture/provenance were merged in #5290. Values
+of other live flags may differ from the fixture defaults; additional fields are
+allowed. The fixture's byte hash is pinned so a locally weakened fixture cannot
+silently narrow the check. Review provenance and update the pin when the fixture
+is deliberately changed.
+
+Use the existing authorized `embark1/dev` target and an existing short-lived ADP
+token with feature-API access. Supply the token through `SUPERPLANE_LIVE_ADP_TOKEN`
+in the invoking process environment; do not put it in source, command arguments,
+shell history, fixtures, reports or GitHub. This check neither acquires credentials
+nor grants access. With that variable already set, run from the repository root:
+
+```sh
+export SUPERPLANE_LIVE_ENVIRONMENT='embark1/dev'
+export SUPERPLANE_LIVE_FEATURES_EVIDENCE_FILE='/absolute/new/path/u1-features.json'
+python3 -m pytest modules/domain-apps/superplane/tests/acceptance/test_u1_features_live.py -q --tb=short
+```
+
+The checker performs one authenticated HTTPS GET to the reviewed origin's
+`/api/features`. The environment mapping is the same reviewed registry used by U6
+below. No arbitrary URL override, redirect, environment proxy, feature change,
+deployment or provider operation is supported. A unique query nonce and cache
+control request fresh data; nonzero response Age, a missing/invalid Date, or a Date
+more than two minutes from the local request time refuses the observation. Keep the
+operator clock accurate. HTTP denial/error, invalid JSON/duplicate fields,
+oversized data, absent/invalid inputs and missing/modified fixtures fail visibly.
+An explicit invocation does not skip. No token or raw response/error body is
+recorded. Failure-output regressions invoke the actual live test with offline
+HTTP responses and `--tb=long --showlocals`, checking schema/JSON/callback,
+redirect and post-token transport failures for private data in the complete
+diagnostic stream. Raw-data frames are hidden and callback exception chains
+are detached before the sanitized error reaches pytest.
+The new evidence file is published atomically with private permissions
+after all assertions succeed; existing files and symlinks are never overwritten.
+
+The record is labelled **U1 feature API only**, `live` / `observed`, with
+`u1_acceptance: incomplete`. It contains observation times, selected endpoint and
+registry target metadata, fixture/response hashes and the three assertion results.
+It does not establish an unset deployment environment, a deployed source revision,
+AWS/cluster identity, browser gating, enabled behavior or deploy/undeploy cleanup.
+Registry account metadata identifies the selected target; this check makes no STS
+or Kubernetes identity observation. Injected transports produce `offline-fixture`
+records and cannot be published by the live entry point.
+
+This command is an equivalent implementation mapping for the API subsection only.
+It does not replace the proposed full `test_u1_live.py` or U1-L1's teardown check.
+That observer must consume U3's final reviewed inventory/lifecycle contracts and
+authorized deploy/undeploy evidence. #5288, #5067 and U1 acceptance remain open.
+
 ## U6: CLI-only delivery
 
 `test_u6_live.py` implements the delivery half of R16 acceptance 1 for #5039,
@@ -63,5 +117,5 @@ attempts. Their injected transports produce `offline-fixture`/`matched` results,
 not `live`/`passed` evidence. A subprocess regression verifies that the explicit
 live pytest command fails before networking when its inputs are absent.
 
-The U1 teardown/feature-fixture and U12 real baseline acceptance checks remain
-separate prerequisites tracked by #5067. This U6 check does not close those gaps.
+The U1 teardown and U12 real baseline acceptance checks remain separate
+prerequisites tracked by #5067. The API observation and U6 check do not close them.
