@@ -428,3 +428,71 @@ class TestEventstreamKeepalive:
         envelope = _json.loads(payload)
         event = _json.loads(_b64.b64decode(envelope["bytes"]))
         assert event == {"type": "ping"}
+
+
+class TestKeepaliveRecordBoundaries:
+    async def test_upstream_timeout_is_not_a_keepalive_timer(self):
+        async def source():
+            yield b"data: {}\n\n"
+            raise TimeoutError("upstream timeout")
+
+        count = 0
+        with pytest.raises(TimeoutError, match="upstream timeout"):
+            async for _ in merge_with_keepalive(source(), interval_seconds=1):
+                count += 1
+                # The broken implementation spins without yielding to the event
+                # loop, so an outer asyncio.wait_for cannot bound this test.
+                assert count < 10, "upstream TimeoutError was converted into an endless keepalive flood"
+        assert count == 1
+
+    @pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+    async def test_split_record_and_split_delimiter_are_preserved(self, newline):
+        event = b'data: {"type":"response.completed","response":{"usage":{}}}' + newline * 2
+        end = b"data: {}" + newline * 2
+
+        async def source():
+            yield event[:30]  # incomplete JSON
+            await asyncio.sleep(0.04)
+            yield event[30:-1]  # delimiter split across chunks
+            yield event[-1:]
+            await asyncio.sleep(0.04)
+            yield end
+
+        received = []
+        accumulated = b""
+        async for chunk in merge_with_keepalive(source(), interval_seconds=0.005):
+            received.append(chunk)
+            if chunk == b": keep-alive\n\n":
+                assert accumulated == event
+            else:
+                accumulated += chunk
+        assert accumulated == event + end
+        assert b": keep-alive\n\n" in received  # resumes after the split delimiter
+
+    async def test_binary_frames_get_keepalive_between_frames(self):
+        from src.proxy.eventstream_codec import EVENTSTREAM_KEEPALIVE
+
+        async def source():
+            yield b"whole-frame-one"
+            await asyncio.sleep(0.04)
+            yield b"whole-frame-two"
+
+        chunks = [c async for c in merge_with_keepalive(source(), interval_seconds=0.005, keepalive=EVENTSTREAM_KEEPALIVE, record_aligned=True)]
+        assert chunks[0] == b"whole-frame-one"
+        assert EVENTSTREAM_KEEPALIVE in chunks[1:-1]
+        assert chunks[-1] == b"whole-frame-two"
+
+    async def test_cancellation_while_upstream_is_pending_closes_source(self):
+        closed = asyncio.Event()
+
+        async def source():
+            try:
+                await asyncio.sleep(10)
+                yield b"data: never\n\n"
+            finally:
+                closed.set()
+
+        wrapped = merge_with_keepalive(source(), interval_seconds=0.005)
+        assert await anext(wrapped) == b": keep-alive\n\n"
+        await wrapped.aclose()
+        assert closed.is_set()

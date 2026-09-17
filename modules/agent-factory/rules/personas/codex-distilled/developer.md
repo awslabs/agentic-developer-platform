@@ -1,7 +1,5 @@
 # Project conventions — code authoring
-
 Apply these standards to any code you write or edit.
-
 ## Mindset
 - Consistency first — match the existing code patterns, naming conventions, and
   project structure already present in the files around you. Read before you write.

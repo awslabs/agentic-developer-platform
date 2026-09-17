@@ -952,6 +952,7 @@ async def invoke_model_stream_by_path(
             merge_with_keepalive(
                 sse_to_eventstream(wrapped_stream),
                 keepalive=EVENTSTREAM_KEEPALIVE,
+                record_aligned=True,
             ),
             error_handler=handle_proxy_error,
             media_type=EVENTSTREAM_CONTENT_TYPE,
