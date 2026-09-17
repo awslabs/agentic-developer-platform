@@ -98,10 +98,13 @@ jobs:
             -backend-config="bucket=${ADP_STATE_BUCKET}" \
             -input=false -reconfigure
 
-      - name: Test runner access tag alignment
+      # No -filter: the whole tests/ directory runs. With a single-file filter, every
+      # other .tftest.hcl in the module was dead weight — present, passing locally, and
+      # never executed in CI, so a regression it covered would still merge (#5051).
+      - name: Test EKS module
         run: |
           terraform -chdir=platform/infra/modules/eks init -backend=false -input=false -plugin-dir=../../.terraform/providers
-          terraform -chdir=platform/infra/modules/eks test -filter=tests/runner_access_tags.tftest.hcl -no-color
+          terraform -chdir=platform/infra/modules/eks test -no-color
 
       - name: Terraform Plan
         id: plan

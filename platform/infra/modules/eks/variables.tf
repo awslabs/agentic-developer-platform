@@ -188,3 +188,27 @@ variable "enable_network_policy_controller" {
   DESC
   default     = false
 }
+
+# EKS Pod Identity for the gateway service account (#5051)
+variable "enable_gateway_pod_identity" {
+  type        = bool
+  description = <<-DESC
+    Create EKS Pod Identity associations for the gateway-service service account,
+    so the gateway obtains AWS credentials through the platform instead of a
+    stored access key.
+
+    Defaults to false. Enabling creates associations but does not switch existing
+    IRSA pods: web-identity credentials precede container credentials in the SDK
+    chain. A separately reviewed cutover must remove IRSA annotations/injected
+    web-identity environment and roll the pods. Both paths use the same role.
+
+    Requires the EKS Pod Identity Agent on the nodes. On Auto Mode clusters it is
+    built in and no addon is needed; on a classic node group the
+    eks-pod-identity-agent addon would have to be added first.
+
+    Rollback: restore the IRSA annotation and roll pods before setting this back
+    to false and applying. Removing associations alone can break pods already
+    using container credentials. This flag performs no pod rollout or cutover.
+  DESC
+  default     = false
+}
