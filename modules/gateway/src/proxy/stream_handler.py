@@ -31,10 +31,27 @@ DEFAULT_KEEPALIVE_INTERVAL_SECONDS = 15.0
 _SSE_KEEPALIVE = b": keep-alive\n\n"
 
 
+class SSEBoundary:
+    """Track record boundaries across arbitrary chunks without buffering data."""
+
+    def __init__(self) -> None:
+        self._tail = b""
+        self.at_boundary = True
+
+    def feed(self, chunk: bytes) -> None:
+        if chunk:
+            self._tail = (self._tail + chunk[-4:])[-4:]
+            # Normalize CRLF before CR; a single CRLF is one line ending.
+            tail = self._tail.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            self.at_boundary = tail.endswith(b"\n\n")
+
+
 async def merge_with_keepalive(
     source: AsyncIterator[bytes],
     interval_seconds: float = DEFAULT_KEEPALIVE_INTERVAL_SECONDS,
     keepalive: bytes = _SSE_KEEPALIVE,
+    *,
+    record_aligned: bool = False,
 ) -> AsyncIterator[bytes]:
     """Relay ``source`` to the client, injecting a keep-alive during silence.
 
@@ -49,8 +66,9 @@ async def merge_with_keepalive(
     ``keepalive`` must be a no-op in the wire format being served: an SSE comment
     (``: ...\\n\\n``) for ``text/event-stream`` responses, or a Bedrock ``ping``
     chunk frame for the binary ``application/vnd.amazon.eventstream`` path. It is
-    only ever emitted BETWEEN complete upstream chunks — never spliced into the
-    middle of one — so the payload the client reconstructs is unchanged.
+    only emitted at SSE record boundaries, including delimiters split across
+    chunks. Raw HTTP chunks are not necessarily complete SSE records. Binary
+    callers must pass ``record_aligned=True`` when each chunk is a whole frame.
 
     Real chunks and upstream exceptions pass through untouched; when the client
     disconnects, the pending upstream read is cancelled and the source is closed
@@ -58,18 +76,21 @@ async def merge_with_keepalive(
     """
     ait = source.__aiter__()
     next_chunk: asyncio.Task[bytes] = asyncio.ensure_future(ait.__anext__())
+    boundary = SSEBoundary()
     try:
         while True:
-            try:
-                # shield so wait_for's timeout cancellation does not kill the
-                # in-flight upstream read — we want to keep waiting on it across
-                # multiple keep-alive intervals.
-                chunk = await asyncio.wait_for(asyncio.shield(next_chunk), interval_seconds)
-            except TimeoutError:
-                yield keepalive
+            # A failed upstream task can itself raise TimeoutError. Re-awaiting
+            # it as if our keep-alive timer fired would spin forever (#4897).
+            done, _ = await asyncio.wait({next_chunk}, timeout=interval_seconds)
+            if not done:
+                if record_aligned or boundary.at_boundary:
+                    yield keepalive
                 continue
+            try:
+                chunk = next_chunk.result()
             except StopAsyncIteration:
                 break
+            boundary.feed(chunk)
             yield chunk
             next_chunk = asyncio.ensure_future(ait.__anext__())
     finally:
