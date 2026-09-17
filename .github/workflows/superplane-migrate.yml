@@ -1,0 +1,415 @@
+name: superplane-migrate
+
+# Schema migrations for the Superplane domain app.
+# Issue #5042 (U3), EPIC #4910.
+#
+# WHO OWNS WHAT
+#
+# #5042 (U3) owns this LANE and the Job it runs — the runner, its identity, its database
+# boundary, and the refusals below. #5045 (U13) owns the CHAIN: repairing
+# `src/superplane-api/alembic/` UPSTREAM, where at the pinned revision revision id `006` is
+# declared by four files and `007` by three, several sharing a down_revision.
+#
+# An earlier version of this lane had that split backwards. It demanded a copied chain at
+# `modules/domain-apps/superplane/migrations/versions/` and said U13 would supply the Job.
+# Both halves were wrong, and the first is worse than a mislabel: a chain copied into ADP is a
+# SECOND chain that diverges from upstream's the first time either side changes, at which point
+# `alembic upgrade head` resolves a head upstream does not have. So the chain stays upstream
+# and is read from inside the pinned runner image; `check_migration_contract.py` fails if
+# revision files appear in this module.
+#
+# WHY THIS LANE CANNOT RUN TODAY, AND WHAT THAT DEPENDS ON
+#
+# Two independent blocks, both read from the release lock rather than hardcoded here, so each
+# clears by data when its owner resolves it:
+#
+#   1. `schema.single_head: false` — the chain above. Owned by #5045 (U13).
+#   2. `superplane-api` is in `pending_images` with NO digest, blocked by `source_access`. The
+#      Alembic chain ships inside that image, so it IS the runner: there is no artifact to
+#      run. Owned by U2/#5041.
+#
+# The lane ships in that blocked state deliberately. The alternative is that whoever unblocks
+# it has to rediscover what a domain migration lane must not do, and the constraints below are
+# not obvious.
+#
+# WHAT REPLACED THE SQL TEXT SCAN, AND WHY IT HAD TO
+#
+# The previous version established its database boundary by grepping migration files for
+# `ALTER TABLE <gateway-owned table>`. Reproduced against that exact pattern, with the real
+# 38-name denylist derived from the gateway's `__tablename__` declarations — a denylist that
+# does contain `users`:
+#
+#   op.drop_table("users")                                   -> NOT caught. Alembic's Python
+#                                                               API emits none of the words
+#                                                               the scan looks for.
+#   op.execute('ALTER TABLE public."request_logs" DROP ...')  -> NOT caught. Schema-qualified
+#                                                               and quoted.
+#   op.execute("ALTER  TABLE budget_configs RENAME TO x")     -> caught (two spaces).
+#
+# One of three. A text scan cannot enumerate the ways to name a table, and a computed name
+# defeats it outright. The boundary is now enforced by the DATABASE SESSION, in the Job at
+# `modules/domain-apps/superplane/migrations/job.yaml`: `search_path` is the domain schema
+# alone with `public` absent, Alembic's version table lives in that schema, and the connection
+# is the domain ServiceAccount's own IRSA-scoped credential. The scan is gone, not
+# supplemented — keeping it would suggest it was doing something.
+#
+# WHAT THIS LANE DOES NOT CLAIM
+#
+# `search_path` constrains NAME RESOLUTION, not PRIVILEGE: a schema-qualified statement still
+# reaches another schema if the connecting role has rights there, and that grant is made on the
+# database. Decision 2 (shared instance vs. separate) is unresolved, so this module does not
+# know what database it connects to and makes NO isolation, backup, retention or restore claim
+# about it. It therefore requires the OPERATOR to present verified evidence of the target and
+# of a restorable backup, and REFUSES without it — the previous version printed
+# `::warning::` and continued, which does not stop a step.
+#
+# Nothing here echoes a plan and calls it a checked migration. The previous version's plan step
+# printed the strings `alembic current` / `alembic history` without running anything, so a
+# reader of the log saw what looked like a verified plan. The plan now comes from `alembic
+# current`/`history` executed in the Job with `--sql`-safe read-only args, or it does not exist.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: false
+        default: 'dev'
+        type: string
+      confirm:
+        description: 'Type "migrate-superplane" to confirm a schema change'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run alembic current/history in the cluster without upgrading'
+        required: false
+        default: true
+        type: boolean
+      backup_evidence:
+        description: >-
+          JSON evidence of the migration target and a restorable backup. REQUIRED to upgrade
+          (ignored for a dry run). Shape:
+          {"target":{"identifier","endpoint","database","schema","observed_by"},
+           "backup":{"identifier","source_identifier","created_at","status","verified_by"}}.
+          Must contain no credentials — it is echoed into the step summary.
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  # Its own group, NOT shared with the gateway migration lane. Two domain schemas on one
+  # database can migrate concurrently; what must not overlap is two runs of THIS chain.
+  group: superplane-migrate-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  MODULE_DIR: modules/domain-apps/superplane
+  LOCK_FILE: modules/domain-apps/superplane/releases/superplane.lock.yaml
+  MIGRATIONS_DIR: modules/domain-apps/superplane/migrations
+  SCRIPTS_DIR: modules/domain-apps/superplane/infra/scripts
+
+jobs:
+  migrate:
+    name: Migrate Superplane schema
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    permissions:
+      contents: read
+
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      SSM_PREFIX: /adp/${{ inputs.environment }}/superplane
+
+    steps:
+      # `inputs.confirm` is operator-supplied text. It is compared as DATA in an env var, not
+      # interpolated into the script: `${{ }}` substitutes before the shell parses, so
+      # `${{ inputs.confirm }}` inside a `run:` body makes the operator's typing executable.
+      # The previous version did exactly that.
+      - name: Confirm intent
+        env:
+          SP_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$SP_CONFIRM" != "migrate-superplane" ]; then
+            echo "::error::Confirmation mismatch. Type 'migrate-superplane' to run a schema migration. Nothing was changed."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - name: Install tooling
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --user pyyaml
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          kubectl version --client
+
+      # -------------------------------------------------------------------------------
+      # PREFLIGHT. One script, so the lane's refusals are the same refusals the tests
+      # exercise directly — a check that lives only in YAML is a check with no test.
+      #
+      # This runs BEFORE kubectl is configured and before any evidence handling: an
+      # unavailable input should be reported without touching a cluster.
+      # -------------------------------------------------------------------------------
+      - name: Preflight — is there a chain, and is there a runner?
+        run: |
+          set -euo pipefail
+          python3 "${SCRIPTS_DIR}/check_migration_contract.py" \
+            --lock-file "$LOCK_FILE" \
+            --migrations-dir "$MIGRATIONS_DIR"
+
+      # -------------------------------------------------------------------------------
+      # Everything below is unreachable until the preflight passes. Written now, and written
+      # to refuse, because the operator who unblocks it will be reasoning about a repaired
+      # Alembic chain rather than about tenancy boundaries.
+      # -------------------------------------------------------------------------------
+
+      - name: Read the configuration Terraform published
+        id: config
+        # NAMES and identifiers only — never the database credential. The Job resolves the
+        # secret itself through the domain ServiceAccount's scoped IRSA role, so the password
+        # never enters this runner, this log, or a rendered manifest. Fetching it here would
+        # put a database password in CI in order to hand it to a pod that can already read it.
+        run: |
+          set -euo pipefail
+          NAMESPACE=$(aws ssm get-parameter --name "${SSM_PREFIX}/namespace" --query 'Parameter.Value' --output text)
+          SCHEMA=$(aws ssm get-parameter --name "${SSM_PREFIX}/database-schema" --query 'Parameter.Value' --output text)
+          REGION=$(aws ssm get-parameter --name "${SSM_PREFIX}/aws-region" --query 'Parameter.Value' --output text)
+          DB_SECRET_NAME=$(aws ssm get-parameter --name "${SSM_PREFIX}/database-secret-name" --query 'Parameter.Value' --output text)
+
+          # The schema is re-checked here even though variables.tf validates it, because SSM
+          # parameters are hand-editable: the value that reaches the search_path must be the
+          # constrained one, and "Terraform wrote it" is not a property of the live parameter.
+          case "$SCHEMA" in
+            public|pg_catalog|information_schema|'')
+              echo "::error::${SSM_PREFIX}/database-schema is '${SCHEMA}'. The migration Job's search_path must not resolve into public or a system schema — with public reachable, an unqualified op.drop_table(\"users\") reaches the gateway's table. Nothing was changed."
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "namespace=${NAMESPACE}"
+            echo "schema=${SCHEMA}"
+            echo "region=${REGION}"
+            echo "db_secret_name=${DB_SECRET_NAME}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Namespace: ${NAMESPACE}"
+          echo "Schema: ${SCHEMA}"
+          echo "Database secret reference (a name, not a value): ${DB_SECRET_NAME}"
+
+      - name: Resolve the pinned migration runner
+        id: runner
+        # The digest comes from the lock, via the same script the preflight used, so the image
+        # the Job runs and the image the contract check verified cannot be two different
+        # answers. `--emit-image` writes the reference only after every refusal has passed, so
+        # an empty file here means "refused", never "resolved to nothing".
+        run: |
+          set -euo pipefail
+          python3 "${SCRIPTS_DIR}/check_migration_contract.py" \
+            --lock-file "$LOCK_FILE" \
+            --migrations-dir "$MIGRATIONS_DIR" \
+            --emit-image /tmp/sp-migration-image
+          REF=$(cat /tmp/sp-migration-image)
+          if [ -z "$REF" ]; then
+            echo "::error::No pinned migration runner reference was emitted. Refusing to render a Job with no image rather than letting kubectl resolve one."
+            exit 1
+          fi
+          echo "image=${REF}" >> "$GITHUB_OUTPUT"
+          echo "Runner: ${REF}"
+
+      # The evidence gate, for a mutating run only. A dry run reads and does not need it.
+      #
+      # This is a REFUSAL, not a warning, and it requires OBSERVED values: the contract script
+      # rejects placeholders, rejects a backup whose status is not `available`, and rejects a
+      # backup taken from a different database than the migration target. A checkbox that any
+      # string satisfies is the warning this replaced with extra steps.
+      - name: Require evidence of the target and a restorable backup
+        if: inputs.dry_run == false
+        env:
+          SP_BACKUP_EVIDENCE: ${{ inputs.backup_evidence }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SP_BACKUP_EVIDENCE" ]; then
+            echo "::error::An upgrade requires backup_evidence. This lane takes no backup and makes no durability claim about the target database (Decision 2 is unresolved), so it refuses to mutate a schema without verified evidence that the target is what you think it is and that a restorable snapshot of THAT database exists. Nothing was changed."
+            exit 1
+          fi
+          # Written via the environment, so nothing in the operator's JSON is parsed as shell.
+          printf '%s' "$SP_BACKUP_EVIDENCE" > /tmp/sp-evidence.json
+          python3 "${SCRIPTS_DIR}/check_migration_contract.py" \
+            --lock-file "$LOCK_FILE" \
+            --migrations-dir "$MIGRATIONS_DIR" \
+            --evidence-file /tmp/sp-evidence.json \
+            --require-evidence
+
+      - name: Render the migration Job
+        env:
+          SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
+          SP_DATABASE_SCHEMA: ${{ steps.config.outputs.schema }}
+          SP_AWS_REGION: ${{ steps.config.outputs.region }}
+          SP_MIGRATION_IMAGE: ${{ steps.runner.outputs.image }}
+          # The Job name records which run applied the schema change. `github.run_id` is a
+          # number, so it is a valid DNS-1123 label; the renderer checks that regardless.
+          SP_MIGRATION_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Values arrive as env DATA, never interpolated into the script body. These come
+          # from SSM parameters an operator can hand-edit, so "Terraform wrote it" is not a
+          # basis for treating them as source code — which is what `${{ }}` in a `run:` body
+          # does. --lane migration selects this lane's placeholder set, which keeps "every
+          # supplied value is consumed" true here without exempting the rollout's values.
+          python3 "${SCRIPTS_DIR}/render_manifests.py" \
+            --source-dir "$MIGRATIONS_DIR" \
+            --output-dir /tmp/rendered-migration \
+            --lock-file "$LOCK_FILE" \
+            --lane migration
+
+      - name: Verify the rendered Job declares the schema boundary
+        env:
+          SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
+          SP_DATABASE_SCHEMA: ${{ steps.config.outputs.schema }}
+        # The check that replaces the SQL scan: the rendered Job's search_path excludes
+        # `public`, its version table is domain-scoped, its identity is the domain
+        # ServiceAccount, its image is the digest the lock pins, and its secret refs are
+        # `optional: false`. Runs BEFORE kubectl touches the cluster.
+        run: |
+          set -euo pipefail
+          python3 "${SCRIPTS_DIR}/check_migration_contract.py" \
+            --lock-file "$LOCK_FILE" \
+            --migrations-dir "$MIGRATIONS_DIR" \
+            --job-file /tmp/rendered-migration/job.yaml \
+            --namespace "$SP_NAMESPACE" \
+            --schema "$SP_DATABASE_SCHEMA"
+
+      - name: Configure kubectl
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          kubectl cluster-info
+
+      - name: Show the migration plan
+        # Actually executed, in the cluster, as the identity that will run the upgrade —
+        # `alembic current` and `history` are read-only. The previous version echoed these
+        # command names without running them, so the log showed a plan that was never
+        # obtained; `--dry-run=server` here means the API server validates the Job object
+        # (RBAC, admission, schema) without creating it.
+        env:
+          SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
+        run: |
+          set -euo pipefail
+          echo "Server-side validation of the Job object (nothing is created):"
+          kubectl apply --dry-run=server -f /tmp/rendered-migration/job.yaml
+
+          echo ""
+          echo "Reading the chain state from the pinned runner, as the identity that would apply it:"
+          # The plan Pod is DERIVED from the Job — same image digest, same ServiceAccount,
+          # same search_path, same version table, only the argument vector differs. A
+          # hand-written second manifest would be free to drift into planning a different
+          # situation than the one being applied.
+          python3 "${SCRIPTS_DIR}/plan_pod_from_job.py" \
+            --job-file /tmp/rendered-migration/job.yaml \
+            --output /tmp/rendered-migration/plan-pod.yaml \
+            --name-suffix "$GITHUB_RUN_ID"
+
+          # A single-line invocation on purpose: a multi-line `python3 -c '...'` inside a
+          # `run: |` block scalar has to be indented to stay inside the block, and an
+          # unindented continuation silently ends the YAML block instead — which makes the
+          # whole workflow unparseable rather than the step wrong.
+          PLAN_POD=$(python3 -c 'import sys,yaml;print(yaml.safe_load(open(sys.argv[1]))["metadata"]["name"])' /tmp/rendered-migration/plan-pod.yaml)
+
+          # Removed on the way out regardless of outcome, so a failed plan does not leave a
+          # Pod that a later run collides with.
+          cleanup() {
+            kubectl delete pod "$PLAN_POD" --namespace "$SP_NAMESPACE" --ignore-not-found --wait=false || true
+          }
+          trap cleanup EXIT
+
+          kubectl apply -f /tmp/rendered-migration/plan-pod.yaml
+          if ! kubectl wait --for=condition=Ready=false "pod/${PLAN_POD}" \
+                 --namespace "$SP_NAMESPACE" --timeout=5m 2>/dev/null; then
+            : # Ready=false is also how a completed pod looks; the logs below are the record.
+          fi
+          if ! kubectl logs "pod/${PLAN_POD}" --namespace "$SP_NAMESPACE" --tail=200; then
+            echo "::error::Could not read the chain state from the target database. The plan is unknown, so nothing may be applied on the basis of it. Nothing was changed."
+            exit 1
+          fi
+
+          PHASE=$(kubectl get "pod/${PLAN_POD}" --namespace "$SP_NAMESPACE" -o jsonpath='{.status.phase}')
+          if [ "$PHASE" != "Succeeded" ]; then
+            echo "::error::The plan pod ended in phase '${PHASE}', so 'alembic current' did not complete. The plan above is incomplete and must not be treated as the chain state. Nothing was changed."
+            exit 1
+          fi
+
+      - name: Apply migrations
+        if: inputs.dry_run == false
+        # No unconditional error here any more. The previous version failed at this point even
+        # when every preflight had passed, which made the lane unable to execute its own
+        # contract — an operator who satisfied every gate still could not migrate.
+        #
+        # The gating is upstream instead: preflight refuses while the chain is multi-headed or
+        # the runner image has no digest, and the evidence gate refuses without an observed
+        # target and backup. If control reaches here, all of that was satisfied.
+        env:
+          SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
+        run: |
+          set -euo pipefail
+          JOB_NAME=$(python3 -c 'import sys,yaml;print(yaml.safe_load(open(sys.argv[1]))["metadata"]["name"])' /tmp/rendered-migration/job.yaml)
+          kubectl apply -f /tmp/rendered-migration/job.yaml
+
+          # `--timeout` is bounded so a hung migration surfaces rather than consuming the job
+          # timeout with no output. `backoffLimit: 0` in the Job means a failure is final: a
+          # retried migration would apply its second half to a schema its first half changed.
+          if ! kubectl wait --for=condition=complete "job/${JOB_NAME}" \
+                 --namespace "$SP_NAMESPACE" --timeout=30m; then
+            echo "::error::The migration Job did not complete. The schema may be PARTIALLY MIGRATED — backoffLimit is 0, so nothing was retried, and the logs below are the record of how far it got. Do not re-run until a person has read them and confirmed the current revision."
+            kubectl logs "job/${JOB_NAME}" --namespace "$SP_NAMESPACE" --tail=200 || true
+            kubectl describe "job/${JOB_NAME}" --namespace "$SP_NAMESPACE" || true
+            exit 1
+          fi
+
+          echo "Migration Job completed. Applied revisions:"
+          kubectl logs "job/${JOB_NAME}" --namespace "$SP_NAMESPACE" --tail=200
+
+      - name: Summary
+        if: always()
+        env:
+          SP_ENVIRONMENT: ${{ inputs.environment }}
+          SP_MODE: ${{ inputs.dry_run == false && 'upgrade' || 'plan only' }}
+          SP_STATUS: ${{ job.status }}
+          SP_SCHEMA: ${{ steps.config.outputs.schema }}
+          SP_RUNNER: ${{ steps.runner.outputs.image }}
+        run: |
+          {
+            echo "## Superplane migrations"
+            echo "- **Environment**: ${SP_ENVIRONMENT}"
+            echo "- **Mode**: ${SP_MODE}"
+            echo "- **Status**: ${SP_STATUS}"
+            echo "- **Schema**: ${SP_SCHEMA:-not resolved}"
+            echo "- **Runner**: ${SP_RUNNER:-not resolved (see preflight)}"
+            echo ""
+            echo "### Ownership"
+            echo "U3 (#5042) owns this lane and \`migrations/job.yaml\`. U13 (#5045) owns the"
+            echo "Alembic chain, upstream at \`src/superplane-api/alembic/\` — there is"
+            echo "deliberately no chain in this module, because a copy would diverge from"
+            echo "upstream's the first time either side changed."
+            echo ""
+            echo "### Why it is separate from \`run-gateway-migrations.yml\`"
+            echo "That workflow runs \`modules/gateway/scripts/pricing-rollout.py\` against"
+            echo "gateway-owned tables and verifies gateway pricing rows. It is not a general"
+            echo "migration runner, and a shared runner is one edit from a shared chain."
+            echo ""
+            echo "### What is NOT claimed"
+            echo "The database boundary is the session's \`search_path\` (domain schema only,"
+            echo "\`public\` absent), a domain-scoped Alembic version table, and the domain"
+            echo "ServiceAccount's own credential — **not** a scan of the migration SQL. A"
+            echo "text scan cannot catch \`op.drop_table(\"users\")\`, which emits none of the"
+            echo "words such a scan looks for."
+            echo ""
+            echo "\`search_path\` constrains name resolution, not privilege. Decision 2"
+            echo "(shared vs. separate database instance) is unresolved, so this lane makes no"
+            echo "isolation, backup, retention or restore claim about the target and requires"
+            echo "operator-presented evidence before mutating anything."
+          } >> "$GITHUB_STEP_SUMMARY"

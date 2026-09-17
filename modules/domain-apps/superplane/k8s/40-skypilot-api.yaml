@@ -1,0 +1,280 @@
+---
+# =============================================================================
+# SkyPilot API service — Issue #5042 (U3), EPIC #4910.
+# =============================================================================
+# The one component of this domain that is deployable today. U2's lock resolves
+# `skypilot-api` to sha256:de41a5c6… (berkeleyskypilot/skypilot:0.12.0), chosen to match the
+# SkyPilot version the upstream controller reports. The other three images — superplane-api,
+# -controller, -platform-monitor — are `pending_images` with no digest, blocked by
+# `source_access`, and this lane's preflight refuses any manifest referencing them.
+#
+# WHY THE SERVICE NAME AND PORT ARE NOT FREE CHOICES
+#
+# The upstream controller's SkyPilot client defaults to
+# `http://skypilot-api.skypilot.svc.cluster.local:46580`
+# (spike/baseline_inventory.py:SKYPILOT_DEFAULT_BASE_URL, derived from
+# src/superplane-controller/skypilot/client.go). Renaming the Service or moving the port would
+# break the controller with a connection error at the moment it first tries to launch — long
+# after the rollout reported success.
+#
+# WHY THERE IS NO POSTGRES STATEFULSET HERE
+#
+# Upstream ships `infra/skypilot-api/05-postgres-statefulset.yaml` as one option and an RDS
+# variant as another. **Decision 2 (database hosting: shared instance vs. separate instance) is
+# UNRESOLVED**, and declaring either shape here would decide it by default. So the database
+# arrives as a REFERENCE and this manifest set makes **no isolation, backup, retention or
+# restore claim** about whatever that reference points at.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: skypilot-api
+  namespace: REPLACE_WITH_SKYPILOT_NAMESPACE
+  labels:
+    app.kubernetes.io/name: skypilot-api
+    app.kubernetes.io/part-of: adp-superplane
+spec:
+  # ClusterIP, deliberately. A LoadBalancer here would put an unauthenticated SkyPilot API —
+  # which can launch GPU compute — on a public address. The controller reaches it in-cluster,
+  # so there is no requirement an external address would satisfy.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: skypilot-api
+  ports:
+    - name: api
+      protocol: TCP
+      port: 46580
+      targetPort: api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skypilot-api
+  namespace: REPLACE_WITH_SKYPILOT_NAMESPACE
+  labels:
+    app.kubernetes.io/name: skypilot-api
+    app.kubernetes.io/part-of: adp-superplane
+spec:
+  # ONE replica, and this is a correctness constraint rather than a cost decision. SkyPilot's
+  # API server holds cluster-provisioning state; two replicas racing on the same Postgres
+  # backend can each believe they own a launch, and the observable result is duplicate GPU
+  # clusters that cost money and that nothing is tracking.
+  replicas: 1
+  strategy:
+    # Recreate, for the same reason. RollingUpdate would briefly run two API servers.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skypilot-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skypilot-api
+        app.kubernetes.io/part-of: adp-superplane
+    spec:
+      # The identity whose AWS half is aws_iam_role.skypilot. The name is a contract with the
+      # OIDC `sub` condition in irsa.tf, not a label.
+      serviceAccountName: skypilot-api
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: skypilot-api
+          # Digest-pinned, substituted from the SSM parameter Terraform derives FROM THE LOCK
+          # (config.tf, local.skypilot_image). Not a tag: upstream's own manifests deploy
+          # `berkeleyskypilot/skypilot:latest`, and at lock time `latest` and `0.12.0`
+          # resolved to different images — so a deploy reading the tag cannot say what ran.
+          image: REPLACE_WITH_SKYPILOT_IMAGE
+          imagePullPolicy: IfNotPresent
+          # =====================================================================
+          # THE STARTUP CONTRACT. Without this block the pod runs a Python REPL.
+          # =====================================================================
+          #
+          # The pinned image declares `Cmd: ["python3"]` and NO `Entrypoint` — verified
+          # against the registry by digest: index sha256:de41a5c6…5019 (matching the lock) →
+          # amd64 manifest sha256:ab4e67e7…b318 → config blob sha256:528a1f79…62a1, each
+          # response hashed and compared. A container that overrides neither `command` nor
+          # `args` therefore starts an interactive interpreter. It stays up, nothing ever
+          # listens on 46580, and the only symptom is the readiness probe failing — which
+          # reads like a slow or unhealthy server rather than like "no server was ever
+          # started". `tests/test_skypilot_startup_contract.py` asserts this block against
+          # the same package the image is built from.
+          #
+          # `-m sky.server.server` is not a guess: `sky/server/common.py` defines
+          # `API_SERVER_CMD = '-m sky.server.server'` and launches it as
+          # `[sys.executable, *API_SERVER_CMD.split()]`, so this is the package's own
+          # canonical invocation. `sky/server/server.py` has no `__main__.py` sibling and
+          # guards on BOTH `__name__ == '__main__'` (the argparse/uvicorn startup) and
+          # `__name__ == 'sky.server.server'` (plugin loading under uvicorn's re-import),
+          # so it must be run as a MODULE. `python3 /path/to/server.py` would take the
+          # `__main__` branch but never the second, silently skipping plugin loading.
+          command: ["python3", "-m", "sky.server.server"]
+          args:
+            # --host is the load-bearing argument. `server.py` defaults it to `127.0.0.1`
+            # (argparse, `parser.add_argument('--host', default='127.0.0.1')`), which binds
+            # loopback INSIDE the pod's network namespace — unreachable from the Service, so
+            # the controller would get connection-refused however healthy the process was.
+            - --host=0.0.0.0
+            # Stated explicitly rather than relying on the default. The Service's port, the
+            # containerPort and the probes are all 46580; leaving the server's port implicit
+            # means a future upstream default change breaks the wiring silently.
+            - --port=46580
+            # Metrics are NOT exposed. The flag is passed because `server.py` raises
+            # `ValueError` if `--port` equals `--metrics-port`, so pinning both makes that
+            # collision impossible to reach by editing one number. The metrics server only
+            # starts when SKYPILOT_SERVER_METRICS_ENABLED is set, which it is not.
+            - --metrics-port=9090
+            #
+            # `--deploy` is DELIBERATELY OMITTED, and that is a scope decision rather than a
+            # tuning one. In deploy mode `setup_consolidation_mode_on_startup` auto-enables
+            # jobs "consolidation mode" when no controller cluster exists yet
+            # (sky/jobs/utils.py), which runs the jobs controller IN THIS POD and provisions
+            # compute from it. This unit is authorised to stand up an API server, not to
+            # launch compute. Omitting the flag keeps the local-mode worker model, whose
+            # resource envelope also matches the 1 CPU / 2Gi limits below.
+          ports:
+            - name: api
+              containerPort: 46580
+              protocol: TCP
+          env:
+            # The Postgres connection URI, by REFERENCE. Never a literal: upstream's
+            # db-migrate-job.yaml carries an inline password in DATABASE_URL, which is an
+            # applied artifact and therefore has to be rotated everywhere once noticed.
+            #
+            # The Kubernetes Secret below is seeded OUT OF BAND from the Secrets Manager
+            # secret named by `var.database_secret_name`. This manifest set does not create
+            # it, and neither does Terraform: `aws_ssm_parameter`/`aws_secretsmanager_*`
+            # with a value writes that value to Terraform state in plaintext regardless of
+            # the parameter type.
+            #
+            # WHY NOT AN initContainer THAT FETCHES FROM SECRETS MANAGER. It would need a
+            # second image (aws-cli), and the release lock pins no such image — so
+            # check_rendered_manifests.py would reject its digest, correctly. Adding an
+            # unpinned image to satisfy a convenience is the R2 violation this unit exists
+            # to prevent. `optional: false` is explicit: the pod must not start with an
+            # empty connection string and fall back to SkyPilot's SQLite default, which
+            # would silently discard cluster state on every restart.
+            - name: SKYPILOT_DB_CONNECTION_URI
+              valueFrom:
+                secretKeyRef:
+                  name: skypilot-api-db
+                  key: connection-uri
+                  optional: false
+            - name: SKYPILOT_SKIP_CLOUD_IDENTITY_CHECK
+              value: "0"
+            # HOME is REQUIRED here, not a convenience. SkyPilot resolves every one of its
+            # paths through `os.path.expanduser('~/...')` — `~/.sky/config.yaml`
+            # (skypilot_config._GLOBAL_CONFIG_PATH), `~/.sky/api_server/server.log`,
+            # `~/.sky/locks/`, `~/.sky/generated`. `expanduser` uses $HOME, and when $HOME is
+            # unset it falls back to the passwd entry for the current uid.
+            #
+            # This pod sets `runAsUser: 1000`, and uid 1000 DOES NOT EXIST in the pinned
+            # image: every layer of sha256:ab4e67e7…b318 was extracted and the effective
+            # /etc/passwd contains no uid 1000 (and no /home entry at all). CPython's
+            # documented behaviour in exactly that case — no $HOME and no passwd entry — is
+            # to RETURN THE PATH UNCHANGED (posixpath.expanduser, bpo-10496). So `~/.sky`
+            # would stay the literal relative string `~/.sky`, resolved against the working
+            # directory, and the config mounted below at an absolute path would never be
+            # read. Setting HOME explicitly removes the dependency on a passwd entry.
+            - name: HOME
+              value: /home/sky
+            # Belt and braces on the same hazard, from the other direction: this names the
+            # config file ABSOLUTELY, so config loading does not depend on `~` expansion at
+            # all. `skypilot_config` prefers $SKYPILOT_GLOBAL_CONFIG over the `~/.sky`
+            # default. Both are set because they fail differently — HOME also covers the log,
+            # lock and generated-file paths, which have no env override.
+            - name: SKYPILOT_GLOBAL_CONFIG
+              value: /home/sky/.sky/config.yaml
+            # Region for the IRSA/STS exchange. Comes from the rollout's own region rather
+            # than a literal.
+            - name: AWS_REGION
+              value: REPLACE_WITH_AWS_REGION
+            - name: AWS_DEFAULT_REGION
+              value: REPLACE_WITH_AWS_REGION
+          volumeMounts:
+            # `~/.sky` is WRITABLE scratch, mounted first (kubelet orders mounts by path
+            # depth, so the parent lands before the file below it).
+            #
+            # An earlier revision mounted the read-only ConfigMap over the whole of
+            # `/home/sky/.sky`. That directory is not config-only: the server creates
+            # `~/.sky/api_server/server.log`, `~/.sky/locks/.skypilot_config.lock` and
+            # `~/.sky/generated` inside it. A ConfigMap volume is read-only whatever the
+            # `readOnly` flag says, so the server would have failed on its first write —
+            # after the container had already started, which is the hardest kind of failure
+            # to read from a rollout.
+            - name: sky-state
+              mountPath: /home/sky/.sky
+            # The config arrives as a single FILE via subPath, so it does not make its parent
+            # read-only. subPath also means the file is not updated when the ConfigMap
+            # changes — which is the behaviour wanted here: this server holds provisioning
+            # state and re-reads config only at startup, so a silent mid-life change would
+            # be a divergence between what is running and what the ConfigMap says.
+            - name: sky-config
+              mountPath: /home/sky/.sky/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          # Requests AND limits on BOTH dimensions. The platform isolation requirement
+          # (2026-09-16) calls for resource limits on domain services, and the concrete
+          # hazard is that this runs on the ADP management cluster: an unbounded domain
+          # workload evicts core ADP pods off a shared node.
+          #
+          # These are the API server only — a control-plane process serving a REST API. It
+          # requests no GPU, and check_rendered_manifests.py separately requires any GPU
+          # container to carry a nodeSelector or affinity so it cannot land here.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          # A startupProbe, and it is the liveness probe's precondition rather than a
+          # duplicate of it. Before serving anything, `server.py` initialises the global user
+          # state DB, resets the request DB, restores the server user hash and starts its
+          # worker processes — against Postgres, over the network. On a fixed
+          # `livenessProbe.initialDelaySeconds`, a startup slower than that window gets the
+          # container KILLED and restarted, which repeats forever and presents as a crash
+          # loop rather than as "startup needs longer".
+          #
+          # While a startupProbe is running, the readiness and liveness probes are held off
+          # entirely, so this gives startup up to 5 minutes (30 × 10s) while keeping the
+          # liveness probe tight once the server is actually up.
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: api
+            periodSeconds: 10
+            failureThreshold: 30
+          # The health endpoint the upstream controller's client actually polls
+          # (spike/baseline_inventory.py, SKYPILOT_CLIENT_ENDPOINTS: GET /api/health).
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: api
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: api
+            periodSeconds: 30
+      volumes:
+        - name: sky-config
+          configMap:
+            name: skypilot-config
+        # emptyDir, NOT a PersistentVolumeClaim, and the distinction is the whole reason U2
+        # pinned `state_backend: postgres`. Durable SkyPilot state lives in Postgres; this
+        # is scratch. A PVC here would create a second, node-bound copy of state that
+        # disagrees with the database after a reschedule — and a StorageClass or
+        # PersistentVolume is platform-owned in any case.
+        - name: sky-state
+          emptyDir:
+            sizeLimit: 1Gi

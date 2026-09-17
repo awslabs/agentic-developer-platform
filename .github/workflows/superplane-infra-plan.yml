@@ -1,0 +1,304 @@
+name: Superplane Infra Plan
+
+# Terraform plan + full test suite for the Superplane control plane.
+# Issue #5042 (U3), EPIC #4910. Mirrors cyber-infra-plan.yml, with two deliberate
+# differences documented below.
+#
+# ACCEPTANCE CRITERION: 100% of the .tftest.hcl files in tests/ execute in this lane.
+#
+# That is enforced by construction rather than by a list. `terraform test` discovers every
+# `tests/*.tftest.hcl` itself, so a new test file is picked up with no edit here — but
+# discovery alone would let the count silently fall to zero, and "0 tests ran" and "all
+# tests passed" are the same exit code (0). Both this repo's `superplane-domain-ci.yml` and
+# `script-tests.yml` call that hazard out by name, and I hit it during development: running
+# `terraform test` from the wrong directory reported "Success! 0 passed, 0 failed."
+#
+# So this lane counts the test files itself, compares that count against the number
+# `terraform test` reports as executed, and fails if they disagree. A deleted test file, a
+# renamed directory or a file that silently fails to load all surface as a failure instead
+# of a green tick over nothing.
+#
+# DIFFERENCE 1 — TWO JOBS, AND ONE OF THEM HAS NO AWS IDENTITY.
+#
+# `tests` runs on ubuntu-latest with no credentials. This is not cosmetic: every one of the
+# 34 runs uses `mock_provider "aws"` plus file-level `override_data`, so the suite needs no
+# account, and I verified it — 34 passed with every AWS_* variable stripped,
+# AWS_EC2_METADATA_DISABLED=true and both credential files pointed at /dev/null.
+#
+# Runner choice is what makes that property enforceable. ARC runner pods carry an ambient
+# IRSA identity: their service account is annotated `eks.amazonaws.com/role-arn`, so the
+# pod-identity webhook injects AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE into every
+# container whether the job asks for them or not. Omitting `configure-aws-credentials` on
+# `arc-runner-org` therefore does NOT produce a credential-free job — the same finding
+# `superplane-domain-ci.yml` records from its #5198 review. On a hosted runner there is no
+# ambient identity, so the guard at the end of that job can assert the absence and be right.
+#
+# The `plan` job DOES need credentials — a plan reads the platform remote state and the real
+# provider — so it stays on `arc-runner-org`, matching cyber-infra-plan.yml.
+#
+# DIFFERENCE 2 — THE TEST JOB GATES THE PLAN JOB.
+#
+# `plan` needs `tests`. The validations in variables.tf are the enforcement mechanism for
+# acceptance criteria 3 and 4, and the suite is what proves they still fire. Running an
+# credentialed plan before knowing the guards work would report a tidy plan for a module
+# whose CORS rule had become unreachable dead code — which is a real failure this suite
+# caught during development, not a hypothetical.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'modules/domain-apps/superplane/infra/control-plane/**'
+      - 'environments/dev/modules/superplane.tfvars'
+      - 'environments/dev/modules/superplane-backend.tfvars'
+      # U2's lock is a Terraform INPUT here: ecr.tf derives repository names from it and
+      # config.tf derives the digest-pinned SkyPilot image. A lock change alters the plan,
+      # so it must be able to trigger the lane that shows the plan.
+      - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
+      - '.github/workflows/superplane-infra-plan.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: superplane-infra-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+  MODULE_NAME: superplane
+  TF_WORKING_DIR: modules/domain-apps/superplane/infra/control-plane
+  BACKEND_CONFIG: environments/dev/modules/superplane-backend.tfvars
+  VAR_FILE: environments/dev/modules/superplane.tfvars
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The credential-free half: validations, formatting, and every .tftest.hcl file.
+  # ---------------------------------------------------------------------------
+  tests:
+    name: Terraform tests (no AWS)
+    # GitHub-hosted, NOT arc-runner-org — see "DIFFERENCE 1" in the header. An ARC runner
+    # would inject ambient IRSA credentials and make the guard at the end unsatisfiable.
+    runs-on: ubuntu-latest
+    # No `id-token` permission: this job must not be able to assume an AWS role.
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          # The wrapper intercepts stdout, which the test-count guard below parses.
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (no backend)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        # `-backend=false` is what keeps this job credential-free: it installs providers
+        # without contacting S3 for state. The backend is exercised by the plan job.
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+      - name: Run every .tftest.hcl and prove none was skipped
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        # The coverage criterion. `terraform test` discovers the files; this step verifies
+        # the discovery actually found them, because a zero-file run exits 0.
+        run: |
+          set -euo pipefail
+
+          EXPECTED=$(find tests -name '*.tftest.hcl' | wc -l | tr -d ' ')
+          echo "Test files present in tests/: ${EXPECTED}"
+
+          if [ "$EXPECTED" -eq 0 ]; then
+            echo "::error::No .tftest.hcl files found in ${TF_WORKING_DIR}/tests. The acceptance criterion for this unit requires 100% of them to execute; zero files means they were moved or deleted, and 'terraform test' would exit 0 regardless."
+            exit 1
+          fi
+
+          find tests -name '*.tftest.hcl' | sort | sed 's/^/  - /'
+
+          terraform test -no-color 2>&1 | tee /tmp/test-output.txt
+
+          # `terraform test` prints one "<file>... pass" or "... fail" line per FILE (in
+          # addition to per-run lines). Counting those against the files on disk is what
+          # turns "the command exited 0" into "every file ran".
+          EXECUTED=$(grep -cE '^tests/.*\.tftest\.hcl\.\.\. (pass|fail)$' /tmp/test-output.txt || echo "0")
+          echo "Test files executed: ${EXECUTED} of ${EXPECTED}"
+
+          if [ "$EXECUTED" -ne "$EXPECTED" ]; then
+            echo "::error::${EXECUTED} of ${EXPECTED} .tftest.hcl files executed. Every test file must run (acceptance criterion for issue #5042). A file that fails to load is reported as not executed rather than as a failure, so this gap is the symptom."
+            exit 1
+          fi
+
+          # Belt and braces: the summary line must not report zero.
+          if grep -qE '^Success! 0 passed, 0 failed' /tmp/test-output.txt; then
+            echo "::error::terraform test reported 0 runs. 'No tests ran' and 'all tests passed' share exit code 0 — this is the failure that guard exists for."
+            exit 1
+          fi
+
+          echo "All ${EXPECTED} test files executed."
+
+      - name: Verify no AWS credentials were configured
+        # A guard on this job's premise. The whole suite is mock-driven and needs no
+        # account; on a hosted runner there is no ambient identity, so a credential here
+        # could only come from somebody adding one. If that happens, this fails and says
+        # why the job exists without one rather than quietly becoming a credentialed job.
+        #
+        # Copied deliberately from superplane-domain-ci.yml, whose #5198 review established
+        # that this assertion is only satisfiable off arc-runner-org.
+        run: |
+          set -euo pipefail
+          FOUND=""
+          for var in AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ACCESS_KEY_ID \
+                     AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+                     AWS_CONTAINER_CREDENTIALS_FULL_URI \
+                     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI; do
+            if [ -n "${!var:-}" ]; then
+              FOUND="${FOUND} ${var}"
+            fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "::error::AWS credentials are present in this job (set:${FOUND}). The Terraform test suite is mock-driven and must never need an account; the plan job is where credentials belong."
+            exit 1
+          fi
+          echo "Confirmed: no AWS credentials in this job's environment."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Superplane Terraform tests"
+            echo "- **Runner**: ubuntu-latest (no AWS identity)"
+            echo "- **Test files**: $(find ${{ env.TF_WORKING_DIR }}/tests -name '*.tftest.hcl' | wc -l | tr -d ' ')"
+            echo "- **Status**: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # The credentialed half: a real plan against real state.
+  # ---------------------------------------------------------------------------
+  plan:
+    name: Terraform Plan
+    needs: tests
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Resolve the target account into tfvars
+        # The committed tfvars ship `account_id = "ACCOUNT_ID"`, a placeholder that
+        # bootstrap.sh normally rewrites. CI has not run bootstrap.sh, so it is substituted
+        # here with the account this runner is actually authenticated to.
+        #
+        # This is the provenance rule working as intended rather than a workaround: the
+        # account comes from the caller's own identity, so a plan cannot target an account
+        # nobody chose, and no account id is committed. `var.account_id`'s 12-digit
+        # validation rejects the unsubstituted placeholder, so a failure of this step
+        # surfaces as a clear validation error rather than a misnamed resource.
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "Planning against account ${ACCOUNT_ID}"
+          sed -i "s/ACCOUNT_ID/${ACCOUNT_ID}/g" \
+            "${{ env.VAR_FILE }}" \
+            "${{ env.BACKEND_CONFIG }}"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -e
+          set -o pipefail
+          terraform plan -var-file="../../../../../${{ env.VAR_FILE }}" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
+
+      - name: Post or update PR comment
+        uses: actions/github-script@v9
+        if: always() && github.event_name == 'pull_request'
+        env:
+          PLAN_OUTPUT: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = `<!-- tf-plan:${{ env.MODULE_NAME }} -->`;
+            let planText = '';
+            try {
+              planText = fs.readFileSync('/tmp/plan-output.txt', 'utf8');
+            } catch (e) {
+              planText = 'Plan output not available.';
+            }
+            if (planText.length > 60000) {
+              planText = planText.substring(0, 60000) + '\n\n... (truncated)';
+            }
+            const status = process.env.PLAN_OUTPUT === 'success' ? ':white_check_mark:' : ':x:';
+            const body = `${marker}\n${status} **Terraform Plan — \`${{ env.MODULE_NAME }}\`**\n\nApply is \`workflow_dispatch\`-only by design: merging this PR deploys nothing.\n\n<details>\n<summary>Plan output</summary>\n\n\`\`\`\n${planText}\n\`\`\`\n\n</details>\n\n*Updated: ${new Date().toISOString()} | Run: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(c => c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Summary
+        if: always()
+        env:
+          SP_PLAN_OUTCOME: ${{ steps.plan.outcome }}
+        run: |
+          {
+            echo "## Terraform Plan -- ${{ env.MODULE_NAME }}"
+            echo "- **Module**: ${{ env.MODULE_NAME }}"
+            echo "- **Status**: ${SP_PLAN_OUTCOME}"
+            echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}"
+            echo "- **Apply**: manual (\`workflow_dispatch\` only) — merging deploys nothing"
+          } >> "$GITHUB_STEP_SUMMARY"

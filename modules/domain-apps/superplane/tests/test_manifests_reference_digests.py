@@ -53,6 +53,35 @@ DIGEST_REF_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 # The exact floating reference upstream ships in all three of its SkyPilot manifests.
 UPSTREAM_FLOATING_REF = "berkeleyskypilot/skypilot:latest"
 
+# The one non-digest `image:` value R2 permits IN THE REPOSITORY, added for U3's manifests.
+#
+# WHY THIS EXEMPTION IS NOT A HOLE.
+#
+# U2 wrote this suite before any manifest existed and reasonably assumed a manifest would
+# carry its digest literally. U3's manifests cannot: a literal digest here would be a SECOND
+# pin, able to disagree with `releases/superplane.lock.yaml` with nothing to detect it — the
+# drift R2 exists to prevent. The digest instead reaches the manifest through
+# `/adp/<env>/superplane/skypilot-image`, which `infra/control-plane/config.tf` derives FROM
+# the lock, so there is exactly one pin.
+#
+# What replaces the check for that value is stricter than what it replaces, because the text
+# that matters for R2 is the text AFTER substitution:
+#
+#   1. `tests/test_skypilot_manifests.py::test_the_only_deployed_image_is_a_placeholder_…`
+#      requires every `image:` in the repository to be this placeholder — so this exemption
+#      cannot be used to smuggle in a tag.
+#   2. `infra/control-plane/tests/lock_pin.tftest.hcl` asserts the SSM parameter Terraform
+#      publishes is digest-addressed and is the lock's digest.
+#   3. The rollout lane re-checks the live SSM value, then
+#      `infra/scripts/check_rendered_manifests.py` requires every rendered digest to be one
+#      the LOCK PINS — not merely 64 hex characters, which is the gap PR #5283's review
+#      found in the guard this replaced.
+#
+# So a floating tag cannot survive to the cluster by this route, and unlike a literal digest
+# it cannot drift from the lock either. The exemption is one exact string: any other
+# non-digest value still fails below.
+RENDERED_FROM_LOCK_PLACEHOLDER = "REPLACE_WITH_SKYPILOT_IMAGE"
+
 
 def _discover_manifests() -> list[Path]:
     found: list[Path] = []
@@ -123,9 +152,42 @@ class TestDiscoveredManifestsArePinned:
 
     def test_every_image_is_digest_addressed(self, manifest: Path) -> None:
         for image in _image_fields(manifest):
+            if image == RENDERED_FROM_LOCK_PLACEHOLDER:
+                # See RENDERED_FROM_LOCK_PLACEHOLDER: the digest arrives from the SSM
+                # parameter config.tf derives from this lock, so there is one pin rather than
+                # two that can disagree. The rendered text is checked against the lock's
+                # digests by check_rendered_manifests.py before kubectl is invoked.
+                continue
             assert DIGEST_REF_RE.search(image), (
                 f"{manifest.relative_to(MODULE_ROOT)} image {image!r} is not @sha256: pinned"
             )
+
+    def test_a_placeholder_image_is_resolved_from_the_lock_by_terraform(
+        self, manifest: Path
+    ) -> None:
+        """The exemption above is only sound if the placeholder really is lock-derived.
+
+        Asserted here rather than assumed: if `config.tf` stopped deriving
+        `skypilot-image` from the lock, the exemption would become a way to deploy an
+        arbitrary image with this suite still green.
+        """
+        if RENDERED_FROM_LOCK_PLACEHOLDER not in _image_fields(manifest):
+            pytest.skip("this manifest carries no placeholder image reference")
+
+        config_tf = (MODULE_ROOT / "infra" / "control-plane" / "config.tf").read_text(
+            encoding="utf-8"
+        )
+        assert "skypilot-image" in config_tf, (
+            "no SSM parameter publishes skypilot-image, so the placeholder in this manifest "
+            "resolves from nothing"
+        )
+        lock_pin = (
+            MODULE_ROOT / "infra" / "control-plane" / "tests" / "lock_pin.tftest.hcl"
+        ).read_text(encoding="utf-8")
+        assert "aws_ssm_parameter.skypilot_image.value" in lock_pin, (
+            "tests/lock_pin.tftest.hcl no longer asserts the published image is the lock's "
+            "digest, so nothing keeps the placeholder honest"
+        )
 
     def test_every_digest_appears_in_the_lock(self, manifest: Path) -> None:
         """A manifest may only deploy a digest this unit actually pinned.
