@@ -470,10 +470,11 @@ assignment you already hold.
    node per story issue created in Step 6, carrying its number in `issue_ref`.
 5. **Edges encode the wave order** from Step 7a: each wave's stories point at that
    wave's eval, and each wave's eval points at the next wave's stories.
-6. **Declare no `gate` nodes unless the delivery plan genuinely calls for one.**
-   Registration inserts an acceptance gate in front of the whole plan, and (for a
-   proposal that declares no gate of its own) a gate at every wave boundary. A
-   hand-declared gate suppresses that default, so declare one only deliberately.
+6. **Propose gate placement deliberately. Do not assume a default will cover you.**
+   Gate placement is yours to decide and to explain, and it is the one part of the
+   plan a human cannot infer from the wave map. See **Step 7f** below for what to
+   propose, the exact node/edge shape, and the two facts about registration that
+   make "leave it to the default" the wrong instinct.
 7. **The edge set MUST be acyclic**, and every endpoint MUST resolve to a declared
    node.
 8. **`description` and `design_history` are OPTIONAL, and omitting them is always
@@ -538,6 +539,119 @@ the flows list before deciding whether to accept the plan — the description as
 loop's one-line purpose, the stage record as the strip showing which design gates
 were approved, skipped, or still open. A flow that carries neither still registers
 and still runs; its card simply says nothing about where it came from.
+
+#### Step 7f: Propose gate placement (issue #4529)
+
+A `gate` node is a **stop**: the engine presents it to a human and will not walk
+past it on its own. `state.py` marks every edge out of `awaiting_gate` toward
+progress as human-only, so no service actor — no tick, no worker, no retry — can
+answer a gate. Gate placement is therefore the plan's only mechanism for "check
+with a person before this happens", and deciding where those stops go is part of
+authoring the plan, not an afterthought.
+
+**Two facts about registration, because the wrong assumption here is costly:**
+
+1. **The acceptance gate is always inserted, and it is not a wave gate.** It sits
+   in front of the *whole* plan and answers exactly one question — "may this plan
+   run at all". It says nothing about anything that happens once the plan is
+   running.
+2. **The gate-at-every-wave-boundary transform is OFF by default.** It is
+   `ORCHESTRATION_AUTONOMY_GATE_EVERY_WAVE`, and `gate_every_wave_enabled()`
+   returns False when the variable is unset. **Do not rely on it.** On a default
+   environment, a proposal that declares no gates will run every wave to
+   completion — including a deploy wave — with no human stop after acceptance.
+
+**So: declare the gates your plan needs. Do not leave them to a flag.**
+
+Two consequences of how the transform is written, which decide *how* you declare
+them rather than whether:
+
+- **It is all-or-nothing.** `insert_wave_gates` no-ops if the proposal declares
+  **any** gate at all. So a plan that declares one gate before its deploy wave
+  gets exactly that one gate — declaring one does not top up the rest. If you want
+  gates at several boundaries, declare all of them.
+- **A gate must be *on* the path, not beside it.** A gate node with no edge routing
+  the work through it is decoration: the engine walks straight past. See the edge
+  shape below.
+
+##### Default heuristics (conservative; the human refines them)
+
+Gate **before** a wave when that wave, if wrong, cannot simply be re-run:
+
+- **Deploys or otherwise changes a live environment** — infrastructure apply,
+  migration, release, DNS/traffic change, flag enablement.
+- **Spends** — anything that provisions paid resources or runs a paid workload at
+  scale.
+- **Is irreversible or externally visible** — deleting data, rotating a credential,
+  publishing something public, sending communications, writing to a third party.
+
+Do **not** gate a wave whose output is code and tests:
+
+- **Code + tests is not a gate.** A story wave whose product is a branch, a PR and
+  passing checks is already reviewed by the normal PR path, and its blast radius is
+  a revert. A gate there buys no safety and costs a human interruption per wave —
+  and gates a human learns to click through are worse than no gates, because they
+  train the habit that defeats the ones that matter.
+
+When the honest answer is "I am not sure whether this wave is reversible", **gate
+it and say so in the brief.** A gate a human removes costs one comment; a missing
+gate in front of an irreversible wave costs the thing that was irreversible.
+
+Judgement beats the list. These are defaults for the common shape, not a
+classifier — if the delivery plan makes a wave consequential for a reason not
+listed here, gate it and explain why.
+
+##### Shape
+
+A gate is an ordinary node of `"kind": "gate"` plus the edges that put it on the
+path. It takes the same four-segment address as everything else (rule 2), and it
+lives in the wave it guards the entry to:
+
+```json
+{
+  "nodes": [
+    {"address": "<flow_slug>/epic-<EPIC>/wave-2/deploy-gate",
+     "kind": "gate", "title": "Human gate: approve deploying wave 2 to <environment>"}
+  ],
+  "edges": [
+    {"from_address": "<flow_slug>/epic-<EPIC>/wave-1/eval",
+     "to_address": "<flow_slug>/epic-<EPIC>/wave-2/deploy-gate"},
+    {"from_address": "<flow_slug>/epic-<EPIC>/wave-2/deploy-gate",
+     "to_address": "<flow_slug>/epic-<EPIC>/wave-2/<first-story-of-wave-2>"}
+  ]
+}
+```
+
+The pattern that makes it a real stop: **every** edge that previously entered the
+guarded wave now ends at the gate, and the gate is the only thing pointing into
+that wave. If any edge still reaches a wave-2 node directly from wave 1, the work
+flows around the gate and the gate does nothing.
+
+Gate nodes take no `issue_ref` — nobody works a gate, a human answers it. A gate
+does not replace a wave's `eval` node (rule 4) and does not count as one.
+
+Titles are read by a human deciding whether to approve, in a list, with no other
+context. `"Human gate: approve deploying wave 2 to <environment>"` is useful;
+`"Gate 2"` is not. Name the consequence, not the position.
+
+##### Present it in the gate brief
+
+Gate placement is a proposal, and the human must be able to see and change it
+**in conversation** before accepting. In the `loop-proposal` gate comment
+(persona Run A, step 4), fill in the gate-placement table with one row per wave —
+including the waves you chose **not** to gate, because a wave you silently left
+ungated is indistinguishable from a wave you never considered.
+
+If the human replies `@agent-aidlc feedback: gate wave 3 as well`, or asks for a
+gate to be removed, revise `proposal.json` and the table and re-gate. That
+exchange is the point of proposing rather than deciding.
+
+After the plan is accepted, gate placement changes through the amendment loop
+instead: a human comments `@agent-engine replan: <what should change>`, an
+authoring run files an amended plan as an inert draft, and a human accepts it by
+name with `@agent-engine accept amendment <draft-id>`. You never move a gate on an
+accepted plan directly, and accepting an amendment is a human act — there is no
+agent-accessible acceptance path.
 
 ### Step 8: Materialize delivery loop (on loop-proposal approval)
 

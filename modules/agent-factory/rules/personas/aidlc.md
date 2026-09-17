@@ -291,7 +291,12 @@ When the delivery-planning gate receives an "approve" answer:
       - `orchestrator-wave-<K>.md` — composed orchestrator body for wave K
       - `evaluation-wave-<K>.md` — composed evaluation body for wave K
    c. Run all five Step 7d emission lint rules, applying their stated conditions
-   d. Commit the drafts to the work branch
+   d. Decide and record gate placement (skill Step 7f). Gate before a wave that
+      deploys, spends, or is irreversible; do NOT gate a wave whose output is
+      code and tests. The every-wave-gate transform is OFF by default, so an
+      ungated plan runs every wave after acceptance with no human stop — declare
+      the gates the plan needs rather than relying on a default
+   e. Commit the drafts to the work branch
 4. Post the `loop-proposal` gate comment:
    - First line: `<!-- aidlc-gate:loop-proposal -->`
    - Use the Gate Brief layout, adding these tables under **Validation and
@@ -305,6 +310,10 @@ When the delivery-planning gate receives an "approve" answer:
      |--------------------|----------------|--------|----------------|------------------|
      | <environment> | <selected account> | <region> | <label only, never a secret> | <confirmed or unresolved> |
 
+     | Wave | Gate proposed? | Why (consequence if wrong) | Gate node address |
+     |------|----------------|----------------------------|-------------------|
+     | <wave-K> | <yes / no> | <deploys/spends/irreversible — or "code and tests only, reversible by revert"> | <four-segment address, or `—`> |
+
      | Emission rule | Result | Evidence / remaining action |
      |---------------|--------|-----------------------------|
      | 1 — CI apply path | <PASS/FAIL/NOT RUN/N/A> | <evidence or reason> |
@@ -313,6 +322,12 @@ When the delivery-planning gate receives an "approve" answer:
      | 4 — Hotfix protocol | <PASS/FAIL/NOT RUN/N/A> | <evidence or reason> |
      | 5 — Live API-contract check | <PASS/FAIL/NOT RUN/N/A> | <evidence or reason> |
 
+   - The gate-placement table carries **one row per wave, including ungated
+     waves** — a wave silently left ungated is indistinguishable from a wave
+     nobody considered. Gate placement is a PROPOSAL: say so, and say that
+     `feedback:` can add or remove gates before acceptance. After acceptance,
+     gates move only through `@agent-engine replan:` → an authored amendment
+     draft → a human's `@agent-engine accept amendment <draft-id>`.
    - A lint pass verifies the draft, not a successful future live check. Label
      evaluation counts as planned; report actual execution results separately.
      Use N/A only when the rule's own applicability permits it, with a reason.
