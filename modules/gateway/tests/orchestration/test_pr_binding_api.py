@@ -107,6 +107,64 @@ async def test_recovered_story_can_reconcile_without_a_run_receipt(session, app_
     assert payload["merge_receipt"]["head_sha"] == HEAD
 
 
+async def test_recovered_story_can_reconcile_a_duplicate_run_skipped_for_merged_pr(session, app_with_router):
+    node, _ = await _story(session, binding_marker=True)
+    node.state = NodeState.RUNNING.value
+    await session.flush()
+    client = read.client_for(app_with_router)
+    assert client.post(recovery_url(node), json=body()).status_code == 200
+
+    class Store:
+        def get(self, *_):
+            return {
+                "tenant_id": node.org_id,
+                "engine_node_id": node.id,
+                "engine_attempt": 1,
+                "status": "skipped",
+                "skip_reason": "idempotency_merged_pr",
+            }
+
+    source = StubSource(evidence=_green())
+    report = await observe_results(session, run_store=Store(), evidence=source)
+
+    assert report.errors == 0
+    assert report.advanced == 1
+    card = client.get(read.route(node.flow_id)).json()["nodes"][0]
+    assert card["state"] == "passed"
+    records = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.RESULT_OBSERVED.value))).all()
+    payload = json.loads(records[-1].reason)
+    assert payload["recovered_from_skipped_run"] is True
+    assert payload["recovered_run_status"] == "skipped"
+    assert payload["recovered_skip_reason"] == "idempotency_merged_pr"
+    assert payload["merge_receipt"]["head_sha"] == HEAD
+
+
+async def test_recovered_story_cannot_reconcile_an_unrelated_skipped_run(session, app_with_router):
+    node, _ = await _story(session, binding_marker=True)
+    client = read.client_for(app_with_router)
+    assert client.post(recovery_url(node), json=body()).status_code == 200
+
+    class Store:
+        def get(self, *_):
+            return {
+                "tenant_id": node.org_id,
+                "engine_node_id": node.id,
+                "engine_attempt": 1,
+                "status": "skipped",
+                "skip_reason": "policy_refused",
+            }
+
+    source = StubSource(evidence=_green())
+    report = await observe_results(session, run_store=Store(), evidence=source)
+
+    assert report.errors == 0
+    assert report.advanced == 0
+    assert report.waiting == 1
+    await session.refresh(node)
+    assert node.state == NodeState.AWAITING_MERGE.value
+    assert source.bound_pr_calls == []
+
+
 async def test_recovered_story_without_receipt_still_requires_complete_pr_evidence(session, app_with_router):
     node, _ = await _story(session, binding_marker=True)
     client = read.client_for(app_with_router)

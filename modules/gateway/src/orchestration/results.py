@@ -371,7 +371,9 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                 store = run_store if run_store is not None else EngineRunStore.from_env()
                 row = await asyncio.to_thread(store.get, dispatch["run_id"], dispatch["arrived_at"])
                 recovered_without_run_record = False
-                if row is None:
+                recovered_from_skipped_run = False
+                recoverable_skipped_run = row is not None and row.get("status") == "skipped" and row.get("skip_reason") == "idempotency_merged_pr"
+                if row is None or recoverable_skipped_run:
                     # An attributed recovery is specifically the operator attesting that
                     # historical work predates (or escaped) the normal run/binding seam.
                     # Requiring the missing run row before inspecting that binding makes
@@ -391,17 +393,33 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     if recovered is None or recovered.registered_by_kind != ActorKind.HUMAN.value or not recovered.recovery_reason:
                         report.waiting += 1
                         continue
-                    row = {
-                        "tenant_id": node.org_id,
-                        "engine_node_id": node.id,
-                        "engine_attempt": node.attempts,
-                        "status": "complete",
-                    }
-                    recovered_without_run_record = True
+                    if row is None:
+                        row = {
+                            "tenant_id": node.org_id,
+                            "engine_node_id": node.id,
+                            "engine_attempt": node.attempts,
+                            "status": "complete",
+                        }
+                        recovered_without_run_record = True
+                    else:
+                        # The worker can positively suppress a duplicate attempt
+                        # after finding an already-merged PR. Preserve and validate
+                        # that run's stored identity below, but let the attributed
+                        # binding prove which exact PR completed the accepted scope.
+                        row = {**row, "status": "complete"}
+                        recovered_from_skipped_run = True
                 if row.get("tenant_id") != node.org_id or row.get("engine_node_id") != node.id or row.get("engine_attempt") != node.attempts:
                     raise ValueError("run record does not match node/tenant/attempt")
                 status = row.get("status")
-                observation: dict = {"recovered_without_run_record": True} if recovered_without_run_record else {}
+                observation: dict = {}
+                if recovered_without_run_record:
+                    observation["recovered_without_run_record"] = True
+                if recovered_from_skipped_run:
+                    observation.update(
+                        recovered_from_skipped_run=True,
+                        recovered_run_status="skipped",
+                        recovered_skip_reason="idempotency_merged_pr",
+                    )
                 if status in {"failed", "budget_stopped", "aborted", "cancelled"}:
                     target, detail = NodeState.FAILED, f"Worker reported {status}; inspect the run before retrying."
                 elif status == "complete":
