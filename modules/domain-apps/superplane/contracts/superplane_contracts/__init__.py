@@ -27,6 +27,8 @@ in the design's revision 3.
 | `accounting` | no release or cost clearance while exposure is unresolved |
 | `provider_truth` | cleanup failure reported as failure, with a non-zero result |
 | `adapter` | the record-then-call ordering, performed under B's authority |
+| `delivery` | a credential scoped to one recipient, run and workspace; per-tenant isolation |
+| `delivery_executor` | the provider executor, which runs only under a delivery lease |
 
 Nothing here confers budget authority. A budget observation reports observed
 spend; enforcement is B's admission-time concern (M6) and is not added locally,
@@ -44,6 +46,15 @@ The full rationale, including the specific upstream bugs each rule prevents, is 
 
 U7 adds provider-connection and workspace-binding contracts, credential rotation,
 disablement and secret guards. Its vault client uses the gateway HTTP boundary.
+
+U10 adds the trusted credential-delivery contract and the provider executor that
+consumes it. Delivery is authorized by a lease scoped to one recipient executor, one
+credential and one active run/allocation/workspace operation — never by the vault's
+credential-management endpoints, which carry no run binding and no run-tied
+revocation, and never by a raw secret read. The executor holds no standing credential
+and writes no domain record. B's trusted-delivery contract does not exist in ADP:
+`TRUSTED_DELIVERY_IS_MOCKED` is True, every outcome carries the marker, and R8's live
+acceptance (a real provider call by the bound executor) stays open.
 """
 
 from __future__ import annotations
@@ -94,6 +105,37 @@ from .connections import (
     disable,
     rotate,
 )
+
+from .delivery import (
+    CREDENTIAL_MANAGEMENT_PERMISSION,
+    DELIVERY_PERMISSION,
+    EXTERNAL_SECRETS_REPLICATION_RETIRED,
+    REVOCATION_LIMITATION,
+    TRUSTED_DELIVERY_IS_MOCKED,
+    DeliveryLease,
+    DeliveryRefused,
+    ExecutorIdentity,
+    IsolationRoot,
+    ProviderOperation,
+    RevocationState,
+    RunBinding,
+    SecretMaterial,
+    TrustedDeliveryChannel,
+    assert_workload_environment,
+    file_is_executor_only,
+    management_credentials_in,
+    refuse_external_secret_replication,
+    restricted_materialization,
+)
+
+from .delivery_executor import (
+    CREDENTIAL_FILENAME,
+    DeliveryOutcome,
+    DeliveryRequest,
+    ProviderExecutor,
+    forbidden_request_parameters,
+)
+from .delivery_executor import summarize as summarize_delivery
 
 from .emission import (
     PLACEHOLDER,
@@ -199,11 +241,13 @@ from .version import (
 )
 
 __all__ = [
-    "AllocationResources",
     "AUTH_HEADER",
+    "AllocationResources",
     "AuthResult",
     "BudgetUsage",
     "CONTRACT_VERSION",
+    "CREDENTIAL_FILENAME",
+    "CREDENTIAL_MANAGEMENT_PERMISSION",
     "CallDecision",
     "CallOutcome",
     "CheckResult",
@@ -215,14 +259,22 @@ __all__ = [
     "CostExposure",
     "CredentialReference",
     "DEFAULT_LEASE_DURATION",
+    "DELIVERY_PERMISSION",
     "DISABLEMENT_LIMITATION",
     "Decision",
+    "DeliveryLease",
+    "DeliveryOutcome",
+    "DeliveryRefused",
+    "DeliveryRequest",
+    "EXTERNAL_SECRETS_REPLICATION_RETIRED",
+    "ExecutorIdentity",
     "FORBIDDEN_PARAMETER_KEYS",
     "FORBIDDEN_PARAMETER_PREFIXES",
     "Finding",
     "HandleRecord",
     "HandleStore",
     "INCONCLUSIVE_STATES",
+    "IsolationRoot",
     "Lease",
     "LeaseDecision",
     "LeaseRequest",
@@ -243,8 +295,10 @@ __all__ = [
     "PROVISIONING_ACTIONS",
     "ProviderAdapter",
     "ProviderClient",
+    "ProviderExecutor",
     "ProviderHandle",
     "ProviderObservation",
+    "ProviderOperation",
     "ProviderPresence",
     "ProvisioningAdapter",
     "ProvisioningIntent",
@@ -253,6 +307,7 @@ __all__ = [
     "ProvisioningRefused",
     "RENEW_CREDENTIAL_PERMISSION",
     "REQUIRED_PERMISSION",
+    "REVOCATION_LIMITATION",
     "ReconcileDecision",
     "ReconcileRequest",
     "ReconcileResult",
@@ -261,18 +316,23 @@ __all__ = [
     "ReleaseIntent",
     "ReleaseState",
     "ResolvedPrincipal",
+    "RevocationState",
     "RotationResult",
+    "RunBinding",
     "SEVERITY_RANK",
     "SIGNATURE_HEADER",
     "SUBMITTER_HEADER",
     "SUPPORTED_VERSIONS",
     "ScopeDecision",
+    "SecretMaterial",
     "SecretRedactingFilter",
     "Submitter",
     "SubmitterResolver",
     "TEARDOWN",
     "TERMINAL_STATES",
+    "TRUSTED_DELIVERY_IS_MOCKED",
     "TeardownReport",
+    "TrustedDeliveryChannel",
     "VERSION_FIELD",
     "VERSION_HEADER",
     "ValidationReport",
@@ -283,6 +343,7 @@ __all__ = [
     "activate",
     "aggregate_status",
     "assert_no_secret_material",
+    "assert_workload_environment",
     "assess_release",
     "authorize_delegation",
     "authorize_provider_call",
@@ -295,18 +356,24 @@ __all__ = [
     "compute_signature",
     "connection_response",
     "disable",
+    "file_is_executor_only",
     "find_secret_material",
     "forbidden_parameters",
+    "forbidden_request_parameters",
     "grant",
     "install_log_redaction",
     "is_fenced_out",
     "is_more_severe",
     "key_names_secret",
     "looks_like_arn",
+    "management_credentials_in",
     "reconcile",
+    "refuse_external_secret_replication",
+    "restricted_materialization",
     "rotate",
     "scrub",
     "summarize",
+    "summarize_delivery",
     "validation_response",
     "value_is_secret_shaped",
     "verify_signature",
