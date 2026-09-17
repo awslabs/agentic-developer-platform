@@ -5,6 +5,7 @@ import datetime
 import json
 import os
 import signal
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,6 +15,22 @@ from common import *
 import artifacts
 import acceptance
 import storage
+
+
+def release_lock(dynamo, lock, owner, deployment_error=None):
+    """Delete only this run's lock without hiding an earlier deployment error."""
+    try:
+        dynamo.delete_item(
+            TableName='adp-terraform-locks',
+            Key=lock,
+            ConditionExpression='#owner = :owner',
+            ExpressionAttributeNames={'#owner': 'Owner'},
+            ExpressionAttributeValues={':owner': {'S': owner}},
+        )
+    except Exception as error:
+        if deployment_error is None:
+            raise
+        print(f'Release lock cleanup failed after deployment error: {error}', flush=True)
 
 
 def integration_gate(manifest, manifest_sha, evidence):
@@ -134,8 +151,7 @@ def upgrade(directory, environment, evidence_directory, integration_evidence=Non
                 print(f'Private log upload failed; local log remains at {log_path}', flush=True)
         json_write(evidence_directory / 'acceptance.json', result)
         json_write(ROOT / '.adp-deploy-state.json', journal)
-        dynamo.delete_item(TableName='adp-terraform-locks', Key=lock,
-                          ConditionExpression='Owner = :owner', ExpressionAttributeValues={':owner': {'S': owner}})
+        release_lock(dynamo, lock, owner, sys.exc_info()[1])
 
 
 if __name__ == '__main__':

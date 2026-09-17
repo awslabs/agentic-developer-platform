@@ -245,12 +245,15 @@ resource "aws_cloudwatch_log_group" "usage_tracker" {
 # source_arn alone, because execute-api, cognito-idp, events and logs ARNs all embed
 # the account id. Do not "fix" those to match this one.
 resource "aws_lambda_permission" "usage_tracker_s3" {
-  statement_id   = "AllowS3Invoke"
-  action         = "lambda:InvokeFunction"
-  function_name  = aws_lambda_function.usage_tracker.function_name
-  principal      = "s3.amazonaws.com"
-  source_arn     = var.chat_logs_bucket_arn
-  source_account = data.aws_caller_identity.current.account_id
+  statement_id  = "AllowS3Invoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.usage_tracker.function_name
+  principal     = "s3.amazonaws.com"
+  source_arn    = var.chat_logs_bucket_arn
+  # Use the root module's already-resolved identity. A module-level depends_on
+  # defers data sources inside this module, and an unknown source_account is a
+  # force-new diff that would briefly remove this confused-deputy protection.
+  source_account = var.account_id
 }
 
 # S3 Bucket Notification for Usage Tracker

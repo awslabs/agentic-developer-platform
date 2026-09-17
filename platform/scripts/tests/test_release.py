@@ -128,6 +128,20 @@ class ReleaseContracts(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 upgrade.integration_gate(self.manifest, digest, dict(evidence, **{key: 'wrong'}))
 
+    def test_release_lock_escapes_reserved_owner_attribute(self):
+        dynamo = Mock()
+        lock = {'LockID': {'S': 'adp-release-upgrade/123456789012'}}
+        upgrade.release_lock(dynamo, lock, 'run-owner')
+        self.assertEqual(dynamo.delete_item.call_args.kwargs['ConditionExpression'], '#owner = :owner')
+        self.assertEqual(dynamo.delete_item.call_args.kwargs['ExpressionAttributeNames'], {'#owner': 'Owner'})
+
+    def test_lock_cleanup_does_not_mask_deployment_failure(self):
+        dynamo = Mock()
+        dynamo.delete_item.side_effect = RuntimeError('cleanup failed')
+        upgrade.release_lock(dynamo, {}, 'run-owner', ValueError('deployment failed'))
+        with self.assertRaisesRegex(RuntimeError, 'cleanup failed'):
+            upgrade.release_lock(dynamo, {}, 'run-owner')
+
     def test_terraform_inputs_use_verified_bytes_and_keep_identity_config(self):
         overrides = artifacts.overrides(self.manifest, self.directory, '615296308642')
         for name, (module, resource, _) in common.LAMBDAS.items():
@@ -142,6 +156,14 @@ class ReleaseContracts(unittest.TestCase):
         tick = overrides['modules/gateway/infra']['data']['aws_ecr_image']['orchestration_tick']
         self.assertIsNone(tick['image_tag'])
         self.assertEqual(tick['image_digest'], self.manifest['images']['gateway']['digest'])
+
+    def test_budget_lambda_source_account_is_known_before_apply(self):
+        root = (ROOT / 'modules/gateway/infra/main.tf').read_text()
+        module = (ROOT / 'modules/gateway/infra/modules/budget-lambda/main.tf').read_text()
+        iam = (ROOT / 'modules/gateway/infra/modules/budget-lambda/iam.tf').read_text()
+        self.assertIn('account_id  = data.aws_caller_identity.current.account_id', root)
+        self.assertIn('source_account = var.account_id', module)
+        self.assertNotIn('data "aws_caller_identity" "current"', iam)
 
     def test_runtime_configuration_is_serialized_as_data(self):
         value = {'VITE_COGNITO_DOMAIN': "example\"; alert(1); //</script>\n"}

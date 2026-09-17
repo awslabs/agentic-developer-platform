@@ -47,6 +47,15 @@ class PlanPolicyTests(unittest.TestCase):
         resource["change"]["after"]["triggers"]["state_bucket"] = "other-account"
         self.assertTrue(self.evaluate(resource)["blocked"])
 
+    def test_layer_build_marker_accepts_create_before_delete_plan_shape(self):
+        triggers = {"build_script": "a" * 64, "layer_recipe": "b" * 64,
+                    "state_bucket": "adp-terraform-state-123456789012"}
+        resource = change("null_resource.build_psycopg2_layer[0]", "null_resource",
+                          {"triggers": triggers},
+                          {"triggers": dict(triggers, build_script="c" * 64)},
+                          ("create", "delete"))
+        self.assertEqual(self.evaluate(resource)["routine"], [resource["address"]])
+
     def test_s3_permission_only_allows_source_account_tightening(self):
         before = {"function_name": "existing", "action": "lambda:InvokeFunction", "principal": "s3.amazonaws.com", "source_arn": "existing-bucket"}
         r = change("module.budget_lambda[0].aws_lambda_permission.usage_tracker_s3", "aws_lambda_permission", before,
@@ -56,6 +65,16 @@ class PlanPolicyTests(unittest.TestCase):
             bad = copy.deepcopy(r)
             bad["change"]["after"][key] = value
             self.assertTrue(self.evaluate(bad)["blocked"])
+
+    def test_s3_permission_with_unknown_source_account_stays_blocked(self):
+        before = {"function_name": "existing", "action": "lambda:InvokeFunction",
+                  "principal": "s3.amazonaws.com", "source_arn": "existing-bucket",
+                  "source_account": "123456789012", "statement_id": "AllowS3Invoke"}
+        resource = change("module.budget_lambda[0].aws_lambda_permission.usage_tracker_s3",
+                          "aws_lambda_permission", before,
+                          {key: value for key, value in before.items() if key != "source_account"})
+        resource["change"]["after_unknown"] = {"source_account": True}
+        self.assertEqual(self.evaluate(resource)["blocked"], [resource["address"]])
 
     def test_known_worker_manifests_can_change_in_same_cluster(self):
         old = {"namespace": "adp-agents", "cluster_name": "existing", "cluster_region": "us-east-1", "manifest_sha": "old"}

@@ -30,7 +30,11 @@ def routine(resource, module, account):
             # These have create-time build provisioners only; no destroy action
             # against AWS. In release mode the helper validates staged packages.
             old, new = before.get("triggers", {}), after.get("triggers", {})
-            return (order == ["delete", "create"]
+            # Terraform reports replacements as create/delete when the
+            # null_resource lifecycle can create the new marker first. These
+            # markers have no destroy provisioner, so either ordering is safe;
+            # the exact trigger contract below remains the security boundary.
+            return (order in (["delete", "create"], ["create", "delete"])
                     and set(old) == set(new) == {"build_script", "layer_recipe", "state_bucket"}
                     and old["state_bucket"] == new["state_bucket"] == f"adp-terraform-state-{account}"
                     and all(re.fullmatch(r"[0-9a-f]{64}", new[k]) for k in ("build_script", "layer_recipe")))
