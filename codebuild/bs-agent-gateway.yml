@@ -2,8 +2,8 @@ version: 0.2
 
 # CodeBuild buildspec for the agent-gateway worker image.
 #
-# Builds the Python worker (gateway/Dockerfile) with the agent/ directory
-# included in the build context. Pushes to ECR repo `adp-agent-gateway`.
+# Builds the Python worker from modules/agent-factory, including its shared
+# personas. Pushes to ECR repo `adp-agent-gateway`.
 #
 # Environment variables injected by the start-build caller:
 #   AWS_REGION, ENVIRONMENT, ACCOUNT_ID, REGISTRY, IMAGE_TAG, EKS_CLUSTER
@@ -28,18 +28,16 @@ phases:
   build:
     commands:
       - cd modules/agent-factory
-      - BUILD_DIR="/tmp/agent-gateway-build"
-      - rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
-      - cp -r gateway/app "$BUILD_DIR/app"
-      - cp -r agent "$BUILD_DIR/agent"
-      - cp gateway/Dockerfile "$BUILD_DIR/Dockerfile"
-      - cp gateway/entrypoint.sh "$BUILD_DIR/entrypoint.sh"
-      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$BUILD_DIR"
+      - docker build --no-cache --pull -f gateway/Dockerfile -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
       - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$REGISTRY/$ECR_REPO:latest"
-      - rm -rf "$BUILD_DIR"
 
   post_build:
     commands:
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          echo "Agent gateway build failed; refusing to report publication success." >&2
+          exit 1
+        fi
       - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"

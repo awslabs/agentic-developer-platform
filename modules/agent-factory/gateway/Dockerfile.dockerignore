@@ -1,0 +1,12 @@
+# Limit the module-wide context to this image's inputs, excluding Terraform
+# state, installed dependencies, and unrelated worker build artifacts.
+**
+!gateway/
+!gateway/Dockerfile
+!gateway/Dockerfile.dockerignore
+!gateway/app/
+!gateway/app/**
+!gateway/entrypoint.sh
+!rules/
+!rules/personas/
+!rules/personas/**

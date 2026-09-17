@@ -1,0 +1,38 @@
+name: Agent Gateway Build Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'codebuild/bs-agent-gateway.yml'
+      - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/tests/test_agent_gateway_build_context.py'
+      - 'modules/agent-factory/scripts/deploy-gateway.sh'
+      - 'modules/agent-factory/gateway/**'
+      - 'modules/agent-factory/rules/personas/**'
+      - '.github/workflows/agent-gateway-build-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'codebuild/bs-agent-gateway.yml'
+      - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/tests/test_agent_gateway_build_context.py'
+      - 'modules/agent-factory/scripts/deploy-gateway.sh'
+      - 'modules/agent-factory/gateway/**'
+      - 'modules/agent-factory/rules/personas/**'
+      - '.github/workflows/agent-gateway-build-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-context:
+    name: Agent gateway build context
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install PyYAML
+      - run: python -m unittest discover -s platform/scripts/tests -p test_agent_gateway_build_context.py -v
