@@ -1,10 +1,21 @@
-# `contracts/` — Superplane observation contracts
+# `contracts/` — Superplane domain contracts
 
-Unit **U8** (issue #5043), requirement **R11**, EPIC #4910.
+Two units share this package, both under EPIC #4910:
+
+| Unit | Issue | Requirement | What it adds |
+|---|---|---|---|
+| **U8** | #5043 | R11 | observation contracts: versioning, auth, scoping, leases |
+| **U11** | #5049 | R15 (A's half) | durable handles, reconciliation, provider-truth reporting |
+
+They sit together because U11's release reporting is the same kind of thing as
+U8's observation reporting: a statement about the world that must not be able to
+claim more than was observed. `WIRE-SCHEMA.md` is the normative field-by-field
+description of U8's wire form; this file is the orientation for both.
+
+# U8 — observation contracts
 
 The versioned contracts through which controllers and monitors submit fleet-health
-and budget observations. `WIRE-SCHEMA.md` is the normative field-by-field
-description; this file is the orientation.
+and budget observations.
 
 ## The problem this exists to fix
 
@@ -31,6 +42,11 @@ contracts/
     auth.py                   <- authentication + body signature
     scoping.py                <- per-workspace submit/read authorization
     leases.py                 <- reconcile leases with fence tokens
+    handles.py                <- U11: provider-operation identity, recorded pre-call
+    reconciliation.py         <- U11: what an ambiguous outcome actually was
+    accounting.py             <- U11: no release/cost clearance while unresolved
+    provider_truth.py         <- U11: teardown reports with a non-zero result
+    adapter.py                <- U11: the record-then-call ordering, in one place
 ```
 
 Tests live at the module level in `../tests/`, alongside the other Superplane
@@ -92,8 +108,11 @@ of those would quietly preserve the dependency the withdrawal removes.
 # The whole contract suite
 python3 -m pytest modules/domain-apps/superplane/tests/ -q
 
-# The smoke check named in the story: per-workspace scoping, both directions
+# U8's smoke check: per-workspace scoping, both directions
 python3 -m pytest modules/domain-apps/superplane/tests/test_observation_scoping.py -q
+
+# U11's smoke check: handles, reconciliation and provider-truth reporting
+python3 -m pytest modules/domain-apps/superplane/tests/test_handle_reconciliation.py -q
 ```
 
 No AWS credentials, no network, no database. That is what lets this run in
@@ -114,3 +133,101 @@ enforcement (M6); any modification to `/internal/heartbeat`; withdrawal of the
 empty here: this unit is R11's contracts half, and no event schema is needed to
 satisfy any of its criteria. Adding speculative schemas ahead of a consumer would
 mean versioning something nothing reads yet.
+
+# U11 — durable handles, reconciliation and provider truth
+
+Unit **U11** (issue #5049), requirement **R15**, A's half.
+
+## The problem this exists to fix
+
+`Onboarder.Onboard` in the pinned reference snapshot asks SkyPilot to launch a
+cluster and receives the launch identifier **only on the success path**
+(`provisioner/onboarder.go:179-186`). When the call times out there is no
+identifier to report, so the result says `Success: false` and carries no provider
+reference at all. `Provisioner.provisionNode` reads that as a failure, logs
+"onboarding failed, trying next option", and launches on the next cloud
+(`controllers/provisioner.go:265-272`).
+
+A timeout is not evidence that nothing was created. So the sequence is: ask a
+provider for a GPU machine, lose the response, conclude failure, ask a *different*
+provider for a GPU machine — and the first one, if it came up, is running and
+billing with nothing in the system holding a reference to it. Nothing reports it,
+because from the controller's point of view the launch failed.
+
+The same substitution appears on the teardown side. `consolidator.go:419-425` logs
+`"failed to delete K8s node, continuing anyway"` and then advances the phase to
+`Terminated`; the delete failed and the status field now says the node is gone.
+Anything reading that field — a cost attribution, a reservation return, an
+operator's dashboard — inherits a conclusion no observation supports.
+
+## What each criterion is held up by
+
+| Criterion | Mechanism |
+|---|---|
+| **R15 acc. 5** — durable identity before the call | `authorize_provider_call()` refuses while `HandleRecord.durable` is false, and `durable=True` additionally requires `confirmed_at` — persistence's acknowledgement instant, which a caller cannot produce by setting a boolean. |
+| **R15 acc. 6** — a lost response is an unknown | `CallOutcome.AMBIGUOUS` is a third outcome alongside succeeded/failed. `reconcile()` reaches a conclusion only from a `ProviderObservation`, and `RETRY_PERMITTED` — the sole route to a repeat — requires provider-established absence. No observation yields `UNRESOLVED`, which authorizes nothing. |
+| **R15 acc. 7** — no premature clearance | `assess_release()` derives `ReleaseState` and `CostExposure` from provider observations only, with `UNKNOWN` outranking `PRESENT`. `may_mark_released` and `may_return_reservation_unused` are separate gates, and `CostExposure.NONE` is unreachable without established absence for every resource. |
+| **R15 acc. 3** — cleanup failure reported as failure | `TeardownReport.exit_code` counts findings and returns non-zero, matching `deprovision-gpu-node-aws.sh`'s re-check/count/`exit ${ERRORS}` standard. Capped at 125 so a count cannot collide with the shell's reserved 126/127/128+n. |
+| **R15 acc. 2** — accident vs. retirement | `ReleaseIntent.recreation_expected` answers it directly, and a deliberate release must record a requester and stop **every** `RecreationDriver` — auto-repair (`health_monitor.go:279-333`) and the unschedulable-pod path (`pod_watcher.go:297-331`), both registered in `main.go`. |
+
+## Ownership, and what is mocked
+
+A performs adapter-side bookkeeping under **B's** authority. B owns the operation
+lifecycle, cancellation ordering, leases/fencing and the recovery worker; **C**
+owns the reservation ledger; **U11c** owns upstream handle persistence; **U11b**
+owns the four upstream Go controllers, untouched here.
+
+None of B's machinery exists in ADP today — there is no lease, fencing or
+`attempt_id` implementation to call. So `OperationAuthority` and `HandleStore` are
+`Protocol`s A calls across rather than classes A ships, the test suite supplies a
+mock authority, and `tests/test_handle_reconciliation.py` records it as a mock in
+its module docstring.
+
+## Three absences that are design decisions
+
+All three are asserted by tests, for the same reason U8's two are.
+
+**No scheduler, timer, queue or thread.** R15 acceptance 8 — stops and cleanup
+working after the agent process is gone — is met by B's independent-lifetime driver
+calling `adapter.release_allocation()`, not by A acquiring a lifetime of its own. A
+second lifecycle owner is what the ownership split forbids.
+
+**No retry inside the adapter.** `perform_operation` returns a decision and lets
+the caller act on `may_repeat_operation`. An adapter that looped internally would
+be making retry decisions B owns.
+
+**No balance, spend total or reservation arithmetic.** C owns the ledger. A reports
+whether a clearance is permitted, so `CostExposure` is a three-way category rather
+than a number — A cannot know the dollar figure for a resource it could not
+observe, but it can refuse to let the exposure be recorded as zero.
+
+## Fixtures
+
+`tests/fixtures/provider-responses.json` is **generated** by
+`generate-provider-responses.py`, from the SkyPilot client's own `json:` struct
+tags in the pinned snapshot and from botocore's `DescribeInstances` output shape.
+Provenance is in `tests/fixtures/provider-responses.md`.
+
+Generated rather than written, because the rule is that fixtures must come from
+the provider's response models and never from what the adapter expects — and a
+hand-written file looks identical either way. A generator fails when the model
+disagrees; review is the wrong instrument for that check.
+
+## Deferred live criteria
+
+R15 acceptances **1, 5, 6 and 8** also have live criteria: a real deletion in a
+named account, a real crash mid-provision, a real lost response, and stop/cleanup
+with the agent process gone. They need a named account and environment, spend
+authorization, a deadline and a named cleanup owner — **all unresolved**, and none
+invented here. Everything above is verified offline against recorded responses, and
+that is the whole extent of the claim.
+
+## Scope boundary
+
+**In:** the contract types, the adapter bookkeeping path, provider-truth reporting,
+the tests and their generated fixtures.
+
+**Out:** the operation lifecycle, cancellation ordering, leases/fencing and the
+recovery worker (B); the reservation ledger (C); upstream handle persistence
+(U11c); the four Go controllers (U11b); any local Jobs, approval or budget
+authority, or scheduler of A's own.
