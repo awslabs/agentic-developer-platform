@@ -707,6 +707,32 @@ class TestPlace:
         assert decision.approvals_required == (ApprovalRequired.SPEND,)
         assert "approval required" in decision.refusal_reason
 
+    def test_changed_pinned_settings_block_the_operational_entry_point(self) -> None:
+        """A supported replacement setting is eligible, but not self-authorizing."""
+        incumbent_request = make_request(
+            required_image="adp-gpu-node-v2", required_network="ws-vpc-v1"
+        )
+        request = make_request(
+            required_image="adp-gpu-node-v3", required_network="ws-vpc-v2"
+        )
+        replacement = make_quote(
+            images=frozenset({"adp-gpu-node-v3"}),
+            networks=frozenset({"ws-vpc-v2"}),
+        )
+
+        decision = place(
+            request,
+            (replacement,),
+            NOW,
+            incumbent=make_quote(),
+            incumbent_request=incumbent_request,
+            incumbent_pricing_mode=PricingMode.ON_DEMAND,
+        )
+
+        assert decision.selected is replacement
+        assert decision.approvals_required == (ApprovalRequired.SETTINGS,)
+        assert decision.allocatable is False
+
     def test_rejections_are_carried_on_the_decision(self) -> None:
         decision = place(
             make_request(),
@@ -1021,7 +1047,7 @@ class TestRelocate:
             make_quote(hourly_cost=20.0, spot_cost=2.0),
             NOW - timedelta(hours=1),
             timedelta(hours=1),
-            (make_quote(instance_type="replacement", hourly_cost=9.0),),
+            (make_quote(instance_type="replacement", hourly_cost=9.0, spot_cost=1.0),),
             NOW,
             "spot preemption",
             interrupted_pricing_mode=PricingMode.SPOT,
@@ -1030,3 +1056,45 @@ class TestRelocate:
         assert record is not None
         assert record.interrupted_pricing_mode is PricingMode.SPOT
         assert record.interrupted_cost == pytest.approx(2.0)
+
+    def test_pricing_mode_change_requires_settings_approval(self) -> None:
+        decision, record = relocate(
+            "job-1",
+            make_request(allow_spot=True),
+            make_quote(hourly_cost=20.0, spot_cost=2.0),
+            NOW - timedelta(hours=1),
+            timedelta(hours=1),
+            (make_quote(instance_type="replacement", hourly_cost=9.0),),
+            NOW,
+            "spot capacity exhausted",
+            interrupted_pricing_mode=PricingMode.SPOT,
+        )
+
+        assert decision.approvals_required == (ApprovalRequired.SETTINGS,)
+        assert decision.allocatable is False
+        assert record is None
+
+    def test_pinned_image_change_requires_settings_approval(self) -> None:
+        incumbent_request = make_request(required_image="adp-gpu-node-v2")
+        request = make_request(required_image="adp-gpu-node-v3")
+        decision, record = relocate(
+            "job-1",
+            request,
+            make_quote(images=frozenset({"adp-gpu-node-v2"})),
+            NOW - timedelta(hours=1),
+            timedelta(hours=1),
+            (
+                make_quote(
+                    instance_type="replacement",
+                    images=frozenset({"adp-gpu-node-v3"}),
+                ),
+            ),
+            NOW,
+            "image update",
+            interrupted_pricing_mode=PricingMode.ON_DEMAND,
+            incumbent_request=incumbent_request,
+        )
+
+        assert decision.approvals_required == (ApprovalRequired.SETTINGS,)
+        assert decision.allocatable is False
+        assert record is None

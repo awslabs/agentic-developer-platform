@@ -258,8 +258,9 @@ jobs:
           set -euo pipefail
           # Values arrive as env DATA, never interpolated into the script body. These come
           # from SSM parameters an operator can hand-edit, so "Terraform wrote it" is not a
-          # basis for treating them as source code — which is what `${{ }}` in a `run:` body
-          # does. --lane migration selects this lane's placeholder set, which keeps "every
+          # basis for treating them as source code — which is what GitHub expression
+          # interpolation in a `run:` body does. --lane migration selects this lane's
+          # placeholder set, which keeps "every
           # supplied value is consumed" true here without exempting the rollout's values.
           python3 "${SCRIPTS_DIR}/render_manifests.py" \
             --source-dir "$MIGRATIONS_DIR" \

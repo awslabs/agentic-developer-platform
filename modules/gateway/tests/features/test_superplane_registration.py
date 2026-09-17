@@ -23,8 +23,13 @@ it as the fifth.
 from __future__ import annotations
 
 import re
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
+import boto3
+import pytest
 import yaml
 
 # tests/features/<file> -> tests -> gateway -> modules -> repo root.
@@ -208,11 +213,8 @@ class TestOfflineCiLane:
         """An offline lane that acquires credentials is no longer offline.
 
         Parsed structurally rather than grepped as text. A substring search over the whole
-        file cannot tell a credential *step* from a comment *explaining why there is no
-        credential step*, and the difference matters here: the header has to describe the
-        ARC-runner IRSA behaviour by name to stop somebody "fixing" the runner back
-        (#5198 review). An absence assertion that forbids naming the thing being avoided
-        makes the file undocumentable.
+        file cannot tell a credential *step* from a comment explaining the ARC runner's
+        identity and the offline test environment. Comments are not credential setup.
 
         So this checks the executable surface — job steps and permissions — and leaves
         comments alone.
@@ -238,24 +240,66 @@ class TestOfflineCiLane:
                 f"superplane-domain-ci.yml step {step.get('name', uses)!r} names a role to assume."
             )
 
-    def test_lane_runs_on_a_runner_without_ambient_credentials(self):
-        """The credential guard is only enforceable on a runner that has no identity.
+    @pytest.mark.parametrize(
+        ("workflow", "job_name"),
+        [
+            ("superplane-domain-ci.yml", "superplane-domain-tests"),
+            ("superplane-infra-plan.yml", "tests"),
+        ],
+    )
+    def test_self_hosted_tests_disable_aws_discovery(self, workflow, job_name, monkeypatch, tmp_path):
+        """Owner-selected ARC jobs must not inherit credentials into normal SDK calls.
 
-        This is the blocker-1 regression pin (#5198 review). `arc-runner-org` pods have an
-        IRSA service account, so the pod-identity webhook injects AWS_ROLE_ARN and
-        AWS_WEB_IDENTITY_TOKEN_FILE into every container and the lane's own guard step can
-        never pass — the job failed on 100% of runs while lint and every test passed.
-        Moving to a GitHub-hosted runner is what makes the "no AWS account" claim true
-        rather than aspirational, so the runner is part of the contract, not a preference.
+        Exercise the actual workflow environment against boto3 with valid-looking
+        ambient sources. The runner still has identity; this checks provider discovery,
+        not isolation against code deliberately opening a mounted service-account token.
         """
-        lane = yaml.safe_load(_CI_LANE.read_text())
-        runs_on = lane["jobs"]["superplane-domain-tests"]["runs-on"]
-        assert "arc-runner" not in str(runs_on), (
-            f"superplane-domain-ci.yml runs on {runs_on!r}. ARC runner pods carry ambient "
-            "IRSA credentials (AWS_ROLE_ARN, AWS_WEB_IDENTITY_TOKEN_FILE are injected into "
-            "every container), which contradicts this lane's offline premise and makes its "
-            "credential guard step fail on every run. Use a GitHub-hosted runner."
-        )
+        lane = yaml.safe_load((_CI_LANE.parent / workflow).read_text())
+        job = lane["jobs"][job_name]
+        assert job["runs-on"] == "arc-runner-org"
+        assert "id-token" not in (job.get("permissions") or lane.get("permissions") or {})
+
+        credentials = tmp_path / "credentials"
+        credentials.write_text("[default]\naws_access_key_id = test-key\naws_secret_access_key = test-secret\n")
+        config = tmp_path / "config"
+        config.write_text("[profile ambient]\ncredential_process = false\n")
+        token = tmp_path / "token"
+        token.write_text("test-token")
+        ambient = {
+            "AWS_ACCESS_KEY_ID": "test-key",
+            "AWS_SECRET_ACCESS_KEY": "test-secret",
+            "AWS_SESSION_TOKEN": "test-session",
+            "AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/test",
+            "AWS_WEB_IDENTITY_TOKEN_FILE": str(token),
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://127.0.0.1:9/credentials",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/credentials",
+            "AWS_CONFIG_FILE": str(config),
+            "AWS_SHARED_CREDENTIALS_FILE": str(credentials),
+            "AWS_PROFILE": "ambient",
+            "AWS_DEFAULT_PROFILE": "ambient",
+        }
+        for name, value in ambient.items():
+            monkeypatch.setenv(name, value)
+        # Without the job environment, boto3 really can find the inherited key.
+        assert boto3.Session().get_credentials().access_key == "test-key"
+
+        effective_env = {**(lane.get("env") or {}), **job["env"]}
+        for name, value in effective_env.items():
+            monkeypatch.setenv(name, str(value))
+        assert effective_env["AWS_CONFIG_FILE"] == "/dev/null"
+        assert effective_env["AWS_SHARED_CREDENTIALS_FILE"] == "/dev/null"
+        assert effective_env.get("AWS_REGION") == "us-east-1"
+        assert effective_env.get("AWS_DEFAULT_REGION") == "us-east-1"
+
+        # Execute the actual default shell used by every test step.
+        script = tmp_path / "step.sh"
+        command = [part.replace("{0}", str(script)) for part in shlex.split(job["defaults"]["run"]["shell"])]
+        probe = "import boto3; assert boto3.Session().get_credentials() is None"
+        script.write_text(f"{shlex.quote(sys.executable)} -c {shlex.quote(probe)}\n")
+        subprocess.run(command, check=True)
+        guard = next(s for s in job["steps"] if s.get("name") == "Verify no AWS credentials were configured")
+        script.write_text(guard["run"])
+        subprocess.run(command, check=True)
 
     def test_lane_is_pinned_to_main(self):
         """All sibling `pull_request` lanes pin `branches: [main]`; this one must too."""

@@ -39,42 +39,75 @@
 
 schema_version: 1
 
-# ── Upstream identity ────────────────────────────────────────────────────────────────
+# ── Historical origin (provenance, NOT a build input) ────────────────────────────────
 #
-# The revision the three Superplane images are to be built FROM. It matches
-# spike/provenance.py:UPSTREAM_REVISION, which is the same fact used by U12's parity
-# fixtures; the two must not drift, and tests/test_lock.py asserts they have not.
+# U22 (#5326) transferred the three components into ADP ownership, so this block changed
+# meaning: it is now the HISTORICAL ORIGIN of the transferred files, recorded separately
+# from the ADP commit that maintains them (see `maintained_source` below). The issue
+# requires those two facts be kept apart — conflating them is how a reader loses the
+# ability to say whether a file has been changed since the transfer.
 #
-# The read-only reference snapshot at this revision (planning branch agent/issue-4910,
-# modules/domain-apps/ai-super-plane/reference/) is EVIDENCE, not a build input. Building
-# from it would ship evidence as a product and pin a revision that is already stale.
-# tests/test_build_source_is_declared.py enforces that no build lane reads it.
+# The revision below remains the exact revision the maintained tree was adopted at. All
+# 161 transferred files were byte-identical at adoption, verified by Git blob id. The
+# maintained tree's intentional test-only divergences are recorded in
+# ../src/TRANSFER-MANIFEST.md. This revision still matches
+# spike/provenance.py:UPSTREAM_REVISION, which U12's parity fixtures cite, and
+# tests/test_lock.py asserts the two have not drifted.
+#
+# Upstream is now a historical origin only. Future maintained changes land in ADP.
 upstream:
   repository: https://github.com/aws-innovate/AISuperPlane
   revision: 5d543c952493f0765133b92e93301b0b24d028ee
+  role: historical origin of the transferred components; not a build input and not a
+    maintenance target after U22
+
+# ── Maintained source (what builds actually read) ────────────────────────────────────
+#
+# The answer to "where does the code being built live" after U22. Build lanes read these
+# in-repository paths, which is why `source_access` below is resolved: no upstream access,
+# no PAT and no reference tree is involved in building any of the three components.
+maintained_source:
+  repository: this repository (aws-e/adp)
+  root: modules/domain-apps/superplane/src
+  transferred_by:
+    issue: 5326
+    unit: U22
+  # The ADP commit the files were adopted FROM (the pinned reference the issue names).
+  # Recorded separately from `upstream.revision` on purpose: this is an ADP fact, that is
+  # an upstream fact, and a single "revision" field could only carry one of them.
+  adopted_from_adp_commit: 8f01c1edfc6052671e214bc944cedaab51cc939b
+  components:
+    superplane-api: src/superplane-api
+    superplane-controller: src/superplane-controller
+    superplane-platform-monitor: src/superplane-platform-monitor
 
 # ── How the pinned source is obtained ────────────────────────────────────────────────
 #
-# Stated, not assumed. This story does not choose between the options below: an access
-# grant is not a planning decision, so the plan records it unresolved
-# (inception/delivery-planning/validation-mapping.md, "Upstream source-ownership
-# mechanism — Unresolved; read access confers none").
+# RESOLVED BY U22 (#5326) via the third candidate mechanism that was recorded here while
+# this was unresolved: "a transferred source location inside ADP's control". The grant
+# question that blocked these lanes — read access to a repository ADP does not own — no
+# longer applies to these three components, because ADP now maintains their source.
+#
+# This is a source-location fact, not an authorization claim. It does NOT assert the
+# components are deployable, that their inherited defects are repaired, or that any
+# credential was granted: U13 still owns migration repair, U14 auth enforcement, and U23
+# the deployable full release.
 source_access:
-  status: unresolved
-  blocks:
-    - the first run of the three pinned Superplane image builds
-    - "U2-L2: a build that actually resolves the pinned source or artifact"
-  # Exactly one must be chosen and recorded here by whoever holds the grant.
-  candidate_mechanisms:
-    - authorized machine identity with read access to the upstream repository
-    - a published upstream artifact or registry ADP is permitted to pull
-    - a transferred source location inside ADP's control
+  status: resolved
+  mechanism: a transferred source location inside ADP's control
+  resolved_by:
+    issue: 5326
+    unit: U22
+  # Kept after resolution: these remain the wrong ways to obtain this source, and
+  # tests/test_build_source_is_declared.py still enforces that no lane uses either.
   ruled_out:
     - why: the hosted agent token is scoped to this repository, so a checkout of the
-        upstream repository fails for everyone rather than only in CI
+        upstream repository fails for everyone rather than only in CI — and after U22
+        there is no reason to reach upstream for these components at all
       mechanism: actions/checkout of aws-innovate/AISuperPlane
     - why: it is read-only evidence at the revision above, verified inert; building from
-        it would pin a stale revision and ship evidence as a product
+        it would ship evidence as a product, and it must not become a second writable
+        runtime tree alongside the maintained one
       mechanism: the reference snapshot on the planning branch
 
 # ── Resolved pins ────────────────────────────────────────────────────────────────────
@@ -100,27 +133,37 @@ image_sources:
     # is the one the controller was written against rather than a newer arbitrary release.
     selected_because: matches the SkyPilot version the upstream controller reports
 
-# ── Not yet buildable ────────────────────────────────────────────────────────────────
+# ── Not yet built ────────────────────────────────────────────────────────────────────
 #
-# No `digest` key by construction — see the header. Each names its upstream source
-# directory (at `upstream.revision`), its target ECR repository, the lane that will build
-# it, and what blocks that lane.
+# No `digest` key by construction — see the header. These stay in `pending_images` after
+# U22, and that is the honest state: the source-access blocker is gone (the source is now
+# in this repository, at the `source_path` below), but NO IMAGE HAS BEEN BUILT, so there is
+# no digest to record. Writing one would be fabricating the exact value the header explains
+# must never be invented. tests/test_lock.py asserts these carry no digest.
+#
+# `source_path` replaces the former `upstream_path`: it is the maintained in-repository
+# directory the build context comes from, relative to `maintained_source.root`. The
+# component's Dockerfile lives there and the lane builds it from a clean ADP checkout.
+#
+# What still stands between these entries and a digest is a BUILD RUN, plus the repairs
+# their own stories own (U13 migrations, U14 auth). Promotion to `images` remains a
+# reviewed commit, never an automated push.
 pending_images:
   superplane-api:
-    upstream_path: src/superplane-api
+    source_path: src/superplane-api
     ecr_repository: adp-superplane-api
     build_workflow: .github/workflows/superplane-api-build.yml
-    blocked_by: source_access
+    blocked_by: no build has run yet
   superplane-controller:
-    upstream_path: src/superplane-controller
+    source_path: src/superplane-controller
     ecr_repository: adp-superplane-controller
     build_workflow: .github/workflows/superplane-controller-build.yml
-    blocked_by: source_access
+    blocked_by: no build has run yet
   superplane-platform-monitor:
-    upstream_path: src/superplane-platform-monitor
+    source_path: src/superplane-platform-monitor
     ecr_repository: adp-superplane-platform-monitor
     build_workflow: .github/workflows/superplane-monitor-build.yml
-    blocked_by: source_access
+    blocked_by: no build has run yet
 
 # ── SkyPilot configuration inputs ────────────────────────────────────────────────────
 #
@@ -155,23 +198,40 @@ skypilot_config:
 
 # ── Schema compatibility ─────────────────────────────────────────────────────────────
 #
-# Recorded as OBSERVED, not asserted as a version. The migration chain at the pinned
-# revision does not have a single head: reading alembic/versions/ there, revision id `006`
-# is declared by four separate files and `007` by three, several sharing down_revision
-# `005`/`006`. `alembic upgrade head` cannot resolve that.
+# Recorded as OBSERVED, not asserted as a version. The migration chain does not have a
+# single head: in alembic/versions/ (13 files), revision id `006` is declared by three
+# separate files and `007` by three more, several sharing the same down_revision.
+# `alembic upgrade head` cannot resolve that.
+#
+# COUNT CORRECTED BY U22 (#5326). This previously recorded `"006": 4`. Counting the
+# maintained chain — now that the files are in this repository — gives three: the four
+# `006_*.py` FILENAMES are real, but `006_account_onboard_fields.py` and
+# `006_add_default_workspace_fields.py` declare their full descriptive ids, so only
+# `006_add_cognito_sub.py`, `006_add_event_audit_columns.py` and
+# `006_add_workspace_reconciler_fields.py` collide on the bare `"006"`. The filename prefix
+# and the declared `revision =` value are different things, and only the second one collides.
+# Verified against the same reference the transfer was taken from.
+#
+# The correction matters because this number is not decoration: check_migration_contract.py
+# renders it into the refusal an operator reads to learn what U13 has to repair, so an
+# inflated count would send them looking for a fourth conflicting file that does not exist.
+# U22 is the first unit in a position to check it — before the transfer, nobody in ADP had
+# the files to count. The conclusion is unchanged: still multiple heads, still unverified.
 #
 # This is U13's repaired-chain work (the earliest upstream hard stop in this EPIC, per
-# acceptance-index.md U3-L2) and NOT U2's to fix — U2's obligation is to record the fact so
-# that no deploy reads a compatible-looking schema field that was never verified.
+# acceptance-index.md U3-L2) and NOT U2's or U22's to fix — the obligation here is to record
+# the fact accurately so that no deploy reads a compatible-looking schema field that was
+# never verified.
 schema:
   migration_tool: alembic
   config: src/superplane-api/alembic.ini
   status: unverified
   single_head: false
   observed:
+    version_files: 13
     duplicate_revision_ids:
-      # id: number of files declaring it, at upstream.revision
-      "006": 4
+      # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
+      "006": 3
       "007": 3
   compatible_with: null
   blocked_by:

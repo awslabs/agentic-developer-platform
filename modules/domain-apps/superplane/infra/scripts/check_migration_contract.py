@@ -60,14 +60,24 @@ FORBIDDEN_SEARCH_PATH_SCHEMAS = frozenset(
 # version table each treat the other's revisions as unknown and re-apply their own.
 DEFAULT_VERSION_TABLE = "alembic_version"
 
-# The chain lives upstream, in the image. Revision files appearing HERE would be a second
-# chain that diverges from upstream's the first time either side changes.
+# The chain lives in exactly ONE place, and revision files appearing HERE would be a second
+# copy that diverges from it the first time either side changes.
+#
+# WHERE THAT ONE PLACE IS CHANGED WITH U22 (#5326); THE RULE DID NOT.
+#
+# It used to be "upstream, in the image" — outside ADP entirely. The chain is now maintained
+# in this repository at `src/superplane-api/alembic/`, so the boundary this guard enforces is
+# no longer ADP-vs-upstream but *this directory* vs *the component that owns the chain*. That
+# is a narrower line and an easier one to cross by accident: the files are now a few
+# directories away rather than in another organisation's repo, so "just drop a revision next
+# to the Job" became a plausible mistake rather than an impossible one. The guard matters more
+# after the transfer, not less.
 #
 # Both naming conventions are matched, and the short one is not hypothetical: an earlier
 # version of this pattern required 4+ hex characters, which is right for Alembic's default
 # 12-character hashes and wrong for THIS chain — whose revision ids are `006` and `007`, the
-# very ids the duplicate-head problem is about. A copy of the actual upstream chain would have
-# walked past a check written to catch copies of it.
+# very ids the duplicate-head problem is about. A copy of the actual chain would have walked
+# past a check written to catch copies of it.
 #
 # `env.py` and `script.py.mako` are Alembic's scaffolding: their presence means a migration
 # ENVIRONMENT was copied here, which is the same defect one level up from a revision file.
@@ -78,7 +88,7 @@ CHAIN_FILE_RE = re.compile(
     | ^ versions$                     # the chain directory itself
     | ^ env\.py$                      # Alembic's migration environment
     | ^ script\.py\.mako$             # Alembic's revision template
-    | ^ alembic\.ini$                 # the chain's config; upstream's lives in the image
+    | ^ alembic\.ini$                 # the chain's config; the real one lives with the chain
     """,
     re.VERBOSE,
 )
@@ -121,10 +131,12 @@ def check_chain_is_resolvable(lock: dict) -> None:
         )
         blocked = schema.get("blocked_by") or {}
         raise Refusal(
-            f"The upstream Alembic chain has no single head, so `alembic upgrade head` has no "
-            f"resolvable target. Observed at the pinned revision: {detail or 'multiple heads'}. "
+            f"The Alembic chain has no single head, so `alembic upgrade head` has no "
+            f"resolvable target. Observed in the maintained chain: {detail or 'multiple heads'}. "
             f"Blocked by issue #{blocked.get('issue')} ({blocked.get('unit')}), which owns the "
-            f"chain repair in src/superplane-api/alembic/. Nothing was changed."
+            f"chain repair in modules/domain-apps/superplane/src/superplane-api/alembic/ — an "
+            f"ADP-maintained directory since U22 (#5326), so the repair is an ordinary PR here "
+            f"rather than a change to someone else's repository. Nothing was changed."
         )
     if schema.get("status") != "verified":
         raise Refusal(
@@ -183,7 +195,12 @@ def resolve_migration_image(lock: dict, image_name: str) -> str:
 
 
 def check_no_local_chain(migrations_dir: Path) -> None:
-    """A chain copied into ADP is a second chain. Upstream owns it (#5045 repairs it there)."""
+    """A chain copied here is a second chain. The API component owns the only one.
+
+    After U22 (#5326) the chain is ADP-maintained, which changes who owns it but not the
+    single-copy rule — see CHAIN_FILE_RE for why the transfer makes this guard more load-bearing
+    rather than redundant.
+    """
     if not migrations_dir.is_dir():
         return
     offenders = sorted(
@@ -194,10 +211,11 @@ def check_no_local_chain(migrations_dir: Path) -> None:
     if offenders:
         raise Refusal(
             f"{migrations_dir} contains what looks like an Alembic chain ({', '.join(offenders)}). "
-            f"The chain is upstream's, at src/superplane-api/alembic/, and #5045 (U13) repairs "
-            f"it THERE. A copy inside ADP diverges from upstream the first time either side "
-            f"changes, and `alembic upgrade head` would then resolve a head upstream does not "
-            f"have. This directory holds the Job and its contract only."
+            f"The chain belongs to the superplane-api component, at "
+            f"modules/domain-apps/superplane/src/superplane-api/alembic/, and #5045 (U13) "
+            f"repairs it THERE. A second copy diverges from it the first time either side "
+            f"changes, and `alembic upgrade head` would then resolve a head the component does "
+            f"not have. This directory holds the Job and its contract only."
         )
 
 

@@ -155,7 +155,7 @@ data "aws_iam_policy_document" "skypilot_assume" {
 
 resource "aws_iam_role" "skypilot" {
   name               = "${local.name_prefix}-skypilot-api"
-  description        = "Runtime identity for the SkyPilot API server (domain app; issue #5042). Compute grant attached separately — see irsa.tf."
+  description        = "Runtime identity for the SkyPilot API server (domain app; issue #5042). Compute grant attached separately - see irsa.tf."
   assume_role_policy = data.aws_iam_policy_document.skypilot_assume.json
 }
 

@@ -6,9 +6,16 @@ while a floating tag moves underneath it. Upstream's own SkyPilot manifests depl
 resolved to different images — so this is a live failure mode, not a hypothetical one.
 
 The second thing they guard is the two-map invariant. Images whose digest cannot exist yet
-(they need upstream read access ADP does not have) live in `pending_images` with NO digest
-field. If a placeholder digest or a tag ever appears there, these tests fail: a fabricated
-`sha256:` is worse than a tag, because it looks authoritative and would be believed.
+live in `pending_images` with NO digest field. If a placeholder digest or a tag ever appears
+there, these tests fail: a fabricated `sha256:` is worse than a tag, because it looks
+authoritative and would be believed.
+
+The *reason* those three digests cannot exist changed with U22 (#5326) while the invariant
+did not. It used to be "building them needs upstream read access ADP does not have"; the
+transfer put the source in this repository, so it is now simply "no build has run yet".
+Worth stating because a resolved `source_access` invites the assumption that the images
+followed, and the whole point of the two maps is that source availability and a verified
+digest are separate facts.
 """
 
 from __future__ import annotations
@@ -166,11 +173,33 @@ class TestPendingImagesCarryNoDigest:
 class TestUnresolvedInputsAreRecordedNotInvented:
     """The plan records these unresolved; a plausible value here would be a fabrication."""
 
-    def test_source_access_is_recorded_unresolved(self, lock: dict) -> None:
-        assert lock["source_access"]["status"] == "unresolved"
+    def test_source_access_records_the_transferred_mechanism(self, lock: dict) -> None:
+        """U22 (#5326) resolved this by transferring the source, not by inventing a grant.
 
-    def test_source_access_names_candidate_mechanisms(self, lock: dict) -> None:
-        assert len(lock["source_access"]["candidate_mechanisms"]) >= 2
+        This is the one entry in this class that moved from unresolved to resolved, and it
+        moved because the underlying fact changed: the source is in this repository now. The
+        assertion checks the mechanism is *named* alongside the status, so a future edit
+        cannot flip the status to resolved without saying what resolved it — which is exactly
+        the fabrication this class exists to prevent.
+        """
+        access = lock["source_access"]
+        assert access["status"] == "resolved"
+        assert access["mechanism"], "resolved without naming a mechanism"
+        assert access["resolved_by"]["issue"] == 5326
+
+    def test_pending_images_still_carry_no_invented_digest(self, lock: dict) -> None:
+        """Resolving source access did NOT make the images exist.
+
+        The distinction the header of the lock is built on: the blocker moved from "ADP cannot
+        read the source" to "no build has run yet", and neither one is a digest. Writing a
+        plausible `sha256:` here would be the exact fabrication a resolved status might
+        tempt someone into.
+        """
+        for name, entry in (lock["pending_images"] or {}).items():
+            assert "digest" not in entry, (
+                f"{name} carries a digest before any build ran"
+            )
+            assert entry["blocked_by"], f"{name} does not say what it is waiting on"
 
     def test_source_access_rules_out_the_two_forbidden_mechanisms(
         self, lock: dict

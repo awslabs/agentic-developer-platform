@@ -4,8 +4,10 @@ Issue #5042 (U3), EPIC #4910.
 
 `control-plane/` is the ADP-owned Terraform wrapper that deploys the pinned Superplane
 control plane and the SkyPilot API service. It owns the AWS-side surface those images need —
-IAM roles, ECR repositories, SSM configuration — and nothing else. Application code and
-migrations stay upstream-owned; `../releases/superplane.lock.yaml` pins what runs.
+IAM roles, ECR repositories, SSM configuration — and nothing else. Application code is now
+ADP-maintained under `../src/` (U22, #5326) rather than upstream-owned, but this module still
+owns none of it: `../releases/superplane.lock.yaml` pins what runs, and the migration chain
+is U13's (#5045).
 
 ## The five lanes
 
@@ -59,13 +61,23 @@ actually be deleted rather than what the source declares.
 
 | Blocked | On | Effect |
 |---------|-----|--------|
-| Migrations | **#5045 (U13)** | The pinned upstream Alembic chain declares revision `006` in four files and `007` in three, so `alembic upgrade head` has no resolvable target. `superplane-migrate.yml` reads `schema.single_head` from the lock and stops |
-| The three application images | `source_access` in the lock | Building `superplane-api`, `-controller` and `-platform-monitor` needs read access to `aws-innovate/AISuperPlane` that ADP does not have. They are recorded as `pending_images` with **no** digest, and the rollout lane refuses any manifest referencing them |
+| Migrations | **#5045 (U13)** | The Alembic chain declares revision `006` in three files and `007` in three more, so `alembic upgrade head` has no resolvable target. `superplane-migrate.yml` reads `schema.single_head` from the lock and stops |
+| The three application images | **no build has run yet** | They are recorded as `pending_images` with **no** digest, and the rollout lane refuses any manifest referencing them. The *source* blocker is gone — U22 (#5326) transferred the three components into `../src/`, so their build lanes now build from this repository — but source availability and a verified digest are separate facts, and only a real build produces the second |
 | Live verification (R3 acc. 2) | named account, spend authorization, named cleanup owner | A backend-contacting plan and a second apply producing an empty plan. Explicitly **not** satisfied by a mocked plan, so it is not claimed anywhere in this module |
 
 The lanes ship in a blocked state rather than not shipping, because the operator who unblocks
-them will be reasoning about Alembic revisions or registry access — not about tenancy
+them will be reasoning about Alembic revisions or a first image build — not about tenancy
 boundaries — and the constraints encoded in the guards are not obvious from the outside.
+
+### Application code is no longer upstream-owned
+
+U22 (#5326) transferred `superplane-api`, `superplane-controller` and
+`superplane-platform-monitor` into `../src/`, with their tests and CI. Ownership of the
+*source* is ADP's; ownership of *deployment* is still this module's. The components' own
+upstream `deploy/` manifests came along as inventoried, read-only evidence — they carry
+upstream's account id and `:latest` tags — and reconciling what the accepted topology needs
+from them into `control-plane/` and `k8s/` remains U3's work. `../src/TRANSFER-MANIFEST.md`
+inventories them; nothing in this module renders or applies them.
 
 ## Environment and account
 

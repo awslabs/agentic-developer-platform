@@ -8,35 +8,29 @@ name: Superplane Domain CI
 # it. Creating a lane is not taking release ownership: U2 keeps the pinned image builds
 # and U3 keeps Terraform, rollout and migrations.
 #
-# This workflow builds no image, deploys nothing and has no AWS identity. It is lint plus
-# unit tests over a source directory. The live acceptance of this module (R1 acc. 4 —
-# resources absent from AWS after the undeploy phase runs) is a separate, credentialed,
-# operator-initiated run against a named account, and it is explicitly deferred: it needs
-# an account/environment and a cleanup owner, neither of which is resolved. A CI job that
-# took a deploy credential to prove a directory lints would have a far larger blast radius
-# than the thing it verifies.
+# This workflow builds no image and deploys nothing. It uses the existing self-hosted
+# arc-runner-org pool, matching the other ADP workflows (owner instruction 2026-09-17).
+# ARC has an ambient platform identity. The test job clears AWS credential provider
+# inputs and uses an empty shared credentials file plus a region-only config so normal
+# SDK calls cannot obtain credentials. This is an offline test environment, not a
+# claim that the runner has no identity or that PR code is sandboxed from the host.
+# Live acceptance remains a separate explicitly authorized run.
 #
-# Runner choice is what makes that credential claim true, and it is deliberate (#5198
-# review). This lane runs on a GitHub-hosted runner, unlike most workflows in this repo,
-# which use the in-cluster `arc-runner-org`. ARC runner pods carry an ambient IRSA
-# identity: their service account is annotated `eks.amazonaws.com/role-arn`
-# (modules/agent-factory/infra/modules/arc-runner/main.tf), so the EKS pod-identity
-# webhook injects AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE into every container and
-# every step runs as adp-<env>-agent-runner-role whether or not the job asks for it. See
-# security-agent-nightly.yml, which relies on exactly that. Omitting
-# `configure-aws-credentials` therefore does NOT make an ARC job credential-free.
-#
-# So a hosted runner is not a stylistic preference here: it is the only way this lane's
-# "no account" property is enforceable rather than aspirational, and it is why the guard
-# at the end of this job can assert the absence of credentials and be right. These tests
-# need no AWS — they monkeypatch environment variables and read files as text — so there
-# is nothing to lose by having no identity, and a real reduction in blast radius: no
-# credential is exposed to a pull_request-triggered job to prove a directory lints.
-#
-# The module is a skeleton today, so the Python job tolerates "no tests yet" — but only
-# for the domain module, and it says so in the log. It does NOT use --passWithNoTests
-# semantics for the gateway-side registration suites: those exist now, and a PR that
+# The module-wide test step tolerates "no tests yet" — but only for the domain module, and
+# it says so in the log. It does NOT use --passWithNoTests semantics for the gateway-side
+# registration suites, or for the transferred suites below: those exist now, and a PR that
 # deleted them must fail rather than pass on an empty glob.
+#
+# TRANSFERRED SOURCE (U22, #5326). This lane also runs the tests that came with the three
+# Superplane components ADP now maintains under `src/` — the API's pytest suite and the
+# controller's and platform monitor's Go suites. That is what makes the ownership transfer
+# real: the tests run here, on every PR, instead of in a repository ADP cannot read.
+#
+# They run in their own steps rather than under the module-wide glob because each component
+# has its own toolchain and dependency set, preserved byte-for-byte from the origin. The
+# module's `conftest.py` excludes `src/` from collection for the same reason, and `.ruff.toml`
+# excludes it from ADP's lint rules — lint only; this lane, its path filters and review all
+# still cover it.
 
 on:
   pull_request:
@@ -83,7 +77,7 @@ on:
       - 'docs/agent-catalogue.md'
   workflow_dispatch:
 
-# No `permissions: id-token` — this lane must never be able to assume an AWS role.
+# No OIDC token permission: lint and unit tests do not need an AWS role.
 permissions:
   contents: read
 
@@ -96,10 +90,27 @@ jobs:
     # Required-check name for U12/U2/U8. Renaming a job silently removes a required check
     # rather than failing, so treat this string as a contract.
     name: Superplane domain tests
-    # GitHub-hosted, NOT arc-runner-org — see the runner note in the header. An ARC runner
-    # would give this job ambient IRSA credentials, which is both unnecessary for lint plus
-    # unit tests and incompatible with the credential guard at the end of this job.
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
+    # Tests use mocks. Disable normal AWS credential discovery in this job only;
+    # the ARC runner retains its platform identity and is not a security sandbox.
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container provider treats presence as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
     steps:
       - uses: actions/checkout@v7
 
@@ -192,7 +203,7 @@ jobs:
         #
         # Nothing here touches AWS: the SkyPilot client, join transport and node resolver
         # are Protocols with in-test fakes, which is what keeps this suite runnable on the
-        # credential-free GitHub-hosted runner this job deliberately uses.
+        # offline test environment this job configures on the existing ARC runner.
         run: |
           set -euo pipefail
           python3 -m pytest -v --tb=short \
@@ -216,6 +227,90 @@ jobs:
           cd modules/domain-apps/superplane/tools/superplane-mcp
           python3 -m pytest tests/ -v --tb=short \
             --cov=superplane_mcp --cov-report=term-missing --cov-fail-under=85
+
+      - name: Run transferred Superplane API tests
+        # The tests that came WITH the transferred source (U22, #5326). This is the step that
+        # makes the ownership transfer real: ADP now runs the API's own 288-test suite on
+        # every PR, rather than pointing at a repository it cannot read and calling that
+        # coverage.
+        #
+        # Run from the component directory with its own dependency set, because that is the
+        # layout upstream wrote these tests for and the transfer preserved every file
+        # byte-for-byte. That is also why they are excluded from the module-wide glob above
+        # (conftest.py's `collect_ignore`): one uninstalled dependency in transferred code
+        # would otherwise abort COLLECTION and report zero results for the other ~1790 tests.
+        #
+        # WHY THE CONSTRAINTS FILE. `pyproject.toml` declares an unbounded
+        # `fastapi>=0.115.0`, so which FastAPI this lane installs depends on the day it runs
+        # — that alone makes it non-reproducible. Concretely, FastAPI 0.137.0 changed what
+        # `app.routes` contains (routers now appear as an `_IncludedRouter` entry rather than
+        # flattened `Route` objects), and one transferred test walks that list looking for
+        # `.path`, so it fails from 0.137.0 onward.
+        #
+        # The routes themselves still work — `app.openapi()` lists 43 paths and `GET /users`
+        # answers 401 rather than 404. This is a test coupled to a changed introspection API,
+        # NOT an app that stopped serving; the distinction is spelled out in
+        # releases/transfer-constraints.txt because the two look identical from the test
+        # output and have very different severity.
+        #
+        # Inherited either way, and pinned here rather than by editing the transferred
+        # pyproject, because byte-fidelity with the origin is what makes the transfer
+        # auditable.
+        #
+        # No AWS: the suite uses aiosqlite in-memory and fakes its clients, which is what
+        # keeps it runnable on this credential-free hosted runner.
+        working-directory: modules/domain-apps/superplane/src/superplane-api
+        run: |
+          set -euo pipefail
+          pip install -e ".[dev]" \
+            -c ../../releases/transfer-constraints.txt
+          # Pinned by directory, but NOT tolerant of an empty glob: these tests exist as of
+          # the transfer, so "no tests found" means a PR deleted them and must fail.
+          COUNT=$(python3 -m pytest tests/ --collect-only -q 2>/dev/null | tail -1)
+          echo "Collected: ${COUNT}"
+          python3 -m pytest tests/ -v --tb=short
+
+      - name: Set up Go for the transferred components
+        # Pinned to the version the transferred go.mod files declare (go 1.23.0), so the
+        # toolchain that judges this code is the one it was written against.
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+          cache-dependency-path: |
+            modules/domain-apps/superplane/src/superplane-controller/go.sum
+            modules/domain-apps/superplane/src/superplane-platform-monitor/go.sum
+
+      - name: Run transferred Superplane controller tests
+        # `go vet` before `go test` because a build-level mistake in transferred code should
+        # be reported as such rather than as a test failure. Both are scoped to this
+        # component: the controller and the monitor are separate modules with separate
+        # go.mod files, and a repo-wide `./...` would not reach either.
+        #
+        # `-count=1` disables Go's test cache, so a green result here always reflects this
+        # commit's code rather than a cached run of an earlier one.
+        #
+        # NOT RUN HERE, and deliberately so: `tests/e2e-controller-test.sh` drives a real
+        # cluster. It transferred with the component (executable bit preserved) and is
+        # inventoried in src/TRANSFER-MANIFEST.md, but it belongs to the credentialed live
+        # acceptance this lane exists to stay out of — running it would give this job the
+        # blast radius the header rules out. `go test ./...` does not pick it up.
+        working-directory: modules/domain-apps/superplane/src/superplane-controller
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go test ./... -count=1 -v
+
+      - name: Run transferred Superplane platform monitor tests
+        # Same NOT-RUN note: `tests/integration_test.go` carries `//go:build integration` and
+        # needs a real PostgreSQL via INTEGRATION_DATABASE_URL, so the default build excludes
+        # it and this lane does not pass `-tags=integration`. That exclusion is the file's own
+        # design, not a suppression added here — but it is stated so the green result is not
+        # read as covering it.
+        working-directory: modules/domain-apps/superplane/src/superplane-platform-monitor
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go test ./... -count=1 -v
 
       - name: Run domain skill tests
         # Skills may ship their own tests (the cyber pack's url-analysis skill does).
@@ -270,17 +365,7 @@ jobs:
             -v --tb=short
 
       - name: Verify no AWS credentials were configured
-        # A guard on the lane's own premise, and one that can actually hold: on a
-        # GitHub-hosted runner there is no ambient identity, so an AWS credential here
-        # could only come from somebody adding one. If that happens this fails and says
-        # why the lane exists without one, rather than the lane quietly becoming a
-        # credentialed job.
-        #
-        # This step is why `runs-on` matters. On arc-runner-org it failed on every run
-        # (#5198 review): the pod-identity webhook injects AWS_ROLE_ARN and
-        # AWS_WEB_IDENTITY_TOKEN_FILE into every container, so the condition below was
-        # unsatisfiable there. Moving the runner is what made the assertion true; do not
-        # move it back and weaken the assertion instead.
+        # Verify the test process environment; the self-hosted runner itself retains IRSA.
         run: |
           set -euo pipefail
           FOUND=""
@@ -293,7 +378,15 @@ jobs:
             fi
           done
           if [ -n "$FOUND" ]; then
-            echo "::error::AWS credentials are present in this job (set:${FOUND}). superplane-domain-ci.yml is an offline lane: lint plus unit tests, no account, no image, no deploy. If a step needs AWS, it does not belong in this lane."
+            echo "::error::AWS credentials are present in this job (set:${FOUND}). superplane-domain-ci.yml is an offline lane: lint plus unit tests, no AWS calls, no image, no deploy. If a step needs AWS, it does not belong in this lane."
             exit 1
           fi
           echo "Confirmed: no AWS credentials in this job's environment."
+
+      - name: Verify the AWS SDK cannot discover credentials
+        run: |
+          python3 - <<'PYTHON'
+          import boto3
+          assert boto3.Session().get_credentials() is None, "Offline tests discovered AWS credentials"
+          print("Confirmed: AWS SDK credential discovery is disabled for this test job.")
+          PYTHON
