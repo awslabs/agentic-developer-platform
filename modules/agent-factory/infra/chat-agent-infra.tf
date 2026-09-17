@@ -240,13 +240,14 @@ resource "aws_sqs_queue" "chat_agent_dlq_fifo" {
 # Session Sweeper Lambda
 # =============================================================================
 
-# Stub Lambda package (skeleton — real code from the TS build replaces this)
-data "archive_file" "session_sweeper_stub" {
+# build-agent-factory-lambdas.sh bundles the real handler before every plan.
+# Missing build output is an error; never activate a TTL consumer with a stub.
+data "archive_file" "session_sweeper" {
   type        = "zip"
-  output_path = "${path.module}/lambda-stubs/session-sweeper.zip"
+  output_path = "${path.module}/.build/session-sweeper.zip"
 
   source {
-    content  = "exports.handler = async (event) => { console.log('stub', JSON.stringify(event)); };"
+    content  = file("${path.module}/.build/session-sweeper/index.js")
     filename = "index.js"
   }
 }
@@ -264,8 +265,8 @@ resource "aws_lambda_function" "session_sweeper" {
     mode = "Active"
   }
 
-  filename         = data.archive_file.session_sweeper_stub.output_path
-  source_code_hash = data.archive_file.session_sweeper_stub.output_base64sha256
+  filename         = data.archive_file.session_sweeper.output_path
+  source_code_hash = data.archive_file.session_sweeper.output_base64sha256
 
   environment {
     variables = {

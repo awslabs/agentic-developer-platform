@@ -192,7 +192,7 @@ resource "aws_iam_policy" "runner_boundary" {
 
 # IRSA role for runner pods
 resource "aws_iam_role" "runner" {
-  name                 = "${var.name_prefix}-runner-role"
+  name                 = var.runner_role_name != "" ? var.runner_role_name : "${var.name_prefix}-runner-role"
   permissions_boundary = aws_iam_policy.runner_boundary.arn
 
   assume_role_policy = jsonencode({

@@ -6,6 +6,12 @@ variable "name_prefix" {
   type = string
 }
 
+variable "runner_role_name" {
+  description = "Explicit role name when preserving an installation or avoiding an existing unrelated role"
+  type        = string
+  default     = ""
+}
+
 variable "oidc_provider_arn" {
   description = "ARN of the shared EKS OIDC provider"
   type        = string

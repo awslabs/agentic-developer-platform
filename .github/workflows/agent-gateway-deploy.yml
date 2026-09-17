@@ -75,8 +75,14 @@ jobs:
       # installation_resolver, which this script vendors from
       # webhook-ingress/lambda/common — without it the ownership layer fails
       # closed on ImportError once IDENTITY_INDEX_TABLE is set.
-      - name: Build ingest Lambda package (deps + vendored modules)
-        run: bash platform/scripts/build-ingest-lambda.sh
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Build factory Lambda packages
+        run: bash platform/scripts/build-agent-factory-lambdas.sh
 
       - name: Terraform init
         working-directory: modules/agent-factory/infra

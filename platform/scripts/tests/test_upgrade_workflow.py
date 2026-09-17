@@ -15,14 +15,15 @@ spec.loader.exec_module(network)
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_scope_updates_only_installed_modules(self):
+    def test_full_upgrade_includes_required_factory_and_discovers_optional_modules(self):
         scenarios = [
-            ({}, ["true", "true", "false", "false"]),
+            ({}, ["true", "true", "true", "false"]),
             ({"GATEWAY_ONLY": "true"}, ["true", "false", "false", "false"]),
             ({"SUPERPLANE_ONLY": "true", "AGENT_CONTEXT_ENABLED": "true"}, ["false"] * 4),
             ({"UPDATE_MODE": "false", "SUPERPLANE_ONLY": "true", "AGENT_CONTEXT_ENABLED": "true"}, ["false"] * 4),
             ({"UPGRADE_MODULES": "platform,gateway,webhook-ingress,agent-factory,agent-context"}, ["true"] * 4),
-            ({"UPGRADE_MODULES": "platform,gateway,agent-context", "SKIP_AGENT_CONTEXT": "true"}, ["true", "false", "false", "false"]),
+            ({"UPGRADE_MODULES": "platform,gateway,agent-context", "SKIP_AGENT_CONTEXT": "true"}, ["true", "false", "true", "false"]),
+            ({"AGENT_FACTORY_ONLY": "true"}, ["false", "true", "true", "false"]),
         ]
         for flags, expected in scenarios:
             env = dict(os.environ, UPDATE_MODE="true", UPGRADE_MODULES="platform,gateway,webhook-ingress")
@@ -32,8 +33,8 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.splitlines(), expected)
 
-    def test_explicit_missing_module_refuses(self):
-        env = dict(os.environ, UPDATE_MODE="true", UPGRADE_MODULES="platform,gateway", AGENT_FACTORY_ONLY="true")
+    def test_explicit_missing_optional_module_refuses(self):
+        env = dict(os.environ, UPDATE_MODE="true", UPGRADE_MODULES="platform,gateway", AGENT_CONTEXT_ONLY="true")
         result = subprocess.run(["bash", "-c", 'set -euo pipefail; fail() { exit 7; }; source "$1"; resolve_deploy_scope', "test",
                                  str(ROOT / "platform/scripts/upgrade-scope.sh")], env=env)
         self.assertEqual(result.returncode, 7)
@@ -68,7 +69,7 @@ curl() { echo '{"status":"healthy"}'; }
         with tempfile.TemporaryDirectory() as tmp:
             calls = Path(tmp) / "calls"
             env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(ROOT / "platform/scripts"),
-                       UPDATE_MODE="true", DEPLOY_GATEWAY="true", SKIP_FRONTEND="false", UPGRADE_RUN_DIR=tmp,
+                       UPDATE_MODE="true", DEPLOY_GATEWAY="true", DEPLOY_FACTORY="true", SKIP_FRONTEND="false", UPGRADE_RUN_DIR=tmp,
                        ENVIRONMENT="test", AWS_REGION="us-east-1", CALLS=str(calls), AUDIT_FAIL=str(audit_fail).lower())
             result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
             return result, calls.read_text().splitlines()
@@ -80,6 +81,24 @@ curl() { echo '{"status":"healthy"}'; }
         self.assertEqual(calls[1:4], ["terraform platform check=false", "terraform gateway-final check=false", "terraform gateway-final check=true"])
         self.assertIn("deploy-frontend.sh", calls[4])
         self.assertIn("upgrade-state.py verify", calls[5])
+        self.assertIn("--require-module agent-factory", calls[5])
+
+    def test_factory_must_be_ready_on_the_intended_image(self):
+        source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
+        start = source.index("  kubectl wait --for=condition=Ready scaledjob/agent-gateway-worker")
+        block = source[start:source.index('\n  if [ "$UPDATE_MODE"', start)]
+        prefix = '''set -euo pipefail
+fail() { echo "$*" >&2; exit 1; }
+kubectl() {
+  if [ "$1" = wait ]; then return "$WAIT_EXIT"; fi
+  echo "$LIVE_IMAGE"
+}
+'''
+        for wait_exit, image, expected in ((0, "release:sha", True), (1, "release:sha", False), (0, "release:old", False)):
+            with self.subTest(wait_exit=wait_exit, image=image):
+                env = dict(os.environ, WAIT_EXIT=str(wait_exit), LIVE_IMAGE=image, AGENT_IMAGE="release:sha")
+                result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
 
     def test_failed_network_audit_stops_before_platform_apply(self):
         result, calls = self.finalize(audit_fail=True)

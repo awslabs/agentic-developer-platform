@@ -1,0 +1,91 @@
+name: Platform Upgrade Tests
+
+on:
+  pull_request:
+    paths:
+      - 'platform/scripts/deploy-all.sh'
+      - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/tests/pricing_policy/test_rollout.py'
+      - 'platform/scripts/build-agent-factory-lambdas.sh'
+      - 'modules/agent-factory/agent/package*.json'
+      - 'modules/agent-factory/agent/src/complex-task-chat/sweepers/**'
+      - 'modules/agent-factory/infra/chat-agent-infra.tf'
+      - 'platform/scripts/upgrade-*.py'
+      - 'platform/scripts/upgrade-*.sh'
+      - 'platform/scripts/terraform-update.sh'
+      - 'platform/scripts/prepare-backends.py'
+      - 'platform/scripts/tests/test_upgrade*.py'
+      - 'platform/scripts/tests/test_update_safety.py'
+      - 'modules/agent-factory/infra/outputs.tf'
+      - 'modules/agent-factory/infra/variables.tf'
+      - 'modules/agent-factory/infra/main.tf'
+      - 'modules/agent-factory/infra/modules/runner-iam/**'
+      - 'modules/agent-factory/infra/modules/lambda-gateway/**'
+      - '.github/workflows/platform-upgrade-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'platform/scripts/deploy-all.sh'
+      - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/tests/pricing_policy/test_rollout.py'
+      - 'platform/scripts/build-agent-factory-lambdas.sh'
+      - 'modules/agent-factory/agent/package*.json'
+      - 'modules/agent-factory/agent/src/complex-task-chat/sweepers/**'
+      - 'modules/agent-factory/infra/chat-agent-infra.tf'
+      - 'platform/scripts/upgrade-*.py'
+      - 'platform/scripts/upgrade-*.sh'
+      - 'platform/scripts/terraform-update.sh'
+      - 'platform/scripts/prepare-backends.py'
+      - 'platform/scripts/tests/test_upgrade*.py'
+      - 'platform/scripts/tests/test_update_safety.py'
+      - 'modules/agent-factory/infra/outputs.tf'
+      - 'modules/agent-factory/infra/variables.tf'
+      - 'modules/agent-factory/infra/main.tf'
+      - 'modules/agent-factory/infra/modules/runner-iam/**'
+      - 'modules/agent-factory/infra/modules/lambda-gateway/**'
+      - '.github/workflows/platform-upgrade-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  factory-lambda-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: bash platform/scripts/build-agent-factory-lambdas.sh
+
+  upgrade-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install PyYAML pytest
+      - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py' -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_update_safety.py -v
+      - run: python -m pytest --confcutdir=modules/gateway/tests/pricing_policy modules/gateway/tests/pricing_policy/test_rollout.py -q
+
+  factory-before-github:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: '1.9.0'
+          terraform_wrapper: false
+      - run: terraform init -backend=false -input=false
+        working-directory: modules/agent-factory/infra/modules/lambda-gateway
+      - run: terraform test -no-color
+        working-directory: modules/agent-factory/infra/modules/lambda-gateway
+      - run: terraform init -backend=false -input=false
+        working-directory: modules/agent-factory/infra/modules/runner-iam
+      - run: terraform test -no-color
+        working-directory: modules/agent-factory/infra/modules/runner-iam

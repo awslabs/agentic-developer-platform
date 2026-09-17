@@ -44,6 +44,8 @@ metadata:
     app.kubernetes.io/name: agent-gateway-worker
     app.kubernetes.io/part-of: agent-gateway
 spec:
+  rollout:
+    strategy: gradual
   jobTargetRef:
     parallelism: 1
     completions: 1

@@ -11,8 +11,9 @@ variable "environment" {
 }
 
 variable "github_org" {
-  description = "GitHub organization name for runner registration"
+  description = "GitHub organization for optional legacy ARC integration; empty when GitHub is not configured"
   type        = string
+  default     = ""
 }
 
 variable "github_repo" {
@@ -25,6 +26,12 @@ variable "runner_namespace" {
   description = "Kubernetes namespace for ARC runner pods"
   type        = string
   default     = "arc-runners"
+}
+
+variable "runner_role_name" {
+  description = "Optional factory IRSA role name; upgrades retain the owned role or avoid legacy CodeBuild name collisions"
+  type        = string
+  default     = ""
 }
 
 variable "gateway_deployed" {

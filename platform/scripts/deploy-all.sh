@@ -31,6 +31,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # (aws sts get-caller-identity, AWS_REGION env, etc.) when no config
 # file is present, so existing self-managed deploys keep working.
 # shellcheck source=load-deploy-config.sh
+# Retain only an explicit override for a missing factory. The config loader's
+# repository-origin fallback is not evidence of a customer's GitHub org.
+FACTORY_GITHUB_ORG_OVERRIDE="${ADP_GITHUB_ORG:-}"
 source "${SCRIPT_DIR}/load-deploy-config.sh"
 
 AWS_REGION="$ADP_REGION"
@@ -233,6 +236,11 @@ if [ "$UPDATE_MODE" = true ]; then
     || fail "Cannot safely discover the existing deployment"
   source "$UPGRADE_RUN_DIR/context.env"
   resolve_deploy_scope
+  if [ "$DEPLOY_FACTORY" = true ]; then
+    python3 "$SCRIPT_DIR/upgrade-state.py" prepare-factory --directory "$UPGRADE_RUN_DIR" \
+      --region "$AWS_REGION" --github-org "$FACTORY_GITHUB_ORG_OVERRIDE" \
+      || fail "Cannot prepare the required agent-factory module"
+  fi
   if [ "$DEPLOY_AGENT_CONTEXT" = true ]; then
     CONTEXT_CONFIG="$ROOT_DIR/modules/agent-context/config.local.env"
     [ -f "$CONTEXT_CONFIG" ] || fail "Existing agent-context requires its original config.local.env (or use --skip-agent-context)"
@@ -1276,6 +1284,7 @@ refresh_credentials
 # fresh deploys where Apps haven't been registered yet.
 if [ "$DEPLOY_FACTORY" = true ]; then
   step "Step 10/12: Deploy agent-factory"
+  bash "$SCRIPT_DIR/build-agent-factory-lambdas.sh"
 
   # Agent factory infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/agent-factory/infra"
@@ -1353,9 +1362,9 @@ EOF
   # --- K8s deploy: runs directly (no CodeBuild needed) ---
   cd "$ROOT_DIR/modules/agent-factory"
   kubectl create namespace adp-gateway-agents --dry-run=client -o yaml | kubectl apply -f -
-  INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
-  RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
-  SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
+  INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url)
+  RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url)
+  SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table)
   AGENT_IMAGE="$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
   sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
       -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
@@ -1363,15 +1372,34 @@ EOF
       -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
       gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
 
+  kubectl wait --for=condition=Ready scaledjob/agent-gateway-worker -n adp-gateway-agents --timeout=300s \
+    || fail "Agent gateway ScaledJob is not ready"
+  DEPLOYED_AGENT_IMAGE=$(kubectl get scaledjob agent-gateway-worker -n adp-gateway-agents \
+    -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].image}')
+  [ "$DEPLOYED_AGENT_IMAGE" = "$AGENT_IMAGE" ] || fail "Agent gateway ScaledJob is not using the intended release"
   if [ "$UPDATE_MODE" = true ]; then
-    # Update mode: mandatory rollout verification for agent-gateway (§2)
-    kubectl rollout status deployment/adp-agent-gateway -n adp-gateway-agents --timeout=300s 2>/dev/null \
-      || warn "Agent gateway rollout status check skipped (ScaledJob — no persistent deployment)"
     ok "Agent gateway deployed (SHA: $IMAGE_TAG)"
   else
     ok "Agent gateway deployed"
     warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
   fi
+
+  # The WebSocket ingest Lambda sends to the chat FIFO queue. Its TypeScript
+  # consumer is a separate image from the legacy Python worker above, although
+  # both use the same ECR repository. Never overwrite one release with the other.
+  step "Step 10c/12: Build and deploy chat agent"
+  CHAT_IMAGE_TAG="${IMAGE_TAG}-chat"
+  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
+    cd "$ROOT_DIR/modules/agent-factory"
+    docker build -f agent/Dockerfile -t "$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG" .
+    docker push "$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG"
+  else
+    IMAGE_TAG="$CHAT_IMAGE_TAG" run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml"
+  fi
+  ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" STATE_BUCKET="$STATE_BUCKET" \
+    AGENT_IMAGE="$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG" \
+    bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
+  ok "Chat agent deployed (SHA: $IMAGE_TAG)"
 else
   step "Step 10/12: Skipping agent-factory"
 fi
@@ -1492,7 +1520,10 @@ else
 fi
 
 if [ "$UPDATE_MODE" = true ]; then
-  python3 "$SCRIPT_DIR/upgrade-state.py" verify --directory "$UPGRADE_RUN_DIR" --region "$AWS_REGION"
+  REQUIRED_MODULE_ARGS=()
+  [ "$DEPLOY_FACTORY" != true ] || REQUIRED_MODULE_ARGS+=(--require-module agent-factory)
+  python3 "$SCRIPT_DIR/upgrade-state.py" verify --directory "$UPGRADE_RUN_DIR" --region "$AWS_REGION" \
+    ${REQUIRED_MODULE_ARGS[@]+"${REQUIRED_MODULE_ARGS[@]}"}
   if [ "$DEPLOY_GATEWAY" = true ]; then
     CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query Parameter.Value --output text)
     curl --fail --silent --show-error --retry 5 --retry-all-errors "https://$CF_DOMAIN/api/health" \
