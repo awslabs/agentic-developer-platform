@@ -86,8 +86,12 @@ __all__ = [
     "OrchestrationExecution",
     "OrchestrationFlow",
     "OrchestrationNode",
+    "OrchestrationAmendmentRequest",
+    "OrchestrationPendingAmendment",
     "OrchestrationPullRequestBinding",
     "OrchestrationWorkClaim",
+    "AmendmentRequestState",
+    "PendingAmendmentState",
     "BindingRole",
     "BindingState",
     "ClaimState",
@@ -210,6 +214,56 @@ class BindingState(StrEnum):
 
     ACTIVE = "active"  # The current binding for its (node, attempt)
     SUPERSEDED = "superseded"  # Replaced by an authorized later binding
+
+
+class AmendmentRequestState(StrEnum):
+    """How far a human's `replan:` request has got towards having an author (#4529).
+
+    The request row exists so that one human replan produces **one** authoring
+    assignment, across a duplicated webhook delivery and across a publish whose ack
+    was lost. That requires the row to be written before the message is sent and to
+    record whether the send happened — which is exactly what these two states are.
+
+    `QUEUED` means "the request is durable and an authoring job is owed". It is
+    written in the same transaction as the `REPLAN_REQUESTED` decision, so it lands
+    or the decision does not. `DISPATCHED` means the envelope reached the queue.
+
+    There is deliberately no `FAILED`: a publish that did not land leaves the row
+    `QUEUED`, which is the retryable state, and a request that can never be
+    published must stay visible as owed work rather than being marked done. Stored
+    as `String(16)`, so a future member needs no DDL.
+    """
+
+    QUEUED = "queued"  # Durable, authoring job owed, envelope not yet published
+    DISPATCHED = "dispatched"  # Envelope published to the authoring queue
+
+
+class PendingAmendmentState(StrEnum):
+    """Where an authored amendment draft stands against its human (#4529).
+
+    Four members, and the distinctions between them are the whole point of the
+    table. A draft is authored by an agent and is **not** a plan: it holds a
+    proposal document and touches no node, edge, claim or accepted-plan row. Only a
+    human naming it in `@agent-engine accept amendment <draft-id>` turns it into an
+    accepted plan version, through the existing `amend_plan` transaction.
+
+    `SUPERSEDED` is not a synonym for `REJECTED`. A rejected draft is one a human
+    declined; a superseded one is a draft that was still pending when a *different*
+    amendment was accepted onto the same flow, so its recorded base version and hash
+    no longer describe what is in force. Both are terminal and neither can be
+    accepted, but only the second can happen without anyone deciding anything — and
+    an operator reading "rejected" on a draft nobody looked at would be reading a
+    decision that was never made.
+
+    Rows are never deleted, for the reason the work-claim row survives release: the
+    draft body is the evidence of what an authoring run proposed, and a deleted row
+    cannot explain why a replan produced nothing. Stored as `String(16)`.
+    """
+
+    PENDING = "pending"  # Authored, awaiting a named human acceptance
+    ACCEPTED = "accepted"  # A human accepted it; `accepted_by_decision_id` is set
+    REJECTED = "rejected"  # A human declined it
+    SUPERSEDED = "superseded"  # Another amendment landed first; the base no longer holds
 
 
 class AppendOnlyViolationError(RuntimeError):
@@ -1141,3 +1195,210 @@ class OrchestrationEnvironmentLease(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
+
+
+class OrchestrationAmendmentRequest(Base, TenantMixin):
+    """One human `replan:` request, and the single authoring job it owes (#4529).
+
+    Before this table, `@agent-engine replan: <text>` wrote a `REPLAN_REQUESTED`
+    decision and stopped: no author was ever summoned, so the reply "the plan is
+    unchanged until someone authors an amendment" described work nobody was doing.
+    This row is what turns the request into an assignment.
+
+    **Why a row and not just the decision.** The decision log is append-only, which
+    is correct for attribution and wrong for "has this been dispatched yet?" — that
+    is mutable per-request state, and expressing it by appending more decisions would
+    make the answer a scan of the log rather than a lookup. More importantly the row
+    is what makes the request *idempotent*: it is written in the same transaction as
+    the decision and before anything is published, so the producer/publisher split
+    the engine already uses (`dispatch_pass`'s commit-then-publish) has a durable
+    place to reconcile against.
+
+    **The uniqueness invariant, and why it is on the decision id.** One replan
+    comment must produce one authoring assignment. `(org_id, replan_decision_id)` is
+    unique, and the decision id is derived from the comment's own committed decision
+    row, so a duplicated webhook delivery of the same comment reconciles onto the
+    same row instead of queueing a second author. Keyed on the decision rather than
+    on the request text, because two humans may legitimately ask for the same change
+    twice and each is a separate authorization; and keyed on the decision rather than
+    the event id, because the decision is what the authoring run's attribution roots
+    in.
+
+    **What the base version and hash are for.** They record what was in force *when
+    the human asked*, so the draft the author eventually produces can be checked
+    against it at acceptance time. An author that took twenty minutes while someone
+    else amended the flow must not have its work applied to a plan it never read —
+    see `OrchestrationPendingAmendment` and `pending_amendments.accept_amendment`.
+    Nullable because a flow may legitimately carry no accepted plan yet.
+
+    **What this row cannot do.** It carries no credential, no token and no repository
+    write authority; `request_text` is the human's bounded words, stored verbatim and
+    never interpreted as an instruction by anything that reads this table. It grants
+    nothing on its own: the authoring run's authority is minted from it in
+    `agentauth/engine.py` under a distinct `replan_request` authority kind that
+    carries no DISPATCH action, precisely so an authoring assignment cannot spawn
+    executing work. `REPLAN_REQUESTED` stays absent from
+    `genesis.APPROVAL_DECISION_KINDS`, so nothing here can root an execution chain.
+    """
+
+    __tablename__ = "orchestration_amendment_requests"
+    __table_args__ = (
+        # THE idempotency invariant, enforced by the database rather than by the
+        # command pass. Two concurrent ticks that both read the same pending comment
+        # row can both pass an application-level "already requested?" check; only one
+        # can win a unique index, and the loser reconciles onto the winner's row.
+        Index("uq_orchestration_amendment_requests_decision", "org_id", "replan_decision_id", unique=True),
+        # An operator's read: this flow's replan requests. Tenant-leading, and
+        # deliberately NOT spelled as `index=True` on the column — that would emit an
+        # implicit index under this very name on `(flow_id)` alone, so the table would
+        # declare two indexes called `ix_orchestration_amendment_requests_flow_id` and
+        # DDL would fail on the second. Every read here is tenant-scoped anyway, so
+        # the composite is the one worth having.
+        Index("ix_orchestration_amendment_requests_flow_id", "org_id", "flow_id"),
+        # The publisher's read: requests still owed an authoring job, per tenant.
+        Index("ix_orchestration_amendment_requests_state", "org_id", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+
+    flow_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_flows.id", ondelete="CASCADE"), nullable=False)
+
+    # The committed `REPLAN_REQUESTED` decision this request was born from. The
+    # attribution root of the authoring run, and the idempotency key above. Not a
+    # ForeignKey: `orchestration_decisions` is append-only and enforced so at the ORM
+    # boundary, and a CASCADE from it would be a delete path into an append-only
+    # table. The value is server-written in the same transaction, so it is not a
+    # dangling reference in practice.
+    replan_decision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+
+    # The human who asked, snapshotted for the same reason `OrchestrationDecision`
+    # snapshots its actor: the authoring assignment is attributed to this act, and
+    # the account's role may change before the draft is accepted.
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # What was in force when the request was made. Both NULL for a flow with no
+    # accepted plan yet.
+    base_plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    base_plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # The human's words, bounded by the parser (`REPLAN_TEXT_MAX_LEN`). DATA, not an
+    # instruction: it is carried into the authoring run's context as the request to
+    # consider, and nothing in this platform executes it.
+    request_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default=AmendmentRequestState.QUEUED.value)
+
+    # The authoring run assigned to this request — the envelope `message_id`, which
+    # is also the `X-Agent-RunId` the author presents when registering its draft.
+    # That is what binds the draft write to this assignment rather than to whoever
+    # holds the route's permission. NULL until the envelope is built.
+    author_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    # When the envelope reached the queue. NULL while the request is still owed.
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OrchestrationPendingAmendment(Base, TenantMixin):
+    """An authored amendment awaiting a named human acceptance (#4529).
+
+    The missing middle of the amendment loop. `orchestration_accepted_plans` holds
+    plans a human accepted; `amend_plan` applies a plan a human is already holding.
+    Neither can hold "an agent proposes this, and no human has said yes yet" — so
+    before this table an authoring agent had nowhere to put its work that was not
+    already in force.
+
+    **This is not a plan, and writing one changes nothing.** A row here holds a
+    proposal *document* and creates no node, no edge, no decision, no work claim and
+    no accepted-plan version. That is why it is a dedicated table rather than a
+    `status` column on `orchestration_accepted_plans`: a nullable-status accepted
+    plan would put un-accepted content in the table every reader treats as the plan
+    of record, and one missing filter anywhere would make an agent's proposal
+    executable. Here the separation is structural — there is nothing to filter,
+    because the graph does not reference this table at all.
+
+    **Acceptance is a human act, by name.** The only path from `PENDING` to
+    `ACCEPTED` is a human commenting `@agent-engine accept amendment <draft-id>` (or
+    the equivalent operator-plane call), which resolves that human's own context and
+    calls the existing `amend_plan` with it in one transaction. Plain
+    `@agent-engine accept` never reaches this table and never selects a draft: an
+    `accept` that quietly picked up "the latest amendment" would apply a plan on a
+    command the human meant for the acceptance gate. There is no agent-accessible
+    acceptance route and no self-accept; `accepted_by`/`accepted_by_decision_id` are
+    written by the server from the accepting human's resolved identity and are not
+    settable by whatever wrote the draft.
+
+    **Why the base version and hash are stored, and compared exactly.** They are what
+    the author was asked to amend. At acceptance they are compared against what is
+    *currently* in force, and a mismatch is a conflict that requires a fresh replan
+    rather than a rebase: silently applying a proposal authored against v3 onto v5
+    would discard v4's changes while reporting success. Two concurrent drafts on one
+    flow therefore admit exactly one current successor — the first accepted wins, and
+    the rest become `SUPERSEDED` because their recorded base no longer describes
+    reality.
+
+    **Idempotency.** `(org_id, flow_id, proposal_hash)` is unique, so a fail-soft
+    author retrying its registration converges on its own row instead of filing a
+    second draft of the same document. `proposal_hash` is the canonical
+    `compile.plan_hash` of `proposal_document`, so the identity is the content rather
+    than the upload.
+    """
+
+    __tablename__ = "orchestration_pending_amendments"
+    __table_args__ = (
+        # Idempotent registration: the same document registered twice on one flow is
+        # one draft. Enforced in the database because two concurrent registrations
+        # can both pass an application-level existence read.
+        Index("uq_orchestration_pending_amendments_proposal", "org_id", "flow_id", "proposal_hash", unique=True),
+        # The acceptance path's read: this flow's drafts by status. Tenant-leading, and
+        # this is the only flow-keyed index on the table — a plain `index=True` on
+        # `flow_id` would add a second, narrower duplicate of this one's prefix.
+        Index("ix_orchestration_pending_amendments_flow_state", "org_id", "flow_id", "state"),
+        # Registration's binding read: the draft owed by one authoring run.
+        Index("ix_orchestration_pending_amendments_request", "org_id", "request_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+
+    flow_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_flows.id", ondelete="CASCADE"), nullable=False)
+
+    # The human request that commissioned this draft. Non-NULL and CASCADE-free:
+    # every draft traces to a replan a human made, and an author that presents no
+    # resolvable request is refused at the route rather than filing an orphan.
+    request_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_amendment_requests.id", ondelete="CASCADE"), nullable=False)
+    # The run that registered it, for provenance and duplicate convergence. Compared
+    # against the request's `author_run_id` at registration time, which is what makes
+    # the write bound to the protected assignment rather than to route permission.
+    author_run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # What this draft was authored against. Compared exactly at acceptance.
+    base_plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    base_plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # The proposed plan, verbatim, and its canonical hash. Stored rather than
+    # referenced for the same reason `plan_document` is: acceptance must not depend
+    # on a branch artifact staying unedited between authoring and the human's yes.
+    proposal_document: Mapped[dict] = mapped_column(JSON_DOC, nullable=False)
+    proposal_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default=PendingAmendmentState.PENDING.value)
+
+    # --- Acceptance provenance. Server-written, never author-supplied. ---
+    # The human whose command applied this draft, and the `PLAN_AMENDED` decision
+    # `amend_plan` wrote. Both NULL while the draft is pending, and both remain NULL
+    # on a rejected or superseded draft — a terminal draft that was never applied
+    # must not carry an acceptance actor.
+    accepted_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    accepted_by_decision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # The plan version this draft became. Read back by a repeated accept so the
+    # replay reports the original result rather than re-amending.
+    accepted_plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # The draft that displaced this one, when a different amendment landed first.
+    # Set only alongside `SUPERSEDED`, so a superseded draft explains itself without
+    # joining the decision log.
+    superseded_by_draft_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    # When the draft reached a terminal state, whichever one. NULL while pending.
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
