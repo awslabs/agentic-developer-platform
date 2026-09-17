@@ -69,6 +69,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ARC's system Python is PEP 668 externally managed. Use the same managed
+      # interpreter pattern as the repository's other Python workflows so installing
+      # the resolver's only dependency never writes into the runner image.
+      - name: Setup Python for the lock resolver
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       - name: Install PyYAML for the lock resolver
         run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
 
