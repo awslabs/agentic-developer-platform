@@ -470,6 +470,8 @@ def requires_approval(
     *,
     approved_hourly_cost: float | None = None,
     incumbent: PriceQuote | None = None,
+    incumbent_request: CapacityRequest | None = None,
+    incumbent_pricing_mode: PricingMode | None = None,
     pricing_mode: PricingMode | None = None,
 ) -> tuple[ApprovalRequired, ...]:
     """Which change classes in this placement need an approval the adapter lacks.
@@ -491,15 +493,15 @@ def requires_approval(
     ):
         needed.append(ApprovalRequired.LOCATION)
 
+    request_settings_changed = incumbent_request is not None and (
+        incumbent_request.required_image != request.required_image
+        or incumbent_request.required_network != request.required_network
+    )
     settings_changed = (
         (request.required_image and request.required_image not in quote.images)
         or (request.required_network and request.required_network not in quote.networks)
-        # Spot when the request forbade it is a settings change, not a cheaper price:
-        # a preemptible node has different failure behavior, which is the caller's
-        # decision to make.
+        or request_settings_changed
     )
-    if settings_changed:
-        needed.append(ApprovalRequired.SETTINGS)
 
     # Only an *increase* needs approval. Spending less than approved is not a change
     # anyone needs to authorize, and gating it would make every price drop block.
@@ -509,6 +511,15 @@ def requires_approval(
             "pricing_mode must match the mode selected for this request and quote"
         )
     mode = pricing_mode or expected_mode
+    if incumbent_pricing_mode is not None:
+        if not isinstance(incumbent_pricing_mode, PricingMode):
+            raise ContractViolation(
+                "incumbent_pricing_mode must be a PricingMode when set"
+            )
+        settings_changed = settings_changed or incumbent_pricing_mode is not mode
+    if settings_changed:
+        needed.append(ApprovalRequired.SETTINGS)
+
     effective_cost = _effective_hourly_cost(quote, mode)
     if (
         approved_hourly_cost is not None
@@ -610,6 +621,8 @@ def place(
     max_age: timedelta = DEFAULT_QUOTE_MAX_AGE,
     approved_hourly_cost: float | None = None,
     incumbent: PriceQuote | None = None,
+    incumbent_request: CapacityRequest | None = None,
+    incumbent_pricing_mode: PricingMode | None = None,
 ) -> PlacementDecision:
     """Choose a placement: eligibility, then freshness, then baseline cost ordering.
 
@@ -653,6 +666,8 @@ def place(
             selected,
             approved_hourly_cost=approved_hourly_cost,
             incumbent=incumbent,
+            incumbent_request=incumbent_request,
+            incumbent_pricing_mode=incumbent_pricing_mode,
             pricing_mode=selected_mode,
         )
 
@@ -764,6 +779,7 @@ def relocate(
     reason: str,
     *,
     interrupted_pricing_mode: PricingMode,
+    incumbent_request: CapacityRequest | None = None,
     max_age: timedelta = DEFAULT_QUOTE_MAX_AGE,
     approved_hourly_cost: float | None = None,
 ) -> tuple[PlacementDecision, RelocationRecord | None]:
@@ -786,6 +802,8 @@ def relocate(
         max_age=max_age,
         approved_hourly_cost=approved_hourly_cost,
         incumbent=interrupted,
+        incumbent_request=incumbent_request or request,
+        incumbent_pricing_mode=interrupted_pricing_mode,
     )
     if not decision.allocatable or decision.selected is None:
         return decision, None
