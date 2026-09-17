@@ -1,7 +1,8 @@
+import { deploymentSetting } from '@/config/runtime';
 import type { ApiError, RequestOptions } from '@/types/api';
 import { getAccessToken, clearTokens } from './auth';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const API_BASE_URL = deploymentSetting('VITE_API_URL') || '/api';
 
 export class ApiClient {
   private baseUrl: string;

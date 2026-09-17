@@ -3,6 +3,11 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+  python3 "$SCRIPT_DIR/release/artifacts.py" verify-prepared --directory "$ADP_RELEASE_DIR"
+  exit 0
+fi
+
 bash "$SCRIPT_DIR/build-ingest-lambda.sh"
 cd "$ROOT_DIR/modules/agent-factory/agent"
 npm ci --include=dev --no-audit --no-fund

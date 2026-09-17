@@ -140,6 +140,16 @@ for _scope in "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY"; do
 done
 [ "$_SCOPE_COUNT" -le 1 ] || fail "Choose only one scope flag"
 
+# Prepared releases only enter through release/upgrade.py, which checks the
+# source, account, manifest and every artifact before any infrastructure apply.
+if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+  [ "$UPDATE_MODE" = true ] && [ "$ENVIRONMENT" = dev ] && [ "$AWS_REGION" = us-east-1 ] || fail "Prepared releases require --update --env dev --region us-east-1"
+  for flag in "$DESTROY" "$CI_MODE" "$LOCAL_MODE" "$CONFIRM_DESTRUCTIVE" "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY" "$SUPERPLANE_ONLY" "$SKIP_FRONTEND" "$SKIP_BROKER" "$SKIP_ADMIN_BOOTSTRAP" "$SKIP_WEBHOOK_INGRESS" "$SKIP_AGENT_CONTEXT" "$SKIP_SUPERPLANE"; do
+    [ "$flag" = false ] || fail "Release upgrades require the full deployment and safety gates"
+  done
+  python3 "$SCRIPT_DIR/release/artifacts.py" verify-prepared --directory "$ADP_RELEASE_DIR"
+fi
+
 # =============================================================================
 # Helper: terraform_update_apply — plan-gated apply for update mode (§4)
 # =============================================================================
@@ -230,12 +240,16 @@ CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
 if [ "$UPDATE_MODE" = true ]; then
   step "Update mode: precondition checks"
 
-  export UPGRADE_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/adp-upgrade-${ACCOUNT_ID}.XXXXXX")"
+  export UPGRADE_RUN_DIR="${UPGRADE_RUN_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/adp-upgrade-${ACCOUNT_ID}.XXXXXX")}"
   python3 "$SCRIPT_DIR/upgrade-state.py" prepare --directory "$UPGRADE_RUN_DIR" \
     --account "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
     || fail "Cannot safely discover the existing deployment"
   source "$UPGRADE_RUN_DIR/context.env"
   resolve_deploy_scope
+  if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+    [ "$DEPLOY_AGENT_CONTEXT" = false ] && [ "$SUPERPLANE_ENABLED" = false ] || fail "This release contract does not cover agent-context or superplane"
+    [ "$DEPLOY_GATEWAY" = true ] && [ "$DEPLOY_FACTORY" = true ] && [ "$DEPLOY_WEBHOOK" = true ] || fail "Release upgrade requires gateway, factory and webhook ingress"
+  fi
   if [ "$DEPLOY_FACTORY" = true ]; then
     python3 "$SCRIPT_DIR/upgrade-state.py" prepare-factory --directory "$UPGRADE_RUN_DIR" \
       --region "$AWS_REGION" --github-org "$FACTORY_GITHUB_ORG_OVERRIDE" \
@@ -285,6 +299,7 @@ fi
 SOURCE_SHA=$(git -C "$ROOT_DIR" rev-parse HEAD) || fail "Cannot pin deployment to a source commit"
 export IMAGE_TAG="$SOURCE_SHA"
 ok "Image tag for this deployment: $IMAGE_TAG"
+GATEWAY_IMAGE="${ADP_RELEASE_GATEWAY_IMAGE:-${REGISTRY}/adp-gateway:${IMAGE_TAG}}"
 
 # =============================================================================
 # Helper: refresh AWS credentials (cross-account / short-lived sessions)
@@ -356,6 +371,10 @@ ensure_codebuild_role() {
 # Uses codebuild-run.sh which uploads source to a per-build-unique S3 key
 # and passes --source-location-override, eliminating the shared-key race.
 run_codebuild() {
+  if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+    ok "Using verified release image; no build required for $1"
+    return 0
+  fi
   local PROJECT_NAME="$1"
   local BUILDSPEC_FILE="$2"  # unused — buildspec is baked into the project
 
@@ -1072,19 +1091,19 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
       -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
       -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
-      -e "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${IMAGE_TAG}|g" \
+      -e "s|REPLACE_WITH_GATEWAY_IMAGE|${GATEWAY_IMAGE}|g" \
       k8s/deployment.yaml | kubectl apply -f - -n adp-gateway
 
   if [ "$UPDATE_MODE" = true ]; then
     # Update mode: SHA-tagged image + mandatory rollout + health check (§2, §8)
     CURRENT_IMAGE=$(kubectl get deployment/bedrockgateway -n adp-gateway \
       -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
-    if [ "$CURRENT_IMAGE" = "${REGISTRY}/adp-gateway:${IMAGE_TAG}" ]; then
+    if [ "$CURRENT_IMAGE" = "${GATEWAY_IMAGE}" ]; then
       echo "Image tag unchanged. Forcing rollout restart..."
       kubectl rollout restart deployment/bedrockgateway -n adp-gateway
     else
       kubectl set image deployment/bedrockgateway \
-        bedrockgateway="${REGISTRY}/adp-gateway:${IMAGE_TAG}" -n adp-gateway
+        bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
     fi
     kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s \
       || fail "Gateway rollout failed. Check: kubectl describe deployment/bedrockgateway -n adp-gateway"
@@ -1098,11 +1117,11 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
 
   else
     # Fresh deployments require the same release-image readiness as updates.
-    kubectl set image deployment/bedrockgateway bedrockgateway="${REGISTRY}/adp-gateway:${IMAGE_TAG}" -n adp-gateway
+    kubectl set image deployment/bedrockgateway bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
     kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || fail "Gateway rollout not complete"
   fi
 
-  PRICING_RELEASE_IMAGE="${REGISTRY}/adp-gateway:${IMAGE_TAG}"
+  PRICING_RELEASE_IMAGE="${GATEWAY_IMAGE}"
   python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" migrate \
     --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
     --expected-image "$PRICING_RELEASE_IMAGE" \
@@ -1365,7 +1384,7 @@ EOF
   INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url)
   RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url)
   SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table)
-  AGENT_IMAGE="$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
+  AGENT_IMAGE="${ADP_RELEASE_AGENT_GATEWAY_IMAGE:-$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG}"
   sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
       -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
       -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
@@ -1397,7 +1416,7 @@ EOF
     IMAGE_TAG="$CHAT_IMAGE_TAG" run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml"
   fi
   ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" STATE_BUCKET="$STATE_BUCKET" \
-    AGENT_IMAGE="$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG" \
+    AGENT_IMAGE="${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG}" \
     bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
   ok "Chat agent deployed (SHA: $IMAGE_TAG)"
 else

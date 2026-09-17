@@ -1,0 +1,83 @@
+name: Upgrade one ADP account from a release
+on:
+  workflow_call:
+    inputs:
+      environment: { required: true, type: string }
+      account: { required: true, type: string }
+      release_id: { required: true, type: string }
+      manifest_sha256: { required: true, type: string }
+      source_sha: { required: true, type: string }
+      integration_run_id: { required: false, type: string, default: '' }
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  upgrade:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    # Account isolation. Approval is the authorized manual dispatch of
+    # adp-release-promote.yml (private-repo plan lacks native reviewers).
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: adp-release-upgrade-${{ inputs.account }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/release-tools
+      - name: Verify target and protections before assuming AWS role
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+          TARGET_ACCOUNT: ${{ inputs.account }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python platform/scripts/release/workflow.py --check-target
+          if [ "$TARGET_ENVIRONMENT" = pre-production ]; then
+            python platform/scripts/release/workflow.py --check-approver
+          fi
+          python platform/scripts/release/bootstrap.py --verify-github
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.account }}:role/adp-release-deploy
+          aws-region: us-east-1
+          role-duration-seconds: 14400
+          allowed-account-ids: ${{ inputs.account }}
+      - name: Retrieve and verify every artifact
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+          MANIFEST_SHA: ${{ inputs.manifest_sha256 }}
+        run: python platform/scripts/release/storage.py download --directory "$RUNNER_TEMP/release" --release-id "$RELEASE_ID" --manifest-sha256 "$MANIFEST_SHA"
+      - name: Use the release's exact reviewed source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python platform/scripts/release/workflow.py --directory "$RUNNER_TEMP/release" --checkout
+      - uses: actions/download-artifact@v7
+        if: inputs.environment == 'pre-production'
+        with:
+          name: acceptance-integration-test
+          path: ${{ runner.temp }}/integration-evidence
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.integration_run_id }}
+      - name: Full upgrade and mandatory acceptance
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          args=()
+          if [ "$TARGET_ENVIRONMENT" = pre-production ]; then
+            args+=(--integration-evidence "$RUNNER_TEMP/integration-evidence/acceptance.json")
+          fi
+          python platform/scripts/release/upgrade.py --directory "$RUNNER_TEMP/release" --environment "$TARGET_ENVIRONMENT" --evidence-directory "$RUNNER_TEMP/evidence" "${args[@]}"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: acceptance-${{ inputs.environment }}
+          path: ${{ runner.temp }}/evidence/acceptance.json
+          if-no-files-found: warn
+          retention-days: 90

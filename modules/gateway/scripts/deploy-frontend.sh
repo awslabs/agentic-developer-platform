@@ -60,6 +60,11 @@ warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 run()  { if [ "$DRY_RUN" = true ]; then echo -e "${BLUE}[dry-run]${NC} $*"; else eval "$@"; fi; }
 
+if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+  python3 "$MODULE_ROOT/../../platform/scripts/release/artifacts.py" frontend --directory "$ADP_RELEASE_DIR"
+  exit 0
+fi
+
 command -v aws &>/dev/null || fail "AWS CLI not installed"
 command -v npm &>/dev/null || fail "npm not installed (Node >= 22)"
 [ -d "$FRONTEND_DIR" ] || fail "Frontend dir not found: $FRONTEND_DIR"

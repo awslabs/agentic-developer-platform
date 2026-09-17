@@ -6,6 +6,8 @@
  * 2. "Sign in with Email" — redirects to Cognito hosted UI (default provider selection)
  */
 
+import { deploymentSetting } from '@/config/runtime';
+
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
@@ -21,7 +23,7 @@ import { Button } from '@/components/ui/Button';
 
 export default function Login() {
   const location = useLocation();
-  const apiUrl = new URL(import.meta.env.VITE_API_URL || '/api', window.location.origin).href.replace(/\/$/, '');
+  const apiUrl = new URL(deploymentSetting('VITE_API_URL') || '/api', window.location.origin).href.replace(/\/$/, '');
   const shellQuote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
   const installCommand = `curl -fsSL ${shellQuote(`${apiUrl}/cli/install.sh`)} | sh -s -- --gateway-url ${shellQuote(apiUrl)}`;
   const [error, setError] = useState<string | null>(null);

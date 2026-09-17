@@ -1,0 +1,56 @@
+name: Approve ADP Pre-production Promotion
+on:
+  workflow_dispatch:
+    inputs:
+      integration_run_id:
+        description: 'Successful ADP Release and Promote run ID. Dispatching approves that exact release for pre-production.'
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  approval:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.evidence.outputs.release_id }}
+      manifest_sha256: ${{ steps.evidence.outputs.manifest_sha256 }}
+      source_sha: ${{ steps.evidence.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Verify manual approval and successful integration run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTEGRATION_RUN_ID: ${{ inputs.integration_run_id }}
+        run: |
+          python platform/scripts/release/workflow.py --check-approver
+          python platform/scripts/release/workflow.py --check-integration-run
+      - uses: actions/download-artifact@v7
+        with:
+          name: acceptance-integration-test
+          path: ${{ runner.temp }}/integration-evidence
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.integration_run_id }}
+      - name: Select the exact release that passed integration
+        id: evidence
+        run: python platform/scripts/release/workflow.py --integration-evidence "$RUNNER_TEMP/integration-evidence/acceptance.json"
+  promote:
+    needs: approval
+    uses: ./.github/workflows/adp-release-upgrade.yml
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    with:
+      environment: pre-production
+      account: '615296308642'
+      integration_run_id: ${{ inputs.integration_run_id }}
+      release_id: ${{ needs.approval.outputs.release_id }}
+      manifest_sha256: ${{ needs.approval.outputs.manifest_sha256 }}
+      source_sha: ${{ needs.approval.outputs.source_sha }}

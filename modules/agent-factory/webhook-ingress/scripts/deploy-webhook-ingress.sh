@@ -102,7 +102,10 @@ CODEBUILD_RUN="${REPO_ROOT}/platform/scripts/codebuild-run.sh"
 # [1/3] Build the agent-worker image (adp-agent-runtime)
 # ---------------------------------------------------------------------------
 step "[1/3] Build agent-worker image (adp-agent-runtime)"
-if [ "$SKIP_IMAGE" = true ]; then
+if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+  python3 "$REPO_ROOT/platform/scripts/release/artifacts.py" verify-prepared --directory "$ADP_RELEASE_DIR"
+  ok "Using verified release worker image"
+elif [ "$SKIP_IMAGE" = true ]; then
   warn "Skipping image build (--skip-image)."
 elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] codebuild-run.sh adp-${ENVIRONMENT}-agent-runtime (with source-location-override)"
@@ -123,7 +126,9 @@ fi
 # [2/3] Package + upload the webhook Lambda zip
 # ---------------------------------------------------------------------------
 step "[2/3] Package + upload webhook Lambda zip"
-if [ "$SKIP_LAMBDA" = true ]; then
+if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+  ok "Using verified release Lambda packages already published to S3"
+elif [ "$SKIP_LAMBDA" = true ]; then
   warn "Skipping Lambda packaging (--skip-lambda)."
 elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] bash scripts/package-lambdas.sh"
@@ -245,7 +250,7 @@ else
     TF_ARGS=(
       -var="environment=${ENVIRONMENT}"
       -var="aws_region=${AWS_REGION}"
-      -var="agent_image=${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}"
+      -var="agent_image=${ADP_RELEASE_AGENT_RUNTIME_IMAGE:-${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}}"
     )
     if [ "$UPDATE_MODE" = false ]; then
       TF_ARGS+=(-var="gateway_api_url=${GATEWAY_API_URL}")
