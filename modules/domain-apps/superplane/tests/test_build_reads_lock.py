@@ -283,6 +283,34 @@ class TestWorkflowsReadTheLock:
         parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
         assert parsed["env"]["LOCK_IMAGE"] == image
 
+    def test_workflow_uses_managed_python_before_installing_pyyaml(
+        self, image: str, workflow: Path
+    ) -> None:
+        """ARC's PEP 668 system Python must not receive workflow dependencies."""
+        parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        steps = parsed["jobs"]["build"]["steps"]
+        setup_indexes = [
+            index
+            for index, step in enumerate(steps)
+            if str(step.get("uses", "")).startswith("actions/setup-python@")
+            and str((step.get("with") or {}).get("python-version", "")) == "3.12"
+        ]
+        install_indexes = [
+            index
+            for index, step in enumerate(steps)
+            if "pyyaml" in str(step.get("run", "")).lower()
+        ]
+        assert len(setup_indexes) == 1, (
+            f"{workflow.name} must select one managed Python 3.12 interpreter"
+        )
+        assert len(install_indexes) == 1, (
+            f"{workflow.name} must install PyYAML exactly once"
+        )
+        assert setup_indexes[0] < install_indexes[0], (
+            f"{workflow.name} installs PyYAML before selecting managed Python; "
+            "the ARC system interpreter rejects this under PEP 668"
+        )
+
     def test_workflow_is_triggered_by_the_lock_file(
         self, image: str, workflow: Path
     ) -> None:
