@@ -634,19 +634,57 @@ class TestDeploymentEndpoints:
 
 
 class TestHeartbeatEndpoint:
-    """Test POST /internal/heartbeat."""
+    """Test POST /internal/heartbeat.
+
+    This route now requires the shared internal token (issue #5055, U14). It
+    previously had NO authentication, so any caller able to reach the service
+    could write cluster health for any cluster id — which feeds the reconciler
+    and the Degraded transitions derived from `last_heartbeat`. Three of its four
+    siblings under the same `/internal` prefix already enforced the token.
+
+    The two tests below therefore now send it. `test_heartbeat_requires_token` is
+    the regression guard for the hole itself.
+    """
 
     @pytest.mark.asyncio
-    async def test_heartbeat_validates_body(self, client):
-        """Invalid body returns 422."""
+    async def test_heartbeat_requires_token(self, client):
+        """No credential is refused, and as 401 rather than a validation error."""
+        response = await client.post(
+            "/internal/heartbeat",
+            json={
+                "cluster_id": str(uuid.uuid4()),
+                "health_status": "Healthy",
+                "node_count": 3,
+            },
+        )
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_rejects_wrong_token(self, client, internal_token_header):
+        """A wrong shared token is refused."""
+        response = await client.post(
+            "/internal/heartbeat",
+            json={
+                "cluster_id": str(uuid.uuid4()),
+                "health_status": "Healthy",
+                "node_count": 3,
+            },
+            headers={"Authorization": "Bearer not-the-internal-token"},
+        )
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_validates_body(self, client, internal_token_header):
+        """Invalid body returns 422 — after authentication succeeds."""
         response = await client.post(
             "/internal/heartbeat",
             json={"cluster_id": "not-a-uuid", "health_status": "Invalid"},
+            headers=internal_token_header,
         )
         assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_heartbeat_valid_body_shape(self, client):
+    async def test_heartbeat_valid_body_shape(self, client, internal_token_header):
         """Valid body shape is accepted (even if cluster doesn't exist in test DB)."""
         response = await client.post(
             "/internal/heartbeat",
@@ -656,9 +694,9 @@ class TestHeartbeatEndpoint:
                 "actual_state_json": {"nodes": 3},
                 "node_count": 3,
             },
+            headers=internal_token_header,
         )
-        # Will fail with 500 because no real DB, but the schema validation should pass
-        # (status could be 404 if DB is available but cluster doesn't exist)
+        # Schema validation passes; the cluster does not exist in the test DB.
         assert response.status_code in (404, 500)
 
 

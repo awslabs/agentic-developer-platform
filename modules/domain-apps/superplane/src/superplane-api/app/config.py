@@ -30,6 +30,32 @@ class Settings(BaseSettings):
     cognito_app_client_id: str = ""
     cognito_app_client_secret: str = ""
 
+    # Domain auth enforcement (issue #5055, U14 — R5/R6).
+    #
+    # `domain_auth_enforced` is the switch, and it is OFF by default here on
+    # purpose. Retiring the legacy self-signed JWT path is U21's conditional
+    # story, so this story adds the strict path beside it rather than deleting
+    # the old one. What the flag does NOT do is soften the strict path: when it
+    # is on there is no fallback to the legacy validator, because a permissive
+    # alternate validator that answers the same question is a bypass.
+    #
+    # There is deliberately no default issuer or client allowlist. An empty
+    # allowlist is indistinguishable from having no policy at all, so
+    # `build_domain_policy()` refuses to start with enforcement on and either
+    # value unset (see app/auth.py) instead of quietly admitting every client
+    # in the user pool.
+    domain_auth_enforced: bool = False
+    cognito_issuer: str = ""
+    cognito_jwks_url: str = ""
+    domain_auth_allowed_client_ids: list[str] = []
+
+    # Recorded, never inferred (R5 acc. 5). Whether the *target environment*
+    # fronts this API with Cognito is a per-environment fact; reading a code
+    # default in this repository and calling it the environment's state is the
+    # inference that criterion forbids. Asserted by the deployment, reported by
+    # GET /health so a reader can observe it rather than assume it.
+    cognito_enabled: bool = False
+
     # JWT Auth
     jwt_secret_key: str = "CHANGE-ME-IN-PRODUCTION"
     jwt_algorithm: str = "HS256"

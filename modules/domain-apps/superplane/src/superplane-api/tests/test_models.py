@@ -24,6 +24,11 @@ def test_all_tables_registered():
         "research_proposals",
         "budget_alerts",
         "users",
+        # Per-workspace authorization grants (issue #5055, U14 — R6). The record
+        # that a named principal may act on one workspace. Before it there was no
+        # schema able to express that, so authority was the caller's organization
+        # and every org-mate reached every workspace in it.
+        "workspace_grants",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables, (

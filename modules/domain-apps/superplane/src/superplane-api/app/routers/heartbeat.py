@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_session
 from app.models.cluster import Cluster
 from app.models.event import Event
+from app.routers.internal import verify_internal_token
 from app.schemas.proxy import HeartbeatRequest, HeartbeatResponse
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/internal", tags=["internal"])
 
 
-@router.post("/heartbeat", response_model=HeartbeatResponse)
+@router.post(
+    "/heartbeat",
+    response_model=HeartbeatResponse,
+    # Issue #5055 (U14). This route had NO authentication, while three of its
+    # five siblings under the same `/internal` prefix enforced the shared token
+    # and the module docstring already claimed the prefix was machine-to-machine
+    # only. Unauthenticated, anyone able to reach the service could write cluster
+    # health for any cluster id — which drives the reconciler and the Degraded
+    # transitions computed from `last_heartbeat`.
+    dependencies=[Depends(verify_internal_token)],
+)
 async def ingest_heartbeat(
     body: HeartbeatRequest,
     db: AsyncSession = Depends(get_session),

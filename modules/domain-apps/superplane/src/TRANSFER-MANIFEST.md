@@ -31,8 +31,8 @@ made every future comparison a manual exercise.
 
 **161 files total.** At adoption, every file was byte-identical to the origin revision,
 verified by comparing Git blob IDs rather than by eye or by diff summary (`checked=161
-mismatches=0`). The maintained tree now has intentional, test-only divergences,
-recorded below. File modes were preserved by transferring through `git archive | tar`
+mismatches=0`). The maintained tree now has intentional divergences, recorded below —
+test-only in the controller, and behavioral in `superplane-api` from U14 (#5055) onward. File modes were preserved by transferring through `git archive | tar`
 rather than `cp`: `superplane-controller/tests/e2e-controller-test.sh` is mode `100755`
 in both trees, and a lost executable bit on a test entrypoint is the kind of difference
 that surfaces only when someone tries to run it.
@@ -104,7 +104,7 @@ context and checks the directory and its Dockerfile exist in the checkout.
 
 | Component | Command | Notes |
 |---|---|---|
-| API | `cd src/superplane-api && pip install -e ".[dev]" -c ../../releases/transfer-constraints.txt && python3 -m pytest tests/` | **288 pass.** The constraints file is required — see [Inherited findings](#inherited-findings) |
+| API | `cd src/superplane-api && pip install -e ../../auth && pip install -e ".[dev]" -c ../../releases/transfer-constraints.txt && python3 -m pytest tests/` | **366 pass** (288 at adoption; U14 #5055 added the domain-auth suite). The policy package install is required from U14 onward, and so is the constraints file — see [Inherited findings](#inherited-findings) |
 | Controller | `cd src/superplane-controller && go vet ./... && go test ./... -count=1` | Go 1.23 (the version its `go.mod` declares) |
 | Platform monitor | `cd src/superplane-platform-monitor && go vet ./... && go test ./... -count=1` | Go 1.23 |
 | Rest of the module | `python3 -m pytest modules/domain-apps/superplane/ -m "not superplane_live"` | Excludes `src/` by `conftest.py`'s `collect_ignore` — see [Boundaries](#boundaries) |
@@ -174,6 +174,42 @@ constant-folded expectation, causing the otherwise-correct test to fail determin
 The tolerance remains far below a meaningful currency change and leaves production code
 unchanged.
 
+#### U14 (#5055) — domain token policy and workspace authorization enforcement
+
+The first **behavioral** divergence in `superplane-api`, as distinct from the test-only
+ones above. Recorded here because the sentence below requires it, and because a reviewer
+diffing the maintained tree against the pinned reference will now get a non-empty result
+for these paths and should find the reason stated rather than have to infer it.
+
+New files (no upstream counterpart): `app/auth.py`, `app/domain_guard.py`,
+`app/endpoint_inventory.py`, `app/models/workspace_grant.py`,
+`alembic/versions/010_add_workspace_grants.py`, `scripts/stage-domain-auth.sh`.
+
+Modified: `app/main.py` (registers the guard), `app/config.py` (enforcement settings,
+including `cognito_enabled` recorded rather than inferred), `app/middleware/auth.py`
+(reads the guard's verified caller instead of re-deriving identity; the legacy HS256
+decoder is consulted only when no verified caller exists — it is not a fallback for a
+rejected one), `app/models/__init__.py`, `app/routers/{internal,heartbeat,cost}.py`
+(the two `/internal/*` routes that had no authentication, plus a missing-header 401 that
+was previously a 422), `app/routers/research.py` and `app/services/scanner.py` (the
+recorded actor comes from the verified caller, and every research read, aggregate and
+write is scoped through the row's server-held workspace tenant; null/dangling legacy
+rows fail closed), `tests/{test_auth.py,conftest.py,test_models.py,test_proxy.py}`.
+
+Outside `src/`: `.github/workflows/superplane-domain-ci.yml` now runs
+`pip install -e ../../auth` before the API's own install. `app/auth.py` imports the
+policy package, and that package is not on any index, so the transferred suite no longer
+installs from its `pyproject.toml` alone. Recorded here because it is the one place the
+transferred tree's dependencies stopped being self-contained.
+
+Enforcement is off by default (`domain_auth_enforced`), so this changes no deployed
+behavior until an operator turns it on with an issuer, a JWKS URL and a client
+allowlist — a missing allowlist fails startup rather than defaulting to "any client".
+Retiring the legacy identity path is U21's separate conditional story and is NOT done
+here.
+
+#### U16b (#5057) — signed EKS auth and mandatory TLS verification
+
 `src/superplane-api/app/services/` gains `eks_auth.py`, and `proxy.py`, `kubeconfig.py`
 and `routers/workspaces.py` diverge from the adopted revision, for the R12 cluster-
 authentication repair (U16b, #5057). The adopted revision sent the STS `SessionToken`
@@ -205,9 +241,9 @@ not made available to CI as a build or comparison input.
 
 ### Migration ownership is unchanged
 
-`src/superplane-api/alembic/` (13 files under `versions/`, with `alembic.ini`) is the
-**only** migration directory this transfer brings, and it belongs to the API's own
-database. It does not touch the gateway's migrations or any shared schema, and nothing
+`src/superplane-api/alembic/` (16 files under `versions/`, with `alembic.ini` — 13 at the
+transfer, two added by U13, plus U14's `010_add_workspace_grants.py`) is the **only** migration directory
+this transfer brings, and it belongs to the API's own database. It does not touch the gateway's migrations or any shared schema, and nothing
 in the transferred source or the build lanes can reach them. The guard on this predates
 U22 and still holds.
 
@@ -256,14 +292,15 @@ changed introspection API, not an app that stopped serving.
   still ship different dependency trees, which is a reproducibility defect on its own.
   **U23 should pin the floor for that reason, not because routing is broken.**
 
-### 2. Broken Alembic migration chain — U13 (#5045)
+### 2. Alembic migration chain — repaired by U13 (#5045)
 
-Of the 13 files in `src/superplane-api/alembic/versions/`, revision id `006` is declared
-by three separate files and `007` by three more, several sharing the same
-`down_revision`. `alembic upgrade head` cannot resolve that. The lock records this as
-`schema.status: unverified` with `single_head: false` and the observed duplicate counts,
-rather than asserting a compatible version that was never verified. **U13 owns the
-repair; it remains explicitly unresolved and is not marked healthy here.**
+The transferred 13-file chain reused revision ids `006` and `007` and referenced a
+missing `005`, so Alembic could not even load its revision map. U13 preserved applied
+revisions 001-005, relinked only the unreachable revisions, and added the missing
+`api_keys` and `budget_alerts` tables. Offline checks now prove one base, one head,
+no duplicate or dangling ids, and model/table parity. The lock remains
+`schema.status: unverified` because a real-database upgrade/restore rehearsal is still
+deferred; that is a live acceptance gate, not an unresolved source graph.
 
 **One count was corrected by this transfer.** The lock previously recorded `"006": 4`.
 Counting the maintained chain gives three: there *are* four `006_*.py` filenames, but
@@ -278,7 +315,29 @@ unit that could check it: before the transfer, nobody in ADP had the files to co
 test now derives the counts from the chain itself, so the lock and the files cannot drift
 apart again. The conclusion is unchanged — still multiple heads, still unverified.
 
-### 3. Insecure defaults and origin-specific values — U14 / U3
+### 3. Clock-dependent cost-reconciler tests — repaired with U13 (#5045)
+
+Two tests in `src/superplane-api/tests/test_cost_reconciler.py` read the real clock and
+seeded node intervals relative to UTC midnight, while `_compute_daily_cost` clamps a
+node's end to `now`. Between 00:00 and 03:00 UTC the seeded interval was still in the
+future, the node was skipped, and the expected cost arrived as `0`.
+
+**Not a flake in the usual sense — deterministic per hour.** Sweeping a pinned clock
+across the day: 2 failures at 00:30 and 01:30, 1 at 02:30, 0 from 03:30 onward. So this
+blocked every PR in a 3-hour daily window and was invisible the other 21 hours, which is
+why it survived the transfer and the units after it. Observed here as a real CI failure
+at 00:42 UTC.
+
+Repaired rather than recorded, because unlike the findings around it this one has no
+owner queued and it gates an unrelated PR's required check. Both tests already pass
+`day_start` and `now` as arguments to the method under test, so deriving `now` from a
+fixed `day_start` expresses the intended scenario more directly than reading the clock
+did — no production code changed, and the assertions are unweakened. This is the second
+behavioral divergence in `superplane-api`; byte-fidelity with the origin is already
+broken for this component by the entry above, and the alternative was leaving a
+guaranteed daily red window in a lane three other units declare as required.
+
+### 4. Insecure defaults and origin-specific values — U14 / U3
 
 Present in the transferred code as-is, and left as-is because rewriting them would be
 implementing another unit's story inside a transfer commit:

@@ -35,6 +35,25 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+# Issue #5055 (U14). `app/auth.py` imports `superplane_auth.policy` — the domain
+# authorization policy owned by this module at `modules/domain-apps/superplane/auth`
+# (issue #5044, U9). It is imported rather than copied so the token and
+# authorization rules have ONE definition; a copy is how the two drift and how a
+# tightened rule silently fails to reach the service enforcing it.
+#
+# It is deliberately NOT listed in `[project.dependencies]` above. That list is
+# resolved from a package index, and this package is not published to one — a
+# named requirement there would make `pip install .` fail looking for it.
+# Instead it is installed from its in-repository path:
+#
+#     pip install -e ../../auth          # CI and local development
+#     scripts/stage-domain-auth.sh       # before `docker build` (see the script)
+#
+# The image needs the staging step because `releases/build-image.sh` pins the
+# Docker build context to this directory, and the policy package lives above it.
+# Nothing has shipped in the gap: `pending_images` in the release lock records
+# that no API image has been built yet.
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

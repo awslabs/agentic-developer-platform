@@ -1,8 +1,25 @@
-"""Tests for auth endpoints (POST /auth/login, POST /auth/token)."""
+"""Tests for auth endpoints, and for domain token/authorization enforcement.
+
+The second half of this file (issue #5055, U14) is the negative matrix for
+R5/R6 enforcement. Two properties of how it is written matter:
+
+**Tokens are really signed.** Each case mints a token with a real RSA keypair
+generated in-process and serves the matching public key through the JWKS cache.
+Stubbing verification would leave the parts most worth testing — the pinned
+RS256 algorithm, the JWKS key lookup, signature and expiry checking — untested,
+and a bypass in any of them would pass a mocked suite.
+
+**Failures are asserted as 401/403, never merely "not 200".** A request rejected
+with 422 is also "not 200", and that was a real defect this story found: a
+required ``Header(...)`` made a missing credential a validation error. Asserting
+the status class is what distinguishes "refused" from "malformed".
+"""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from jose import jwt
 
 from app.middleware.auth import create_access_token, decode_token
 from app.routers.auth import _generate_api_key, _hash_api_key, _verify_api_key
@@ -102,3 +119,1530 @@ class TestCreateApiKeyEndpoint:
         headers = {"Authorization": f"Bearer {token}"}
         response = await client.post("/auth/token", json={"name": ""}, headers=headers)
         assert response.status_code == 422
+
+
+# ===========================================================================
+# Domain token policy + workspace authorization enforcement (issue #5055, U14)
+# ===========================================================================
+
+from app import auth as domain_auth  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.endpoint_inventory import (  # noqa: E402
+    DOMAIN_ROUTES,
+    all_inventoried,
+    classify,
+)
+from app.main import app as fastapi_app  # noqa: E402
+from app.models.organization import Organization  # noqa: E402
+from app.models.research_finding import ResearchFinding  # noqa: E402
+from app.models.research_proposal import ResearchProposal  # noqa: E402
+from app.models.workspace import Workspace  # noqa: E402
+from app.models.workspace_grant import WorkspaceGrantRecord  # noqa: E402
+from superplane_auth.policy import (  # noqa: E402
+    REJECTED_VALIDATION_PATHS,
+    TRUSTED_VALIDATION_PATH,
+    DomainTokenPolicy,
+    Permission,
+    TokenPolicyError,
+    TokenRejectedError,
+)
+
+TEST_ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_testpool"
+TEST_CLIENT_ID = "test-allowlisted-client"
+TEST_KID = "test-key-1"
+
+
+def _rsa_keypair():
+    """Generate a throwaway RSA keypair and its JWKS entry.
+
+    Generated per test session and never written to disk: there is no key
+    material in this repository, and none of these values is a credential for
+    anything that exists.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from jose import jwk
+
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    public_pem = (
+        private.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    jwk_dict = jwk.construct(public_pem, "RS256").to_dict()
+    jwk_dict = {
+        k: (v.decode() if isinstance(v, bytes) else v) for k, v in jwk_dict.items()
+    }
+    jwk_dict.update({"kid": TEST_KID, "alg": "RS256", "use": "sig"})
+    return pem, jwk_dict
+
+
+@pytest.fixture(scope="module")
+def rsa_keys():
+    return _rsa_keypair()
+
+
+@pytest.fixture
+def enforcing(rsa_keys, monkeypatch):
+    """Turn domain enforcement ON with a real signing key, for one test.
+
+    Rebuilds the app's policy the way startup does, so a test exercises the same
+    object graph production gets rather than a hand-assembled one.
+    """
+    private_pem, public_jwk = rsa_keys
+    monkeypatch.setattr(settings, "domain_auth_enforced", True)
+    monkeypatch.setattr(settings, "cognito_issuer", TEST_ISSUER)
+    monkeypatch.setattr(settings, "domain_auth_allowed_client_ids", [TEST_CLIENT_ID])
+    monkeypatch.setattr(settings, "cognito_jwks_url", "https://example.invalid/jwks")
+
+    domain_auth.jwks_cache.load([public_jwk])
+    previous = getattr(fastapi_app.state, "domain_policy", None)
+    fastapi_app.state.domain_policy = domain_auth.build_domain_policy()
+    yield private_pem
+    fastapi_app.state.domain_policy = previous
+    domain_auth.jwks_cache.clear()
+
+
+def _mint(private_pem: str, **overrides) -> str:
+    """Mint a signed token whose claims default to a valid access token."""
+    now = datetime.now(UTC)
+    claims = {
+        "sub": "user-abc",
+        "token_use": "access",
+        "iss": TEST_ISSUER,
+        "client_id": TEST_CLIENT_ID,
+        "custom:org_id": str(uuid.uuid4()),
+        "custom:account_type": "human",
+        "exp": int((now + timedelta(minutes=10)).timestamp()),
+        "iat": int(now.timestamp()),
+    }
+    claims.update(overrides)
+    claims = {k: v for k, v in claims.items() if v is not None}
+    return jwt.encode(claims, private_pem, algorithm="RS256", headers={"kid": TEST_KID})
+
+
+async def _seed_workspace(permissions: str | None, principal="user-abc", org_id=None):
+    """Create an org + workspace, optionally granting `principal` on it."""
+    from tests.conftest import async_session_test
+
+    org_uuid = org_id or uuid.uuid4()
+    workspace_id = uuid.uuid4()
+    async with async_session_test() as session:
+        # Name is unique, so it is derived from the id: a test that seeds two
+        # organizations must not collide on it.
+        session.add(
+            Organization(
+                id=org_uuid, name=f"test-org-{org_uuid.hex[:8]}", billing_plan="free"
+            )
+        )
+        session.add(
+            Workspace(
+                id=workspace_id,
+                org_id=org_uuid,
+                name="ws",
+                isolation_mode="shared",
+                status="active",
+            )
+        )
+        if permissions is not None:
+            session.add(
+                WorkspaceGrantRecord(
+                    id=uuid.uuid4(),
+                    workspace_id=workspace_id,
+                    org_id=org_uuid,
+                    principal=principal,
+                    permissions=permissions,
+                )
+            )
+        await session.commit()
+    return org_uuid, workspace_id
+
+
+async def _seed_two_tenant_research():
+    """Create owned, foreign, and unowned rows for the isolation matrix."""
+    from tests.conftest import async_session_test
+
+    org_a, workspace_a = await _seed_workspace("workspace:administer")
+    org_b, workspace_b = await _seed_workspace("workspace:administer")
+    finding_a, finding_b, unowned_finding = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    proposal_a, proposal_b, unowned_proposal = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(UTC)
+    async with async_session_test() as session:
+        session.add_all(
+            [
+                ResearchFinding(
+                    id=finding_a,
+                    workspace_id=workspace_a,
+                    source="github",
+                    source_url="https://example.invalid/a",
+                    title="Tenant A finding",
+                    relevance_score=80,
+                    scanned_at=now,
+                ),
+                ResearchFinding(
+                    id=finding_b,
+                    workspace_id=workspace_b,
+                    source="github",
+                    source_url="https://example.invalid/b",
+                    title="Tenant B finding",
+                    relevance_score=90,
+                    scanned_at=now,
+                ),
+                ResearchFinding(
+                    id=unowned_finding,
+                    workspace_id=None,
+                    source="github",
+                    source_url="https://example.invalid/legacy",
+                    title="Unowned legacy finding",
+                    relevance_score=100,
+                    scanned_at=now,
+                ),
+                ResearchProposal(
+                    id=proposal_a,
+                    workspace_id=workspace_a,
+                    title="Tenant A proposal",
+                    objective="Validate tenant A behavior",
+                    hypothesis="Tenant A remains isolated",
+                    status="proposed",
+                ),
+                ResearchProposal(
+                    id=proposal_b,
+                    workspace_id=workspace_b,
+                    title="Tenant B proposal",
+                    objective="Validate tenant B behavior",
+                    hypothesis="Tenant B remains isolated",
+                    status="proposed",
+                ),
+                ResearchProposal(
+                    id=unowned_proposal,
+                    workspace_id=None,
+                    title="Unowned legacy proposal",
+                    objective="Validate legacy behavior",
+                    hypothesis="Unowned data remains hidden",
+                    status="proposed",
+                ),
+            ]
+        )
+        await session.commit()
+    return {
+        "org_a": org_a,
+        "org_b": org_b,
+        "workspace_a": workspace_a,
+        "workspace_b": workspace_b,
+        "finding_a": finding_a,
+        "finding_b": finding_b,
+        "proposal_a": proposal_a,
+        "proposal_b": proposal_b,
+    }
+
+
+# -- Token policy: the shapes that must never be admitted -------------------
+
+
+class TestDomainTokenPolicy:
+    """R5: which tokens the domain API admits, and which it refuses."""
+
+    def _policy(self):
+        return DomainTokenPolicy(
+            allowed_client_ids=[TEST_CLIENT_ID], expected_issuer=TEST_ISSUER
+        )
+
+    def _claims(self, **overrides):
+        base = {
+            "sub": "user-abc",
+            "token_use": "access",
+            "iss": TEST_ISSUER,
+            "client_id": TEST_CLIENT_ID,
+            "custom:org_id": "org-1",
+            "custom:account_type": "human",
+        }
+        base.update(overrides)
+        return {k: v for k, v in base.items() if v is not None}
+
+    def test_valid_access_token_is_admitted(self):
+        principal = self._policy().admit(
+            self._claims(), validation_path=TRUSTED_VALIDATION_PATH
+        )
+        assert principal.subject == "user-abc"
+        assert principal.org_id == "org-1"
+
+    def test_id_token_presented_as_access_token_is_refused(self):
+        """An ID token is not an API credential, even correctly signed."""
+        with pytest.raises(TokenRejectedError, match="access token"):
+            self._policy().admit(
+                self._claims(token_use="id"), validation_path=TRUSTED_VALIDATION_PATH
+            )
+
+    def test_missing_token_use_is_refused(self):
+        with pytest.raises(TokenRejectedError, match="access token"):
+            self._policy().admit(
+                self._claims(token_use=None), validation_path=TRUSTED_VALIDATION_PATH
+            )
+
+    def test_wrong_issuer_is_refused(self):
+        with pytest.raises(TokenRejectedError, match="issuer"):
+            self._policy().admit(
+                self._claims(iss="https://evil.example.com/"),
+                validation_path=TRUSTED_VALIDATION_PATH,
+            )
+
+    def test_non_allowlisted_client_is_refused(self):
+        with pytest.raises(TokenRejectedError, match="client"):
+            self._policy().admit(
+                self._claims(client_id="some-other-app"),
+                validation_path=TRUSTED_VALIDATION_PATH,
+            )
+
+    def test_denial_does_not_echo_the_client_id(self):
+        """A denial must not confirm which values are close to allowlisted."""
+        with pytest.raises(TokenRejectedError) as exc:
+            self._policy().admit(
+                self._claims(client_id="nearly-right-client"),
+                validation_path=TRUSTED_VALIDATION_PATH,
+            )
+        assert "nearly-right-client" not in str(exc.value)
+
+    def test_missing_org_claim_is_refused(self):
+        with pytest.raises(TokenRejectedError, match="organization"):
+            self._policy().admit(
+                self._claims(**{"custom:org_id": None}),
+                validation_path=TRUSTED_VALIDATION_PATH,
+            )
+
+    def test_unknown_account_type_is_refused(self):
+        with pytest.raises(TokenRejectedError, match="account type"):
+            self._policy().admit(
+                self._claims(**{"custom:account_type": "robot"}),
+                validation_path=TRUSTED_VALIDATION_PATH,
+            )
+
+    @pytest.mark.parametrize("path", sorted(REJECTED_VALIDATION_PATHS))
+    def test_permissive_alternate_validator_cannot_admit(self, path):
+        """The weaker validator must not satisfy the stricter policy.
+
+        This is the "alternate validator must not bypass policy" requirement:
+        the API-authorizer path checks neither token_use nor a client allowlist,
+        so claims it produced are refused before any claim is read — even when
+        every claim would otherwise pass.
+        """
+        with pytest.raises(TokenRejectedError):
+            self._policy().admit(self._claims(), validation_path=path)
+
+    def test_unknown_validation_path_is_refused(self):
+        with pytest.raises(TokenRejectedError, match="unknown validation path"):
+            self._policy().admit(self._claims(), validation_path="something.invented")
+
+
+class TestStartupRefusesWeakConfiguration:
+    """A missing allowlist is an operator error, not a permissive default."""
+
+    def test_empty_allowlist_fails_to_start(self):
+        with pytest.raises(TokenPolicyError):
+            DomainTokenPolicy(allowed_client_ids=[], expected_issuer=TEST_ISSUER)
+
+    def test_allowlist_of_blanks_fails_to_start(self):
+        """Whitespace entries must not count as an allowlist."""
+        with pytest.raises(TokenPolicyError):
+            DomainTokenPolicy(
+                allowed_client_ids=["", "   "], expected_issuer=TEST_ISSUER
+            )
+
+    def test_missing_issuer_fails_to_start(self):
+        with pytest.raises(TokenPolicyError):
+            DomainTokenPolicy(allowed_client_ids=[TEST_CLIENT_ID], expected_issuer="")
+
+    def test_build_policy_raises_when_enforced_without_allowlist(self, monkeypatch):
+        """The app-level builder inherits the same refusal."""
+        monkeypatch.setattr(settings, "domain_auth_enforced", True)
+        monkeypatch.setattr(settings, "cognito_issuer", TEST_ISSUER)
+        monkeypatch.setattr(settings, "domain_auth_allowed_client_ids", [])
+        with pytest.raises(TokenPolicyError):
+            domain_auth.build_domain_policy()
+
+    def test_build_policy_is_none_when_not_enforced(self, monkeypatch):
+        monkeypatch.setattr(settings, "domain_auth_enforced", False)
+        assert domain_auth.build_domain_policy() is None
+
+
+# -- Signature verification -------------------------------------------------
+
+
+class TestTokenSignatureVerification:
+    """Authenticity, verified against real keys."""
+
+    def test_valid_signature_returns_claims(self, enforcing):
+        claims = domain_auth.verify_access_token(_mint(enforcing))
+        assert claims["sub"] == "user-abc"
+
+    def test_unsigned_alg_none_token_is_refused(self, enforcing):
+        """`alg: none` must never verify — the classic bypass.
+
+        Hand-assembled rather than minted: python-jose refuses to *produce* an
+        `alg: none` token, but an attacker is under no such constraint, so
+        building the bytes directly is the only way to actually probe the
+        verifier instead of probing the signing library.
+        """
+        import base64
+        import json
+
+        def b64(payload: dict) -> str:
+            raw = json.dumps(payload, separators=(",", ":")).encode()
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        forged = (
+            f"{b64({'alg': 'none', 'typ': 'JWT', 'kid': TEST_KID})}."
+            f"{b64({'sub': 'attacker', 'token_use': 'access', 'exp': 9999999999})}."
+        )
+        with pytest.raises(TokenRejectedError):
+            domain_auth.verify_access_token(forged)
+
+    def test_hs256_token_is_refused(self, enforcing):
+        """The algorithm is pinned, so the legacy HS256 token cannot verify here.
+
+        Also covers HS256-with-the-public-key-as-secret confusion: honouring the
+        header's algorithm choice is what makes that attack possible.
+        """
+        forged = jwt.encode(
+            {"sub": "attacker", "token_use": "access"},
+            key="any-shared-secret",
+            algorithm="HS256",
+            headers={"kid": TEST_KID},
+        )
+        with pytest.raises(TokenRejectedError, match="RS256"):
+            domain_auth.verify_access_token(forged)
+
+    def test_token_signed_by_a_different_key_is_refused(self, enforcing):
+        """A well-formed token from the wrong signer does not verify."""
+        other_pem, _ = _rsa_keypair()
+        forged = jwt.encode(
+            {"sub": "attacker", "token_use": "access", "exp": 9999999999},
+            other_pem,
+            algorithm="RS256",
+            headers={"kid": TEST_KID},
+        )
+        with pytest.raises(TokenRejectedError):
+            domain_auth.verify_access_token(forged)
+
+    def test_unknown_kid_is_refused(self, enforcing):
+        forged = jwt.encode(
+            {"sub": "a", "exp": 9999999999},
+            enforcing,
+            algorithm="RS256",
+            headers={"kid": "not-published"},
+        )
+        with pytest.raises(TokenRejectedError, match="key id"):
+            domain_auth.verify_access_token(forged)
+
+    def test_token_without_kid_is_refused(self, enforcing):
+        forged = jwt.encode({"sub": "a", "exp": 9999999999}, enforcing, "RS256")
+        # python-jose omits `kid` only if not supplied; assert on behaviour.
+        header = jwt.get_unverified_header(forged)
+        if "kid" not in header:
+            with pytest.raises(TokenRejectedError, match="key id"):
+                domain_auth.verify_access_token(forged)
+
+    def test_expired_token_is_refused(self, enforcing):
+        expired = _mint(
+            enforcing,
+            exp=int((datetime.now(UTC) - timedelta(minutes=5)).timestamp()),
+        )
+        with pytest.raises(TokenRejectedError):
+            domain_auth.verify_access_token(expired)
+
+    def test_garbage_token_is_refused_not_crashed(self, enforcing):
+        with pytest.raises(TokenRejectedError):
+            domain_auth.verify_access_token("not-a-jwt")
+
+    def test_non_string_kid_is_refused_not_a_type_error(self, enforcing):
+        """A JWT header is attacker-controlled JSON, so `kid` may be any type.
+
+        `{"kid": {...}}` is a well-formed header that `get_unverified_header`
+        returns happily, and an unhashable value then raised `TypeError` out of
+        the key-cache dict lookup — a 500 on a path reachable with no credential
+        at all, where this module's contract is that a bad token is a 401.
+        """
+        forged = jwt.encode(
+            {"sub": "a", "exp": 9999999999},
+            enforcing,
+            "RS256",
+            headers={"kid": {"nested": "object"}},
+        )
+        with pytest.raises(TokenRejectedError, match="key id"):
+            domain_auth.verify_access_token(forged)
+
+    def test_unusable_published_key_is_refused_not_a_server_error(
+        self, enforcing, monkeypatch
+    ):
+        """`JWKError` is a SIBLING of `JWTError`, not a subclass.
+
+        So a structurally unusable key in the published JWKS escaped a
+        `JWTError`-only handler, as did the `ValueError` the underlying key
+        construction raises ("e must be >= 3 and < n"). Both are triggered by an
+        unauthenticated request and must be denials, not 500s.
+        """
+        # `kty: oct` raises `JWKError` ("Incorrect key type"), which is the
+        # sibling class. A short `n` on an RSA key raises a bare `ValueError`
+        # ("e must be >= 3 and < n") from the key construction. Both are asserted
+        # because they escaped through different holes.
+        for unusable in (
+            {"kty": "oct", "kid": TEST_KID, "k": "c2VjcmV0"},
+            {"kty": "RSA", "kid": TEST_KID, "n": "AQAB", "e": "AQAB"},
+        ):
+            monkeypatch.setattr(domain_auth.jwks_cache, "_keys", {TEST_KID: unusable})
+            with pytest.raises(TokenRejectedError):
+                domain_auth.verify_access_token(_mint(enforcing))
+
+    def test_unreachable_jwks_is_a_denial_not_a_server_error(
+        self, enforcing, monkeypatch
+    ):
+        """An unreachable key endpoint is an outage, but not a 500 to the caller.
+
+        A missing JWKS *URL* stays a `TokenPolicyError` (operator
+        misconfiguration); a transport failure fetching a configured URL is
+        answered as a denial and logged with its real cause.
+        """
+        cache = type(domain_auth.jwks_cache)()
+
+        def _boom() -> None:
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(cache, "_fetch", _boom)
+        monkeypatch.setattr(domain_auth, "jwks_cache", cache)
+        with pytest.raises(TokenRejectedError, match="unavailable"):
+            domain_auth.verify_access_token(_mint(enforcing))
+
+
+# -- Workspace authorization over HTTP, through the real guard --------------
+
+
+class TestWorkspaceAuthorizationEnforcement:
+    """R6: authority is a server-held grant, re-read per operation."""
+
+    @pytest.mark.asyncio
+    async def test_no_token_is_401(self, client, enforcing):
+        _, workspace_id = await _seed_workspace("workspace:read")
+        response = await client.get(f"/workspaces/{workspace_id}")
+        assert response.status_code == 401
+        # A 401 must say how to authenticate; a bare 401 is a worse API and
+        # tempts clients into retry loops.
+        assert "WWW-Authenticate" in response.headers
+
+    @pytest.mark.asyncio
+    async def test_org_member_without_a_grant_is_403(self, client, enforcing):
+        """The regression that motivated the story.
+
+        The caller is a legitimate, fully authenticated member of the org that
+        owns the workspace. Before this change the org claim alone was the
+        authority, so this call succeeded. It must now be refused: org
+        membership is not workspace authority.
+        """
+        org_id, workspace_id = await _seed_workspace(None)
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            f"/workspaces/{workspace_id}", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_grant_with_insufficient_permission_is_403(self, client, enforcing):
+        """READ does not imply PROVISION.
+
+        `POST /kubeconfig` returns live cluster credentials, so a read-only
+        grant must not reach it even on a workspace the caller may read.
+        """
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.post(
+            f"/workspaces/{workspace_id}/kubeconfig",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_refusals_are_indistinguishable_across_causes(
+        self, client, enforcing
+    ):
+        """Cross-org, nonexistent and ungranted must be one identical answer.
+
+        A 404-vs-403 split would let a caller enumerate which workspace ids exist
+        in other organizations — but so would an identical status code with a
+        differing ``detail`` string, which is what an earlier version of this
+        code did. All three causes must return the same status AND the same body.
+        """
+        _, other_org_workspace = await _seed_workspace("workspace:administer")
+        own_org, ungranted = await _seed_workspace(None)
+
+        cross_org_token = _mint(enforcing, **{"custom:org_id": str(uuid.uuid4())})
+        own_org_token = _mint(enforcing, **{"custom:org_id": str(own_org)})
+
+        cross_org = await client.get(
+            f"/workspaces/{other_org_workspace}",
+            headers={"Authorization": f"Bearer {cross_org_token}"},
+        )
+        nonexistent = await client.get(
+            f"/workspaces/{uuid.uuid4()}",
+            headers={"Authorization": f"Bearer {cross_org_token}"},
+        )
+        no_grant = await client.get(
+            f"/workspaces/{ungranted}",
+            headers={"Authorization": f"Bearer {own_org_token}"},
+        )
+
+        assert cross_org.status_code == nonexistent.status_code == 403
+        assert no_grant.status_code == 403
+        assert cross_org.json() == nonexistent.json() == no_grant.json(), (
+            "the refusal reason distinguishes these cases, which makes workspace "
+            "ids and grant state enumerable"
+        )
+
+    @pytest.mark.asyncio
+    async def test_permission_revoked_after_admission_is_denied(
+        self, client, enforcing
+    ):
+        """R6's core claim: authority is re-checked when the operation runs.
+
+        The token stays valid the whole time — it is not re-issued and not
+        expired. Only the server-held grant changes. If authority were inherited
+        from sign-in, the second call would still succeed.
+        """
+        from sqlalchemy import update
+
+        from tests.conftest import async_session_test
+
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        headers = {"Authorization": f"Bearer {token}"}
+
+        first = await client.get(f"/workspaces/{workspace_id}", headers=headers)
+        assert first.status_code not in (401, 403), (
+            "precondition: the granted caller must be authorized before revocation"
+        )
+
+        async with async_session_test() as session:
+            await session.execute(
+                update(WorkspaceGrantRecord)
+                .where(WorkspaceGrantRecord.workspace_id == workspace_id)
+                .values(revoked_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+        second = await client.get(f"/workspaces/{workspace_id}", headers=headers)
+        assert second.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_unrecognized_stored_permission_grants_nothing(
+        self, client, enforcing
+    ):
+        """A permission value this build cannot reason about confers no access."""
+        org_id, workspace_id = await _seed_workspace("workspace:invented_power")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            f"/workspaces/{workspace_id}", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_administer_implies_read_via_policy_closure(self, client, enforcing):
+        """The implication closure comes from the policy, not from this service."""
+        org_id, workspace_id = await _seed_workspace("workspace:administer")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            f"/workspaces/{workspace_id}", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code not in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_malformed_workspace_id_is_403_not_422(self, client, enforcing):
+        """The guard runs before the handler and must not leak existence."""
+        response = await client.get(
+            "/workspaces/not-a-uuid",
+            headers={"Authorization": f"Bearer {_mint(enforcing)}"},
+        )
+        assert response.status_code in (401, 403)
+
+
+class TestIdentitySpoofing:
+    """Identity comes from verified claims only — never from the request."""
+
+    @pytest.mark.asyncio
+    async def test_spoofed_identity_headers_do_not_grant_access(
+        self, client, enforcing
+    ):
+        """Client-supplied identity headers must not become authority.
+
+        The grant belongs to `victim-user`; the caller's verified subject does
+        not. Naming the victim in every identity header the platform recognizes
+        must not move the decision.
+        """
+        org_id, workspace_id = await _seed_workspace(
+            "workspace:administer", principal="victim-user"
+        )
+        token = _mint(enforcing, sub="attacker-user", **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-ADP-Principal": "victim-user",
+                "X-Caller-Id": "victim-user",
+                "X-Superplane-User": "victim-user",
+                "X-Auth-Subject": "victim-user",
+                "X-Forwarded-User": "victim-user",
+            },
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_identity_headers_are_stripped_from_request_state(
+        self, client, enforcing
+    ):
+        """The sanitized mapping actually drops the spoofable headers."""
+        from superplane_auth.policy import strip_identity_headers
+
+        safe = strip_identity_headers(
+            {
+                "authorization": "Bearer x",
+                "content-type": "application/json",
+                "x-adp-principal": "victim",
+                "x-caller-id": "victim",
+                "x-forwarded-user": "victim",
+            }
+        )
+        assert "content-type" in safe
+        assert not [k for k in safe if k.lower().startswith(("x-adp-", "x-caller-"))]
+        assert "x-forwarded-user" not in {k.lower() for k in safe}
+
+    @pytest.mark.asyncio
+    async def test_body_supplied_approver_is_not_trusted(self, client, enforcing):
+        """The legacy `approved_by` body field must not become the actor.
+
+        Proposal approval recorded whatever the caller typed. With enforcement
+        on, an unauthorized caller cannot reach the handler at all — so the
+        field cannot be used to attribute an approval to someone else.
+        """
+        response = await client.patch(
+            f"/api/v1/research/proposals/{uuid.uuid4()}/approve",
+            json={"approved_by": "someone-elses-name"},
+            headers={"Authorization": f"Bearer {_mint(enforcing)}"},
+        )
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_recorded_actor_prefers_verified_caller_over_body(self):
+        """When a caller IS verified, the body value is ignored outright."""
+        from types import SimpleNamespace
+
+        from app.routers.research import _recorded_actor
+
+        verified = SimpleNamespace(
+            state=SimpleNamespace(
+                caller=SimpleNamespace(
+                    principal=SimpleNamespace(subject="verified-subject")
+                )
+            )
+        )
+        assert _recorded_actor(verified, "claimed-by-body") == "verified-subject"
+
+
+class TestUnauthenticatedRoutesAreRefused:
+    """Every previously-open surface now requires a credential."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method,path",
+        [
+            ("post", "/internal/heartbeat"),
+            ("post", "/internal/cost-reconcile"),
+        ],
+    )
+    async def test_internal_routes_require_the_shared_token(self, client, method, path):
+        """These two had no authentication at all before this story.
+
+        Asserted as 401/403 rather than "not 200": a required header would make
+        this a 422, which is an unauthenticated request being reported as a
+        malformed one.
+        """
+        response = await getattr(client, method)(path, json={})
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_internal_route_rejects_a_wrong_token(
+        self, client, internal_token_header
+    ):
+        response = await client.post(
+            "/internal/heartbeat", json={}, headers={"Authorization": "Bearer wrong"}
+        )
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method,path",
+        [
+            ("get", "/api/v1/research/findings"),
+            ("get", "/api/v1/research/proposals"),
+            ("post", "/api/v1/research/scan"),
+        ],
+    )
+    async def test_research_routes_require_a_domain_token(
+        self, client, enforcing, method, path
+    ):
+        """Fifteen research routes had no auth dependency before this story."""
+        kwargs = {"json": {}} if method == "post" else {}
+        response = await getattr(client, method)(path, **kwargs)
+        assert response.status_code in (401, 403)
+
+
+# -- Route inventory: the property that keeps enforcement total -------------
+
+
+class TestRouteInventoryCoverage:
+    """Every mounted route must carry a recorded authorization decision."""
+
+    def _mounted(self):
+        from fastapi.routing import APIRoute
+
+        mounted = set()
+        for route in fastapi_app.routes:
+            path = getattr(route, "path", None)
+            methods = getattr(route, "methods", None) or set()
+            if path is None:
+                continue
+            if not isinstance(route, APIRoute) and path not in {
+                "/openapi.json",
+                "/docs",
+                "/docs/oauth2-redirect",
+                "/redoc",
+            }:
+                continue
+            for method in methods:
+                if method in {"HEAD", "OPTIONS"}:
+                    continue
+                mounted.add((method.upper(), path))
+        return mounted
+
+    def test_every_mounted_route_is_inventoried(self):
+        """A new route cannot ship without a decision — collection fails first.
+
+        This is the test that makes the inventory an inventory rather than a
+        list. Adding a route without classifying it fails CI here, which is
+        strictly better than failing closed in production (which it also does).
+        """
+        missing = sorted(self._mounted() - all_inventoried())
+        assert not missing, (
+            "these routes have no recorded authorization decision in "
+            f"app/endpoint_inventory.py: {missing}"
+        )
+
+    def test_inventory_has_no_routes_the_app_does_not_serve(self):
+        """A stale entry is dead configuration that reads as coverage."""
+        stale = sorted(all_inventoried() - self._mounted())
+        assert not stale, f"inventory lists routes the app does not serve: {stale}"
+
+    def test_every_route_classifies_without_raising(self):
+        for method, path in sorted(self._mounted()):
+            route_class, requirement = classify(method, path)
+            assert route_class is not None
+            if requirement is not None:
+                scope, permission = requirement
+                assert isinstance(permission, Permission)
+
+    def test_sensitive_routes_are_not_classified_public(self):
+        """Pin the classifications whose misfiling would be most costly."""
+        for method, path in [
+            ("POST", "/workspaces/{workspace_id}/kubeconfig"),
+            ("DELETE", "/workspaces/{workspace_id}"),
+            ("POST", "/auth/token"),
+            ("PATCH", "/api/v1/research/proposals/{proposal_id}/approve"),
+        ]:
+            route_class, requirement = classify(method, path)
+            assert route_class.value == "domain", (
+                f"{method} {path} is not a domain route"
+            )
+            assert requirement is not None
+
+    def test_kubeconfig_requires_provision_not_read(self):
+        """It reads like a getter and it hands out live cluster credentials."""
+        _, (_, permission) = classify("POST", "/workspaces/{workspace_id}/kubeconfig")
+        assert permission is Permission.PROVISION
+
+    def test_no_domain_route_is_also_public_or_internal(self):
+        """Two classifications for one route means one of them is not enforced."""
+        from app.endpoint_inventory import INTERNAL_ROUTES, PUBLIC_ROUTES
+
+        domain = set(DOMAIN_ROUTES)
+        assert not domain & PUBLIC_ROUTES
+        assert not domain & INTERNAL_ROUTES
+        assert not PUBLIC_ROUTES & INTERNAL_ROUTES
+
+    def test_the_research_route_count_in_the_docs_matches_reality(self):
+        """The prose count is load-bearing, so it is asserted rather than trusted.
+
+        `app/endpoint_inventory.py` and `app/domain_guard.py` both justify this
+        design by naming how many `/api/v1/research/*` routes shipped with no
+        authentication. An earlier draft said "fifteen" while the app serves
+        twelve, and a wrong number in the rationale is how a reader concludes
+        the inventory was checked against something it was not. If the surface
+        changes, update the count in BOTH docstrings and here.
+        """
+        import app.domain_guard as guard_module
+        from app import endpoint_inventory
+
+        served = {
+            (method, path)
+            for method, path in self._mounted()
+            if path.startswith("/api/v1/research/")
+        }
+        assert len(served) == 12, (
+            f"the research surface is now {len(served)} routes; update the count "
+            "in endpoint_inventory.py and domain_guard.py docstrings"
+        )
+        assert served <= set(DOMAIN_ROUTES), (
+            "a research route escaped the domain classification"
+        )
+        for module in (endpoint_inventory, guard_module):
+            assert "twelve ``/api/v1/research/*``" in (module.__doc__ or ""), (
+                f"{module.__name__}'s docstring no longer states the real count"
+            )
+
+
+class TestResearchTenantIsolation:
+    """Research rows are owned through their server-held workspace record."""
+
+    @staticmethod
+    def _headers(enforcing, org_id):
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        return {"Authorization": f"Bearer {token}"}
+
+    @pytest.mark.asyncio
+    async def test_lists_exclude_other_tenants_and_unowned_rows(
+        self, client, enforcing
+    ):
+        seeded = await _seed_two_tenant_research()
+        headers = self._headers(enforcing, seeded["org_a"])
+
+        findings = await client.get("/api/v1/research/findings", headers=headers)
+        proposals = await client.get("/api/v1/research/proposals", headers=headers)
+
+        assert findings.status_code == 200
+        assert findings.json()["total"] == 1
+        assert {item["id"] for item in findings.json()["items"]} == {
+            str(seeded["finding_a"])
+        }
+        assert proposals.status_code == 200
+        assert proposals.json()["total"] == 1
+        assert {item["id"] for item in proposals.json()["items"]} == {
+            str(seeded["proposal_a"])
+        }
+
+    @pytest.mark.asyncio
+    async def test_stats_are_tenant_scoped(self, client, enforcing):
+        seeded = await _seed_two_tenant_research()
+        headers = self._headers(enforcing, seeded["org_a"])
+
+        finding_stats = await client.get("/api/v1/research/stats", headers=headers)
+        proposal_stats = await client.get(
+            "/api/v1/research/proposals/stats", headers=headers
+        )
+
+        assert finding_stats.status_code == 200
+        assert finding_stats.json()["total_findings"] == 1
+        assert finding_stats.json()["findings_by_source"] == {"github": 1}
+        assert proposal_stats.status_code == 200
+        assert proposal_stats.json()["total_proposals"] == 1
+        assert proposal_stats.json()["proposed_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_direct_ids_from_another_tenant_are_not_visible(
+        self, client, enforcing
+    ):
+        seeded = await _seed_two_tenant_research()
+        headers = self._headers(enforcing, seeded["org_a"])
+
+        own = await client.get(
+            f"/api/v1/research/findings/{seeded['finding_a']}", headers=headers
+        )
+        foreign_finding = await client.get(
+            f"/api/v1/research/findings/{seeded['finding_b']}", headers=headers
+        )
+        foreign_proposal = await client.get(
+            f"/api/v1/research/proposals/{seeded['proposal_b']}", headers=headers
+        )
+
+        assert own.status_code == 200
+        assert foreign_finding.status_code == 404
+        assert foreign_proposal.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_cannot_approve_another_tenants_proposal(self, client, enforcing):
+        seeded = await _seed_two_tenant_research()
+        headers = self._headers(enforcing, seeded["org_a"])
+
+        response = await client.patch(
+            f"/api/v1/research/proposals/{seeded['proposal_b']}/approve",
+            headers=headers,
+            json={"approved_by": "spoofed-actor"},
+        )
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_cannot_reject_another_tenants_proposal(self, client, enforcing):
+        seeded = await _seed_two_tenant_research()
+        headers = self._headers(enforcing, seeded["org_a"])
+
+        response = await client.patch(
+            f"/api/v1/research/proposals/{seeded['proposal_b']}/reject",
+            headers=headers,
+            json={"rejected_by": "spoofed-actor", "reason": "not mine"},
+        )
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_writes_require_a_workspace_owned_by_the_verified_tenant(
+        self, client, enforcing
+    ):
+        seeded = await _seed_two_tenant_research()
+        headers = self._headers(enforcing, seeded["org_a"])
+        proposal = {
+            "workspace_id": str(seeded["workspace_b"]),
+            "title": "Foreign workspace proposal",
+            "objective": "This write must be rejected",
+            "hypothesis": "Tenant ownership is checked server-side",
+        }
+
+        foreign = await client.post(
+            "/api/v1/research/proposals", headers=headers, json=proposal
+        )
+        foreign_scan = await client.post(
+            "/api/v1/research/scan",
+            headers=headers,
+            json={"sources": [], "workspace_id": str(seeded["workspace_b"])},
+        )
+        foreign_generate = await client.post(
+            "/api/v1/research/proposals/generate",
+            headers=headers,
+            json={"workspace_id": str(seeded["workspace_b"])},
+        )
+        missing = await client.post(
+            "/api/v1/research/scan", headers=headers, json={"sources": []}
+        )
+
+        assert foreign.status_code == 403
+        assert foreign_scan.status_code == 403
+        assert foreign_generate.status_code == 403
+        assert missing.status_code == 403
+
+
+class TestBuildContextHygiene:
+    """The staged auth package must never become a second source of truth."""
+
+    def test_vendored_auth_package_is_not_committed(self):
+        """Staged into the build context at build time; git-ignored always.
+
+        If this directory were committed it would be an editable second copy of
+        the policy, and the two would drift silently — which is the failure the
+        single-definition design exists to prevent.
+        """
+        import subprocess
+        from pathlib import Path
+
+        component = Path(__file__).resolve().parent.parent
+        tracked = subprocess.run(
+            ["git", "ls-files", "vendor/"],
+            cwd=component,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert tracked.stdout.strip() == "", (
+            "vendor/ is build scratch and must not be tracked; "
+            f"tracked files: {tracked.stdout!r}"
+        )
+
+
+class TestOrganizationScopedAuthorization:
+    """Org-scoped endpoints need org authority, not one workspace grant."""
+
+    @pytest.mark.asyncio
+    async def test_single_workspace_grant_is_not_org_authority(self, client, enforcing):
+        """The policy refuses org endpoints against a workspace grant, by design.
+
+        A member holding ADMINISTER on one of the org's two workspaces must not
+        reach an org-wide collection: that is how a single-workspace member
+        reads the whole organization.
+        """
+        from tests.conftest import async_session_test
+
+        org_id, _ = await _seed_workspace("workspace:administer")
+        async with async_session_test() as session:
+            session.add(
+                Workspace(
+                    id=uuid.uuid4(),
+                    org_id=org_id,
+                    name="second-ws",
+                    isolation_mode="shared",
+                    status="active",
+                )
+            )
+            await session.commit()
+
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            "/orgs/current/quota", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_no_grant_at_all_is_refused_for_org_endpoint(self, client, enforcing):
+        org_id, _ = await _seed_workspace(None)
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            "/orgs/current/quota", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_grant_across_every_workspace_is_org_authority(
+        self, client, enforcing
+    ):
+        """The conservative definition: authority on every active workspace."""
+        org_id, _ = await _seed_workspace("workspace:administer")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            "/orgs/current/quota", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code not in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_a_torn_down_workspace_does_not_revoke_org_authority(
+        self, client, enforcing
+    ):
+        """`DELETE /workspaces/{id}` is a SOFT delete, so the row survives.
+
+        It survives with `status="Teardown"` and never acquires a grant, so
+        counting it toward "the caller holds this permission across the
+        organization" made org authority monotonically harder to hold: every
+        workspace the org ever deleted became a permanent denial for every
+        member, on a check with no way to grant past it. The caller here holds
+        ADMINISTER on every LIVE workspace and must be admitted.
+        """
+        from tests.conftest import async_session_test
+
+        org_id, _ = await _seed_workspace("workspace:administer")
+        async with async_session_test() as session:
+            for dead_status in ("Teardown", "Deleted"):
+                session.add(
+                    Workspace(
+                        id=uuid.uuid4(),
+                        org_id=org_id,
+                        name=f"gone-{dead_status}",
+                        isolation_mode="shared",
+                        status=dead_status,
+                    )
+                )
+            await session.commit()
+
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            "/orgs/current/quota", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code not in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_a_live_ungranted_workspace_still_refuses_org_authority(
+        self, client, enforcing
+    ):
+        """The complement: excluding torn-down rows must not weaken the check.
+
+        A workspace in a provisioning-lifecycle state is still live, so a caller
+        without a grant on it does not hold organization authority.
+        """
+        from tests.conftest import async_session_test
+
+        org_id, _ = await _seed_workspace("workspace:administer")
+        async with async_session_test() as session:
+            session.add(
+                Workspace(
+                    id=uuid.uuid4(),
+                    org_id=org_id,
+                    name="still-live",
+                    isolation_mode="shared",
+                    status="max_retries_exceeded",
+                )
+            )
+            await session.commit()
+
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            "/orgs/current/quota", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_insufficient_permission_is_refused_for_org_endpoint(
+        self, client, enforcing
+    ):
+        """READ across the org is not ADMINISTER over the org."""
+        org_id, _ = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.patch(
+            "/orgs/current/quota",
+            json={"max_nodes": 10},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_malformed_org_claim_is_denied_not_a_server_error(
+        self, client, enforcing
+    ):
+        """A verified-but-unusable org claim is a 403, never a 500."""
+        token = _mint(enforcing, **{"custom:org_id": "not-a-uuid"})
+        response = await client.get(
+            "/orgs/current/quota", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 403
+
+
+class TestAuthorizedWorkspaceFiltering:
+    """Collection reads are filtered to the caller's own workspaces."""
+
+    @pytest.mark.asyncio
+    async def test_returns_only_workspaces_the_caller_holds(self, enforcing):
+        """Without this filter, a listing leaks the existence of other workspaces."""
+        from tests.conftest import async_session_test
+
+        org_id, granted = await _seed_workspace("workspace:read")
+        async with async_session_test() as session:
+            session.add(
+                Workspace(
+                    id=uuid.uuid4(),
+                    org_id=org_id,
+                    name="unheld-ws",
+                    isolation_mode="shared",
+                    status="active",
+                )
+            )
+            await session.commit()
+
+        caller = domain_auth.VerifiedCaller(
+            principal=type(
+                "P",
+                (),
+                {
+                    "subject": "user-abc",
+                    "org_id": str(org_id),
+                    "client_id": TEST_CLIENT_ID,
+                    "account_type": "human",
+                },
+            )(),
+            safe_headers={},
+        )
+        async with async_session_test() as session:
+            visible = await domain_auth.authorized_workspace_ids(
+                session, caller, Permission.READ
+            )
+        assert visible == [granted]
+
+    @pytest.mark.asyncio
+    async def test_permission_is_respected_by_the_filter(self, enforcing):
+        """A READ grant does not appear in a PROVISION-filtered listing."""
+        from tests.conftest import async_session_test
+
+        org_id, _ = await _seed_workspace("workspace:read")
+        caller = domain_auth.VerifiedCaller(
+            principal=type(
+                "P",
+                (),
+                {
+                    "subject": "user-abc",
+                    "org_id": str(org_id),
+                    "client_id": TEST_CLIENT_ID,
+                    "account_type": "human",
+                },
+            )(),
+            safe_headers={},
+        )
+        async with async_session_test() as session:
+            assert (
+                await domain_auth.authorized_workspace_ids(
+                    session, caller, Permission.PROVISION
+                )
+                == []
+            )
+
+
+class TestJWKSCache:
+    """Key retrieval, including the failure that must not be silent."""
+
+    def test_missing_jwks_url_is_a_startup_class_error(self, monkeypatch):
+        """Enforcing without a JWKS URL cannot verify anything, so it raises."""
+        monkeypatch.setattr(settings, "cognito_jwks_url", "")
+        cache = type(domain_auth.jwks_cache)()
+        with pytest.raises(TokenPolicyError, match="JWKS"):
+            cache.get("any-kid")
+
+    def test_keys_are_fetched_once_and_reused(self, monkeypatch, rsa_keys):
+        """A per-request fetch would put an outage on the authorization path."""
+        _, public_jwk = rsa_keys
+        calls = []
+
+        cache = type(domain_auth.jwks_cache)()
+
+        def fake_fetch():
+            calls.append(1)
+            cache.load([public_jwk])
+
+        monkeypatch.setattr(cache, "_fetch", fake_fetch)
+        assert cache.get(TEST_KID) is not None
+        assert cache.get(TEST_KID) is not None
+        assert len(calls) == 1
+
+    def test_clear_forces_a_refetch(self, rsa_keys):
+        _, public_jwk = rsa_keys
+        cache = type(domain_auth.jwks_cache)()
+        cache.load([public_jwk])
+        assert cache.loaded
+        cache.clear()
+        assert not cache.loaded
+
+    def test_keys_without_a_kid_are_ignored(self):
+        cache = type(domain_auth.jwks_cache)()
+        cache.load([{"kty": "RSA", "n": "x"}])
+        assert cache.get("anything") is None
+
+
+class TestEnforcementDisabledPath:
+    """With enforcement off the legacy path decides — and says so."""
+
+    @pytest.mark.asyncio
+    async def test_domain_route_without_policy_does_not_use_strict_path(
+        self, client, monkeypatch
+    ):
+        """The guard must not half-enforce when no policy is configured.
+
+        Enforcement off means the legacy validator is authoritative; the guard
+        has still classified the route. What must NOT happen is the strict path
+        running without a policy, which would refuse every request.
+        """
+        monkeypatch.setattr(fastapi_app.state, "domain_policy", None, raising=False)
+        org_id = uuid.uuid4()
+        legacy_token, _ = create_access_token(org_id)
+        response = await client.get(
+            "/workspaces", headers={"Authorization": f"Bearer {legacy_token}"}
+        )
+        assert response.status_code not in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_require_verified_caller_refuses_without_a_policy(self):
+        """Called directly with no policy configured: refuse, never fall back."""
+        from fastapi import HTTPException
+        from starlette.datastructures import Headers
+
+        class _Req:
+            def __init__(self):
+                self.app = type("A", (), {"state": type("S", (), {})()})()
+                self.state = type("S", (), {})()
+                self.headers = Headers({})
+
+        with pytest.raises(HTTPException) as exc:
+            await domain_auth.require_verified_caller(_Req(), None)
+        assert exc.value.status_code == 403
+
+
+class TestUninventoriedRouteFailsClosed:
+    """A route nobody classified must be refused, not served."""
+
+    @pytest.mark.asyncio
+    async def test_route_absent_from_the_inventory_is_refused(self, enforcing):
+        """The property that makes the inventory safe to rely on.
+
+        Registered on a throwaway app carrying the same guard, because the point
+        is what happens to a route that was never classified — which cannot be
+        demonstrated on the real app without leaving an unclassified route in it
+        (and the inventory test would then fail, correctly).
+        """
+        from fastapi import Depends, FastAPI
+        from httpx import ASGITransport, AsyncClient
+
+        from app.database import get_session
+        from app.domain_guard import enforce_domain_authorization
+
+        probe = FastAPI(dependencies=[Depends(enforce_domain_authorization)])
+        probe.state.domain_policy = fastapi_app.state.domain_policy
+        probe.dependency_overrides[get_session] = fastapi_app.dependency_overrides.get(
+            get_session
+        )
+
+        @probe.get("/never-classified")
+        async def _never_classified():
+            return {"reached": True}  # pragma: no cover - must be unreachable
+
+        transport = ASGITransport(app=probe)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            response = await ac.get("/never-classified")
+
+        assert response.status_code == 403
+        assert "no recorded authorization decision" in response.text
+
+    @pytest.mark.asyncio
+    async def test_unmatched_path_is_404_not_403(self, client, enforcing):
+        """A typo must not be reported as an authorization failure."""
+        response = await client.get("/no/such/path")
+        assert response.status_code == 404
+
+
+class TestLegacyActorFallback:
+    """With enforcement off, the legacy body field is still the only actor."""
+
+    def test_body_value_is_used_when_no_verified_caller(self):
+        """Documents the legacy path rather than pretending it is gone.
+
+        U21 owns retiring it. What matters here is that the body value is used
+        ONLY when no verified caller exists — never in preference to one.
+        """
+        from types import SimpleNamespace
+
+        from app.routers.research import _recorded_actor
+
+        unenforced = SimpleNamespace(state=SimpleNamespace())
+        assert _recorded_actor(unenforced, "legacy-actor") == "legacy-actor"
+
+
+class TestEnvironmentStateIsObservable:
+    """R5 acc. 5: the environment's identity state is asserted, not inferred."""
+
+    @pytest.mark.asyncio
+    async def test_health_reports_identity_posture(self, client):
+        """The flags are readable without a credential, so they can be asserted.
+
+        A deployment check (or a reviewer) can observe what the running process
+        actually has, instead of reading this repository's defaults and assuming
+        they describe the target environment.
+        """
+        response = await client.get("/health")
+        assert response.status_code == 200
+        body = response.json()
+        assert "cognito_enabled" in body
+        assert "domain_auth_enforced" in body
+        assert isinstance(body["cognito_enabled"], bool)
+
+    @pytest.mark.asyncio
+    async def test_health_reflects_the_loaded_policy_not_the_setting(
+        self, client, enforcing
+    ):
+        """Enforcement is reported from the policy object that decides requests."""
+        response = await client.get("/health")
+        assert response.json()["domain_auth_enforced"] is True
+
+    @pytest.mark.asyncio
+    async def test_enforced_setting_without_a_policy_reports_false(
+        self, client, monkeypatch
+    ):
+        """A truthy setting whose policy failed to build must not read as enforcing.
+
+        This is the case that would otherwise be most dangerous to misreport: an
+        operator sets the flag, the policy fails to build, and a status endpoint
+        claiming "enforced" would hide that every domain route is running on the
+        legacy path.
+        """
+        monkeypatch.setattr(settings, "domain_auth_enforced", True)
+        monkeypatch.setattr(fastapi_app.state, "domain_policy", None, raising=False)
+        response = await client.get("/health")
+        assert response.json()["domain_auth_enforced"] is False
+
+    @pytest.mark.asyncio
+    async def test_health_leaks_no_identity_configuration(self, client, enforcing):
+        """Posture booleans only — no issuer, client ids, JWKS URL or keys."""
+        body = (await client.get("/health")).text
+        assert TEST_ISSUER not in body
+        assert TEST_CLIENT_ID not in body
+        assert "jwks" not in body.lower()
+
+
+class TestEveryDomainRouteRefusesUnauthorizedCallers:
+    """The acceptance matrix, applied to every domain route rather than a sample.
+
+    The issue's criterion is that EVERY unauthorized case returns 401/403. A
+    hand-picked handful of routes cannot establish that, and the routes most
+    likely to be missed are the ones nobody thought to sample. So this walks the
+    inventory itself: a newly added domain route is covered the moment it is
+    inventoried, without anyone remembering to extend this test.
+    """
+
+    @staticmethod
+    def _concrete(template: str) -> str:
+        path = template
+        for placeholder in (
+            "{workspace_id}",
+            "{dep_id}",
+            "{event_id}",
+            "{user_id}",
+            "{account_id}",
+            "{credential_id}",
+            "{finding_id}",
+            "{proposal_id}",
+            "{cluster_id}",
+        ):
+            path = path.replace(placeholder, str(uuid.uuid4()))
+        return path
+
+    @pytest.mark.asyncio
+    async def test_no_credential_is_always_401_or_403(self, client, enforcing):
+        offenders = []
+        for method, template in sorted(DOMAIN_ROUTES):
+            body = {} if method in {"POST", "PATCH", "PUT"} else None
+            response = await client.request(method, self._concrete(template), json=body)
+            if response.status_code not in (401, 403):
+                offenders.append((method, template, response.status_code))
+        assert not offenders, (
+            "these domain routes answered an unauthenticated request with "
+            f"something other than 401/403: {offenders}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_forged_credential_is_always_401_or_403(self, client, enforcing):
+        """A 422 here would report an auth failure as a validation error."""
+        offenders = []
+        headers = {"Authorization": "Bearer forged.token.here"}
+        for method, template in sorted(DOMAIN_ROUTES):
+            body = {} if method in {"POST", "PATCH", "PUT"} else None
+            response = await client.request(
+                method, self._concrete(template), headers=headers, json=body
+            )
+            if response.status_code not in (401, 403):
+                offenders.append((method, template, response.status_code))
+        assert not offenders, (
+            f"these domain routes accepted or mis-reported a forged token: {offenders}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_internal_routes_never_accept_a_domain_token(self, client, enforcing):
+        """A user token must not reach a machine-to-machine route.
+
+        The two credential systems are separate on purpose: the internal token
+        authenticates the platform to itself and carries no user identity, so
+        admitting a user token here would grant platform authority to a user.
+        """
+        from app.endpoint_inventory import INTERNAL_ROUTES
+
+        offenders = []
+        headers = {"Authorization": f"Bearer {_mint(enforcing)}"}
+        for method, template in sorted(INTERNAL_ROUTES):
+            body = {} if method in {"POST", "PATCH", "PUT"} else None
+            response = await client.request(
+                method, self._concrete(template), headers=headers, json=body
+            )
+            if response.status_code not in (401, 403):
+                offenders.append((method, template, response.status_code))
+        assert not offenders, (
+            f"internal routes admitted a domain user token: {offenders}"
+        )

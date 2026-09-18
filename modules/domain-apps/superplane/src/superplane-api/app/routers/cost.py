@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.middleware.auth import get_current_org
+from app.routers.internal import verify_internal_token
 from app.schemas.proxy import (
     BudgetStatusResponse,
     CostResponse,
@@ -105,7 +106,16 @@ async def get_org_cost(
     return OrgCostResponse(**result)
 
 
-@router.post("/internal/cost-reconcile", response_model=ReconcileResponse)
+@router.post(
+    "/internal/cost-reconcile",
+    response_model=ReconcileResponse,
+    # Issue #5055 (U14). Previously unauthenticated: any caller able to reach the
+    # service could start a reconciliation cycle that enforces budget limits
+    # across every active workspace in every organization. It is a cron/internal
+    # trigger, so it takes the same shared-token check as the other
+    # machine-to-machine routes rather than a user credential.
+    dependencies=[Depends(verify_internal_token)],
+)
 async def trigger_cost_reconcile(
     db: AsyncSession = Depends(get_session),
 ) -> ReconcileResponse:

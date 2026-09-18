@@ -262,11 +262,24 @@ jobs:
         working-directory: modules/domain-apps/superplane/src/superplane-api
         run: |
           set -euo pipefail
+          # The domain authorization policy (#5044, U9) that `app/auth.py` imports to
+          # enforce the token and workspace rules (#5055, U14). Installed from its
+          # in-repository path because it is not published to any index, which is why
+          # it is absent from the API's `[project.dependencies]` — see the note in
+          # src/superplane-api/pyproject.toml. Importing rather than vendoring keeps
+          # one definition of the rules; the cost is that whoever installs the API has
+          # to install this too, and this is that step.
+          pip install -e ../../auth
           pip install -e ".[dev]" \
             -c ../../releases/transfer-constraints.txt
           # Pinned by directory, but NOT tolerant of an empty glob: these tests exist as of
           # the transfer, so "no tests found" means a PR deleted them and must fail.
-          COUNT=$(python3 -m pytest tests/ --collect-only -q 2>/dev/null | tail -1)
+          #
+          # stderr is kept (it used to go to /dev/null): a collection ERROR and an empty
+          # glob both reach this line, `pipefail` fails the step for either, and with
+          # stderr discarded the log showed the failure without the traceback naming the
+          # unimportable module. The count is still read from the last stdout line.
+          COUNT=$(python3 -m pytest tests/ --collect-only -q | tail -1)
           echo "Collected: ${COUNT}"
           python3 -m pytest tests/ -v --tb=short
 

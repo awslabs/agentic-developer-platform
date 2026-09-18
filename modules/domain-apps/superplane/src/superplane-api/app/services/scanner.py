@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.research_finding import VALID_SOURCES, ResearchFinding
+from app.models.workspace import Workspace
 from app.services.scanner_sources import (
     ALL_SOURCES,
     AUTO_TAGS,
@@ -779,21 +780,31 @@ async def run_scan(
     }
 
 
-async def get_scanner_stats(session: AsyncSession) -> dict[str, Any]:
-    """Get aggregate statistics about scanner findings."""
+async def get_scanner_stats(
+    session: AsyncSession, org_id: uuid.UUID | None = None
+) -> dict[str, Any]:
+    """Get aggregate statistics, tenant-scoped when strict auth supplies one."""
+
+    def owned(query):
+        if org_id is None:
+            return query
+        return query.join(
+            Workspace, Workspace.id == ResearchFinding.workspace_id
+        ).where(Workspace.org_id == org_id)
+
     # Total counts by relevance tier
-    total_q = await session.execute(select(func.count(ResearchFinding.id)))
+    total_q = await session.execute(owned(select(func.count(ResearchFinding.id))))
     total = total_q.scalar() or 0
 
     high_q = await session.execute(
-        select(func.count(ResearchFinding.id)).where(
+        owned(select(func.count(ResearchFinding.id))).where(
             ResearchFinding.relevance_score > HIGH_RELEVANCE_THRESHOLD
         )
     )
     high_count = high_q.scalar() or 0
 
     low_q = await session.execute(
-        select(func.count(ResearchFinding.id)).where(
+        owned(select(func.count(ResearchFinding.id))).where(
             ResearchFinding.relevance_score < LOW_RELEVANCE_THRESHOLD
         )
     )
@@ -803,15 +814,19 @@ async def get_scanner_stats(session: AsyncSession) -> dict[str, Any]:
 
     # Counts by source
     source_q = await session.execute(
-        select(
-            ResearchFinding.source,
-            func.count(ResearchFinding.id),
+        owned(
+            select(
+                ResearchFinding.source,
+                func.count(ResearchFinding.id),
+            )
         ).group_by(ResearchFinding.source)
     )
     findings_by_source = {row[0]: row[1] for row in source_q.all()}
 
     # Last scan time
-    last_scan_q = await session.execute(select(func.max(ResearchFinding.scanned_at)))
+    last_scan_q = await session.execute(
+        owned(select(func.max(ResearchFinding.scanned_at)))
+    )
     last_scan = last_scan_q.scalar()
 
     return {

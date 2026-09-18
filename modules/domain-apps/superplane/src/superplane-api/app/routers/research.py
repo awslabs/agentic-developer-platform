@@ -14,13 +14,14 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.models.research_finding import VALID_SOURCES, ResearchFinding
 from app.models.research_proposal import VALID_STATUSES, ResearchProposal
+from app.models.workspace import Workspace
 from app.schemas.research import (
     ProposalApproveRequest,
     ProposalCreateRequest,
@@ -45,8 +46,75 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/research", tags=["research"])
 
 
+def _recorded_actor(http_request: Request, body_value: str) -> str:
+    """The identity to record for an approval or rejection.
+
+    Issue #5055 (U14). Returns the VERIFIED principal's subject when domain
+    authorization is enforcing — the guard has already admitted the caller and
+    put it on ``request.state.caller``, and that subject comes entirely from
+    signature-verified token claims.
+
+    The body value is used only when enforcement is off, where there is no
+    verified caller to name and the legacy self-signed token carries no user
+    identity at all. That is a legacy-compatibility fallback for an unenforcing
+    deployment, NOT an authorization decision: it records who *claimed* to act,
+    and the route is unreachable without organization authority once enforcement
+    is on. Retiring that path is U21's conditional story.
+    """
+    caller = getattr(http_request.state, "caller", None)
+    if caller is not None:
+        return caller.principal.subject
+    return body_value
+
+
+def _tenant_org_id(http_request: Request) -> UUID | None:
+    """Return the verified tenant when strict domain auth is enforcing.
+
+    The global domain guard publishes only a signature-verified caller.  The
+    legacy unenforced mode deliberately keeps its existing behaviour until U21;
+    strict mode must never infer tenant ownership from a query or request body.
+    """
+    caller = getattr(http_request.state, "caller", None)
+    if caller is None:
+        return None
+    return UUID(caller.principal.org_id)
+
+
+def _scope_to_tenant(query, model, org_id: UUID | None):
+    """Inner-join research rows to their server-held workspace tenant.
+
+    An inner join intentionally excludes null, dangling, and otherwise unowned
+    legacy rows.  Those rows cannot be exposed merely because strict auth has
+    now been enabled.
+    """
+    if org_id is None:
+        return query
+    return query.join(Workspace, Workspace.id == model.workspace_id).where(
+        Workspace.org_id == org_id
+    )
+
+
+async def _require_owned_workspace(
+    session: AsyncSession, org_id: UUID | None, workspace_id: UUID | None
+) -> None:
+    """Fail closed when a strict-mode write lacks tenant-owned workspace state."""
+    if org_id is None:
+        return
+    if workspace_id is None:
+        raise HTTPException(status_code=403, detail="workspace is not authorized")
+    owned = await session.scalar(
+        select(Workspace.id).where(
+            Workspace.id == workspace_id,
+            Workspace.org_id == org_id,
+        )
+    )
+    if owned is None:
+        raise HTTPException(status_code=403, detail="workspace is not authorized")
+
+
 @router.get("/findings", response_model=ResearchFindingsList)
 async def list_findings(
+    http_request: Request,
     source: str | None = Query(None, description="Filter by source"),
     min_relevance: int = Query(0, ge=0, le=100, description="Minimum relevance score"),
     max_relevance: int = Query(
@@ -63,7 +131,8 @@ async def list_findings(
     By default, low-relevance findings (<30) are excluded unless
     explicitly requested via min_relevance=0.
     """
-    query = select(ResearchFinding)
+    org_id = _tenant_org_id(http_request)
+    query = _scope_to_tenant(select(ResearchFinding), ResearchFinding, org_id)
 
     # Apply filters
     if source:
@@ -112,12 +181,14 @@ async def list_findings(
 @router.get("/findings/{finding_id}", response_model=ResearchFindingDetail)
 async def get_finding(
     finding_id: UUID,
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> ResearchFindingDetail:
     """Get a single research finding with full details including raw content."""
-    result = await session.execute(
-        select(ResearchFinding).where(ResearchFinding.id == finding_id)
-    )
+    query = _scope_to_tenant(
+        select(ResearchFinding), ResearchFinding, _tenant_org_id(http_request)
+    ).where(ResearchFinding.id == finding_id)
+    result = await session.execute(query)
     finding = result.scalar_one_or_none()
 
     if not finding:
@@ -129,6 +200,7 @@ async def get_finding(
 @router.post("/scan", response_model=ScanResponse)
 async def trigger_scan(
     request: ScanRequest,
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> ScanResponse:
     """Trigger a manual scan of external data sources.
@@ -136,6 +208,10 @@ async def trigger_scan(
     If sources are not specified, all sources are scanned.
     This endpoint is also called by the scheduled cron/CloudWatch trigger.
     """
+    await _require_owned_workspace(
+        session, _tenant_org_id(http_request), request.workspace_id
+    )
+
     # Validate sources if provided
     if request.sources:
         invalid = [s for s in request.sources if s not in VALID_SOURCES]
@@ -166,10 +242,11 @@ async def trigger_scan(
 
 @router.get("/stats", response_model=ScannerStatsResponse)
 async def scanner_stats(
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> ScannerStatsResponse:
     """Get aggregate statistics about scanner findings."""
-    stats = await get_scanner_stats(session)
+    stats = await get_scanner_stats(session, _tenant_org_id(http_request))
     return ScannerStatsResponse(**stats)
 
 
@@ -198,6 +275,7 @@ async def list_sources() -> dict:
 
 @router.get("/proposals", response_model=ResearchProposalsList)
 async def list_proposals(
+    http_request: Request,
     status: str | None = Query(None, description="Filter by status"),
     workspace_id: UUID | None = Query(None, description="Filter by workspace"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -205,7 +283,8 @@ async def list_proposals(
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalsList:
     """List research proposals with filtering and pagination."""
-    query = select(ResearchProposal)
+    org_id = _tenant_org_id(http_request)
+    query = _scope_to_tenant(select(ResearchProposal), ResearchProposal, org_id)
 
     if status:
         if status not in VALID_STATUSES:
@@ -243,27 +322,35 @@ async def list_proposals(
 
 @router.get("/proposals/stats", response_model=ProposalStatsResponse)
 async def proposal_stats(
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> ProposalStatsResponse:
     """Get aggregate statistics about research proposals."""
-    total_q = await session.execute(select(func.count(ResearchProposal.id)))
+    org_id = _tenant_org_id(http_request)
+    total_q = await session.execute(
+        _scope_to_tenant(
+            select(func.count(ResearchProposal.id)), ResearchProposal, org_id
+        )
+    )
     total = total_q.scalar() or 0
 
     # Count by status
     status_counts = {}
     for status_name in VALID_STATUSES:
         q = await session.execute(
-            select(func.count(ResearchProposal.id)).where(
-                ResearchProposal.status == status_name
-            )
+            _scope_to_tenant(
+                select(func.count(ResearchProposal.id)), ResearchProposal, org_id
+            ).where(ResearchProposal.status == status_name)
         )
         status_counts[status_name] = q.scalar() or 0
 
     # Total estimated cost for approved + in_progress proposals
     cost_q = await session.execute(
-        select(func.sum(ResearchProposal.estimated_cost_usd)).where(
-            ResearchProposal.status.in_(["approved", "in_progress"])
-        )
+        _scope_to_tenant(
+            select(func.sum(ResearchProposal.estimated_cost_usd)),
+            ResearchProposal,
+            org_id,
+        ).where(ResearchProposal.status.in_(["approved", "in_progress"]))
     )
     total_cost = cost_q.scalar()
 
@@ -282,12 +369,14 @@ async def proposal_stats(
 @router.get("/proposals/{proposal_id}", response_model=ResearchProposalResponse)
 async def get_proposal(
     proposal_id: UUID,
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalResponse:
     """Get a single research proposal with full details."""
-    result = await session.execute(
-        select(ResearchProposal).where(ResearchProposal.id == proposal_id)
-    )
+    query = _scope_to_tenant(
+        select(ResearchProposal), ResearchProposal, _tenant_org_id(http_request)
+    ).where(ResearchProposal.id == proposal_id)
+    result = await session.execute(query)
     proposal = result.scalar_one_or_none()
 
     if not proposal:
@@ -299,6 +388,7 @@ async def get_proposal(
 @router.post("/proposals", response_model=ResearchProposalResponse, status_code=201)
 async def create_proposal(
     request: ProposalCreateRequest,
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalResponse:
     """Create a research proposal manually.
@@ -307,6 +397,10 @@ async def create_proposal(
     before experiments begin.
     """
     import uuid
+
+    await _require_owned_workspace(
+        session, _tenant_org_id(http_request), request.workspace_id
+    )
 
     # Convert source_findings UUIDs to strings for JSONB storage
     source_finding_ids = (
@@ -345,6 +439,7 @@ async def create_proposal(
 @router.post("/proposals/generate", response_model=ProposalGenerateResponse)
 async def generate_proposals_endpoint(
     request: ProposalGenerateRequest,
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> ProposalGenerateResponse:
     """Auto-generate research proposals from scanner findings.
@@ -353,6 +448,10 @@ async def generate_proposals_endpoint(
     groups them into themes, and generates actionable proposals with cost
     estimates and experiment plans.
     """
+    await _require_owned_workspace(
+        session, _tenant_org_id(http_request), request.workspace_id
+    )
+
     logger.info(
         "Generating proposals: min_relevance=%d, max_proposals=%d, workspace=%s",
         request.min_relevance,
@@ -382,16 +481,24 @@ async def generate_proposals_endpoint(
 async def approve_proposal(
     proposal_id: UUID,
     request: ProposalApproveRequest,
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalResponse:
     """Approve a research proposal for execution.
 
     Only proposals in 'proposed' status can be approved.
     Approved proposals move to the experiment queue (US-G4).
+
+    Issue #5055 (U14): the recorded approver is the VERIFIED principal, not the
+    ``approved_by`` field in the request body. Previously this wrote the body
+    value straight to ``proposal.approved_by``, so the audit record said whatever
+    the caller typed — on a route that also had no authentication at all. Body
+    fields never carry authority; see ``_recorded_actor``.
     """
-    result = await session.execute(
-        select(ResearchProposal).where(ResearchProposal.id == proposal_id)
-    )
+    query = _scope_to_tenant(
+        select(ResearchProposal), ResearchProposal, _tenant_org_id(http_request)
+    ).where(ResearchProposal.id == proposal_id)
+    result = await session.execute(query)
     proposal = result.scalar_one_or_none()
 
     if not proposal:
@@ -404,8 +511,10 @@ async def approve_proposal(
             f"Only proposals in 'proposed' status can be approved.",
         )
 
+    approver = _recorded_actor(http_request, request.approved_by)
+
     proposal.status = "approved"
-    proposal.approved_by = request.approved_by
+    proposal.approved_by = approver
     proposal.approved_at = datetime.now(timezone.utc)
     proposal.updated_at = datetime.now(timezone.utc)
 
@@ -416,7 +525,7 @@ async def approve_proposal(
         "Proposal approved: %s (%s) by %s",
         proposal.title,
         proposal.id,
-        request.approved_by,
+        approver,
     )
 
     return ResearchProposalResponse.model_validate(proposal)
@@ -429,15 +538,21 @@ async def approve_proposal(
 async def reject_proposal(
     proposal_id: UUID,
     request: ProposalRejectRequest,
+    http_request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalResponse:
     """Reject a research proposal.
 
     Only proposals in 'proposed' or 'approved' status can be rejected.
+
+    Issue #5055 (U14): the logged rejector is the verified principal rather than
+    the body's ``rejected_by``, for the same reason as approval — a body field
+    is a claim, not an identity.
     """
-    result = await session.execute(
-        select(ResearchProposal).where(ResearchProposal.id == proposal_id)
-    )
+    query = _scope_to_tenant(
+        select(ResearchProposal), ResearchProposal, _tenant_org_id(http_request)
+    ).where(ResearchProposal.id == proposal_id)
+    result = await session.execute(query)
     proposal = result.scalar_one_or_none()
 
     if not proposal:
@@ -460,7 +575,7 @@ async def reject_proposal(
         "Proposal rejected: %s (%s) by %s — %s",
         proposal.title,
         proposal.id,
-        request.rejected_by,
+        _recorded_actor(http_request, request.rejected_by),
         request.reason or "no reason",
     )
 

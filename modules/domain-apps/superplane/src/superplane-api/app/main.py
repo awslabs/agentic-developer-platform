@@ -3,11 +3,13 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.auth import build_domain_policy
 from app.config import settings
 from app.database import async_session_factory
+from app.domain_guard import enforce_domain_authorization
 from app.middleware.audit import AuditMiddleware
 from app.middleware.quota import QuotaEnforcementMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
@@ -56,7 +58,23 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
+    # Domain authorization (issue #5055, U14 — R5/R6). ONE dependency for the
+    # whole app rather than a `Depends` per handler: every request is classified
+    # against app/endpoint_inventory.py and a route with no recorded decision is
+    # refused, so the unsafe state is "route not inventoried" (which fails CI and
+    # fails closed) instead of "handler missing its auth dependency" (which is
+    # invisible and ships reachable). See app/domain_guard.py for why this cannot
+    # be a Starlette middleware: middleware runs before routing, so it cannot
+    # identify the route it is protecting.
+    dependencies=[Depends(enforce_domain_authorization)],
 )
+
+# The token policy is built once, at import, and held on app.state. Building it
+# is what enforces "an empty client allowlist is a startup failure, not a
+# default" — with enforcement on and no allowlist or issuer configured, the
+# policy's constructor raises and this process does not serve, rather than
+# serving while admitting every app client in the user pool.
+app.state.domain_policy = build_domain_policy()
 
 # CORS middleware
 app.add_middleware(

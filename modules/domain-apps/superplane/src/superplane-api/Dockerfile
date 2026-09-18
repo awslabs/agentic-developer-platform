@@ -14,6 +14,21 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY pyproject.toml .
 RUN pip install --no-cache-dir --prefix=/install .
 
+# The domain authorization policy (issue #5055, U14 — imported by app/auth.py).
+# It is maintained at modules/domain-apps/superplane/auth/ and staged into this
+# context by scripts/stage-domain-auth.sh, because releases/build-image.sh pins the
+# build context to this directory and Docker cannot COPY from above it.
+#
+# Not optional: without it `app.main` raises ModuleNotFoundError at startup. The
+# build fails here with that named cause rather than producing an image that
+# crash-loops on import.
+COPY vendor/superplane-auth ./vendor/superplane-auth
+RUN test -f vendor/superplane-auth/superplane_auth/policy.py || { \
+      echo "error: superplane_auth is not staged; run scripts/stage-domain-auth.sh before docker build" >&2; \
+      exit 1; \
+    } \
+    && pip install --no-cache-dir --prefix=/install ./vendor/superplane-auth
+
 # Stage 2: Runtime image
 FROM public.ecr.aws/docker/library/python:3.12-slim
 

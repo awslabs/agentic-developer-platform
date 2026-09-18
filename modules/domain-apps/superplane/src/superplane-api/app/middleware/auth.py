@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
@@ -14,6 +14,12 @@ from app.schemas.auth import TokenPayload
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer()
+
+# auto_error=False so a missing credential reaches the dependency body, which
+# decides between the verified-caller path and the legacy decoder before
+# answering. With auto_error=True, HTTPBearer would 403 on the way in and a
+# request already admitted by the domain guard could never reach its handler.
+optional_security = HTTPBearer(auto_error=False)
 
 
 def create_access_token(
@@ -74,28 +80,85 @@ def decode_token(token: str) -> TokenPayload:
         ) from exc
 
 
+def _verified_org_id(request: Request) -> uuid.UUID | None:
+    """The org of the caller the domain guard already admitted, if any.
+
+    Issue #5055 (U14). ``app/domain_guard.py`` runs before any handler
+    dependency and, when enforcement is on, has already verified the token's
+    signature and admitted it under the strict policy. This reads that decision
+    instead of re-deriving identity.
+
+    Two paths deciding the same question is the bypass this story exists to
+    close, so the order matters: when a verified caller exists, the legacy
+    decoder is not consulted at all. It is not a fallback — a valid domain token
+    is not HS256-signed and would fail the legacy decoder, and "try the other
+    validator on failure" is exactly how a permissive path re-admits what the
+    strict one refused.
+    """
+    caller = getattr(request.state, "caller", None)
+    if caller is None:
+        return None
+    try:
+        return uuid.UUID(caller.principal.org_id)
+    except (ValueError, AttributeError, TypeError) as exc:
+        # Verified, but not a usable identifier. A denial rather than a 500 from
+        # the query layer.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="token organization claim is not a valid identifier",
+        ) from exc
+
+
 async def get_current_org(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
 ) -> uuid.UUID:
-    """FastAPI dependency — extracts org_id from a valid JWT Bearer token.
+    """FastAPI dependency — the caller's organization.
 
     Usage in routers:
         @router.get("/workspaces")
         async def list_workspaces(org_id: uuid.UUID = Depends(get_current_org)):
             ...
     """
-    token_data = decode_token(credentials.credentials)
-    return token_data.org_id
+    verified = _verified_org_id(request)
+    if verified is not None:
+        return verified
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return decode_token(credentials.credentials).org_id
 
 
 async def get_current_user_context(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
 ) -> dict:
-    """FastAPI dependency — extracts full user context from JWT.
+    """FastAPI dependency — extracts full user context.
 
     Returns dict with: org_id, user_id, role.
     Used by RBAC middleware and user-aware endpoints.
     """
+    caller = getattr(request.state, "caller", None)
+    verified = _verified_org_id(request)
+    if verified is not None:
+        # The role is deliberately NOT taken from the token. Under enforcement,
+        # authority is the server-held grant the guard already checked for this
+        # operation; a role claim here would be a second, weaker source of
+        # authority that no grant backs.
+        return {
+            "org_id": verified,
+            "user_id": None,
+            "role": caller.principal.account_type,
+        }
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     token_data = decode_token(credentials.credentials)
     return {
         "org_id": token_data.org_id,

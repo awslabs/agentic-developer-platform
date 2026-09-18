@@ -1,6 +1,6 @@
 """Health check endpoint."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.config import settings
 from app.schemas.health import HealthResponse
@@ -9,6 +9,25 @@ router = APIRouter()
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
-    """Return application health status and version."""
-    return HealthResponse(status="healthy", version=settings.app_version)
+async def health_check(request: Request) -> HealthResponse:
+    """Return application health status, version and identity posture.
+
+    The two identity flags are reported so the environment's state can be
+    asserted rather than inferred from this repository's defaults (issue #5055,
+    R5 acceptance 5).
+
+    `domain_auth_enforced` reads the policy OBJECT THE APP ACTUALLY LOADED, not
+    the setting. The two can disagree — a truthy setting whose policy failed to
+    build must never report as "enforcing" — and the loaded object is the one
+    that decides real requests. It is read from app state rather than rebuilt
+    here because rebuilding would re-raise a misconfiguration and turn the
+    liveness probe into a 500, which would take the pod down for a reason that
+    has nothing to do with liveness.
+    """
+    return HealthResponse(
+        status="healthy",
+        version=settings.app_version,
+        cognito_enabled=settings.cognito_enabled,
+        domain_auth_enforced=getattr(request.app.state, "domain_policy", None)
+        is not None,
+    )

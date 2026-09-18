@@ -32,12 +32,26 @@ class ClusterResourceUpdate(BaseModel):
 
 
 async def verify_internal_token(
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: str | None = Header(None, alias="Authorization"),
 ) -> None:
     """Verify the internal API token from the Authorization header.
 
     Expects: Authorization: Bearer <API_SERVER_TOKEN>
+
+    The header is declared OPTIONAL and then rejected explicitly (issue #5055,
+    U14). Declared as required, FastAPI answers a missing header with 422
+    "Field required" — a validation error, which reports an authentication
+    failure as a malformed request and does not carry ``WWW-Authenticate``.
+    R5's matrix requires every unauthorized case to answer 401 or 403, so the
+    absence of a credential is handled here as the authentication failure it is.
     """
+    if authorization is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

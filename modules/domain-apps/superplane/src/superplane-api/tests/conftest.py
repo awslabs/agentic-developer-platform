@@ -74,9 +74,60 @@ async def _setup_db():
         await conn.run_sync(Base.metadata.drop_all)
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_buckets():
+    """Clear the rate limiter's counters between tests.
+
+    The middleware instance lives for the lifetime of the app, so its buckets are
+    shared by every test in the session and requests accumulate across them.
+    Without this, a test's result depends on how many requests the tests before
+    it happened to make: a suite that passes individually starts returning 429
+    once any test exercises many routes, and the failure surfaces in an unrelated
+    file (`assert 429 in (401, 403)`), which points at the wrong code.
+
+    Autouse and unconditional, because the leak is not specific to the tests that
+    reveal it.
+    """
+    from app.middleware.rate_limit import RateLimitMiddleware
+
+    def _clear():
+        for middleware in getattr(app, "user_middleware", []):
+            if middleware.cls is RateLimitMiddleware:
+                # Starlette builds the instance lazily on first request, so the
+                # object may not exist yet; clearing the built stack is what
+                # actually reaches it.
+                stack = getattr(app, "middleware_stack", None)
+                while stack is not None:
+                    if isinstance(stack, RateLimitMiddleware):
+                        stack._buckets.clear()
+                        return
+                    stack = getattr(stack, "app", None)
+
+    _clear()
+    yield
+    _clear()
+
+
 @pytest.fixture
 async def client():
     """Async HTTP client for testing FastAPI endpoints."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+# Shared internal token for the machine-to-machine `/internal/*` routes.
+# Issue #5055 (U14) put this check on the two routes that lacked it, so tests
+# exercising them need a credential. Set on `settings` for the duration of the
+# test rather than in the environment, because `Settings` reads env vars once at
+# import and a later os.environ write would not be seen.
+TEST_INTERNAL_TOKEN = "test-internal-token-not-a-real-secret"
+
+
+@pytest.fixture
+def internal_token_header(monkeypatch):
+    """Authorization header carrying the internal shared token."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "internal_api_token", TEST_INTERNAL_TOKEN)
+    return {"Authorization": f"Bearer {TEST_INTERNAL_TOKEN}"}
