@@ -98,7 +98,7 @@ func newTestMonitor(database *fakeDB) *ClusterHealthMonitor {
 		Config:    defaultConfig(),
 		Logger:    zap.NewNop(),
 		Clock:     &fakeClock{now: time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)},
-		EKSProber: &NoopEKSProber{},
+		EKSProber: &UnconfiguredEKSProber{},
 	}
 }
 
@@ -184,14 +184,16 @@ func TestCheckSkyPilotHealth_Unhealthy(t *testing.T) {
 	}
 }
 
+// #5056: was "expected Healthy when not reported". An unreported dimension is
+// not a passing one — see R11 acceptance 4.
 func TestCheckSkyPilotHealth_NotReported(t *testing.T) {
 	r := newTestMonitor(nil)
 	payload := &db.HeartbeatPayload{}
 
 	dim := r.checkSkyPilotHealth(payload)
 
-	if dim.Status != HealthStatusHealthy {
-		t.Errorf("expected Healthy when not reported, got %s", dim.Status)
+	if dim.Status != HealthStatusNotChecked {
+		t.Errorf("expected NotChecked when not reported, got %s", dim.Status)
 	}
 }
 
@@ -230,14 +232,33 @@ func TestCheckVaultSyncStatus_Pending(t *testing.T) {
 	}
 }
 
+// #5056: was "expected Healthy when empty".
 func TestCheckVaultSyncStatus_Empty(t *testing.T) {
 	r := newTestMonitor(nil)
 	payload := &db.HeartbeatPayload{}
 
 	dim := r.checkVaultSyncStatus(payload)
 
-	if dim.Status != HealthStatusHealthy {
-		t.Errorf("expected Healthy when empty, got %s", dim.Status)
+	if dim.Status != HealthStatusNotChecked {
+		t.Errorf("expected NotChecked when empty, got %s", dim.Status)
+	}
+}
+
+// TestCheckVaultSyncStatus_Unrecognised covers the branch that used to make this
+// function unable to report anything but health. It is not hypothetical: the
+// controller emits `vault_sync_status: "synced"`, which the API schema's
+// `^(ok|failed|pending)$` does not allow, so this is the value production sends.
+func TestCheckVaultSyncStatus_Unrecognised(t *testing.T) {
+	r := newTestMonitor(nil)
+	payload := &db.HeartbeatPayload{VaultSyncStatus: "synced"}
+
+	dim := r.checkVaultSyncStatus(payload)
+
+	if dim.Status != HealthStatusUnknown {
+		t.Errorf("expected Unknown for an uninterpretable value, got %s", dim.Status)
+	}
+	if dim.Status == HealthStatusHealthy {
+		t.Error("an unrecognised status must never be reported as healthy")
 	}
 }
 
@@ -286,14 +307,29 @@ func TestCheckNodeHealth_MajorityNotReady(t *testing.T) {
 	}
 }
 
+// #5056: was "expected Healthy when not reported".
 func TestCheckNodeHealth_NotReported(t *testing.T) {
 	r := newTestMonitor(nil)
 	payload := &db.HeartbeatPayload{}
 
 	dim := r.checkNodeHealth(payload)
 
-	if dim.Status != HealthStatusHealthy {
-		t.Errorf("expected Healthy when not reported, got %s", dim.Status)
+	if dim.Status != HealthStatusNotChecked {
+		t.Errorf("expected NotChecked when not reported, got %s", dim.Status)
+	}
+}
+
+// #5056: a summary that lists zero nodes is a summary of nothing. This is the
+// shape a failed or partial node listing produces, so reporting it as Healthy
+// turned a broken listing into a clean bill of health.
+func TestCheckNodeHealth_ZeroNodesIsNotHealth(t *testing.T) {
+	r := newTestMonitor(nil)
+	payload := &db.HeartbeatPayload{NodeSummary: &db.NodeSummary{Total: 0}}
+
+	dim := r.checkNodeHealth(payload)
+
+	if dim.Status != HealthStatusNotChecked {
+		t.Errorf("expected NotChecked when no nodes were reported, got %s", dim.Status)
 	}
 }
 
@@ -323,6 +359,8 @@ func TestCheckEKSReachability_Unreachable(t *testing.T) {
 	}
 }
 
+// #5056: was "expected Healthy when prober nil" — the case R11 acceptance 4
+// names directly. No prober means no probe, and no probe cannot yield a verdict.
 func TestCheckEKSReachability_NilProber(t *testing.T) {
 	r := newTestMonitor(nil)
 	r.EKSProber = nil
@@ -330,13 +368,30 @@ func TestCheckEKSReachability_NilProber(t *testing.T) {
 
 	dim := r.checkEKSReachability(context.Background(), cluster)
 
-	if dim.Status != HealthStatusHealthy {
-		t.Errorf("expected Healthy when prober nil, got %s", dim.Status)
+	if dim.Status != HealthStatusNotChecked {
+		t.Errorf("expected NotChecked when prober nil, got %s", dim.Status)
+	}
+}
+
+// TestCheckEKSReachability_UnconfiguredProber covers the wired default in
+// main.go: it must read as NotChecked, and specifically NOT as Unreachable —
+// declining to probe is not evidence of an outage either.
+func TestCheckEKSReachability_UnconfiguredProber(t *testing.T) {
+	r := newTestMonitor(nil)
+	r.EKSProber = &UnconfiguredEKSProber{}
+	cluster := &db.Cluster{ID: "test-cluster"}
+
+	dim := r.checkEKSReachability(context.Background(), cluster)
+
+	if dim.Status != HealthStatusNotChecked {
+		t.Errorf("expected NotChecked from the unconfigured prober, got %s", dim.Status)
 	}
 }
 
 // --- Cost Anomaly Tests ---
 
+// #5056: was "expected Healthy when no cost data" — i.e. "no cost anomaly" from
+// a comparison that never happened.
 func TestCheckCostAnomaly_NoCostData(t *testing.T) {
 	r := newTestMonitor(&fakeDB{})
 	payload := &db.HeartbeatPayload{}
@@ -344,8 +399,8 @@ func TestCheckCostAnomaly_NoCostData(t *testing.T) {
 
 	dim := r.checkCostAnomaly(context.Background(), cluster, payload)
 
-	if dim.Status != HealthStatusHealthy {
-		t.Errorf("expected Healthy when no cost data, got %s", dim.Status)
+	if dim.Status != HealthStatusNotChecked {
+		t.Errorf("expected NotChecked when no cost data, got %s", dim.Status)
 	}
 }
 
@@ -392,13 +447,19 @@ func TestCheckCostAnomaly_FallbackToHistory(t *testing.T) {
 
 // --- Aggregation Tests ---
 
+// #5056: this test previously reported Healthy overall while supplying data for
+// only three of the six dimensions — the aggregate said "healthy" on the
+// strength of three checks that never ran. All six inputs are now provided, so
+// an overall Healthy means six dimensions were actually evaluated.
 func TestCheckAllDimensions_AllHealthy(t *testing.T) {
 	database := &fakeDB{}
 	r := newTestMonitor(database)
+	r.EKSProber = &fakeEKSProber{err: nil}
 
 	now := r.Clock.Now()
 	lastHeartbeat := now.Add(-1 * time.Minute)
 	healthy := true
+	cost, avg := 10.0, 10.0
 	cluster := &db.Cluster{
 		ID:            "test-cluster",
 		LastHeartbeat: &lastHeartbeat,
@@ -407,6 +468,8 @@ func TestCheckAllDimensions_AllHealthy(t *testing.T) {
 		SkyPilotHealthy: &healthy,
 		VaultSyncStatus: "ok",
 		NodeSummary:     &db.NodeSummary{Total: 5, Ready: 5, NotReady: 0},
+		CostHourly:      &cost,
+		CostHourlyAvg:   &avg,
 	}
 
 	result := r.checkAllDimensions(context.Background(), cluster, payload, now)
@@ -416,6 +479,30 @@ func TestCheckAllDimensions_AllHealthy(t *testing.T) {
 	}
 	if len(result.Dimensions) != 6 {
 		t.Errorf("expected 6 dimensions, got %d", len(result.Dimensions))
+	}
+	for _, dim := range result.Dimensions {
+		if dim.Status != HealthStatusHealthy {
+			t.Errorf("dimension %s should be Healthy when its input was supplied, got %s", dim.Name, dim.Status)
+		}
+	}
+}
+
+// #5056: the aggregate of a partly-reported payload must not be Healthy. This is
+// the acceptance-4 property at the aggregate level — before the fix, a cluster
+// that reported nothing but a fresh heartbeat aggregated to a clean Healthy.
+func TestCheckAllDimensions_PartialReportIsNotHealthy(t *testing.T) {
+	database := &fakeDB{}
+	r := newTestMonitor(database)
+
+	now := r.Clock.Now()
+	lastHeartbeat := now.Add(-1 * time.Minute)
+	cluster := &db.Cluster{ID: "test-cluster", LastHeartbeat: &lastHeartbeat}
+
+	// Only the heartbeat dimension has anything to inspect.
+	result := r.checkAllDimensions(context.Background(), cluster, &db.HeartbeatPayload{}, now)
+
+	if result.OverallStatus != HealthStatusNotChecked {
+		t.Errorf("expected NotChecked overall when five of six dimensions had no data, got %s", result.OverallStatus)
 	}
 }
 
@@ -481,10 +568,15 @@ func TestCheck_FullCycle(t *testing.T) {
 				Status:        "Active",
 				HealthStatus:  &currentHealth,
 				LastHeartbeat: &lastHeartbeat,
+				// #5056: cost fields and a real prober added. The payload used to
+				// omit them and the test still expected Healthy, i.e. it asserted
+				// that unperformed checks read as passing ones.
 				ActualStateJSON: json.RawMessage(`{
 					"skypilot_healthy": true,
 					"vault_sync_status": "ok",
-					"node_summary": {"total": 3, "ready": 3, "not_ready": 0}
+					"node_summary": {"total": 3, "ready": 3, "not_ready": 0},
+					"cost_hourly": 10.0,
+					"cost_hourly_avg": 10.0
 				}`),
 			},
 		},
@@ -496,7 +588,7 @@ func TestCheck_FullCycle(t *testing.T) {
 		Config:    defaultConfig(),
 		Logger:    zap.NewNop(),
 		Clock:     &fakeClock{now: now},
-		EKSProber: &NoopEKSProber{},
+		EKSProber: &fakeEKSProber{err: nil},
 	}
 
 	err := r.Check(context.Background())
@@ -542,7 +634,7 @@ func TestCheck_LockNotAcquired(t *testing.T) {
 		Config:    defaultConfig(),
 		Logger:    zap.NewNop(),
 		Clock:     &fakeClock{now: now},
-		EKSProber: &NoopEKSProber{},
+		EKSProber: &UnconfiguredEKSProber{},
 	}
 
 	err := r.Check(context.Background())
@@ -569,9 +661,15 @@ func TestCheck_NoHealthTransitionEvent(t *testing.T) {
 				Name:          "stable-cluster",
 				HealthStatus:  &currentHealth,
 				LastHeartbeat: &lastHeartbeat,
+				// #5056: completed for the same reason as TestCheck_FullCycle —
+				// this test is about event suppression on an unchanged status, so
+				// the payload has to actually produce the Healthy it starts from.
 				ActualStateJSON: json.RawMessage(`{
 					"skypilot_healthy": true,
-					"vault_sync_status": "ok"
+					"vault_sync_status": "ok",
+					"node_summary": {"total": 3, "ready": 3, "not_ready": 0},
+					"cost_hourly": 10.0,
+					"cost_hourly_avg": 10.0
 				}`),
 			},
 		},
@@ -583,7 +681,7 @@ func TestCheck_NoHealthTransitionEvent(t *testing.T) {
 		Config:    defaultConfig(),
 		Logger:    zap.NewNop(),
 		Clock:     &fakeClock{now: now},
-		EKSProber: &NoopEKSProber{},
+		EKSProber: &fakeEKSProber{err: nil},
 	}
 
 	err := r.Check(context.Background())
@@ -609,6 +707,11 @@ func TestWorstStatus(t *testing.T) {
 		{[]string{HealthStatusDegraded, HealthStatusUnreachable}, HealthStatusUnreachable},
 		{[]string{HealthStatusHealthy, HealthStatusDegraded, HealthStatusUnreachable}, HealthStatusUnreachable},
 		{[]string{HealthStatusUnknown}, HealthStatusUnknown},
+		// #5056: corrected ordering — a proven Unreachable outranks an
+		// unexplained Unknown, and NotChecked sits between Healthy and Degraded.
+		{[]string{HealthStatusUnknown, HealthStatusUnreachable}, HealthStatusUnreachable},
+		{[]string{HealthStatusHealthy, HealthStatusNotChecked}, HealthStatusNotChecked},
+		{[]string{HealthStatusNotChecked, HealthStatusDegraded}, HealthStatusDegraded},
 	}
 
 	for _, tt := range tests {

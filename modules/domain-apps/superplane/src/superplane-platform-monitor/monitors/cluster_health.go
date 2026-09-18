@@ -3,6 +3,7 @@ package monitors
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -236,15 +237,17 @@ func (r *ClusterHealthMonitor) checkHeartbeatFreshness(cluster *db.Cluster, now 
 // checkSkyPilotHealth checks the skypilot_healthy field from the heartbeat payload.
 //
 // Rules:
-//   - Field not present -> Healthy (assume OK if not reported)
+//   - Field not present -> NotChecked (nothing was reported, so nothing is known)
 //   - skypilot_healthy=true -> Healthy
 //   - skypilot_healthy=false -> Degraded (triggers SkyPilot pod restart)
 func (r *ClusterHealthMonitor) checkSkyPilotHealth(payload *db.HeartbeatPayload) HealthDimension {
 	dim := HealthDimension{Name: "skypilot_health"}
 
 	if payload.SkyPilotHealthy == nil {
-		dim.Status = HealthStatusHealthy
-		dim.Message = "SkyPilot health not reported (assuming OK)"
+		// #5056: was Healthy / "assuming OK". A cluster whose agent never
+		// reported SkyPilot at all is not evidence that SkyPilot is up.
+		dim.Status = HealthStatusNotChecked
+		dim.Message = "SkyPilot health not reported"
 		return dim
 	}
 
@@ -262,15 +265,28 @@ func (r *ClusterHealthMonitor) checkSkyPilotHealth(payload *db.HeartbeatPayload)
 // checkVaultSyncStatus checks the vault_sync_status field from the heartbeat payload.
 //
 // Rules:
-//   - Field not present or empty -> Healthy (assume OK)
+//   - Field not present or empty -> NotChecked (nothing reported)
 //   - vault_sync_status=ok -> Healthy
-//   - vault_sync_status=pending -> Healthy (sync in progress)
+//   - vault_sync_status=pending -> Healthy (sync reported, in progress)
 //   - vault_sync_status=failed -> Degraded (re-trigger credential sync)
+//   - any other value -> Unknown (reported, but not a value this monitor understands)
+//
+// #5056 note: every branch here used to end in Healthy, so the function could
+// only ever say "fine" — including for the value the controller actually sends.
+// The controller emits `vault_sync_status: "synced"`, which is not in the API
+// schema's `^(ok|failed|pending)$` and so lands in `default`. Under the old code
+// that unrecognised value was reported as a healthy vault sync; it is now
+// Unknown, which is what "I was told something I cannot interpret" means. The
+// producer/schema mismatch itself is a live defect that this story only records
+// (see docs/runbooks/superplane-monitor-grant-withdrawal.md).
 func (r *ClusterHealthMonitor) checkVaultSyncStatus(payload *db.HeartbeatPayload) HealthDimension {
 	dim := HealthDimension{Name: "vault_sync_status"}
 
 	switch payload.VaultSyncStatus {
-	case "", "ok":
+	case "":
+		dim.Status = HealthStatusNotChecked
+		dim.Message = "Vault sync status not reported"
+	case "ok":
 		dim.Status = HealthStatusHealthy
 		dim.Message = "Vault credential sync OK"
 	case "pending":
@@ -280,8 +296,8 @@ func (r *ClusterHealthMonitor) checkVaultSyncStatus(payload *db.HeartbeatPayload
 		dim.Status = HealthStatusDegraded
 		dim.Message = "Vault credential sync failed — re-trigger recommended"
 	default:
-		dim.Status = HealthStatusHealthy
-		dim.Message = fmt.Sprintf("Vault sync status: %s", payload.VaultSyncStatus)
+		dim.Status = HealthStatusUnknown
+		dim.Message = fmt.Sprintf("Unrecognised vault sync status: %s", payload.VaultSyncStatus)
 	}
 
 	return dim
@@ -290,7 +306,8 @@ func (r *ClusterHealthMonitor) checkVaultSyncStatus(payload *db.HeartbeatPayload
 // checkNodeHealth checks the node_summary.not_ready count from the heartbeat payload.
 //
 // Rules:
-//   - No node summary -> Healthy (assume OK)
+//   - No node summary -> NotChecked (nothing reported)
+//   - total == 0 -> NotChecked (a summary listing no nodes says nothing about node health)
 //   - not_ready == 0 -> Healthy
 //   - not_ready > 0 but < 50% of total -> Degraded (warning, controller handles auto-repair)
 //   - not_ready >= 50% of total -> Degraded (critical warning)
@@ -298,14 +315,17 @@ func (r *ClusterHealthMonitor) checkNodeHealth(payload *db.HeartbeatPayload) Hea
 	dim := HealthDimension{Name: "node_health"}
 
 	if payload.NodeSummary == nil {
-		dim.Status = HealthStatusHealthy
-		dim.Message = "Node health not reported (assuming OK)"
+		// #5056: was Healthy / "assuming OK".
+		dim.Status = HealthStatusNotChecked
+		dim.Message = "Node health not reported"
 		return dim
 	}
 
 	ns := payload.NodeSummary
 	if ns.Total == 0 {
-		dim.Status = HealthStatusHealthy
+		// #5056: was Healthy. Zero nodes examined is zero evidence — this is the
+		// shape a partially-initialised or failed node-listing produces.
+		dim.Status = HealthStatusNotChecked
 		dim.Message = "No nodes reported"
 		return dim
 	}
@@ -334,18 +354,30 @@ func (r *ClusterHealthMonitor) checkNodeHealth(payload *db.HeartbeatPayload) Hea
 // checkEKSReachability probes the cluster's K8s API to verify network/IAM connectivity.
 //
 // Rules:
+//   - No prober wired, or the prober reports ErrProbeNotPerformed -> NotChecked
 //   - API reachable -> Healthy
 //   - API unreachable -> Unreachable (network or IAM issue)
+//
+// #5056: both "no prober" branches used to report Healthy / "EKS API reachable",
+// which is the acceptance-4 defect at its most direct — the shipped default
+// wiring probed nothing and reported every cluster's K8s API as reachable.
 func (r *ClusterHealthMonitor) checkEKSReachability(ctx context.Context, cluster *db.Cluster) HealthDimension {
 	dim := HealthDimension{Name: "eks_reachability"}
 
 	if r.EKSProber == nil {
-		dim.Status = HealthStatusHealthy
+		dim.Status = HealthStatusNotChecked
 		dim.Message = "EKS probing not configured"
 		return dim
 	}
 
 	if err := r.EKSProber.ProbeEKS(ctx, cluster); err != nil {
+		// A prober that declines to probe is not a failed probe: distinguish
+		// "did not look" from "looked and could not reach it".
+		if errors.Is(err, ErrProbeNotPerformed) {
+			dim.Status = HealthStatusNotChecked
+			dim.Message = "EKS probing not configured"
+			return dim
+		}
 		dim.Status = HealthStatusUnreachable
 		dim.Message = fmt.Sprintf("EKS API unreachable: %v", err)
 	} else {
@@ -359,14 +391,17 @@ func (r *ClusterHealthMonitor) checkEKSReachability(ctx context.Context, cluster
 // checkCostAnomaly compares current hourly cost against the rolling average.
 //
 // Rules:
-//   - No cost data -> Healthy (nothing to compare)
+//   - No cost data, or no average to compare against -> NotChecked
 //   - cost_hourly / cost_hourly_avg > CostAnomalyMultiplier -> Degraded (alert)
 //   - Otherwise -> Healthy
+//
+// #5056: the three "nothing to compare" branches reported Healthy, i.e. "no cost
+// anomaly", on the strength of never having performed the comparison.
 func (r *ClusterHealthMonitor) checkCostAnomaly(ctx context.Context, cluster *db.Cluster, payload *db.HeartbeatPayload) HealthDimension {
 	dim := HealthDimension{Name: "cost_anomaly"}
 
 	if payload.CostHourly == nil {
-		dim.Status = HealthStatusHealthy
+		dim.Status = HealthStatusNotChecked
 		dim.Message = "Cost data not reported"
 		return dim
 	}
@@ -381,7 +416,7 @@ func (r *ClusterHealthMonitor) checkCostAnomaly(ctx context.Context, cluster *db
 		// Fall back to DB-based cost history if payload doesn't include average.
 		costs, err := r.DB.GetCostHistory(ctx, cluster.ID, 24*time.Hour)
 		if err != nil || len(costs) == 0 {
-			dim.Status = HealthStatusHealthy
+			dim.Status = HealthStatusNotChecked
 			dim.Message = fmt.Sprintf("Current cost: $%.2f/hr (no history for comparison)", currentCost)
 			return dim
 		}
@@ -394,7 +429,7 @@ func (r *ClusterHealthMonitor) checkCostAnomaly(ctx context.Context, cluster *db
 	}
 
 	if avgCost <= 0 {
-		dim.Status = HealthStatusHealthy
+		dim.Status = HealthStatusNotChecked
 		dim.Message = fmt.Sprintf("Current cost: $%.2f/hr (average not available)", currentCost)
 		return dim
 	}

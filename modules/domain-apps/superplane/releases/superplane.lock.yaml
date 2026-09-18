@@ -219,8 +219,9 @@ skypilot_config:
 # unreachable by construction, so no recorded history can reference it.
 #
 # Two tables the models declare (`api_keys`, `budget_alerts`) were created by no migration
-# at all; 008 and 009 add them. U14's 010 then adds the server-held workspace grants
-# table. The chain now renders 18 CREATE TABLEs for the 18 tables `Base.metadata` declares.
+# at all; 008 and 009 add them. U14's 010 then adds the server-held workspace grant table,
+# and U15's 011 adds observation receipts and leases. The chain now renders 20 CREATE
+# TABLEs for the 20 tables `Base.metadata` declares.
 #
 # WHY `status` IS STILL `unverified`, AND WHY THAT IS NOT A LEFTOVER
 #
@@ -248,14 +249,15 @@ schema:
   status: unverified
   single_head: true
   observed:
-    # U13 repaired the 13-file transferred chain and added two missing-table
-    # revisions. U14 adds 010 for the workspace grant table used by strict auth.
-    version_files: 16
+    # U13 repaired the transferred chain and added two missing-table revisions;
+    # U14 added 010 for workspace grants; U15 adds 011 for observation receipts
+    # and leases. All additions extend the same linear head.
+    version_files: 17
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 010_add_workspace_grants
+    head: 011_add_observation_receiver_tables
     base: 001_initial
   compatible_with: null
   blocked_by:

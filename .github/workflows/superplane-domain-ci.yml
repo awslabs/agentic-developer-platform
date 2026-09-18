@@ -272,6 +272,14 @@ jobs:
           pip install -e ../../auth
           pip install -e ".[dev]" \
             -c ../../releases/transfer-constraints.txt
+          # The receiver (#5056, U15) imports `superplane_contracts` — U8's shared
+          # contract package, which lives in the module's `contracts/` directory and is
+          # NOT a declared dependency of the transferred pyproject.toml (that file stays
+          # byte-identical to the origin, which predates the package). So the lane
+          # installs it explicitly. Without this, collection of the whole API suite aborts
+          # with ModuleNotFoundError and pytest exits 4.
+          pip install -e ../../contracts \
+            -c ../../releases/transfer-constraints.txt
           # Pinned by directory, but NOT tolerant of an empty glob: these tests exist as of
           # the transfer, so "no tests found" means a PR deleted them and must fail.
           #
@@ -282,6 +290,45 @@ jobs:
           COUNT=$(python3 -m pytest tests/ --collect-only -q | tail -1)
           echo "Collected: ${COUNT}"
           python3 -m pytest tests/ -v --tb=short
+
+      - name: Enforce coverage on the observation receiver
+        # Issue #5056 (U15) requires >=85% on the receiver logic it changed. The step
+        # above RUNS these tests but has no --cov-fail-under, so it cannot enforce that.
+        #
+        # Scoped to the three modules the story wrote rather than to the whole app: an
+        # app-wide percentage lets exactly this code rot behind the aggregate, and the
+        # aggregate is dominated by 40+ transferred modules this story did not touch.
+        #
+        # WHY pytest-cov IS INSTALLED HERE. The transferred `pyproject.toml` does not
+        # declare it, and it is preserved byte-for-byte from the origin (that fidelity is
+        # what makes the transfer auditable and is asserted by
+        # tests/test_transferred_source_boundary.py). So the lane adds the tool it needs
+        # instead of editing the file — a dev-only measurement dependency, constrained
+        # alongside the rest.
+        #
+        # WHY THE greenlet CONCURRENCY SETTING IS NOT OPTIONAL. These are async SQLAlchemy
+        # paths, which execute on greenlets; without it coverage.py never sees those
+        # frames and reports 68% for code measured at 96%. A 85% gate would then fail on
+        # correct, fully covered code, and the obvious "fix" is to lower the gate. Verified
+        # both ways before pinning: 96% with, 68% without.
+        working-directory: modules/domain-apps/superplane/src/superplane-api
+        run: |
+          set -euo pipefail
+          pip install 'pytest-cov>=5.0.0' -c ../../releases/transfer-constraints.txt
+          cat > /tmp/superplane-receiver-cov.ini <<'INI'
+          [run]
+          concurrency = greenlet,thread
+          INI
+          # --cov takes MODULE paths, not file paths: a file path silently collects
+          # nothing. That failure mode is safe here (no data => the gate fails rather
+          # than passes) but the distinction is worth stating, since the fix for a
+          # "0% coverage" error is a dotted name and not a lower threshold.
+          python3 -m pytest tests/test_heartbeat_auth.py -v --tb=short \
+            --cov=app.services.observations \
+            --cov=app.services.leases \
+            --cov=app.routers.heartbeat \
+            --cov-config=/tmp/superplane-receiver-cov.ini \
+            --cov-report=term-missing --cov-fail-under=85
 
       - name: Set up Go for the transferred components
         # Pinned to the version the transferred go.mod files declare (go 1.23.0), so the
@@ -314,16 +361,48 @@ jobs:
           go test ./... -count=1 -v
 
       - name: Run transferred Superplane platform monitor tests
-        # Same NOT-RUN note: `tests/integration_test.go` carries `//go:build integration` and
-        # needs a real PostgreSQL via INTEGRATION_DATABASE_URL, so the default build excludes
-        # it and this lane does not pass `-tags=integration`. That exclusion is the file's own
-        # design, not a suppression added here — but it is stated so the green result is not
-        # read as covering it.
+        # Same NOT-RUN note: `tests/integration_test.go` carries `//go:build integration`, so
+        # the default build excludes it and this lane does not pass `-tags=integration`. That
+        # exclusion is the file's own design, not a suppression added here — but it is stated
+        # so the green result is not read as covering it.
+        #
+        # Since #5056 (U15) that file needs a deployed RECEIVER, not a database: the
+        # INTEGRATION_OBSERVATION_* variables replaced INTEGRATION_DATABASE_URL when the
+        # monitor stopped holding a database credential. It is also not the live acceptance
+        # (U15-L1), which additionally requires the direct table grant to be withdrawn.
+        #
+        # `go vet` is run with the integration tag as well. Without it, a build-level
+        # mistake in a tagged file — a stale call signature, say — is invisible to every
+        # lane and surfaces only when someone runs the live acceptance, which is the worst
+        # possible moment to discover the suite does not compile.
         working-directory: modules/domain-apps/superplane/src/superplane-platform-monitor
         run: |
           set -euo pipefail
           go vet ./...
+          go vet -tags=integration ./...
           go test ./... -count=1 -v
+
+      - name: Enforce coverage on the observation client
+        # The sender half of #5056's >=85% requirement. Scoped to `db/`, the package the
+        # story rewrote from a pgx pool into an authenticated contract client; a
+        # component-wide number would average it against monitors/ and config/.
+        #
+        # Measured at 91.0% when written. The gate is the issue's 85%, not that number:
+        # a threshold pinned to the current value turns any honest refactor into a CI
+        # failure, which teaches people to edit the gate.
+        working-directory: modules/domain-apps/superplane/src/superplane-platform-monitor
+        run: |
+          set -euo pipefail
+          go test ./db/... -count=1 -coverprofile=/tmp/monitor-db-cover.out
+          go tool cover -func=/tmp/monitor-db-cover.out | tail -1
+          PCT=$(go tool cover -func=/tmp/monitor-db-cover.out | awk 'END{gsub(/%/,"",$3); print $3}')
+          echo "db package statement coverage: ${PCT}%"
+          # awk, not bc: bc is not installed on every runner image and its absence would
+          # read as a coverage failure rather than a missing tool.
+          if awk -v p="$PCT" 'BEGIN{exit !(p+0 < 85)}'; then
+            echo "::error::Observation client coverage ${PCT}% is below the 85% required by issue #5056. The db package is the monitor's only path to cluster state; add tests rather than lowering this gate."
+            exit 1
+          fi
 
       - name: Run domain skill tests
         # Skills may ship their own tests (the cyber pack's url-analysis skill does).

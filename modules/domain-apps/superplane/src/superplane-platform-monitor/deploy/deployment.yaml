@@ -60,11 +60,26 @@ spec:
             - configMapRef:
                 name: superplane-platform-monitor-config
           env:
-            - name: DATABASE_URL
+            # Issue #5056 (U15): the monitor reaches cluster state through the
+            # API's authenticated observation contract, not through Aurora. There
+            # is deliberately no DATABASE_URL here — the pod holds no database
+            # credential, which is what makes withdrawing its table grant a no-op
+            # for this workload rather than an outage.
+            - name: OBSERVATION_API_URL
+              value: "http://superplane-api.superplane-system.svc.cluster.local:8000"
+            - name: OBSERVATION_CREDENTIAL
               valueFrom:
                 secretKeyRef:
-                  name: superplane-db-credentials
-                  key: url
+                  name: superplane-observation-submitter
+                  key: credential
+            - name: OBSERVATION_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-observation-submitter
+                  key: signing_key
+            # Distinguishes the two replicas so one cannot release the other's
+            # lease; the receiver namespaces the lease holder by this plus the
+            # authenticated submitter id.
             - name: MONITOR_ID
               valueFrom:
                 fieldRef:
@@ -98,7 +113,11 @@ metadata:
   name: superplane-platform-monitor
   namespace: superplane-system
   annotations:
-    # For IRSA (IAM Roles for Service Accounts) to access Aurora via IAM auth
+    # IRSA. Since #5056 this role no longer needs Aurora data-API or IAM-auth
+    # access for the monitor's own reads and writes — those go through the API.
+    # The runbook (docs/runbooks/superplane-monitor-grant-withdrawal.md) sequences
+    # narrowing it against the in-database grant withdrawal; U23 (#5327) owns the
+    # deployment of both.
     eks.amazonaws.com/role-arn: "arn:aws:iam::role/superplane-platform-monitor"
 
 ---

@@ -7,6 +7,7 @@ package monitors
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.uber.org/zap"
@@ -15,8 +16,16 @@ import (
 )
 
 // HealthStatus constants for cluster health.
+//
+// HealthStatusNotChecked exists because "we did not look" is not a health state,
+// and every other value in this list is a claim about the cluster. Before issue
+// #5056 a check with no data to inspect reported Healthy, which meant an absent
+// probe and a passing probe were indistinguishable downstream — the exact
+// condition R11 acceptance 4 forbids ("a probe never reports health it did not
+// check"). It maps to the contract's `not_checked`.
 const (
 	HealthStatusHealthy     = "Healthy"
+	HealthStatusNotChecked  = "NotChecked"
 	HealthStatusDegraded    = "Degraded"
 	HealthStatusUnreachable = "Unreachable"
 	HealthStatusUnknown     = "Unknown"
@@ -24,11 +33,23 @@ const (
 
 // HealthDimensionSeverity ranks health dimensions from least to most severe.
 // Higher values indicate worse health.
+//
+// Unreachable outranks Unknown, corrected in #5056. The previous ordering put
+// Unknown (3) above Unreachable (2), so a cluster that was provably unreachable
+// on one dimension and merely unexplained on another aggregated to "Unknown" —
+// downgrading a confirmed failure to an open question, and hiding the outage that
+// the escalation path keys on. A definite negative result is worse news than a
+// missing one.
+//
+// NotChecked sits just above Healthy: it must not mask a real Degraded or worse
+// finding from another dimension, but it must also never be mistaken for Healthy.
+// Matches `SEVERITY_RANK` in the contract's health module.
 var HealthDimensionSeverity = map[string]int{
 	HealthStatusHealthy:     0,
-	HealthStatusDegraded:    1,
-	HealthStatusUnreachable: 2,
+	HealthStatusNotChecked:  1,
+	HealthStatusDegraded:    2,
 	HealthStatusUnknown:     3,
+	HealthStatusUnreachable: 4,
 }
 
 // Monitor is the interface all monitor implementations must satisfy.
@@ -112,9 +133,24 @@ type EKSProber interface {
 	ProbeEKS(ctx context.Context, cluster *db.Cluster) error
 }
 
-// NoopEKSProber always reports the cluster as reachable.
-// Used as default when cross-account K8s probing is not configured.
-type NoopEKSProber struct{}
+// ErrProbeNotPerformed reports that no probe was attempted, as distinct from a
+// probe that ran and failed. Callers must translate it to NotChecked rather than
+// to a health verdict; `errors.Is` distinguishes it from a real probe error.
+var ErrProbeNotPerformed = errors.New("probe not performed")
 
-// ProbeEKS always returns nil (cluster reachable).
-func (NoopEKSProber) ProbeEKS(_ context.Context, _ *db.Cluster) error { return nil }
+// UnconfiguredEKSProber performs no probe and says so.
+//
+// It replaces `NoopEKSProber`, which returned nil — indistinguishable from a
+// successful probe, so every cluster in an unconfigured deployment was reported
+// as having a reachable K8s API that nothing had contacted. That is the defect
+// R11 acceptance 4 names at main.go:76, and it was the default wiring, so the
+// false "reachable" was what production actually reported.
+//
+// Named for what it is rather than for doing nothing: a "noop" prober sounds
+// harmless, while an unconfigured one obviously cannot answer the question.
+type UnconfiguredEKSProber struct{}
+
+// ProbeEKS reports that no probe was performed.
+func (UnconfiguredEKSProber) ProbeEKS(_ context.Context, _ *db.Cluster) error {
+	return ErrProbeNotPerformed
+}

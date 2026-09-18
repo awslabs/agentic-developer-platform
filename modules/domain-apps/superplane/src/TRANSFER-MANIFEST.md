@@ -174,6 +174,67 @@ constant-folded expectation, causing the otherwise-correct test to fail determin
 The tolerance remains far below a meaningful currency change and leaves production code
 unchanged.
 
+#### Observation receiver — issue #5056 (U15)
+
+U15 implements the receiving end of the U8 observation contract in the maintained API, so
+these files diverge from the adopted revision by design:
+
+| Path | Change |
+|------|--------|
+| `superplane-api/app/config.py` | Adds `observation_submitters` (fail-closed, empty default) and `legacy_heartbeat_enabled`. |
+| `superplane-api/app/models/observation.py` | New: `observation_receipts` (replay/idempotency state) and `observation_leases` (fence tokens). |
+| `superplane-api/app/models/__init__.py` | Registers the two new models so Alembic discovers them. |
+| `superplane-api/app/services/observations.py` | New: submitter resolution, storage-based ownership resolution, replay enforcement, persistence. |
+| `superplane-api/app/services/leases.py` | New: lease acquire/release with receiver-assigned fence tokens. |
+| `superplane-api/app/routers/heartbeat.py` | Adds the authenticated `/internal/observations*` routes; gates the legacy shared-token heartbeat on `legacy_heartbeat_enabled`. |
+| `superplane-api/alembic/versions/011_add_observation_receiver_tables.py` | New additive revision for the two tables. Not applied; deployment is U23 (#5327). |
+| `superplane-api/tests/test_models.py` | `test_all_tables_registered` asserts an *exact* table set, so the two new tables had to be added to it. |
+| `superplane-api/tests/test_heartbeat_auth.py` | New: 59 cases covering R11 acceptances 2–4, replay/idempotency and lease behaviour. |
+
+The `test_models.py` edit is the only change to a pre-existing *test* in this group. It was
+not optional: the assertion is an equality against a literal set, so any new model fails it.
+
+Two properties of the receiver are worth recording because a later "simplification" would
+silently reintroduce the vulnerabilities they close. Ownership is resolved only through
+`workspaces.cluster_id`: `shared_cluster_id` is many-to-one and would let any tenant on a
+shared cluster write every other tenant's fleet state, and `clusters.workspace_id` is never
+written by any application code in this tree, so trusting it would fail open. And released
+leases keep their row so fence tokens stay monotonic; a `DELETE`-on-release, which is what
+the old `reconcile_locks` path did, resets the sequence and defeats fencing.
+
+`releases/superplane.lock.yaml` records `schema.observed.version_files: 17` after integrating
+U13's migration-chain repair and U14's workspace-grant revision. The U15 revision is therefore
+`011_add_observation_receiver_tables`, extends `010_add_workspace_grants`, and remains the
+single head. `status: unverified` still records that deployment verification belongs to U23;
+it does not describe the now-linear source tree as multi-headed.
+
+##### Honest probe reporting in the monitor — R11 acceptance 4
+
+R11 acceptance 4 requires that "a probe never reports health it did not check", and names
+three defects in the transferred monitor. All three are repaired here, which means changing
+transferred **non-test** code and the transferred tests that asserted the old behaviour:
+
+| Path | Change |
+|------|--------|
+| `superplane-platform-monitor/monitors/monitor.go` | Adds `HealthStatusNotChecked`; corrects `HealthDimensionSeverity` so `Unreachable`(4) outranks `Unknown`(3) and `NotChecked`(1) sits between `Healthy` and `Degraded`; replaces `NoopEKSProber` with `UnconfiguredEKSProber` returning the new `ErrProbeNotPerformed`. |
+| `superplane-platform-monitor/monitors/cluster_health.go` | Five dimension checks report `NotChecked` instead of `Healthy` when they had nothing to inspect (skypilot not reported, vault status empty, no node summary, node total 0, no cost data / no average / no history). `checkVaultSyncStatus`'s `default` now reports `Unknown` instead of `Healthy`. `checkEKSReachability` maps `ErrProbeNotPerformed` to `NotChecked` rather than to `Unreachable`. |
+| `superplane-platform-monitor/main.go` | Wires `UnconfiguredEKSProber` in place of `NoopEKSProber`. |
+| `superplane-platform-monitor/monitors/monitor_test.go` | `TestNoopEKSProber` asserted `ProbeEKS` returns `nil` — i.e. it asserted the defect. Replaced by `TestUnconfiguredEKSProber_ReportsProbeNotPerformed`. `TestWorstStatus_Table`'s "unknown is worst" case renamed and three ordering cases added. |
+| `superplane-platform-monitor/monitors/cluster_health_test.go` | Five "expected Healthy when not reported" assertions inverted to `NotChecked`; `TestCheckAllDimensions_AllHealthy`, `TestCheck_FullCycle` and `TestCheck_NoHealthTransitionEvent` now supply all six dimensions' inputs (they previously expected an overall `Healthy` from three); `TestWorstStatus`'s table gains the corrected ordering cases. New cases: unrecognised vault status, zero-node summary, unconfigured prober, partial-report aggregate. |
+| `superplane-platform-monitor/tests/integration_test.go` | `NoopEKSProber` → `UnconfiguredEKSProber` at 7 call sites (build-tagged `integration`, not run in the CI lane). |
+
+The Go severity map is now value-for-value identical to `SEVERITY_RANK` in
+`contracts/superplane_contracts/health.py`, so the two ends of the contract cannot rank the
+same statuses differently.
+
+One live producer/consumer mismatch is **recorded, not repaired**: the controller emits
+`vault_sync_status: "synced"`, which the API's `^(ok|failed|pending)$` schema does not
+allow. Under the transferred code that unrecognised value fell into a `default` branch that
+reported `Healthy`, so the mismatch was invisible. It now reports `Unknown`, which is what
+"I was told something I cannot interpret" means. Aligning the producer with the schema is
+not this story's; the runbook
+(`docs/runbooks/superplane-monitor-grant-withdrawal.md`) names it for the operator.
+
 #### U14 (#5055) — domain token policy and workspace authorization enforcement
 
 The first **behavioral** divergence in `superplane-api`, as distinct from the test-only
@@ -241,8 +302,9 @@ not made available to CI as a build or comparison input.
 
 ### Migration ownership is unchanged
 
-`src/superplane-api/alembic/` (16 files under `versions/`, with `alembic.ini` — 13 at the
-transfer, two added by U13, plus U14's `010_add_workspace_grants.py`) is the **only** migration directory
+`src/superplane-api/alembic/` (17 files under `versions/`, with `alembic.ini` — 13 at the
+transfer, two added by U13, U14's `010_add_workspace_grants.py`, and U15's
+`011_add_observation_receiver_tables.py`) is the **only** migration directory
 this transfer brings, and it belongs to the API's own database. It does not touch the gateway's migrations or any shared schema, and nothing
 in the transferred source or the build lanes can reach them. The guard on this predates
 U22 and still holds.

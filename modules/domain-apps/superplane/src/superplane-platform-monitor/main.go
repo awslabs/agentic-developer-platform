@@ -1,16 +1,22 @@
 // Package main is the entry point for the Superplane Platform Monitor.
 //
-// The platform monitor runs on the control plane and monitors cluster health
-// by evaluating heartbeat data stored in Aurora PostgreSQL. It implements
-// the monitor pattern with distributed locking via the reconcile_locks table.
+// The platform monitor runs on the control plane and monitors cluster health by
+// evaluating heartbeat data. It implements the monitor pattern with distributed
+// locking, and since issue #5056 (U15) it reaches all of that through the API's
+// authenticated observation contract rather than through Aurora directly.
 //
 // Monitors:
 //   - ClusterHealthMonitor: Monitors 6 health dimensions per cluster
+//   - BudgetMonitor: Detects cost anomalies
 //
 // Architecture:
-//   - Polls Aurora PostgreSQL on a configurable interval (default 30s)
-//   - Uses reconcile_locks table for distributed locking
+//   - Polls the observation API on a configurable interval (default 30s)
+//   - Leases (not `reconcile_locks` rows) provide distributed locking
 //   - Exposes /healthz and /metrics endpoints
+//
+// This binary holds no database credential. That is the point of #5056: with the
+// monitor's direct table grant withdrawn, monitoring continues, which proves the
+// direct-write path is gone rather than merely unused.
 package main
 
 import (
@@ -58,22 +64,38 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Connect to database.
-	dbClient, err := db.NewClient(ctx, cfg.DatabaseURL)
+	// Build the observation client. Since #5056 this is an authenticated API
+	// client, not a database pool: the monitor holds no database credential, so
+	// withdrawing its table grant does not affect this process.
+	dbClient, err := db.NewClient(db.ClientConfig{
+		BaseURL:    cfg.ObservationAPIURL,
+		Credential: cfg.ObservationCredential,
+		SigningKey: cfg.ObservationSigningKey,
+		Reporter:   "superplane-platform-monitor",
+		InstanceID: cfg.MonitorID,
+	})
 	if err != nil {
-		logger.Fatal("Failed to connect to database", zap.Error(err))
+		// The error names which setting is missing and never its value; the
+		// credential and signing key must not reach the log.
+		logger.Fatal("Failed to build observation client", zap.Error(err))
 	}
 	defer dbClient.Close()
 
-	logger.Info("Connected to database")
+	// Only the URL is logged. Confirming reachability is /healthz's job, which
+	// calls the scoped list route and therefore also exercises authentication.
+	logger.Info("Observation client ready", zap.String("api_url", cfg.ObservationAPIURL))
 
 	// Initialize monitors.
 	clusterHealth := &monitors.ClusterHealthMonitor{
-		DB:        dbClient,
-		Config:    cfg,
-		Logger:    logger.Named("cluster-health"),
-		Clock:     monitors.RealClock{},
-		EKSProber: &monitors.NoopEKSProber{}, // TODO: implement real EKS prober with cross-account assume-role
+		DB:     dbClient,
+		Config: cfg,
+		Logger: logger.Named("cluster-health"),
+		Clock:  monitors.RealClock{},
+		// No real prober exists yet (a cross-account assume-role probe is still
+		// to be built), so the wiring says so instead of returning nil: with
+		// UnconfiguredEKSProber the eks_reachability dimension reports
+		// NotChecked rather than claiming a reachable K8s API nothing contacted.
+		EKSProber: &monitors.UnconfiguredEKSProber{},
 	}
 
 	budgetMonitor := &monitors.BudgetMonitor{
@@ -89,7 +111,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := dbClient.Ping(r.Context()); err != nil {
-			http.Error(w, "database unreachable", http.StatusServiceUnavailable)
+			// "unhealthy" rather than a reason: this response is reachable by
+			// anything that can hit the pod's metrics port, and distinguishing
+			// "credential rejected" from "API down" here would leak the state of
+			// our authorization to a caller that has not authenticated at all.
+			logger.Warn("Health check failed", zap.Error(err))
+			http.Error(w, "observation API unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)

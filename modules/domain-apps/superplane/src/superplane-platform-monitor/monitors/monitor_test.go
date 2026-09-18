@@ -2,6 +2,7 @@ package monitors
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -52,8 +53,17 @@ func TestWorstStatus_Table(t *testing.T) {
 		{"all healthy", []string{"Healthy", "Healthy"}, "Healthy"},
 		{"one degraded", []string{"Healthy", "Degraded"}, "Degraded"},
 		{"unreachable wins", []string{"Degraded", "Unreachable"}, "Unreachable"},
-		{"unknown is worst", []string{"Healthy", "Unknown"}, "Unknown"},
+		{"unknown beats healthy", []string{"Healthy", "Unknown"}, "Unknown"},
 		{"empty", []string{}, "Healthy"},
+		// #5056: a confirmed Unreachable must outrank an unexplained Unknown.
+		// The pre-#5056 severity map ranked Unknown above Unreachable, so this
+		// case aggregated to "Unknown" and downgraded a proven outage to an open
+		// question.
+		{"unreachable outranks unknown", []string{"Unknown", "Unreachable"}, "Unreachable"},
+		// NotChecked is worse than Healthy — it must not be mistaken for a pass...
+		{"not checked beats healthy", []string{"Healthy", "NotChecked"}, "NotChecked"},
+		// ...but it must not mask a real finding from a dimension that did run.
+		{"degraded outranks not checked", []string{"NotChecked", "Degraded"}, "Degraded"},
 	}
 
 	for _, tt := range tests {
@@ -74,10 +84,15 @@ func TestRealClock_ReturnsUTC(t *testing.T) {
 	}
 }
 
-func TestNoopEKSProber(t *testing.T) {
-	p := NoopEKSProber{}
+// #5056: replaces TestNoopEKSProber, which asserted the defect — that the
+// default prober returns nil, i.e. reports success for a probe it never ran.
+func TestUnconfiguredEKSProber_ReportsProbeNotPerformed(t *testing.T) {
+	p := UnconfiguredEKSProber{}
 	err := p.ProbeEKS(context.Background(), nil)
-	if err != nil {
-		t.Errorf("NoopEKSProber should return nil, got %v", err)
+	if err == nil {
+		t.Fatal("UnconfiguredEKSProber must not return nil: a nil error is indistinguishable from a successful probe")
+	}
+	if !errors.Is(err, ErrProbeNotPerformed) {
+		t.Errorf("error should be ErrProbeNotPerformed so callers can tell it apart from a real probe failure, got %v", err)
 	}
 }

@@ -1628,9 +1628,11 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
     async def test_internal_routes_never_accept_a_domain_token(self, client, enforcing):
         """A user token must not reach a machine-to-machine route.
 
-        The two credential systems are separate on purpose: the internal token
-        authenticates the platform to itself and carries no user identity, so
-        admitting a user token here would grant platform authority to a user.
+        Machine credentials are separate from domain user tokens on purpose.
+        Internal routes use either the shared platform token or the observation
+        receiver's workspace-scoped credential, neither of which is a domain
+        user identity. Admitting a user token would grant machine authority to a
+        user.
         """
         from app.endpoint_inventory import INTERNAL_ROUTES
 

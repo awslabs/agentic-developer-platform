@@ -26,7 +26,8 @@ Every route is exactly one of:
 
 * ``PUBLIC`` — unauthenticated by design (health, OpenAPI, and the two login
   routes that *establish* a credential and so cannot require one).
-* ``INTERNAL`` — machine-to-machine, authenticated by the shared internal token.
+* ``INTERNAL`` — machine-to-machine, authenticated either by the shared
+  internal token or by the endpoint family's dedicated machine credential.
 * an ``(scope, Permission)`` pair — a domain operation requiring a verified
   principal and a server-held grant.
 
@@ -51,7 +52,11 @@ class RouteClass(StrEnum):
     """No credential required. Reachable by anyone who can reach the service."""
 
     INTERNAL = "internal"
-    """Shared internal token only. Never a user-facing credential."""
+    """Machine credential only. Never a user-facing credential.
+
+    Most internal routes use the shared token. Observation routes use their
+    dedicated workspace-scoped credential and HMAC signature instead.
+    """
 
     DOMAIN = "domain"
     """Verified principal plus a server-held grant."""
@@ -122,6 +127,17 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # reconciliation cycle across every active workspace.
         ("POST", "/internal/heartbeat"),
         ("POST", "/internal/cost-reconcile"),
+        # Observation receiver routes authenticate with their own
+        # workspace-scoped submitter credential and HMAC signature. They are
+        # INTERNAL so the domain guard records the decision and then leaves
+        # authentication to that stricter endpoint-family authenticator.
+        ("POST", "/internal/observations"),
+        ("POST", "/internal/observations/leases"),
+        ("POST", "/internal/observations/leases/release"),
+        ("GET", "/internal/observations/clusters"),
+        ("GET", "/internal/observations/{cluster_id}/cost-history"),
+        ("POST", "/internal/observations/{cluster_id}/events"),
+        ("GET", "/internal/observations/{cluster_id}"),
     }
 )
 

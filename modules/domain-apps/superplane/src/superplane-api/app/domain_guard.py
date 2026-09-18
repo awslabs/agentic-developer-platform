@@ -33,8 +33,9 @@ WHAT IT ENFORCES, IN ORDER
 1. Client-supplied identity headers are stripped and the sanitized mapping is
    published, before any decision is made.
 2. The route is classified. Unrecorded means refused.
-3. Public routes proceed. Internal routes are left to the shared-token check
-   that already owns them.
+3. Public routes proceed. Internal routes are left to their machine
+   authenticators: the shared-token check for the existing internal surface,
+   or the observation receiver's workspace credential and HMAC verification.
 4. Domain routes require a verified access token admitted by U9's policy, then a
    server-held grant re-read for THIS operation — workspace-scoped against the
    workspace resolved from the path, organization-scoped against the separate
@@ -108,9 +109,12 @@ async def enforce_domain_authorization(
     if route_class is RouteClass.PUBLIC:
         return None
     if route_class is RouteClass.INTERNAL:
-        # The shared-token check lives in app/routers/internal.py so there is one
-        # implementation of it. Classifying the route here is what stops a
-        # machine-to-machine route from being mistaken for an unclassified one.
+        # Machine authentication stays with each internal endpoint family. The
+        # shared-token check lives in app/routers/internal.py; observation
+        # routes use their workspace-scoped submitter credential and HMAC
+        # verification in app/routers/heartbeat.py. Classifying them here is
+        # what stops machine-to-machine routes from being mistaken for
+        # unclassified ones without weakening either authenticator.
         return None
 
     # Step 4 — domain routes.

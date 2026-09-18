@@ -64,6 +64,27 @@ class Settings(BaseSettings):
     # Internal API (machine-to-machine auth for bootstrap workflows)
     internal_api_token: str = ""
 
+    # Observation contract v1 receiver (issue #5056, U15).
+    #
+    # A JSON array of submitter entries, each with `submitter_id`, `credential`,
+    # `signing_key` and `workspaces`. Empty by default and therefore
+    # fail-closed: with no entries configured, no credential resolves and every
+    # submission is refused. An empty grant authorizing everything is how a
+    # misconfigured deployment becomes a tenant-boundary failure, so the default
+    # is "nobody" rather than "anybody".
+    #
+    # The value carries credentials, so it comes from the deployment's secret
+    # store via the environment and is never logged. Nothing in this file holds a
+    # real value.
+    observation_submitters: str = ""
+
+    # The legacy shared-token POST /internal/heartbeat. True preserves it so a
+    # receiver can be deployed before any sender changes (see
+    # docs/runbooks/superplane-monitor-grant-withdrawal.md); set false at the
+    # cutover step, after which the route refuses with 410 and the authenticated
+    # contract is the only write path.
+    legacy_heartbeat_enabled: bool = True
+
     # Workspace provisioning runs through the authorized-operation facade
     # (app/services/provisioning.py), not GitHub Actions. The `github_token` /
     # `github_repo` settings were removed by issue #5058 (U17b): they held a

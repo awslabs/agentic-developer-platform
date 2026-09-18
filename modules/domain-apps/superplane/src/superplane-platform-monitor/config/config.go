@@ -5,13 +5,35 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 // Config holds all platform monitor configuration.
 type Config struct {
-	// DatabaseURL is the PostgreSQL connection string (e.g., postgres://user:pass@host:5432/db).
-	DatabaseURL string
+	// ObservationAPIURL is the base URL of the API's observation receiver, e.g.
+	// https://superplane-api.superplane-system.svc.cluster.local:8000.
+	//
+	// This replaced DatabaseURL in issue #5056. The monitor no longer holds a
+	// PostgreSQL connection string at all, which is what makes withdrawing its
+	// table grant a no-op for this process: there is no credential here that a
+	// grant could apply to.
+	ObservationAPIURL string
+
+	// ObservationCredential authenticates this monitor to the receiver.
+	//
+	// Read from the environment, which reads it from the deployment's secret
+	// store. Never logged, never included in an error message: the receiver's
+	// refusals are deliberately non-enumerating, and echoing the credential we
+	// sent would undo that.
+	ObservationCredential string
+
+	// ObservationSigningKey is the HMAC key for the submission body signature.
+	//
+	// Separate from the credential because they answer different questions — the
+	// credential says who is calling, the signature says this body is the one that
+	// caller sent. Also never logged.
+	ObservationSigningKey []byte
 
 	// PollInterval is how often the monitor polls for clusters to check.
 	PollInterval time.Duration
@@ -39,14 +61,31 @@ type Config struct {
 }
 
 // LoadFromEnv loads configuration from environment variables with sensible defaults.
+//
+// The three observation settings are required and have no defaults. A monitor
+// that starts without them would run its polling loop and fail every call, which
+// looks like an outage of the API rather than a misconfiguration of the monitor;
+// failing at startup names the actual problem. There is deliberately no fallback
+// to DATABASE_URL — that fallback is exactly what would keep the direct-write
+// path alive past the grant withdrawal.
 func LoadFromEnv() (*Config, error) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL environment variable is required")
+	apiURL := os.Getenv("OBSERVATION_API_URL")
+	if apiURL == "" {
+		return nil, fmt.Errorf("OBSERVATION_API_URL environment variable is required")
+	}
+	credential := os.Getenv("OBSERVATION_CREDENTIAL")
+	if credential == "" {
+		return nil, fmt.Errorf("OBSERVATION_CREDENTIAL environment variable is required")
+	}
+	signingKey := os.Getenv("OBSERVATION_SIGNING_KEY")
+	if signingKey == "" {
+		return nil, fmt.Errorf("OBSERVATION_SIGNING_KEY environment variable is required")
 	}
 
 	cfg := &Config{
-		DatabaseURL:                   dbURL,
+		ObservationAPIURL:             strings.TrimRight(apiURL, "/"),
+		ObservationCredential:         credential,
+		ObservationSigningKey:         []byte(signingKey),
 		PollInterval:                  durationEnv("POLL_INTERVAL", 30*time.Second),
 		HeartbeatDegradedThreshold:    durationEnv("HEARTBEAT_DEGRADED_THRESHOLD", 5*time.Minute),
 		HeartbeatUnreachableThreshold: durationEnv("HEARTBEAT_UNREACHABLE_THRESHOLD", 30*time.Minute),

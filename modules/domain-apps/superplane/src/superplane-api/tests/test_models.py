@@ -24,6 +24,12 @@ def test_all_tables_registered():
         "research_proposals",
         "budget_alerts",
         "users",
+        # Receiver-side state for the observation contract (issue #5056, U15).
+        # Deliberately not columns on `reconcile_locks`: U15's point is that the
+        # monitor stops writing to domain tables, so lease state belongs to the
+        # receiver that grants it.
+        "observation_receipts",
+        "observation_leases",
         # Per-workspace authorization grants (issue #5055, U14 — R6). The record
         # that a named principal may act on one workspace. Before it there was no
         # schema able to express that, so authority was the caller's organization
