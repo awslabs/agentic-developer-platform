@@ -582,6 +582,18 @@ def _journey_payload(cfg, ctx):
         "usage_wait_seconds": int(cfg["usage_wait_seconds"]),
         "cloudtrail_wait_seconds": int(cfg["cloudtrail_wait_seconds"]),
         "inference_timeout_seconds": int(cfg["inference_timeout_seconds"]),
+        # #5413's three deployment records, each {name, gateway_url,
+        # credential_secret_name}. Absent when no three-deployment fixture is bound,
+        # which is why E16/E17 block at the fixture gate long before this payload is
+        # built — the empty list here is what a resumed or hand-written dispatch
+        # would hit, and the journey refuses it by name rather than by IndexError.
+        "deployments": cfg.get("deployments") or [],
+        # Per-request output cap and the absence window, passed explicitly for the
+        # same reason the other bounds are: a live run's spend limit must come from
+        # the validated config of the run that was authorised, not from a constant
+        # inside a shipped module where nobody reviewing the dispatch can see it.
+        "max_output_length": int(cfg["max_output_length"]),
+        "absence_wait_seconds": int(cfg["absence_wait_seconds"]),
         # Where a script that installs from a staged copy finds it. The scripts that
         # install from the served release ignore this.
         "source_dir": bundle.REMOTE_DIR + "/release",

@@ -568,23 +568,40 @@ def process_alive(pid):
 
 
 def stop_proxy(home):
-    """Stop the auth proxy a launcher started, using the pidfile the core writes.
+    """Stop the auth proxy a launcher started, in the LEGACY store layout.
 
     Lives here because both E08 and E14 start that proxy and neither may leave it
     running: a lingering listener holds its port against a resumed attempt on the
     same instance.
+
+    `~/.bedrock-gateway` is where a legacy single-deployment CLI keeps its runtime
+    files. A named deployment (#5413) keeps them in its own runtime directory
+    instead, so a caller with three of those calls `stop_proxy_runtime` directly.
+    """
+    return stop_proxy_runtime(Path(home) / ".bedrock-gateway")
+
+
+def stop_proxy_runtime(runtime_dir):
+    """Stop the proxy whose pidfile lives in this runtime directory.
+
+    Split from `stop_proxy` for #5413: with three named deployments there are three
+    proxies to account for, each publishing into its own
+    `~/.adp/deployments/<id>/runtime`, and none of them is at the legacy path.
+    Taking the directory rather than a HOME is what lets one implementation serve
+    both layouts — the alternative was a second copy of the signal-and-confirm
+    logic below, which is the part that is easy to get subtly wrong.
 
     There is no `adp serve --stop`. The core's `serve` accepts `--port` and
     `--foreground` only, and the `adp` wrapper merely READS this pidfile, so the
     recorded pid is the only handle — and it is the proxy itself, because
     `cmd_serve` writes `$$` and then execs python3.
 
-    Returns True when nothing is listening on that pid any more, including the
-    case where there was no pidfile to begin with (nothing was started).
+    Returns True when nothing is listening on that pid any more, including the case
+    where there was no pidfile to begin with (nothing was started).
     """
     import signal
 
-    pidfile = Path(home) / ".bedrock-gateway" / "proxy.pid"
+    pidfile = Path(runtime_dir) / "proxy.pid"
     try:
         pid = int(pidfile.read_text().strip())
     except (OSError, ValueError):

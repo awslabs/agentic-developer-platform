@@ -71,10 +71,36 @@ def config_fixture(**overrides):
 # --------------------------------------------------------------------------
 
 
-def test_all_fifteen_cases_present_with_owners():
-    assert [case.id for case in cases.CASES] == [f"E{n:02d}" for n in range(1, 16)]
+def test_every_case_present_with_owners():
+    """#5199's fifteen, plus #5413's two.
+
+    Derived from the registry's own numbering rather than a hardcoded range, so
+    adding a case to a later story does not have to edit an arithmetic expression
+    whose only job was to spell out "consecutive". What the assertion still
+    enforces is the property that mattered: the ids are E01..En with no gap and no
+    duplicate, so a case cannot be added under an id another already uses.
+    """
+    identifiers = [case.id for case in cases.CASES]
+    assert identifiers == [f"E{n:02d}" for n in range(1, len(identifiers) + 1)]
     assert all(case.owner for case in cases.CASES)
     assert all(case.suite in cases.SUITES for case in cases.CASES)
+
+
+def test_the_multi_deployment_cases_are_owned_by_5413_and_need_three_deployments():
+    """#5413's two cases sit INSIDE the matrix, which is what keeps `full` honest.
+
+    Placed here rather than beside the matrix as C01 is, because BLOCKED is not
+    PASSED: with no three-deployment fixture configured these two block, and a
+    blocked case keeps full acceptance false until the live evidence is actually
+    collected. A checkpoint outside the matrix would have let the epic go green
+    with the concurrency requirement never exercised.
+    """
+    multi = [case for case in cases.CASES if case.suite == "multi-deployment"]
+
+    assert [case.id for case in multi] == ["E16", "E17"]
+    assert {case.owner for case in multi} == {"#5413"}
+    assert all(cases.THREE_DEPLOYMENTS in case.requires for case in multi)
+    assert all(cases.EC2 in case.requires for case in multi)
 
 
 def test_every_case_belongs_to_a_reachable_named_suite():
@@ -88,7 +114,14 @@ def test_every_case_belongs_to_a_reachable_named_suite():
 
 def test_new_matrix_starts_every_case_not_run():
     matrix = cases.new_matrix(FULL)
-    assert len(matrix) == 15
+    # Every registered case, counted from the registry rather than restated as a
+    # literal: a `full` matrix that silently omitted a case is the failure worth
+    # catching, and a hardcoded number only catches it until someone updates the
+    # number instead of the code.
+    assert len(matrix) == len(cases.CASES)
+    # `CASES`, not `BY_ID`: the latter also carries C01, the login checkpoint that
+    # is deliberately NOT a matrix row.
+    assert set(matrix) == {case.id for case in cases.CASES}
     assert {entry["status"] for entry in matrix.values()} == {cases.NOT_RUN}
 
 
@@ -195,11 +228,16 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
     matrix = cases.new_matrix(FULL)
     available = {cases.EC2, cases.PLATFORM, cases.DESTINATION, cases.COGNITO}
     blocked = cases.block_missing_fixtures(matrix, available)
-    # GitHub and hosted cases block; install/admin/routing do not.
-    assert set(blocked) == {"E07", "E09", "E10", "E11", "E12"}
+    # GitHub, hosted and multi-deployment cases block; install/admin/routing do not.
+    assert set(blocked) == {"E07", "E09", "E10", "E11", "E12", "E16", "E17"}
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
     assert blocked["E11"] == ["github_app", "github_repo"]
+    # #5413: three real deployments are a fixture like any other, so their absence
+    # blocks E16/E17 by the same mechanism rather than by a special case — and says
+    # which fixture is missing, so an operator knows what to go and create.
+    assert blocked["E16"] == ["three_deployments"]
+    assert matrix["E17"]["status"] == cases.BLOCKED
 
 
 def test_block_missing_fixtures_does_not_overwrite_a_result():
@@ -212,7 +250,7 @@ def test_block_missing_fixtures_does_not_overwrite_a_result():
 def test_tally_always_reports_every_status_key():
     counts = cases.tally(cases.new_matrix(FULL))
     assert set(counts) == set(cases.STATUSES)
-    assert counts[cases.NOT_RUN] == 15
+    assert counts[cases.NOT_RUN] == len(cases.CASES)
 
 
 # --------------------------------------------------------------------------
@@ -442,7 +480,7 @@ def test_report_is_serializable_and_carries_revisions_and_correlation():
     assert document["expected_revision"] == "91ae8043125c990a349b9acf68b1c604cfdbf18e"
     assert document["evaluation_id"] == "eval-001"
     assert document["attempt_id"] == "eval-001-a2"
-    assert document["counts"][cases.PASSED] == 15
+    assert document["counts"][cases.PASSED] == len(cases.CASES)
     assert document["correlation"]["adp_org"] == "adp-e2e-x"
 
 
@@ -490,7 +528,7 @@ def test_junit_marks_blocked_and_not_run_distinctly_and_fails_the_suite():
     cases.record(matrix, "E11", cases.FAILED, {"why": "wrong repo returned"})
     matrix["E12"]["status"] = cases.NOT_RUN
     xml = report.junit(matrix, "eval-001")
-    assert 'tests="15"' in xml
+    assert f'tests="{len(cases.CASES)}"' in xml
     assert 'failures="1"' in xml
     # Blocked and not-run are skipped-with-reason, never silent passes.
     assert xml.count("<skipped") == 2
@@ -3165,8 +3203,13 @@ def test_full_still_runs_and_grades_when_only_the_destination_roles_are_absent()
     cfg = config.validate(
         config_fixture(destination_role_arn="", provisioner_role_arn="")
     )
-    # Does not raise, and does not silently drop the secret requirement.
-    assert config.require_bindings(cfg, FULL) == config.BINDINGS
+    # Does not raise, and does not silently drop the secret requirement. #5413's
+    # three deployment records are reported as needed here for the same reason the
+    # destination roles are: a `full` run wants them, and saying so is not the same
+    # as refusing to start without them.
+    assert (
+        config.require_bindings(cfg, FULL) == config.BINDINGS + config.FIXTURE_BINDINGS
+    )
 
     # The destination class is withheld, so exactly its cases block...
     available = preflight.evaluate_fixtures(cfg)
@@ -6795,7 +6838,10 @@ def test_the_overlay_supplies_the_bindings_the_recovery_sweep_needs():
             "CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME": "adp/cli-uplift-eval/fixture",
         }
     )
-    assert config.require_bindings(resolved, FULL) == config.BINDINGS
+    assert (
+        config.require_bindings(resolved, FULL)
+        == config.BINDINGS + config.FIXTURE_BINDINGS
+    )
     assert resolved["state_bucket"] == STATE_BUCKET
 
 
@@ -7106,6 +7152,10 @@ def test_example_config_leaves_unestablished_fixtures_absent():
     # cases block alongside them rather than attempting a destination account
     # they hold no session for.
     assert cases.DESTINATION not in available
+    # #5413: likewise the three named deployments. The example file is checked in
+    # and describes no real environment, so it cannot name three reachable
+    # gateways; E16/E17 therefore block here exactly as the GitHub cases do.
+    assert cases.THREE_DEPLOYMENTS not in available
     matrix = cases.new_matrix(FULL)
     blocked = cases.block_missing_fixtures(matrix, available)
     assert set(blocked) == {
@@ -7118,6 +7168,8 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E10",
         "E11",
         "E12",
+        "E16",
+        "E17",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.

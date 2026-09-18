@@ -1,4 +1,4 @@
-"""The 15 acceptance cases of #5199, their owners, and how a run is graded.
+"""The acceptance cases of #5199 (plus #5413's two), their owners, and grading.
 
 Every function here is pure: no AWS, no gateway, no filesystem. The offline
 suite exercises the whole grading contract with sockets disabled, because the
@@ -13,6 +13,13 @@ Two rules drive the design and are asserted directly in the offline tests:
 2. A partial (named-suite) run can never satisfy full acceptance, however green
    it looks. `accept()` requires every case in the matrix to be present AND
    passed AND for the run to have declared itself a full run.
+
+#5413 adds E16/E17 (the `multi-deployment` suite) rather than a second harness,
+and adds them INSIDE the matrix rather than beside it as C01 is. That placement
+is the point: three real deployment bindings do not exist yet, so these two grade
+BLOCKED, and because BLOCKED is not PASSED a `full` run stays red until the live
+multi-deployment evidence is actually collected. A checkpoint outside the matrix
+would instead have let full acceptance go green with those two never run.
 """
 
 from __future__ import annotations
@@ -38,6 +45,10 @@ SUITES = (
     "github",
     "parity",
     "harness",
+    # #5413. One installed CLI serving three deployments at once, which no other
+    # suite can express: every suite above runs a single deployment, so a crossed
+    # endpoint, token or proxy is invisible to all of them.
+    "multi-deployment",
 )
 
 
@@ -68,6 +79,13 @@ COGNITO = "cognito"
 GITHUB_APP = "github_app"
 GITHUB_REPO = "github_repo"
 HOSTED = "hosted"
+# #5413: three separately-reachable ADP deployments and a sign-in fixture for
+# each. Deliberately its own class rather than a count on DESTINATION — those are
+# AWS accounts a rule routes TO, whereas these are three gateways the CLI signs in
+# to independently, and one cannot stand in for the other. Absent, E16/E17 BLOCK:
+# approximating three deployments with one URL registered under three names would
+# pass while every crossed-endpoint defect the story exists to prevent survived.
+THREE_DEPLOYMENTS = "three_deployments"
 
 CASES = (
     Case(
@@ -174,6 +192,20 @@ CASES = (
         "harness",
         "Two fresh full runs pass on one deployed revision; interrupt, resume and repeat cleanup leave no duplicates or unowned mutations",
         (EC2, PLATFORM),
+    ),
+    Case(
+        "E16",
+        "#5413",
+        "multi-deployment",
+        "One install, three deployments, three concurrent tool sessions (two Codex + Claude and the reverse mix): every marker has an authenticated request and usage receipt at its own deployment for its own user, and none at the other two",
+        (EC2, PLATFORM, THREE_DEPLOYMENTS),
+    ),
+    Case(
+        "E17",
+        "#5413",
+        "multi-deployment",
+        "Live default switch, refresh, and logout of one deployment leave the other two correctly routed; the logged-out one fails labelled without borrowing a session; teardown leaves no deployment state",
+        (EC2, PLATFORM, THREE_DEPLOYMENTS),
     ),
 )
 
