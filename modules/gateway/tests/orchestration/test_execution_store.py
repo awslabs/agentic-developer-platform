@@ -69,6 +69,7 @@ from src.orchestration.models import (
     OrchestrationWorkClaim,
 )
 from src.orchestration.state import NodeState
+from src.orchestration.work_claims import OwnerKind
 from src.shared.models.base import Base
 
 ORG_A = "org-alpha"
@@ -151,7 +152,7 @@ async def graph(session):
                 org_id=org,
                 provider_repository_id=5142,
                 issue_number=5142,
-                owner_kind="flow",
+                owner_kind=OwnerKind.ENGINE_FLOW.value,
                 owner_ref=flow.id,
                 state=ClaimState.HELD.value,
                 generation=1,
@@ -400,6 +401,27 @@ class TestAuthorityBinding:
 
         assert outcome.kind is OutcomeKind.CONFLICT
         assert outcome.reason == "claim_not_held"
+        assert (await session.execute(select(OrchestrationExecution))).scalars().all() == []
+
+    @pytest.mark.parametrize(
+        ("owner_kind", "owner_ref_key"),
+        [
+            (OwnerKind.DIRECT_DISPATCH.value, "flow_a"),
+            (OwnerKind.ENGINE_FLOW.value, "flow_b"),
+        ],
+    )
+    async def test_create_refuses_a_claim_not_owned_by_this_engine_flow(self, session, graph, owner_kind, owner_ref_key):
+        identity = _identity(graph)
+        claim = await session.get(OrchestrationWorkClaim, identity.claim_id)
+        claim.owner_kind = owner_kind
+        claim.owner_ref = graph[owner_ref_key]
+        await session.flush()
+
+        outcome = await create_execution(session, identity=identity, flow_id=graph["flow_a"])
+
+        assert outcome.kind is OutcomeKind.CONFLICT
+        assert outcome.reason == "claim_owner_mismatch"
+        assert outcome.record is None
         assert (await session.execute(select(OrchestrationExecution))).scalars().all() == []
 
     async def test_advance_checks_the_live_claim_not_only_the_ledger_snapshot(self, session, graph):

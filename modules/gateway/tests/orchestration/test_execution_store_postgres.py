@@ -75,6 +75,7 @@ from src.orchestration.models import (
     OrchestrationNode,
     OrchestrationWorkClaim,
 )
+from src.orchestration.work_claims import OwnerKind
 
 # Re-exported through tests/migrations/conftest.py, but this file lives in
 # tests/orchestration/, so the fixtures are imported explicitly. `pg_server` is
@@ -148,7 +149,7 @@ async def graph(pg_session_factory):
                     org_id=org,
                     provider_repository_id=5142,
                     issue_number=5142,
-                    owner_kind="flow",
+                    owner_kind=OwnerKind.ENGINE_FLOW.value,
                     owner_ref=flow.id,
                     state=ClaimState.HELD.value,
                     generation=1,

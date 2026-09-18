@@ -101,6 +101,7 @@ from .models import (
     OrchestrationNode,
     OrchestrationWorkClaim,
 )
+from .work_claims import OwnerKind
 
 logger = get_logger(__name__)
 
@@ -360,6 +361,8 @@ async def _live_authority_conflict(
     claim = (await session.execute(claim_stmt.execution_options(populate_existing=True))).scalar_one_or_none()
     if claim is None:
         return "claim_mismatch"
+    if claim.owner_kind != OwnerKind.ENGINE_FLOW.value or claim.owner_ref != flow_id:
+        return "claim_owner_mismatch"
     if claim.state != ClaimState.HELD.value:
         return "claim_not_held"
     if claim.generation != identity.claim_generation:
@@ -443,20 +446,17 @@ def _conflict(row: OrchestrationExecution, reason: str) -> ExecutionOutcome:
 
     - `tenant_mismatch`: withheld, because returning it would leak across the very
       boundary the refusal exists to enforce.
-    - `claim_mismatch`: also withheld. The caller presented a claim this execution
-      does not run under, so it is not a stale owner — it never was one, and it has
-      no standing to read the row. This matters because `load_execution` reaches
-      this arm on a plain read whose only correct inputs are `org_id`, `node_id` and
-      `cycle`: returning the record there would hand an unauthorized caller the
-      `claim_id`, `claim_generation` and `accepted_plan_version` that make up the
-      binding, which is precisely what the next write's authority check tests.
-      A refusal must not disclose what would satisfy it.
+    - `claim_mismatch` / `claim_owner_mismatch`: also withheld. The caller either
+      presented a different claim or a claim owned by another dispatch lane, so it
+      has no standing to read the row. Returning the record would disclose the
+      binding values the next write tests; a refusal must not disclose what would
+      satisfy it.
     - `claim_generation_superseded` / `accepted_plan_version_mismatch`: returned.
       Here the caller holds the right claim and its own binding lapsed, so it
       already knows these values and needs the current row to see what superseded
       it without a second round trip.
     """
-    withheld = reason in ("tenant_mismatch", "claim_mismatch")
+    withheld = reason in ("tenant_mismatch", "claim_mismatch", "claim_owner_mismatch")
     return ExecutionOutcome(
         kind=OutcomeKind.CONFLICT,
         record=None if withheld else _to_record(row),
