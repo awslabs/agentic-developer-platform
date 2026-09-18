@@ -109,17 +109,10 @@ def installed(tmp_path: Path, cli_dir: Path, upstream) -> tuple[Path, Path]:
     """An install whose config points at the mock gateway. Returns (bin, home)."""
     bin_dir = tmp_path / "installed-bin"
     bin_dir.mkdir()
-    for name in (
-        "adp",
-        "bg-cognito-auth.sh",
-        "bg-gateway-proxy.py",
-        "adp_common.py",
-        "adp-admin.py",
-        "adp-bedrock.py",
-        "adp-aws.py",
-        "adp-github.py",
-        "adp-github-admin.py",
-    ):
+    # Derived from install.sh's CLI_FILES, like `upstream` above, rather than
+    # hardcoded: a second copy of the file list goes stale the moment a CLI file
+    # is added, and then this fixture fails for a reason unrelated to `update`.
+    for name in (item for item in CLI_FILES if item != "install.sh"):
         target = bin_dir / name
         target.write_bytes((cli_dir / name).read_bytes())
         target.chmod(0o755)

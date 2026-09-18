@@ -18,15 +18,38 @@
 set -euo pipefail
 
 # Configuration file locations
-CONFIG_DIR="${HOME}/.bedrock-gateway"
+#
+# BG_CONFIG_DIR (Issue #5413) is how the selected deployment reaches this script.
+# `adp` resolves the deployment ONCE at entry and exports this, so a machine with
+# three deployments keeps three independent token stores; unset, the path is the
+# original single-deployment one, which is what keeps every existing install and
+# every direct invocation of this script working unchanged.
+#
+# Read here and nowhere else: everything below derives from CONFIG_DIR, so there
+# is one place where "which store" is decided and no way for the config file and
+# the token file to end up belonging to different deployments.
+CONFIG_DIR="${BG_CONFIG_DIR:-${HOME}/.bedrock-gateway}"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 AWS_CREDENTIALS_FILE="${HOME}/.aws/credentials"
 AWS_CONFIG_FILE="${HOME}/.aws/config"
-PROFILE_NAME="bedrock-gateway"
+
+# The AWS profile the Identity Pool exchange writes into the user's own
+# ~/.aws/credentials. BG_AWS_PROFILE (Issue #5413) is set by the deployment
+# resolver so three deployments write three profiles instead of silently
+# overwriting each other's credentials; unset, it stays the original name, which
+# is what existing AWS_PROFILE=bedrock-gateway setups depend on.
+PROFILE_NAME="${BG_AWS_PROFILE:-bedrock-gateway}"
 
 # Local auth-proxy mode (Issue #4154)
-PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
+#
+# ADP_RUNTIME_DIR (Issue #5413) is the selected deployment's runtime directory,
+# exported by the resolver. The pidfile MUST agree with what `adp` reads, or one
+# half would think no proxy is running while the other refuses to start a second
+# — so both derive it from the same variable, defaulting to the original path
+# when no deployment is selected.
+PROXY_RUNTIME_DIR="${ADP_RUNTIME_DIR:-${CONFIG_DIR}}"
+PROXY_PID_FILE="${PROXY_RUNTIME_DIR}/proxy.pid"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEFAULT_PROXY_PORT=9191
 
@@ -1278,6 +1301,8 @@ cmd_serve() {
         rm -f "${PROXY_PID_FILE}"
     fi
 
+    # The runtime dir may not exist on a named deployment's first serve.
+    mkdir -p "${PROXY_RUNTIME_DIR}" 2>/dev/null || true
     echo "$$" > "${PROXY_PID_FILE}"
     chmod 600 "${PROXY_PID_FILE}"
 

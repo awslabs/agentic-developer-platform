@@ -115,11 +115,15 @@ def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
         "bg-cognito-auth.sh",
         "bg-gateway-proxy.py",
         "adp_common.py",
+        # Issue #5413: `adp` resolves the selected deployment through this at
+        # entry, so without it every command in an installed prefix fails.
+        "adp_deployments.py",
         "adp-admin.py",
         "adp-bedrock.py",
         "adp-aws.py",
         "adp-github.py",
         "adp-github-admin.py",
+        "adp-superplane.py",
     ):
         target = bin_dir / name
         target.write_bytes((cli_dir / name).read_bytes())

@@ -96,6 +96,10 @@ NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]{0,62}\Z")
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
+# The AWS profile the auth helper's Identity Pool exchange has always written.
+# Kept verbatim for the legacy deployment; see Deployment.aws_profile.
+LEGACY_AWS_PROFILE = "bedrock-gateway"
+
 REGISTRY_LOCK_TIMEOUT_SECONDS = 10
 REGISTRY_LOCK_STALE_SECONDS = 30
 
@@ -437,19 +441,46 @@ class Deployment:
 
     @property
     def runtime_dir(self):
-        """Proxy port/identity and this deployment's locks.
+        """Proxy pidfile, published proxy identity and this deployment's locks.
 
-        The legacy deployment keeps its runtime under ~/.adp so the pre-#5413
-        ~/.bedrock-gateway layout (which other tooling greps) gains no new files.
+        The legacy deployment keeps these in `~/.bedrock-gateway`, where they have
+        always lived. That is not cosmetic: `proxy.pid` and `proxy-spawn.lock` are
+        how a RUNNING proxy is discovered. Relocating them during an upgrade would
+        make an already-running proxy invisible to the new CLI, which would then
+        try to start a second one on the same port and fail with an opaque
+        "address already in use" — the upgrade breaking the thing it should leave
+        alone. Named deployments, having no such history, keep theirs together
+        with the rest of their private files.
         """
-        return (adp_home() / "runtime" / LEGACY_NAME) if self.legacy else self.root / "runtime"
+        return self.root if self.legacy else self.root / "runtime"
 
     @property
     def log_dir(self):
         return (adp_home() / "logs") if self.legacy else self.root / "logs"
 
     def ensure_directories(self):
-        private_directory(self.config_dir)
+        """Create this deployment's private directories, 0700.
+
+        The legacy config dir is the one exception, and adopting it must not be
+        stricter than living with it was: install.sh and the auth helper have
+        always created `~/.bedrock-gateway` with a plain `mkdir -p`, so on a normal
+        umask it is 0755 on real machines. Demanding 0700 there would make every
+        pre-existing user's first command after upgrading fail with a permissions
+        error about a directory they never chose the mode of — a regression, not a
+        security win, since we are not the ones who created it and the token file
+        itself is written 0600. It is still refused if it is not a directory we
+        own, which is the case that actually matters.
+        """
+        if self.legacy:
+            self.config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            info = self.config_dir.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                raise DeploymentError(
+                    f"{self.config_dir} is not a directory you own — move it aside and sign in again.",
+                    "unsafe_file",
+                )
+        else:
+            private_directory(self.config_dir)
         private_directory(self.state_dir)
         private_directory(self.runtime_dir)
         private_directory(self.log_dir)
@@ -468,6 +499,22 @@ class Deployment:
             detail["state_dir"] = str(self.state_dir)
         return detail
 
+    @property
+    def aws_profile(self):
+        """The AWS profile name this deployment's Cognito credentials write to.
+
+        The auth helper's Identity Pool exchange writes a profile into the user's
+        own ~/.aws/credentials. That name was fixed, so three deployments would
+        each overwrite the other two's AWS credentials — cross-deployment
+        interference of exactly the kind this change exists to stop.
+
+        The legacy deployment keeps the original name, because an existing user
+        has `AWS_PROFILE=bedrock-gateway` in their shell profile, scripts and
+        muscle memory; renaming it would break them for no benefit. Named
+        deployments get a suffixed profile, so they coexist instead of colliding.
+        """
+        return LEGACY_AWS_PROFILE if self.legacy else f"{LEGACY_AWS_PROFILE}-{self.name}"
+
     def environment(self):
         """The pin handed to children, so one command cannot drift mid-flight.
 
@@ -484,6 +531,7 @@ class Deployment:
             "ADP_STATE_DIR": str(self.state_dir),
             "ADP_RUNTIME_DIR": str(self.runtime_dir),
             "ADP_LOG_DIR": str(self.log_dir),
+            "BG_AWS_PROFILE": self.aws_profile,
         }
 
     def __repr__(self):
@@ -886,12 +934,39 @@ def main(argv=None):
 
 
 def _emit_result(command, detail, as_json):
+    """Report a mutation. JSON for scripts; for a person, prose — not a JSON dump.
+
+    A human running `adp deployment add dev` wants to know what happened and what
+    to do next, so the interesting consequences are spelled out: that a name is an
+    alias sharing another's session, that this is now the default, and that the
+    terminal's own ADP_DEPLOYMENT still overrides that default.
+    """
     status = detail.pop("status", "configured")
     if as_json:
         print(json.dumps({"status": status, "command": command, "detail": detail, "next_action": None}))
         return
-    print(f"{command}: {status}")
-    print(json.dumps(detail, indent=2))
+
+    name = detail.get("deployment", "")
+    if status == "unchanged":
+        print(f"Deployment '{name}' is already registered for {detail.get('gateway_url', '')} — nothing to change.")
+    elif status == "removed":
+        print(f"Deployment '{name}' has been forgotten locally. Nothing in the cloud was changed.")
+        if detail.get("aliases_remaining"):
+            print("Its session is kept, because another name still points at the same gateway.")
+    elif command == "deployment use":
+        print(f"Saved default is now '{name}' ({detail.get('gateway_url', '')}). New terminals will use it.")
+    else:
+        print(f"Deployment '{name}' is registered for {detail.get('gateway_url', '')}.")
+        if detail.get("alias_of"):
+            print(f"It is another name for '{detail['alias_of']}' and shares that deployment's sign-in.")
+        elif detail.get("default") == name:
+            print("It is the saved default, so commands use it unless you select another.")
+        else:
+            print(f"Sign in to it with: adp --deployment {name} login")
+
+    override = detail.get("effective_override")
+    if override and override != name:
+        print(f"Note: this terminal has ADP_DEPLOYMENT={override}, which still takes precedence here.")
 
 
 if __name__ == "__main__":
