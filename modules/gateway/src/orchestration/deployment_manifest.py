@@ -122,6 +122,11 @@ CANONICAL_KEY_VERSION = "v1"
 # become ambiguous as the repository grows, and "the approved revision" must not
 # be a value that can later denote two different files.
 _FULL_SHA = re.compile(r"\A[0-9a-f]{40}\Z")
+# Artifact revisions are compared, not just stored, so the same shape rule applies:
+# a full immutable SHA or nothing. Case-insensitive because a caller may hand us an
+# uppercase SHA from a provider API, and rejecting that would be a shape complaint
+# about a perfectly immutable revision. Comparison casefolds both sides.
+_ARTIFACT_SHA = re.compile(r"\A[0-9a-fA-F]{40}\Z")
 
 # Workflow paths must be repository-relative and inside the workflows directory.
 # Anchored rather than merely checked for a prefix so that neither an absolute
@@ -464,9 +469,14 @@ class ManifestEntry:
       a component outside them is refused, so "deploy the gateway" cannot quietly
       become "deploy everything".
     - `workflow` — the pinned pipeline and its permitted inputs.
-    - `artifact_revision` — the build this entry is approved to ship. `None` means
-      "the workflow's own resolution", which is honest: pinning a SHA we have not
-      got would be invention.
+    - `artifact_revision` — the immutable build this entry is approved to ship.
+      **Required** for an enabled entry unless `docs_only`, and validated as a
+      full 40-character SHA whatever the status. Deferring to "the workflow's own
+      resolution" sounds honest but is not a pin: the same reviewed approval would
+      ship a different build tomorrow, and an incident would have no answer to
+      "what was deployed?". An entry that has no SHA to pin yet stays
+      `unresolved` with `artifact_revision: ~` — which is the honest state —
+      rather than being enabled without one.
     - `verification_adapter` / `rollback_adapter` — *names* of adapters #5152 owns.
       A present rollback name is a permission, not an instruction; nothing here
       executes either.
@@ -494,14 +504,37 @@ class ManifestEntry:
     def __post_init__(self) -> None:
         if not str(self.entry_id or "").strip():
             raise ManifestError("invalid_manifest_entry", "A manifest entry must have an entry_id.")
+        if self.artifact_revision is not None and not _ARTIFACT_SHA.match(str(self.artifact_revision)):
+            # Refuses "latest", "main", a tag, or an abbreviation. Every one of
+            # those is resolved at *use* time by something other than the
+            # reviewer, so storing one records an approval of a name rather than
+            # of a build. Enforced for every status, not only enabled ones, so a
+            # mutable pin cannot be parked in an unresolved entry and then enabled
+            # by a one-line status edit that changes no value a reviewer re-reads.
+            raise ManifestError(
+                "invalid_artifact_revision",
+                f"Entry {self.entry_id!r} pins artifact_revision {self.artifact_revision!r}; "
+                "a pin must be a full 40-character commit SHA, because any mutable name is resolved by something other than the reviewer.",
+            )
         if self.status is EntryStatus.ENABLED:
             # An enabled entry is the one an agent can act on, so every field a
             # dispatch needs must be present *at review time*. Discovering a
             # missing connection id at dispatch time would turn a reviewed
             # approval into a runtime failure.
-            missing = [
-                name for name in ("connection_id", "workflow", "resource_kind", "resource_id", "verification_adapter") if not getattr(self, name)
-            ]
+            required = ["connection_id", "workflow", "resource_kind", "resource_id", "verification_adapter"]
+            if not self.docs_only:
+                # An enabled entry that ships code must name WHICH build it ships.
+                # Without this the entry approves "whatever the workflow resolves
+                # at dispatch time", which is a moving target: the same reviewed
+                # approval would ship a different artifact tomorrow, and an
+                # incident would have no answer to "what was deployed?".
+                #
+                # `docs_only` entries are carved out deliberately, not by
+                # oversight: they produce no deployable artifact, so requiring a
+                # build SHA from them would force a reviewer to invent one — the
+                # exact failure this check exists to prevent.
+                required.append("artifact_revision")
+            missing = [name for name in required if not getattr(self, name)]
             if missing:
                 raise ManifestError(
                     "incomplete_manifest_entry",
@@ -594,6 +627,7 @@ def resolve_manifest_entry(
     policy_connection_ids: frozenset[str],
     target_lookup,
     requested_inputs: dict[str, str] | None = None,
+    resolved_workflow_revision: str | None = None,
 ) -> TargetResolution:
     """Resolve one manifest entry to a lockable physical target, or a typed block.
 
@@ -626,6 +660,25 @@ def resolve_manifest_entry(
             An exception from it is **not** converted into a pass: it becomes an
             `EQUIVALENCE_UNVERIFIABLE` block, because a lookup that failed has not
             established that the target is free to use.
+        resolved_workflow_revision: The commit SHA the caller actually resolved the
+            workflow definition to, read from the repository or the provider at
+            dispatch time. Checked against the entry's approved
+            `definition_revision`.
+
+            Passed in, and required whenever the entry pins a workflow, because
+            this module reads nothing: it cannot resolve a revision itself, so the
+            only alternative to injection is to skip the check — which would leave
+            `WORKFLOW_REVISION_MISMATCH` declared and never raised, i.e. a
+            documented guarantee the code does not enforce.
+
+            `None` is a **block, not a pass**. "The caller did not tell us which
+            definition it resolved" and "the definition matches" are different
+            facts, and treating the first as the second is precisely how a
+            pinned-revision approval degrades into a pinned-*filename* approval:
+            the workflow file at that path can be edited after review, and an
+            unchecked dispatch would run the edited version under the old
+            approval. The two cases carry distinct `detail` values so the operator
+            is told whether to supply a revision or to re-review the entry.
 
     Returns:
         A `TargetResolution` carrying either the physical target to lease or a
@@ -681,6 +734,43 @@ def resolve_manifest_entry(
                 required_input="The in-force accepted plan does not permit this deployment target; amend the plan or choose a permitted target.",
             ),
         )
+
+    if entry.workflow is not None:
+        # The approval is of a *definition*, not of a path. See the module
+        # docstring: a path names a file that anyone with write access can change
+        # after review, so the pinned revision is the only half of the pin that
+        # makes the approval mean anything — and a pin that is never compared is
+        # not a pin.
+        if resolved_workflow_revision is None:
+            return TargetResolution(
+                entry=entry,
+                block=TargetBlock(
+                    code=TargetBlockCode.WORKFLOW_REVISION_MISMATCH,
+                    owner="platform operator",
+                    required_input=(
+                        "Resolve the workflow definition to a commit SHA and pass it as resolved_workflow_revision; "
+                        "an unchecked definition cannot be dispatched under a pinned approval."
+                    ),
+                    detail="workflow_revision_unresolved",
+                ),
+            )
+        if str(resolved_workflow_revision).strip().casefold() != entry.workflow.definition_revision.strip().casefold():
+            return TargetResolution(
+                entry=entry,
+                block=TargetBlock(
+                    code=TargetBlockCode.WORKFLOW_REVISION_MISMATCH,
+                    owner="plan approver",
+                    # Neither SHA is echoed. The caller supplied one and does not
+                    # need it back; the approved one belongs to the review record,
+                    # and repeating it here would let a caller enumerate approved
+                    # revisions by guessing.
+                    required_input=(
+                        "The workflow definition resolved for this dispatch is not the revision this entry approves; "
+                        "re-review the entry against the current definition or dispatch the approved revision."
+                    ),
+                    detail="workflow_revision_mismatch",
+                ),
+            )
 
     if entry.workflow is not None and requested_inputs:
         reason = entry.workflow.check_inputs(requested_inputs)
@@ -885,20 +975,76 @@ def _parse_workflow(raw: object) -> WorkflowRef | None:
     )
 
 
+PACKAGED_MANIFEST_ANCHOR = "src.orchestration.manifests"
+PACKAGED_MANIFEST_NAME = "orchestration-deployments.yaml"
+
+
 def load_manifest_document(text: str) -> DeploymentManifest:
     """Parse manifest YAML text into a `DeploymentManifest`.
-
-    `yaml` is imported inside the function because it is a **dev-only** dependency
-    of this package (declared under `[project.optional-dependencies] dev`). A
-    module-scope import would pass every test and raise `ModuleNotFoundError` in
-    the deployed image — the same class of mistake as writing DDL that only exists
-    under a local `create_all` flag. Callers in the deployed path should parse the
-    document with whatever loader they already have and call `parse_manifest`.
 
     `yaml.safe_load` rather than `yaml.load`: this file is reviewed, but a loader
     that can construct arbitrary Python objects should never be pointed at
     configuration, because the day that assumption changes is not announced.
+
+    Takes text rather than a path so the caller owns the I/O — a test can pass a
+    literal document, and `load_packaged_manifest` below supplies the one the image
+    actually ships.
     """
-    import yaml  # noqa: PLC0415 - deliberate lazy import; see docstring
+    import yaml  # noqa: PLC0415 - kept function-local; see load_packaged_manifest
 
     return parse_manifest(yaml.safe_load(text) or {})
+
+
+def load_packaged_manifest() -> DeploymentManifest:
+    """Load the reviewed manifest that ships inside this distribution.
+
+    THE DEPLOYED LOADING CONTRACT
+    -----------------------------
+    This is the only supported way for the running gateway to obtain the manifest.
+    Two things make it work in the image, and both were verified by building a wheel
+    and by reading the image definition rather than assumed:
+
+    1. **The YAML lives inside `src/`**, which the Dockerfile already carries with
+       `COPY src/ src/`, and the gateway image is built with `modules/gateway` as its
+       docker context (`codebuild/bs-gateway-build.yml`: `cd modules/gateway && docker
+       build .`). This is the load-bearing mechanism: the container runs
+       `uvicorn src.app:create_app` from `/app`, so it imports the copied tree. A
+       repository-root `config/` directory is not in that build context at all, so no
+       `COPY` could reach it — which is why this file is not there.
+    2. **`pyyaml` is a runtime dependency**, not a `dev` extra. The image installs with
+       bare `pip install .`, which resolves no extras — so a manifest loader relying on
+       a dev-only parser would pass every test and raise `ModuleNotFoundError` in the
+       pod.
+
+    `[tool.setuptools.package-data]` also names this package, mirroring the
+    `pricing_policy/snapshots` precedent (#4969). Measured honestly: under the
+    current backend (`setuptools>=75`, `include-package-data` left at its pyproject
+    default of true) the YAML is included in a built wheel *without* that entry, so
+    it is a declaration of intent and a guard against that default changing — **not**
+    the reason the file is present. It is recorded that way here so nobody later
+    treats removing it as safe *because* of a comment, or as sufficient *on its own*
+    for a consumer installing from a wheel.
+
+    `importlib.resources.files()` rather than `Path(__file__).parents[n]`: the
+    latter resolves relative to the source tree and breaks once the package is
+    installed rather than run from a checkout — exactly the difference between a
+    test environment and the image.
+
+    Raises:
+        ManifestError: if the packaged manifest is missing. Fails closed and names
+            the packaging cause, because a gateway that silently substituted an
+            empty manifest would refuse every deployment with `ENTRY_UNKNOWN` and
+            send an operator looking for a missing review rather than a missing
+            file.
+    """
+    from importlib.resources import files  # noqa: PLC0415 - local, mirrors pricing_policy's loader
+
+    try:
+        text = files(PACKAGED_MANIFEST_ANCHOR).joinpath(PACKAGED_MANIFEST_NAME).read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, OSError) as exc:
+        raise ManifestError(
+            "packaged_manifest_missing",
+            f"The reviewed deployment manifest {PACKAGED_MANIFEST_NAME!r} is not present in this build "
+            f"(anchor {PACKAGED_MANIFEST_ANCHOR!r}); it must be packaged as package-data, not read from the repository.",
+        ) from exc
+    return load_manifest_document(text)

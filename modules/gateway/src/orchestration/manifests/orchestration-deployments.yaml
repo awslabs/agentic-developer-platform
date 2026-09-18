@@ -67,8 +67,17 @@
 #      (`ExecutionPolicy.environment_connection_ids`). The manifest and the
 #      in-force policy are checked independently and both must permit the target.
 #   3. Record the concrete surface in `resource_kind` / `resource_id`.
-#   4. Confirm `definition_revision` is the SHA of the reviewed definition.
-#   5. Change `status` to `enabled` and remove `unresolved_reason`.
+#   4. Confirm `definition_revision` is the SHA of the reviewed definition. The
+#      engine now compares it against the revision the dispatcher actually
+#      resolved and refuses the dispatch on a mismatch — or when no revision was
+#      resolved at all — so a stale SHA here blocks rather than silently passes.
+#   5. Pin `artifact_revision` to the full 40-character commit SHA of the build
+#      this entry is approved to ship. Required for an enabled entry unless
+#      `docs_only: true`, and refused unless it is a full SHA — `latest`, `main`
+#      and a tag are all resolved by something other than the reviewer. Leave it
+#      as `~` while the entry is unresolved; do not invent a SHA to satisfy the
+#      check.
+#   6. Change `status` to `enabled` and remove `unresolved_reason`.
 
 schema_version: 1
 

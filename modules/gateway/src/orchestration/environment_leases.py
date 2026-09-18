@@ -66,6 +66,17 @@ mints no credentials. It does not decide whether a deploy is authorized — that
 module refuses to acquire a lease for anything that did not already resolve to a
 `PhysicalTarget` carrying readback evidence.
 
+## Every write requires standing over the stored holder
+
+`acquire_lease`, `reconcile_lease` and `release_lease` all take a `LeaseHolder` and
+all prove it against the row's own `(owner_org_id, owner_action_id, owner_generation)`
+before writing. `reconcile_lease` is the one where this is least obvious and most
+important: recording terminal evidence looks like a passive observation, but that
+evidence is the **only** thing that unblocks a takeover of a lapsed target. A caller
+that could write it for a lease it does not hold could manufacture its own
+authorization to deploy over another tenant's cluster. Authority to write the
+evidence is therefore the same authority as the takeover it licenses.
+
 ## Cross-tenant information disclosure
 
 A refusal tells the caller the target is held and **nothing else**: not the
@@ -74,6 +85,12 @@ the key. The story requires scoped generic conflict information, and the reason 
 concrete — a refusal that named the holder would let any tenant probe for the
 existence and deployment activity of another tenant's infrastructure. `LeaseView`
 is returned only to a caller that holds the lease.
+
+This is why standing is checked **before** the compare-and-set in every method
+rather than after. The natural ordering — cheap revision check first — leaks: a
+caller can present a deliberately stale revision for a target it has an alias for
+and read the real holder's identity out of the `STALE` answer. Contention and
+staleness must be indistinguishable to a caller without standing.
 """
 
 from __future__ import annotations
@@ -377,6 +394,7 @@ def _require_known_state(row: OrchestrationEnvironmentLease) -> LeaseState:
 def _take(
     row: OrchestrationEnvironmentLease,
     *,
+    target: PhysicalTarget,
     holder: LeaseHolder,
     manifest_entry_id: str,
     release_ref: str | None,
@@ -390,6 +408,21 @@ def _take(
     place would mean the next expiry-based takeover would find stale evidence that
     appears to license it. The takeover gate would then be satisfied by a reading
     of a deployment two holders ago.
+
+    Rewrites the canonicalization evidence from the **incoming** target, and that
+    is a correctness requirement rather than tidiness. There is one durable row per
+    physical target for the life of the platform, so a row acquired today may have
+    been inserted by a different tenant, through a different alias, months ago.
+    Leaving the insert-time evidence in place would mean the row describes a
+    readback that did not authorize the current hold — and `evidence_source` is the
+    exact field an operator consults to answer "why did the engine believe these two
+    aliases were the same place, and what proved it?". A stale answer there is worse
+    than none, because it is indistinguishable from a fresh one.
+
+    Written on every take, not only on a change of action: the incoming
+    `PhysicalTarget` is by construction the readback that authorized *this*
+    acquisition, so the fresher timestamp is the truthful one even for a same-action
+    reacquire.
     """
     # The generation fence is **per action**, and that scoping is the whole of its
     # correctness. Within one action it is monotonic, like the execution store's
@@ -418,6 +451,11 @@ def _take(
     row.reconciled_at = None
     row.release_reason = None
     row.released_at = None
+    # The readback that authorized THIS hold, replacing whatever the previous
+    # holder's alias recorded. See the docstring.
+    row.evidence_source = target.evidence.source
+    row.evidence_verified_at = _parse_evidence_time(target.evidence.verified_at)
+    row.evidence_detail = target.evidence.detail
 
 
 async def acquire_lease(
@@ -468,6 +506,7 @@ async def acquire_lease(
     if existing is not None:
         return _acquire_existing(
             existing,
+            target=target,
             holder=holder,
             manifest_entry_id=manifest_entry_id,
             release_ref=release_ref,
@@ -518,6 +557,7 @@ async def acquire_lease(
             ) from None
         return _acquire_existing(
             winner,
+            target=target,
             holder=holder,
             manifest_entry_id=manifest_entry_id,
             release_ref=release_ref,
@@ -536,6 +576,7 @@ async def acquire_lease(
 def _acquire_existing(
     row: OrchestrationEnvironmentLease,
     *,
+    target: PhysicalTarget,
     holder: LeaseHolder,
     manifest_entry_id: str,
     release_ref: str | None,
@@ -569,6 +610,7 @@ def _acquire_existing(
             # contact window rather than refusing, so recovery is not punished.
             _take(
                 row,
+                target=target,
                 holder=holder,
                 manifest_entry_id=manifest_entry_id,
                 release_ref=release_ref,
@@ -602,6 +644,7 @@ def _acquire_existing(
     # Free, or a lapsed hold with reconciled terminal evidence.
     _take(
         row,
+        target=target,
         holder=holder,
         manifest_entry_id=manifest_entry_id,
         release_ref=release_ref,
@@ -617,9 +660,9 @@ async def reconcile_lease(
     canonical_target_key: str,
     expected_revision: int,
     terminal_evidence: str,
+    holder: LeaseHolder,
     heartbeat: bool = False,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
-    holder: LeaseHolder | None = None,
 ) -> LeaseOutcome:
     """Record what was observed about the current holder's deployment.
 
@@ -631,23 +674,51 @@ async def reconcile_lease(
     is the intended fail-closed behaviour rather than a bug to be timed out.
 
     `heartbeat=True` instead refreshes the current holder's contact window; it
-    requires `holder` and is refused for anyone else, so an unrelated actor cannot
-    keep somebody else's lease alive.
+    records continuing liveness rather than an ending.
+
+    ## `holder` is required, and why it must be
+
+    Both modes demand proof of standing over the **stored** holder before they read
+    or write anything. `holder` was briefly optional for the reconcile mode, on the
+    reasoning that an observer reports what it saw and needs no authority to have
+    looked. That reasoning is wrong, and dangerously so: terminal evidence on this
+    row is the *only* thing that unblocks a takeover of a lapsed target. Any caller
+    able to derive the canonical key — which is derivable from a connection the
+    caller legitimately owns — could therefore submit an arbitrary evidence string
+    for a lease it has nothing to do with, wait for expiry, and acquire a target
+    another tenant is actively deploying to. The evidence write *is* the takeover
+    authorization, so it carries the same authority requirement as the takeover.
+
+    Standing is the stored row's `(owner_org_id, owner_action_id)` at a generation
+    not behind `owner_generation` — the same fence `release_lease` applies, and for
+    the same reason. An observer that is not the holder does not reconcile; it
+    reports to whatever owns the holder's action, and that action reconciles.
+
+    Every unauthorized answer is the same opaque contention `CONFLICT`, including
+    the stale-revision case. A distinguishable answer — or a returned `LeaseView` —
+    would let one tenant present its own alias for a shared physical target,
+    deliberately supply a stale revision, and read back the other tenant's
+    `owner_org_id`, `owner_action_id`, `manifest_entry_id`, `release_ref` and
+    evidence. Standing is therefore established *before* the compare-and-set is
+    consulted, not after.
 
     Args:
         expected_revision: The compare-and-set fence. A mismatch answers `STALE`
             without writing, because whatever moved the row may have changed what
-            the caller should record.
+            the caller should record — but only to a caller that has already proven
+            standing.
         terminal_evidence: What established that the holder's deployment is over —
             a workflow conclusion, a run id, a check verdict. Required and non-empty
             for a reconcile, because unevidenced reconciliation is exactly the
             expiry-based takeover this module refuses. Ignored when `heartbeat` is
-            set, which records continuing liveness rather than an ending.
+            set.
+        holder: The action claiming standing over this lease. Required in both modes.
 
     Returns:
-        `APPLIED` with the updated lease. `STALE` when the revision moved.
-        `CONFLICT` when a heartbeat was attempted by a non-holder or at a
-        superseded generation.
+        `APPLIED` with the updated lease. `STALE` (with the lease) when the caller
+        holds standing and only its revision moved. `CONFLICT` with no lease when
+        the caller is not the holder, and `CONFLICT` with the lease when the caller
+        holds the right action at a superseded generation.
     """
     if not heartbeat and not str(terminal_evidence or "").strip():
         raise LeaseError(
@@ -655,8 +726,6 @@ async def reconcile_lease(
             "Reconciling a lease requires evidence that the holder's deployment is over; "
             "an unevidenced reconcile is the expiry-based takeover this module refuses.",
         )
-    if heartbeat and holder is None:
-        raise LeaseError("invalid_reconcile", "Refreshing a lease's contact window requires the holder it belongs to.")
     if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 1:
         raise LeaseError("invalid_reconcile", "expected_revision must be a positive integer read from the lease.")
 
@@ -664,24 +733,38 @@ async def reconcile_lease(
     if row is None:
         raise LeaseError("unknown_lease", "No lease exists for that physical target; nothing to reconcile.")
 
+    # STANDING FIRST — before the compare-and-set, and before anything is returned.
+    #
+    # Ordering is the security of this function, not a style choice. Checking the
+    # revision first and returning `_to_view(row)` on a mismatch is a cross-tenant
+    # disclosure: a caller holding its own alias for a shared physical target can
+    # derive the key, present a deliberately stale revision, and read back the other
+    # tenant's owner, action, manifest entry, release ref and evidence. A caller with
+    # no standing must not be able to distinguish "held by someone else" from "your
+    # revision moved", so both answers are the same opaque conflict.
+    if row.state != LeaseState.HELD.value or row.owner_org_id != holder.org_id or row.owner_action_id != holder.action_id:
+        logger.info("environment lease: refusing reconcile by a caller with no standing over the stored holder")
+        return _held_conflict()
+    if holder.generation < row.owner_generation:
+        # Right action, superseded generation. Terminal, and the lease IS returned:
+        # this caller holds the correct action and only its own binding lapsed, so it
+        # needs to see what superseded it. The same asymmetry `release_lease` applies.
+        logger.warning(
+            "environment lease: refusing reconcile at superseded generation %s (current %s)",
+            holder.generation,
+            row.owner_generation,
+        )
+        return LeaseOutcome(kind=LeaseOutcomeKind.CONFLICT, lease=_to_view(row), reason="owner_generation_superseded")
+
     if row.revision != expected_revision:
-        # Another writer moved it. Retryable, and the lease is returned so the
-        # caller can decide again without a second round trip. Returning it is safe
-        # here only because the caller is reconciling a target it was told about;
-        # a heartbeat by a non-holder is refused below before it can read anything.
-        if heartbeat and not (row.owner_org_id == holder.org_id and row.owner_action_id == holder.action_id):
-            return _held_conflict()
+        # Another writer moved it. Retryable, and the lease is returned so the caller
+        # can decide again without a second round trip — safe only because standing
+        # is already proven above.
         return LeaseOutcome(kind=LeaseOutcomeKind.STALE, lease=_to_view(row), reason="stale_revision")
 
     now = _now()
 
     if heartbeat:
-        if row.state != LeaseState.HELD.value or row.owner_org_id != holder.org_id or row.owner_action_id != holder.action_id:
-            # Not the holder. Opaque refusal: a distinguishable answer would let a
-            # caller probe which targets another tenant currently holds.
-            return _held_conflict()
-        if holder.generation < row.owner_generation:
-            return LeaseOutcome(kind=LeaseOutcomeKind.CONFLICT, lease=_to_view(row), reason="owner_generation_superseded")
         row.heartbeat_at = now
         row.lease_expires_at = now + timedelta(seconds=lease_seconds)
         row.revision = row.revision + 1

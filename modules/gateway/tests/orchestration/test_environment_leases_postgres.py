@@ -109,7 +109,7 @@ async def pg_engine(pg_url):  # noqa: F811 - pg_url is a fixture, not a shadowed
     independent of unrelated migrations. The lease table has no foreign keys, so
     nothing else is needed. Migration correctness — including that the DDL matches
     this model and that the unique index is NOT tenant-scoped — is
-    `tests/migrations/test_053_orchestration_environment_leases.py` instead.
+    `tests/migrations/test_054_orchestration_environment_leases.py` instead.
     """
     engine = create_async_engine(to_async_url(pg_url), echo=False)
     async with engine.begin() as conn:
@@ -347,6 +347,9 @@ class TestConcurrentTransitions:
                     canonical_target_key=target.canonical_key,
                     expected_revision=revision,
                     terminal_evidence=note,
+                    # Both racers ARE the holder — this tests the compare-and-set
+                    # between two processes of one action, not authority.
+                    holder=_holder(),
                 )
                 await session.commit()
                 return outcome
@@ -552,6 +555,170 @@ class TestStaleGenerationUnderConcurrency:
         assert all(o.kind is LeaseOutcomeKind.CONFLICT for o in outcomes)
         row = await _fetch(pg_session_factory, target.canonical_key)
         assert row.state == LeaseState.HELD.value
+
+
+class TestReconcileAuthorityUnderContention:
+    """Terminal evidence is writable only by the holder — proven with real row locks.
+
+    The SQLite suite asserts the same refusals, but on SQLite `SELECT ... FOR UPDATE`
+    is a no-op, so it cannot show that the check holds when a foreign caller's
+    reconcile genuinely overlaps the holder's own writes. That overlap is where an
+    ordering bug would actually surface: the attacker's read and the holder's write
+    interleave, and a check that consulted a stale in-session copy of the row would
+    pass its unit test and fail here.
+    """
+
+    async def test_concurrent_foreign_reconciles_all_refuse_and_write_nothing(self, pg_session_factory):
+        """Six tenants, each with its own alias, all trying to manufacture takeover.
+
+        Every one must be refused and the row must be left with no reconciled
+        evidence, because that evidence is the only thing that unblocks takeover of a
+        lapsed target.
+        """
+        target = _target()
+        first = await _acquire_committed(pg_session_factory, target, _holder(ORG_A, "action-a"))
+        revision = first.lease.revision
+
+        barrier = asyncio.Barrier(6)
+
+        async def foreign(index: int):
+            async with pg_session_factory() as session:
+                await barrier.wait()
+                outcome = await reconcile_lease(
+                    session,
+                    canonical_target_key=target.canonical_key,
+                    expected_revision=revision,
+                    terminal_evidence=f"fabricated-{index}",
+                    holder=_holder(f"org-intruder-{index}", f"action-{index}"),
+                )
+                await session.commit()
+                return outcome
+
+        outcomes = await asyncio.gather(*(foreign(i) for i in range(6)))
+
+        for outcome in outcomes:
+            assert outcome.kind is LeaseOutcomeKind.CONFLICT
+            assert outcome.reason == "target_held"
+            assert outcome.lease is None
+
+        row = await _fetch(pg_session_factory, target.canonical_key)
+        assert row.reconciled_terminal_evidence is None
+        assert row.revision == revision, "a refused reconcile must not advance the revision"
+
+    async def test_foreign_reconcile_cannot_unblock_a_lapsed_takeover(self, pg_session_factory):
+        """The end-to-end attack, on real PostgreSQL.
+
+        Org B holds a legitimate alias for the cluster org A is deploying to. It
+        fabricates evidence, waits for the contact window to lapse, and tries to take
+        the target. Both steps must fail, and the second is the one that matters.
+        """
+        target_a = _target(connection="conn-A")
+        await _acquire_committed(pg_session_factory, target_a, _holder(ORG_A, "action-a"))
+
+        target_b = _target(connection="conn-B")
+        assert target_b.canonical_key == target_a.canonical_key
+
+        async with pg_session_factory() as session:
+            refused = await reconcile_lease(
+                session,
+                canonical_target_key=target_b.canonical_key,
+                expected_revision=1,
+                terminal_evidence="fabricated: run 999 concluded success",
+                holder=_holder(ORG_B, "action-b"),
+            )
+            await session.commit()
+        assert refused.kind is LeaseOutcomeKind.CONFLICT
+
+        # Lapse the contact window without any reconciled evidence.
+        async with pg_session_factory() as session:
+            await session.execute(
+                update(OrchestrationEnvironmentLease)
+                .where(OrchestrationEnvironmentLease.canonical_target_key == target_a.canonical_key)
+                .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+            )
+            await session.commit()
+
+        stolen = await _acquire_committed(pg_session_factory, target_b, _holder(ORG_B, "action-b"))
+        assert stolen.kind is LeaseOutcomeKind.CONFLICT
+        assert stolen.lease is None
+
+    async def test_foreign_caller_cannot_distinguish_stale_from_held(self, pg_session_factory):
+        """Indistinguishability while the holder is concurrently moving the revision.
+
+        A foreign caller racing the holder's own writes gets the same opaque answer
+        whatever revision it guesses; otherwise the difference is an oracle for when
+        another tenant is deploying.
+        """
+        target = _target()
+        await _acquire_committed(pg_session_factory, target, _holder(ORG_A, "action-a"))
+
+        async def foreign(revision: int):
+            async with pg_session_factory() as session:
+                return await reconcile_lease(
+                    session,
+                    canonical_target_key=target.canonical_key,
+                    expected_revision=revision,
+                    terminal_evidence="probe",
+                    holder=_holder(ORG_B, "action-b"),
+                )
+
+        answers = await asyncio.gather(foreign(1), foreign(2), foreign(9999))
+        shapes = {(a.kind, a.reason, a.lease) for a in answers}
+        assert len(shapes) == 1, f"a foreign caller learned something from the revision: {shapes}"
+        assert answers[0].lease is None
+
+
+class TestEvidenceRefreshUnderContention:
+    """A new holder's row records the readback that authorized ITS hold.
+
+    One durable row per physical target outlives every hold, so without an explicit
+    refresh the row keeps whichever tenant's evidence inserted it — and
+    `evidence_source` is what an operator reads to answer "what proved these two
+    aliases name the same cluster?".
+    """
+
+    async def test_winner_of_a_cross_tenant_race_owns_the_evidence(self, pg_session_factory):
+        """Whoever wins, the stored evidence must be the winner's, not the insert's.
+
+        Under a genuine race the winner is not known in advance, which is what makes
+        this stronger than the sequential case: the assertion has to hold for either
+        outcome, so it cannot accidentally be satisfied by insert-time values.
+        """
+        participants = [
+            (_target(connection="conn-A"), _holder(ORG_A, "action-a"), ENTRY),
+            (_target(connection="conn-B"), _holder(ORG_B, "action-b"), ENTRY),
+        ]
+        outcomes = await _race_acquire(pg_session_factory, participants)
+
+        applied = [o for o in outcomes if getattr(o, "kind", None) is LeaseOutcomeKind.APPLIED]
+        assert len(applied) == 1
+        winner = applied[0]
+
+        row = await _fetch(pg_session_factory, participants[0][0].canonical_key)
+        assert row.evidence_source == winner.lease.evidence_source
+        assert row.evidence_source in {"verified-aws-connection:conn-A", "verified-aws-connection:conn-B"}
+
+    async def test_reacquire_after_release_replaces_the_previous_tenants_evidence(self, pg_session_factory):
+        target_a = _target(connection="conn-A")
+        await _acquire_committed(pg_session_factory, target_a, _holder(ORG_A, "action-a"))
+        async with pg_session_factory() as session:
+            await release_lease(
+                session,
+                canonical_target_key=target_a.canonical_key,
+                holder=_holder(ORG_A, "action-a"),
+                reason=ReleaseReason.COMPLETED,
+                terminal_evidence="run 1 concluded: success",
+            )
+            await session.commit()
+
+        target_b = _target(connection="conn-B")
+        taken = await _acquire_committed(pg_session_factory, target_b, _holder(ORG_B, "action-b"))
+        assert taken.applied
+
+        row = await _fetch(pg_session_factory, target_a.canonical_key)
+        assert row.evidence_source == "verified-aws-connection:conn-B"
+        # One row still, across both tenants' aliases.
+        assert await _row_count(pg_session_factory, target_a.canonical_key) == 1
 
 
 class TestUniqueIndexIsGlobal:

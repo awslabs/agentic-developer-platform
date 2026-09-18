@@ -20,6 +20,8 @@ import pytest
 from src.orchestration.deployment_manifest import (
     CANONICAL_KEY_VERSION,
     MANIFEST_SCHEMA_VERSION,
+    PACKAGED_MANIFEST_ANCHOR,
+    PACKAGED_MANIFEST_NAME,
     DeploymentManifest,
     EntryStatus,
     ManifestEntry,
@@ -30,6 +32,7 @@ from src.orchestration.deployment_manifest import (
     WorkflowRef,
     canonical_target_key,
     load_manifest_document,
+    load_packaged_manifest,
     parse_manifest,
     resolve_manifest_entry,
 )
@@ -39,6 +42,9 @@ from src.orchestration.deployment_manifest import (
 # obvious in a failure message that the value is a fixture rather than a pin.
 SHA_A = "a" * 40
 SHA_B = "b" * 40
+# A distinct third SHA so the artifact pin cannot accidentally be satisfied by the
+# workflow revision fixture — the two pin different things and must not be aliased.
+SHA_ARTIFACT = "c" * 40
 
 EVIDENCE = TargetEvidence(
     source="verified-aws-connection:conn-1",
@@ -84,6 +90,7 @@ def _enabled_entry(**overrides) -> ManifestEntry:
         "resource_kind": "eks-namespace",
         "resource_id": "cluster-a/adp-gateway",
         "verification_adapter": "gateway-health-verification",
+        "artifact_revision": SHA_ARTIFACT,
     }
     defaults.update(overrides)
     return ManifestEntry(**defaults)
@@ -96,6 +103,10 @@ def _resolve(entry: ManifestEntry, **kwargs):
         "component": "gateway-backend",
         "policy_connection_ids": frozenset({"conn-1"}),
         "target_lookup": lambda _cid: _target(),
+        # The happy path resolves to exactly the revision the entry approves. Made
+        # explicit here rather than defaulted inside the resolver, because a
+        # resolver that supplied its own "matching" revision would never refuse.
+        "resolved_workflow_revision": SHA_A,
     }
     params.update(kwargs)
     return resolve_manifest_entry(manifest, **params)
@@ -519,6 +530,171 @@ class TestResolution:
         assert exc.value.code == "invalid_target_lookup"
 
 
+class TestWorkflowRevisionEnforcement:
+    """The pinned revision must be *compared*, not merely stored.
+
+    `WorkflowRef` already refuses an abbreviation, so the approval records a full
+    immutable SHA — but a pin nothing checks approves the file at that path, not the
+    definition. The workflow file is editable by anyone with write access after the
+    review, so an unchecked dispatch runs the edited pipeline under the old approval.
+    These tests are the difference between a declared guarantee and an enforced one.
+    """
+
+    def test_mismatched_revision_is_refused(self):
+        """THE revision test: the definition resolved is not the one approved."""
+        resolution = _resolve(_enabled_entry(), resolved_workflow_revision=SHA_B)
+        assert not resolution.resolved
+        assert resolution.block.code is TargetBlockCode.WORKFLOW_REVISION_MISMATCH
+        assert resolution.block.detail == "workflow_revision_mismatch"
+        assert resolution.block.owner == "plan approver"
+
+    def test_unresolved_revision_blocks_rather_than_passing(self):
+        """`None` is the dangerous case, and it must not read as "matches".
+
+        A caller that cannot resolve the definition has not established anything
+        about it. Defaulting the parameter to `None` and skipping the check on `None`
+        would make every existing caller silently exempt — which is how a gate gets
+        added and enforces nothing.
+        """
+        resolution = _resolve(_enabled_entry(), resolved_workflow_revision=None)
+        assert not resolution.resolved
+        assert resolution.block.code is TargetBlockCode.WORKFLOW_REVISION_MISMATCH
+        assert resolution.block.detail == "workflow_revision_unresolved"
+        assert resolution.block.owner == "platform operator"
+
+    def test_the_two_revision_failures_are_distinguishable(self):
+        """Different owners fix them, so one code with one detail would misroute.
+
+        "You did not tell us what you resolved" is the dispatcher's bug; "what you
+        resolved is not approved" needs a human to re-review. Collapsing them sends
+        both to the same person.
+        """
+        unresolved = _resolve(_enabled_entry(), resolved_workflow_revision=None)
+        mismatch = _resolve(_enabled_entry(), resolved_workflow_revision=SHA_B)
+        assert unresolved.block.detail != mismatch.block.detail
+        assert unresolved.block.owner != mismatch.block.owner
+
+    def test_refusal_does_not_echo_either_revision(self):
+        """A refusal that named the approved SHA is an enumeration oracle.
+
+        The caller supplied its own revision and is not owed the approved one; a
+        caller that could read it back by guessing could discover exactly which build
+        an environment is approved to run.
+        """
+        block = _resolve(_enabled_entry(), resolved_workflow_revision=SHA_B).block
+        text = f"{block.required_input} {block.detail}"
+        assert SHA_A not in text
+        assert SHA_B not in text
+
+    def test_case_differing_revision_is_accepted_not_refused(self):
+        """An uppercase SHA is the same immutable commit.
+
+        Some provider APIs return uppercase. Refusing it would be a shape complaint
+        about a perfectly valid pin, and the operator's only workaround would be to
+        edit the reviewed manifest — a worse outcome than comparing case-insensitively.
+        """
+        assert _resolve(_enabled_entry(), resolved_workflow_revision=SHA_A.upper()).resolved
+
+    def test_a_prefix_of_the_approved_revision_is_refused(self):
+        """No prefix matching, in either direction.
+
+        A prefix names a set of commits. Accepting one here would reintroduce exactly
+        the ambiguity `WorkflowRef` refuses at construction time.
+        """
+        resolution = _resolve(_enabled_entry(), resolved_workflow_revision=SHA_A[:12])
+        assert resolution.block.code is TargetBlockCode.WORKFLOW_REVISION_MISMATCH
+
+    def test_revision_is_checked_before_the_target_is_resolved(self):
+        """Ordering: an unapproved definition must not cause a provider call.
+
+        Resolving the target first would let a refused dispatch still probe the
+        connection service, and the block would be reported against a target the
+        caller was never permitted to reach.
+        """
+
+        def exploding_lookup(_cid):
+            raise AssertionError("target_lookup must not be called for an unapproved definition")
+
+        resolution = _resolve(_enabled_entry(), resolved_workflow_revision=SHA_B, target_lookup=exploding_lookup)
+        assert resolution.block.code is TargetBlockCode.WORKFLOW_REVISION_MISMATCH
+
+
+class TestArtifactRevisionPinning:
+    """An enabled entry that ships code must name WHICH build it ships.
+
+    Without this, the entry approves "whatever the workflow resolves at dispatch
+    time" — so the same reviewed approval ships a different build tomorrow, and an
+    incident has no answer to "what was deployed?". The `docs_only` carve-out is
+    asserted too: an exemption nothing tests is indistinguishable from a hole.
+    """
+
+    def test_enabled_entry_without_an_artifact_revision_is_refused(self):
+        with pytest.raises(ManifestError) as exc:
+            _enabled_entry(artifact_revision=None)
+        assert exc.value.code == "incomplete_manifest_entry"
+        assert "artifact_revision" in str(exc.value)
+
+    @pytest.mark.parametrize("value", ["latest", "main", "v1.2.3", "HEAD", SHA_A[:12], "z" * 40])
+    def test_a_mutable_name_is_not_a_pin(self, value):
+        """Every one of these is resolved at *use* time by someone other than the reviewer.
+
+        `latest` and `main` move; a tag can be re-pointed; an abbreviation names a
+        prefix; a 40-character non-hex string is not a SHA at all. Storing any of
+        them records approval of a name rather than of a build.
+        """
+        with pytest.raises(ManifestError) as exc:
+            _enabled_entry(artifact_revision=value)
+        assert exc.value.code == "invalid_artifact_revision"
+
+    def test_a_mutable_pin_is_refused_even_on_an_unresolved_entry(self):
+        """Shape is enforced at every status, deliberately.
+
+        Otherwise `latest` can be parked in an unresolved entry and go live via a
+        one-line `status:` edit that changes no value a reviewer would re-read.
+        """
+        with pytest.raises(ManifestError) as exc:
+            ManifestEntry(
+                entry_id="env-2",
+                status=EntryStatus.UNRESOLVED,
+                connection_id=None,
+                component_selectors=(),
+                workflow=None,
+                artifact_revision="latest",
+                unresolved_reason="connection not yet verified",
+            )
+        assert exc.value.code == "invalid_artifact_revision"
+
+    def test_an_unresolved_entry_may_carry_no_pin_at_all(self):
+        """The honest state for an entry whose build does not exist yet.
+
+        This is why the requirement is scoped to ENABLED: forcing a SHA onto an
+        unresolved entry would make inventing one the path of least resistance.
+        """
+        entry = ManifestEntry(
+            entry_id="env-2",
+            status=EntryStatus.UNRESOLVED,
+            connection_id=None,
+            component_selectors=(),
+            workflow=None,
+            artifact_revision=None,
+            unresolved_reason="connection not yet verified",
+        )
+        assert entry.artifact_revision is None
+
+    def test_docs_only_entry_is_exempt_and_still_enabled(self):
+        """The carve-out is deliberate, and asserted so a later "tighten it" is informed.
+
+        A docs-only entry produces no deployable artifact, so demanding a build SHA
+        would force a reviewer to invent one — the exact failure this check prevents.
+        """
+        entry = _enabled_entry(docs_only=True, artifact_revision=None)
+        assert entry.status is EntryStatus.ENABLED
+        assert entry.docs_only is True
+
+    def test_an_uppercase_pin_is_accepted(self):
+        assert _enabled_entry(artifact_revision=SHA_ARTIFACT.upper()).artifact_revision == SHA_ARTIFACT.upper()
+
+
 class TestParsing:
     """What the parser refuses in a document a reviewer edited."""
 
@@ -531,6 +707,7 @@ class TestParsing:
             "resource_kind": "eks-namespace",
             "resource_id": "cluster-a/adp-gateway",
             "verification_adapter": "gateway-health-verification",
+            "artifact_revision": SHA_ARTIFACT,
             "workflow": {
                 "path": ".github/workflows/gateway-deploy.yml",
                 "definition_revision": SHA_A,
@@ -548,6 +725,7 @@ class TestParsing:
         # `account_id: ~` becomes an empty allow-list: pass-through at the
         # workflow's default, not "any value".
         assert entry.workflow.allowed_inputs["account_id"] == frozenset()
+        assert entry.artifact_revision == SHA_ARTIFACT
 
     def test_unknown_top_level_key_is_refused(self):
         """Ignoring it is how a narrowing constraint gets silently dropped."""
@@ -598,22 +776,137 @@ class TestParsing:
             parse_manifest(document)
 
 
+class TestPackagedManifestLoading:
+    """The manifest must be loadable *the way the image loads it*.
+
+    Every other test in this file reads the YAML through a filesystem path derived
+    from `__file__`, which works in a source checkout and proves nothing about the
+    installed distribution the pod actually runs. The gap between those two is the
+    whole class of "documentation asserting an invariant the code does not enforce":
+    a loader that only works from a checkout would pass this suite and raise in the
+    image. These tests exercise the packaged path and assert the packaging
+    declarations that make it work.
+    """
+
+    def test_manifest_loads_through_the_packaged_anchor(self):
+        """THE loadability test: `importlib.resources`, not a relative path walk.
+
+        This is the call the deployed process makes. If the YAML were not packaged
+        as package-data, or the anchor were not an importable package, this is where
+        it fails — rather than at 3am in a pod.
+        """
+        manifest = load_packaged_manifest()
+        assert manifest.schema_version == MANIFEST_SCHEMA_VERSION
+        assert manifest.entries
+
+    def test_the_packaged_copy_is_the_reviewed_file_itself(self):
+        """One manifest, not a copy that can drift from the reviewed one.
+
+        A second file synchronized by hand would let the image ship an approval
+        nobody reviewed, which is worse than shipping none.
+        """
+        from_path = load_manifest_document(
+            (Path(__file__).resolve().parents[1].parent / "src" / "orchestration" / "manifests" / PACKAGED_MANIFEST_NAME).read_text(encoding="utf-8")
+        )
+        assert load_packaged_manifest() == from_path
+
+    def test_the_anchor_is_an_importable_package(self):
+        """`importlib.resources.files()` needs an importable anchor.
+
+        Without `__init__.py` the anchor is a namespace package, and
+        `setuptools.packages.find` does not discover it — which also makes any
+        `package-data` key naming it silently inert.
+        """
+        import importlib  # noqa: PLC0415
+
+        module = importlib.import_module(PACKAGED_MANIFEST_ANCHOR)
+        assert Path(module.__file__).name == "__init__.py"
+
+    def test_yaml_is_a_runtime_dependency_not_a_dev_extra(self):
+        """The image installs with bare `pip install .`, which resolves no extras.
+
+        Asserted against pyproject.toml rather than trusted to a comment: a
+        well-meaning cleanup that moved `pyyaml` back under `dev` would break the
+        deployed loader while leaving every test green, because the dev extra is
+        exactly what the test environment installs.
+        """
+        text = (Path(__file__).resolve().parents[1].parent / "pyproject.toml").read_text(encoding="utf-8")
+        runtime = text.split("[project.optional-dependencies]")[0]
+        assert "pyyaml" in runtime.lower(), "pyyaml must be a runtime dependency; the deployed manifest loader parses YAML"
+
+    def test_the_manifest_is_declared_as_package_data(self):
+        """A declaration of intent, honestly scoped.
+
+        Measured, not assumed: under the current backend (`setuptools>=75`,
+        `include-package-data` at its pyproject default of true) a built wheel
+        contains the YAML *even without* this entry — so it is a guard against that
+        default changing and a marker for anyone building a sdist/wheel for a
+        consumer, NOT the reason the file reaches the image. That reason is
+        `COPY src/ src/`, asserted separately below. Kept as a test so the entry is
+        not deleted as noise, and worded so nobody mistakes it for the mechanism.
+        """
+        text = (Path(__file__).resolve().parents[1].parent / "pyproject.toml").read_text(encoding="utf-8")
+        section = text.split("[tool.setuptools.package-data]")[1]
+        assert PACKAGED_MANIFEST_ANCHOR in section
+
+    def test_the_manifest_is_inside_the_docker_build_context(self):
+        """The context is `modules/gateway`, so a repo-root `config/` is unreachable.
+
+        This is why the file moved. Asserted because the constraint is invisible from
+        Python: nothing in the import graph reveals that `COPY` cannot see a sibling
+        directory of the build context.
+        """
+        gateway_root = Path(__file__).resolve().parents[1].parent
+        packaged = gateway_root / "src" / "orchestration" / "manifests" / PACKAGED_MANIFEST_NAME
+        assert packaged.is_file()
+        assert packaged.is_relative_to(gateway_root / "src"), "must be under src/, which the Dockerfile already COPYs"
+        repo_root = Path(__file__).resolve().parents[4]
+        assert not (repo_root / "config" / PACKAGED_MANIFEST_NAME).exists(), (
+            "the repo-root copy must not come back: it is outside the gateway docker build context"
+        )
+
+    def test_the_dockerfile_copies_the_tree_that_contains_the_manifest(self):
+        """The actual mechanism, asserted against the image definition.
+
+        `COPY src/ src/` is what puts the YAML in the container; everything else in
+        this class is a guard. Checked here because the alternative is a comment
+        claiming it, and a comment does not fail when somebody narrows that COPY to
+        specific subdirectories.
+        """
+        gateway_root = Path(__file__).resolve().parents[1].parent
+        dockerfile = (gateway_root / "Dockerfile").read_text(encoding="utf-8")
+        assert "COPY src/ src/" in dockerfile, "the manifest reaches the image only because the whole src/ tree is copied"
+
+    def test_a_missing_packaged_manifest_fails_closed_and_names_the_cause(self, monkeypatch):
+        """An absent manifest must not degrade into an empty one.
+
+        An empty manifest refuses every deploy with `ENTRY_UNKNOWN`, which sends the
+        operator looking for a missing *review* rather than a missing *file* — a
+        diagnosis that can cost hours. The typed error names packaging instead.
+        """
+        import src.orchestration.deployment_manifest as module  # noqa: PLC0415
+
+        monkeypatch.setattr(module, "PACKAGED_MANIFEST_NAME", "no-such-manifest.yaml")
+        with pytest.raises(ManifestError) as exc:
+            module.load_packaged_manifest()
+        assert exc.value.code == "packaged_manifest_missing"
+
+
 class TestShippedManifest:
     """The reviewed file in `config/` must parse, and must not claim false approvals."""
 
     @property
     def _path(self) -> Path:
-        # tests/orchestration/ -> tests/ -> modules/gateway/ -> modules/ -> repo root
-        return Path(__file__).resolve().parents[4] / "config" / "orchestration-deployments.yaml"
+        """The manifest inside the package, not at the repository root.
+
+        It moved there so the gateway image can actually read it: the image is built
+        with `modules/gateway` as its docker context, and a repo-root `config/`
+        directory is not in that context.
+        """
+        return Path(__file__).resolve().parents[1].parent / "src" / "orchestration" / "manifests" / PACKAGED_MANIFEST_NAME
 
     def test_shipped_manifest_parses(self):
-        """A manifest that does not parse is an approval nobody can act on.
-
-        Uses `load_manifest_document`, which imports yaml lazily — `pyyaml` is a
-        dev-only dependency, so a module-scope import would pass here and raise
-        `ModuleNotFoundError` in the deployed image.
-        """
-        pytest.importorskip("yaml")
+        """A manifest that does not parse is an approval nobody can act on."""
         manifest = load_manifest_document(self._path.read_text(encoding="utf-8"))
         assert manifest.schema_version == MANIFEST_SCHEMA_VERSION
         assert manifest.entries
@@ -626,7 +919,6 @@ class TestShippedManifest:
         entry by filling in a plausible-looking account or cluster to make the
         example executable — the specific failure the story forbids.
         """
-        pytest.importorskip("yaml")
         manifest = load_manifest_document(self._path.read_text(encoding="utf-8"))
         for entry in manifest.entries:
             if entry.status is EntryStatus.ENABLED:
@@ -642,8 +934,11 @@ class TestShippedManifest:
         history the test environment may not have, and #5151 owns the
         revision-match refusal at dispatch time.
         """
-        pytest.importorskip("yaml")
-        repo_root = self._path.parent.parent
+        # Derived from this test file, not from the manifest's own path: the
+        # manifest now lives several levels inside the package, so a relative walk
+        # from it would silently point somewhere plausible-but-wrong.
+        # tests/orchestration/ -> tests/ -> modules/gateway/ -> modules/ -> repo root
+        repo_root = Path(__file__).resolve().parents[4]
         manifest = load_manifest_document(self._path.read_text(encoding="utf-8"))
         for entry in manifest.entries:
             if entry.workflow is None:
@@ -657,7 +952,6 @@ class TestShippedManifest:
         `allowed_inputs` list is a one-token diff that reads as configuration and
         lands as a permission grant.
         """
-        pytest.importorskip("yaml")
         manifest = load_manifest_document(self._path.read_text(encoding="utf-8"))
         for entry in manifest.entries:
             if entry.workflow is None:

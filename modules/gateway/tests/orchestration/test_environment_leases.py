@@ -402,6 +402,7 @@ class TestExpiryIsNotAnExit:
             canonical_target_key=target.canonical_key,
             expected_revision=first.lease.revision,
             terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_A, "action-a"),
         )
         refused = await acquire_lease(session, target=target, holder=_holder(ORG_B, "action-b"), manifest_entry_id=ENTRY)
         assert refused.kind is LeaseOutcomeKind.CONFLICT
@@ -431,6 +432,7 @@ class TestReconcile:
                 canonical_target_key=target.canonical_key,
                 expected_revision=first.lease.revision,
                 terminal_evidence="   ",
+                holder=_holder(),
             )
         assert exc.value.code == "missing_terminal_evidence"
 
@@ -442,6 +444,7 @@ class TestReconcile:
             canonical_target_key=target.canonical_key,
             expected_revision=first.lease.revision,
             terminal_evidence=f"  {EVIDENCE_TEXT}  ",
+            holder=_holder(),
         )
         assert outcome.applied
         assert outcome.lease.reconciled_terminal_evidence == EVIDENCE_TEXT
@@ -463,12 +466,14 @@ class TestReconcile:
             canonical_target_key=target.canonical_key,
             expected_revision=first.lease.revision,
             terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(),
         )
         stale = await reconcile_lease(
             session,
             canonical_target_key=target.canonical_key,
             expected_revision=first.lease.revision,
             terminal_evidence="a different reading",
+            holder=_holder(),
         )
         assert stale.kind is LeaseOutcomeKind.STALE
         assert stale.reason == "stale_revision"
@@ -483,6 +488,7 @@ class TestReconcile:
                 canonical_target_key="v1:" + "0" * 64,
                 expected_revision=1,
                 terminal_evidence=EVIDENCE_TEXT,
+                holder=_holder(),
             )
         assert exc.value.code == "unknown_lease"
 
@@ -496,6 +502,7 @@ class TestReconcile:
                 canonical_target_key=target.canonical_key,
                 expected_revision=revision,
                 terminal_evidence=EVIDENCE_TEXT,
+                holder=_holder(),
             )
 
     async def test_heartbeat_extends_the_holders_window(self, session):
@@ -515,10 +522,31 @@ class TestReconcile:
         # A heartbeat records continuing liveness, not an ending.
         assert outcome.lease.reconciled_terminal_evidence is None
 
-    async def test_heartbeat_requires_a_holder(self, session):
+    async def test_both_modes_require_a_holder(self, session):
+        """`holder` is mandatory for a reconcile too, not only for a heartbeat.
+
+        It was briefly optional for the reconcile mode, on the reasoning that an
+        observer reports what it saw and needs no authority to have looked. That is
+        wrong: terminal evidence on this row is the ONLY thing that unblocks takeover
+        of a lapsed target, so writing it is the takeover authorization. Making it
+        optional let any caller that could derive the key manufacture its own licence
+        to deploy over another tenant's cluster.
+
+        Asserted as a TypeError because the guard is the signature itself — a keyword
+        with no default cannot be omitted, which is a stronger guarantee than a
+        runtime check a later refactor could reorder past.
+        """
         target = _target()
         first = await acquire_lease(session, target=target, holder=_holder(), manifest_entry_id=ENTRY)
-        with pytest.raises(LeaseError) as exc:
+
+        with pytest.raises(TypeError):
+            await reconcile_lease(
+                session,
+                canonical_target_key=target.canonical_key,
+                expected_revision=first.lease.revision,
+                terminal_evidence=EVIDENCE_TEXT,
+            )
+        with pytest.raises(TypeError):
             await reconcile_lease(
                 session,
                 canonical_target_key=target.canonical_key,
@@ -526,7 +554,6 @@ class TestReconcile:
                 terminal_evidence="",
                 heartbeat=True,
             )
-        assert exc.value.code == "invalid_reconcile"
 
     async def test_non_holder_cannot_keep_someone_elses_lease_alive(self, session):
         """Otherwise an unrelated actor could hold a target open indefinitely.
@@ -796,6 +823,272 @@ class TestStaleGenerationCannotRelease:
         assert freed.applied
 
 
+class TestReconcileAuthority:
+    """Terminal evidence may only be written by a caller with standing over the holder.
+
+    This class exists because of a fail-open defect: `reconcile_lease` took an
+    optional `holder` and, in the non-heartbeat mode, checked nothing at all. The
+    reasoning that produced it sounds right — an observer reports what it saw, and
+    looking requires no authority. But the evidence it writes is the *only* thing
+    that unblocks takeover of a lapsed target, so the write IS the takeover
+    authorization, and it needs the takeover's authority.
+
+    The attack it enabled, end to end: a tenant legitimately owns connection X, which
+    aliases the same physical cluster another tenant is deploying to. It derives the
+    canonical key from its own connection (no privileged information required),
+    submits any string as `terminal_evidence`, waits for the real holder's contact
+    window to lapse, and acquires a cluster that is still being deployed to.
+    """
+
+    async def test_foreign_tenant_cannot_write_terminal_evidence(self, session):
+        """The whole defect, asserted directly.
+
+        Org B has an alias for org A's physical target and tries to manufacture the
+        evidence that would license its own takeover.
+        """
+        target = _target()
+        first = await acquire_lease(session, target=target, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
+
+        refused = await reconcile_lease(
+            session,
+            canonical_target_key=target.canonical_key,
+            expected_revision=first.lease.revision,
+            terminal_evidence="fabricated: run 999 concluded success",
+            holder=_holder(ORG_B, "action-b"),
+        )
+
+        assert refused.kind is LeaseOutcomeKind.CONFLICT
+        assert refused.reason == "target_held"
+        assert refused.lease is None
+        # Nothing was written, so the takeover gate is still closed.
+        row = await _row(session, target.canonical_key)
+        assert row.reconciled_terminal_evidence is None
+        assert row.reconciled_at is None
+
+    async def test_refused_evidence_does_not_enable_takeover(self, session):
+        """The consequence, not just the refusal.
+
+        Proves the two halves connect: after the unauthorized reconcile is refused,
+        the lapsed lease still blocks takeover. A version that refused the call but
+        wrote the row anyway would pass the test above and fail this one.
+        """
+        target = _target()
+        first = await acquire_lease(session, target=target, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
+        await reconcile_lease(
+            session,
+            canonical_target_key=target.canonical_key,
+            expected_revision=first.lease.revision,
+            terminal_evidence="fabricated",
+            holder=_holder(ORG_B, "action-b"),
+        )
+        await _expire(session, target.canonical_key)
+
+        stolen = await acquire_lease(session, target=target, holder=_holder(ORG_B, "action-b"), manifest_entry_id=ENTRY)
+        assert stolen.kind is LeaseOutcomeKind.CONFLICT
+        assert stolen.lease is None
+
+    async def test_same_org_different_action_has_no_standing(self, session):
+        """Standing is the action, not the tenant.
+
+        A sibling action in the same org is still not the holder. Checking only
+        `org_id` would let any action in a tenant reconcile any other's deployment —
+        a weaker fence that looks correct in a single-tenant test.
+        """
+        target = _target()
+        first = await acquire_lease(session, target=target, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
+        refused = await reconcile_lease(
+            session,
+            canonical_target_key=target.canonical_key,
+            expected_revision=first.lease.revision,
+            terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_A, "action-other"),
+        )
+        assert refused.kind is LeaseOutcomeKind.CONFLICT
+        assert refused.lease is None
+
+    async def test_superseded_generation_cannot_reconcile(self, session):
+        """A displaced process of the right action cannot write evidence either.
+
+        The lease IS returned here, unlike the foreign-caller case: this caller holds
+        the correct action and only its own binding lapsed, so it needs to see what
+        superseded it. Same asymmetry `release_lease` applies.
+        """
+        target = _target()
+        await acquire_lease(session, target=target, holder=_holder(ORG_A, "action-a", generation=1), manifest_entry_id=ENTRY)
+        current = await acquire_lease(session, target=target, holder=_holder(ORG_A, "action-a", generation=5), manifest_entry_id=ENTRY)
+
+        refused = await reconcile_lease(
+            session,
+            canonical_target_key=target.canonical_key,
+            expected_revision=current.lease.revision,
+            terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_A, "action-a", generation=1),
+        )
+        assert refused.kind is LeaseOutcomeKind.CONFLICT
+        assert refused.reason == "owner_generation_superseded"
+        row = await _row(session, target.canonical_key)
+        assert row.reconciled_terminal_evidence is None
+
+    async def test_holder_can_still_reconcile(self, session):
+        """The carve-out is not so tight that the legitimate path broke.
+
+        Without this, every test above would also pass if `reconcile_lease` refused
+        unconditionally.
+        """
+        target = _target()
+        first = await acquire_lease(session, target=target, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
+        applied = await reconcile_lease(
+            session,
+            canonical_target_key=target.canonical_key,
+            expected_revision=first.lease.revision,
+            terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_A, "action-a"),
+        )
+        assert applied.applied
+        assert applied.lease.reconciled_terminal_evidence == EVIDENCE_TEXT
+
+
+class TestReconcileDisclosure:
+    """A caller without standing cannot distinguish contention from staleness.
+
+    The defect this guards: the revision compare-and-set ran BEFORE the standing
+    check, and a mismatch returned `_to_view(row)`. So a tenant holding its own alias
+    for a shared physical target could present a deliberately wrong revision and read
+    the real holder's org, action, manifest entry, release ref and evidence out of the
+    `STALE` answer. Ordering, not a missing check — which is why it reads as harmless.
+    """
+
+    async def test_stale_revision_from_a_foreign_caller_leaks_nothing(self, session):
+        target = _target()
+        await acquire_lease(session, target=target, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
+
+        refused = await reconcile_lease(
+            session,
+            canonical_target_key=target.canonical_key,
+            expected_revision=9999,  # deliberately wrong
+            terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_B, "action-b"),
+        )
+
+        assert refused.kind is LeaseOutcomeKind.CONFLICT, "a foreign caller must not be told its revision moved"
+        assert refused.reason == "target_held"
+        assert refused.lease is None
+
+    async def test_foreign_caller_gets_an_identical_answer_either_way(self, session):
+        """Indistinguishability is the actual property, so compare the two answers.
+
+        If a correct revision and a wrong one produce different answers, the
+        difference is itself an oracle: a caller can search for the real revision and
+        learn when it changes, i.e. when the other tenant is deploying.
+        """
+        target = _target()
+        first = await acquire_lease(session, target=target, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
+
+        with_correct = await reconcile_lease(
+            session,
+            canonical_target_key=target.canonical_key,
+            expected_revision=first.lease.revision,
+            terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_B, "action-b"),
+        )
+        with_wrong = await reconcile_lease(
+            session,
+            canonical_target_key=target.canonical_key,
+            expected_revision=4242,
+            terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_B, "action-b"),
+        )
+
+        assert (with_correct.kind, with_correct.reason, with_correct.lease) == (with_wrong.kind, with_wrong.reason, with_wrong.lease)
+        assert with_correct.lease is None
+
+
+class TestEvidenceRefreshOnTake:
+    """The row's canonicalization evidence describes the hold it actually authorized.
+
+    There is ONE durable row per physical target for the platform's life, so a row
+    acquired today may have been inserted months ago by a different tenant through a
+    different alias. The defect: `_take` wrote the holder columns but left
+    `evidence_source` / `evidence_verified_at` / `evidence_detail` at their
+    insert-time values, so a new holder inherited the previous tenant's evidence and
+    the row no longer recorded what proved THIS acquisition. `evidence_source` is the
+    field an operator consults to answer "what proved these two aliases are the same
+    place?" — a stale answer there is worse than none, being indistinguishable from a
+    fresh one.
+    """
+
+    async def test_cross_tenant_reacquire_replaces_the_evidence(self, session):
+        target_a = _target(source="verified-aws-connection:conn-A")
+        await acquire_lease(session, target=target_a, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
+        await release_lease(
+            session,
+            canonical_target_key=target_a.canonical_key,
+            holder=_holder(ORG_A, "action-a"),
+            reason=ReleaseReason.COMPLETED,
+            terminal_evidence=EVIDENCE_TEXT,
+        )
+
+        # Org B's alias for the SAME physical target — same canonical key, different
+        # readback. The key must match or this tests nothing.
+        target_b = _target(source="verified-aws-connection:conn-B")
+        assert target_b.canonical_key == target_a.canonical_key
+
+        taken = await acquire_lease(session, target=target_b, holder=_holder(ORG_B, "action-b"), manifest_entry_id=ENTRY)
+        assert taken.applied
+        assert taken.lease.evidence_source == "verified-aws-connection:conn-B"
+        row = await _row(session, target_a.canonical_key)
+        assert row.evidence_source == "verified-aws-connection:conn-B"
+
+    async def test_reconciled_takeover_replaces_the_evidence(self, session):
+        """The other route onto an existing row: lapsed plus reconciled evidence."""
+        target_a = _target(source="verified-aws-connection:conn-A")
+        first = await acquire_lease(session, target=target_a, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
+        await reconcile_lease(
+            session,
+            canonical_target_key=target_a.canonical_key,
+            expected_revision=first.lease.revision,
+            terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_A, "action-a"),
+        )
+        await _expire(session, target_a.canonical_key, reconciled=EVIDENCE_TEXT)
+
+        target_b = _target(source="verified-aws-connection:conn-B")
+        taken = await acquire_lease(session, target=target_b, holder=_holder(ORG_B, "action-b"), manifest_entry_id=ENTRY)
+        assert taken.applied
+        assert taken.lease.evidence_source == "verified-aws-connection:conn-B"
+
+    async def test_evidence_timestamp_and_detail_are_refreshed_too(self, session):
+        """All three evidence columns, not only the one a spot-check would notice."""
+        target_a = _target(source="verified-aws-connection:conn-A")
+        await acquire_lease(session, target=target_a, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
+        await release_lease(
+            session,
+            canonical_target_key=target_a.canonical_key,
+            holder=_holder(ORG_A, "action-a"),
+            reason=ReleaseReason.COMPLETED,
+            terminal_evidence=EVIDENCE_TEXT,
+        )
+
+        fresh = PhysicalTarget(
+            provider="aws",
+            account_id="000000000000",
+            region="us-east-1",
+            resource_kind="eks-namespace",
+            resource_id="cluster-a/adp-gateway",
+            evidence=TargetEvidence(
+                source="verified-aws-connection:conn-B",
+                verified_at="2026-09-19T12:00:00+00:00",
+                detail="sts:AssumeRole readback for conn-B",
+            ),
+        )
+        assert fresh.canonical_key == target_a.canonical_key
+
+        await acquire_lease(session, target=fresh, holder=_holder(ORG_B, "action-b"), manifest_entry_id=ENTRY)
+        row = await _row(session, target_a.canonical_key)
+        assert row.evidence_detail == "sts:AssumeRole readback for conn-B"
+        assert row.evidence_verified_at.replace(tzinfo=UTC) == datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
+
+
 class TestTerminalVersusRetryable:
     """The two refusal classes stay distinct."""
 
@@ -809,17 +1102,22 @@ class TestTerminalVersusRetryable:
         first = await acquire_lease(session, target=target, holder=_holder(ORG_A, "action-a"), manifest_entry_id=ENTRY)
 
         conflict = await acquire_lease(session, target=target, holder=_holder(ORG_B, "action-b"), manifest_entry_id=ENTRY)
+        # The holder reconciles (it has standing), moving the revision...
         await reconcile_lease(
             session,
             canonical_target_key=target.canonical_key,
             expected_revision=first.lease.revision,
             terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_A, "action-a"),
         )
+        # ...and then presents its now-stale revision again. STALE, not CONFLICT:
+        # it still holds authority, it just lost a compare-and-set.
         stale = await reconcile_lease(
             session,
             canonical_target_key=target.canonical_key,
             expected_revision=first.lease.revision,
             terminal_evidence=EVIDENCE_TEXT,
+            holder=_holder(ORG_A, "action-a"),
         )
 
         assert conflict.kind is LeaseOutcomeKind.CONFLICT
