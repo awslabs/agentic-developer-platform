@@ -48,9 +48,44 @@ on:
 permissions:
   contents: read
 
+# RUNNER CHOICE (#5362). These three jobs ran on GitHub-hosted runners until the
+# org's Actions billing block stopped GitHub allocating one: every run failed in ~3s
+# with no steps and no log, so the contracts below were not enforced at all while the
+# checks showed red. They now use the in-cluster self-hosted pool, which the billing
+# block does not affect and which the rest of this repo already uses.
+#
+# None of these jobs needs AWS: the packaging script makes no `aws` call, the Python
+# suites read files and monkeypatch env vars, and both Terraform suites declare
+# `mock_provider "aws"` with `override_data` for aws_caller_identity. Verified locally
+# with every AWS_* variable stripped: 54 upgrade + 8 safety + 38 pricing tests and
+# 5 + 2 Terraform runs all passed with no credentials discoverable.
+#
+# Note what the self-hosted pool is NOT: credential-free. Runner pods carry an ambient
+# IRSA identity (their service account is annotated eks.amazonaws.com/role-arn), so the
+# pod-identity webhook injects AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE into every
+# container whether the job asks or not. Omitting configure-aws-credentials here does
+# not make these jobs credential-free. The test jobs therefore disable credential
+# discovery for their own processes; that is an offline test environment, not a sandbox
+# claim and not an assertion that the runner has no identity. A job that needs to
+# assert the ABSENCE of an ambient identity cannot use this pool — see the runner note
+# in orchestration-harness-ci.yml, and do not weaken such an assertion to move it.
 jobs:
   factory-lambda-build:
     runs-on: arc-runner-org
+    # Packaging only: npm ci, esbuild, and pip-installed manylinux wheels. No `aws`
+    # call in build-agent-factory-lambdas.sh or build-ingest-lambda.sh, and no Docker
+    # (ARC container jobs are still blocked by #4167). Region pinned and credential
+    # files neutralised so a future step cannot quietly start depending on the pool's
+    # ambient identity. The `defaults.run.shell` override used by the test jobs below
+    # is deliberately NOT applied here: this job's Node/Python toolchain comes from the
+    # setup actions, and a bare --noprofile --norc shell is a needless risk for a build
+    # that makes no AWS calls anyway.
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -63,6 +98,27 @@ jobs:
 
   upgrade-contracts:
     runs-on: arc-runner-org
+    # Pure unittest/pytest over scripts and YAML. Credential discovery disabled for the
+    # test processes so a pass here cannot depend on the pool's ambient identity.
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container credential provider treats presence
+        # of the variable as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -75,6 +131,29 @@ jobs:
 
   factory-before-github:
     runs-on: arc-runner-org
+    # The only automated `terraform test` for the lambda-gateway and runner-iam modules.
+    # These are IAM-shaped, so a silent regression is a security regression — which is
+    # exactly why leaving this check red-for-billing was the expensive part of #5362.
+    # Both suites mock the aws provider and override aws_caller_identity, so they make
+    # no AWS call; credential discovery is disabled as well so the assertions cannot be
+    # satisfied by the pool's ambient identity instead of the mocks.
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
     steps:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4

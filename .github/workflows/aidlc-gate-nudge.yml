@@ -13,6 +13,21 @@ on:
 jobs:
   nudge:
     name: Nudge stale AIDLC gates
+    # RUNNER CHOICE (#5362). Was ubuntu-latest, which the org's Actions billing block
+    # stopped GitHub allocating. This job's failure mode is quieter than the PR checks in
+    # that issue and worse for it: nobody watches a nightly cron, so the gate reminders
+    # simply stopped being posted while the workflow reported red. The in-cluster
+    # self-hosted pool is unaffected by the block, and every other scheduled workflow in
+    # this repo (8 of 8 before this change) already runs on it, either by the bare
+    # arc-runner-org label or via `vars.ARC_RUNNER_LABEL || 'arc-runner-org'`. A cron on
+    # this pool is the established pattern; this job was the only exception.
+    #
+    # Safe to move: a single actions/github-script step using the Actions-provided
+    # GITHUB_TOKEN via the GitHub API. No AWS call, no Docker (ARC container jobs are
+    # still blocked by #4167), no assertion about credentials being absent. No AWS
+    # credential-neutralising env is set here because this job runs no `run:` step for a
+    # shell override to apply to, and github-script makes no AWS calls — adding one
+    # would be inert config implying a guarantee it does not provide.
     runs-on: arc-runner-org
     permissions:
       issues: write

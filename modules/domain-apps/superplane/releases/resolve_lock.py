@@ -7,11 +7,24 @@ class it exists to prevent is a build that resolves a floating ref while a lock
 file sits next to it looking authoritative: pinning has to be the mechanism, not
 a document.
 
-It is also the fail-closed point. Building any of the three Superplane images
-needs read access to the upstream repository that ADP does not have, so
-``resolve_build_inputs`` raises ``SourceAccessUnresolved`` with the mechanism
-options named. A lane that cannot build must say why in one place, rather than
-failing later with a checkout error that reads like a transient CI fault.
+U22 (#5326) changed what this resolves TO. Before the transfer, building any of
+the three Superplane images needed read access to a repository ADP does not own,
+so every lane stopped here with ``SourceAccessUnresolved``. The source is now
+maintained in this repository under ``MAINTAINED_ROOT``, so the resolver hands
+back an in-repository build context and the lanes build from a clean ADP checkout
+— no upstream access, no PAT, no reference tree.
+
+Two facts are kept deliberately separate, because the issue requires it and
+because one field could only carry one of them:
+
+* ``source_path`` / ``SUPERPLANE_SOURCE_DIR`` — where the code being built lives
+  now. This is what a build reads.
+* ``origin_repository`` / ``origin_revision`` — the historical origin the files
+  were transferred from. Provenance for the image label; never a fetch target.
+
+The fail-closed path is retained rather than deleted: a lock that records an
+unresolved mechanism still stops with a named cause instead of a checkout error
+that reads like a transient CI fault.
 
 Usage from a workflow step::
 
@@ -33,9 +46,23 @@ import yaml
 
 LOCK_PATH = Path(__file__).with_name("superplane.lock.yaml")
 
+# Repository-relative module root of the maintained source transferred by U22 (#5326).
+# Build contexts are resolved under this, so "which directory does the build read" has one
+# answer in code rather than being re-derived in each of the three lanes.
+#
+# Note this stops at the MODULE root, not at `src/`: the lock's `source_path` values are
+# themselves `src/superplane-*`, matching the layout the components were transferred into,
+# so appending them here must not repeat the `src/` segment.
+MAINTAINED_ROOT = "modules/domain-apps/superplane"
+
 # Exit code for "this lane is correctly configured but is blocked by an unresolved
 # access grant". Distinct from 1 so a blocked lane is never mistaken for a broken
 # lock file. 78 is EX_CONFIG from sysexits.h.
+#
+# Retained after U22 resolved the grant for the three transferred components: the
+# fail-closed path is still the correct behavior for a lock that records an unresolved
+# mechanism, and removing it would mean a future component added in the same
+# not-yet-granted state would fail with a confusing error instead of a named one.
 EXIT_SOURCE_ACCESS_UNRESOLVED = 78
 
 
@@ -49,24 +76,31 @@ class SourceAccessUnresolved(Exception):
 
 @dataclass(frozen=True)
 class BuildInputs:
-    """Everything a build lane needs, all of it read from the lock."""
+    """Everything a build lane needs, all of it read from the lock.
+
+    After U22 (#5326) the source is maintained in this repository, so ``source_path`` is
+    an in-repository build context rather than a path inside a repository ADP cannot read.
+    ``origin_repository``/``origin_revision`` are retained as PROVENANCE — the historical
+    origin of the transferred files — and are deliberately named ``origin_*`` rather than
+    ``upstream_*`` so no caller can mistake them for a place to fetch from.
+    """
 
     image: str
-    upstream_repository: str
-    upstream_revision: str
-    upstream_path: str
+    origin_repository: str
+    origin_revision: str
+    source_path: str
     ecr_repository: str
 
     def __post_init__(self) -> None:
         values = {
             "image": (self.image, r"superplane-(api|controller|platform-monitor)"),
-            "repository": (
-                self.upstream_repository,
+            "origin repository": (
+                self.origin_repository,
                 r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
             ),
-            "revision": (self.upstream_revision, r"[0-9a-f]{40}"),
-            "path": (
-                self.upstream_path,
+            "origin revision": (self.origin_revision, r"[0-9a-f]{40}"),
+            "source path": (
+                self.source_path,
                 r"src/superplane-(api|controller|platform-monitor)",
             ),
             "ECR repository": (self.ecr_repository, r"adp-superplane-[a-z0-9-]+"),
@@ -75,7 +109,7 @@ class BuildInputs:
             if not re.fullmatch(pattern, value):
                 raise LockError(f"invalid build {name}")
         if (
-            self.upstream_path != "src/" + self.image
+            self.source_path != "src/" + self.image
             or self.ecr_repository != "adp-" + self.image
         ):
             raise LockError(
@@ -83,13 +117,18 @@ class BuildInputs:
             )
 
     def as_env_lines(self) -> str:
-        """Render for ``>> "$GITHUB_ENV"``."""
+        """Render for ``>> "$GITHUB_ENV"``.
+
+        ``SUPERPLANE_SOURCE_DIR`` is the repository-relative build context, so a lane
+        never has to reconstruct it from the module root and the component name.
+        """
         return "\n".join(
             [
                 f"SUPERPLANE_IMAGE={self.image}",
-                f"UPSTREAM_REPOSITORY={self.upstream_repository}",
-                f"UPSTREAM_REVISION={self.upstream_revision}",
-                f"UPSTREAM_PATH={self.upstream_path}",
+                f"ORIGIN_REPOSITORY={self.origin_repository}",
+                f"ORIGIN_REVISION={self.origin_revision}",
+                f"SOURCE_PATH={self.source_path}",
+                f"SUPERPLANE_SOURCE_DIR={MAINTAINED_ROOT}/{self.source_path}",
                 f"ECR_REPO={self.ecr_repository}",
             ]
         )
@@ -186,9 +225,9 @@ def resolve_build_inputs(image: str, path: Path | None = None) -> BuildInputs:
     if access.get("status") != "resolved":
         mechanisms = access.get("candidate_mechanisms") or []
         raise SourceAccessUnresolved(
-            f"Cannot build {image}: the upstream source-access mechanism is unresolved.\n"
-            f"The lock records upstream {data['upstream'].get('repository')} at "
-            f"{data['upstream']['revision']}, but ADP has no way to read it.\n"
+            f"Cannot build {image}: the source-access mechanism is unresolved.\n"
+            f"The lock records origin {data['upstream'].get('repository')} at "
+            f"{data['upstream']['revision']}, but records no way for ADP to obtain it.\n"
             "Ruled out: actions/checkout of the upstream repository (the hosted token is "
             "scoped to this repository), and the read-only reference snapshot (evidence, "
             "not a build input).\n"
@@ -196,12 +235,12 @@ def resolve_build_inputs(image: str, path: Path | None = None) -> BuildInputs:
             + "\n".join(f"  - {m}" for m in mechanisms)
         )
 
-    upstream = data["upstream"]
+    origin = data["upstream"]
     return BuildInputs(
         image=image,
-        upstream_repository=str(upstream.get("repository", "")),
-        upstream_revision=str(upstream["revision"]),
-        upstream_path=str(entry.get("upstream_path", "")),
+        origin_repository=str(origin.get("repository", "")),
+        origin_revision=str(origin["revision"]),
+        source_path=str(entry.get("source_path", "")),
         ecr_repository=str(entry.get("ecr_repository", "")),
     )
 

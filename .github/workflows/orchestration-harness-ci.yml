@@ -26,8 +26,9 @@ on:
       - '.github/workflows/orchestration-harness-ci.yml'
 
 # No `permissions: id-token` and no AWS credential step anywhere in this file.
-# The suite must pass with no credentials available; if a test ever needs one,
-# it belongs in orchestration-live-tests.yml instead.
+# The self-hosted runner has ambient IRSA, so normal AWS credential discovery is
+# disabled for every test process below. If a test ever needs AWS, it belongs in
+# orchestration-live-tests.yml instead.
 permissions:
   contents: read
 
@@ -38,8 +39,29 @@ concurrency:
 jobs:
   harness-tests:
     name: Qualification harness unit tests (offline)
+    # Owner direction: every Actions job uses the in-cluster self-hosted pool. The pool's
+    # ambient identity is not a sandbox boundary, so this offline lane disables normal AWS
+    # credential discovery for its test processes and verifies the effective environment.
     runs-on: arc-runner-org
     timeout-minutes: 10
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container provider treats presence as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
 
     steps:
       - name: Checkout
@@ -49,6 +71,22 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+
+      - name: Verify the test process has no AWS credentials
+        run: |
+          FOUND=""
+          for var in AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ACCESS_KEY_ID \
+                     AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+                     AWS_CONTAINER_CREDENTIALS_FULL_URI \
+                     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI; do
+            if [ -n "${!var:-}" ]; then
+              FOUND="${FOUND} ${var}"
+            fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "::error::AWS credentials are present in the offline test process (set:${FOUND})."
+            exit 1
+          fi
 
       # pytest only. The harness is standard-library-only by design: repo-root
       # tests/ has no requirements file, and the offline suite must not need

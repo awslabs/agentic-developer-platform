@@ -1,6 +1,7 @@
 """The build lanes declare their source mechanism — Issue #5041 (U2), EPIC #4910.
+Updated for the source-ownership transfer — Issue #5326 (U22).
 
-Two forbidden ways to obtain the pinned source, each with its own consequence:
+Two forbidden ways to obtain the source, each with its own consequence:
 
   * ``actions/checkout`` of ``aws-innovate/AISuperPlane`` — the hosted agent token is scoped
     to *this* repository, so the workflow fails for everyone. Worse than failing: it fails
@@ -10,8 +11,17 @@ Two forbidden ways to obtain the pinned source, each with its own consequence:
     that is read-only evidence at upstream ``5d543c95``. Building from it would ship
     evidence as a product and silently pin a revision that is already stale.
 
-So the lanes must instead **state** which mechanism they assume and record it as unresolved.
-That choice is an access grant, not a planning decision, and this story does not make it.
+Both remain forbidden after U22, and for a sharper reason than before: the transfer put the
+source in this repository, so a lane reaching for either one is not merely unauthorized, it
+is reaching past the copy ADP maintains to a copy nobody maintains. The reference snapshot in
+particular must not become a second writable runtime tree.
+
+What changed is the positive obligation. Before the transfer, the lanes had to **state** an
+assumed mechanism and record it as unresolved, because choosing one was an access grant this
+repo could not make. Now the lock records the resolved mechanism — a transferred source
+location inside ADP's control — and the lanes must resolve their build context from it rather
+than hardcoding a path. So the tests below check the same two prohibitions, plus that the
+declared source is the maintained in-repository tree.
 
 ## Why these tests check usage rather than mentions
 
@@ -50,6 +60,14 @@ WORKFLOWS = sorted(
 UPSTREAM_REPO_SLUG = "aws-innovate/AISuperPlane"
 SNAPSHOT_PREFIX = "modules/domain-apps/ai-super-plane/reference/"
 
+# Where U22 (#5326) placed the maintained source. Build contexts must be under this.
+MAINTAINED_SRC_ROOT = "modules/domain-apps/superplane/src"
+COMPONENTS = (
+    "superplane-api",
+    "superplane-controller",
+    "superplane-platform-monitor",
+)
+
 
 def _non_comment_lines(path: Path) -> list[str]:
     """Lines with full-line comments removed.
@@ -62,6 +80,25 @@ def _non_comment_lines(path: Path) -> list[str]:
         for ln in path.read_text(encoding="utf-8").splitlines()
         if not ln.strip().startswith("#")
     ]
+
+
+def _step_bodies(path: Path) -> list[str]:
+    """Every step's executable content: `run` scripts plus `with:` inputs.
+
+    Deliberately excludes `on.push.paths` and step names, so a check for "does this lane
+    hardcode a path" tests what the lane *executes* rather than what it documents or watches.
+    """
+    parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+    bodies: list[str] = []
+    for job in (parsed.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            if step.get("run"):
+                bodies.append(str(step["run"]))
+            for value in (step.get("with") or {}).values():
+                bodies.append(str(value))
+    return bodies
 
 
 def _checkout_steps(path: Path) -> list[dict]:
@@ -139,7 +176,7 @@ class TestSnapshotIsNotABuildInput:
 
 @pytest.mark.parametrize("workflow", WORKFLOWS, ids=lambda p: p.name)
 class TestSourceMechanismIsStated:
-    """The positive obligation: say which mechanism is assumed, and that it is unresolved."""
+    """The positive obligation: say where the source comes from, and get it from the lock."""
 
     def test_workflow_explains_why_the_upstream_checkout_is_ruled_out(
         self, workflow: Path
@@ -158,50 +195,117 @@ class TestSourceMechanismIsStated:
             f"{workflow.name} does not reference the lock's source_access"
         )
 
-    def test_workflow_has_an_explicit_source_acquisition_step(
-        self, workflow: Path
-    ) -> None:
-        """The one place source would be obtained is named, so it cannot be added ad hoc."""
+    def test_workflow_has_an_explicit_source_step(self, workflow: Path) -> None:
+        """The one place source is established is named, so it cannot be added ad hoc.
+
+        Before U22 this step was the (unwritten) upstream fetch. After the transfer there is
+        nothing to fetch — ``actions/checkout`` of this repository already brought the source
+        — so the named step *verifies* that the directory the lock points at is really here.
+        The obligation is unchanged: exactly one step in the lane is responsible for source,
+        so a second one cannot appear quietly further down.
+        """
         parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
         names = [
             str(s.get("name", ""))
             for job in parsed["jobs"].values()
             for s in job.get("steps") or []
         ]
-        assert any("pinned upstream source" in n.lower() for n in names), (
-            f"{workflow.name} has no declared source-acquisition step"
+        assert any("maintained source" in n.lower() for n in names), (
+            f"{workflow.name} has no declared maintained-source step"
+        )
+
+    def test_no_step_hardcodes_a_component_source_path(self, workflow: Path) -> None:
+        """The build context must come from the resolver, not be spelled out in a step.
+
+        A hardcoded path would build correctly today and silently keep building the old
+        directory the day the lock moves a component — the same "pinning is a document, not a
+        mechanism" failure the resolver exists to prevent, one level down.
+
+        Scoped to step bodies on purpose. The `on.push.paths` filter *must* name the
+        directory: that is how a change to the maintained source triggers a rebuild at all,
+        and GitHub does not evaluate expressions there, so it cannot be resolved from the
+        lock. Blanket-matching the whole file would force that filter to be deleted, which
+        would trade a cosmetic win for a lane that no longer notices its own source changing.
+        """
+        for body in _step_bodies(workflow):
+            for component in COMPONENTS:
+                assert f"{MAINTAINED_SRC_ROOT}/{component}" not in body, (
+                    f"{workflow.name} hardcodes a source path in a step instead of "
+                    f"resolving it: {body.strip()[:120]!r}"
+                )
+
+    def test_workflow_reads_the_resolved_build_context(self, workflow: Path) -> None:
+        """Positive counterpart: the lane must actually use what the resolver handed back."""
+        text = workflow.read_text(encoding="utf-8")
+        assert "SUPERPLANE_SOURCE_DIR" in text, (
+            f"{workflow.name} never reads the resolved build context"
         )
 
 
-class TestLockRecordsTheMechanismAsUnresolved:
-    def test_lock_states_the_mechanism_is_unresolved(self) -> None:
-        lock = yaml.safe_load(
+class TestLockRecordsTheTransferredMechanism:
+    """After U22 the mechanism is resolved — and resolved to a location ADP maintains."""
+
+    @staticmethod
+    def _lock() -> dict:
+        return yaml.safe_load(
             (MODULE_ROOT / "releases" / "superplane.lock.yaml").read_text(
                 encoding="utf-8"
             )
         )
-        assert lock["source_access"]["status"] == "unresolved"
 
-    def test_lock_does_not_choose_a_mechanism(self) -> None:
-        """Recording candidates is required; picking one would be making the access grant."""
-        lock = yaml.safe_load(
-            (MODULE_ROOT / "releases" / "superplane.lock.yaml").read_text(
-                encoding="utf-8"
-            )
-        )
-        access = lock["source_access"]
-        assert "chosen_mechanism" not in access
-        assert len(access["candidate_mechanisms"]) >= 2
+    def test_lock_states_the_mechanism_is_resolved(self) -> None:
+        assert self._lock()["source_access"]["status"] == "resolved"
 
-    def test_lock_names_what_the_unresolved_grant_blocks(self) -> None:
-        lock = yaml.safe_load(
-            (MODULE_ROOT / "releases" / "superplane.lock.yaml").read_text(
-                encoding="utf-8"
+    def test_lock_names_the_resolved_mechanism_and_who_resolved_it(self) -> None:
+        """A resolved status with no named mechanism would be a claim without a subject."""
+        access = self._lock()["source_access"]
+        assert access["mechanism"], "the lock does not say which mechanism was adopted"
+        assert access["resolved_by"]["issue"] == 5326
+
+    def test_lock_still_records_what_was_ruled_out(self) -> None:
+        """Kept after resolution: these are still the wrong ways to obtain this source.
+
+        Deleting them once the grant question went away would lose the reason a future
+        reader should not "simplify" the lanes by checking out upstream.
+        """
+        ruled_out = self._lock()["source_access"]["ruled_out"]
+        mechanisms = " ".join(str(entry["mechanism"]) for entry in ruled_out).lower()
+        assert "checkout" in mechanisms
+        assert "snapshot" in mechanisms
+
+    def test_lock_records_the_maintained_source_location(self) -> None:
+        maintained = self._lock()["maintained_source"]
+        assert maintained["root"] == MAINTAINED_SRC_ROOT
+        assert maintained["transferred_by"]["issue"] == 5326
+
+    def test_every_component_source_path_is_under_the_maintained_root(self) -> None:
+        """The lock must not point a build anywhere except the tree ADP maintains."""
+        lock = self._lock()
+        for component, entry in (lock["pending_images"] or {}).items():
+            assert entry["source_path"] == f"src/{component}", (
+                f"{component} does not resolve to its maintained directory: {entry!r}"
             )
+            assert (MODULE_ROOT / entry["source_path"]).is_dir(), (
+                f"{component} names {entry['source_path']!r}, which does not exist"
+            )
+
+    def test_origin_provenance_is_recorded_separately_from_maintained_source(
+        self,
+    ) -> None:
+        """The two facts the issue requires be kept apart.
+
+        One "revision" field could only carry one of them, and whichever it carried, a reader
+        would lose the ability to tell whether the maintained files have changed since the
+        transfer.
+        """
+        lock = self._lock()
+        assert lock["upstream"]["repository"].endswith("AISuperPlane")
+        assert re.fullmatch(r"[0-9a-f]{40}", str(lock["upstream"]["revision"]))
+        assert "role" in lock["upstream"], (
+            "upstream must say it is provenance, not a build input"
         )
-        assert lock["source_access"]["blocks"], (
-            "the lock does not say what the missing grant blocks"
-        )
+        assert "not a build input" in lock["upstream"]["role"]
+        assert lock["maintained_source"]["repository"] != lock["upstream"]["repository"]
 
     def test_snapshot_is_not_referenced_as_a_build_input_in_the_lock(self) -> None:
         """The lock may explain the snapshot is excluded; it may not point a build at it."""

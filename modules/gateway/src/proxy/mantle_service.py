@@ -40,7 +40,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -60,6 +60,9 @@ from src.shared.database import get_session_factory
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.schemas.auth import TokenContext
 from src.usage.service import UsageService
+
+if TYPE_CHECKING:  # Imported lazily at call time to keep the proxy import graph acyclic.
+    from src.orchestration.provider_quotes import TrustedUsage
 
 logger = logging.getLogger(__name__)
 
@@ -622,9 +625,24 @@ class MantlePassthroughService:
             return {}
         # Keep invalid and absent counters as evidence; policy validation, not
         # int() coercion, decides whether they can be billed.
+        #
+        # Issue #5226: output_tokens_details is retained for the same reason. It
+        # is not priced separately (reasoning bills as output, already inside
+        # output_tokens), but it is the evidence that shows whether the reported
+        # counts agree with each other — reasoning_tokens exceeding output_tokens
+        # means they do not, and the quote contract must not release a
+        # reservation against totals that only agree after clamping. Dropping it
+        # here would make that conflict invisible downstream.
         return {
             name: found[name]
-            for name in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens_details")
+            for name in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "input_tokens_details",
+                "output_tokens_details",
+            )
             if name in found
         }
 
@@ -673,6 +691,27 @@ class MantlePassthroughService:
     # ------------------------------------------------------------------
     # Metering
     # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _trusted_usage(usage: dict[str, Any]) -> TrustedUsage:
+        """Ask the route's own quote adapter whether this usage can settle a hold.
+
+        Routed through the registry rather than calling the Responses adapter
+        directly so the answer always comes from whichever adapter actually
+        issued the bound for this endpoint. If no adapter owns the route there is
+        no reservation to protect, so ordinary metering is unaffected.
+        """
+        from src.orchestration.provider_quotes import TrustedUsage, adapter_for
+
+        adapter = adapter_for(MANTLE_RESPONSES_PATH)
+        if adapter is None:
+            return TrustedUsage(input_tokens=0, output_tokens=0, known=True)
+        try:
+            return await adapter.reconcile({"usage": dict(usage)})
+        except Exception:
+            # A failure to establish trust is not a grant of it.
+            logger.exception("Responses usage trust check failed; treating usage as unknown")
+            return TrustedUsage.unknown("usage trust check failed")
 
     async def _log_usage(
         self,
@@ -741,6 +780,22 @@ class MantlePassthroughService:
         output_tokens = decision.usage["output_tokens"] if decision else 0
         cost_usd = decision.ledger_cost if decision else Decimal("0")
 
+        # Issue #5226: settling a policy reservation needs a STRICTER test than
+        # "a decision exists". `normalize_usage` is deliberately forgiving — it
+        # bounds contradictory counters (cached > input) and records the conflict
+        # as `valid=False` rather than refusing, because the usage_logs row is
+        # worth keeping either way. But the quote contract may not release
+        # reserved headroom on counters it cannot trust: a partly-invented total
+        # would replace a real hold with an understated charge. So the adapter
+        # that issued the bound decides whether this usage is settleable, and an
+        # untrusted block keeps the hold exactly as an absent one does.
+        trusted = await self._trusted_usage(usage)
+        if decision is not None and not trusted.known:
+            logger.warning(
+                "Mantle usage rejected by the Responses quote contract; retaining reservation",
+                extra={"request_id": request_id, "model": model, "reason": trusted.reason},
+            )
+
         await reconcile_budget_reservation(
             context=context,
             request_id=request_id,
@@ -748,7 +803,7 @@ class MantlePassthroughService:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             actual_cost_usd=cost_usd,
-            usage_known=decision is not None,
+            usage_known=decision is not None and trusted.known,
         )
 
         # Budget & Spend reads budget_usage, not usage_logs. Only the S3 event

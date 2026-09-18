@@ -542,12 +542,25 @@ class AnthropicTextQuoteAdapter:
 # means adding an adapter that can bound it, which is the whole point of the
 # boundary. #5226 registers the Responses adapter here; #5227 the media/history/
 # server-tool capabilities.
-_ADAPTERS: tuple[ProviderQuoteAdapter, ...] = (AnthropicTextQuoteAdapter(),)
+#
+# Built lazily and cached: the Responses adapter lives in its own module and
+# imports from this one, so constructing it at import time here would be a
+# circular import. Routing is a per-request read, so the tuple is built once.
+_ADAPTERS: tuple[ProviderQuoteAdapter, ...] | None = None
+
+
+def _adapters() -> tuple[ProviderQuoteAdapter, ...]:
+    global _ADAPTERS
+    if _ADAPTERS is None:
+        from src.orchestration.responses_quotes import OpenAIResponsesQuoteAdapter
+
+        _ADAPTERS = (AnthropicTextQuoteAdapter(), OpenAIResponsesQuoteAdapter())
+    return _ADAPTERS
 
 
 def adapter_for(path: str) -> ProviderQuoteAdapter | None:
     """The adapter owning this route, or ``None`` — never a fallback estimator."""
-    for adapter in _ADAPTERS:
+    for adapter in _adapters():
         if adapter.handles(path):
             return adapter
     return None

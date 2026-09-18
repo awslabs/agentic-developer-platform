@@ -18,20 +18,13 @@ name: Superplane Infra Plan
 # renamed directory or a file that silently fails to load all surface as a failure instead
 # of a green tick over nothing.
 #
-# DIFFERENCE 1 — TWO JOBS, AND ONE OF THEM HAS NO AWS IDENTITY.
+# DIFFERENCE 1 — OFFLINE TESTS AND A SEPARATE CREDENTIALED PLAN.
 #
-# `tests` runs without credentials. This is not cosmetic: every one of the 34 runs uses
-# `mock_provider "aws"` plus file-level `override_data`, so the suite needs no account, and
-# I verified it — 34 passed with every AWS_* variable stripped,
-# AWS_EC2_METADATA_DISABLED=true and both credential files pointed at /dev/null.
-#
-# Every job in this repository uses `arc-runner-org`, whose pods normally carry an ambient
-# IRSA identity. The `tests` job explicitly overrides all injected AWS credential sources,
-# disables instance metadata, and points shared configuration files at /dev/null. The
-# guard at the end verifies that the injected variables remain empty.
-#
-# The `plan` job DOES need credentials — a plan reads the platform remote state and the real
-# provider — so it stays on `arc-runner-org`, matching cyber-infra-plan.yml.
+# Both jobs use the existing self-hosted arc-runner-org pool, per owner instruction.
+# The tests use mock_provider "aws" and override_data. Their job-local environment
+# disables normal AWS credential discovery, including IRSA, shared files and metadata.
+# The runner still has its platform identity; this is not a host isolation boundary.
+# The separate plan job retains its existing credentials to read real remote state.
 #
 # DIFFERENCE 2 — THE TEST JOB GATES THE PLAN JOB.
 #
@@ -69,24 +62,30 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # The credential-free half: validations, formatting, and every .tftest.hcl file.
+  # Offline validations, formatting, and every .tftest.hcl file.
   # ---------------------------------------------------------------------------
   tests:
     name: Terraform tests (no AWS)
     runs-on: arc-runner-org
-    # Neutralize the ARC pod's ambient IRSA identity. Keep this list aligned with the
-    # credential guard at the end of the job.
+    # Tests use mocks. Disable normal AWS credential discovery in this job only;
+    # the ARC runner retains its platform identity and is not a security sandbox.
     env:
-      AWS_ROLE_ARN: ''
-      AWS_WEB_IDENTITY_TOKEN_FILE: ''
-      AWS_ACCESS_KEY_ID: ''
-      AWS_SECRET_ACCESS_KEY: ''
-      AWS_SESSION_TOKEN: ''
-      AWS_CONTAINER_CREDENTIALS_FULL_URI: ''
-      AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: ''
       AWS_EC2_METADATA_DISABLED: 'true'
-      AWS_SHARED_CREDENTIALS_FILE: /dev/null
       AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container provider treats presence as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
     # No `id-token` permission: this job must not be able to assume an AWS role.
     permissions:
       contents: read
@@ -153,10 +152,7 @@ jobs:
           echo "All ${EXPECTED} test files executed."
 
       - name: Verify no AWS credentials were configured
-        # A guard on this job's premise. The whole suite is mock-driven and needs no
-        # account. The job-level environment must override the ARC pod's ambient IRSA
-        # variables, and no step may configure replacement credentials. If either changes,
-        # fail instead of quietly credentialing the test job.
+        # Verify the test process environment; the plan job keeps its own identity.
         run: |
           set -euo pipefail
           FOUND=""
@@ -179,7 +175,7 @@ jobs:
         run: |
           {
             echo "## Superplane Terraform tests"
-            echo "- **Runner**: arc-runner-org (ambient AWS identity stripped)"
+            echo "- **Runner**: arc-runner-org (offline test environment)"
             echo "- **Test files**: $(find ${{ env.TF_WORKING_DIR }}/tests -name '*.tftest.hcl' | wc -l | tr -d ' ')"
             echo "- **Status**: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"

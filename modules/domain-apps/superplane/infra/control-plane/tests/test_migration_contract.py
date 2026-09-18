@@ -425,21 +425,79 @@ class TestChainOwnership:
 
 
 class TestUnavailableInputsAreRefusedByName:
-    def test_the_shipped_state_is_blocked_on_the_chain(self) -> None:
-        result = _contract()
-        assert result.returncode == 1
-        assert "no single head" in result.stdout
-        assert "5045" in result.stdout and "U13" in result.stdout
-        assert "Nothing was changed" in result.stdout
+    def test_the_shipped_state_is_still_refused_after_the_chain_repair(self) -> None:
+        """The shipped lock must still refuse — but now for the RIGHT reason.
 
-    def test_the_refusal_reports_the_observed_duplicates(self) -> None:
-        """The count comes from the lock, so the message describes the real chain.
+        UPDATED BY U13 (#5045). These two tests previously asserted the refusal named the
+        multi-headed chain and quoted "revision '006' declared by 3 files". The chain is
+        repaired, so that refusal is gone and asserting it would pin a defect that no
+        longer exists.
 
-        A generic "multiple heads" refusal would be true but would not tell the reader what
-        #5045 has to fix.
+        What must NOT change is that the shipped state still refuses. `single_head` is now
+        true, but `schema.status` is still `unverified` — no `alembic upgrade head` has run
+        against a real database, because the lane that would do it is offline by design and
+        the live acceptance is deferred behind an unresolved account and database access.
+        An unverified head is the dangerous case the checker exists for: the first thing a
+        bad head does is apply half of itself.
         """
         result = _contract()
-        assert "'006'" in result.stdout and "4 files" in result.stdout
+        assert result.returncode == 1
+        assert "verified" in result.stdout
+        assert "half of itself" in result.stdout, (
+            "the refusal should say why an unverified head is dangerous, not merely that "
+            "a field has the wrong value"
+        )
+        assert "Nothing was changed" in result.stdout
+
+    def test_the_repaired_chain_no_longer_refuses_on_multiple_heads(self) -> None:
+        """The chain-level refusal must be gone, not merely reworded.
+
+        Complements the test above: that one asserts the surviving refusal, this one
+        asserts the retired one. Together they pin the exact transition #5045 made — the
+        blocker moved from "the graph cannot resolve a target" to "the target has not been
+        verified against a real database".
+        """
+        result = _contract()
+        assert "no single head" not in result.stdout
+        assert "declared by 3 files" not in result.stdout
+
+    def test_the_reported_counts_match_the_maintained_chain(self) -> None:
+        """The number in the refusal must be countable in the tree, not just plausible.
+
+        Added by U22 (#5326), which is the first point at which this was checkable: before
+        the source transfer the chain lived in a repository ADP could not read, so the lock's
+        count could only be taken on faith. It was wrong — recorded as four files declaring
+        ``'006'`` where three do. The four ``006_*.py`` filenames are real, but two of them
+        declare their full descriptive ids and only three collide on the bare ``'006'``.
+
+        That mattered because this count is rendered into the refusal an operator reads to
+        learn what U13 must repair, so an inflated number sends them hunting a fourth
+        conflicting file that does not exist. Deriving the assertion from the files means the
+        lock and the chain cannot drift apart again — including after U13 repairs it.
+        """
+        versions = MODULE_ROOT / "src" / "superplane-api" / "alembic" / "versions"
+        assert versions.is_dir(), (
+            "the maintained migration chain is missing; U22 transferred it here"
+        )
+        declared: dict[str, int] = {}
+        for path in sorted(versions.glob("*.py")):
+            match = re.search(
+                r'^revision(?:\s*:\s*str)?\s*=\s*["\']([^"\']+)["\']',
+                path.read_text(encoding="utf-8"),
+                re.M,
+            )
+            assert match, f"{path.name} declares no revision id"
+            declared[match.group(1)] = declared.get(match.group(1), 0) + 1
+
+        actual = {rid: n for rid, n in declared.items() if n > 1}
+        observed = yaml.safe_load(LOCK_FILE.read_text(encoding="utf-8"))["schema"][
+            "observed"
+        ]
+        assert observed["duplicate_revision_ids"] == actual, (
+            f"the lock records {observed['duplicate_revision_ids']} but the chain has "
+            f"{actual}"
+        )
+        assert observed["version_files"] == len(list(versions.glob("*.py")))
 
     def test_an_unverified_chain_is_refused_even_when_single_headed(
         self, tmp_path: Path
