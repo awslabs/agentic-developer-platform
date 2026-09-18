@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Add parent directories to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -312,6 +314,88 @@ class TestSuccessfulPublish:
         result = handler(event, None)
 
         assert result["statusCode"] == 500
+
+
+class TestIndependentCodexReviewerDispatch:
+    @pytest.mark.parametrize(("assignment_recorded", "expected_status"), [(True, 202), (False, 500)])
+    @patch("handler._capture_invocation_event")
+    @patch("handler._pr_marker_text_with_issue_fallback", return_value=("", True))
+    @patch("handler.determine_correlation")
+    @patch("handler._check_min_author_association", return_value=None)
+    @patch("handler._get_events_log")
+    @patch("common.codex_review_dispatcher.publish", return_value="codex-sqs-1")
+    @patch("handler._get_rate_limiter")
+    @patch("handler._get_identity_resolver")
+    @patch("handler._get_signature")
+    def test_pr_opened_bypasses_the_claude_persona_queue(
+        self,
+        mock_sig,
+        mock_resolver,
+        mock_rate,
+        mock_codex_publish,
+        mock_log,
+        _mock_assoc,
+        mock_correlation,
+        _mock_marker,
+        mock_capture,
+        monkeypatch,
+        assignment_recorded,
+        expected_status,
+    ):
+        monkeypatch.setenv("CODEX_REVIEWER_ENABLED", "true")
+        mock_sig.return_value.verify_github_signature.return_value = True
+        mock_resolver.return_value.resolve.return_value = (
+            _mock_resolved_identity("acme", "u_bob"),
+            "ok",
+        )
+        mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
+        mock_log.return_value.log_event = MagicMock()
+        mock_capture.return_value = assignment_recorded
+        mock_correlation.return_value = {
+            "correlation_id": "corr-1",
+            "root_human_id": "u_bob",
+            "parent_invocation_id": "developer-run",
+            "chain_depth": 1,
+            "is_human_rooted": True,
+        }
+
+        from handler import handler
+
+        payload = {
+            "action": "opened",
+            "pull_request": {
+                "number": 6000,
+                "title": "Feature",
+                "body": "",
+                "html_url": "https://github.com/acme/repo/pull/6000",
+                "head": {
+                    "sha": "a" * 40,
+                    "ref": "agent/issue-5054",
+                    "repo": {"full_name": "acme/repo"},
+                },
+                "base": {"ref": "main"},
+            },
+            "repository": {"full_name": "acme/repo"},
+            "sender": {"login": "bob", "id": 1001, "type": "User"},
+            "installation": {"id": 99887766},
+        }
+        event = _make_event("pull_request", payload)
+        event["headers"]["x-github-delivery"] = "delivery-1"
+        result = handler(event, None)
+
+        assert result["statusCode"] == expected_status
+        if not assignment_recorded:
+            mock_codex_publish.assert_not_called()
+            return
+        body = json.loads(result["body"])
+        assert body["reviewer"] == "agent-codex-reviewer"
+        envelope = mock_codex_publish.call_args[0][0]
+        assert envelope["kind"] == "codex_pr_review"
+        assert envelope["message_id"] == "delivery-1"
+        assert envelope["pull_request"]["number"] == 6000
+        assert envelope["pull_request"]["issue_number"] == 5054
+        assert envelope["pull_request"]["expected_head_sha"] == "a" * 40
+        assert mock_capture.call_args.kwargs["persona"] == "codex-reviewer"
 
 
 class TestSecretResolution:

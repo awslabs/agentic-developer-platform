@@ -1,0 +1,25 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - |
+        if [ -z "${ADP_SOURCE_SHA:-}" ]; then
+          echo "ERROR: ADP_SOURCE_SHA is required" >&2
+          exit 1
+        fi
+      - ECR_REPO="adp-codex-reviewer"
+      - IMAGE_TAG="${IMAGE_TAG:-latest}"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+  build:
+    commands:
+      - docker build --pull
+          -f modules/agent-factory/codex-reviewer/Dockerfile
+          -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+          -t "$REGISTRY/$ECR_REPO:latest"
+          .
+      - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+      - 'if [ "${PUBLISH_LATEST:-true}" = true ]; then docker push "$REGISTRY/$ECR_REPO:latest"; fi'
+  post_build:
+    commands:
+      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (latest publication controlled by PUBLISH_LATEST)"

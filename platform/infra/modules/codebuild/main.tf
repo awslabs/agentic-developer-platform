@@ -17,6 +17,7 @@ locals {
     "arc-runner"     = { buildspec = "codebuild/bs-arc-runner.yml" }
     "cyber-worker"   = { buildspec = "codebuild/bs-cyber-worker.yml" }
     "agent-runtime"  = { buildspec = "codebuild/bs-agent-runtime.yml", build_timeout = 90, compute_type = "BUILD_GENERAL1_LARGE" }
+    "codex-reviewer" = { buildspec = "codebuild/bs-codex-reviewer.yml", build_timeout = 90, compute_type = "BUILD_GENERAL1_LARGE" }
     "pyjwt-layer"    = { buildspec = "codebuild/bs-pyjwt-layer.yml" }
     "psycopg2-layer" = { buildspec = "codebuild/bs-psycopg2-layer.yml" }
     "grype-scan"     = { buildspec = "codebuild/bs-grype-scan.yml", build_timeout = 90 }

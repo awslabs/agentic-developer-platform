@@ -53,7 +53,10 @@ resource "aws_iam_policy" "lambda_sqs" {
           "sqs:GetQueueUrl",
           "sqs:GetQueueAttributes"
         ]
-        Resource = aws_sqs_queue.agent_submit.arn
+        Resource = [
+          aws_sqs_queue.agent_submit.arn,
+          aws_sqs_queue.codex_review.arn,
+        ]
       }
     ]
   })

@@ -104,6 +104,7 @@ variable "ecr_repositories" {
   default = [
     "adp-gateway",
     "adp-agent-runtime",
+    "adp-codex-reviewer",
     "adp-skill-registry",
     "adp-agent-gateway",
   ]

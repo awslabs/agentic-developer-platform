@@ -544,6 +544,19 @@ async def resolve_installation(
 
 
 async def _revalidate_github_binding(request: Request, binding, permissions=None, authorized_action=None) -> None:
+    codex_binding = getattr(request.state, "codex_reviewer_binding", None)
+    if codex_binding is not None:
+        from src.internal.codex_reviewer_identity import verify_codex_reviewer_broker
+
+        await verify_codex_reviewer_broker(request)
+        if (
+            getattr(request.state, "codex_reviewer_binding", None) != codex_binding
+            or request.state.agent_installation_binding != binding
+            or getattr(request.state, "agent_authorized_action", None) is not authorized_action
+            or (permissions is not None and request.state.agent_github_permissions != permissions)
+        ):
+            raise HTTPException(404, "not found")
+        return
     if getattr(request.state, "agent_broker_grant", None) is None:
         return  # Legacy rollout cohort, not a protected worker.
     from src.agentauth.broker_identity import verify_broker_worker

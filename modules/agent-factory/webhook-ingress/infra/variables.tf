@@ -38,6 +38,40 @@ variable "sqs_message_retention" {
   default     = 345600 # 4 days
 }
 
+# -----------------------------------------------------------------------------
+# Independent Codex SDK pull-request reviewer
+# -----------------------------------------------------------------------------
+
+variable "codex_reviewer_enabled" {
+  description = "Route eligible pull_request events to the independent Codex SDK reviewer queue."
+  type        = bool
+  default     = false
+}
+
+variable "codex_reviewer_image" {
+  description = "Standalone agent-codex-reviewer image. Empty selects adp-codex-reviewer:latest in this account."
+  type        = string
+  default     = ""
+}
+
+variable "codex_reviewer_model" {
+  description = "Gateway model identifier used by the independent Codex reviewer."
+  type        = string
+  default     = "openai.gpt-5.6-sol"
+}
+
+variable "codex_reviewer_apply_fixes" {
+  description = "Allow Codex to make bounded mechanical fixes before the controller pushes them to the PR branch."
+  type        = bool
+  default     = true
+}
+
+variable "codex_reviewer_merge_enabled" {
+  description = "Allow the deterministic Codex reviewer controller to merge a current, approved, green PR."
+  type        = bool
+  default     = false
+}
+
 variable "rate_limit_per_window" {
   description = "Max webhook dispatches per 5-min window per tenant. Bump in tfvars to drain a backlog without code change. Default 50 = original behavior."
   type        = number

@@ -151,7 +151,11 @@ async def verify_internal_or_irsa(
             )
 
         request.state.token_context = token_context
-        if (
+        if token_context.user_id == "agent-codex-reviewer" and request.url.path == "/internal/v1/github-installation-token":
+            from src.internal.codex_reviewer_identity import verify_codex_reviewer_broker
+
+            await verify_codex_reviewer_broker(request)
+        elif (
             getattr(token_context, "requires_run_identity", False)
             or (os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and token_context.scope == "internal")
             or request.headers.get("X-Adp-Run-Credential")

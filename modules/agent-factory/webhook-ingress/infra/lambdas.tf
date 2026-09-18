@@ -93,6 +93,8 @@ resource "aws_lambda_function" "github_webhook" {
     variables = {
       ENVIRONMENT                   = var.environment
       SUBMIT_QUEUE_URL              = aws_sqs_queue.agent_submit.url
+      CODEX_REVIEW_QUEUE_URL        = aws_sqs_queue.codex_review.url
+      CODEX_REVIEWER_ENABLED        = tostring(var.codex_reviewer_enabled)
       IDENTITY_INDEX_TABLE          = var.identity_index_table_name
       USER_IDENTITY_INDEX_TABLE     = "adp-${var.environment}-user-identity-index"
       EVENTS_TABLE                  = aws_dynamodb_table.webhook_events.name

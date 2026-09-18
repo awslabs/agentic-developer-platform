@@ -1,0 +1,8 @@
+# Standalone agent-codex-reviewer defaults. The SDK supplies the per-run
+# working directory, sandbox and local SigV4 proxy URL.
+model = "openai.gpt-5.6-sol"
+approval_policy = "never"
+web_search = "disabled"
+
+[sandbox_workspace_write]
+network_access = false
