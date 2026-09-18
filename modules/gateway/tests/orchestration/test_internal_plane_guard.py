@@ -395,6 +395,28 @@ class TestOrchestrationRouterIsOperatorPlane:
             # and reading it under a spend-read permission is the escalation the
             # sibling guard exists to stop.
             ("/orchestration/flows/{flow_id}", "GET"): "Permission.USAGE_READ",
+            # Issue #5145: the delivery ledger's read model — per node and cycle,
+            # the phase, whether it is moving, the next scheduled check and the
+            # typed block naming who must act. USAGE_READ, because this answers
+            # "why is delivery waiting" for the operator watching it, and making
+            # *progress visibility* require approval authority would push people
+            # back to reading logs, which is the problem the ledger exists to fix.
+            #
+            # It surfaces no acceptance record, and that is enforced rather than
+            # asserted: this route deliberately does NOT serve
+            # `accepted_plan_version`, even though the ledger row carries it. An
+            # earlier draft did, and the sibling guard below caught it — which is
+            # the guard working exactly as intended, because "which approved plan
+            # authorized this" is the approval record. The response also carries no
+            # `actor_id`, `actor_role`, `actor_kind`, reason text or plan document.
+            #
+            # It likewise does not publish `claim_id`/`claim_generation`: those are
+            # the authority binding `execution_store`'s fence tests, and the store
+            # withholds them from a refused caller precisely so a refusal cannot
+            # disclose what would satisfy it. Serving them to a browser would undo
+            # that. Asserted on the response body in
+            # `test_execution_read.py::test_the_claim_binding_is_never_published`.
+            ("/orchestration/flows/{flow_id}/execution", "GET"): "Permission.USAGE_READ",
             # Issue #5301: attributed recovery of a *historically unbound* story —
             # a human asserting which pull request delivered work that no run ever
             # registered. PLAN_APPROVE and nothing weaker, for two reasons.

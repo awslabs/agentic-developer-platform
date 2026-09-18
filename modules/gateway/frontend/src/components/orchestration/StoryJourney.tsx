@@ -2,8 +2,19 @@ import { Link } from 'react-router-dom';
 import type { GraphNode } from '@/types/orchestration';
 import { storyJourney } from '@/utils/storyJourney';
 
-/** Keep the whole route visible even on narrow story cards. */
-export function StoryJourney({ node }: { node: GraphNode }) {
+/**
+ * Keep the whole route visible even on narrow story cards.
+ *
+ * `execution` (issue #5145) is the delivery-ledger panel, passed as a **slot**
+ * rather than queried here, for the same reason `controls` is a slot on `NodeChip`:
+ * this component stays presentational, so it keeps rendering identically in tests
+ * that mount no query client and for a caller with no ledger data at all. It is
+ * rendered beneath the stage list, not beside it — the journey shows the stages and
+ * the panel says why the current one is waiting and who acts next. Deliberately one
+ * journey, not two: a parallel delivery view would drift from this stage
+ * vocabulary.
+ */
+export function StoryJourney({ node, execution }: { node: GraphNode; execution?: React.ReactNode }) {
   const { headline, steps, historyNote } = storyJourney(node);
   return (
     <div className="mt-2" data-testid={`story-journey-${node.node_ref}`}>
@@ -36,6 +47,7 @@ export function StoryJourney({ node }: { node: GraphNode }) {
       )}
       {node.binding_hold && <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">{node.binding_hold}</p>}
       {historyNote && <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{historyNote}</p>}
+      {execution}
     </div>
   );
 }

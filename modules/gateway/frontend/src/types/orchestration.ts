@@ -495,3 +495,185 @@ export interface FlowListParams {
   /** No `cost`: it lives in another table and cannot be sorted with the page. */
   sort?: 'created' | 'updated' | 'stalled';
 }
+
+/* ---------------------------------------------------------------------------
+ * Delivery execution read model (issue #5145).
+ *
+ * The **one shared presentation contract** for execution progress and blocks.
+ * Five sibling acceptance issues (review, merge, deployment, evaluation
+ * receipts) populate these same fields as their phase handlers land, so the
+ * display lights up for each rather than each needing a dashboard of its own.
+ * That is why `ExecutionAction` has no per-kind variants: `kind` is a string and
+ * `receipt_ref` is rendered generically. A per-kind union here would become four
+ * divergent renderings later.
+ *
+ * Mirrors `FlowExecutionResponse` in `src/orchestration/routes.py`. Every field
+ * is read-only — approval and recovery stay with the existing gate/resume
+ * controls, and this endpoint has no mutating verb.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Where a delivery cycle got to. Ordered as the engine advances, so a client may
+ * compare positions, but never infer success from position — `concluded` is
+ * reached by a cycle that gave up as well as one that delivered.
+ */
+export type ExecutionPhase =
+  | 'admitted'
+  | 'preparing'
+  | 'delivering'
+  | 'submitting'
+  | 'awaiting_review'
+  | 'repairing'
+  | 'settling'
+  | 'concluded';
+
+/**
+ * Whether the cycle is moving.
+ *
+ * `blocked` is **not** a failure: it means someone must supply something, and
+ * rendering it as an error sends an operator hunting a crash that never happened.
+ * `awaiting_external` means the engine is correctly waiting on a third party.
+ */
+export type ExecutionStatus =
+  | 'runnable'
+  | 'awaiting_external'
+  | 'blocked'
+  | 'concluded'
+  | 'superseded';
+
+/**
+ * Why a cycle stopped. Stable codes a client may branch on.
+ *
+ * An unrecognised code arrives as `authority_unverifiable` — the server maps it
+ * fail-closed, so a newer engine's block can never read here as "not blocked".
+ */
+export type BlockCode =
+  | 'human_gate_required'
+  | 'human_input_required'
+  | 'attempts_exhausted'
+  | 'dependency_unmet'
+  | 'credential_unavailable'
+  | 'authority_unverifiable'
+  | 'external_unavailable'
+  | 'policy_refused'
+  | 'budget_exhausted'
+  | 'deadline_exceeded';
+
+/**
+ * The lifecycle of one externally-visible step.
+ *
+ * `unknown` is a settled record of an *unsettled* fact: the engine looked and
+ * could not tell. Never render it as either outcome — see `resolved`.
+ */
+export type ActionStatus = 'prepared' | 'dispatched' | 'succeeded' | 'failed' | 'unknown';
+
+/** Why delivery stopped, who clears it, and what they must supply. */
+export interface ExecutionBlock {
+  code: BlockCode;
+  /** Who acts next, e.g. `platform-operator`, `requesting-user`. */
+  owner: string;
+  /** What that person supplies. This is what turns a status into a next step. */
+  required_input: string;
+  /**
+   * Outstanding human approval gates. Informational only — approving still goes
+   * through the existing gate controls, not this read.
+   */
+  remaining_gates: string[];
+  /**
+   * Last *real* progress, not the moment of blocking: the ledger deliberately
+   * does not reset it, because it is the clock separating "stuck for a minute"
+   * from "stuck since Tuesday".
+   */
+  progressed_at: string | null;
+  detail: string | null;
+}
+
+/** One externally-visible step: a PR opened, a deployment run, an eval report. */
+export interface ExecutionAction {
+  id: string;
+  /** The idempotency key the engine dispatched under. */
+  operation_key: string;
+  /** Free-form, e.g. `open_pull_request`, `review`, `merge`, `deployment`. */
+  kind: string;
+  status: ActionStatus;
+  attempt: number;
+  /**
+   * Served by the server, never derived here. The tempting client-side
+   * derivation (`status !== 'prepared'`) counts `unknown` as resolved, which is
+   * how a green worker status hides an outstanding gate.
+   */
+  resolved: boolean;
+  /** Sanitized server-side; a reference that failed validation arrives null. */
+  artifact_ref: string | null;
+  /** Null means **pending**, not "nothing happened". */
+  receipt_ref: string | null;
+  created_at: string | null;
+  observed_at: string | null;
+}
+
+/** One node's delivery cycle: where it is, whether it is moving, why not if not. */
+export interface ExecutionSummary {
+  id: string;
+  /** Joins to `GraphNode.id`. */
+  node_id: string;
+  /** A repair cycle is separate work; cycles are never collapsed. */
+  cycle: number;
+  phase: ExecutionPhase;
+  status: ExecutionStatus;
+  /**
+   * Advances by exactly one per applied write. This is what makes rejecting a
+   * stale poll a comparison rather than a guess about arrival order.
+   */
+  revision: number;
+  /*
+   * No `accepted_plan_version`, and no `claim_id`/`claim_generation`: the server
+   * does not serve them. The claim pair is the authority binding its store fence
+   * tests; `accepted_plan_version` is an acceptance record, and the router requires
+   * approval authority of any handler touching one — so a read that exists to show
+   * *progress* must not carry it. The authorizing plan is on the plans route.
+   */
+  attempts: number;
+  next_check_at: string | null;
+  deadline_at: string | null;
+  progressed_at: string | null;
+  progress_note: string | null;
+  /** Present only while actually blocked. */
+  block: ExecutionBlock | null;
+  /** What a recovering pass must go and ask about. */
+  pending_action_key: string | null;
+  notification_receipt_ref: string | null;
+  handoff_receipt_ref: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  /** Newest first, and **capped** — see `action_overflow`. */
+  actions: ExecutionAction[];
+  /** True when older actions were omitted. A capped list is not a complete one. */
+  action_overflow: boolean;
+}
+
+/**
+ * Execution progress for one flow.
+ *
+ * `server_time` is what makes the other instants interpretable: age computed
+ * against a browser clock is computed against a clock that may be wrong or in
+ * another zone.
+ *
+ * `legacy` true means the flow has **no execution rows at all** — a real,
+ * permanent state for every flow delivered before the ledger existed. It means
+ * *no durable execution record*, which is emphatically not success.
+ */
+export interface FlowExecution {
+  flow_id: string;
+  server_time: string;
+  executions: ExecutionSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  legacy: boolean;
+}
+
+/** Paging for the execution read. Mirrors the route's signature. */
+export interface FlowExecutionParams {
+  limit?: number;
+  offset?: number;
+}

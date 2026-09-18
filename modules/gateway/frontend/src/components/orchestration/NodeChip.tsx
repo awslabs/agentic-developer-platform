@@ -39,6 +39,11 @@ export interface NodeChipProps {
    * with no authority and in tests that never mount a provider.
    */
   controls?: React.ReactNode;
+  /**
+   * Delivery-ledger panel for this node (issue #5145), also a slot. Same reason as
+   * `controls`: no query, no permission check, no client here.
+   */
+  execution?: React.ReactNode;
 }
 
 /**
@@ -57,7 +62,7 @@ function reasonBadge(node: GraphNode): string | null {
   return null;
 }
 
-export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeChipProps) {
+export function NodeChip({ node, blockedBy = [], dependencies, controls, execution }: NodeChipProps) {
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
@@ -121,7 +126,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeC
           {/* The projected state, as text. The fill is a second channel, never
               the only one. */}
           {style && node.kind !== 'story' && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
-          {node.kind === 'story' && <StoryJourney node={node} />}
+          {node.kind === 'story' && <StoryJourney node={node} execution={execution} />}
           {node.configuration_problem && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
           {resultSummary && !node.binding_hold && <p className="mt-1 text-sm">{resultSummary}</p>}
           <div className="mt-1 flex flex-wrap gap-3 text-xs">

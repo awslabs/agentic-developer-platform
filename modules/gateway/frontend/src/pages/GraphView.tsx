@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useFlowGraph } from '@/hooks/useFlowGraph';
+import { useFlowExecution } from '@/hooks/useFlowExecution';
 import { countByDisplayState } from '@/utils/nodeState';
 import { groupIntoEpics } from '@/utils/flowLayout';
 import { RollupBar } from '@/components/orchestration/RollupBar';
@@ -9,6 +10,8 @@ import { PlanSummary } from '@/components/orchestration/PlanSummary';
 import { NodeChip } from '@/components/orchestration/NodeChip';
 import { WaveCard } from '@/components/orchestration/WaveCard';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
+import { ExecutionProgress } from '@/components/orchestration/ExecutionProgress';
+import { executionForNode } from '@/utils/executionProgress';
 import { LastUpdated } from '@/components/LastUpdated';
 import { Alert, Spinner } from '@/components/ui';
 
@@ -16,6 +19,20 @@ export function GraphView() {
   const { flowId } = useParams<{ flowId: string }>();
   const [expandedWaves, setExpandedWaves] = useState<Record<string, boolean>>({});
   const { data, isPending, isError, error, dataUpdatedAt, isFetching } = useFlowGraph(flowId);
+  // The delivery ledger (issue #5145), queried once for the whole flow and handed
+  // down — never per node, which on a long flow would be one request per chip.
+  // Deliberately a separate query from the graph: a ledger read failing must not
+  // blank the plan, and the graph is the older, load-bearing view.
+  // `isError` is read, not discarded: a denied or failed ledger read that merely
+  // removed the panel would be pixel-identical to the feature not existing, which is
+  // the worst outcome for whoever is debugging it — the screen would actively suggest
+  // there is nothing to debug. It is surfaced as a non-blocking notice below while the
+  // graph stays fully usable.
+  const {
+    data: executionView,
+    isError: executionFailed,
+    error: executionError,
+  } = useFlowExecution(flowId);
 
   if (isPending) {
     return (
@@ -51,6 +68,32 @@ export function GraphView() {
   const waves = epics.flatMap((epic) => epic.waves.map((wave) => ({ epicRef: epic.epicRef, wave })));
   const firstUnfinished = waves.find(({ wave }) => wave.nodes.some((node) => node.state !== 'passed'));
   const waveKey = (epicRef: string, waveRef: string) => JSON.stringify([flowId, epicRef, waveRef]);
+  // Rendered only once the ledger read has returned. Before that the journey shows
+  // exactly what it shows today: an absence panel here would claim "no execution
+  // record" — which means the flow predates the ledger — about a flow whose record
+  // simply has not arrived yet.
+  const renderExecution = executionView
+    ? (node: typeof activeNodes[number]) => {
+        if (node.kind !== 'story') return null;
+        const { execution, earlierCycles } = executionForNode(executionView, node.id);
+        return (
+          <ExecutionProgress
+            nodeRef={node.node_ref}
+            execution={execution}
+            // The response's own clock, so age is two instants from one source.
+            serverTime={executionView.server_time}
+            legacy={executionView.legacy}
+            earlierCycles={earlierCycles}
+            // The graph's own verdict, which is the ONLY thing that may render this
+            // panel as complete. The ledger's `concluded` means "no further pickup"
+            // and is reached by a cycle that gave up as well as one that delivered,
+            // so acceptance has to come from here — the authoritative state — rather
+            // than be inferred from the execution row.
+            nodeAccepted={node.state === 'passed'}
+          />
+        );
+      }
+    : undefined;
   const setAllExpanded = (expanded: boolean) => setExpandedWaves(Object.fromEntries(
     waves.map(({ epicRef, wave }) => [waveKey(epicRef, wave.waveRef), expanded])
   ));
@@ -93,6 +136,24 @@ export function GraphView() {
           Work behind the affected gates is paused. Requesting changes records feedback; it does not start an agent to revise the plan.
           {' '}Review the notes below, update the plan as needed, then use “Reopen review” for another approval decision.
         </Alert>
+      )}
+
+      {/* A ledger read that failed says so, rather than vanishing. `warning`, not
+          `error`: the plan below is intact and current, and only the delivery-progress
+          detail is missing — styling this as an error would overstate the damage. It is
+          purely informational; nothing here retries or mutates, and the graph,
+          the waves and every existing control continue to work. */}
+      {executionFailed && (
+        <div data-testid="execution-unavailable">
+          <Alert variant="warning" title="Execution progress is unavailable">
+            The delivery plan below is current, but the execution ledger could not be read, so
+            per-story progress, blocks and evidence are not shown. This does not mean delivery has
+            stopped — it means this view cannot currently tell you where it stands.
+            {(executionError as { message?: string } | null)?.message
+              ? ` (${(executionError as { message?: string }).message})`
+              : null}
+          </Alert>
+        </div>
       )}
 
       {activeNodes.length === 0 && (
@@ -138,6 +199,7 @@ export function GraphView() {
                 graph={data}
                 expanded={expanded}
                 onToggle={() => setExpandedWaves((current) => ({ ...current, [key]: !expanded }))}
+                renderExecution={renderExecution}
               />
             );
           })}
@@ -149,7 +211,9 @@ export function GraphView() {
             Superseded steps ({historicalNodes.length}) — history, excluded from the current plan
           </summary>
           <ul className="mt-3 space-y-2">
-            {historicalNodes.map((node) => <NodeChip key={node.id} node={node} />)}
+            {historicalNodes.map((node) => (
+              <NodeChip key={node.id} node={node} execution={renderExecution?.(node)} />
+            ))}
           </ul>
         </details>
       )}
