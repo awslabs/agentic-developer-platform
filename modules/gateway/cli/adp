@@ -1161,6 +1161,18 @@ cmd_update() {
 
     local gateway_url
     gateway_url="$(stored_gateway_url)"
+    # Fall back to the URL the SELECTED deployment is registered under. The stored
+    # config is written by sign-in, so a deployment that has been added but not yet
+    # signed in to has no config.json — and once such a deployment is the saved
+    # default, `adp update` failed with "No gateway URL ... cannot tell where to
+    # update from" even though the registry has held its URL since `deployment
+    # add`. Every named deployment serves the same CLI, so any of them can answer
+    # the question; refusing to update the software because one of several
+    # deployments is not signed in makes no sense to the user, whose CLI is
+    # installed once, not per deployment.
+    if [ -z "${gateway_url}" ]; then
+        gateway_url="${ADP_DEPLOYMENT_URL:-}"
+    fi
     if [ -z "${gateway_url}" ]; then
         print_error "No gateway URL in ${CONFIG_FILE} — cannot tell where to update from."
         print_warning "Reinstall with: curl -fsSL <gateway>/api/cli/install.sh | sh -s -- --gateway-url <gateway>"

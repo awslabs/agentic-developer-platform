@@ -119,15 +119,25 @@ def installed(tmp_path: Path, cli_dir: Path, upstream) -> tuple[Path, Path]:
 
     home = tmp_path / "update-home"
     (home / ".bedrock-gateway").mkdir(parents=True)
+    # 0700, as install.sh and the auth core both create it. The deployment
+    # registry refuses to adopt a legacy store with looser permissions -- a
+    # world-readable directory holds this user's refresh token -- so a fixture
+    # left at the default mode would fail #5413's tests on the fixture's own
+    # mistake rather than on anything `adp update` did.
+    (home / ".bedrock-gateway").chmod(0o700)
     (home / ".bedrock-gateway" / "config.json").write_text(json.dumps({"gateway_url": upstream.url, "client_id": "abc123"}))
 
     return bin_dir, home
 
 
-def _run_adp(bin_dir: Path, home: Path, args: list[str]) -> subprocess.CompletedProcess:
+def _run_adp(bin_dir: Path, home: Path, args: list[str], *, deployment: str | None = None) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["SHELL"] = "/bin/sh"
+    # `ADP_DEPLOYMENT` pins one terminal's selection (#5413). Passed here rather
+    # than via `--deployment` for the verbs that refuse a selection flag.
+    if deployment is not None:
+        env["ADP_DEPLOYMENT"] = deployment
     return subprocess.run(["bash", str(bin_dir / "adp"), *args], capture_output=True, text=True, env=env, timeout=60)
 
 
@@ -271,3 +281,187 @@ class TestUpdateFailure:
         assert result.returncode != 0
         assert 'ADP_VERSION="1.0.0"' in (bin_dir / "adp").read_text()
         assert _run_adp(bin_dir, home, ["version"]).returncode == 0, "the CLI must still run"
+
+
+
+
+class TestUpdateWithThreeDeployments:
+    """AC-08 (#5413): a CLI serving three deployments must survive its own update.
+
+    The registry and the three per-deployment stores live under `~/.adp`, and
+    `install.sh` writes into the PREFIX, so in principle they never meet. In
+    principle is not the standard here: this is the verb that overwrites its own
+    executables, and a user with development, integration and pre-production
+    terminals open loses three sessions at once if it touches the registry. The
+    single-deployment `test_keeps_the_session_config` above could not catch that,
+    because a legacy install keeps its session somewhere else entirely.
+
+    One of the three is the real mock gateway and is made the default, which is
+    what a genuine multi-deployment install looks like: the CLI is installed once,
+    from one of the deployments it goes on to serve.
+    """
+
+    OTHERS = ("integration", "preprod")
+
+    @staticmethod
+    def _register_three(bin_dir: Path, home: Path, upstream) -> None:
+        """development = the serving gateway; the other two are registered only.
+
+        Registered-not-signed-in is the ordinary state, not an edge case: `adp
+        deployment add` writes a record and makes no request, so the two remote
+        environments have a URL and no config.json until someone logs in to them.
+        """
+        for name, url in (
+            ("development", upstream.url),
+            ("integration", "https://integration.example.invalid/api"),
+            ("preprod", "https://preprod.example.invalid/api"),
+        ):
+            result = _run_adp(bin_dir, home, ["deployment", "add", name, "--url", url])
+            assert result.returncode == 0, f"registering {name} failed: {result.stderr}"
+        assert _run_adp(bin_dir, home, ["deployment", "use", "development"]).returncode == 0
+
+    @staticmethod
+    def _listed(bin_dir: Path, home: Path) -> dict:
+        result = _run_adp(bin_dir, home, ["deployment", "list", "--json"])
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def test_update_keeps_every_record_and_the_saved_default(self, installed, upstream) -> None:
+        bin_dir, home = installed
+        self._register_three(bin_dir, home, upstream)
+        before = self._listed(bin_dir, home)
+
+        assert _run_adp(bin_dir, home, ["update"]).returncode == 0
+
+        after = self._listed(bin_dir, home)
+        assert [entry["name"] for entry in after["deployments"]] == [
+            entry["name"] for entry in before["deployments"]
+        ]
+        # The stable ids matter more than the names: an id change would orphan the
+        # per-deployment store holding that deployment's session.
+        assert [entry["deployment_id"] for entry in after["deployments"]] == [
+            entry["deployment_id"] for entry in before["deployments"]
+        ]
+        assert after["default"] == "development"
+        assert "9.9.9-from-gateway" in (bin_dir / "adp").read_text()
+
+    def test_the_updated_cli_still_routes_each_deployment_to_its_own_url(self, installed, upstream) -> None:
+        """Records surviving is not the same as selection still working.
+
+        Selected through the environment rather than `--deployment`, because
+        `adp deployment` is one of the verbs exempt from resolution — it MANAGES
+        deployments, so a selection flag would be ambiguous about which of the two
+        names it meant, and it refuses one by design. The environment variable is
+        the surface a second terminal actually uses.
+        """
+        bin_dir, home = installed
+        self._register_three(bin_dir, home, upstream)
+
+        assert _run_adp(bin_dir, home, ["update"]).returncode == 0
+
+        expected = {
+            "development": upstream.url,
+            "integration": "https://integration.example.invalid/api",
+            "preprod": "https://preprod.example.invalid/api",
+        }
+        for name, url in expected.items():
+            result = _run_adp(bin_dir, home, ["deployment", "list", "--json"], deployment=name)
+            assert result.returncode == 0, result.stderr
+            payload = json.loads(result.stdout)
+            assert payload["effective"] == name
+            selected = next(entry for entry in payload["deployments"] if entry["name"] == name)
+            assert selected["gateway_url"] == url
+
+    def test_rollback_restores_the_executables_and_not_the_registry(self, installed, upstream) -> None:
+        """A deployment added after an update must not vanish when it is undone.
+
+        The executables and the registry have different lifetimes: one is the
+        software, the other is the user's own state. Rolling the first back to
+        recover from a bad release must not roll the second back to a moment
+        before a deployment the user registered — they would have to notice the
+        absence and re-add it, on a CLI they are already rolling back.
+        """
+        bin_dir, home = installed
+        self._register_three(bin_dir, home, upstream)
+        assert _run_adp(bin_dir, home, ["update"]).returncode == 0
+        added = _run_adp(bin_dir, home, ["deployment", "add", "sandbox", "--url", "https://sandbox.example.invalid/api"])
+        assert added.returncode == 0, added.stderr
+
+        result = _run_adp(bin_dir, home, ["update", "--rollback"])
+
+        assert result.returncode == 0, result.stderr
+        assert 'ADP_VERSION="1.0.0"' in (bin_dir / "adp").read_text()
+        names = [entry["name"] for entry in self._listed(bin_dir, home)["deployments"]]
+        # `default` is the adopted legacy record: this fixture has a
+        # `~/.bedrock-gateway` store, so the first mutating command registers it
+        # alongside the named ones (AC-07). It belongs in the assertion rather
+        # than being filtered out — a rollback that dropped the legacy record
+        # would log out the pre-#5413 session, which is the worst version of this
+        # bug and the one a set of only named deployments could not see.
+        assert set(names) == {"default", "development", "integration", "preprod", "sandbox"}
+
+    def test_a_failed_update_leaves_every_record_untouched(self, installed, upstream) -> None:
+        """The abort path must be as safe for the registry as for the executables."""
+        bin_dir, home = installed
+        self._register_three(bin_dir, home, upstream)
+        before = self._listed(bin_dir, home)
+        upstream.fail_paths.add("/api/cli/adp_deployments.py")
+
+        result = _run_adp(bin_dir, home, ["update"])
+
+        assert result.returncode != 0
+        assert "adp_deployments.py" in result.stderr
+        assert self._listed(bin_dir, home) == before
+
+    def test_the_deployment_resolver_is_part_of_the_installed_set(self, installed, upstream) -> None:
+        """Sibling resolution, not PATH: a missing resolver is a broken install.
+
+        `adp` runs `adp_deployments.py` from its own directory, so an update that
+        refreshed every other file would leave the new front door calling an old
+        resolver — or none at all. Asserting it is in the fetched set keeps
+        `install.sh`'s CLI_FILES and the gateway's download route in step with what
+        the front door expects to find beside it.
+        """
+        bin_dir, home = installed
+
+        assert _run_adp(bin_dir, home, ["update"]).returncode == 0
+
+        assert "/api/cli/adp_deployments.py" in upstream.requested
+        assert (bin_dir / "adp_deployments.py").is_file()
+
+    def test_update_works_when_the_default_deployment_was_never_signed_in_to(self, installed, upstream) -> None:
+        """A registered-but-unauthenticated default must not block a CLI update.
+
+        The defect this closes: `adp update` read the gateway URL only from the
+        SELECTED deployment's `config.json`, which sign-in writes — so a user who
+        ran `adp deployment add preprod` and `adp deployment use preprod` before
+        logging in got "No gateway URL ... cannot tell where to update from",
+        naming a path inside `~/.adp/deployments/<id>/` they had never seen, while
+        the registry had held that deployment's URL since the moment they added it.
+
+        Updating the software is not a per-deployment operation — the CLI is
+        installed once — so the registered URL is a legitimate answer to "where do
+        I update from", and the registry always has one.
+        """
+        bin_dir, home = installed
+        added = _run_adp(bin_dir, home, ["deployment", "add", "development", "--url", upstream.url])
+        assert added.returncode == 0, added.stderr
+        assert _run_adp(bin_dir, home, ["deployment", "use", "development"]).returncode == 0
+        listed = self._listed(bin_dir, home)
+        identifier = next(
+            entry["deployment_id"]
+            for entry in listed["deployments"]
+            if entry["name"] == "development"
+        )
+        store = home / ".adp" / "deployments" / identifier
+        assert not (store / "config.json").exists(), "add must write no session"
+        assert not next(
+            entry["signed_in"]
+            for entry in listed["deployments"]
+            if entry["name"] == "development"
+        )
+
+        result = _run_adp(bin_dir, home, ["update"])
+
+        assert result.returncode == 0, result.stderr
+        assert "9.9.9-from-gateway" in (bin_dir / "adp").read_text()
