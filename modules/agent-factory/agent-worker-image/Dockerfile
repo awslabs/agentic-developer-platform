@@ -241,6 +241,15 @@ COPY --chown=agent:agent modules/agent-factory/agent-worker-image/adp_trigger/ /
 RUN printf '#!/bin/sh\nexec python3 -m adp_trigger "$@"\n' > /usr/local/bin/adp-trigger && \
     chmod +x /usr/local/bin/adp-trigger
 
+# Install adp-review CLI (formal PR review submission, #5350). Same pattern again.
+# This is the ONLY sanctioned path for a reviewer to publish a verdict: it catches
+# GitHub's self-review 422 (author and reviewer are the same App), publishes the
+# verdict anyway, and names the pending human approval instead of silently
+# downgrading to a comment that sets no reviewDecision.
+COPY --chown=agent:agent modules/agent-factory/agent-worker-image/adp_review/ /app/adp_review/
+RUN printf '#!/bin/sh\nexec python3 -m adp_review "$@"\n' > /usr/local/bin/adp-review && \
+    chmod +x /usr/local/bin/adp-review
+
 # Set working directory and switch to non-root user
 WORKDIR /work
 USER agent

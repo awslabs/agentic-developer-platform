@@ -7,7 +7,27 @@ import pytest
 from src.orchestration.results import GitHubEvidenceSource
 
 
-@pytest.mark.parametrize("defect", [None, "withdrawn", "missing-check", "missing-review", "different-head"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "withdrawn",
+        "missing-check",
+        "missing-review",
+        "different-head",
+        # Issue #5350. Every PR the engine opens is authored by the same GitHub App
+        # that reviews it, and GitHub 422s APPROVE/REQUEST_CHANGES on your own PR.
+        # The reviewer's only remaining option is a COMMENT review or a plain issue
+        # comment, neither of which sets `reviewDecision`. These three cases pin the
+        # arm that must therefore never pass: a verdict that could not be recorded is
+        # not an approval. The behaviour is already correct — it was entirely
+        # uncovered, so a refactor could have removed it silently and turned
+        # "no verdict was possible" into "approved".
+        "comment-only-review",
+        "no-verdict-at-all",
+        "self-approval",
+    ],
+)
 async def test_provider_eligibility_uses_current_opinion_and_head_checks(monkeypatch, defect):
     head = "a" * 40
     record = {
@@ -37,6 +57,22 @@ async def test_provider_eligibility_uses_current_opinion_and_head_checks(monkeyp
         record["reviewDecision"] = "REVIEW_REQUIRED"
     elif defect == "different-head":
         record["reviews"]["nodes"][0]["commit"]["oid"] = "c" * 40
+    elif defect == "comment-only-review":
+        # What the engine's reviewer actually achieves today: GitHub accepted the
+        # COMMENT it fell back to, so a review exists and carries a real verdict in
+        # its body — but `state` is COMMENTED and reviewDecision stays empty.
+        record["reviewDecision"] = None
+        record["reviews"]["nodes"][0]["state"] = "COMMENTED"
+    elif defect == "no-verdict-at-all":
+        # The verdict was published as an ordinary issue comment, so the PR has no
+        # review objects at all. An absent reviewDecision must not read as approval.
+        record["reviewDecision"] = None
+        record["reviews"]["nodes"] = []
+    elif defect == "self-approval":
+        # The impossible case, asserted anyway: were GitHub ever to accept a
+        # self-approval, the author approving their own PR is still not independent
+        # review, and the predicate must exclude it by login.
+        record["reviews"]["nodes"][0]["author"] = {"login": "developer"}
 
     class App:
         def __init__(self, *args):

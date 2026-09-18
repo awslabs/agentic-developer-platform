@@ -137,6 +137,16 @@ on:
       - 'modules/agent-factory/agent-worker-image/adp_trigger/**'
       - 'modules/agent-factory/agent-worker-image/tests/test_adp_trigger.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_adp_trigger_control.py'
+      # Formal review submission and its self-review fallback (#5350). Grouped
+      # here because it mints through the same gateway credential path as
+      # adp-trigger, and because the failure it guards — a refused verdict
+      # silently downgraded to a comment — is invisible at runtime.
+      - 'modules/agent-factory/agent-worker-image/adp_review/**'
+      - 'modules/agent-factory/agent-worker-image/tests/test_adp_review.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_reviewer_no_artifact_pr.py'
+      - 'modules/agent-factory/agent-worker-image/lib/gateway_credential_client.py'
+      - 'modules/gateway/src/knowledge/github_app_service.py'
+      - 'modules/gateway/tests/internal/test_github_installation_token_route.py'
       - 'modules/agent-factory/agent-worker-image/lib/run_identity.py'
       - 'modules/agent-factory/agent-worker-image/lib/control_renewal.py'
       - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
@@ -719,6 +729,7 @@ jobs:
           pytest tests/test_adp_trigger.py tests/test_adp_trigger_control.py tests/test_run_identity.py tests/test_gateway_credential_client.py \
             tests/test_control_renewal.py tests/test_task_credentials.py tests/test_transport_identity.py \
             tests/test_adp_cred.py tests/test_adp_cred_assume.py \
+            tests/test_adp_review.py tests/test_reviewer_no_artifact_pr.py \
             tests/test_entrypoint.py::TestBedrockViaGateway tests/test_entrypoint.py::TestBedrockViaFlag \
             -v --tb=short --timeout=60
 

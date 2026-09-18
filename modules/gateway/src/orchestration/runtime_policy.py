@@ -35,10 +35,11 @@ class WorkerCredentialDecision(Decision):
     aws_role_arns: tuple[str, ...] = ()
     policy_id: str | None = None
     plan_version: int | None = None
-    # The action this assignment was admitted for, and the immutable provider
-    # repository it was admitted against. Both are reported so the mediated
-    # operation service can build its assignment from what THIS function proved,
-    # rather than re-deriving authority from a request body.
+    # The action resolved from engine-written execution state, and the immutable
+    # provider repository this assignment was admitted against. Broker routes may
+    # use the action as authority; a request body must never choose it. Both are
+    # reported so the mediated operation service can build its assignment from
+    # what THIS function proved rather than re-deriving either from request data.
     action: Action | None = None
     provider_repository_id: int | None = None
     # The accepted policy document itself, so a consumer checks content and
@@ -327,6 +328,7 @@ async def authorize_worker_credential(
         return WorkerCredentialDecision(
             permitted=True,
             detail=decision.detail,
+            action=action,
             not_after=not_after,
             provider_permissions=True,
             credential_id=credential_id,
@@ -337,7 +339,13 @@ async def authorize_worker_credential(
             plan_version=inputs.plan_version,
         )
     if decision.permitted and broker_path == "/internal/v1/github-installation-token":
-        return WorkerCredentialDecision(permitted=True, detail=decision.detail, permissions=permissions, not_after=not_after)
+        return WorkerCredentialDecision(
+            permitted=True,
+            detail=decision.detail,
+            action=action,
+            permissions=permissions,
+            not_after=not_after,
+        )
     if decision.permitted and broker_path == MEDIATED_GITHUB_OPERATION_PATH:
         # `scope` is still UNSCOPABLE unless the branch above matched, so a repo
         # outside the accepted policy or the grant is already refused by

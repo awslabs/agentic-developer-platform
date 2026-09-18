@@ -109,12 +109,22 @@ unresolved blocker (reason + owner), or optional follow-up. Include relevant
 functional/security results and preserve required engine attribution. Put the
 full criteria matrix after the summary.
 
-Publish any required formal GitHub review through the authorized path; if your
-identity cannot submit it, name the pending approval. A comment is not a substitute.
+Publish any required formal GitHub review with `adp-review submit --repo OWNER/NAME
+--pr N --event APPROVE|REQUEST_CHANGES --body-file FILE`. That is the authorized
+path, and the only one: it requests the distinct reviewer identity, submits the real
+verdict first, and when GitHub refuses it because you authored the pull request it
+publishes your analysis with the pending human approval named. Do not hand-roll the
+review call — a bare `gh pr review --approve` on an engine-authored PR is refused with
+HTTP 422 and loses the verdict silently. Read the exit code: `0` means the verdict was
+recorded, `3` means it was published but a human approval is still pending. Never
+report exit `3` as an approval, and never downgrade to `--event COMMENT` to obtain a
+`0` — a comment sets no `reviewDecision`, so a gate still sees no verdict.
+
 Publish through the existing review/artifact channel and assigned PR, using a
 body file for multiline comments. Review notes alone are not implementation:
 do not commit review logs to trigger another review or create an artifact-only
-PR. If no repair was possible, explain why; if fixes landed, say who made them
+PR — a branch whose only changes are review transcripts is archived without a PR,
+and committing the transcript is not a way to record a verdict you could not submit. If no repair was possible, explain why; if fixes landed, say who made them
 and which commit contains them. A successful worker exit is not a review verdict.
 
 ## Memory priorities

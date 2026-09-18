@@ -159,6 +159,7 @@ async def test_token_lifetime_cannot_exceed_flow_deadline(session, assignment, m
 
     result = await check(session, assignment)
     assert isinstance(result, WorkerCredentialDecision)
+    assert result.action is Action.DEVELOP
     assert result.not_after == assignment.dispatch.created_at + timedelta(seconds=7200)
     later = datetime.now(UTC) + timedelta(minutes=65)
     monkeypatch.setattr("src.orchestration.runtime_policy.utcnow", lambda: later)
@@ -275,6 +276,8 @@ async def broker_client(session, assignment, monkeypatch):
     monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: SessionContext)
     monkeypatch.setattr("src.internal.routes.resolve_tenant_app_credentials", AsyncMock(return_value=("app-test", "test-key")))
+    reviewer = AsyncMock(return_value=("review-app-test", "review-test-key", INSTALLATION_A + 1))
+    monkeypatch.setattr("src.internal.routes.resolve_reviewer_app_credentials", reviewer)
     mint = AsyncMock(return_value=("scoped-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()))
     monkeypatch.setattr("src.internal.routes.mint_installation_token_with_expiry", mint)
     revoke = AsyncMock()
@@ -287,6 +290,7 @@ async def broker_client(session, assignment, monkeypatch):
         yield SimpleNamespace(
             client=client,
             mint=mint,
+            reviewer=reviewer,
             revoke=revoke,
             body={"invocation_id": "worker", "installation_id": INSTALLATION_A, "repo_owner": "aws-e", "repo_name": "adp"},
         )
@@ -323,6 +327,45 @@ async def test_endpoint_mints_only_policy_permissions(session, assignment, broke
         "repositories": ["adp"],
         "permissions": {"contents": contents, "pull_requests": pull_requests, "issues": pull_requests, "checks": "read", "metadata": "read"},
     }
+    # No request asked for the reviewer identity, so none of these mints may use it —
+    # including the reviewer run's. This is the bootstrap mint every run makes first,
+    # and it needs the authoring App's grant (note `issues` above) to clone and drive
+    # the check run. A review-only App does not hold that, so routing this mint to it
+    # would fail the mint and kill the run before it reviewed anything.
+    broker_client.reviewer.assert_not_awaited()
+    assert broker_client.mint.await_args.args[:2] == ("app-test", "test-key")
+
+
+async def test_reviewer_run_asking_for_the_review_identity_gets_the_reviewer_app(session, assignment, broker_client):
+    """With the authority AND the request, the reviewer App and its own installation.
+
+    The reviewer App is registered `pull_requests: write` + `contents: read` and
+    deliberately not `issues`/`checks`, so the mint is narrowed to what it actually
+    holds — GitHub refuses a token request naming an ungranted permission.
+    """
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == assignment.flow.id))
+    plan.plan_document = {**plan.plan_document, "execution_policy": {**plan.plan_document["execution_policy"], "allowed_actions": ["review"]}}
+    assignment.node.kind = "story"
+    assignment.execution["persona"] = {"S": "reviewer"}
+    await session.flush()
+
+    response = await broker_client.client.post(GITHUB, json={**broker_client.body, "identity": "review"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["identity"] == "review"
+    broker_client.reviewer.assert_awaited_once_with(ORG_A)
+    assert broker_client.mint.await_args.args[:3] == ("review-app-test", "review-test-key", INSTALLATION_A + 1)
+    assert broker_client.mint.await_args.kwargs["permissions"] == {"contents": "read", "pull_requests": "write", "metadata": "read"}
+
+
+async def test_develop_action_cannot_request_reviewer_credentials(assignment, broker_client):
+    """An implementation worker cannot promote itself through the body hint."""
+    response = await broker_client.client.post(GITHUB, json={**broker_client.body, "identity": "review"})
+
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["error"] == "review_identity_not_authorized"
+    broker_client.reviewer.assert_not_awaited()
+    broker_client.mint.assert_not_awaited()
 
 
 @pytest.mark.parametrize("case", ["wrong_repo", "expired_grant", "short_grant", "short_deadline", "human_merge_gate"])

@@ -117,9 +117,21 @@ report starts with:
 - Remaining blockers, check status and the next owner/action.
 - Optional follow-ups, clearly separate from required repairs.
 
-Publish any required formal GitHub review through the authorized path; if the
-current identity cannot do so, report the pending approval explicitly. A PR comment
-is not a substitute for a required approval.
+Publish any required formal GitHub review with `adp-review submit`, the authorized
+path:
+
+```
+adp-review submit --repo OWNER/NAME --pr N --event APPROVE --body-file FILE
+```
+
+It asks the gateway for the distinct reviewer identity, submits the real verdict, and
+if GitHub refuses it (the pull request's author and this reviewer are the same GitHub
+App — HTTP 422) it publishes the analysis with the pending human approval named
+instead of losing it. Exit `0` means the verdict is recorded; exit `3` means it was
+published but only a human can supply the formal approval — report that pending
+approval explicitly and do not call it approved. Do not substitute `--event COMMENT`,
+`gh pr review`, or a committed review document for a required approval; none of them
+set `reviewDecision`.
 
 Follow with the complete criteria matrix and functional/security evidence. Keep
 engine attribution. A final REQUEST CHANGES identifies unresolved code defects
