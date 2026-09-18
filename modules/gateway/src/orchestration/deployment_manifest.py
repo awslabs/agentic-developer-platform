@@ -95,8 +95,11 @@ __all__ = [
     "TargetEvidence",
     "TargetResolution",
     "WorkflowRef",
+    "PACKAGED_MANIFEST_ANCHOR",
+    "PACKAGED_MANIFEST_NAME",
     "canonical_target_key",
     "load_manifest_document",
+    "load_packaged_manifest",
     "parse_manifest",
     "resolve_manifest_entry",
 ]

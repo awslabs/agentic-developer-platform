@@ -5,9 +5,19 @@
 # the orchestration engine is permitted to deploy to, and — for each — exactly
 # what a deploy to it may consist of.
 #
-# Parsed by `src/orchestration/deployment_manifest.py` (`parse_manifest`).
-# Consumed by #5151 (dispatch) and #5152 (verification/rollback). Nothing in this
-# repository dispatches a workflow from this file today.
+# Parsed by `src/orchestration/deployment_manifest.py`. The deployed gateway loads
+# THIS file via `load_packaged_manifest()`; consumed by #5151 (dispatch) and #5152
+# (verification/rollback). Nothing in this repository dispatches a workflow from it
+# today.
+#
+# WHY IT LIVES INSIDE `src/` RATHER THAN IN A ROOT `config/` DIRECTORY
+# -------------------------------------------------------------------
+# The gateway image is built with `modules/gateway` as its docker build context
+# (`codebuild/bs-gateway-build.yml`: `cd modules/gateway && docker build .`), and
+# the Dockerfile carries the tree with `COPY src/ src/`. A repository-root
+# `config/` directory is outside that context, so no `COPY` could reach it — a
+# manifest kept there is unreachable from the running process by construction,
+# which would make this an approval the engine cannot read.
 #
 # WHY THIS FILE EXISTS
 # --------------------
@@ -26,8 +36,9 @@
 # with every merge — so the approval would silently transfer to whatever that
 # path contains later, including a rewritten job that deploys somewhere else.
 # `definition_revision` is the commit SHA of the workflow definition that was
-# actually reviewed; #5151 refuses a dispatch whose resolved definition does not
-# match it. When a workflow legitimately changes, re-review it and update the
+# actually reviewed. `resolve_manifest_entry` refuses a dispatch whose resolved
+# definition does not match it — and also refuses when the caller resolved no
+# revision at all, because "we did not check" must not read as "it matches". When a workflow legitimately changes, re-review it and update the
 # SHA. Do NOT widen the check to make a drifted definition run.
 #
 # WHY `allowed_inputs` LISTS VALUES AND NOT JUST NAMES
