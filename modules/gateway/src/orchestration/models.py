@@ -60,7 +60,7 @@ forfeit JSONB; the migration declares the identical variant so the two agree.
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, event
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, event
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -232,6 +232,7 @@ class OrchestrationFlow(Base, TenantMixin):
 
     __tablename__ = "orchestration_flows"
     __table_args__ = (
+        Index("uq_orchestration_flows_org_id_id", "org_id", "id", unique=True),
         Index("ix_orchestration_flows_org_id_created_at", "org_id", "created_at"),
         # Issue #4898: a flow's slug is the first segment of every node's graph
         # address (`{slug}/{epic}/{wave}/{node}`), and the cost readback groups
@@ -289,6 +290,7 @@ class OrchestrationNode(Base, TenantMixin):
 
     __tablename__ = "orchestration_nodes"
     __table_args__ = (
+        Index("uq_orchestration_nodes_org_id_id", "org_id", "id", unique=True),
         # The graph address is unique per flow — it is an address, so a duplicate
         # means two nodes answer to the same name and the rollup double-counts.
         Index("uq_orchestration_nodes_address", "flow_id", "epic_ref", "wave_ref", "node_ref", unique=True),
@@ -772,6 +774,19 @@ class OrchestrationExecution(Base, TenantMixin):
 
     __tablename__ = "orchestration_executions"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "flow_id"],
+            ["orchestration_flows.org_id", "orchestration_flows.id"],
+            name="fk_orchestration_executions_org_flow",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "node_id"],
+            ["orchestration_nodes.org_id", "orchestration_nodes.id"],
+            name="fk_orchestration_executions_org_node",
+            ondelete="CASCADE",
+        ),
+        Index("uq_orchestration_executions_org_id_id", "org_id", "id", unique=True),
         # THE identity invariant: one execution per node per cycle per tenant. Two
         # concurrent starts can both pass an application-level "is there one
         # already?" read, so the database is what refuses the second. Without this
@@ -908,6 +923,12 @@ class OrchestrationAction(Base, TenantMixin):
 
     __tablename__ = "orchestration_actions"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "execution_id"],
+            ["orchestration_executions.org_id", "orchestration_executions.id"],
+            name="fk_orchestration_actions_org_execution",
+            ondelete="CASCADE",
+        ),
         # THE idempotency invariant: one action per operation key per execution per
         # tenant. This is what makes a crash-and-retry safe, so it is enforced by
         # the database and not by a read-then-write in the store.

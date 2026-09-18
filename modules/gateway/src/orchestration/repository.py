@@ -744,6 +744,12 @@ class OrchestrationRepository:
         makes a concurrent double-accept fail loudly instead of silently
         producing two "version 2" plans.
         """
+        # Serialize plan changes with execution-ledger authority checks.  The flow
+        # exists even before version 1, so this also closes the first-plan race.
+        await self._session.execute(
+            select(OrchestrationFlow.id).where(OrchestrationFlow.org_id == org_id, OrchestrationFlow.id == flow_id).with_for_update()
+        )
+
         current = await self.get_accepted_plan(org_id=org_id, flow_id=flow_id)
         if current is not None:
             current.superseded_at = utcnow()
