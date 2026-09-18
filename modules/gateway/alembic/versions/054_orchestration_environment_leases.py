@@ -158,7 +158,8 @@ def downgrade() -> None:
     story — a `raise` here would block the very path the rollback plan prescribes
     (stop admitting deploys, reconcile any held target, then downgrade). What must
     survive a rollback is the record of what a human approved, and that lives in
-    `config/orchestration-deployments.yaml` under review, not in these rows.
+    `src/orchestration/manifests/orchestration-deployments.yaml` under review, not
+    in these rows.
 
     One precondition, because it is not recoverable afterwards: reconcile any
     `state = 'held'` row first. Dropping the table while a deployment is in flight

@@ -694,7 +694,7 @@ def resolve_manifest_entry(
             block=TargetBlock(
                 code=TargetBlockCode.ENTRY_UNKNOWN,
                 owner="platform operator",
-                required_input=f"Add a reviewed manifest entry for {entry_id!r} to config/orchestration-deployments.yaml.",
+                required_input=f"Add a reviewed manifest entry for {entry_id!r} to src/orchestration/manifests/orchestration-deployments.yaml.",
             ),
         )
 
