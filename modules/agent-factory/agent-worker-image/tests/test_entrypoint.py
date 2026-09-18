@@ -3191,6 +3191,236 @@ class TestIdempotencyGuard:
         mock_delete_msg.assert_called_once()
 
 
+class TestClaimBoundWorkIsNotBranchInferred:
+    """Issue #5335: under protected dispatch, replay is decided by the invocation.
+
+    A merged PR on `agent/issue-N` proves somebody finished something on the
+    issue once — not that THIS delivery already ran. Before this change any
+    persona's run was discarded once any PR for its issue merged, so the normal
+    developer -> reviewer -> repair sequence could not proceed past the first
+    merge. Under protected dispatch the run has already been admitted against its
+    own dispatch record, attempt and work claim, so the branch question is both
+    redundant and wrong; without protected dispatch the legacy guard is unchanged.
+    """
+
+    @pytest.mark.parametrize(
+        ("envelope_extra", "env"),
+        [
+            ({"work_claim_required": True}, {}),
+            ({}, {"ADP_WORK_CLAIMS_ENABLED": "true"}),
+            ({}, {"ADP_AGENT_AUTHORITY_ENABLED": "true"}),
+        ],
+        ids=["envelope-claim-required", "claims-enabled", "authority-enabled"],
+    )
+    def test_identity_decides_replay_when_protected_dispatch_is_in_force(self, monkeypatch, envelope_extra, env):
+        """Each of the three conditions `bootstrap_run_identity` itself uses."""
+        from entrypoint import _invocation_identity_decides_replay
+
+        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
+        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+
+        assert _invocation_identity_decides_replay({**SAMPLE_ENVELOPE, **envelope_extra}) is True
+
+    def test_legacy_deployment_still_uses_branch_history(self, monkeypatch):
+        """The deliberate legacy path: no claims, no authority — unchanged."""
+        from entrypoint import _invocation_identity_decides_replay
+
+        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
+        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
+
+        assert _invocation_identity_decides_replay(SAMPLE_ENVELOPE) is False
+
+    def test_a_claimed_envelope_does_not_read_authority_from_the_message_alone(self, monkeypatch):
+        """`work_claim_required: False` in the envelope must not switch the guard
+        off — a producer cannot opt out of the legacy guard by spelling the flag."""
+        from entrypoint import _invocation_identity_decides_replay
+
+        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
+        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
+
+        assert _invocation_identity_decides_replay({**SAMPLE_ENVELOPE, "work_claim_required": False}) is False
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_fresh_authorized_run_proceeds_after_an_older_merged_pr(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """AC1-positive, through the real bootstrap: a claim-bound reviewer run
+        arrives after the developer's PR merged and must execute. The branch does
+        have a merged PR (`_is_already_completed` would say True), and that must
+        no longer decide anything."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        claimed = {**SAMPLE_ENVELOPE, "persona": "reviewer", "work_claim_required": True}
+        mock_receive_msg.return_value = (json.dumps(claimed), "receipt-fresh-authorized")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+        # The branch DOES carry a merged PR from the earlier developer run.
+        mock_is_completed.return_value = True
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        # The gateway ADMITS this invocation: its dispatch record is pending, the
+        # attempt matches and it holds the work claim. That admission — not the
+        # branch — is what authorizes the run, so it is stubbed as succeeding
+        # rather than bypassed. (A refused admission is the next test.)
+        with patch("lib.run_identity.bootstrap_run_identity", return_value=MagicMock()) as mock_identity:
+            result = main()
+
+        assert result == 0
+        mock_identity.assert_called_once_with(claimed)
+
+        # The agent actually ran: this is work, not a skip.
+        assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
+        # And the branch was never consulted — the invocation decided.
+        mock_is_completed.assert_not_called()
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    def test_legacy_replay_of_completed_work_is_still_skipped(
+        self,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """AC1-negative: with no protected dispatch, a redelivery on a merged
+        branch is still suppressed and still acknowledged. This is the #1864
+        protection, and it must not have been traded away."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
+        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-redelivery")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_is_completed.return_value = True
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+
+        result = main()
+
+        assert result == 0
+        mock_is_completed.assert_called_once()
+        mock_run_cmd.assert_not_called()
+        mock_delete_msg.assert_called_once_with(
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-redelivery",
+        )
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_an_unadmitted_claimed_run_never_reaches_the_guard(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """The refusal this change relies on. Skipping the branch check is only
+        safe because a claim-bound run that the gateway does NOT admit is stopped
+        earlier, at `bootstrap_run_identity`. If that refusal ever stopped being
+        fatal, an unauthorized fresh identity would reach the work — so assert the
+        run does not proceed and never gets as far as the guard."""
+        from lib.run_identity import RunIdentityError
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        claimed = {**SAMPLE_ENVELOPE, "persona": "developer", "work_claim_required": True}
+        mock_receive_msg.return_value = (json.dumps(claimed), "receipt-refused")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch(
+            "lib.run_identity.bootstrap_run_identity",
+            side_effect=RunIdentityError("gateway refused run identity"),
+        ):
+            with pytest.raises(RunIdentityError):
+                entrypoint.main()
+
+        mock_is_completed.assert_not_called()
+        assert not any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
+
+
 # --- Test: VisibilityHeartbeat ---
 
 

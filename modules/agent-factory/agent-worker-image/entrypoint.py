@@ -617,12 +617,52 @@ class VisibilityHeartbeat:
                     logger.debug("Heartbeat extension failed (will retry): %s", exc)
 
 
+def _invocation_identity_decides_replay(envelope: dict) -> bool:
+    """Whether this run's replay verdict comes from its protected invocation.
+
+    True when the run reached here through protected dispatch, which is the only
+    mechanism that can answer "is this delivery a replay?" about *this
+    invocation* rather than about the issue. `bootstrap_run_identity` has already
+    exchanged the pod's Kubernetes proof and the full envelope digest for a
+    credential at that point; the gateway admits the invocation only if its
+    dispatch record is still `pending`, the attempt matches and no other pod is
+    bound to it, and it holds the transactional work claim for
+    (tenant, repository, issue). A replay of a completed execution cannot pass
+    that bind — so by the time control reaches the guard, replay is already
+    refused and a merged PR on the branch adds nothing.
+
+    Conditions mirror `bootstrap_run_identity`'s own (issue #5127): the
+    envelope's `work_claim_required`, the `ADP_WORK_CLAIMS_ENABLED` deployment
+    setting, or agent authority being on. Read here rather than threaded back
+    from that call because it returns None when authority is off, and a bare
+    None cannot distinguish "authority off" from "claims not required".
+
+    False means this deployment has NOT enabled protected dispatch, and the
+    legacy branch-history guard below stays in force for it, byte for byte.
+    """
+    return (
+        envelope.get("work_claim_required") is True
+        or os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
+        or authority_enabled()
+    )
+
+
 def _is_already_completed(repo: str, issue: int, token: str) -> bool:
     """Check if the agent branch for this issue already has a merged PR.
 
     Returns True if the issue has a merged PR from the agent branch
     (agent/issue-NNN), indicating a prior run already completed successfully.
     This is the idempotency guard for SQS redelivery (issue #1864).
+
+    **Legacy path only.** A merged PR on `agent/issue-N` proves that *somebody*
+    finished *something* on this issue once — not that *this* invocation already
+    ran. So it cannot tell a genuinely fresh authorized run (the reviewer after
+    the developer, a repair after review findings) from a stale redelivery, and
+    once any PR for an issue merged it refuses every later run on that issue
+    (issue #5335). Under protected dispatch the invocation's own admission
+    answers the question precisely, so this is consulted only when
+    `_invocation_identity_decides_replay` is False. Kept, rather than removed,
+    so a deployment that has not enabled claims keeps its current behaviour.
 
     Fail-open: returns False on any error (so the run proceeds normally).
     """
@@ -1472,8 +1512,24 @@ def main() -> int:
     # the branch means "one gate landed," not "this issue is done" — so a new
     # comment answering the next gate's open questions must not be treated as
     # a stale redelivery of already-completed work.
-    if persona not in PERSONAS_EXTENDING_BRANCH and _already_completed(
-        repo, issue, token, mediated=_mediated_run
+    #
+    # Issue #5335: skipped entirely under protected dispatch. The branch question
+    # is about the ISSUE ("did anyone finish anything here?"), while the guard
+    # needs an answer about THIS INVOCATION ("did this delivery already run?").
+    # Those diverge the moment a legitimate second run follows a merged PR —
+    # reviewer after developer, repair after review findings — and the branch
+    # answer refuses all of them, freezing the issue permanently after its first
+    # merge. When protected dispatch is in force the run has already been admitted
+    # against its own dispatch record, attempt and work claim a few steps above,
+    # so a replay is refused there and a genuinely later authorized attempt is
+    # allowed through — including when older work on the issue merged. This is
+    # NOT "every new SQS message is fresh authority": authority still comes from
+    # the gateway's admission, never from the message. Same reasoning as the
+    # aidlc/authority carve-out at the completion receipt above.
+    if (
+        persona not in PERSONAS_EXTENDING_BRANCH
+        and not _invocation_identity_decides_replay(envelope)
+        and _already_completed(repo, issue, token, mediated=_mediated_run)
     ):
         logger.info(
             "Idempotency guard: issue #%s already has merged PR on agent branch — "

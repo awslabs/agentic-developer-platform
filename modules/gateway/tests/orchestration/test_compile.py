@@ -225,6 +225,46 @@ class TestAC29AuthoritativeValidation:
         await assert_graph_is_empty(session)
 
     @pytest.mark.asyncio
+    async def test_an_unordered_duplicate_issue_is_refused_and_writes_nothing(self, session, approval):
+        """Issue #5335: two stories on one issue with no order between them is a
+        plan to deliver one issue twice at once. The transactional work claim
+        would refuse the second at runtime, but by then the plan is already
+        accepted — so the compiler must refuse it here and create no nodes."""
+        proposal = valid_proposal(
+            nodes=[
+                ProposedNode(address=address("story-a"), kind="story", title="A", issue_ref="5127"),
+                ProposedNode(address=address("story-b"), kind="story", title="B", issue_ref="5127"),
+                ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"),
+            ],
+            edges=[
+                ProposedEdge(from_address=address("story-a"), to_address=address("eval")),
+                ProposedEdge(from_address=address("story-b"), to_address=address("eval")),
+            ],
+        )
+        with pytest.raises(ProposalRejectedError) as caught:
+            await compile_proposal(session, proposal, approval)
+        assert "unordered_same_issue" in {v.rule for v in caught.value.violations}
+        await assert_graph_is_empty(session)
+
+    @pytest.mark.asyncio
+    async def test_explicitly_ordered_reuse_of_one_issue_still_compiles(self, session, approval):
+        """The positive control for #5335. Sequenced reuse is the intended
+        developer-then-repair shape and must keep compiling."""
+        proposal = valid_proposal(
+            nodes=[
+                ProposedNode(address=address("story-a"), kind="story", title="A", issue_ref="5127"),
+                ProposedNode(address=address("story-b"), kind="story", title="B", issue_ref="5127"),
+                ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"),
+            ],
+            edges=[
+                ProposedEdge(from_address=address("story-a"), to_address=address("story-b")),
+                ProposedEdge(from_address=address("story-b"), to_address=address("eval")),
+            ],
+        )
+        result = await compile_proposal(session, proposal, approval)
+        assert result.nodes_created == 3
+
+    @pytest.mark.asyncio
     async def test_the_session_stays_usable_after_a_refusal(self, session, approval):
         """Refusal happens before any savepoint opens, so the caller's transaction
         must be unharmed — a gate-approval route has its own writes to make."""

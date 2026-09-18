@@ -600,6 +600,46 @@ class TestAC29ValidationParity:
         assert {"container_as_node", "duplicate_address"} <= rules
 
     @pytest.mark.asyncio
+    async def test_unordered_duplicate_issue_amendment_is_rejected(self, session, approval, amender):
+        """Issue #5335: the amendment door must refuse an unordered same-issue
+        plan too. An amendment is the softer door — accepting here what the
+        original path refuses is exactly the drift this class exists to stop."""
+        original = await compile_original(session, approval)
+        collision = amended_proposal(
+            nodes=[
+                ProposedNode(address=address("story-a"), kind="story", title="Story A", issue_ref="4196"),
+                ProposedNode(address=address("story-c"), kind="story", title="Story C", issue_ref="4196"),
+                ProposedNode(address=address("eval"), kind="eval", title="Wave 1 eval"),
+            ],
+            edges=[
+                ProposedEdge(from_address=address("story-a"), to_address=address("eval")),
+                ProposedEdge(from_address=address("story-c"), to_address=address("eval")),
+            ],
+        )
+        with pytest.raises(ProposalRejectedError) as excinfo:
+            await amend_plan(session, original.flow_id, collision, amender)
+        assert "unordered_same_issue" in {v.rule for v in excinfo.value.violations}
+
+    @pytest.mark.asyncio
+    async def test_explicitly_ordered_reuse_amendment_is_accepted(self, session, approval, amender):
+        """The positive control: an amendment that sequences the reuse is valid,
+        so amending a plan to add a repair story on an existing issue works."""
+        original = await compile_original(session, approval)
+        ordered = amended_proposal(
+            nodes=[
+                ProposedNode(address=address("story-a"), kind="story", title="Story A", issue_ref="4196"),
+                ProposedNode(address=address("story-c"), kind="story", title="Story C (repair)", issue_ref="4196"),
+                ProposedNode(address=address("eval"), kind="eval", title="Wave 1 eval"),
+            ],
+            edges=[
+                ProposedEdge(from_address=address("story-a"), to_address=address("story-c")),
+                ProposedEdge(from_address=address("story-c"), to_address=address("eval")),
+            ],
+        )
+        result = await amend_plan(session, original.flow_id, ordered, amender)
+        assert result.plan_version == 2
+
+    @pytest.mark.asyncio
     async def test_amendment_uses_the_same_validator_as_compile(self):
         """Structural, not behavioural: `amend.py` imports `validate_proposal`
         from the proposal module rather than defining rules of its own. A second

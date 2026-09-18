@@ -73,6 +73,11 @@ __all__ = [
 # Hand-listing them here is exactly how the vocabulary would drift.
 _EXECUTABLE_KINDS = frozenset(kind.value for kind in NodeKind)
 
+# The kinds that dispatch to their issue and consume a worker. A `gate` is a
+# human decision the tick presents; it performs no work on an issue, so it is
+# absent. Derived from the enum for the same reason `_EXECUTABLE_KINDS` is.
+_ISSUE_CONSUMING_KINDS = frozenset({NodeKind.STORY.value, NodeKind.EVAL.value})
+
 # Container levels are named explicitly ONLY so the violation message can say
 # "containers are derived" instead of the unhelpful "not a valid kind". They are
 # not a vocabulary — they are the rejection's explanation.
@@ -411,15 +416,13 @@ def _check_edges(proposal: LoopProposal) -> list[Violation]:
     violations: list[Violation] = []
     declared = {node.address for node in proposal.nodes}
 
-    adjacency: dict[str, list[str]] = {address: [] for address in declared}
+    adjacency = _resolvable_adjacency(proposal)
 
     for edge in proposal.edges:
         label = f"{edge.from_address} -> {edge.to_address}"
-        resolvable = True
 
         for endpoint, side in ((edge.from_address, "from"), (edge.to_address, "to")):
             if endpoint not in declared:
-                resolvable = False
                 violations.append(
                     Violation(
                         rule="dangling_edge",
@@ -429,7 +432,6 @@ def _check_edges(proposal: LoopProposal) -> list[Violation]:
                 )
 
         if edge.from_address == edge.to_address:
-            resolvable = False
             violations.append(
                 Violation(
                     rule="self_edge",
@@ -437,9 +439,6 @@ def _check_edges(proposal: LoopProposal) -> list[Violation]:
                     where=label,
                 )
             )
-
-        if resolvable:
-            adjacency[edge.from_address].append(edge.to_address)
 
     cycle = _find_cycle(adjacency)
     if cycle is not None:
@@ -452,6 +451,101 @@ def _check_edges(proposal: LoopProposal) -> list[Violation]:
         )
 
     return violations
+
+
+def _work_identity(issue_ref: str | None) -> str | None:
+    """The normalized work identity an `issue_ref` denotes, or None if it has one.
+
+    Two nodes claim the same work when they resolve to the same issue *number*,
+    not the same string. `"5127"`, `"#5127"` and `" 5127 "` are one issue spelled
+    three ways, and comparing raw strings would let a whitespace or `#` difference
+    hide a genuine duplicate.
+
+    Deliberately the same parse the runtime performs — `int(str(ref).lstrip("#"))`
+    in `dispatch_pass.issue_number_for_dispatch`, `policy_admission` and
+    `diagnose` — so plan validation and the transactional work claim cannot
+    disagree about which nodes are on one issue. Reimplemented rather than
+    imported for the import-weight reason given on rule 6.
+
+    Returns None for an absent, unparseable or non-positive reference. Such a
+    reference cannot be a shared work identity: the engine could not route it to
+    an issue either, and rule 6 is not the place to report a malformed one.
+
+    Repository identity is not part of the key because the proposal schema has no
+    per-node repository: every node of a flow dispatches into the one repository
+    resolved at dispatch time, so within a document a shared issue number is a
+    shared issue. If per-node repositories are ever added, this key is where they
+    join.
+    """
+    if not issue_ref:
+        return None
+    try:
+        issue = int(str(issue_ref).lstrip("#"))
+    except ValueError:
+        return None
+    return str(issue) if issue > 0 else None
+
+
+def _resolvable_adjacency(proposal: LoopProposal) -> dict[str, list[str]]:
+    """The dependency graph over edges that can actually be followed.
+
+    Declared once and shared by rule 3 (cycles) and rule 6 (same-issue ordering)
+    so the two rules cannot disagree about what the graph is. Only *resolvable*
+    edges are included — an edge with a dangling endpoint or a self-edge is
+    reported by rule 3 and then excluded, because traversing it would either
+    invent a phantom node or manufacture a cycle on top of the violation the
+    author already has.
+
+    Every declared address is a key, including isolated nodes, so a caller can
+    traverse from any node without a membership test first.
+    """
+    declared = {node.address for node in proposal.nodes}
+    adjacency: dict[str, list[str]] = {address: [] for address in declared}
+
+    for edge in proposal.edges:
+        if edge.from_address == edge.to_address:
+            continue  # A self-edge is rule 3's one-node cycle, not an ordering.
+        if edge.from_address in declared and edge.to_address in declared:
+            adjacency[edge.from_address].append(edge.to_address)
+
+    return adjacency
+
+
+def _reaches(adjacency: dict[str, list[str]], source: str, target: str) -> bool:
+    """Whether `target` is reachable from `source` by following dependency edges.
+
+    This is what "ordered before" means in a proposal: `from -> to` says `from`
+    must reach `PASSED` before `to` becomes ready (see `tick`), so an
+    order exists between two nodes exactly when one can be reached from the
+    other. Reachability, not a direct-edge test: `a -> x -> b` orders `a` before
+    `b` just as firmly as `a -> b`, and an author who expressed the order through
+    an intermediate node has still expressed it.
+
+    Iterative breadth-first with a visited set, for the same two reasons
+    `_find_cycle` is iterative: a deep author-supplied chain must not raise
+    `RecursionError`, and validation collects every violation, so this runs even
+    on a document rule 3 already flagged as cyclic and must still terminate.
+
+    A single search with an early exit rather than a precomputed transitive
+    closure: closure over a large plan is quadratic in memory for a question
+    asked about only the few nodes that share an issue.
+    """
+    if source == target:
+        return True
+
+    seen = {source}
+    frontier = [source]
+
+    while frontier:
+        node = frontier.pop()
+        for successor in adjacency.get(node, ()):
+            if successor == target:
+                return True
+            if successor not in seen:
+                seen.add(successor)
+                frontier.append(successor)
+
+    return False
 
 
 def _find_cycle(adjacency: dict[str, list[str]]) -> list[str] | None:
@@ -550,6 +644,76 @@ def _check_wave_evals(proposal: LoopProposal) -> list[Violation]:
     return violations
 
 
+def _check_same_issue_ordering(proposal: LoopProposal) -> list[Violation]:
+    """Rule 6: two nodes on one issue must be ordered relative to each other.
+
+    Reusing an issue across nodes is legitimate and intentional — a story
+    delivers it, a later story repairs what the evaluation found. What is not
+    legitimate is two nodes on the same issue with *no order between them*: the
+    plan then says "do this issue twice, independently, at the same time", which
+    is duplicate work on one issue rather than a sequence.
+
+    The runtime is not where this belongs. Transactional work claims do serialise
+    the collision (one node admits, the other is refused), and they stay the
+    cross-plan and concurrency backstop. But that turns an unschedulable plan
+    into a run-time refusal on a plan that was already *accepted* — the author is
+    told at execution what should have been rejected at authoring, and the
+    accepted plan on record is one the engine cannot actually execute as written.
+
+    Order means reachable, not adjacent: `a -> eval -> b` sequences `a` before
+    `b` perfectly well. So this only fires when neither node can reach the other,
+    which is precisely the case where nothing decides which runs first.
+
+    Only `story` and `eval` nodes are considered. A `gate` is a human decision
+    presented by the tick; it consumes no worker and performs no work on its
+    issue, so two gates on one issue are not competing deliveries. That mirrors
+    rule 4 exempting gate-only waves. The set is derived here rather than by
+    importing `dispatch_pass.node_requires_issue_routing`, whose module pulls in
+    boto3 and SQS — the advisory CLI validates from a bare checkout with only
+    pydantic, and this rule must not drag the dispatch stack into that path.
+
+    Nodes with no issue reference are skipped: eval and gate nodes frequently
+    have none, and "no issue" is not a shared identity.
+    """
+    violations: list[Violation] = []
+    by_issue: dict[str, list[str]] = {}
+
+    for node in proposal.nodes:
+        if node.kind not in _ISSUE_CONSUMING_KINDS:
+            continue
+        identity = _work_identity(node.issue_ref)
+        if identity is None:
+            continue
+        by_issue.setdefault(identity, []).append(node.address)
+
+    adjacency = _resolvable_adjacency(proposal)
+
+    for identity, addresses in sorted(by_issue.items()):
+        if len(addresses) < 2:
+            continue
+        # Sorted and pairwise so the report is deterministic and names both ends
+        # of each unordered pair — an author fixing this needs to know which two
+        # nodes to sequence, not just that the issue is over-claimed.
+        ordered_addresses = sorted(addresses)
+        for index, first in enumerate(ordered_addresses):
+            for second in ordered_addresses[index + 1 :]:
+                if _reaches(adjacency, first, second) or _reaches(adjacency, second, first):
+                    continue
+                violations.append(
+                    Violation(
+                        rule="unordered_same_issue",
+                        message=(
+                            f"nodes {first!r} and {second!r} both deliver issue {identity!r} but neither "
+                            f"is ordered before the other; add a dependency edge between them to declare "
+                            f"the intended sequence, or point one of them at a different issue"
+                        ),
+                        where=f"{first} | {second}",
+                    )
+                )
+
+    return violations
+
+
 def _check_declarations(proposal: LoopProposal) -> list[Violation]:
     """Rule 5: `org_id` and `spec_revision` are present and meaningful.
 
@@ -604,6 +768,7 @@ def validate_proposal(proposal: LoopProposal) -> list[Violation]:
         *_check_kinds(proposal),
         *_check_edges(proposal),
         *_check_wave_evals(proposal),
+        *_check_same_issue_ordering(proposal),
     ]
 
 
