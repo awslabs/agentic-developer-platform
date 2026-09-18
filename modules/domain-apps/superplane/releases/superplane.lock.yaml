@@ -250,14 +250,22 @@ schema:
   single_head: true
   observed:
     # U13 repaired the transferred chain and added two missing-table revisions;
-    # U14 added 010 for workspace grants; U15 adds 011 for observation receipts
-    # and leases. All additions extend the same linear head.
-    version_files: 17
+    # U14 added 010 for workspace grants; U15 added 011 for observation receipts
+    # and leases. U13b (#5046) adds 012, which replaces the copied secret ARN in
+    # credential_registry/cloud_accounts with an opaque ADP credential reference.
+    # All additions extend the same linear head.
+    #
+    # U13b authored its revision as `011` on 010 before U15 merged its own `011` onto
+    # that same parent. Both files coexisting is not a Git conflict, but it leaves the
+    # chain two-headed, and `alembic upgrade head` then applies NOTHING rather than
+    # choosing. U13b was renumbered to 012 onto U15's revision instead. Free to do:
+    # `status` below is still `unverified`, so no database has this chain applied.
+    version_files: 18
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 011_add_observation_receiver_tables
+    head: 012_adp_credential_reference
     base: 001_initial
   compatible_with: null
   blocked_by:
@@ -267,4 +275,11 @@ schema:
       the chain is single-headed as of #5045, but no schema compatibility claim is made
       here until `alembic upgrade head` has run against a real database — the live smoke
       check and R4 acceptance 3 that would establish it are deferred behind an unresolved
-      account, database access and backup target
+      account, database access and backup target.
+      Head 012 (#5046, U13b) adds a second, independent live gate on top of that one: it
+      refuses to run against a database whose credential rows still hold secret ARNs,
+      because an ADP credential ID cannot be derived from one. Remapping those rows onto
+      credentials verified as ADP-owned and ADP-readable is the audited vault-owned
+      migration (R7 acceptances 6-7, owned by U7), which has not run. So a deployed
+      database with existing credential rows will be REFUSED by `alembic upgrade head`
+      until that audited migration completes — by design, leaving the database unchanged.

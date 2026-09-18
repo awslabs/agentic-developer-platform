@@ -181,8 +181,24 @@ class TestVaultSyncReconciler:
         return reconciler
 
     @pytest.mark.asyncio
-    async def test_sync_assignment_success(self):
-        """Test successful sync of a single assignment."""
+    async def test_sync_assignment_reports_delivery_unavailable(self):
+        """Issue #5046 (U13b): the reconciler no longer replicates a secret by ARN.
+
+        REPLACES `test_sync_assignment_success`, which asserted
+        `call["secret_arn"] == credential.secret_arn` — that the reconciler copied the
+        secret's Secrets Manager address into the target cluster's ExternalSecret. That is
+        the behavior this story removes: the workload cluster then read the secret
+        directly, so the ADP vault (which owns rotation and revocation) never saw the
+        access and could not stop it.
+
+        The domain record now holds only an opaque ADP credential ID that only the vault
+        can resolve, so the reconciler cannot build such a manifest. It must fail the
+        assignment explicitly rather than invent an address, which is what this pins.
+
+        Almost no working capability was lost: `KubernetesExternalSecretClient` only BUILT
+        a manifest and returned `{"synced": True}` without ever applying it, so the old
+        "success" was never evidence of delivery. Vault-brokered delivery is U7/U7b.
+        """
         es_client = FakeExternalSecretClient(should_succeed=True)
         reconciler = self._make_reconciler(es_client)
 
@@ -209,12 +225,11 @@ class TestVaultSyncReconciler:
             session, assignment, credential, cluster
         )
 
-        assert result is True
-        assert len(es_client.apply_calls) == 1
-        call = es_client.apply_calls[0]
-        assert call["cluster_endpoint"] == cluster.endpoint
-        assert call["secret_arn"] == credential.secret_arn
-        assert call["namespace"] == EXTERNAL_SECRET_NAMESPACE
+        assert result is False, "delivery is unavailable, so the sync must not claim success"
+        assert es_client.apply_calls == [], (
+            "no ExternalSecret may be applied: doing so would require a secret ARN the "
+            "domain record must no longer hold"
+        )
 
     @pytest.mark.asyncio
     async def test_sync_assignment_no_endpoint(self):
@@ -424,9 +439,19 @@ class TestVaultSyncReconciler:
 
         stats = await reconciler.trigger_sync(credential_id=credential.id)
 
+        # Issue #5046 (U13b): the assignment is still FOUND and processed — the manual
+        # trigger and its query still work — but it is no longer counted as synced,
+        # because delivery from a copied secret ARN was withdrawn. Previously this
+        # asserted synced == 1, describing a sync that never applied anything to a cluster.
+        #
+        # It lands in `skipped` rather than `failed` because `trigger_sync` buckets by
+        # `_sync_assignment`'s return value, counting `failed` only for a raised exception;
+        # a False return has always meant `skipped` here, including for the pre-existing
+        # no-endpoint case. The assignment row itself IS marked "Failed" with the reason.
+        # That counter imprecision predates this story and is left alone as out of scope.
         assert stats["total"] == 1
-        assert stats["synced"] == 1
-        assert stats["failed"] == 0
+        assert stats["synced"] == 0
+        assert stats["skipped"] == 1
 
     @pytest.mark.asyncio
     async def test_lifecycle_start_stop(self):

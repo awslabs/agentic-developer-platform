@@ -1,7 +1,25 @@
 """VaultSyncReconciler — credential rotation propagation (US-H2).
 
-This control plane reconciler detects credential rotations in the Credential Registry
-and propagates updated secrets to all assigned data plane clusters via ExternalSecrets.
+CREDENTIAL DELIVERY IS WITHDRAWN HERE — issue #5046 (U13b).
+
+This reconciler used to propagate secrets to data plane clusters by writing the
+credential's Secrets Manager ARN into an ExternalSecret on the target cluster. A domain
+record no longer holds that ARN: it holds an opaque ADP credential ID that only the ADP
+vault can resolve. Copying a secret's address created a second, independent route to the
+secret material outside the vault, so vault rotation and revocation stopped reaching it.
+
+`_sync_assignment` therefore marks each assignment Failed with an explicit reason instead
+of delivering anything, and records a `sync_unavailable` audit entry. It does not fabricate
+an address to keep working.
+
+Little working capability was lost: `KubernetesExternalSecretClient` only BUILT a manifest
+and returned `{"synced": True}` without ever applying it, so its success flag was never
+evidence of delivery — the design notes say so directly. The replacement is vault-brokered
+delivery (the vault resolving a reference over a recipient-bound, short-lived channel),
+owned by U7 (ADP-side contract/client) and U7b (routes/service logic).
+
+Still active: the expiry-warning pass, the reconcile locking, and the stale-assignment
+query below.
 
 Reconciliation loop:
   1. Query all ClusterVaultAssignments that need sync:
@@ -10,9 +28,8 @@ Reconciliation loop:
      - status == "Failed" with retry backoff elapsed
   2. For each stale assignment:
      a. Acquire a reconcile lock to prevent concurrent syncs
-     b. Create/update the ExternalSecret on the target cluster's K8s API
-     c. Update assignment status and synced_at
-     d. Emit audit log entry
+     b. Mark the assignment Failed — delivery is unavailable pending U7/U7b
+     c. Emit an audit log entry
   3. Detect credentials approaching expiry and emit warnings
 """
 
@@ -60,6 +77,18 @@ class ExternalSecretClient:
 
     In production this talks to the target cluster's K8s API.
     Abstracted here so the reconciler can be tested without real clusters.
+
+    WITHDRAWN as a credential-delivery path by issue #5046 (U13b). `apply_external_secret`
+    still takes a `secret_arn`, but no production code path calls it any more: the domain
+    record now holds an opaque ADP credential ID, and replicating a secret from a copied
+    ARN is exactly the leak that story removes — the workload cluster would read the secret
+    directly, leaving the ADP vault unable to enforce rotation or revocation.
+
+    Do not wire this back up to satisfy a caller. The replacement is vault-brokered
+    delivery (the vault resolving a reference over a recipient-bound, short-lived channel),
+    owned by U7's ADP-side contract and U7b's service logic. The class and its tests are
+    retained rather than deleted because that work replaces them; retiring the broad
+    secret-replication pattern outright is called for in the design notes.
     """
 
     async def apply_external_secret(
@@ -337,53 +366,42 @@ class VaultSyncReconciler:
             return False
 
         try:
-            # Build a deterministic secret name from provider and friendly name
-            secret_name = _build_secret_name(credential)
-
-            cluster_endpoint = cluster.endpoint or ""
-            if not cluster_endpoint:
-                logger.warning(
-                    "Cluster %s has no endpoint, cannot sync credential %s",
-                    cluster.id,
-                    credential.id,
-                )
-                await self._mark_failed(session, assignment, "Cluster has no endpoint")
-                return False
-
-            # Apply the ExternalSecret to the target cluster
-            result = await self._es_client.apply_external_secret(
-                cluster_endpoint=cluster_endpoint,
-                secret_name=secret_name,
-                secret_arn=credential.secret_arn,
-                namespace=EXTERNAL_SECRET_NAMESPACE,
-                kms_key_id=credential.kms_key_id,
+            # Issue #5046 (U13b): this reconciler can no longer deliver a credential, and
+            # it must not pretend otherwise.
+            #
+            # It previously passed `credential.secret_arn` and `credential.kms_key_id`
+            # straight into the target cluster's ExternalSecret. That is precisely the leak
+            # the schema change removes: the workload cluster then read the secret from
+            # Secrets Manager directly, so the ADP vault -- the owner of rotation and
+            # revocation -- never saw the access and could not stop it.
+            #
+            # The domain record now holds only an opaque ADP credential ID, which only the
+            # vault can resolve. Rather than invent an address to keep the old manifest
+            # buildable, the assignment fails with an explicit, auditable reason. The
+            # replacement is vault-brokered delivery (the vault resolving a reference over
+            # a recipient-bound, short-lived channel): U7's ADP-side contract and U7b's
+            # service logic, not this story's schema half.
+            #
+            # Little real capability is lost. `KubernetesExternalSecretClient` only BUILT a
+            # manifest and returned `{"synced": True}` without ever applying it, so the
+            # previous "success" was never evidence of working delivery -- the design notes
+            # call that out directly. This turns a misleading success into a visible
+            # failure, which is why no `_emit_event` VaultSyncSucceeded path remains.
+            await self._mark_failed(
+                session,
+                assignment,
+                "Credential delivery unavailable: the domain record holds an opaque ADP "
+                "credential ID, which only the ADP vault can resolve. ExternalSecret "
+                "replication from a copied secret ARN was withdrawn with issue #5046; "
+                "vault-brokered delivery is pending (U7/U7b).",
             )
-
-            if result.get("synced"):
-                await self._mark_synced(session, assignment)
-                await self._write_audit_log(
-                    session,
-                    credential=credential,
-                    cluster=cluster,
-                    action="sync_success",
-                )
-                await self._emit_event(
-                    session,
-                    org_id=credential.org_id,
-                    resource_type="ClusterVaultAssignment",
-                    resource_id=assignment.id,
-                    event_type="VaultSyncSucceeded",
-                    message=(
-                        f"Credential '{credential.friendly_name}' synced to "
-                        f"cluster '{cluster.name}'"
-                    ),
-                )
-                return True
-            else:
-                await self._mark_failed(
-                    session, assignment, "ExternalSecret apply returned not synced"
-                )
-                return False
+            await self._write_audit_log(
+                session,
+                credential=credential,
+                cluster=cluster,
+                action="sync_unavailable",
+            )
+            return False
 
         finally:
             await self._release_lock(session, lock_key)

@@ -119,7 +119,9 @@ class TestRegisterCredential:
             json={
                 "name": "test-cred",
                 "provider": "nebius",
-                "secret_arn": "arn:aws:secretsmanager:us-east-1:123:secret:test",
+                # Issue #5046 (U13b): the field is an ADP credential ID — an opaque vault
+                # reference — not a Secrets Manager ARN.
+                "adp_credential_id": "adp-cred-01HQ8V3XK2WERTY",
             },
         )
         assert response.status_code in (401, 403)
@@ -134,6 +136,29 @@ class TestRegisterCredential:
             headers=headers,
         )
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_register_rejects_a_secret_arn_at_the_route(self, client):
+        """Issue #5046 (U13b): an authenticated caller cannot register a secret ARN.
+
+        The model-level rule is covered in test_models.py; this asserts it is reachable
+        through the actual HTTP route, so a client sending the old ARN-shaped payload gets
+        a 422 rather than persisting a second reference to secret material.
+        """
+        headers = _auth_header()
+        response = await client.post(
+            "/vault/credentials",
+            json={
+                "name": "test-cred",
+                "provider": "nebius",
+                "adp_credential_id": (
+                    "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-AbCdEf"
+                ),
+            },
+            headers=headers,
+        )
+        assert response.status_code == 422
+        assert "must not be an ARN" in response.text
 
 
 class TestListCredentials:

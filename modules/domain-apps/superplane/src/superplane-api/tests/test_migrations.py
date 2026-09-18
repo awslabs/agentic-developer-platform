@@ -29,6 +29,7 @@ unresolved account/database/backup gate.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import io
 from pathlib import Path
@@ -112,7 +113,9 @@ class TestNoDuplicateOrDanglingRevisions:
         for rev in revisions:
             seen[rev.revision] = seen.get(rev.revision, 0) + 1
         duplicates = {rid: n for rid, n in seen.items() if n > 1}
-        assert not duplicates, f"revision ids declared by more than one file: {duplicates}"
+        assert not duplicates, (
+            f"revision ids declared by more than one file: {duplicates}"
+        )
 
     def test_every_declared_parent_exists(self, revisions: list) -> None:
         """Regression for three files declaring parent `"005"`, which no file declares."""
@@ -283,7 +286,9 @@ class TestColumnsFitTheValuesTheAppWrites:
 
         from app.models.api_key import ApiKey
 
-        source = (VERSIONS_DIR / "008_add_api_keys_table.py").read_text(encoding="utf-8")
+        source = (VERSIONS_DIR / "008_add_api_keys_table.py").read_text(
+            encoding="utf-8"
+        )
         widths = {
             node.args[0].value: node.args[1].args[0].value
             for node in ast.walk(ast.parse(source))
@@ -484,3 +489,351 @@ def _tables_created_by_migrations() -> set[str]:
                 if isinstance(table, str):
                     created.add(table)
     return created
+
+
+class TestCredentialReferenceMigrationRefusesToGuess:
+    """Revision 011 (issue #5046, U13b) — the state machine around the cutover.
+
+    WHY THIS MIGRATION IS ALLOWED TO REFUSE, since a migration that raises normally
+    indicates a bug. Revision 011 replaces a copied secret ARN with an ADP credential ID:
+    an opaque handle only the ADP vault can resolve. Those two are not translations of each
+    other. An ARN is an address in Secrets Manager; an ADP credential ID is a vault-owned
+    reference. Nothing inside a schema migration can turn the first into the second, and
+    Superplane is deliberately not given broad read access to ADP secrets to try.
+
+    The requirement is that any mapping must *establish, not assume*, that each mapped
+    credential is ADP-owned and ADP-readable under the relevant account and KMS
+    permissions, and that rotation and revocation work through the new reference. A
+    migration cannot check any of that. So it classifies instead:
+
+      supported state -> no credential rows and no account secret references; apply.
+      unknown state   -> any credential row or account secret ARN remains; REFUSE.
+
+    Fabricating a reference in the unknown state is the "migration assumes ADP ownership"
+    row of the issue's risk table: records would point at credentials nobody confirmed ADP
+    can read, and the failure would be silent. Refusing leaves the database untouched and
+    still upgradeable once the audited vault-owned migration (R7 acc. 6-7, deferred to U7)
+    has produced verified references.
+
+    These tests run against SQLite, which is what the credential-free required lane can
+    offer. That is a real limit: SQLite does not enforce VARCHAR widths and its ALTER
+    TABLE support differs from PostgreSQL's. `TestChainCompilesForPostgres` above covers
+    PostgreSQL *rendering* of the same revision, and the live `alembic upgrade head`
+    against a real database remains the deferred criterion.
+    """
+
+    REVISION_FILE = "012_adp_credential_reference.py"
+
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def _revision_module():
+        """Load the revision through Alembic, so the test uses the real chain entry.
+
+        Cached deliberately. Each `ScriptDirectory.from_config` re-imports the revision
+        file as a fresh module object, so a second load defines a *different*
+        `UnverifiedCredentialReferencesError` class. `pytest.raises` compares by identity,
+        so an uncached helper would raise the refusal correctly and still fail the test —
+        the class the test holds would not be the class the migration raised.
+        """
+        config = Config(str(API_ROOT / "alembic.ini"))
+        config.set_main_option("script_location", str(API_ROOT / "alembic"))
+        script = ScriptDirectory.from_config(config)
+        return script.get_revision("012_adp_credential_reference").module
+
+    @staticmethod
+    def _apply(connection, direction: str = "upgrade") -> None:
+        """Run 012's upgrade() or downgrade() against a live SQLite connection.
+
+        Binds Alembic's module-global `op` proxy to a real (online) MigrationContext, so
+        `op.get_context().as_sql` is False and the row-state check actually runs — the
+        thing the offline rendering test above cannot exercise.
+        """
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        module = TestCredentialReferenceMigrationRefusesToGuess._revision_module()
+        context = MigrationContext.configure(connection=connection)
+        with Operations.context(context):
+            getattr(module, direction)()
+
+    @staticmethod
+    def _minimal_schema(connection) -> None:
+        """The two tables 011 alters, in their pre-011 shape.
+
+        Hand-built rather than produced by running the whole chain: 001-010 include
+        PostgreSQL-specific types (UUID, JSONB) that do not apply cleanly to SQLite, and
+        this test is about 011's row-state decision, not the earlier chain's portability
+        (covered by the tests above).
+        """
+        connection.exec_driver_sql(
+            "CREATE TABLE credential_registry ("
+            " id TEXT PRIMARY KEY,"
+            " provider TEXT,"
+            " friendly_name TEXT,"
+            " secret_arn VARCHAR(512) NOT NULL,"
+            " kms_key_id VARCHAR(512),"
+            " status TEXT)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE cloud_accounts ("
+            " id TEXT PRIMARY KEY,"
+            " account_identifier TEXT,"
+            " cross_account_role_arn VARCHAR(512),"
+            " irsa_role_arns_json TEXT,"
+            " secret_arns_json TEXT)"
+        )
+
+    @staticmethod
+    def _columns(connection, table: str) -> set:
+        import sqlalchemy as sa
+
+        return {c["name"] for c in sa.inspect(connection).get_columns(table)}
+
+    @pytest.fixture()
+    def connection(self):
+        import sqlalchemy as sa
+
+        engine = sa.create_engine("sqlite://")
+        with engine.connect() as conn:
+            self._minimal_schema(conn)
+            yield conn
+
+    # --- supported state ---
+
+    def test_supported_state_applies_the_cutover(self, connection) -> None:
+        """No rows reference secret material, so the schema change goes through."""
+        self._apply(connection)
+
+        credential_columns = self._columns(connection, "credential_registry")
+        assert "adp_credential_id" in credential_columns
+        assert "secret_arn" not in credential_columns, (
+            "the copied secret address must be gone after a supported-state upgrade"
+        )
+        assert "kms_key_id" not in credential_columns, (
+            "the decryption key for a secret this record no longer resolves must be gone"
+        )
+
+        account_columns = self._columns(connection, "cloud_accounts")
+        assert "adp_credential_ids_json" in account_columns
+        assert "secret_arns_json" not in account_columns
+
+    def test_supported_state_keeps_iam_role_arn_columns(self, connection) -> None:
+        """Role ARNs are identities, not secret material, and must survive.
+
+        Guards against an over-broad implementation that strips every column with "arn" in
+        its name: that would break cross-account role assumption while protecting nothing,
+        because a role ARN names who may act and carries no secret value.
+        """
+        self._apply(connection)
+
+        account_columns = self._columns(connection, "cloud_accounts")
+        assert "cross_account_role_arn" in account_columns
+        assert "irsa_role_arns_json" in account_columns
+
+    def test_an_empty_arn_list_is_not_treated_as_a_reference(self, connection) -> None:
+        """`'[]'` is an empty list — it addresses nothing, so it must not block."""
+        connection.exec_driver_sql(
+            "INSERT INTO cloud_accounts (id, account_identifier, secret_arns_json) "
+            "VALUES ('a1', '123456789012', '[]')"
+        )
+        self._apply(connection)
+        assert "adp_credential_ids_json" in self._columns(connection, "cloud_accounts")
+
+    def test_a_credential_row_with_empty_arn_is_refused_unchanged(
+        self, connection
+    ) -> None:
+        """An empty legacy ARN is not evidence of a verified ADP credential ID.
+
+        Before 012 there is no column that could hold that ID. Refusing before DDL keeps
+        the row available for the audited vault-owned migration instead of silently
+        replacing its missing value with another unusable empty value.
+        """
+        module = self._revision_module()
+        connection.exec_driver_sql(
+            "INSERT INTO credential_registry (id, provider, secret_arn, status) "
+            "VALUES ('c1', 'nebius', '', 'Active')"
+        )
+        before = self._columns(connection, "credential_registry")
+
+        with pytest.raises(module.UnverifiedCredentialReferencesError) as excinfo:
+            self._apply(connection)
+
+        assert "credential_registry: 1 row(s)" in str(excinfo.value)
+        assert self._columns(connection, "credential_registry") == before
+        preserved = connection.exec_driver_sql(
+            "SELECT secret_arn FROM credential_registry WHERE id = 'c1'"
+        ).scalar()
+        assert preserved == ""
+
+    # --- unknown state: refuse ---
+
+    def test_a_credential_row_holding_a_secret_arn_is_refused(self, connection) -> None:
+        module = self._revision_module()
+        connection.exec_driver_sql(
+            "INSERT INTO credential_registry (id, provider, secret_arn, status) VALUES "
+            "('c1', 'nebius', "
+            "'arn:aws:secretsmanager:us-east-1:123456789012:secret:k-AbCdEf', 'Active')"
+        )
+
+        with pytest.raises(module.UnverifiedCredentialReferencesError) as excinfo:
+            self._apply(connection)
+
+        message = str(excinfo.value)
+        assert "credential_registry: 1 row(s)" in message
+        assert "audited" in message, (
+            "the refusal must name the audited vault-owned migration that has to run first"
+        )
+
+    def test_an_account_row_holding_secret_arns_is_refused(self, connection) -> None:
+        module = self._revision_module()
+        connection.exec_driver_sql(
+            "INSERT INTO cloud_accounts (id, account_identifier, secret_arns_json) VALUES "
+            "('a1', '123456789012', "
+            "'[\"arn:aws:secretsmanager:us-east-1:123456789012:secret:k-AbCdEf\"]')"
+        )
+
+        with pytest.raises(module.UnverifiedCredentialReferencesError) as excinfo:
+            self._apply(connection)
+        assert "cloud_accounts.secret_arns_json: 1 row(s)" in str(excinfo.value)
+
+    def test_a_refusal_changes_nothing(self, connection) -> None:
+        """The decisive property: a refused database is left exactly as it was.
+
+        A migration that raised halfway would leave a half-migrated schema that is neither
+        the old shape nor the new one, and the operator's rollback would have nothing
+        coherent to return to. The state check therefore runs BEFORE any DDL.
+        """
+        module = self._revision_module()
+        connection.exec_driver_sql(
+            "INSERT INTO credential_registry (id, provider, secret_arn, kms_key_id, status)"
+            " VALUES ('c1', 'nebius', "
+            "'arn:aws:secretsmanager:us-east-1:123456789012:secret:k-AbCdEf', "
+            "'arn:aws:kms:us-east-1:123456789012:key/abcd', 'Active')"
+        )
+        before = self._columns(connection, "credential_registry")
+
+        with pytest.raises(module.UnverifiedCredentialReferencesError):
+            self._apply(connection)
+
+        assert self._columns(connection, "credential_registry") == before, (
+            "a refused migration must not have altered the schema"
+        )
+        preserved = connection.exec_driver_sql(
+            "SELECT secret_arn FROM credential_registry WHERE id = 'c1'"
+        ).scalar()
+        assert preserved.startswith("arn:aws:secretsmanager:"), (
+            "the row must be left untouched so the audited migration can still read it"
+        )
+
+    def test_the_refusal_counts_every_offending_row(self, connection) -> None:
+        """The operator needs the real scope of the work, not just "something blocked"."""
+        module = self._revision_module()
+        for i in range(3):
+            connection.exec_driver_sql(
+                "INSERT INTO credential_registry (id, provider, secret_arn, status) VALUES"
+                f" ('c{i}', 'nebius', "
+                f"'arn:aws:secretsmanager:us-east-1:123456789012:secret:k{i}', 'Active')"
+            )
+
+        with pytest.raises(module.UnverifiedCredentialReferencesError) as excinfo:
+            self._apply(connection)
+        assert "3 row(s)" in str(excinfo.value)
+
+    # --- rollback ---
+
+    def test_downgrade_restores_the_columns_empty(self, connection) -> None:
+        """Rollback must restore the shape WITHOUT re-copying a secret ARN.
+
+        This is the issue's explicit rollback constraint. The prior column held an address
+        this revision did not create, so repopulating it on downgrade would silently
+        recreate the unmanaged second reference to secret material that the upgrade exists
+        to remove. Prior values are recoverable only from the pre-migration backup.
+        """
+        self._apply(connection, "upgrade")
+        connection.exec_driver_sql(
+            "INSERT INTO credential_registry "
+            "(id, provider, adp_credential_id, status) "
+            "VALUES ('c1', 'nebius', 'adp-cred-01HQ8V3XK2WERTY', 'Active')"
+        )
+        self._apply(connection, "downgrade")
+
+        columns = self._columns(connection, "credential_registry")
+        assert "secret_arn" in columns, "downgrade must restore the prior shape"
+        assert "adp_credential_id" not in columns
+
+        restored = connection.exec_driver_sql(
+            "SELECT secret_arn FROM credential_registry WHERE id = 'c1'"
+        ).scalar()
+        assert not restored, (
+            f"downgrade must leave secret_arn empty, got {restored!r}. Re-copying a secret "
+            f"ARN would recreate the second, unmanaged reference to secret material."
+        )
+
+    def test_downgraded_secret_arn_is_nullable(self, connection) -> None:
+        """The restored column must be nullable, since there is no value to put in it.
+
+        Restoring it NOT NULL (as it originally was) would either fail outright or force a
+        fabricated ARN into every row to satisfy the constraint.
+        """
+        import sqlalchemy as sa
+
+        self._apply(connection, "upgrade")
+        self._apply(connection, "downgrade")
+
+        column = next(
+            c
+            for c in sa.inspect(connection).get_columns("credential_registry")
+            if c["name"] == "secret_arn"
+        )
+        assert column["nullable"] is True
+
+    # --- static guarantees ---
+
+    def test_the_revision_extends_the_repaired_single_head(self) -> None:
+        """012 must extend U13's repaired chain, which is the issue's hard dependency.
+
+        Asserted as "the sole head, with 010 among its ancestors" rather than as a literal
+        `down_revision == "010_add_workspace_grants"`. The literal form was what this test
+        originally checked, and it encoded the wrong requirement: the dependency is on
+        U13's repaired chain being *underneath* this revision, not on this revision being
+        the immediate child of one particular id. When U15 (#5387) landed its own revision
+        on 010, satisfying the literal assertion would have meant leaving the chain
+        two-headed -- passing the test by breaking the invariant it exists to protect.
+
+        This form holds however many siblings land on 010 later, and it still fails if this
+        revision is detached from the chain, is not the head, or ends up parallel to
+        another head.
+        """
+        config = Config(str(API_ROOT / "alembic.ini"))
+        config.set_main_option("script_location", str(API_ROOT / "alembic"))
+        script = ScriptDirectory.from_config(config)
+
+        # `list(...)`: `get_heads()` returns a list, and comparing it to a tuple is
+        # always False regardless of the chain's actual shape.
+        assert list(script.get_heads()) == ["012_adp_credential_reference"], (
+            "this revision must be the single head; a second head makes "
+            "`alembic upgrade head` ambiguous and applies no migration at all"
+        )
+
+        ancestors = {
+            rev.revision
+            for rev in script.iterate_revisions("012_adp_credential_reference", "base")
+        }
+        assert "010_add_workspace_grants" in ancestors, (
+            "U13's repaired chain (through 010) must remain an ancestor of this revision"
+        )
+
+    def test_the_upgrade_never_writes_a_secret_arn_into_the_new_column(self) -> None:
+        """Statically: no UPDATE in 012 copies an ARN column into the reference column.
+
+        Belt-and-braces against the exact defect the risk table names first. Even with the
+        row-state check in place, an `UPDATE ... SET adp_credential_id = secret_arn` would
+        satisfy every behavioral test above on an empty database and silently copy secret
+        addresses on a populated one.
+        """
+        source = (VERSIONS_DIR / self.REVISION_FILE).read_text(encoding="utf-8")
+        upgrade_body = source.split("def upgrade()")[1].split("def downgrade()")[0]
+        lowered = upgrade_body.lower()
+
+        assert "set adp_credential_id = secret_arn" not in lowered
+        assert "adp_credential_ids_json = secret_arns_json" not in lowered

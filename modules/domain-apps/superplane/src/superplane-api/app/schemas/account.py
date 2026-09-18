@@ -3,7 +3,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.models.credential import validate_adp_credential_id
 
 
 # ── Account (POST /accounts, GET /accounts, DELETE /accounts/{id}) ──
@@ -34,13 +36,33 @@ class RegisterAccountRequest(BaseModel):
     ingest_role_arn: str | None = Field(
         default=None, max_length=512, description="Ingest Lambda cross-account role ARN"
     )
-    secret_arns: list[str] = Field(
+    # Issue #5046 (U13b): ADP credential IDs, not Secrets Manager ARNs. A copied secret
+    # ARN is a second route to the secret material outside the vault; an ADP credential ID
+    # is an opaque handle only the vault can resolve.
+    adp_credential_ids: list[str] = Field(
         default_factory=list,
-        description="Secrets Manager ARNs for neocloud credentials",
+        description="ADP credential IDs (opaque vault references) for neocloud credentials",
     )
+
     irsa_role_arns: list[str] = Field(
         default_factory=list, description="IRSA role ARNs for data plane pods"
     )
+
+    @field_validator("adp_credential_ids")
+    @classmethod
+    def _reject_arns_or_secrets(cls, values: list[str]) -> list[str]:
+        """Validate every element, matching the singular field on the credential request.
+
+        Without this, the list form was the unguarded way into the same defect: the
+        singular `adp_credential_id` rejected an ARN with a 422 while this field accepted a
+        whole list of them. Validating here keeps the boundary behavior consistent, so a
+        bad payload is a 422 naming the field rather than a 500 out of the model hook.
+
+        Note `irsa_role_arns` above is deliberately NOT validated: an IAM role ARN is an
+        identity, not secret material, and rejecting it would break cross-account
+        assumption while protecting nothing.
+        """
+        return [validate_adp_credential_id(value) for value in values]
 
 
 class AccountResponse(BaseModel):
@@ -54,7 +76,7 @@ class AccountResponse(BaseModel):
     role_arn: str | None = None
     external_id: str | None = None
     status: str
-    secret_arns: list[str] = Field(default_factory=list)
+    adp_credential_ids: list[str] = Field(default_factory=list)
     irsa_role_arns: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -101,14 +123,26 @@ class RegisterCredentialRequest(BaseModel):
     aws_account_id: str | None = Field(
         default=None, max_length=255, description="AWS account where secret is stored"
     )
-    secret_arn: str = Field(
-        ..., min_length=1, max_length=512, description="Secrets Manager ARN"
+    # Issue #5046 (U13b). Was `secret_arn`. Validated with the same rule the model
+    # enforces, so an ARN is rejected at the API boundary with a 422 rather than reaching
+    # the database layer.
+    adp_credential_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="ADP credential ID — an opaque vault reference, never a secret ARN",
     )
+
     irsa_role_arn: str | None = Field(
         default=None,
         max_length=512,
         description="IRSA role ARN that can read the secret",
     )
+
+    @field_validator("adp_credential_id")
+    @classmethod
+    def _reject_arn_or_secret(cls, value: str) -> str:
+        return validate_adp_credential_id(value)
 
 
 class CredentialResponse(BaseModel):
@@ -119,7 +153,7 @@ class CredentialResponse(BaseModel):
     name: str
     provider: str
     credential_type: str
-    secret_arn: str
+    adp_credential_id: str
     status: str
     created_at: datetime
     updated_at: datetime

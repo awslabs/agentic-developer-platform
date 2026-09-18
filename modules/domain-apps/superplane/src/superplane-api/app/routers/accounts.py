@@ -33,7 +33,11 @@ router = APIRouter(tags=["accounts"])
 
 def _account_to_response(acct: CloudAccount) -> AccountResponse:
     """Convert a CloudAccount model to the API response schema."""
-    secret_arns = json.loads(acct.secret_arns_json) if acct.secret_arns_json else []
+    adp_credential_ids = (
+        json.loads(acct.adp_credential_ids_json)
+        if acct.adp_credential_ids_json
+        else []
+    )
     irsa_role_arns = (
         json.loads(acct.irsa_role_arns_json) if acct.irsa_role_arns_json else []
     )
@@ -46,7 +50,7 @@ def _account_to_response(acct: CloudAccount) -> AccountResponse:
         role_arn=acct.cross_account_role_arn,
         external_id=acct.external_id,
         status=acct.status,
-        secret_arns=secret_arns,
+        adp_credential_ids=adp_credential_ids,
         irsa_role_arns=irsa_role_arns,
         created_at=acct.created_at,
         updated_at=acct.updated_at,
@@ -61,7 +65,7 @@ def _credential_to_response(cred: CredentialRegistry) -> CredentialResponse:
         name=cred.friendly_name,
         provider=cred.provider,
         credential_type=cred.credential_type,
-        secret_arn=cred.secret_arn,
+        adp_credential_id=cred.adp_credential_id,
         status=cred.status,
         created_at=cred.created_at,
         updated_at=cred.updated_at,
@@ -107,7 +111,9 @@ async def register_account(
         cross_account_role_arn=body.role_arn,
         external_id=body.external_id,
         ingest_role_arn=body.ingest_role_arn,
-        secret_arns_json=json.dumps(body.secret_arns) if body.secret_arns else None,
+        adp_credential_ids_json=json.dumps(body.adp_credential_ids)
+        if body.adp_credential_ids
+        else None,
         irsa_role_arns_json=json.dumps(body.irsa_role_arns)
         if body.irsa_role_arns
         else None,
@@ -187,18 +193,24 @@ async def register_credential(
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ) -> CredentialResponse:
-    """Register a credential ARN in the vault.
+    """Register an ADP credential reference.
 
-    The CLI stores the actual secret in the user's Secrets Manager, then
-    calls this endpoint to register the ARN with Superplane. The credential
-    value never crosses account boundaries.
+    Issue #5046 (U13b): the stored reference is an **ADP credential ID** — an opaque
+    handle only the ADP vault can resolve — not a Secrets Manager ARN. The credential
+    value never reaches Superplane, and neither does the address of the secret holding it,
+    so vault rotation and revocation remain the single control point.
+
+    The route accepts a reference that is well-formed. It does NOT establish that the
+    reference resolves: that ADP owns the credential and can read it under the relevant
+    account and KMS permissions is verified by the audited vault-owned migration and the
+    ADP-side client contract (U7), not here.
     """
     credential = CredentialRegistry(
         org_id=org_id,
         provider=body.provider,
         friendly_name=body.name,
         credential_type=body.credential_type,
-        secret_arn=body.secret_arn,
+        adp_credential_id=body.adp_credential_id,
         status="Active",
     )
     db.add(credential)
