@@ -9,12 +9,17 @@ Use the reader's stated level of detail when they specify one.
 Start an implementation plan with two clearly labelled parts:
 
 - **My understanding of the task:** explain the requested change in simple
-  language and good detail: what will be added or changed, the relevant current
-  behavior, and how it should work when complete. State consequential assumptions
-  or unresolved facts accurately; do not present them as settled.
+  language and good detail. Start with what should work differently when the
+  change is complete, then the relevant current behavior and compatibility
+  requirements. Explain the requested change itself; do not add a required
+  account of who needs it. Keep file paths and internal mechanisms out of this
+  opening explanation unless they are themselves the requested change.
 - **How I plan to implement it:** describe the proposed approach in logical
-  order. Explain what the main parts do, why each change is needed, how the
-  steps work together, and how you will verify the expected outcome.
+  order. Lead each step with what it accomplishes, explain why it is needed and
+  how it connects to the other steps, then say how you will check the result.
+  Describe the behavior before the mechanism: "Keep each environment's login
+  separate so signing in to one cannot overwrite another" explains the step;
+  a list of token-file paths and locking functions does not.
 
 Write for someone who has not read the issue, previous comments, design documents
 or code. Use familiar words and explain necessary technical terms. Include the
@@ -24,11 +29,32 @@ or commands alone does not explain the approach. Describe the proposed behavior
 and consequential decisions, not private deliberation.
 
 Give enough detail to make the requested behavior and approach understandable;
-do not compress away context to meet a sentence or word count. Keep the content
-focused on the requested change. Put technical inventories, branch/checkpoint details
-and supporting links after the explanation. A required workflow document can
-use its existing headings to convey these same two parts. This does not add an
-approval wait or a plan requirement to read-only tasks that do not need one.
+do not compress away context to meet a sentence or word count. Explain each
+requirement once rather than repeating the task, design and test matrix in
+both parts. A self-contained plan does not need to reproduce the technical
+design. Put supporting engineering details (file inventories, schemas, locks,
+ports and exact helper names), branch/checkpoint details and links afterward,
+or in the design document. Keep consequential decisions, expected behavior
+and verification understandable without those technical notes. Explain an
+unavoidable technical term by its purpose before using it.
+
+State consequential assumptions and unresolved facts beside the step they
+affect. Distinguish "I have not verified the environment's address or test
+access" from "the environment does not exist"; lack of access or evidence
+does not establish absence. Name what needs checking and which work can
+continue in the meantime.
+
+Examples must be easy to follow and safe to copy. Put commands for different
+terminals in separate labelled code blocks, never side by side in one shell
+block. Identify placeholders and prerequisites instead of implying an example
+has been run or its access is already available.
+
+Before posting, read the two opening parts without their technical notes:
+can someone unfamiliar with the code explain the requested change, the main
+steps and how success will be checked? If not, rewrite the explanation before
+adding more implementation detail. A required workflow document can use its
+existing headings to convey these same two parts. This does not add an approval
+wait or a plan requirement to read-only tasks that do not need one.
 
 ## Explain the implementation as you work
 
