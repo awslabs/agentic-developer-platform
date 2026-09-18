@@ -174,6 +174,31 @@ constant-folded expectation, causing the otherwise-correct test to fail determin
 The tolerance remains far below a meaningful currency change and leaves production code
 unchanged.
 
+`src/superplane-api/app/services/` gains `eks_auth.py`, and `proxy.py`, `kubeconfig.py`
+and `routers/workspaces.py` diverge from the adopted revision, for the R12 cluster-
+authentication repair (U16b, #5057). The adopted revision sent the STS `SessionToken`
+returned by `AssumeRole` as the Kubernetes bearer token and disabled TLS verification
+whenever cluster CA data was absent — with `ca_data` hardcoded to `""` on the proxy path,
+so the unverified branch was the one that always ran. Both are corrected here rather than
+recorded as inherited findings, because they are the defect the story owns: cluster calls
+now use a signed, cluster-bound `k8s-aws-v1.` token, kubeconfig export carries an
+`aws eks get-token` exec block instead of an inlined credential, and no code path can
+disable verification. This is a production-behavior divergence, unlike the test-only ones
+above.
+
+Two further divergences in the same files came out of review of that change. First, an
+exported kubeconfig for a tenant whose role requires an `sts:ExternalId` now delegates role
+assumption to a locally configured AWS profile instead of setting an `AWS_EXTERNAL_ID`
+environment variable: the AWS CLI honours no such variable and `aws eks get-token` has no
+`--external-id` flag, so the variable was inert and the export would have failed with
+AccessDenied against exactly the trust policies it appeared to satisfy. `--role-arn` is
+omitted on that path because supplying it alongside a profile makes the CLI mint the token
+with an AssumeRole call that carries no `ExternalId`. Second, `write_ca_bundle` now derives
+its path from a hash of the CA content and reuses it, rather than calling `mkstemp` per
+invocation; the bundle is written on every brokered request and cannot be deleted on return
+(the Kubernetes client re-reads `ssl_ca_cert` per request), so the original form grew `/tmp`
+without bound once the verified path became reachable.
+
 Superplane domain maintainers own this manually maintained inventory. Any further change
 from the adopted revision must be recorded here; the historical reference is deliberately
 not made available to CI as a build or comparison input.

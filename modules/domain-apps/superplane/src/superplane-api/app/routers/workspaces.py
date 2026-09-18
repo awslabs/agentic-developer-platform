@@ -261,9 +261,15 @@ async def generate_kubeconfig(
 ) -> KubeconfigResponse:
     """Generate a scoped kubeconfig for direct cluster access.
 
-    Uses STS assume-role to get a short-lived token for the workspace's cluster.
+    Exceptional path: brokered API operations are the default for workload access. The
+    exported config carries no credential — it uses an ``aws eks get-token`` exec plugin,
+    so the holder must still be authorized to assume the workspace role — and it always
+    pins the cluster's CA so clients verify the cluster's identity.
     """
+    from app.services.eks_auth import EksAuthError, describe_cluster_ca
+    from app.services.kubeconfig import KubeconfigError
     from app.services.kubeconfig import generate_kubeconfig as gen_kubeconfig
+    from app.services.proxy import ProxyError
 
     result = await db.execute(
         select(Workspace).where(
@@ -301,14 +307,18 @@ async def generate_kubeconfig(
             detail="Cluster endpoint not available",
         )
 
-    # We need the AWS account for the workspace. For now, derive from cluster ARN or use a placeholder.
-    # In production, this comes from the cloud_accounts table via workspace.aws_account_id.
-    workspace_aws_account_id = ""
-    if cluster.eks_cluster_arn:
-        # arn:aws:eks:us-east-1:123456789012:cluster/name
-        parts = cluster.eks_cluster_arn.split(":")
-        if len(parts) >= 5:
-            workspace_aws_account_id = parts[4]
+    # Account, region and EKS cluster name all come from the cluster's ARN, which is
+    # authoritative: the workspace cluster need not be in the control plane's own region,
+    # and its real EKS name need not match the display name on the row.
+    from app.services.proxy import (
+        _get_aws_account_from_cluster,
+        _get_cluster_name_from_arn,
+        _get_region_from_cluster,
+        _get_workspace_external_id,
+        assume_role_for_cluster,
+    )
+
+    workspace_aws_account_id = _get_aws_account_from_cluster(cluster)
 
     if not workspace_aws_account_id:
         raise HTTPException(
@@ -316,14 +326,49 @@ async def generate_kubeconfig(
             detail="Cannot determine AWS account for kubeconfig generation",
         )
 
+    eks_cluster_name = _get_cluster_name_from_arn(cluster)
+    cluster_region = _get_region_from_cluster(cluster)
+
+    # Read the tenant's ExternalId from their stored cloud-account record (U16a, #5051)
+    # so the exported config's exec plugin can satisfy a trust policy that requires it.
+    external_id = await _get_workspace_external_id(workspace, db)
+
+    # Resolve the cluster CA from EKS, which is authoritative for it. Generation is
+    # refused if it cannot be resolved rather than emitting a config that would connect
+    # without verifying the cluster's identity.
+    try:
+        credentials = assume_role_for_cluster(
+            workspace_aws_account_id,
+            workspace.name,
+            session_suffix="kubeconfig",
+            external_id=external_id,
+        )
+        cluster_ca_cert = describe_cluster_ca(
+            cluster_name=eks_cluster_name,
+            credentials=credentials,
+            region=cluster_region,
+        )
+    except (EksAuthError, ProxyError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Cannot generate kubeconfig: {exc}",
+        ) from exc
+
     try:
         kubeconfig_yaml, expires_at = gen_kubeconfig(
             cluster_endpoint=cluster.endpoint,
-            cluster_ca_cert="",  # Would come from cluster metadata in production
-            cluster_name=cluster.name,
+            cluster_ca_cert=cluster_ca_cert,
+            cluster_name=eks_cluster_name,
             workspace_aws_account_id=workspace_aws_account_id,
             workspace_name=workspace.name,
+            region=cluster_region,
+            external_id=external_id,
         )
+    except KubeconfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

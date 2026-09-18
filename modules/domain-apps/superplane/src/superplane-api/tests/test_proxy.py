@@ -1,7 +1,8 @@
 """Tests for proxy, heartbeat, cost, and rate limiting."""
 
+import base64
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -274,6 +275,309 @@ class TestProxyErrorHandling:
 
         err = ProxyError("not found", status_code=404)
         assert err.status_code == 404
+
+
+# ---- Cluster authentication and TLS (U16b, issue #5057) ----
+#
+# The brokered proxy path must authenticate with a signed, cluster-bound EKS token and
+# always verify the cluster's CA. Token construction and the TLS trust decision itself
+# are covered in test_kubeconfig.py; these cases cover how the proxy service resolves
+# what to sign and what to trust, and that a failure is a refusal rather than a
+# degraded connection.
+
+
+_STS_CREDENTIALS = {
+    "AccessKeyId": "ASIAIOSFODNN7EXAMPLE",
+    "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "SessionToken": "FwoGZXIvYXdzEExampleSessionTokenValueOnly",
+}
+
+
+def _cluster(**overrides):
+    """Build a Cluster row for identifier-resolution tests."""
+    from app.models.cluster import Cluster
+
+    fields = {
+        "id": uuid.uuid4(),
+        "org_id": uuid.uuid4(),
+        "name": "display-name",
+        "eks_cluster_arn": "arn:aws:eks:eu-west-1:123456789012:cluster/real-eks-name",
+        "endpoint": "https://ABC.gr7.eu-west-1.eks.amazonaws.com",
+        "status": "Active",
+    }
+    fields.update(overrides)
+    return Cluster(**fields)
+
+
+class TestClusterIdentifierResolution:
+    """Region and cluster name must come from the ARN, which is authoritative.
+
+    Signing against the wrong regional STS endpoint, or under the row's display name
+    rather than the cluster's real EKS name, produces a token the cluster rejects.
+    """
+
+    def test_region_from_arn(self):
+        from app.services.proxy import _get_region_from_cluster
+
+        assert _get_region_from_cluster(_cluster()) == "eu-west-1"
+
+    def test_region_falls_back_to_configured_region(self):
+        from app.config import settings
+        from app.services.proxy import _get_region_from_cluster
+
+        assert (
+            _get_region_from_cluster(_cluster(eks_cluster_arn=None))
+            == settings.aws_region
+        )
+
+    def test_cluster_name_from_arn_not_display_name(self):
+        from app.services.proxy import _get_cluster_name_from_arn
+
+        assert _get_cluster_name_from_arn(_cluster()) == "real-eks-name"
+
+    def test_cluster_name_falls_back_to_row_name(self):
+        from app.services.proxy import _get_cluster_name_from_arn
+
+        assert (
+            _get_cluster_name_from_arn(_cluster(eks_cluster_arn=None)) == "display-name"
+        )
+
+    def test_account_from_arn(self):
+        from app.services.proxy import _get_aws_account_from_cluster
+
+        assert _get_aws_account_from_cluster(_cluster()) == "123456789012"
+
+
+class TestBrokeredAssume:
+    """The assume must carry the tenant's stored ExternalId (U16a, #5051)."""
+
+    def test_external_id_is_sent_when_present(self):
+        from app.services.proxy import assume_role_for_cluster
+
+        fake_sts = MagicMock()
+        fake_sts.assume_role.return_value = {"Credentials": _STS_CREDENTIALS}
+        with patch("app.services.proxy.boto3.client", return_value=fake_sts):
+            assume_role_for_cluster("123456789012", "ws-a", external_id="tenant-xyz")
+
+        assert fake_sts.assume_role.call_args.kwargs["ExternalId"] == "tenant-xyz"
+
+    def test_external_id_omitted_entirely_when_absent(self):
+        """An empty ExternalId is not equivalent to omitting the parameter."""
+        from app.services.proxy import assume_role_for_cluster
+
+        fake_sts = MagicMock()
+        fake_sts.assume_role.return_value = {"Credentials": _STS_CREDENTIALS}
+        with patch("app.services.proxy.boto3.client", return_value=fake_sts):
+            assume_role_for_cluster("123456789012", "ws-a", external_id=None)
+
+        assert "ExternalId" not in fake_sts.assume_role.call_args.kwargs
+
+    def test_role_arn_and_session_name_shape(self):
+        from app.services.proxy import assume_role_for_cluster
+
+        fake_sts = MagicMock()
+        fake_sts.assume_role.return_value = {"Credentials": _STS_CREDENTIALS}
+        with patch("app.services.proxy.boto3.client", return_value=fake_sts):
+            assume_role_for_cluster("123456789012", "ws-a", session_suffix="kubeconfig")
+
+        kwargs = fake_sts.assume_role.call_args.kwargs
+        assert (
+            kwargs["RoleArn"]
+            == "arn:aws:iam::123456789012:role/superplane-workspace-ws-a"
+        )
+        assert kwargs["RoleSessionName"] == "superplane-kubeconfig-ws-a"
+
+    @pytest.mark.asyncio
+    async def test_external_id_read_from_stored_record_scoped_to_org(self):
+        """Read from stored metadata, and only from the workspace's own org's record.
+
+        A value derived in code would drift from the tenant's trust policy or be
+        guessable; an unscoped lookup would let one tenant's record broker another's role.
+        """
+        from app.services.proxy import _get_workspace_external_id
+
+        workspace = MagicMock()
+        workspace.aws_account_id = uuid.uuid4()
+        workspace.org_id = uuid.uuid4()
+
+        account = MagicMock()
+        account.external_id = "stored-external-id"
+        db = MagicMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=account))
+        )
+
+        assert await _get_workspace_external_id(workspace, db) == "stored-external-id"
+        assert db.execute.await_count == 1
+
+        # Assert the org constraint is really in the WHERE clause, not just intended. A
+        # count-only assertion passes for an unscoped query too, which is the exact bug
+        # that would let one tenant's record broker another tenant's role. The filter has
+        # to be read off the WHERE clause specifically: `org_id` appears in every
+        # `select(CloudAccount)` column list whether or not it is filtered on.
+        where = str(db.execute.await_args.args[0].whereclause)
+        assert "cloud_accounts.org_id" in where
+        assert "cloud_accounts.id" in where
+
+    @pytest.mark.asyncio
+    async def test_no_external_id_when_workspace_has_no_account(self):
+        from app.services.proxy import _get_workspace_external_id
+
+        workspace = MagicMock()
+        workspace.aws_account_id = None
+        db = MagicMock()
+        db.execute = AsyncMock()
+
+        assert await _get_workspace_external_id(workspace, db) is None
+        # No account linked means no lookup at all.
+        db.execute.assert_not_awaited()
+
+
+class TestProxyTlsRefusal:
+    """A CA that cannot be resolved refuses the operation; it never downgrades TLS."""
+
+    def test_missing_ca_raises_proxy_error(self):
+        from app.services.proxy import ProxyError, create_k8s_client
+
+        with pytest.raises(ProxyError) as exc_info:
+            create_k8s_client(
+                cluster_endpoint="https://example.eks.amazonaws.com",
+                cluster_ca_data="",
+                credentials=_STS_CREDENTIALS,
+                cluster_name="my-cluster",
+                region="us-east-1",
+            )
+        assert exc_info.value.status_code == 502
+        assert "TLS verification" in str(exc_info.value)
+
+    def test_malformed_ca_raises_proxy_error(self):
+        from app.services.proxy import ProxyError, create_k8s_client
+
+        with pytest.raises(ProxyError, match="not valid base64"):
+            create_k8s_client(
+                cluster_endpoint="https://example.eks.amazonaws.com",
+                cluster_ca_data="!!!not-base64!!!",
+                credentials=_STS_CREDENTIALS,
+                cluster_name="my-cluster",
+                region="us-east-1",
+            )
+
+    def test_incomplete_credentials_raise_proxy_error(self):
+        """Signing with a partial credential yields a token the cluster silently rejects."""
+        from app.services.proxy import ProxyError, create_k8s_client
+
+        creds = dict(_STS_CREDENTIALS)
+        creds["SessionToken"] = ""
+        with pytest.raises(ProxyError, match="Incomplete STS credentials"):
+            create_k8s_client(
+                cluster_endpoint="https://example.eks.amazonaws.com",
+                cluster_ca_data=base64.b64encode(
+                    b"-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"
+                ).decode(),
+                credentials=creds,
+                cluster_name="my-cluster",
+                region="us-east-1",
+            )
+
+    def test_missing_credentials_surface_as_unavailable(self):
+        """No pod identity is a 503 (config problem), not a generic gateway failure."""
+        from botocore.exceptions import NoCredentialsError
+
+        from app.services.proxy import ProxyError, assume_role_for_cluster
+
+        fake_sts = MagicMock()
+        fake_sts.assume_role.side_effect = NoCredentialsError()
+        with patch("app.services.proxy.boto3.client", return_value=fake_sts):
+            with pytest.raises(ProxyError) as exc_info:
+                assume_role_for_cluster("123456789012", "ws-a")
+        assert exc_info.value.status_code == 503
+
+    def test_assume_failure_surfaces_as_proxy_error(self):
+        from botocore.exceptions import ClientError
+
+        from app.services.proxy import ProxyError, assume_role_for_cluster
+
+        fake_sts = MagicMock()
+        fake_sts.assume_role.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "AssumeRole"
+        )
+        with patch("app.services.proxy.boto3.client", return_value=fake_sts):
+            with pytest.raises(ProxyError, match="Failed to assume cross-account role"):
+                assume_role_for_cluster("123456789012", "ws-a")
+
+    @pytest.mark.asyncio
+    async def test_cluster_without_arn_or_name_is_refused(self):
+        """Without a resolvable EKS name there is nothing to bind a token to."""
+        from app.services import proxy as proxy_module
+
+        workspace = MagicMock()
+        workspace.name = "ws-a"
+        workspace.org_id = uuid.uuid4()
+        # An ARN supplies the account but the row has no usable name to sign.
+        cluster = _cluster(eks_cluster_arn="arn:aws:eks:eu-west-1:123456789012:", name="")
+
+        with patch.object(
+            proxy_module, "get_workspace_cluster", return_value=(workspace, cluster)
+        ):
+            with pytest.raises(
+                proxy_module.ProxyError, match="Cannot determine EKS cluster name"
+            ):
+                await proxy_module.get_k8s_clients(
+                    uuid.uuid4(), workspace.org_id, MagicMock()
+                )
+
+    @pytest.mark.asyncio
+    async def test_cluster_without_account_is_refused(self):
+        from app.services import proxy as proxy_module
+
+        workspace = MagicMock()
+        workspace.name = "ws-a"
+        workspace.org_id = uuid.uuid4()
+        cluster = _cluster(eks_cluster_arn=None)
+
+        with patch.object(
+            proxy_module, "get_workspace_cluster", return_value=(workspace, cluster)
+        ):
+            with pytest.raises(
+                proxy_module.ProxyError, match="Cannot determine AWS account"
+            ):
+                await proxy_module.get_k8s_clients(
+                    uuid.uuid4(), workspace.org_id, MagicMock()
+                )
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_cluster_ca_refuses_the_operation(self):
+        """When EKS cannot supply a CA, the brokered call fails rather than proceeding."""
+        from app.services import proxy as proxy_module
+        from app.services.eks_auth import EksAuthError
+
+        workspace = MagicMock()
+        workspace.name = "ws-a"
+        workspace.org_id = uuid.uuid4()
+        cluster = _cluster()
+
+        with (
+            patch.object(
+                proxy_module, "get_workspace_cluster", return_value=(workspace, cluster)
+            ),
+            patch.object(
+                proxy_module, "_get_workspace_external_id", return_value=None
+            ),
+            patch.object(
+                proxy_module,
+                "assume_role_for_cluster",
+                return_value=_STS_CREDENTIALS,
+            ),
+            patch.object(
+                proxy_module,
+                "describe_cluster_ca",
+                side_effect=EksAuthError("reported no CA certificate"),
+            ),
+        ):
+            with pytest.raises(proxy_module.ProxyError, match="no CA certificate"):
+                await proxy_module.get_k8s_clients(
+                    uuid.uuid4(), workspace.org_id, MagicMock()
+                )
 
 
 # ---- Router endpoint tests (auth checks) ----
