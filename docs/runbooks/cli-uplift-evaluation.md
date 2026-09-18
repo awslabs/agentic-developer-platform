@@ -143,9 +143,18 @@ that proves nothing:
   already-registered URL as an *alias* — one canonical URL, one stable id, one
   session — so three names over fewer URLs would satisfy a count while sharing
   the very session whose independence is under test.
-- **A distinct `credential_secret_name` per deployment.** One identity signed in
-  three times cannot demonstrate that logging out of one deployment leaves the
-  other two signed in.
+- **A distinct `credential_secret_name` per deployment**, as required by the
+  fixture format. Each secret supplies credentials valid for its gateway;
+  matching user IDs across different deployments are allowed.
+
+E16 sends a unique `X-Request-ID` from each tool and matches the usage API's
+`request_id` field. Each test identity needs access to its own usage logs. A tool
+version that does not forward the correlation header fails receipt validation.
+E17 requires shell-tool access in the temporary fixture directory: each model
+runs a local barrier command, then continues in the same process after the harness
+switches the default, refreshes one deployment, and logs out another. The logged-out
+Codex session must report an authentication error, and the other two must finish.
+Cleanup failure makes the case fail.
 
 With the variable unset, E16/E17 report `blocked` naming `three_deployments`, and
 `full_acceptance` stays false. That is the intended state until a coordinator

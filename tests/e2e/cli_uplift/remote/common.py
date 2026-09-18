@@ -525,7 +525,7 @@ def install_release(config, env, home, transcript):
 
 
 def process_state(pid):
-    """The single-letter process state from procfs, or None where there is none.
+    """The single-letter process state from procfs, with a portable ps fallback.
 
     Read from the end of the line: field 2 is the executable name in parentheses
     and may itself contain spaces or a bracket, so splitting from the left is how
@@ -534,7 +534,18 @@ def process_state(pid):
     try:
         stat = Path(f"/proc/{int(pid)}/stat").read_text()
     except (OSError, ValueError):
-        return None
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(int(pid))],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        state = result.stdout.strip()
+        return state[0] if result.returncode == 0 and state else None
     _, _, tail = stat.rpartition(")")
     fields = tail.split()
     return fields[0] if fields else None

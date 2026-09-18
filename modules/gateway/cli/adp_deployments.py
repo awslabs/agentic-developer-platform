@@ -70,7 +70,10 @@ import os
 import re
 import secrets
 import shlex
+import shutil
+import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -142,7 +145,13 @@ def legacy_config_dir():
     two agree about where the legacy store is; a test harness that redirects one
     must not end up with the two halves looking at different directories.
     """
-    return Path(os.environ.get("BG_CONFIG_DIR") or legacy_home_config_dir())
+    override = os.environ.get("ADP_LEGACY_CONFIG_DIR") or os.environ.get("BG_CONFIG_DIR")
+    if override:
+        path = Path(override).absolute()
+        # BG_CONFIG_DIR is derived for named children, not a new legacy store.
+        if path != deployments_root().absolute() and deployments_root().absolute() not in path.parents:
+            return path
+    return legacy_home_config_dir()
 
 
 def legacy_home_config_dir():
@@ -202,7 +211,13 @@ def canonical_url(url):
     """
     if not isinstance(url, str) or not url.strip():
         raise DeploymentError("Give the deployment's URL with --url https://<host>.", "usage_error", 1)
-    parsed = urllib.parse.urlsplit(url.strip())
+    if any(char.isspace() or ord(char) < 32 for char in url):
+        raise DeploymentError("A deployment URL cannot contain whitespace or control characters.", "usage_error", 1)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise DeploymentError("Give a valid gateway hostname and port.", "usage_error", 1) from None
     if not parsed.hostname:
         raise DeploymentError(f"{url!r} is not a usable URL. Use the form https://<host>.", "usage_error", 1)
     loopback = parsed.hostname in LOOPBACK_HOSTS
@@ -218,7 +233,9 @@ def canonical_url(url):
             "usage_error",
             1,
         )
-    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")).rstrip("/")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    authority = host + (f":{port}" if port and port != (443 if parsed.scheme == "https" else 80) else "")
+    base = urllib.parse.urlunsplit((parsed.scheme, authority, parsed.path, "", "")).rstrip("/")
     return base if base.endswith("/api") else base + "/api"
 
 
@@ -331,12 +348,26 @@ def load_registry():
             f"{registry_path()} has no readable deployment records. Fix or move it, then re-run.",
             "deployment_state_unreadable",
         )
+    bindings = {}
     for name, record in records.items():
         if not isinstance(record, dict) or not isinstance(record.get("id"), str) or not isinstance(record.get("gateway_url"), str):
             raise DeploymentError(
                 f"The deployment record for {name!r} in {registry_path()} is incomplete. Fix or move the file, then re-run.",
                 "deployment_state_unreadable",
             )
+        valid_id = record["id"] == LEGACY_NAME if record.get("legacy") else re.fullmatch(r"d[0-9a-f]{16}", record["id"])
+        if not NAME_PATTERN.fullmatch(name) or not valid_id:
+            raise DeploymentError("The deployment registry contains an unsafe name or storage id.", "deployment_state_unreadable")
+        if not record.get("legacy"):
+            try:
+                url = canonical_url(record["gateway_url"])
+            except DeploymentError:
+                raise DeploymentError("The deployment registry contains an invalid gateway URL.", "deployment_state_unreadable") from None
+            if url != record["gateway_url"] or bindings.get(record["id"], url) != url:
+                raise DeploymentError("One deployment store has inconsistent gateway bindings.", "deployment_state_unreadable")
+            bindings[record["id"]] = url
+    if raw.get("default") is not None and raw["default"] not in records:
+        raise DeploymentError("The saved default is missing from the deployment registry.", "deployment_state_unreadable")
     return {"schema_version": version, "default": raw.get("default"), "deployments": records}
 
 
@@ -408,39 +439,18 @@ def adopt_legacy(registry):
 
 
 def _registry_with_implicit_legacy(registry):
-    """A READ-ONLY view including the legacy store, without writing anything.
+    """Include the original store without adopting it on a read.
 
-    `status` and `deployment list` must be able to show an unadopted legacy store
-    without mutating the machine, so resolution reads through this view and only
-    the first genuinely mutating command calls adopt_legacy().
-
-    The adopted record's URL is also REFRESHED from the live store here. Adoption
-    persists a snapshot of the legacy `config.json` URL, but the legacy deployment
-    is adopted IN PLACE — that store, not the registry, is the authority for where
-    it points, and `adp login --gateway-url <other>` rewrites it (URL and token
-    together) without touching the registry. Trusting the snapshot then made the
-    two disagree, and because the destination URL is read from the registry while
-    the bearer comes from the store, the command sent the newly minted token for
-    gateway B to gateway A — the cross-deployment credential leak this module
-    exists to prevent. Deriving the URL from the store keeps them in lockstep, so
-    the divergence is not merely detected but impossible.
+    The implicit legacy name follows its existing config for compatibility.
+    Explicit aliases retain the URL they were registered with: if the original
+    store is rebound, validate_config refuses to use that alias's credentials.
     """
     view, _ = adopt_legacy(registry)
     live = legacy_gateway_url()
     if not live:
         return view
-    # EVERY record backed by the legacy store must be refreshed, not just the one
-    # named LEGACY_NAME. `deployment add aaa --url <legacy URL>` creates an ALIAS —
-    # same stable id, same store, its own registry key — and keying this refresh on
-    # the name alone left the alias holding the URL as of the moment it was added.
-    # After the legacy store was rebound (a reinstall, or `login --gateway-url
-    # <other>`, which rewrites URL and token together), the alias then addressed the
-    # OLD gateway while drawing the NEW token from the shared store: one
-    # deployment's live credential sent to another deployment's gateway, which is
-    # the leak this refresh exists to make impossible. Keyed on the `legacy` flag,
-    # so every name for that one store answers with the store's live URL.
     refreshed = {
-        name: ({**record, "gateway_url": live} if record.get("legacy") and record.get("gateway_url") != live else record)
+        name: ({**record, "gateway_url": live} if name == LEGACY_NAME and record.get("legacy") and record.get("gateway_url") != live else record)
         for name, record in view["deployments"].items()
     }
     if refreshed != view["deployments"]:
@@ -466,10 +476,14 @@ class Deployment:
         self.gateway_url = record.get("gateway_url") or ""
         self.legacy = bool(record.get("legacy"))
         self.selection_source = selection_source
+        self._legacy_root = legacy_config_dir()
+        self._root = self._legacy_root if self.legacy else deployments_root() / self.id
+        self._state = legacy_state_dir() if self.legacy else self._root / "state"
+        self._logs = adp_home() / "logs" if self.legacy else self._root / "logs"
 
     @property
     def root(self):
-        return legacy_config_dir() if self.legacy else deployments_root() / self.id
+        return self._root
 
     @property
     def config_dir(self):
@@ -478,7 +492,7 @@ class Deployment:
 
     @property
     def state_dir(self):
-        return legacy_state_dir() if self.legacy else self.root / "state"
+        return self._state
 
     @property
     def runtime_dir(self):
@@ -497,7 +511,20 @@ class Deployment:
 
     @property
     def log_dir(self):
-        return (adp_home() / "logs") if self.legacy else self.root / "logs"
+        return self._logs
+
+    def validate_config(self):
+        config = _read_json(self.config_dir / "config.json")
+        if config is None:
+            return
+        if not isinstance(config, dict):
+            raise DeploymentError("The session configuration is not a JSON object.", "deployment_state_unreadable")
+        stored = config.get("gateway_url")
+        if self.gateway_url and (not stored or canonical_url(stored) != self.gateway_url):
+            raise DeploymentError(
+                f"The session store for {self.name!r} belongs to another gateway. Repair its configuration before continuing.",
+                "deployment_mismatch",
+            )
 
     def ensure_directories(self):
         """Create this deployment's private directories, 0700.
@@ -568,6 +595,7 @@ class Deployment:
             "ADP_DEPLOYMENT_NAME": self.name,
             "ADP_DEPLOYMENT_SOURCE": self.selection_source,
             "ADP_DEPLOYMENT_URL": self.gateway_url,
+            "ADP_LEGACY_CONFIG_DIR": str(self._legacy_root),
             "BG_CONFIG_DIR": str(self.config_dir),
             "ADP_STATE_DIR": str(self.state_dir),
             "ADP_RUNTIME_DIR": str(self.runtime_dir),
@@ -580,6 +608,10 @@ class Deployment:
 
 
 def _find_by_id(registry, stable_id):
+    inherited_name = os.environ.get("ADP_DEPLOYMENT_NAME")
+    inherited = registry["deployments"].get(inherited_name)
+    if inherited and inherited["id"] == stable_id:
+        return inherited_name, inherited
     for name, record in registry["deployments"].items():
         if record["id"] == stable_id:
             return name, record
@@ -631,6 +663,9 @@ def resolve(explicit=None, *, registry=None):
             )
         resolved = Deployment(name, record, os.environ.get("ADP_DEPLOYMENT_SOURCE") or "inherited")
         _reject_crossed_context(registry, resolved)
+        inherited_url = os.environ.get("ADP_DEPLOYMENT_URL")
+        if inherited_url and canonical_url(inherited_url) != resolved.gateway_url:
+            raise DeploymentError("The inherited deployment URL has changed. Start a new command.", "deployment_mismatch")
         return resolved
 
     selected = (os.environ.get("ADP_DEPLOYMENT") or "").strip()
@@ -814,6 +849,76 @@ def use(name):
     return _result("configured", name, registry, alias_of=None)
 
 
+def _process_start(pid):
+    if pid <= 0:
+        return None
+    try:
+        result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+        return result.stdout.strip() if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def setup_port(deployment):
+    """Keep bare Codex's saved endpoint stable across proxy restarts."""
+    if deployment.legacy:
+        return 9191
+    with _RegistryLock():
+        path = deployment.runtime_dir / "setup-port.json"
+        saved = _read_json(path)
+        if saved:
+            return int(saved["port"])
+        identity = _read_json(deployment.runtime_dir / "proxy.json") or {}
+        port = identity.get("port") if identity.get("deployment_id") == deployment.id else None
+        if not port:
+            reserved = {int(value["port"]) for item in deployments_root().glob("*/runtime/setup-port.json") if (value := _read_json(item))}
+            # Holding the registry lock excludes other setup commands. Binding
+            # tests external availability; an unrelated later bind fails closed.
+            for _ in range(100):
+                with socket.socket() as probe:
+                    probe.bind(("127.0.0.1", 0))
+                    candidate = probe.getsockname()[1]
+                if candidate not in reserved:
+                    port = candidate
+                    break
+            if not port:
+                raise DeploymentError("Could not reserve a distinct local proxy port.", "deployment_busy")
+        _write_json_private(path, {"port": port})
+        return int(port)
+
+
+def helper_command(deployment, adp_path):
+    environment = deployment.environment()
+    environment["ADP_DEPLOYMENT_SOURCE"] = "setup"
+    return shlex.join(["env", "-u", "ADP_DEPLOYMENT", *[f"{key}={value}" for key, value in environment.items()], adp_path, "token"])
+
+
+def lease(deployment, pid):
+    """Protect a running command, including the tool that replaces it via exec.
+
+    Registration and removal share the registry lock. Process start time makes a
+    stale lease harmless after PID reuse; no cleanup handler must survive exec.
+    """
+    with _RegistryLock():
+        records = _registry_with_implicit_legacy(load_registry())["deployments"]
+        current = records.get(deployment.name) or {}
+        if current.get("id") != deployment.id or current.get("gateway_url") != deployment.gateway_url:
+            raise DeploymentError("The selected deployment changed before this command started.", "deployment_mismatch")
+        start = _process_start(pid)
+        if not start:
+            raise DeploymentError("Could not establish the running command's identity.", "deployment_busy")
+        directory = deployment.runtime_dir / "leases"
+        for old in directory.glob("*.json"):
+            if old.stem.isdigit() and int(old.stem) > 0:
+                try:
+                    os.kill(int(old.stem), 0)
+                except ProcessLookupError:
+                    old.unlink(missing_ok=True)
+                except PermissionError:
+                    pass
+        _write_json_private(directory / f"{pid}.json", {"pid": pid, "start": start})
+
+
 def _busy_reason(deployment):
     """Why a deployment must not be removed right now, or None.
 
@@ -822,6 +927,14 @@ def _busy_reason(deployment):
     the file's existence.
     """
     runtime = deployment.runtime_dir
+    for path in (runtime / "leases").glob("*.json"):
+        value = _read_json(path) or {}
+        start = _process_start(int(value.get("pid", 0)))
+        if start and start == value.get("start"):
+            return f"a command is running (pid {value['pid']})"
+    daemon = Path.home() / "Library/LaunchAgents" / f"com.adp.gateway-proxy.{deployment.id}.plist"
+    if daemon.exists():
+        return "an always-on proxy is installed; run adp daemon uninstall for this deployment"
     for marker in ("proxy.json", "proxy.pid"):
         path = runtime / marker
         if not path.exists():
@@ -877,6 +990,14 @@ def remove(name):
         # Other aliases share this id and this session, so the store survives until
         # the last name pointing at it is gone.
         aliases_left = any(other["id"] == record["id"] for other in remaining.values())
+        if not aliases_left and not deployment.legacy and deployment.root.exists():
+            if deployment.root.is_symlink() or deployments_root().is_symlink():
+                raise DeploymentError("Refusing to remove a deployment store through a symlink.", "unsafe_file")
+            private_directory(deployment.root)
+            try:
+                shutil.rmtree(deployment.root)
+            except OSError as exc:
+                raise DeploymentError(f"Could not remove the local deployment store: {exc}.", "operation_failed") from None
         registry = {**registry, "deployments": remaining}
         save_registry(registry)
     return {
@@ -1004,6 +1125,8 @@ def main(argv=None):
     resolve_parser.add_argument("--deployment", default=None)
     resolve_parser.add_argument("--format", choices=("env", "json"), default="json")
     resolve_parser.add_argument("--ensure", action="store_true", help="create the private directories")
+    resolve_parser.add_argument("--lease-pid", type=int, help="protect the calling command from concurrent removal")
+    resolve_parser.add_argument("--validate-config", action="store_true")
 
     # Exposed so the bash front door can compare two URLs the way alias detection
     # does. `https://gw`, `https://gw/` and `https://gw/api/` are ONE gateway, so a
@@ -1011,6 +1134,9 @@ def main(argv=None):
     # trailing slash while still missing a genuinely different host.
     canonicalize_parser = subparsers.add_parser("canonicalize", parents=[shared], help="print a URL's canonical form (internal)")
     canonicalize_parser.add_argument("url")
+    helper_parser = subparsers.add_parser("helper-command", help="print a pinned Claude token helper (internal)")
+    helper_parser.add_argument("adp_path")
+    subparsers.add_parser("setup-port", help="reserve the selected deployment's bare Codex port (internal)")
 
     args = parser.parse_args(argv)
     if not args.verb:
@@ -1031,8 +1157,16 @@ def main(argv=None):
             return _print_listing(listing(), args.json)
         elif args.verb == "canonicalize":
             print(canonical_url(args.url))
+        elif args.verb == "helper-command":
+            print(helper_command(resolve(), args.adp_path))
+        elif args.verb == "setup-port":
+            print(setup_port(resolve()))
         elif args.verb == "resolve":
             deployment = resolve(args.deployment)
+            if args.validate_config:
+                deployment.validate_config()
+            if args.lease_pid and not deployment.legacy:
+                lease(deployment, args.lease_pid)
             if args.ensure:
                 deployment.ensure_directories()
             if args.format == "env":

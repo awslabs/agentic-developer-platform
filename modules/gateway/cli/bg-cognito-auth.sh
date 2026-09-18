@@ -162,17 +162,15 @@ save_config() {
     # gateway does it server-side (Issue #4837 follow-up). Empty = direct Cognito.
     local refresh_via="${6:-}"
 
-    cat > "${CONFIG_FILE}" << EOF
-{
-    "gateway_url": "${gateway_url}",
-    "user_pool_id": "${user_pool_id}",
-    "client_id": "${client_id}",
-    "identity_pool_id": "${identity_pool_id}",
-    "region": "${region}",
-    "refresh_via": "${refresh_via}"
-}
-EOF
-    chmod 600 "${CONFIG_FILE}"
+    local tmp
+    tmp=$(mktemp "${CONFIG_FILE}.XXXXXX")
+    jq -n --arg gateway_url "${gateway_url}" --arg user_pool_id "${user_pool_id}" \
+        --arg client_id "${client_id}" --arg identity_pool_id "${identity_pool_id}" \
+        --arg region "${region}" --arg refresh_via "${refresh_via}" \
+        '{gateway_url: $gateway_url, user_pool_id: $user_pool_id, client_id: $client_id,
+          identity_pool_id: $identity_pool_id, region: $region, refresh_via: $refresh_via}' > "${tmp}"
+    chmod 600 "${tmp}"
+    mv -f "${tmp}" "${CONFIG_FILE}"
 }
 
 # Load configuration
@@ -1252,6 +1250,9 @@ cmd_serve() {
     local port="${DEFAULT_PROXY_PORT}"
     if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
         port=0
+        if [ -f "${PROXY_RUNTIME_DIR}/setup-port.json" ]; then
+            port="$(jq -er '.port' "${PROXY_RUNTIME_DIR}/setup-port.json")"
+        fi
     fi
 
     while [[ $# -gt 0 ]]; do
@@ -1429,8 +1430,58 @@ EOF
 }
 
 # Main entry point
+resolve_auth_deployment() {
+    local resolver="$(dirname "$(script_path)")/adp_deployments.py"
+    local registry="${ADP_HOME:-${HOME}/.adp}/deployments.json"
+    if [ ! -f "${resolver}" ]; then
+        if [ -n "${ADP_DEPLOYMENT:-}${ADP_DEPLOYMENT_ID:-}" ] || [ -f "${registry}" ]; then
+            print_error "Deployment resolver is missing. Reinstall the CLI before using this session." >&2
+            exit 1
+        fi
+        return
+    fi
+    if [ -z "${ADP_DEPLOYMENT:-}${ADP_DEPLOYMENT_ID:-}" ] && [ ! -f "${registry}" ] && [ ! -f "${CONFIG_FILE}" ]; then
+        return
+    fi
+    local exports
+    exports=$(python3 "${resolver}" resolve --format env --validate-config --lease-pid "$$") || exit $?
+    eval "${exports}"
+    CONFIG_DIR="${BG_CONFIG_DIR}"
+    CONFIG_FILE="${CONFIG_DIR}/config.json"
+    TOKEN_FILE="${CONFIG_DIR}/tokens.json"
+    PROFILE_NAME="${BG_AWS_PROFILE}"
+    PROXY_RUNTIME_DIR="${ADP_RUNTIME_DIR}"
+    PROXY_PID_FILE="${PROXY_RUNTIME_DIR}/proxy.pid"
+    PROXY_IDENTITY_FILE="${PROXY_RUNTIME_DIR}/proxy.json"
+    LOCK_DIR="${CONFIG_DIR}/refresh.lock"
+
+    # Validate every supplied URL before discovery, authentication, or writes.
+    # In particular a second flag cannot replace an already-validated first one.
+    local seen=0 requested
+    while [ $# -gt 0 ]; do
+        if [ "$1" = "--gateway-url" ]; then
+            if [ "${seen}" = 1 ] || [ -z "${2:-}" ]; then
+                print_error "Supply --gateway-url exactly once with a value." >&2
+                exit 1
+            fi
+            seen=1
+            requested=$(python3 "${resolver}" canonicalize "$2") || exit $?
+            if [ -n "${ADP_DEPLOYMENT_URL:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ] && [ "${requested}" != "${ADP_DEPLOYMENT_URL}" ]; then
+                print_error "Gateway URL does not match the selected deployment." >&2
+                exit 1
+            fi
+            shift
+        fi
+        shift
+    done
+}
+
 main() {
     check_dependencies
+    case "${1:-}" in
+        help|--help|-h|"") ;;
+        *) resolve_auth_deployment "$@" ;;
+    esac
     init_config
 
     local command="${1:-}"

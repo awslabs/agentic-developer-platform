@@ -94,7 +94,20 @@ signs out of the selected deployment only.
 `adp deployment add` registers locally and makes no request, so a deployment can
 be registered long before you sign in to it. `adp deployment remove` forgets one
 locally: it never touches the cloud, and it refuses to remove the saved default
-or a deployment whose proxy is still running.
+or a deployment with a running command, proxy, or installed daemon. Removing the
+last alias deletes that deployment's private local session and state. The original
+legacy store is retained.
+
+`adp --deployment dev claude setup` pins bare `claude` to dev, including its token
+helper. Changing the saved default does not change that setup. Use
+`adp --deployment integration claude` to launch against integration with temporary
+settings; the saved Claude configuration stays intact. Custom tool arguments are
+forwarded, but overrides of ADP's endpoint or authentication settings are refused.
+
+Named `codex setup` reserves a stable local proxy port. On macOS, run
+`adp --deployment dev daemon install` for bare Codex; each deployment has a separate
+daemon pinned to its own session and port. Setup determines which deployment bare
+Codex uses. Use `adp --deployment <name> codex` for simultaneous terminals.
 
 Each deployment keeps its session, state, logs and Codex proxy under
 `~/.adp/deployments/<id>/`, and gets its own AWS profile

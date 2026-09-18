@@ -190,7 +190,7 @@ resolve_deployment() {
     # straight to the terminal instead.
     local diagnostics
     diagnostics="$(mktemp)"
-    exports="$(deployments resolve ${requested:+--deployment "${requested}"} --format env 2>"${diagnostics}")" || status=$?
+    exports="$(deployments resolve ${requested:+--deployment "${requested}"} --format env --validate-config --lease-pid "$$" 2>"${diagnostics}")" || status=$?
 
     if [ "${status}" -ne 0 ]; then
         # A BROKEN registry is fatal whatever the selection route. The registry is
@@ -204,7 +204,7 @@ resolve_deployment() {
         rm -f "${diagnostics}"
         # ADP_HOME mirrors adp_deployments.adp_home(), so the two halves agree
         # about which file they are asking about.
-        if [ -n "${requested}" ] || [ -n "${ADP_DEPLOYMENT:-}" ] \
+        if [ -n "${requested}" ] || [ -n "${ADP_DEPLOYMENT:-}${ADP_DEPLOYMENT_ID:-}" ] \
            || [ -f "${ADP_HOME:-${HOME}/.adp}/deployments.json" ]; then
             exit "${status}"
         fi
@@ -224,6 +224,10 @@ resolve_deployment() {
     PROXY_PID_FILE="${ADP_RUNTIME_DIR}/proxy.pid"
     PROXY_IDENTITY_FILE="${ADP_RUNTIME_DIR}/proxy.json"
     PROXY_SPAWN_LOCK_DIR="${ADP_RUNTIME_DIR}/proxy-spawn.lock"
+    if [ "${ADP_DEPLOYMENT_ID}" != "default" ]; then
+        LAUNCH_AGENT_LABEL="com.adp.gateway-proxy.${ADP_DEPLOYMENT_ID}"
+        LAUNCH_AGENT_FILE="${HOME}/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist"
+    fi
 
     # Children (the core helper, the python helpers, the proxy) inherit the pin.
     export ADP_DEPLOYMENT_ID ADP_DEPLOYMENT_NAME ADP_DEPLOYMENT_SOURCE ADP_DEPLOYMENT_URL
@@ -569,8 +573,16 @@ ensure_proxy() {
     local requested_port="${CODEX_PROXY_PORT}"
     local where="127.0.0.1:${CODEX_PROXY_PORT}"
     if [ -n "${named}" ]; then
-        requested_port=0
-        where="127.0.0.1 on a free port chosen by the OS"
+        requested_port="${ADP_PROXY_PORT:-0}"
+        if [ -f "${ADP_RUNTIME_DIR}/setup-port.json" ]; then
+            requested_port="$(jq -er '.port' "${ADP_RUNTIME_DIR}/setup-port.json")"
+            if [ -n "${ADP_PROXY_PORT:-}" ] && [ "${ADP_PROXY_PORT}" != "${requested_port}" ]; then
+                _release_proxy_spawn_lock
+                print_error "ADP_PROXY_PORT conflicts with this deployment's saved setup port."
+                exit 1
+            fi
+        fi
+        where="127.0.0.1:${requested_port}"
     fi
 
     # Stale identity removed BEFORE spawning, so the wait below cannot mistake a
@@ -652,6 +664,30 @@ require_tool() {
 # placeholder env var Codex insists on, hand over.
 cmd_codex_launch() {
     require_tool codex
+    # Reject attempts to replace ADP's transport; pass unrelated tool options on.
+    local argument value key expect_config=0
+    for argument in "$@"; do
+        value=""
+        if [ "${expect_config}" = 1 ]; then
+            value="${argument}"
+            expect_config=0
+        else
+            case "${argument}" in
+                -c|--config) expect_config=1 ;;
+                --config=*) value="${argument#--config=}" ;;
+                -c?*) value="${argument#-c}" ;;
+                --oss|--local-provider|--local-provider=*)
+                    print_error "This option replaces the selected ADP transport."; exit 1 ;;
+            esac
+        fi
+        key="${value%%=*}"
+        key="$(printf '%s' "${key}" | tr -d " \"'")"
+        case "${key}" in
+            model_provider|model_providers|model_providers.adp-gateway|model_providers.adp-gateway.base_url|model_providers.adp-gateway.wire_api|model_providers.adp-gateway.env_key|model_providers.adp-gateway.experimental_bearer_token|model_providers.adp-gateway.requires_openai_auth)
+                print_error "ADP manages ${key} for the selected deployment. Remove that override."
+                exit 1 ;;
+        esac
+    done
     require_live_session "Codex"
     ensure_proxy
 
@@ -661,23 +697,13 @@ cmd_codex_launch() {
     # and setting it here is what removes it from the user's command line.
     export ADP_GATEWAY_DUMMY="${ADP_GATEWAY_DUMMY:-unused}"
 
-    # Pin THIS launch to the proxy we just confirmed, when config.toml cannot
-    # already be right (Issue #5413). config.toml is one global file shared by all
-    # three terminals, so it cannot describe three different ports at once, and a
-    # named deployment's port is assigned by the OS and only known at runtime.
-    #
-    # `-c` rather than rewriting the user's file: a launch must not mutate global
-    # tool configuration that another terminal's running session is reading.
-    # Verified against the real Codex CLI — `-c` overrides config.toml, and a
-    # LATER `-c` overrides an earlier one, which is why ours goes before "$@" so
-    # the user's own `-c` still wins.
-    #
-    # Nothing is injected when the live port already equals the one `codex setup`
-    # wrote, which is every legacy single-deployment launch: config.toml agrees,
-    # so the flag would be noise on a command line the user reads and reports.
     local pinned=()
-    if [ -n "${ADP_ACTIVE_PROXY_PORT:-}" ] && [ "${ADP_ACTIVE_PROXY_PORT}" != "${CODEX_PROXY_PORT}" ]; then
-        pinned=(-c "model_providers.${CODEX_PROVIDER}.base_url=\"http://127.0.0.1:${ADP_ACTIVE_PROXY_PORT}/openai/v1\"")
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
+        pinned=(-c "model_provider=\"${CODEX_PROVIDER}\""
+            -c "model_providers.${CODEX_PROVIDER}.base_url=\"http://127.0.0.1:${ADP_ACTIVE_PROXY_PORT}/openai/v1\""
+            -c "model_providers.${CODEX_PROVIDER}.name=\"${CODEX_PROVIDER}\""
+            -c "model_providers.${CODEX_PROVIDER}.wire_api=\"responses\""
+            -c "model_providers.${CODEX_PROVIDER}.env_key=\"ADP_GATEWAY_DUMMY\"")
     fi
 
     # exec, so Codex owns the terminal: job control, Ctrl-C and its exit status
@@ -693,25 +719,31 @@ cmd_claude_launch() {
     require_tool claude
     require_live_session "Claude Code"
 
-    # Pin THIS launch to the selected deployment's endpoint (Issue #5413).
-    #
-    # ~/.claude/settings.json is one global file, so it cannot name three
-    # endpoints at once — and rewriting it per launch would change the endpoint
-    # under a Claude Code session already running in another terminal. The
-    # environment is the right scope: it belongs to this process only.
-    #
-    # The token follows automatically. settings.json's apiKeyHelper runs
-    # `adp token`, which Claude Code launches as a CHILD of this process, so it
-    # inherits the ADP_DEPLOYMENT_* pin exported at entry and resolves to this
-    # same deployment — endpoint and credential cannot disagree.
-    #
-    # Only set when a named deployment is selected: on a legacy machine the
-    # settings file is already correct and must stay authoritative.
-    if [ -n "${ADP_DEPLOYMENT_URL:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
+    local settings='{}' rest=() supplied
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --settings|--settings=*)
+                if [ "$1" = "--settings" ]; then
+                    [ $# -ge 2 ] || { print_error "--settings needs a value."; exit 1; }
+                    supplied="$2"; shift 2
+                else supplied="${1#--settings=}"; shift; fi
+                if [ -f "${supplied}" ]; then supplied="$(cat "${supplied}")"; fi
+                settings="$(printf '%s' "${supplied}" | jq -e 'select(type == "object")')" || {
+                    print_error "Claude --settings must be a JSON object or a settings file."; exit 1;
+                }
+                if printf '%s' "${settings}" | jq -e 'has("apiKeyHelper") or ((.env // {}) | keys | any(. == "ANTHROPIC_BEDROCK_BASE_URL" or . == "ANTHROPIC_BASE_URL" or . == "ANTHROPIC_AUTH_TOKEN" or . == "ANTHROPIC_API_KEY" or . == "CLAUDE_CODE_USE_BEDROCK" or . == "CLAUDE_CODE_SKIP_BEDROCK_AUTH"))' >/dev/null; then
+                    print_error "The supplied Claude settings replace the selected ADP transport."; exit 1
+                fi ;;
+            *) rest+=("$1"); shift ;;
+        esac
+    done
+    if [ -n "${ADP_DEPLOYMENT_URL:-}" ]; then
+        settings="$(printf '%s' "${settings}" | jq -c --arg helper "$(pinned_token_helper)" --arg url "${ADP_DEPLOYMENT_URL}" \
+            '.apiKeyHelper = $helper | .env = ((.env // {}) + {ANTHROPIC_BEDROCK_BASE_URL: $url, CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1"})')"
         export ANTHROPIC_BEDROCK_BASE_URL="${ADP_DEPLOYMENT_URL}"
+        exec claude --settings "${settings}" "${rest[@]}"
     fi
-
-    exec claude "$@"
+    exec claude "${rest[@]}"
 }
 
 # --- login ------------------------------------------------------------------
@@ -896,6 +928,10 @@ cmd_codex_setup() {
         exit 1
     fi
 
+    local setup_proxy_port="${CODEX_PROXY_PORT}"
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_ID}" != "default" ]; then
+        setup_proxy_port="$(deployments setup-port)"
+    fi
     mkdir -p "$(dirname "${CODEX_CONFIG_FILE}")"
 
     # Everything we do NOT own, preserved verbatim. awk (not sed) because the
@@ -939,7 +975,7 @@ cmd_codex_setup() {
 
 [model_providers.${CODEX_PROVIDER}]
 name = "${CODEX_PROVIDER}"
-base_url = "http://127.0.0.1:${CODEX_PROXY_PORT}/openai/v1"
+base_url = "http://127.0.0.1:${setup_proxy_port}/openai/v1"
 wire_api = "responses"
 env_key = "ADP_GATEWAY_DUMMY"
 EOF
@@ -956,6 +992,14 @@ EOF
     echo ""
     echo "  adp daemon install"
     echo ""
+}
+
+pinned_token_helper() {
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ]; then
+        deployments helper-command "$(adp_path)"
+    else
+        python3 -c 'import shlex,sys; print(shlex.join([sys.argv[1], "token"]))' "$(adp_path)"
+    fi
 }
 
 # --- claude setup -----------------------------------------------------------
@@ -991,7 +1035,7 @@ cmd_claude_setup() {
     local merged
     merged=$(printf '%s' "${existing}" | jq \
         --arg base_url "${gateway_url}" \
-        --arg helper "$(adp_path) token" \
+        --arg helper "$(pinned_token_helper)" \
         --argjson ttl "${CLAUDE_HELPER_TTL_MS}" \
         '. as $orig
          | .env = (($orig.env // {}) * {
@@ -1080,35 +1124,23 @@ cmd_daemon_install() {
 
     mkdir -p "$(dirname "${LAUNCH_AGENT_FILE}")" "${ADP_LOG_DIR}"
 
-    # KeepAlive so a crashed proxy comes back; RunAtLoad so it is up after a
-    # reboot without the user thinking about it. Both streams to the same log the
-    # on-demand launcher uses, so there is one place to look either way.
-    cat > "${LAUNCH_AGENT_FILE}" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${LAUNCH_AGENT_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>${core_path}</string>
-        <string>serve</string>
-        <string>--port</string>
-        <string>${CODEX_PROXY_PORT}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>${PROXY_LOG_FILE}</string>
-    <key>StandardErrorPath</key>
-    <string>${PROXY_LOG_FILE}</string>
-</dict>
-</plist>
-EOF
+    local daemon_port="${CODEX_PROXY_PORT}"
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_ID}" != "default" ]; then
+        daemon_port="$(deployments setup-port)"
+    fi
+    python3 - "${LAUNCH_AGENT_FILE}" "${LAUNCH_AGENT_LABEL}" "${core_path}" "${daemon_port}" "${PROXY_LOG_FILE}" <<'PYPLIST'
+import os, plistlib, sys
+path, label, core, port, log = sys.argv[1:]
+keys = ("ADP_DEPLOYMENT_ID", "ADP_DEPLOYMENT_NAME", "ADP_DEPLOYMENT_URL", "ADP_LEGACY_CONFIG_DIR", "ADP_HOME",
+        "BG_CONFIG_DIR", "ADP_STATE_DIR", "ADP_RUNTIME_DIR", "ADP_LOG_DIR", "BG_AWS_PROFILE")
+env = {key: os.environ[key] for key in keys if key in os.environ}
+env["ADP_DEPLOYMENT_SOURCE"] = "daemon"
+with open(path, "wb") as output:
+    plistlib.dump({"Label": label, "ProgramArguments": ["/bin/bash", core, "serve", "--port", port],
+                  "EnvironmentVariables": env, "RunAtLoad": True, "KeepAlive": True,
+                  "StandardOutPath": log, "StandardErrorPath": log}, output)
+os.chmod(path, 0o600)
+PYPLIST
 
     # Unload first so a re-run picks up a changed plist instead of leaving the
     # old definition loaded. Failure is expected when nothing is loaded yet.
@@ -1158,7 +1190,12 @@ cmd_daemon_uninstall() {
         removed=1
     fi
 
-    daemon_remove_rc_export "$(daemon_rc_file)"
+    # Other deployments' daemons still need the shared bare-Codex placeholder.
+    local remaining_daemons
+    remaining_daemons=$(find "${HOME}/Library/LaunchAgents" -name 'com.adp.gateway-proxy*.plist' -print 2>/dev/null || true)
+    if [ -z "${remaining_daemons}" ]; then
+        daemon_remove_rc_export "$(daemon_rc_file)"
+    fi
 
     if [ "${removed}" -eq 0 ]; then
         print_info "No always-on proxy was installed — nothing to remove."
@@ -1437,6 +1474,10 @@ main() {
     while [ $# -gt 0 ]; do
         case "${1:-}" in
             --deployment)
+                if [ -n "${requested_deployment}" ]; then
+                    print_error "Supply --deployment only once, before the command."
+                    exit 1
+                fi
                 if [ -z "${2:-}" ]; then
                     print_error "--deployment needs a name: adp --deployment dev status"
                     exit 1
@@ -1445,6 +1486,10 @@ main() {
                 shift 2
                 ;;
             --deployment=*)
+                if [ -n "${requested_deployment}" ]; then
+                    print_error "Supply --deployment only once, before the command."
+                    exit 1
+                fi
                 requested_deployment="${1#--deployment=}"
                 if [ -z "${requested_deployment}" ]; then
                     print_error "--deployment needs a name: adp --deployment dev status"

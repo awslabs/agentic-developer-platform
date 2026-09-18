@@ -61,16 +61,24 @@ def deployment():
 
 
 def _resolve_deployment():
+    selected = any(os.environ.get(variable) for variable in _SELECTION_VARIABLES)
+    registered = (Path(os.environ.get("ADP_HOME") or Path.home() / ".adp") / "deployments.json").exists()
     module = load_provider("adp_deployments.py")
     if module is None:
         # A partial install (the sibling file is missing). Degrading to the legacy
         # single-deployment paths keeps `adp login`/`adp update` usable, which is
         # how a user repairs that install.
+        if selected or registered:
+            raise CliError("Deployment resolver is missing. Reinstall the CLI.", "deployment_state_unreadable")
         return None
     try:
-        return module.resolve()
+        resolved = module.resolve()
+        resolved.validate_config()
+        if not resolved.legacy:
+            module.lease(resolved, os.getpid())
+        return resolved
     except module.DeploymentError as exc:
-        if any(os.environ.get(variable) for variable in _SELECTION_VARIABLES):
+        if selected or registered or exc.code != "deployment_not_found":
             # A selection WAS requested and could not be honoured. Never fall back:
             # a fallback here is precisely how a credential reaches a deployment
             # the user did not name.
@@ -294,7 +302,7 @@ def save_session(result):
                 raise CliError("A token refresh is still running. Retry adp admin login.") from None
             time.sleep(0.1)
     try:
-        config = json.loads(config_path().read_text())
+        config = json.loads(config_path().read_text()) if config_path().exists() else {"gateway_url": gateway_url()}
         config.update({key: result[key] for key in ("client_id", "user_pool_id", "region")})
         config.update(refresh_via="gateway", identity_pool_id="")
         tokens = {key: result[key] for key in ("access_token", "id_token", "refresh_token")}

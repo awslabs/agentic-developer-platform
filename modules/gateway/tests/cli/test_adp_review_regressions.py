@@ -1,0 +1,313 @@
+"""Exercise deployment boundaries through installed entrypoints (#5413)."""
+
+import json
+import os
+import plistlib
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+import pytest
+
+
+@pytest.fixture
+def installed(adp_bin, adp_home, tmp_path):
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("ADP_", "BG_", "ANTHROPIC_", "CLAUDE_"))}
+    env.update(HOME=str(adp_home), AWS_EC2_METADATA_DISABLED="true")
+    # Unexpected network calls fail locally and leave evidence.
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    network = tmp_path / "network"
+    (stubs / "curl").write_text(f'#!/bin/sh\necho called >> "{network}"\nexit 97\n')
+    (stubs / "curl").chmod(0o755)
+    env["PATH"] = f"{stubs}:{adp_bin}:{env['PATH']}"
+
+    def run(*args, extra=None, script="adp"):
+        return subprocess.run(
+            ["bash", str(adp_bin / script), *args],
+            env={**env, **(extra or {})},
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+    stores = {}
+    for name in ("dev", "integration"):
+        result = run("deployment", "add", name, "--url", f"https://{name}.example.test", "--json")
+        assert result.returncode == 0, result.stderr
+        registry = json.loads((adp_home / ".adp/deployments.json").read_text())
+        root = adp_home / ".adp/deployments" / registry["deployments"][name]["id"]
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (root / "config.json").write_text(json.dumps({"gateway_url": f"https://{name}.example.test/api"}))
+        (root / "tokens.json").write_text(
+            json.dumps(
+                {
+                    "access_token": f"{name}-token",
+                    "refresh_token": f"{name}-refresh",
+                    "id_token": f"{name}-id",
+                    "expires_at": int(time.time()) + 3600,
+                }
+            )
+        )
+        stores[name] = root
+    return run, env, stores, adp_home, adp_bin, network
+
+
+def test_direct_auth_helper_honors_terminal_selection(installed):
+    run, _, _, _, _, network = installed
+    result = run("token", extra={"ADP_DEPLOYMENT": "integration"}, script="bg-cognito-auth.sh")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "integration-token"
+    assert not network.exists()
+
+
+def test_direct_auth_helper_honors_saved_default(installed):
+    run, _, _, _, _, _ = installed
+    assert run("deployment", "use", "integration").returncode == 0
+    result = run("token", script="bg-cognito-auth.sh")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "integration-token"
+
+
+def test_duplicate_import_url_cannot_overwrite_selected_store(installed):
+    run, _, stores, _, _, network = installed
+    before = {p: p.read_bytes() for p in stores["dev"].iterdir() if p.is_file()}
+    result = run(
+        "--deployment",
+        "dev",
+        "import",
+        "--gateway-url",
+        "https://dev.example.test/api",
+        "--gateway-url",
+        "https://wrong.example.test/api",
+        "--refresh-token",
+        "fixture",
+        "--client-id",
+        "fixture",
+    )
+    assert result.returncode != 0
+    assert not network.exists(), "a mismatched import contacted the network"
+    assert all(p.read_bytes() == data for p, data in before.items())
+
+
+def test_token_refuses_config_bound_to_another_gateway(installed):
+    run, _, stores, _, _, network = installed
+    (stores["dev"] / "config.json").write_text('{"gateway_url":"https://wrong.example.test/api"}')
+    result = run("--deployment", "dev", "token")
+    assert result.returncode != 0
+    assert "dev-token" not in result.stdout
+    assert not network.exists()
+
+
+def test_bare_claude_helper_stays_with_setup_after_default_and_env_change(installed):
+    run, env, _, home, _, _ = installed
+    assert run("--deployment", "dev", "claude", "setup").returncode == 0
+    settings = json.loads((home / ".claude/settings.json").read_text())
+    assert run("deployment", "use", "integration").returncode == 0
+    result = subprocess.run(
+        ["bash", "-c", settings["apiKeyHelper"]], env={**env, "ADP_DEPLOYMENT": "integration"}, capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "dev-token"
+    assert settings["env"]["ANTHROPIC_BEDROCK_BASE_URL"] == "https://dev.example.test/api"
+
+
+def test_remove_actually_deletes_last_alias_private_store(installed):
+    run, _, stores, _, _, _ = installed
+    result = run("deployment", "remove", "integration", "--json")
+    assert result.returncode == 0, result.stderr
+    assert not stores["integration"].exists(), "successful removal left credentials behind"
+    assert (stores["dev"] / "tokens.json").exists()
+
+
+def test_management_inside_named_session_does_not_adopt_its_store_as_legacy(installed):
+    run, _, stores, home, _, _ = installed
+    result = run(
+        "deployment",
+        "add",
+        "preprod",
+        "--url",
+        "https://preprod.example.test",
+        extra={"ADP_DEPLOYMENT_ID": stores["dev"].name, "BG_CONFIG_DIR": str(stores["dev"])},
+    )
+    assert result.returncode == 0, result.stderr
+    registry = json.loads((home / ".adp/deployments.json").read_text())
+    assert "default" not in registry["deployments"], "named credentials were adopted as a phantom legacy store"
+
+
+def test_duplicate_selection_is_rejected(installed):
+    run, _, _, _, _, network = installed
+    result = run("--deployment", "dev", "--deployment=integration", "token")
+    assert result.returncode != 0
+    assert "token" not in result.stdout
+    assert not network.exists()
+
+
+def test_claude_launch_overrides_setup_helper_without_rewriting_settings(installed):
+    run, _, stores, home, prefix, _ = installed
+    assert run("--deployment", "dev", "claude", "setup").returncode == 0
+    saved = (home / ".claude/settings.json").read_bytes()
+    tool = prefix / "claude"
+    tool.write_text(f"""#!{sys.executable}
+import json, os, subprocess, sys
+settings = json.loads(sys.argv[sys.argv.index('--settings') + 1])
+token = subprocess.check_output(['bash', '-c', settings['apiKeyHelper']], text=True).strip()
+print(json.dumps({{'settings': settings, 'token': token, 'args': sys.argv[1:]}}))
+""")
+    tool.chmod(0o755)
+    result = run("--deployment", "integration", "claude", "--settings", '{"permissions":{"allow":["Read"]}}', "--print", "hello world")
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["token"] == "integration-token"
+    assert observed["settings"]["env"]["ANTHROPIC_BEDROCK_BASE_URL"] == "https://integration.example.test/api"
+    assert observed["settings"]["permissions"] == {"allow": ["Read"]}
+    assert observed["args"][-2:] == ["--print", "hello world"]
+    assert (home / ".claude/settings.json").read_bytes() == saved
+
+
+def test_removal_refuses_a_running_claude_session_and_recovers_after_exit(installed):
+    run, env, stores, home, prefix, _ = installed
+    tool = prefix / "claude"
+    ready = home / "ready"
+    tool.write_text(f'#!/bin/sh\ntouch "{ready}"\nread line\n')
+    tool.chmod(0o755)
+    process = subprocess.Popen(
+        ["bash", str(prefix / "adp"), "--deployment", "integration", "claude"],
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), process.communicate(timeout=2)
+        result = run("deployment", "remove", "integration")
+        assert result.returncode != 0
+        assert "in use" in result.stderr
+        assert (stores["integration"] / "tokens.json").exists()
+    finally:
+        process.communicate("done\n", timeout=5)
+    assert run("deployment", "remove", "integration").returncode == 0
+    assert not stores["integration"].exists()
+
+
+def test_named_codex_setup_uses_distinct_stable_ports(installed):
+    run, _, _, home, _, _ = installed
+    import tomllib
+
+    ports = {}
+    for name in ("dev", "integration", "dev"):
+        assert run("--deployment", name, "codex", "setup").returncode == 0
+        config = tomllib.loads((home / ".codex/config.toml").read_text())
+        endpoint = config["model_providers"]["adp-gateway"]["base_url"]
+        assert ":9191/" not in endpoint
+        if name in ports:
+            assert ports[name] == endpoint
+        ports[name] = endpoint
+    assert ports["dev"] != ports["integration"]
+
+
+def test_direct_python_helper_fails_closed_on_corrupt_registry(installed):
+    _, env, _, home, prefix, network = installed
+    (home / ".adp/deployments.json").write_text("{")
+    result = subprocess.run([sys.executable, str(prefix / "adp-aws.py"), "list", "--json"], env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert json.loads(result.stdout)["error"]["code"] == "deployment_state_unreadable"
+    assert not network.exists()
+
+
+def test_admin_session_can_be_saved_for_new_registration(installed):
+    run, env, stores, _, prefix, _ = installed
+    assert run("deployment", "add", "fresh", "--url", "https://fresh.example.test").returncode == 0
+    source = """import adp_common as c
+c.save_session(dict(access_token='a', id_token='i', refresh_token='r', expires_in=3600,
+                    client_id='c', user_pool_id='p', region='us-east-1'))
+print(c.gateway_url())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", source], cwd=prefix, env={**env, "ADP_DEPLOYMENT": "fresh"}, capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "https://fresh.example.test/api"
+    assert (stores["dev"] / "tokens.json").exists()
+
+
+@pytest.mark.parametrize("override", ["--config=model_provider='other'", '-cmodel_providers."adp-gateway".base_url="https://wrong.test"', "--oss"])
+def test_codex_transport_override_is_rejected_before_startup(installed, override):
+    run, _, _, _, prefix, network = installed
+    tool = prefix / "codex"
+    tool.write_text("#!/bin/sh\necho incorrectly-started\n")
+    tool.chmod(0o755)
+    result = run("--deployment", "dev", "codex", override)
+    assert result.returncode != 0
+    assert "incorrectly-started" not in result.stdout
+    assert not network.exists()
+
+
+def test_codex_launch_pins_complete_provider_without_global_setup(installed):
+    run, env, stores, home, prefix, _ = installed
+    tool = prefix / "codex"
+    tool.write_text(f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+    tool.chmod(0o755)
+    # Permit localhost health probes by the real CLI; the stub model sends no
+    # request upstream. Credentials and gateway URLs are fixture values only.
+    try:
+        result = run("--deployment", "dev", "codex", "exec", "hello world", extra={"PATH": env["PATH"].split(":", 1)[1:][0]})
+        assert result.returncode == 0, result.stderr
+        args = json.loads(result.stdout)
+        identity = json.loads((stores["dev"] / "runtime/proxy.json").read_text())
+        assert 'model_provider="adp-gateway"' in args
+        assert f'model_providers.adp-gateway.base_url="http://127.0.0.1:{identity["port"]}/openai/v1"' in args
+        assert 'model_providers.adp-gateway.wire_api="responses"' in args
+        assert 'model_providers.adp-gateway.env_key="ADP_GATEWAY_DUMMY"' in args
+        assert args[-2:] == ["exec", "hello world"]
+        assert not (home / ".codex/config.toml").exists()
+    finally:
+        identity_file = stores["dev"] / "runtime/proxy.json"
+        if identity_file.exists():
+            identity = json.loads(identity_file.read_text())
+            os.kill(identity["pid"], signal.SIGINT)
+
+
+def test_daemons_have_separate_labels_pinned_context_and_saved_ports(installed):
+    run, _, stores, home, prefix, _ = installed
+    for name, body in (("uname", "echo Darwin"), ("launchctl", "exit 0")):
+        script = prefix / name
+        script.write_text("#!/bin/sh\n" + body + "\n")
+        script.chmod(0o755)
+    paths = []
+    for name, store in stores.items():
+        assert run("--deployment", name, "codex", "setup").returncode == 0
+        result = run("--deployment", name, "daemon", "install")
+        assert result.returncode == 0, result.stderr
+        path = home / "Library/LaunchAgents" / f"com.adp.gateway-proxy.{store.name}.plist"
+        paths.append(path)
+        plist = plistlib.loads(path.read_bytes())
+        assert plist["EnvironmentVariables"]["ADP_DEPLOYMENT_ID"] == store.name
+        assert plist["EnvironmentVariables"]["ADP_DEPLOYMENT_URL"] == f"https://{name}.example.test/api"
+        assert plist["ProgramArguments"][-1] == str(json.loads((store / "runtime/setup-port.json").read_text())["port"])
+    result = run("deployment", "remove", "integration")
+    assert result.returncode != 0 and "always-on proxy" in result.stderr
+    assert run("--deployment", "integration", "daemon", "uninstall").returncode == 0
+    assert paths[0].exists() and not paths[1].exists()
+
+
+def test_claude_helper_quotes_install_path_with_spaces(installed):
+    _, env, _, home, prefix, _ = installed
+    spaced = home / "installed cli"
+    shutil.copytree(prefix, spaced)
+    result = subprocess.run(
+        ["bash", str(spaced / "adp"), "--deployment", "dev", "claude", "setup"], env=env, capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode == 0, result.stderr
+    settings = json.loads((home / ".claude/settings.json").read_text())
+    token = subprocess.run(
+        ["bash", "-c", settings["apiKeyHelper"]], env={**env, "ADP_DEPLOYMENT": "integration"}, capture_output=True, text=True, timeout=10
+    )
+    assert token.returncode == 0, token.stderr
+    assert token.stdout.strip() == "dev-token"

@@ -42,6 +42,276 @@ from tests.e2e.cli_uplift import (
 FULL = ("full",)
 
 
+def test_multi_deployment_thread_exception_cannot_pass(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+
+    def broken(*args, **kwargs):
+        raise ValueError("unexpected tool failure")
+
+    monkeypatch.setattr(module, "_run_tool", broken)
+    with pytest.raises(common.RemoteError, match="unexpected tool failure"):
+        module._pass(
+            {"evaluation_id": "test"},
+            {},
+            dict.fromkeys(("dev", "int", "preprod")),
+            {},
+            {"transcript": []},
+            label="overlap",
+        )
+
+
+def test_multi_deployment_requires_actual_time_overlap(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+
+    def sequential(config, env, session, tool, marker, transcript):
+        start = session["start"]
+        return {
+            "deployment": session["name"],
+            "started": start,
+            "finished": start + 1,
+            "exit_code": 0,
+            "returned_marker": True,
+        }
+
+    monkeypatch.setattr(module, "_run_tool", sequential)
+    sessions = {
+        name: {"name": name, "start": index * 10}
+        for index, name in enumerate(("dev", "int", "preprod"))
+    }
+    with pytest.raises(common.RemoteError, match="did not overlap"):
+        module._pass(
+            {"evaluation_id": "test"},
+            {},
+            sessions,
+            {},
+            {"transcript": []},
+            label="overlap",
+        )
+
+
+def test_multi_deployment_matches_usage_request_id_not_prompt_text(
+    tmp_path, monkeypatch
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    row = {
+        "request_id": "receipt-123",
+        "timestamp": "2026-09-18T12:00:00Z",
+        "user_id": "fixture",
+        "status_code": 200,
+    }
+    monkeypatch.setattr(
+        common, "api", lambda *a, **k: (200, {"items": [row], "has_more": False})
+    )
+    monkeypatch.setattr(common, "wait_for", lambda check, **k: check())
+    session = {
+        "gateway_url": "https://dev.example.test/api",
+        "org_id": "org",
+        "user_id": "fixture",
+    }
+    assert (
+        module._usage_marker(
+            {}, session, "test-token", "receipt-123", after="2026-09-18", expect=True
+        )
+        == row
+    )
+    assert (
+        module._usage_marker(
+            {}, session, "test-token", "fixture", after="2026-09-18", expect=True
+        )
+        is None
+    )
+
+
+def test_multi_deployment_refuses_truncated_absence_evidence(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    monkeypatch.setattr(
+        common, "api", lambda *a, **k: (200, {"items": [], "has_more": True})
+    )
+    monkeypatch.setattr(common, "wait_for", lambda check, **k: check())
+    with pytest.raises(common.RemoteError, match="absence cannot be established"):
+        module._usage_marker(
+            {},
+            {
+                "gateway_url": "https://dev.example.test",
+                "org_id": "org",
+                "user_id": "user",
+            },
+            "fixture",
+            "receipt",
+            after="2026-09-18",
+            expect=True,
+        )
+
+
+def test_multi_deployment_tools_send_usage_correlation_header(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return 0, "marker", ""
+
+    monkeypatch.setattr(common, "bounded", run)
+    config = {"cli_path": "/fixture/adp", "claude_model": "fixture-model"}
+    for tool in ("claude", "codex"):
+        result = module._run_tool(config, {}, {"name": "dev"}, tool, "marker", [])
+        argv, kwargs = calls[-1]
+        if tool == "claude":
+            assert (
+                kwargs["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+                == "X-Request-ID: " + result["request_id"]
+            )
+        else:
+            assert any(
+                result["request_id"] in arg and "http_headers" in arg for arg in argv
+            )
+
+
+def test_multi_deployment_checks_proxies_after_both_arrangements(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    labels = []
+
+    def run(*args, label):
+        labels.append(label)
+        return {"receipts": []}
+
+    monkeypatch.setattr(module, "_pass", run)
+    monkeypatch.setattr(
+        module,
+        "_proxy_identities",
+        lambda *a: {"dev": {"port": 1111, "attributed_correctly": True}},
+    )
+    with pytest.raises(common.RemoteError, match="every deployment"):
+        module._overlap(
+            {},
+            {},
+            tmp_path,
+            {},
+            {},
+            dict.fromkeys(("dev", "int", "preprod")),
+            {"checks": []},
+        )
+    assert labels == ["overlap", "reverse"]
+
+
+def test_multi_deployment_cleanup_failure_is_fatal(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+
+    class Cli:
+        def run(self, argv, **kwargs):
+            return 0, {"deployments": [{"name": "dev"}]} if argv == [
+                "deployment",
+                "list",
+            ] else {}
+
+    monkeypatch.setattr(common, "stop_proxy_runtime", lambda *a: False)
+    evidence = {}
+    with pytest.raises(common.RemoteError, match="stop every deployment proxy"):
+        module._teardown(Cli(), tmp_path, {"dev": "id-dev", "int": "id-int"}, evidence)
+    assert evidence["teardown"]["proxies_stopped"] == {"dev": False, "int": False}
+
+
+def test_multi_deployment_lifecycle_continues_same_tool_sessions(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    state = {"changed": False}
+
+    def run(config, env, session, tool, marker, transcript):
+        workspace = pathlib.Path(config["session_cwd"])
+        name = session["name"]
+        (workspace / f"{name}.ready").touch()
+        deadline = time.monotonic() + 5
+        while (
+            not (workspace / f"{name}.release").exists() and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert state["changed"], "tool continued before lifecycle changes"
+        return {
+            "tool": tool,
+            "exit_code": 1 if name == "dev" else 0,
+            "returned_marker": name != "dev",
+            "authentication_failed": name == "dev",
+        }
+
+    def change(config, cli, sessions, evidence):
+        assert all(
+            (tmp_path / "lifecycle" / f"{name}.ready").exists() for name in sessions
+        )
+        state["changed"] = True
+        evidence["detail"] = {}
+
+    monkeypatch.setattr(module, "_run_tool", run)
+    monkeypatch.setattr(module, "_lifecycle_changes", change)
+    monkeypatch.setattr(module, "_access_token", lambda cli, name: name + "-credential")
+
+    def receipts(config, sessions, tokens, runs, *, after):
+        assert len(runs) == 2 and all(run["returned_marker"] for run in runs)
+        assert state["changed"] and after
+        return [{"request_id": "continued-request"}]
+
+    monkeypatch.setattr(module, "_receipts", receipts)
+    evidence = {"transcript": [], "checks": []}
+    module._lifecycle(
+        {"evaluation_id": "test", "inference_timeout_seconds": 5},
+        None,
+        {},
+        tmp_path,
+        {name: {"name": name} for name in ("dev", "int", "preprod")},
+        evidence,
+    )
+    assert (
+        "existing_model_sessions_continue_after_lifecycle_changes" in evidence["checks"]
+    )
+    assert evidence["detail"]["continued_usage"] == [
+        {"request_id": "continued-request"}
+    ]
+
+
+def test_multi_deployment_execute_does_not_swallow_teardown_failure(
+    tmp_path, monkeypatch
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    document = dict.fromkeys(module.REQUIRED, "fixture")
+    document.update(
+        mode="overlap",
+        deployments=[
+            {
+                "name": name,
+                "gateway_url": f"https://{name}.example.test",
+                "credential_secret_name": name,
+            }
+            for name in ("dev", "int", "preprod")
+        ],
+    )
+    monkeypatch.setattr(module, "_home", lambda *a: (tmp_path, {}))
+    monkeypatch.setattr(
+        module,
+        "_register",
+        lambda cli, entries, evidence, ids: ids.update(
+            {entry["name"]: entry["name"] for entry in entries}
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_login",
+        lambda c, cli, env, entry, e: {
+            "user_id": "same-id-on-independent-gateways",
+            "org_id": "org",
+        },
+    )
+    monkeypatch.setattr(module, "_access_token", lambda cli, name: name + "-credential")
+    monkeypatch.setattr(module, "_setup_tools", lambda *a: None)
+    monkeypatch.setattr(module, "_overlap", lambda *a: None)
+
+    def fail_cleanup(*args):
+        raise common.RemoteError("cleanup failed")
+
+    monkeypatch.setattr(module, "_teardown", fail_cleanup)
+    evidence = {"checks": [], "transcript": []}
+    with pytest.raises(common.RemoteError, match="cleanup failed"):
+        module.execute(document, evidence)
+    assert evidence["success"] is False
+
+
 def config_fixture(**overrides):
     """A minimal valid config using the approved dev test targets."""
     base = {
@@ -445,7 +715,7 @@ def test_two_deployments_cannot_stand_in_for_three():
     smallest set where a crossed request has a wrong destination that is not just
     "the other one".
     """
-    with pytest.raises(config.ConfigError, match="at least 3"):
+    with pytest.raises(config.ConfigError, match="exactly 3"):
         config.validate(config_fixture(deployments=deployment_bindings()[:2]))
 
 

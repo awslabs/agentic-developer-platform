@@ -372,8 +372,8 @@ def validate(config):
     )
     if deployments:
         require(
-            len(deployments) >= REQUIRED_DEPLOYMENTS,
-            f"deployments needs at least {REQUIRED_DEPLOYMENTS} entries for the "
+            len(deployments) == REQUIRED_DEPLOYMENTS,
+            f"deployments needs exactly {REQUIRED_DEPLOYMENTS} entries for the "
             "multi-deployment cases; fewer cannot prove three concurrent sessions "
             "stay independent",
         )

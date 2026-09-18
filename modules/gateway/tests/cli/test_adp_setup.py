@@ -20,6 +20,7 @@ These drive the real shell scripts against a sandboxed HOME, like the
 """
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -219,8 +220,9 @@ class TestClaudeSetup:
         assert run_adp(["claude", "setup"]).returncode == 0
 
         settings = json.loads((adp_home / ".claude" / "settings.json").read_text())
-        assert settings["apiKeyHelper"] == f"{adp_bin}/adp token"
-        assert settings["apiKeyHelper"].startswith("/")
+        assert settings["apiKeyHelper"].endswith(f"{adp_bin}/adp token")
+        assert "ADP_DEPLOYMENT_ID=default" in settings["apiKeyHelper"]
+        assert Path(shlex.split(settings["apiKeyHelper"])[-2]).is_absolute()
         assert settings["apiKeyHelperTtlMs"] == 3300000
 
     def test_sets_the_bedrock_env_the_setup_page_documents(self, run_adp, adp_home: Path) -> None:

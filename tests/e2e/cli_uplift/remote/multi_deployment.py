@@ -22,9 +22,9 @@ Not from what the CLI prints. A command that reports success while sending
 integration's token to the development gateway looks identical to a correct one,
 so the load-bearing assertions are made against the deployments themselves:
 
-* each tool marker must appear in the usage log of ITS OWN deployment, recorded
+* each tool request ID must appear in the usage log of ITS OWN deployment, recorded
   against the identity that signed in there;
-* the same marker must be ABSENT from the other two deployments' usage logs, read
+* the same request ID must be ABSENT from the other two deployments' usage logs, read
   with each of those deployments' OWN credential, so an absence is that
   deployment's own account of what it did not receive rather than an inference
   from the first one.
@@ -32,9 +32,10 @@ so the load-bearing assertions are made against the deployments themselves:
 BOUNDS
 
 The issue's live limits are hard: one instance, 48 requests, 256 output tokens per
-request. Six model calls are made (three concurrent in each of the two tool
-arrangements), each capped by the tool's own output limit, and every wait is
-bounded. Nothing here loops until something happens.
+request. Six tool sessions are launched for overlap (three in each arrangement). The
+lifecycle case launches three sessions and continues them after state changes.
+Claude receives the configured output cap; Codex is prompted for a short reply.
+The existing run-level cost and time controls remain required.
 
 WHAT IS DELIBERATELY NOT DONE
 
@@ -48,10 +49,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
+import uuid
 import tempfile
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlencode
 
 import common
 from common import require
@@ -119,7 +124,7 @@ def _home(config, temporary):
     return home, env
 
 
-def _register(cli, deployments, evidence):
+def _register(cli, deployments, evidence, identifiers=None):
     """`adp deployment add` for each, then prove the CLI agrees it has three.
 
     Asserted through `adp deployment list --json` rather than by reading the
@@ -127,8 +132,14 @@ def _register(cli, deployments, evidence):
     command resolves against is what the CLI reports.
     """
     evidence["stage"] = "register"
+    if identifiers is None:
+        identifiers = {}
     for entry in deployments:
         cli.json(["deployment", "add", entry["name"], "--url", entry["gateway_url"]])
+        # Preserve partial progress for cleanup if a later registration fails.
+        for row in cli.json(["deployment", "list"]).get("deployments") or []:
+            if row.get("name") in {item["name"] for item in deployments}:
+                identifiers[row["name"]] = row["deployment_id"]
 
     # `deployment list` prints the listing document directly, not the
     # status/detail envelope the mutating verbs use.
@@ -268,6 +279,9 @@ def _run_tool(config, env, session, tool, marker, transcript):
     tool directly would test the tool rather than the CLI.
     """
     name = session["name"]
+    request_id = str(uuid.uuid5(uuid.NAMESPACE_URL, marker))
+    prompt = config.get("session_prompt", MARKER_PROMPT.format(marker=marker))
+    tool_env = {**env, "ANTHROPIC_CUSTOM_HEADERS": f"X-Request-ID: {request_id}"}
     if tool == "claude":
         argv = [
             str(config["cli_path"]),
@@ -277,7 +291,7 @@ def _run_tool(config, env, session, tool, marker, transcript):
             "--print",
             "--model",
             config["claude_model"],
-            MARKER_PROMPT.format(marker=marker),
+            prompt,
         ]
     else:
         argv = [
@@ -287,17 +301,42 @@ def _run_tool(config, env, session, tool, marker, transcript):
             "codex",
             "exec",
             "--skip-git-repo-check",
-            MARKER_PROMPT.format(marker=marker),
+            "-c",
+            'model_providers.adp-gateway.http_headers={"X-Request-ID"="'
+            + request_id
+            + '"}',
+            prompt,
         ]
+    if config.get("session_cwd"):
+        # Both tools may run only the fixture's local barrier command. There are
+        # no cloud credentials or repository checkout in this working directory.
+        if tool == "claude":
+            argv[4:4] = ["--allowedTools", "Bash", "--max-turns", "3"]
+        else:
+            argv[5:5] = ["--sandbox", "workspace-write"]
     transcript.append(common.sanitize(argv))
+    began = time.monotonic()
     code, out, _err = common.bounded(
-        argv, env=env, timeout=int(config.get("inference_timeout_seconds", 300))
+        argv,
+        env=tool_env,
+        timeout=int(config.get("inference_timeout_seconds", 300)),
+        cwd=config.get("session_cwd"),
     )
     return {
         "deployment": name,
         "tool": tool,
         "marker": marker,
+        "request_id": request_id,
+        "started": began,
+        "finished": time.monotonic(),
         "exit_code": code,
+        "authentication_failed": bool(
+            re.search(
+                r"proxy_token_error|401|authentication.required|not signed in",
+                (out or "") + (_err or ""),
+                re.I,
+            )
+        ),
         "returned_marker": marker in (out or ""),
     }
 
@@ -350,14 +389,25 @@ def _usage_marker(config, session, token, marker, *, after, expect):
     def look():
         _status, payload = common.api(
             {**config, "gateway_url": session["gateway_url"]},
-            f"/usage/logs?org_id={session['org_id']}"
-            f"&user_id={session['user_id']}&limit=100",
+            "/usage/logs?"
+            + urlencode(
+                {
+                    "org_id": session["org_id"],
+                    "user_id": session["user_id"],
+                    "start_date": after,
+                    "limit": 100,
+                }
+            ),
             token,
+        )
+        require(
+            not (payload or {}).get("has_more"),
+            "Usage window exceeds one page; absence cannot be established",
         )
         for row in (payload or {}).get("items") or []:
             if str(row.get("timestamp") or "") < after:
                 continue
-            if marker in json.dumps(row):
+            if row.get("request_id") == marker:
                 return row
         return None
 
@@ -383,13 +433,18 @@ def _receipts(config, sessions, tokens, runs, *, after):
             config,
             sessions[owner],
             tokens[owner],
-            run["marker"],
+            run["request_id"],
             after=after,
             expect=True,
         )
         if record is None:
             unrecorded.append(f"{owner}/{run['tool']}")
             continue
+        require(
+            record.get("status_code") == 200
+            and int(record.get("output_tokens") or 0) > 0,
+            f"{owner}/{run['tool']} has no successful metered completion",
+        )
         attributed = str(record.get("user_id") or "")
         require(
             attributed == sessions[owner]["user_id"],
@@ -406,25 +461,34 @@ def _receipts(config, sessions, tokens, runs, *, after):
                 "output_tokens": record.get("output_tokens"),
             }
         )
-        for other in sessions:
-            if other == owner:
-                continue
-            crossed = _usage_marker(
-                config,
-                sessions[other],
-                tokens[other],
-                run["marker"],
-                after=after,
-                expect=False,
-            )
-            if crossed is not None:
-                leaks.append({"aimed_at": owner, "also_reached": other})
     require(
         not unrecorded,
         "No usage carrying the marker was recorded at its own deployment for: "
         + ", ".join(unrecorded)
         + ". The request cannot be attributed to the deployment it was aimed at",
     )
+    # One observation window covers every pair; do not sleep once per pair.
+    time.sleep(
+        min(
+            int(config.get("usage_wait_seconds", 180)),
+            int(config.get("absence_wait_seconds", 60)),
+        )
+    )
+    for run in runs:
+        owner = run["deployment"]
+        for other in sessions:
+            if other == owner:
+                continue
+            crossed = _usage_marker(
+                {**config, "absence_wait_seconds": 0},
+                sessions[other],
+                tokens[other],
+                run["request_id"],
+                after=after,
+                expect=False,
+            )
+            if crossed is not None:
+                leaks.append({"aimed_at": owner, "also_reached": other})
     require(
         not leaks,
         "A request aimed at one deployment was also recorded by another: "
@@ -457,7 +521,7 @@ def _pass(config, env, sessions, tokens, evidence, *, label):
             result = _run_tool(
                 config, env, sessions[name], tool, marker, evidence["transcript"]
             )
-        except common.RemoteError as exc:
+        except Exception as exc:
             with lock:
                 failures.append(f"{name}/{tool}: {exc}")
             return
@@ -481,6 +545,14 @@ def _pass(config, env, sessions, tokens, evidence, *, label):
     stuck = [thread.name for thread in threads if thread.is_alive()]
     require(not stuck, f"{label}: a tool session never returned: {', '.join(stuck)}")
     require(not failures, f"{label}: " + "; ".join(failures))
+    require(
+        len(runs) == 3 and {run["deployment"] for run in runs} == set(names),
+        f"{label}: not all three tool sessions produced a result",
+    )
+    require(
+        max(run["started"] for run in runs) < min(run["finished"] for run in runs),
+        f"{label}: the three tool sessions did not overlap",
+    )
 
     refused = [run for run in runs if run["exit_code"] != 0]
     require(not refused, f"{label}: a tool session exited non-zero: {refused}")
@@ -506,13 +578,14 @@ def _overlap(config, env, home, sessions, tokens, identifiers, evidence):
         config, env, sessions, tokens, evidence, label="overlap"
     )
 
-    # Read after Codex has actually run, because a proxy that was never started
-    # publishes nothing and three absent files would trivially satisfy a
-    # distinctness check.
+    evidence["reverse"] = _pass(
+        config, env, sessions, tokens, evidence, label="reverse"
+    )
+
     identities = _proxy_identities(home, identifiers)
     require(
-        identities,
-        "No deployment published a proxy identity, so the Codex sessions cannot be "
+        set(identities) == set(identifiers),
+        "Not every deployment published a proxy identity, so the Codex sessions cannot be "
         "shown to have used per-deployment proxies",
     )
     crossed = [
@@ -531,9 +604,6 @@ def _overlap(config, env, home, sessions, tokens, identifiers, evidence):
     evidence["proxies"] = identities
     evidence["checks"].append("each_deployment_proxy_holds_its_own_attributed_port")
 
-    evidence["reverse"] = _pass(
-        config, env, sessions, tokens, evidence, label="reverse"
-    )
     evidence["checks"].append("both_tool_arrangements_overlap_without_crossing")
     evidence["correlation"] = {
         "overlap_request_ids": [
@@ -551,7 +621,7 @@ def _overlap(config, env, home, sessions, tokens, identifiers, evidence):
     }
 
 
-def _lifecycle(config, cli, sessions, evidence):
+def _lifecycle_changes(config, cli, sessions, evidence):
     """E17: a default switch, a refresh, and one logout — live.
 
     Ordered so each step's subject is still intact when it runs: the switch and the
@@ -604,6 +674,10 @@ def _lifecycle(config, cli, sessions, evidence):
     )
     require(code == 0, f"`adp --deployment {refreshed} refresh` failed")
     after = {name: _access_token(cli, name) for name in names}
+    require(
+        after[refreshed] != before[refreshed],
+        "The explicit refresh did not rotate the selected deployment's access token",
+    )
     rotated = [
         name for name in names if name != refreshed and after[name] != before[name]
     ]
@@ -672,6 +746,125 @@ def _lifecycle(config, cli, sessions, evidence):
     }
 
 
+def _lifecycle(config, cli, env, home, sessions, evidence):
+    """Continue real model sessions after changing shared deployment state.
+
+    Each model must first run a local command that waits at a barrier. Only once
+    all three commands are waiting do we switch, refresh and log out. Releasing
+    the barriers then requires a further model response in the SAME processes.
+    The reply token exists only in the released file, so echoing the prompt
+    without actually reaching the barrier cannot pass this test.
+    """
+    workspace = home / "lifecycle"
+    workspace.mkdir(mode=0o700)
+    (workspace / "gate.py").write_text(
+        "import pathlib, sys, time\n"
+        "name = sys.argv[1]\n"
+        "pathlib.Path(name + '.ready').touch()\n"
+        "release = pathlib.Path(name + '.release')\n"
+        "deadline = time.monotonic() + 180\n"
+        "while not release.exists():\n"
+        "    if time.monotonic() > deadline: raise SystemExit('barrier timed out')\n"
+        "    time.sleep(0.1)\n"
+        "print(release.read_text())\n"
+    )
+    names = list(sessions)
+    results, errors = {}, []
+    lock = threading.Lock()
+    markers = {name: f"{config['evaluation_id']}-lifecycle-{name}" for name in names}
+
+    def drive(name, tool):
+        try:
+            prompt = (
+                "Run the following command once using your shell tool, with a 180 second timeout, "
+                "and wait for it to finish. Then reply with exactly the token it prints, nothing else: "
+                f"python3 gate.py {shlex.quote(name)}"
+            )
+            run = _run_tool(
+                {**config, "session_prompt": prompt, "session_cwd": str(workspace)},
+                env,
+                sessions[name],
+                tool,
+                markers[name],
+                evidence["transcript"],
+            )
+            with lock:
+                results[name] = run
+        except Exception as exc:
+            with lock:
+                errors.append(f"{name}/{tool}: {exc}")
+
+    threads = [
+        threading.Thread(target=drive, args=(name, tool), daemon=True)
+        for name, tool in zip(names, ("codex", "codex", "claude"), strict=True)
+    ]
+    audit_tokens = {name: _access_token(cli, name) for name in names}
+    for thread in threads:
+        thread.start()
+    try:
+        ready = common.wait_for(
+            lambda: all((workspace / f"{name}.ready").exists() for name in names),
+            timeout=min(int(config.get("inference_timeout_seconds", 300)), 150),
+            interval=1,
+        )
+        require(
+            ready and all(thread.is_alive() for thread in threads),
+            "All three model sessions must reach the local barrier before lifecycle changes",
+        )
+        _lifecycle_changes(config, cli, sessions, evidence)
+        continued_after = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    finally:
+        for name in names:
+            (workspace / f"{name}.release").write_text(markers[name])
+        deadline = (
+            time.monotonic() + int(config.get("inference_timeout_seconds", 300)) + 15
+        )
+        for thread in threads:
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+        require(
+            not any(thread.is_alive() for thread in threads),
+            "A lifecycle tool process did not stop",
+        )
+    require(
+        not errors and set(results) == set(names),
+        "Lifecycle sessions failed: " + "; ".join(errors),
+    )
+    # The logged-out session uses Codex, whose proxy fetches auth on each call.
+    # Its continuation must fail, while both other sessions complete the token
+    # returned by their barrier command after the state changes.
+    require(
+        results[names[0]]["exit_code"] not in (0, 124)
+        and results[names[0]]["authentication_failed"]
+        and not results[names[0]]["returned_marker"],
+        "The logged-out model session continued using credentials",
+    )
+    for name in names[1:]:
+        require(
+            results[name]["exit_code"] == 0 and results[name]["returned_marker"],
+            f"The existing model session for {name} did not continue after lifecycle changes",
+        )
+        audit_tokens[name] = _access_token(cli, name)
+    receipts = _receipts(
+        config,
+        sessions,
+        audit_tokens,
+        [results[name] for name in names[1:]],
+        after=continued_after,
+    )
+    evidence["checks"].append(
+        "existing_model_sessions_continue_after_lifecycle_changes"
+    )
+    evidence["detail"]["model_sessions"] = {
+        name: {
+            "tool": run["tool"],
+            "exit_code": run["exit_code"],
+            "returned_marker": run["returned_marker"],
+        }
+        for name, run in results.items()
+    }
+    evidence["detail"]["continued_usage"] = receipts
+
+
 def _teardown(cli, home, identifiers, evidence):
     """Stop what we started and forget the local records.
 
@@ -697,6 +890,8 @@ def _teardown(cli, home, identifiers, evidence):
     }
 
     names = list(identifiers)
+    if not names:
+        return {}
     keeper = names[0]
     cli.run(["deployment", "use", keeper], expected=None)
     removed = []
@@ -716,6 +911,11 @@ def _teardown(cli, home, identifiers, evidence):
             str(row.get("name")) for row in listed.get("deployments") or []
         ],
     }
+    require(all(stopped.values()), "Failed to stop every deployment proxy")
+    require(
+        set(evidence["teardown"]["records_remaining"]) == {keeper},
+        "Cleanup left unexpected deployment records",
+    )
     return evidence["teardown"]
 
 
@@ -729,7 +929,7 @@ def _validate_bindings(config):
     """
     deployments = config["deployments"]
     require(
-        len(deployments) >= 3,
+        len(deployments) == 3,
         f"This journey needs three deployments; {len(deployments)} were supplied. "
         "Two cannot distinguish 'each command reached its own' from 'commands "
         "alternated between the two'",
@@ -774,7 +974,7 @@ def execute(config, evidence):
         cli = common.Cli(Path(config["cli_path"]), env, evidence["transcript"])
         identifiers = {}
         try:
-            identifiers = _register(cli, deployments, evidence)
+            _register(cli, deployments, evidence, identifiers)
 
             evidence["stage"] = "login"
             sessions, tokens = {}, {}
@@ -785,12 +985,6 @@ def execute(config, evidence):
                 len(set(tokens.values())) == len(tokens),
                 "Three separate logins produced a shared token, so the sessions are "
                 "not independent and no later assertion could distinguish them",
-            )
-            require(
-                len({session["user_id"] for session in sessions.values()})
-                == len(sessions),
-                "Two deployments attributed the session to the same identity, so the "
-                "per-deployment receipts could not be told apart",
             )
             evidence["sessions"] = {
                 name: {"signed_in": True, "org_id": session["org_id"]}
@@ -805,8 +999,7 @@ def execute(config, evidence):
             if config["mode"] == "overlap":
                 _overlap(config, env, home, sessions, tokens, identifiers, evidence)
             else:
-                _lifecycle(config, cli, sessions, evidence)
-            evidence.update(stage="complete", success=True)
+                _lifecycle(config, cli, env, home, sessions, evidence)
         finally:
             # In `finally` because a failed assertion must not leave three proxies
             # listening: the next attempt on this instance would find them and fail
@@ -814,8 +1007,11 @@ def execute(config, evidence):
             if identifiers:
                 try:
                     _teardown(cli, home, identifiers, evidence)
-                except common.RemoteError as exc:
+                except Exception as exc:
                     evidence["teardown_error"] = str(exc)
+                    evidence["success"] = False
+                    raise
+        evidence.update(stage="complete", success=True)
 
 
 if __name__ == "__main__":

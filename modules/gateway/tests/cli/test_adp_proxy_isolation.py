@@ -403,17 +403,21 @@ class TestNamedServeDoesNotClaimTheFixedPort:
         helper = CLI / "bg-cognito-auth.sh"
         home = tmp_path / "home"
         home.mkdir()
-        config_dir = tmp_path / "deployments" / "d1111111"
-        config_dir.mkdir(parents=True)
-        (config_dir / "config.json").write_text(json.dumps({"gateway_url": "https://dev.example.com/api"}))
-
-        environment = os.environ.copy()
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(("ADP_", "BG_"))}
         environment["HOME"] = str(home)
-        environment["BG_CONFIG_DIR"] = str(config_dir)
-        environment["ADP_RUNTIME_DIR"] = str(config_dir)
-        environment["ADP_DEPLOYMENT_ID"] = "d1111111"
-        environment["ADP_DEPLOYMENT_NAME"] = "dev"
-        environment["ADP_DEPLOYMENT_SOURCE"] = "default"
+        registered = subprocess.run(
+            ["bash", str(CLI / "adp"), "deployment", "add", "dev", "--url", "https://dev.example.com/api"],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert registered.returncode == 0, registered.stderr
+        registry = json.loads((home / ".adp/deployments.json").read_text())
+        identifier = registry["deployments"]["dev"]["id"]
+        config_dir = home / ".adp/deployments" / identifier
+        (config_dir / "config.json").write_text(json.dumps({"gateway_url": "https://dev.example.com/api"}))
+        environment["ADP_DEPLOYMENT"] = "dev"
         process = subprocess.Popen(
             ["bash", str(helper), "serve"],  # no --port: the default is what is under test
             stdout=subprocess.DEVNULL,
@@ -422,10 +426,10 @@ class TestNamedServeDoesNotClaimTheFixedPort:
             env=environment,
         )
         try:
-            identity = _wait_for_file(config_dir / "proxy.json")
+            identity = _wait_for_file(config_dir / "runtime/proxy.json")
 
             assert identity["port"] != proxy_module.DEFAULT_PORT, "a named deployment claimed the shared fixed port, so a second one cannot start"
-            assert identity["deployment_id"] == "d1111111"
+            assert identity["deployment_id"] == identifier
             # Actually bound, not merely recorded.
             with socket.create_connection(("127.0.0.1", identity["port"]), timeout=5):
                 pass
@@ -442,7 +446,7 @@ class TestLegacyProxyUnchanged:
         """Every existing config.toml, doc and /setup page names 9191."""
         assert proxy_module.DEFAULT_PORT == 9191
 
-    def test_a_legacy_serve_keeps_the_fixed_port_and_publishes_no_deployment(self, tmp_path):
+    def test_a_legacy_serve_keeps_its_port_and_original_store(self, tmp_path):
         """An existing user's proxy must be found exactly where it always was."""
         helper = CLI / "bg-cognito-auth.sh"
         home = tmp_path / "home"
@@ -463,7 +467,7 @@ class TestLegacyProxyUnchanged:
             identity = _wait_for_file(home / ".bedrock-gateway" / "proxy.json")
 
             assert identity["port"] == port, "a legacy serve must honour the port it was given"
-            assert identity["deployment_id"] == "", "a legacy proxy names no deployment"
+            assert identity["deployment_id"] == "default", "the direct helper and wrapper must agree on legacy identity"
             # The pidfile stays where every existing tool and doc looks for it.
             assert (home / ".bedrock-gateway" / "proxy.pid").is_file()
         finally:

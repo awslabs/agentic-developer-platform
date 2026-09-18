@@ -141,6 +141,7 @@ def launch(adp_bin: Path, adp_home: Path, stub_tools: Path, proxy_port: int, tmp
 
     def _run(args: list[str], extra_env: dict[str, str] | None = None, timeout: int = 45) -> subprocess.CompletedProcess:
         env = os.environ.copy()
+        env.pop("ADP_GATEWAY_DUMMY", None)
         env.update(
             {
                 "HOME": str(adp_home),
@@ -306,6 +307,7 @@ class TestCodexReusesProxy:
         _seed_valid_session(adp_home)
         invocation_log = tmp_path / "concurrent.log"
         env = os.environ.copy()
+        env.pop("ADP_GATEWAY_DUMMY", None)
         env.update(
             {
                 "HOME": str(adp_home),
@@ -477,7 +479,9 @@ class TestClaudeLauncher:
 
         assert result.returncode == 0, result.stderr
         assert launch.record.tools == ["claude"]
-        assert launch.record.argv == ["--resume -p fix the build"]
+        assert len(launch.record.argv) == 1
+        assert launch.record.argv[0].endswith(" --resume -p fix the build")
+        assert launch.record.argv[0].startswith("--settings ")
 
     def test_never_starts_the_proxy(self, launch, adp_home: Path) -> None:
         _seed_valid_session(adp_home)
@@ -541,7 +545,11 @@ class TestVerbRouting:
         launch([verb, "--", "setup"])
 
         assert launch.record.tools == [verb]
-        assert launch.record.argv == ["setup"]
+        if verb == "claude":
+            assert len(launch.record.argv) == 1
+            assert launch.record.argv[0].endswith(" setup")
+        else:
+            assert launch.record.argv == ["setup"]
 
     def test_usage_documents_the_launchers_and_the_asymmetry(self, launch) -> None:
         """The Claude/Codex difference is documented, not hidden (issue's own words)."""

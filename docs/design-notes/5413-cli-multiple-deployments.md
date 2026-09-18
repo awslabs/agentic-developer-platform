@@ -235,8 +235,10 @@ their shell profile and scripts.
 `adp codex` runs a loopback proxy that holds the session, so two Codex sessions
 on one machine is the case where a fixed port breaks.
 
-- A **named** deployment asks the OS for a free port (`--port 0`). Three of them
-  cannot share one fixed port, and nothing in the design needs them to.
+- A **named** deployment asks the OS for a free port (`--port 0`) until `codex
+  setup` reserves a stable port for bare Codex. Subsequent launches and its
+  deployment-specific daemon use that saved port; a collision fails rather than
+  routing through another deployment's listener.
 - The **legacy** deployment keeps the fixed port it has always used, so a proxy
   started by an older CLI or by `adp daemon install` is still found.
 
@@ -256,11 +258,23 @@ is validated twice:
 A proxy that answers with an empty id is a legacy single-deployment proxy, which
 is how a running pre-upgrade session keeps working.
 
-Each launch is additionally pinned to the selected deployment's endpoint
-(`ANTHROPIC_BEDROCK_BASE_URL`), and the agent's own `adp` invocations inherit the
-`ADP_DEPLOYMENT_*` pin, so endpoint and credential cannot disagree. The variable
-is set only when a named deployment is selected; on a legacy machine the
-environment is byte-for-byte what it was before this change.
+Claude setup saves the endpoint and a shell-quoted helper pinned to the stable
+ID, URL and store. Each `adp claude` launch supplies its own `--settings` overlay
+with that same binding; unrelated supplied settings and arguments survive, and
+normal launches do not rewrite global settings. Named `adp codex` launches supply
+the selected provider, proxy URL and authentication configuration per process.
+Conflicting transport overrides are rejected.
+
+Direct auth and Python helpers resolve through the same module. Before using a
+session, they verify that its configured URL matches the selected binding. A
+corrupt registry or missing resolver never silently selects the legacy account.
+A named alias of the legacy store retains its registered URL; if the legacy store
+is rebound, that alias refuses to use its credentials until explicitly repaired.
+
+Running named commands record leases containing their PID and process start time.
+Removal checks those leases under the registry lock, so a Claude session or login
+protects its store even without a Codex proxy. Dead leases do not prevent removal.
+The last named alias deletes the private local store; legacy adoption never does.
 
 > `ADP_PROXY_PORT` pins one port and must **not** be set when running concurrent
 > sessions. It is a single-deployment debugging aid.
@@ -270,8 +284,8 @@ environment is byte-for-byte what it was before this change.
 ## 6. What deliberately did not change
 
 - **`adp codex` and `adp claude` dispatch.** Frozen by the command contract.
-  `--deployment` is a global option before the verb precisely so that argument
-  forwarding is untouched.
+  `--deployment` remains a global option before the verb. Tool arguments are
+  forwarded except conflicting overrides of ADP-managed transport settings.
 - **A machine with nothing registered.** It resolves with source `legacy` and
   behaves exactly as before, including messages: reporting "Deployment: default"
   there would introduce a concept the user has never met. The deployment name is
@@ -338,8 +352,9 @@ green result that proves nothing:
 
 - **Distinct gateway URLs**, since three names over fewer URLs are aliases (§3)
   sharing the very session whose independence is under test;
-- **a distinct credential secret per deployment**, since one identity signed in
-  three times cannot show that logging out of one leaves the other two signed in.
+- **a credential secret reference per deployment**, so each gateway's login is
+  independently configured. The current fixture format requires distinct secret
+  names. User IDs may coincide across independent deployments.
 
 With the variable unset, E16/E17 report `blocked` naming `three_deployments` and
 `full_acceptance` stays false. That is the intended state until a coordinator
@@ -350,3 +365,12 @@ cover the registry, the precedence rule, concurrency, the proxy identity checks,
 install/update/rollback with three records, and the fixture rules above. They do
 not and cannot establish AC-10/AC-11, which require real CLI, Claude and Codex
 execution against three live gateways on disposable EC2. Those remain open.
+
+The live runner correlates tool requests with `X-Request-ID` in usage records;
+prompt text is not a field in the usage API. It requires three completed,
+overlapping processes, all three proxy identities after both arrangements, and
+successful cleanup. E17 holds three real tool processes at local shell barriers,
+changes the default, refreshes one session, logs another out, then requires the
+same processes to continue or fail with an authentication error as appropriate.
+These paths still need execution against the three real deployment fixtures on
+EC2. Offline tests validate the harness decisions, not live acceptance.

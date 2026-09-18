@@ -170,7 +170,11 @@ class TestPinnedForTheWholeCommand:
         class Result:
             stdout = "token-value\n"
 
+        real_run = common.subprocess.run
+
         def fake_run(argv, **kwargs):
+            if argv[0] == "ps":
+                return real_run(argv, **kwargs)
             captured.update(kwargs.get("env") or {})
             return Result()
 

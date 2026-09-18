@@ -589,17 +589,8 @@ class TestAnInheritedStoreCannotBeAimedAtTheLegacyName:
         assert "mixed deployment context" not in result.stderr
 
 
-class TestEveryNameForTheLegacyStoreTracksIt:
-    """An ALIAS of the legacy deployment shares its store, so it shares its URL.
-
-    `deployment add aaa --url <legacy URL>` records a second name for the same
-    stable id and the same store. The live-URL refresh was keyed on the record
-    NAMED `default`, so the alias kept the URL as of the moment it was added. Once
-    the legacy store was rebound — a reinstall, or `login --gateway-url <other>`,
-    which rewrites URL and token together — the alias addressed the OLD gateway
-    while drawing the NEW token from the shared store. One store cannot have two
-    destinations; that is the leak this refresh exists to make impossible.
-    """
+class TestLegacyAliasesRetainTheirRegisteredBinding:
+    """Rebinding the original store must not silently rebind a named alias."""
 
     @pytest.fixture
     def aliased(self, adp, adp_home, resolved):
@@ -615,17 +606,19 @@ class TestEveryNameForTheLegacyStoreTracksIt:
         assert "another name for" in result.stdout, f"the fixture must create an ALIAS, not a second deployment: {result.stdout}"
         return adp
 
-    def test_the_alias_follows_the_store_when_it_is_rebound(self, aliased, adp_home, resolved) -> None:
+    def test_alias_keeps_its_url_and_refuses_rebound_credentials(self, aliased, adp_home, resolved) -> None:
+        before = resolved("aaa")["gateway_url"]
         (adp_home / ".bedrock-gateway" / "config.json").write_text(json.dumps({"gateway_url": PREPROD_URL + "/api"}))
+        assert resolved("aaa")["gateway_url"] == before
+        result = aliased(["--deployment", "aaa", "token"])
+        assert result.returncode != 0
+        assert result.stdout == ""
+        assert "another gateway" in result.stderr
 
-        assert resolved("aaa")["gateway_url"] == PREPROD_URL + "/api", "the alias shares the rebound store, so it must address the rebound gateway"
-
-    def test_the_alias_and_the_legacy_name_never_disagree(self, aliased, adp_home, resolved) -> None:
-        """Two names, one store, one token — therefore exactly one destination."""
+    def test_legacy_name_still_follows_original_store(self, aliased, adp_home, resolved) -> None:
         (adp_home / ".bedrock-gateway" / "config.json").write_text(json.dumps({"gateway_url": PREPROD_URL + "/api"}))
-
-        assert resolved("aaa")["gateway_url"] == resolved("default")["gateway_url"]
-        assert resolved("aaa")["config_dir"] == resolved("default")["config_dir"], "the fixture's alias premise must hold"
+        assert resolved("default")["gateway_url"] == PREPROD_URL + "/api"
+        assert resolved("aaa")["config_dir"] == resolved("default")["config_dir"]
 
 
 class TestTheLegacyUrlIsReadFromItsStoreNotASnapshot:
