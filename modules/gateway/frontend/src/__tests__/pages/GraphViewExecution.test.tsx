@@ -270,6 +270,31 @@ describe('a ledger read that has not answered is not an absence', () => {
     expect(screen.queryByTestId('graph-error')).toBeNull();
     expect(screen.queryByTestId('execution-absent-story-a')).toBeNull();
   });
+
+  /**
+   * The assertions above are all NEGATIVE — they establish that a ledger failure does
+   * not blank the plan and does not masquerade as an absence. Every one of them also
+   * holds when the failure is simply DISCARDED, which is the defect the visible notice
+   * was added to fix: a silently swallowed read is pixel-identical to the feature not
+   * existing, so the screen tells whoever is debugging it that there is nothing to
+   * debug. Verified by deleting the notice from `GraphView.tsx` — the negative
+   * assertions stayed green, so they could not have been what was holding it in place.
+   *
+   * This test is the positive half: the failure has to be STATED. It asserts the
+   * notice is present and that its text does not overclaim — a read that failed must
+   * not be reported as delivery having stopped, only as this view being unable to say
+   * where delivery stands.
+   */
+  it('states the ledger failure instead of discarding it', async () => {
+    mockGetFlowExecution.mockRejectedValue(new Error('ledger unavailable'));
+    renderGraph();
+
+    const notice = await screen.findByTestId('execution-unavailable');
+    expect(notice.textContent).toMatch(/could not be read/i);
+    // The plan is still trustworthy, and the notice must say so rather than implying
+    // the absence of progress data means the absence of progress.
+    expect(notice.textContent).toMatch(/does not mean delivery has\s+stopped/i);
+  });
 });
 
 describe('legacy flows', () => {
