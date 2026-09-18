@@ -11,7 +11,7 @@ import inspect
 import logging
 import os
 from datetime import UTC, datetime
-from functools import lru_cache
+from functools import lru_cache, partial
 
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,7 +22,7 @@ from starlette.responses import JSONResponse
 from src.agentauth.adapter import CREDENTIAL_HEADER, MAX_COMMAND_BODY_BYTES, AgentControlAdapter
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, issue_bound_credential
 from src.agentauth.composition import build_authorization_service, build_control_adapter
-from src.agentauth.dispatch import DispatchRequest, DispatchService
+from src.agentauth.dispatch import FAN_OUT_CAPABILITY, FAN_OUT_CAPABILITY_FIELD, DispatchRequest, DispatchService
 from src.agentauth.execution import ExecutionStateError, evaluate_execution_state
 from src.agentauth.grants import LIVE_CONTROL_ACTIONS, AgentAction
 from src.agentauth.policy import PolicyError
@@ -139,9 +139,41 @@ class AgentRuntime:
         )
         return record, grant
 
-    def dispatch(self, body: DispatchRequest, credential_token: str, workload_token: str, *, context=None) -> dict:
+    def dispatch(self, body: DispatchRequest, credential_token: str, workload_token: str, *, context=None, fan_out_cleared: bool = False) -> dict:
         pod, _, _, _ = context or self.authenticate(credential_token, workload_token)
-        return self.dispatcher.dispatch(body=body, credential_token=credential_token, workload_binding=pod.uid)
+        return self.dispatcher.dispatch(body=body, credential_token=credential_token, workload_binding=pod.uid, fan_out_cleared=fan_out_cleared)
+
+    async def resolve_fan_out(self, body, context) -> bool:
+        """Resolve the #5365 repository fan-out clearance for a root coordinator.
+
+        Only asked when the stored grant already carries the server-written
+        capability, so an ordinary issue-scoped run costs no query. Any failure to
+        resolve returns False, which leaves the caller pinned to its launch issue
+        rather than widened on an unproven fact.
+        """
+        from src.agentauth.coordinator import resolve_repository_fan_out
+        from src.shared.database import get_session_factory
+
+        record, grant = context[2], context[3]
+        raw_grant = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"GRANT#{grant.principal}")
+        if not raw_grant or raw_grant.get(FAN_OUT_CAPABILITY_FIELD) != {"S": FAN_OUT_CAPABILITY}:
+            return False
+        execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
+        if not execution:
+            return False
+        try:
+            async with get_session_factory()() as session:
+                config = os.environ if self.env is None else self.env
+                return await resolve_repository_fan_out(
+                    session=session,
+                    execution=execution,
+                    grant=grant,
+                    target_repo=body.target.repo,
+                    target_issue=body.target.issue,
+                    orchestration_repo=config.get("BG_ORCH_DISPATCH_REPO", ""),
+                )
+        except Exception:
+            return False
 
     @property
     def dispatcher(self):
@@ -157,7 +189,8 @@ class AgentRuntime:
 
     async def dispatch_request(self, body, credential_token, workload_token, *, context):
         if context[3].authority.kind != "gate_decision":
-            return await run_in_threadpool(self.dispatch, body, credential_token, workload_token, context=context)
+            cleared = await self.resolve_fan_out(body, context)
+            return await run_in_threadpool(partial(self.dispatch, body, credential_token, workload_token, context=context, fan_out_cleared=cleared))
         from src.agentauth.graph_dispatch import dispatch_graph
         from src.shared.database import get_session_factory
 

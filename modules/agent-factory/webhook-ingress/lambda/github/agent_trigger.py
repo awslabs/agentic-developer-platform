@@ -15,12 +15,21 @@ not trusted. Five fail-open behaviours are closed:
   - an omitted body tenant_id no longer skips the cross-tenant check
   - is_human_rooted defaults to False, not True
 
+Issue #5365: per-lineage depth is enforced on the protected gateway dispatch
+route, where a run credential authenticates the requesting invocation and the
+server derives its parent. This legacy route has only a fleet-wide IAM identity;
+it therefore charges the higher of the named member's depth and the
+server-observed chain head. A selected shallow ancestor cannot buy headroom, and
+an honest older caller retains the pre-existing conservative behavior until the
+protected-route rollout. ``MAX_CHAIN_DEPTH`` is unchanged on both paths.
+
 Reject rules:
   - Missing correlation_id        -> 400 missing_lineage
   - Unknown/expired chain         -> 422 unknown_chain (NEVER mint new root)
   - Cross-tenant mismatch         -> 403 cross_tenant
   - Chain has no tenant           -> 403 cross_tenant  (#4128)
   - Forged/unsigned marker        -> 403 unverified_provenance  (#4128)
+  - Marker names another run      -> 403 provenance_parent_mismatch  (#5365)
   - Malformed chain_depth         -> 422 invalid_chain_depth  (#4128)
   - Parent not in chain           -> 422 unknown_parent_invocation  (#4128)
   - target.repo outside tenant    -> 403 cross_tenant_target  (#4128)
@@ -48,7 +57,7 @@ _GSI_MAX_ATTEMPTS = 2
 # this bounds the read while still spanning a realistic chain. Legitimate
 # cross-issue lineage (#1828) points at a recent ancestor, not an arbitrary one.
 #
-# NOTE: no longer used to validate parent_invocation_id — see _parent_in_chain.
+# NOTE: no longer used to validate parent_invocation_id — see _verified_parent_row.
 # A recency window silently rejected valid parents once a chain outgrew it.
 _CHAIN_SCAN_LIMIT = 50
 
@@ -157,13 +166,6 @@ def handle_agent_trigger(event: dict, context) -> dict:
     # spawned run a human's authority on the strength of an ABSENT field.
     chain_is_human_rooted = bool(chain_record.get("is_human_rooted", False))
 
-    # Issue #4128: chain_depth must never silently reset to 0. A reset makes the
-    # runaway-chain guard (MAX_CHAIN_DEPTH in spawn_persona) stop bounding
-    # recursion, because every hop re-enters the chain at depth 0.
-    chain_depth, depth_error = _resolve_chain_depth(chain_record, marker, correlation_id)
-    if depth_error is not None:
-        return depth_error
-
     # Cross-tenant check (Issue #4128: absence is no longer a bypass).
     #
     # Previously guarded by `if body_tenant and ...`, so simply OMITTING
@@ -194,7 +196,12 @@ def handle_agent_trigger(event: dict, context) -> dict:
     # Issue #4128: the claimed parent must actually be part of this chain.
     # Without this, parent_invocation_id is a free-text field that fabricates a
     # lineage edge the Activity chain view then renders as real.
-    if not _parent_in_chain(correlation_id, parent_invocation_id, chain_record):
+    #
+    # The primary-key lookup proves membership even when the caller is no longer
+    # the newest row. The legacy shared-IAM route cannot prove that this member is
+    # the caller, so depth remains conservatively bounded by the chain head below.
+    parent_row = _verified_parent_row(correlation_id, parent_invocation_id, chain_record)
+    if parent_row is None:
         logger.warning(
             "agent_trigger: parent_invocation_id=%s not found in chain "
             "correlation=%s — rejecting forged lineage edge",
@@ -208,6 +215,68 @@ def handle_agent_trigger(event: dict, context) -> dict:
                 "detail": "parent_invocation_id does not belong to this chain",
             },
         )
+
+    # A verified marker must agree with the already server-bounded parent claim.
+    # Marker HMACs are not run identity: workers share the key and published
+    # markers can be replayed, so this is an integrity check only.
+    mismatch = _marker_binds_parent(marker, parent_invocation_id, correlation_id)
+    if mismatch is not None:
+        return mismatch
+
+    # Issue #4128: chain_depth must never silently reset to 0. A reset makes the
+    # runaway-chain guard (MAX_CHAIN_DEPTH in spawn_persona) stop bounding
+    # recursion, because every hop re-enters the chain at depth 0.
+    #
+    # The protected run-credential route performs true per-lineage accounting.
+    # This shared-IAM route instead keeps the old conservative upper bound: a
+    # selected ancestor can never make the charge lower than the observed head.
+    chain_depth, depth_error = _resolve_chain_depth(
+        parent_row, marker, correlation_id, parent_invocation_id
+    )
+    if depth_error is not None:
+        return depth_error
+
+    observed_invocation_id = str(chain_record.get("event_id") or "")
+    observed_chain_depth, depth_error = _resolve_chain_depth(
+        chain_record, None, correlation_id, observed_invocation_id
+    )
+    if depth_error is not None:
+        return depth_error
+    depth_source_invocation = parent_invocation_id
+    if observed_chain_depth > chain_depth:
+        logger.info(
+            "agent_trigger: shared-IAM caller named invocation=%s depth=%d but "
+            "the server-observed head invocation=%s is depth=%d correlation=%s "
+            "— charging the higher value until protected dispatch is enabled",
+            parent_invocation_id,
+            chain_depth,
+            observed_invocation_id or "unknown",
+            observed_chain_depth,
+            correlation_id,
+        )
+        chain_depth = observed_chain_depth
+        depth_source_invocation = observed_invocation_id or parent_invocation_id
+
+    # The credential horizon is monotonic and persisted separately from the cap.
+    # This matters during mixed-version rollout: once a conservative depth is
+    # observed, a later shallow row must not restore root-human vault authority.
+    credential_chain_depth = chain_depth
+    observed_depth = max(
+        _safe_int(chain_record.get("chain_depth"), chain_depth),
+        _safe_int(chain_record.get("credential_chain_depth"), chain_depth),
+    )
+    if observed_depth > credential_chain_depth:
+        logger.info(
+            "agent_trigger: credential horizon measured on the server-observed "
+            "chain depth %d rather than the current cap depth %d "
+            "(correlation=%s parent_invocation=%s) — a prior conservative "
+            "horizon cannot be lowered",
+            observed_depth,
+            chain_depth,
+            correlation_id,
+            parent_invocation_id,
+        )
+        credential_chain_depth = observed_depth
 
     # Issue #4128: target.repo must belong to the chain's tenant. The channel
     # key and the spawned run's repo are both built from this body value, so an
@@ -244,6 +313,10 @@ def handle_agent_trigger(event: dict, context) -> dict:
         # every hop through this route. Guard 5 reads this field as "the depth of
         # the run asking to spawn", which is what it needs to bound recursion.
         "chain_depth": chain_depth,
+        # Issue #5365: the conservative depth the #3174 credential horizon is
+        # measured on. Only ever >= chain_depth, so it can withhold vault
+        # authority but never extend it. See the derivation above.
+        "credential_chain_depth": credential_chain_depth,
         # Carry forward loop-tracking from pointer if available
         "last_triggered_persona": chain_record.get("last_triggered_persona"),
         "recent_triggered_personas": set(chain_record.get("recent_triggered_personas") or []),
@@ -326,7 +399,21 @@ def handle_agent_trigger(event: dict, context) -> dict:
         )
         if block_reason == "sqs_publish_failed":
             return _response(500, {"error": "enqueue_failed"})
-        return _response(422, {"error": "guard_rejected", "detail": block_reason})
+        rejection: dict[str, Any] = {"error": "guard_rejected", "detail": block_reason}
+        if block_reason == "chain_depth_exceeded":
+            # Issue #5365: a bare `chain_depth_exceeded` is unactionable — there is
+            # no field the caller can change that alters the outcome, so it reads
+            # as a caller bug and costs an operator a DynamoDB spelunk (this issue
+            # was diagnosed that way). Report which lineage was priced, what it was
+            # priced at, and the cap. All three are values the caller already
+            # supplied or can read from the code; no credentials, no payload
+            # content, no other tenant's data.
+            from common.spawn_persona import MAX_CHAIN_DEPTH
+
+            rejection["chain_depth"] = chain_depth
+            rejection["max_chain_depth"] = MAX_CHAIN_DEPTH
+            rejection["depth_source_invocation"] = depth_source_invocation
+        return _response(422, rejection)
 
     latency_ms = (time.time() - start_time) * 1000
     logger.info(
@@ -401,7 +488,7 @@ def _query_event_row(event_id: str) -> list[dict[str, Any]]:
 
     ``event_id`` is the table's partition key (range key ``arrived_at``), so this
     is a bounded primary-key query rather than a scan. Used by
-    :func:`_parent_in_chain` to resolve a claimed parent directly instead of
+    :func:`_verified_parent_row` to resolve a claimed parent directly instead of
     hoping it falls inside a recency window — see that function for why the
     window approach broke long-lived chains (#4245).
 
@@ -559,76 +646,195 @@ def _verified_marker(body: dict) -> tuple[dict[str, Any] | None, dict | None]:
 
 
 def _resolve_chain_depth(
-    chain_record: dict[str, Any],
+    parent_row: dict[str, Any],
     marker: dict[str, Any] | None,
     correlation_id: str,
+    parent_invocation_id: str = "",
 ) -> tuple[int, dict | None]:
-    """Resolve this chain's depth, refusing to silently reset it (Issue #4128).
+    """Read a server-written row's depth without a reset path.
 
-    Depth is taken from the VERIFIED marker when one was supplied (it reflects
-    the calling run's own position), otherwise from the chain record.
-
-    The previous code had two fallbacks to 0 — one for a malformed value and one
-    for an absent one. Either turns the depth counter into a reset button, so
-    the runaway-chain guard stops bounding recursion. Both are now errors.
-
-    Returns ``(depth, None)`` or ``(0, response)`` with a 422 to return.
+    The caller-selected member and server-observed head are both read through
+    this function, then the route charges their maximum. The protected gateway
+    route handles true per-lineage dispatch from its authenticated execution
+    record. A verified marker may raise the member's depth but never lower it.
+    Missing, malformed, and negative values fail closed with an actionable 422.
     """
-    if marker is not None and marker.get("chain_depth") is not None:
-        source = "marker"
-        raw = marker.get("chain_depth")
-    else:
-        source = "chain"
-        raw = chain_record.get("chain_depth")
+    raw = parent_row.get("chain_depth")
 
     if raw is None:
         logger.warning(
-            "agent_trigger: chain_depth absent on chain correlation=%s — "
-            "refusing to reset depth to 0",
+            "agent_trigger: chain_depth absent on verified parent invocation=%s "
+            "correlation=%s — refusing to reset depth to 0",
+            parent_invocation_id,
             correlation_id,
         )
         return 0, _response(
             422,
-            {"error": "invalid_chain_depth", "detail": "chain_depth is missing"},
+            {
+                "error": "invalid_chain_depth",
+                "detail": "chain_depth is missing",
+                "depth_source_invocation": parent_invocation_id,
+            },
         )
 
     try:
         depth = int(raw)
     except (ValueError, TypeError):
         logger.warning(
-            "agent_trigger: chain_depth=%r is malformed (source=%s) "
-            "correlation=%s — refusing to reset depth to 0",
+            "agent_trigger: chain_depth=%r is malformed on verified parent "
+            "invocation=%s correlation=%s — refusing to reset depth to 0",
             raw,
-            source,
+            parent_invocation_id,
             correlation_id,
         )
         return 0, _response(
             422,
-            {"error": "invalid_chain_depth", "detail": "chain_depth is not an integer"},
+            {
+                "error": "invalid_chain_depth",
+                "detail": "chain_depth is not an integer",
+                "depth_source_invocation": parent_invocation_id,
+            },
         )
 
     if depth < 0:
         logger.warning(
-            "agent_trigger: chain_depth=%d is negative (source=%s) correlation=%s "
-            "— refusing (would evade the depth guard)",
+            "agent_trigger: chain_depth=%d is negative on verified parent "
+            "invocation=%s correlation=%s — refusing (would evade the depth guard)",
             depth,
-            source,
+            parent_invocation_id,
             correlation_id,
         )
         return 0, _response(
             422,
-            {"error": "invalid_chain_depth", "detail": "chain_depth is negative"},
+            {
+                "error": "invalid_chain_depth",
+                "detail": "chain_depth is negative",
+                "depth_source_invocation": parent_invocation_id,
+            },
         )
+
+    # A verified marker may raise the charge, never lower it.
+    if marker is not None and marker.get("chain_depth") is not None:
+        try:
+            marker_depth = int(marker["chain_depth"])
+        except (ValueError, TypeError):
+            logger.warning(
+                "agent_trigger: verified marker carries malformed chain_depth=%r "
+                "correlation=%s — using the verified parent's depth %d",
+                marker.get("chain_depth"),
+                correlation_id,
+                depth,
+            )
+        else:
+            if marker_depth > depth:
+                logger.info(
+                    "agent_trigger: verified marker depth %d exceeds parent "
+                    "invocation=%s depth %d correlation=%s — charging the higher "
+                    "value",
+                    marker_depth,
+                    parent_invocation_id,
+                    depth,
+                    correlation_id,
+                )
+                depth = marker_depth
 
     return depth, None
 
 
-def _parent_in_chain(
+def _marker_binds_parent(
+    marker: dict[str, Any] | None,
+    parent_invocation_id: str,
+    correlation_id: str,
+) -> dict | None:
+    """Require a verified marker to agree with the server-bounded parent.
+
+    This is marker consistency, not caller authentication: the marker is
+    replayable and its signing key is shared by workers. Caller identity is
+    supplied only by the protected run-credential dispatch route. An absent
+    marker remains governed by ``REQUIRE_SIGNED_PROVENANCE`` in
+    :func:`_verified_marker`.
+    """
+    if marker is None:
+        return None
+
+    # A VERIFIED marker that omits ``adp-invocation`` must not skip the binding.
+    # ``marker_verify`` substitutes "" for the absent field when it rebuilds the
+    # signing input, so an invocation-less marker is a marker a key-holder can
+    # legitimately sign — and treating its absence as "nothing to check" turned
+    # this control off for exactly the caller it exists to bind. The emitter
+    # always sets the field when ``ADP_MESSAGE_ID`` is present
+    # (``agent-worker-image/lib/correlation_marker.py``), so requiring it here
+    # refuses a forged-lineage claim without refusing a real dispatcher.
+    marker_invocation = marker.get("invocation_id")
+    if not marker_invocation:
+        logger.warning(
+            "agent_trigger: verified marker carries no invocation_id while the "
+            "request claims parent_invocation_id=%s correlation=%s — refusing (a "
+            "signed marker that names no run cannot select this dispatch's "
+            "lineage depth)",
+            parent_invocation_id,
+            correlation_id,
+        )
+        return _response(
+            403,
+            {
+                "error": "provenance_parent_mismatch",
+                "detail": "provenance marker does not name an invocation",
+            },
+        )
+    if marker_invocation != parent_invocation_id:
+        logger.warning(
+            "agent_trigger: verified marker names invocation=%s but the request "
+            "claims parent_invocation_id=%s correlation=%s — refusing (a marker "
+            "for another run cannot select this dispatch's lineage depth)",
+            marker_invocation,
+            parent_invocation_id,
+            correlation_id,
+        )
+        return _response(
+            403,
+            {
+                "error": "provenance_parent_mismatch",
+                "detail": (
+                    "provenance marker names a different invocation than "
+                    "parent_invocation_id"
+                ),
+            },
+        )
+
+    marker_correlation = marker.get("correlation_id")
+    if marker_correlation and marker_correlation != correlation_id:
+        logger.warning(
+            "agent_trigger: verified marker names correlation=%s but the request "
+            "claims correlation=%s — refusing",
+            marker_correlation,
+            correlation_id,
+        )
+        return _response(
+            403,
+            {
+                "error": "provenance_parent_mismatch",
+                "detail": "provenance marker names a different correlation chain",
+            },
+        )
+
+    return None
+
+
+def _verified_parent_row(
     correlation_id: str,
     parent_invocation_id: str,
     chain_record: dict[str, Any],
-) -> bool:
-    """Whether the claimed parent_invocation_id belongs to this chain.
+) -> dict[str, Any] | None:
+    """The claimed parent's row, if it genuinely belongs to this chain.
+
+    Issue #5365: returns the ROW rather than a bool. The membership assertion is
+    unchanged — see below — but the verified row is also the depth source now, so
+    returning it keeps "which row did we verify" and "which row did we price" the
+    same object by construction. Two lookups could drift; one cannot.
+
+    Returns None when the claim is unverifiable (fail-closed), which the caller
+    turns into ``422 unknown_parent_invocation``.
 
     Issue #4128: requires the claimed parent's ``event_id`` to appear under this
     ``correlation_id``. Reuses :func:`_query_chain` (the same correlation-index
@@ -657,8 +863,9 @@ def _parent_in_chain(
     """
     if chain_record.get("event_id") == parent_invocation_id:
         # Fast path: the parent is the row we already read. Avoids a second query
-        # for the common agent-just-wrote-its-row case.
-        return True
+        # for the common agent-just-wrote-its-row case. Its correlation_id is this
+        # chain's by construction — it came from the correlation-index query.
+        return chain_record
 
     rows = _query_event_row(parent_invocation_id)
     if not rows:
@@ -671,12 +878,15 @@ def _parent_in_chain(
             parent_invocation_id,
             correlation_id,
         )
-        return False
+        return None
 
     # The row exists; it belongs to this chain only if its correlation matches.
     # Without this comparison the check would accept any real invocation id from
     # any chain, which is precisely the forged-lineage edge #4128 closed.
-    return any(row.get("correlation_id") == correlation_id for row in rows)
+    for row in rows:
+        if row.get("correlation_id") == correlation_id:
+            return row
+    return None
 
 
 def _repo_in_tenant(
