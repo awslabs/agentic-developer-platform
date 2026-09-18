@@ -226,6 +226,52 @@ def state_path(name):
     return private_directory(state_dir()) / (name + ".json")
 
 
+def deployment_stamp():
+    """Identity to record in a handoff file, so a later resume can prove it is ours.
+
+    Issue #5413. A handoff directory outlives the command that wrote it, gets
+    emailed to an administrator, and comes back minutes or days later. By then the
+    saved default may name a different deployment, so the returning `--resume` must
+    be able to tell whose setup it is holding. The gateway URL alone is not that
+    answer: it is the deployment's current binding, not its identity, and two
+    records can be re-pointed or renamed while a handoff is in flight.
+
+    The stable id is recorded because it is the filesystem authority for a
+    deployment; the name is recorded only so the error message can say something a
+    person recognises. Neither is a secret, which is why they may be written into a
+    directory the user is about to hand to somebody else.
+    """
+    resolved = deployment()
+    return {"deployment_id": resolved.id if resolved else "", "deployment": resolved.name if resolved else ""}
+
+
+def check_handoff_deployment(metadata, what="setup"):
+    """Refuse another deployment's handoff BEFORE anything is created or assigned.
+
+    Issue #5413. Ordering is the whole point: this runs while the only thing that
+    has happened is reading a file, so a resume aimed at the wrong deployment
+    changes nothing anywhere — no role provisioned, no routing rule assigned, no
+    state overwritten.
+
+    A handoff written before this change carries no stamp. That is accepted rather
+    than rejected: refusing it would strand a setup a user is part-way through, and
+    the pre-existing gateway-URL check still applies to it.
+    """
+    recorded = (metadata or {}).get("deployment_id")
+    if not recorded:
+        return
+    resolved = deployment()
+    current_id = resolved.id if resolved else ""
+    if recorded != current_id:
+        raise CliError(
+            f"This {what} belongs to deployment {metadata.get('deployment') or recorded!r}, "
+            f"but this command is running against {(resolved.name if resolved else 'the legacy deployment')!r}. "
+            f"Nothing was changed. Rerun it with --deployment {metadata.get('deployment') or '<name>'}.",
+            "deployment_mismatch",
+            1,
+        )
+
+
 def read_state(name):
     path = state_path(name)
     return read_private_json(path) if path.exists() else {}

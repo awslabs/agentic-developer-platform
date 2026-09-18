@@ -322,6 +322,10 @@ def resume_details(api, args):
             "--resume uses the account and connection saved in the download directory. No other setup options are needed.", "usage_error", 1
         )
     metadata = common.read_private_json(Path(args.resume) / "connection.json")
+    # Whose setup this is, checked before any ADP or AWS call (Issue #5413). Two
+    # deployments can share a gateway URL as aliases, so identity is checked by the
+    # stable id the handoff recorded, not by the URL alone.
+    common.check_handoff_deployment(metadata, "AWS setup")
     if metadata.get("gateway_url") != api.base:
         raise CliError("This setup belongs to a different ADP gateway. Sign in to that gateway before resuming.")
     rows = [row for row in connections(api) if row["id"] == metadata["credential_id"]]
@@ -457,6 +461,9 @@ def connect(api, args):
             json.dumps(
                 {
                     "gateway_url": api.base,
+                    # Which deployment this handoff belongs to (Issue #5413), so the
+                    # resume that comes back later can refuse to apply it elsewhere.
+                    **common.deployment_stamp(),
                     "credential_id": connection["id"],
                     "account_id": setup["account_id"],
                     "role_arn": setup["role_arn"],
