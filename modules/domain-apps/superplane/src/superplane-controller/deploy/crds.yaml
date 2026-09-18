@@ -296,8 +296,10 @@ spec:
                     - Joining
                     - Ready
                     - Degraded
+                    - Retiring
                     - Draining
                     - Terminated
+                    - ReleaseFailed
                     - Failed
                 k8sNodeName:
                   type: string

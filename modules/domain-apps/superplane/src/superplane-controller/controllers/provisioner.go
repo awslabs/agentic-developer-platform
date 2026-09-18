@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +51,12 @@ type ProvisionerReconciler struct {
 
 	// inFlight tracks SuperplaneNode names currently being provisioned.
 	inFlight map[string]struct{}
+
+	// ReleaseVerifyTimeout and ReleaseVerifyInterval bound the wait for an
+	// asynchronous teardown to be confirmed at the provider. Zero means use the
+	// package defaults; tests shorten them to keep runs fast.
+	ReleaseVerifyTimeout  time.Duration
+	ReleaseVerifyInterval time.Duration
 }
 
 // NewProvisionerReconciler creates a new ProvisionerReconciler.
@@ -75,6 +82,14 @@ func (r *ProvisionerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// 2. Skip deleted nodes.
 	if spNode.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
+
+	// 2b. Never provision capacity for deliberately retired nodes. A node can be
+	// marked for retirement while still Pending (for example, an operator cancels
+	// a request that has not launched yet); provisioning it anyway would create
+	// exactly the capacity that was just refused.
+	if spNode.IsDeliberatelyRetiring() {
 		return ctrl.Result{}, nil
 	}
 
@@ -176,6 +191,10 @@ func (r *ProvisionerReconciler) handlePending(ctx context.Context, spNode *super
 func (r *ProvisionerReconciler) provisionAsync(ctx context.Context, spNode *superplanev1.SuperplaneNode, pool *superplanev1.NodePool, options []adapters.SelectionResult) {
 	logger := log.FromContext(ctx).WithName("provisioner").WithValues("node", spNode.Name)
 
+	// Clusters whose cleanup failed or could not be confirmed. Their handles are
+	// retained on the node so a later reconciliation can finish the release.
+	var unreleased []string
+
 	defer func() {
 		r.mu.Lock()
 		delete(r.inFlight, spNode.Name)
@@ -266,18 +285,155 @@ func (r *ProvisionerReconciler) provisionAsync(ctx context.Context, spNode *supe
 			"error", result.Error,
 		)
 
-		// Attempt to terminate the failed SkyPilot cluster to clean up.
+		// Clean up the failed SkyPilot cluster, and verify the cleanup.
+		//
+		// This used to be fire-and-forget: a failed TerminateNode was logged and
+		// the loop moved to the next cloud, leaving a possibly-live GPU cluster
+		// with nothing recording its existence. A partially-provisioned cluster
+		// still bills, so an unconfirmed teardown is retained as an unresolved
+		// handle instead of being dropped.
 		if _, termErr := option.Adapter.TerminateNode(ctx, clusterName); termErr != nil {
-			logger.Error(termErr, "failed to terminate failed cluster", "cluster", clusterName)
+			logger.Error(termErr, "failed to terminate failed cluster; retaining handle for reconciliation",
+				"cluster", clusterName,
+				"cloud", cloud,
+			)
+			unreleased = append(unreleased, clusterName)
+			continue
+		}
+
+		if err := r.verifyClusterReleased(ctx, option.Adapter, clusterName); err != nil {
+			logger.Error(err, "cleanup of failed cluster not confirmed; retaining handle for reconciliation",
+				"cluster", clusterName,
+				"cloud", cloud,
+			)
+			unreleased = append(unreleased, clusterName)
 		}
 	}
 
 	// All options exhausted - mark as Failed.
+	//
+	// If any cleanup could not be confirmed, say so on the object and keep the
+	// handle: provider truth, not a status column, decides whether resources are
+	// gone, and an operator needs the cluster name to finish the job.
+	if len(unreleased) > 0 {
+		logger.Info("all cloud options exhausted with unconfirmed cleanup",
+			"node", spNode.Name,
+			"unreleasedClusters", unreleased,
+		)
+		message := fmt.Sprintf(
+			"All cloud options exhausted. Cleanup NOT confirmed for cluster(s) %s; provider resources may still exist and are retained for reconciliation.",
+			strings.Join(unreleased, ", "))
+		if err := r.updateFailedWithHandle(ctx, spNode, message, unreleased[0]); err != nil {
+			logger.Error(err, "failed to update phase to ReleaseFailed")
+		}
+		return
+	}
+
 	logger.Info("all cloud options exhausted, marking node as Failed", "node", spNode.Name)
 	if err := r.updatePhase(ctx, spNode, superplanev1.SuperplaneNodePhaseFailed,
 		"All cloud options exhausted after trying each available provider"); err != nil {
 		logger.Error(err, "failed to update phase to Failed")
 	}
+}
+
+// verifyClusterReleased re-checks the provider to confirm a cluster is gone.
+//
+// TerminateNode is asynchronous (it submits a teardown request and returns an
+// ID), so immediately after it returns the provider legitimately still reports
+// the cluster while the teardown runs. The check is therefore retried until the
+// provider converges or the timeout elapses; only the state at the deadline is a
+// verdict. Without this, an ordinary in-progress teardown would be misread as an
+// unreleased resource and the node parked in ReleaseFailed.
+func (r *ProvisionerReconciler) verifyClusterReleased(ctx context.Context, adapter adapters.CloudAdapter, clusterName string) error {
+	timeout, interval := r.releaseVerifyTiming()
+	deadline := time.Now().Add(timeout)
+
+	for {
+		err := r.checkClusterReleased(ctx, adapter, clusterName)
+		if err == nil {
+			return nil
+		}
+
+		if !time.Now().Before(deadline) {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("verify release of cluster %q: %w (last observation: %v)",
+				clusterName, ctx.Err(), err)
+		case <-time.After(interval):
+		}
+	}
+}
+
+// releaseVerifyTiming returns the polling window for release verification,
+// falling back to the package defaults when unset (tests shorten these).
+func (r *ProvisionerReconciler) releaseVerifyTiming() (time.Duration, time.Duration) {
+	timeout, interval := r.ReleaseVerifyTimeout, r.ReleaseVerifyInterval
+	if timeout <= 0 {
+		timeout = releaseVerifyTimeout
+	}
+	if interval <= 0 {
+		interval = releaseVerifyInterval
+	}
+	return timeout, interval
+}
+
+// checkClusterReleased performs a single provider probe. A nil error means the
+// provider confirms the cluster is gone. A query failure is an UNKNOWN outcome,
+// deliberately treated as "not released" rather than as success: concluding a
+// resource is gone because we could not reach the provider is exactly how live
+// capacity gets orphaned.
+func (r *ProvisionerReconciler) checkClusterReleased(ctx context.Context, adapter adapters.CloudAdapter, clusterName string) error {
+	info, err := adapter.GetNodeStatus(ctx, clusterName)
+	if err != nil {
+		return fmt.Errorf("verify release of cluster %q: provider status unknown: %w", clusterName, err)
+	}
+	if info == nil {
+		// No record at the provider: released.
+		return nil
+	}
+
+	switch info.Status {
+	case adapters.NodeStatusTerminated:
+		return nil
+	default:
+		// STOPPED still retains disks and keeps incurring storage cost, so it is
+		// not a released resource.
+		return fmt.Errorf("verify release of cluster %q: provider still reports status %q; resources may still be billing",
+			clusterName, info.Status)
+	}
+}
+
+// updateFailedWithHandle marks the node ReleaseFailed and retains the provider
+// handle that a later reconciliation needs to finish releasing the resource.
+func (r *ProvisionerReconciler) updateFailedWithHandle(
+	ctx context.Context,
+	spNode *superplanev1.SuperplaneNode,
+	message string,
+	clusterHandle string,
+) error {
+	var current superplanev1.SuperplaneNode
+	key := types.NamespacedName{Name: spNode.Name, Namespace: spNode.Namespace}
+	if err := r.Get(ctx, key, &current); err != nil {
+		return fmt.Errorf("get node %q: %w", spNode.Name, err)
+	}
+
+	current.Status.Phase = superplanev1.SuperplaneNodePhaseReleaseFailed
+	current.Status.Message = message
+	if current.Status.SkypilotCluster == "" {
+		current.Status.SkypilotCluster = clusterHandle
+	}
+
+	if err := r.Status().Update(ctx, &current); err != nil {
+		return fmt.Errorf("update status for %q: %w", spNode.Name, err)
+	}
+
+	spNode.Status.Phase = current.Status.Phase
+	spNode.Status.Message = current.Status.Message
+	spNode.Status.SkypilotCluster = current.Status.SkypilotCluster
+	return nil
 }
 
 // SetupWithManager registers the reconciler with the controller manager.

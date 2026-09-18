@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	superplanev1 "github.com/aws-innovate/AISuperPlane/src/superplane-controller/api/v1"
+	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/skypilot"
 )
 
 // fakeSkyPilotClient is a mock SkyPilot client for testing.
@@ -23,11 +25,71 @@ type fakeSkyPilotClient struct {
 	downCalls    []downCall
 	downErr      error
 	downPurgeErr error
+
+	// statusCalls records the cluster names passed to Status, so tests can assert
+	// that release was actually verified against the provider.
+	statusCalls [][]string
+
+	// statusErr makes the provider re-check fail, modelling an UNKNOWN release
+	// outcome (provider unreachable, credentials rejected).
+	statusErr error
+
+	// stillPresent are clusters the provider keeps reporting after Down, i.e. a
+	// teardown that did not actually release the resource. Values are the status
+	// the provider reports; the zero value reports UP.
+	stillPresent map[string]skypilot.ClusterStatus
+
+	// extraInfos are entries the provider returns that were not asked about. A
+	// real API may answer a filtered query with a wider list, and those unrelated
+	// clusters must not be mistaken for the one being verified.
+	extraInfos []skypilot.ClusterInfo
+
+	// presentForFirstNChecks models a real asynchronous teardown: Down() only
+	// submits the request, so the provider keeps reporting the cluster for the
+	// first few status probes and then stops. Counted per cluster name.
+	presentForFirstNChecks map[string]int
+
+	// checkCounts records how many times each cluster has been probed.
+	checkCounts map[string]int
 }
 
 type downCall struct {
 	ClusterNames []string
 	Purge        bool
+}
+
+// Status models the provider re-check. By default a cluster is absent from the
+// response, which is how the provider reports a released cluster.
+func (f *fakeSkyPilotClient) Status(_ context.Context, clusterNames ...string) ([]skypilot.ClusterInfo, error) {
+	f.statusCalls = append(f.statusCalls, clusterNames)
+	if f.statusErr != nil {
+		return nil, f.statusErr
+	}
+
+	var infos []skypilot.ClusterInfo
+	for _, name := range clusterNames {
+		if f.checkCounts == nil {
+			f.checkCounts = map[string]int{}
+		}
+		f.checkCounts[name]++
+
+		// Asynchronous teardown still in progress for this cluster.
+		if n, ok := f.presentForFirstNChecks[name]; ok && f.checkCounts[name] <= n {
+			infos = append(infos, skypilot.ClusterInfo{Name: name, Status: skypilot.ClusterStatusInit})
+			continue
+		}
+
+		status, ok := f.stillPresent[name]
+		if !ok {
+			continue // released
+		}
+		if status == "" {
+			status = skypilot.ClusterStatusUp
+		}
+		infos = append(infos, skypilot.ClusterInfo{Name: name, Status: status})
+	}
+	infos = append(infos, f.extraInfos...)
+	return infos, nil
 }
 
 func (f *fakeSkyPilotClient) Down(_ context.Context, clusterNames []string, purge bool) (string, error) {
@@ -39,6 +101,17 @@ func (f *fakeSkyPilotClient) Down(_ context.Context, clusterNames []string, purg
 		return "", f.downErr
 	}
 	return "req-123", nil
+}
+
+// newTestConsolidator builds a Consolidator with a short release-verification
+// window. Verification polls the provider until an asynchronous teardown
+// converges, so tests that exercise a *failing* release would otherwise sit
+// through the production 10-minute timeout.
+func newTestConsolidator(c client.Client, sky SkyPilotClient, cfg ConsolidatorConfig) *Consolidator {
+	cons := NewConsolidator(c, sky, cfg)
+	cons.ReleaseVerifyTimeout = 50 * time.Millisecond
+	cons.ReleaseVerifyInterval = 5 * time.Millisecond
+	return cons
 }
 
 func newScheme() *runtime.Scheme {
@@ -419,7 +492,7 @@ func TestRemoveNode(t *testing.T) {
 
 	fc := newFakeClient(k8sNode, spNode)
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
 
 	err := cons.removeNode(context.Background(), spNode)
 	if err != nil {
@@ -452,7 +525,7 @@ func TestRemoveNodeSkyDownFailsRetryWithPurge(t *testing.T) {
 	sky := &fakeSkyPilotClient{
 		downErr: fmt.Errorf("sky down failed"),
 	}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
 
 	err := cons.removeNode(context.Background(), spNode)
 	if err != nil {
@@ -477,7 +550,7 @@ func TestReconcileNoReadyNodes(t *testing.T) {
 
 	fc := newFakeClient(pendingNode, pool)
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
 
 	err := cons.Reconcile(context.Background())
 	if err != nil {
@@ -495,7 +568,7 @@ func TestReconcileConsolidationDisabled(t *testing.T) {
 
 	fc := newFakeClient(pool, spNode, k8sNode)
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
 
 	err := cons.Reconcile(context.Background())
 	if err != nil {
@@ -516,7 +589,7 @@ func TestReconcileRemovesExpiredNode(t *testing.T) {
 
 	fc := newFakeClient(pool, spNode, k8sNode)
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
 
 	err := cons.Reconcile(context.Background())
 	if err != nil {
@@ -551,7 +624,7 @@ func TestReconcileRespectsDisruptionBudget(t *testing.T) {
 
 	fc := newFakeClient(pool, sp1, sp2, k8s1, k8s2)
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
 
 	err := cons.Reconcile(context.Background())
 	if err != nil {
@@ -573,7 +646,7 @@ func TestReconcileNodeNotExpiredYet(t *testing.T) {
 
 	fc := newFakeClient(pool, spNode, k8sNode)
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
 
 	err := cons.Reconcile(context.Background())
 	if err != nil {
@@ -596,7 +669,7 @@ func TestReconcileNodeWithWorkloadNotRemoved(t *testing.T) {
 
 	fc := newFakeClient(pool, spNode, k8sNode, workPod)
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
 
 	err := cons.Reconcile(context.Background())
 	if err != nil {
@@ -618,7 +691,7 @@ func TestReconcileNewlyEmptyNodeNotRemoved(t *testing.T) {
 
 	fc := newFakeClient(pool, spNode, k8sNode)
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
 
 	err := cons.Reconcile(context.Background())
 	if err != nil {
@@ -635,7 +708,7 @@ func TestStartStop(t *testing.T) {
 	pool := makeNodePool("pool1", ptrInt64(300), nil, nil)
 	fc := newFakeClient(pool)
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{Interval: 100 * time.Millisecond})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Interval: 100 * time.Millisecond})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -659,7 +732,7 @@ func TestStartStop(t *testing.T) {
 func TestStartAlreadyRunning(t *testing.T) {
 	fc := newFakeClient()
 	sky := &fakeSkyPilotClient{}
-	cons := NewConsolidator(fc, sky, ConsolidatorConfig{Interval: 100 * time.Millisecond})
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Interval: 100 * time.Millisecond})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -674,5 +747,566 @@ func TestStartAlreadyRunning(t *testing.T) {
 	err := cons.Start(ctx)
 	if err == nil {
 		t.Error("expected error when starting already running consolidator")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R15: provider truth determines cleanup, not a success status column
+//
+// Two of the three teardown paths used to mark success without confirming it.
+// These tests pin the corrected behaviour: a node is only Terminated once the
+// provider confirms the cluster is gone, and an unconfirmed teardown is a
+// failure that retains the handle.
+// ---------------------------------------------------------------------------
+
+// TestRemoveNodeVerifiesReleaseAgainstProvider asserts the happy path actually
+// re-checks the provider rather than trusting that Down() succeeded.
+func TestRemoveNodeVerifiesReleaseAgainstProvider(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-node1", false)
+	spNode := makeSuperplaneNode("sp-node1", "default", "pool1", "k8s-node1", "sky-cluster-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(k8sNode, spNode)
+	sky := &fakeSkyPilotClient{}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+
+	if err := cons.removeNode(context.Background(), spNode); err != nil {
+		t.Fatalf("removeNode() error = %v", err)
+	}
+
+	if len(sky.statusCalls) != 1 {
+		t.Fatalf("expected the release to be verified against the provider exactly once, got %d checks",
+			len(sky.statusCalls))
+	}
+	if len(sky.statusCalls[0]) != 1 || sky.statusCalls[0][0] != "sky-cluster-1" {
+		t.Errorf("expected verification of sky-cluster-1, got %v", sky.statusCalls[0])
+	}
+}
+
+// TestRemoveNodeClusterStillPresentIsFailure: the provider still reports the
+// cluster, so the resource exists and may still be billing.
+func TestRemoveNodeClusterStillPresentIsFailure(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-node1", false)
+	spNode := makeSuperplaneNode("sp-node1", "default", "pool1", "k8s-node1", "sky-cluster-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(k8sNode, spNode)
+	sky := &fakeSkyPilotClient{
+		stillPresent: map[string]skypilot.ClusterStatus{"sky-cluster-1": skypilot.ClusterStatusUp},
+	}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+
+	err := cons.removeNode(context.Background(), spNode)
+	if err == nil {
+		t.Fatal("expected an error when the provider still reports the cluster")
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-node1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+
+	if updated.Status.Phase == superplanev1.SuperplaneNodePhaseTerminated {
+		t.Error("node was marked Terminated despite an unreleased provider resource")
+	}
+	if updated.Status.Phase != superplanev1.SuperplaneNodePhaseReleaseFailed {
+		t.Errorf("expected phase ReleaseFailed, got %s", updated.Status.Phase)
+	}
+	// The handle is the only way a later pass can finish the release.
+	if updated.Status.SkypilotCluster != "sky-cluster-1" {
+		t.Errorf("provider handle was not retained, got %q", updated.Status.SkypilotCluster)
+	}
+	if !strings.Contains(updated.Status.Message, "sky-cluster-1") {
+		t.Errorf("expected the unreleased cluster named in the message, got %q", updated.Status.Message)
+	}
+}
+
+// TestRemoveNodeStoppedClusterIsNotReleased: a STOPPED cluster keeps its disks
+// and keeps incurring storage cost, so it must not clear the accounting.
+func TestRemoveNodeStoppedClusterIsNotReleased(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-node1", false)
+	spNode := makeSuperplaneNode("sp-node1", "default", "pool1", "k8s-node1", "sky-cluster-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(k8sNode, spNode)
+	sky := &fakeSkyPilotClient{
+		stillPresent: map[string]skypilot.ClusterStatus{"sky-cluster-1": skypilot.ClusterStatusStopped},
+	}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+
+	if err := cons.removeNode(context.Background(), spNode); err == nil {
+		t.Fatal("expected a STOPPED cluster to count as not released")
+	}
+}
+
+// TestRemoveNodeUnknownProviderStatusIsFailure: the provider could not be
+// queried. An unknown outcome is not a negative one — we must not conclude the
+// resource is gone because we could not reach the provider. This is also the
+// credential-loss case: a rejected call reads as an error, never as success.
+func TestRemoveNodeUnknownProviderStatusIsFailure(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-node1", false)
+	spNode := makeSuperplaneNode("sp-node1", "default", "pool1", "k8s-node1", "sky-cluster-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(k8sNode, spNode)
+	sky := &fakeSkyPilotClient{
+		statusErr: fmt.Errorf("ExpiredToken: credentials could not be refreshed"),
+	}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+
+	err := cons.removeNode(context.Background(), spNode)
+	if err == nil {
+		t.Fatal("expected an unknown provider status to be reported as failure")
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-node1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+	if updated.Status.Phase != superplanev1.SuperplaneNodePhaseReleaseFailed {
+		t.Errorf("expected phase ReleaseFailed after credential loss, got %s", updated.Status.Phase)
+	}
+	if updated.Status.SkypilotCluster != "sky-cluster-1" {
+		t.Error("unresolved allocation was erased instead of retained")
+	}
+}
+
+// TestReconcileReportsReleaseFailureAsError is the controller's equivalent of the
+// teardown script's non-zero exit: a failed release must surface, not be logged
+// and swallowed.
+func TestReconcileReportsReleaseFailureAsError(t *testing.T) {
+	pool := makeNodePool("pool1", ptrInt64(10), nil, nil)
+	spNode := makeSuperplaneNode("sp-1", "default", "pool1", "k8s-1", "sky-1",
+		superplanev1.SuperplaneNodePhaseReady, timeAgo(1*time.Hour))
+	k8sNode := makeK8sNode("k8s-1", false)
+
+	fc := newFakeClient(pool, spNode, k8sNode)
+	sky := &fakeSkyPilotClient{
+		stillPresent: map[string]skypilot.ClusterStatus{"sky-1": skypilot.ClusterStatusUp},
+	}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+
+	err := cons.Reconcile(context.Background())
+	if err == nil {
+		t.Fatal("expected Reconcile to report the unconfirmed release as an error")
+	}
+	if !strings.Contains(err.Error(), "unconfirmed") {
+		t.Errorf("expected the error to describe an unconfirmed release, got %v", err)
+	}
+}
+
+// TestRemoveNodeK8sNodeDeleteFailureIsReported pins the removal of the old
+// "continuing anyway" path: a node object left behind is an unresolved handle
+// (the scheduler may keep placing pods against it), not a cosmetic problem.
+func TestRemoveNodeK8sNodeDeleteFailureIsReported(t *testing.T) {
+	// The K8s node is absent, so Delete fails with NotFound.
+	spNode := makeSuperplaneNode("sp-node1", "default", "pool1", "missing-k8s-node", "sky-cluster-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(spNode)
+	sky := &fakeSkyPilotClient{}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+
+	err := cons.removeNode(context.Background(), spNode)
+	if err == nil {
+		t.Fatal("expected a failed K8s node delete to be reported rather than ignored")
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-node1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+	if updated.Status.Phase == superplanev1.SuperplaneNodePhaseTerminated {
+		t.Error("node was marked Terminated despite a failed K8s node delete")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R15: the idle-node TTL path is reachable
+//
+// getEmptyTimestamp reads status.lastPodScheduledAt, which nothing in the
+// codebase ever wrote, so the TTL removal branch was dead for every node the
+// controller provisions.
+// ---------------------------------------------------------------------------
+
+// TestReconcileWritesLastPodScheduledAtWhenBusy asserts the missing write now
+// happens, which is what makes the TTL measurable at all.
+func TestReconcileWritesLastPodScheduledAtWhenBusy(t *testing.T) {
+	pool := makeNodePool("pool1", ptrInt64(300), nil, nil)
+	// No lastPodScheduledAt, and the node is carrying a workload pod.
+	spNode := makeSuperplaneNode("sp-1", "default", "pool1", "k8s-1", "sky-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+	k8sNode := makeK8sNode("k8s-1", false)
+	workloadPod := makePod("training-job", "default", "k8s-1", "")
+
+	fc := newFakeClient(pool, spNode, k8sNode, workloadPod)
+	sky := &fakeSkyPilotClient{}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+
+	if err := cons.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+	if updated.Status.LastPodScheduledAt == nil {
+		t.Fatal("lastPodScheduledAt was not written, so the TTL branch stays unreachable")
+	}
+
+	// A busy node must not be torn down.
+	if len(sky.downCalls) != 0 {
+		t.Errorf("a busy node was torn down: %d sky down calls", len(sky.downCalls))
+	}
+}
+
+// TestReconcileNewlyEmptyNodeStartsTTLClock: a node that never carried work must
+// still get a stamp, otherwise it stays unstamped forever and is never reclaimed.
+func TestReconcileNewlyEmptyNodeStartsTTLClock(t *testing.T) {
+	pool := makeNodePool("pool1", ptrInt64(300), nil, nil)
+	spNode := makeSuperplaneNode("sp-1", "default", "pool1", "k8s-1", "sky-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+	k8sNode := makeK8sNode("k8s-1", false)
+
+	fc := newFakeClient(pool, spNode, k8sNode)
+	sky := &fakeSkyPilotClient{}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+
+	if err := cons.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+	if updated.Status.LastPodScheduledAt == nil {
+		t.Fatal("expected the TTL clock to start for a newly empty node")
+	}
+	// Not yet expired, so nothing is removed on this pass.
+	if len(sky.downCalls) != 0 {
+		t.Errorf("expected no teardown before the TTL expires, got %d", len(sky.downCalls))
+	}
+}
+
+// TestReconcileExpiredTTLReachesRemoval closes the loop: with a real stamp older
+// than the TTL, the previously unreachable removal branch now executes.
+func TestReconcileExpiredTTLReachesRemoval(t *testing.T) {
+	pool := makeNodePool("pool1", ptrInt64(300), nil, nil)
+	// Empty for an hour against a 300s TTL.
+	spNode := makeSuperplaneNode("sp-1", "default", "pool1", "k8s-1", "sky-1",
+		superplanev1.SuperplaneNodePhaseReady, timeAgo(1*time.Hour))
+	k8sNode := makeK8sNode("k8s-1", false)
+
+	fc := newFakeClient(pool, spNode, k8sNode)
+	sky := &fakeSkyPilotClient{}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{Namespace: "default"})
+
+	if err := cons.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	if len(sky.downCalls) != 1 {
+		t.Fatalf("expected the expired node to be torn down, got %d sky down calls", len(sky.downCalls))
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+	if updated.Status.Phase != superplanev1.SuperplaneNodePhaseTerminated {
+		t.Errorf("expected phase Terminated after a confirmed release, got %s", updated.Status.Phase)
+	}
+}
+
+// TestCountUnavailableNodesIncludesRetiringAndReleaseFailed: retiring and
+// release-failed nodes are unavailable, so counting them keeps the disruption
+// budget honest instead of draining more nodes on top of a retirement.
+func TestCountUnavailableNodesIncludesRetiringAndReleaseFailed(t *testing.T) {
+	retiring := makeSuperplaneNode("retiring", "default", "pool1", "k8s-1", "sky-1",
+		superplanev1.SuperplaneNodePhaseRetiring, nil)
+	releaseFailed := makeSuperplaneNode("release-failed", "default", "pool1", "k8s-2", "sky-2",
+		superplanev1.SuperplaneNodePhaseReleaseFailed, nil)
+	ready := makeSuperplaneNode("ready", "default", "pool1", "k8s-3", "sky-3",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(retiring, releaseFailed, ready)
+	cons := NewConsolidator(fc, &fakeSkyPilotClient{}, ConsolidatorConfig{Namespace: "default"})
+
+	count, err := cons.countUnavailableNodes(context.Background(), "pool1")
+	if err != nil {
+		t.Fatalf("countUnavailableNodes() error = %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected Retiring and ReleaseFailed to count as unavailable (2), got %d", count)
+	}
+}
+
+// TestDrainNodeUsesEvictionAPIRespectingPDBs pins the drain sequence R15 requires
+// be preserved: cordon first, then evict via the Eviction API. Using the Eviction
+// subresource (rather than deleting pods directly) is what makes the API server
+// enforce PodDisruptionBudgets — a budget-blocked eviction is rejected instead of
+// silently taking a workload below its minimum available replicas.
+func TestDrainNodeCordonsThenEvictsRespectingPDBs(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-1", false)
+	spNode := makeSuperplaneNode("sp-1", "default", "pool1", "k8s-1", "sky-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(k8sNode, spNode)
+	cons := NewConsolidator(fc, &fakeSkyPilotClient{}, ConsolidatorConfig{})
+
+	// Cordon must happen before eviction, so the scheduler cannot place new pods
+	// onto a node that is being drained.
+	if err := cons.cordonNode(context.Background(), "k8s-1"); err != nil {
+		t.Fatalf("cordonNode() error = %v", err)
+	}
+
+	var cordoned corev1.Node
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: "k8s-1"}, &cordoned); err != nil {
+		t.Fatalf("get k8s node: %v", err)
+	}
+	if !cordoned.Spec.Unschedulable {
+		t.Error("expected the node to be cordoned (unschedulable) before draining")
+	}
+
+	// Draining an already-empty node completes without evicting anything.
+	if err := cons.drainNode(context.Background(), "k8s-1"); err != nil {
+		t.Fatalf("drainNode() on an empty node error = %v", err)
+	}
+}
+
+// TestDrainNodeSkipsDaemonSetPods: DaemonSet pods are expected to run on every
+// node and are not evicted, so their presence must not block a drain.
+func TestDrainNodeSkipsDaemonSetPods(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-1", true)
+	dsPod := makePod("node-exporter", "kube-system", "k8s-1", "DaemonSet")
+
+	fc := newFakeClient(k8sNode, dsPod)
+	cons := NewConsolidator(fc, &fakeSkyPilotClient{}, ConsolidatorConfig{})
+
+	if err := cons.drainNode(context.Background(), "k8s-1"); err != nil {
+		t.Fatalf("drainNode() error = %v", err)
+	}
+}
+
+// TestRemoveNodePurgeRetryFailureIsReleaseFailed: sky down is retried with purge,
+// and when that also fails the teardown never happened at all. The node must not
+// be recorded as Terminated.
+func TestRemoveNodePurgeRetryFailureIsReleaseFailed(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-node1", false)
+	spNode := makeSuperplaneNode("sp-node1", "default", "pool1", "k8s-node1", "sky-cluster-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(k8sNode, spNode)
+	sky := &fakeSkyPilotClient{
+		downErr:      fmt.Errorf("500 Internal Server Error"),
+		downPurgeErr: fmt.Errorf("500 Internal Server Error"),
+	}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+
+	err := cons.removeNode(context.Background(), spNode)
+	if err == nil {
+		t.Fatal("expected an error when both sky down and the purge retry fail")
+	}
+	if !strings.Contains(err.Error(), "purge") {
+		t.Errorf("expected the purge retry named in the error, got %v", err)
+	}
+
+	// Both attempts must have been made: plain down, then purge.
+	if len(sky.downCalls) != 2 {
+		t.Fatalf("expected 2 down attempts (plain then purge), got %d", len(sky.downCalls))
+	}
+	if sky.downCalls[0].Purge || !sky.downCalls[1].Purge {
+		t.Errorf("expected plain down then purge, got %+v", sky.downCalls)
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-node1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+	if updated.Status.Phase != superplanev1.SuperplaneNodePhaseReleaseFailed {
+		t.Errorf("expected ReleaseFailed, got %s", updated.Status.Phase)
+	}
+	if updated.Status.SkypilotCluster != "sky-cluster-1" {
+		t.Errorf("cluster handle must be retained, got %q", updated.Status.SkypilotCluster)
+	}
+}
+
+// TestRemoveNodePurgeRetrySucceeds: the first down fails but the purge retry works
+// and the provider confirms the release, so this is a complete teardown.
+func TestRemoveNodePurgeRetrySucceeds(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-node1", false)
+	spNode := makeSuperplaneNode("sp-node1", "default", "pool1", "k8s-node1", "sky-cluster-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(k8sNode, spNode)
+	sky := &fakeSkyPilotClient{downErr: fmt.Errorf("transient 503")}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+
+	if err := cons.removeNode(context.Background(), spNode); err != nil {
+		t.Fatalf("removeNode() error = %v", err)
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-node1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+	if updated.Status.Phase != superplanev1.SuperplaneNodePhaseTerminated {
+		t.Errorf("expected Terminated after a confirmed release, got %s", updated.Status.Phase)
+	}
+
+	// The K8s node object must be gone too.
+	var gone corev1.Node
+	err := fc.Get(context.Background(), types.NamespacedName{Name: "k8s-node1"}, &gone)
+	if err == nil {
+		t.Error("expected the K8s node object to be deleted")
+	}
+}
+
+// TestMarkNodeBusyOnMissingNodeIsAnError: the TTL stamp is written against a
+// freshly read copy of the object, so a node deleted mid-reconcile surfaces as an
+// error instead of a silent no-op.
+func TestMarkNodeBusyOnMissingNodeIsAnError(t *testing.T) {
+	spNode := makeSuperplaneNode("sp-gone", "default", "pool1", "k8s-node1", "",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	// The object is NOT seeded into the client.
+	fc := newFakeClient()
+	cons := NewConsolidator(fc, nil, ConsolidatorConfig{Namespace: "default"})
+
+	err := cons.markNodeBusy(context.Background(), spNode, time.Now())
+	if err == nil {
+		t.Fatal("expected an error when the node no longer exists")
+	}
+}
+
+// TestVerifyClusterReleasedIgnoresUnrelatedClusters: the provider answering with
+// other clusters is not evidence about this one. Matching on presence alone rather
+// than on name would make every release look like a failure.
+func TestVerifyClusterReleasedIgnoresUnrelatedClusters(t *testing.T) {
+	sky := &fakeSkyPilotClient{
+		extraInfos: []skypilot.ClusterInfo{
+			{Name: "sky-cluster-2", Status: skypilot.ClusterStatusUp},
+			{Name: "sky-cluster-3", Status: skypilot.ClusterStatusInit},
+		},
+	}
+	cons := newTestConsolidator(newFakeClient(), sky, ConsolidatorConfig{})
+
+	if err := cons.verifyClusterReleased(context.Background(), "sky-cluster-1"); err != nil {
+		t.Errorf("unrelated clusters must not block confirmation, got %v", err)
+	}
+
+	// And the target still being present is a failure even amongst others.
+	sky.stillPresent = map[string]skypilot.ClusterStatus{"sky-cluster-1": skypilot.ClusterStatusUp}
+	if err := cons.verifyClusterReleased(context.Background(), "sky-cluster-1"); err == nil {
+		t.Error("expected a failure when the target cluster is still reported")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Asynchronous teardown must not be misread as a failed release
+//
+// Down() only submits a teardown request and returns a request ID; the provider
+// tears the cluster down afterwards. For a short window /status therefore still
+// reports the cluster. A single immediate probe read that in-progress teardown as
+// "not released", which parked a perfectly normal release in ReleaseFailed,
+// permanently consumed the pool's disruption budget (ReleaseFailed counts as
+// unavailable, maxUnavailable defaults to 1) and leaked the K8s node object.
+// ---------------------------------------------------------------------------
+
+// TestRemoveNodeWaitsForAsyncTeardownToConverge: the cluster is still reported by
+// the first probes and gone afterwards. That is a successful release.
+func TestRemoveNodeWaitsForAsyncTeardownToConverge(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-node1", false)
+	spNode := makeSuperplaneNode("sp-node1", "default", "pool1", "k8s-node1", "sky-cluster-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(k8sNode, spNode)
+	sky := &fakeSkyPilotClient{
+		presentForFirstNChecks: map[string]int{"sky-cluster-1": 2},
+	}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+
+	if err := cons.removeNode(context.Background(), spNode); err != nil {
+		t.Fatalf("an in-progress asynchronous teardown that then completes must be a successful release, got %v", err)
+	}
+
+	if sky.checkCounts["sky-cluster-1"] < 2 {
+		t.Errorf("expected the provider to be re-checked while teardown was in flight, got %d probe(s)",
+			sky.checkCounts["sky-cluster-1"])
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-node1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+	if updated.Status.Phase != superplanev1.SuperplaneNodePhaseTerminated {
+		t.Errorf("expected Terminated after a confirmed release, got %s", updated.Status.Phase)
+	}
+
+	// The early return on a false failure also skipped node deletion, leaving a
+	// node object the scheduler may keep placing pods against.
+	var leaked corev1.Node
+	err := fc.Get(context.Background(), types.NamespacedName{Name: "k8s-node1"}, &leaked)
+	if err == nil {
+		t.Error("K8s node object leaked: it must be deleted once the release is confirmed")
+	}
+}
+
+// TestRemoveNodeStillPresentAtDeadlineIsFailure: a cluster the provider keeps
+// reporting for the whole window really is unreleased. Waiting must not soften
+// that verdict — only defer it to the deadline.
+func TestRemoveNodeStillPresentAtDeadlineIsFailure(t *testing.T) {
+	k8sNode := makeK8sNode("k8s-node1", false)
+	spNode := makeSuperplaneNode("sp-node1", "default", "pool1", "k8s-node1", "sky-cluster-1",
+		superplanev1.SuperplaneNodePhaseReady, nil)
+
+	fc := newFakeClient(k8sNode, spNode)
+	sky := &fakeSkyPilotClient{
+		stillPresent: map[string]skypilot.ClusterStatus{"sky-cluster-1": skypilot.ClusterStatusUp},
+	}
+	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+
+	if err := cons.removeNode(context.Background(), spNode); err == nil {
+		t.Fatal("a cluster still reported at the deadline must remain a failed release")
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-node1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get sp node: %v", err)
+	}
+	if updated.Status.Phase != superplanev1.SuperplaneNodePhaseReleaseFailed {
+		t.Errorf("expected ReleaseFailed, got %s", updated.Status.Phase)
+	}
+	if updated.Status.SkypilotCluster != "sky-cluster-1" {
+		t.Errorf("provider handle must be retained, got %q", updated.Status.SkypilotCluster)
+	}
+}
+
+// TestVerifyClusterReleasedRespectsContextCancellation: the wait must never
+// outlive the caller's context, and a cancelled wait is not a confirmed release.
+func TestVerifyClusterReleasedRespectsContextCancellation(t *testing.T) {
+	sky := &fakeSkyPilotClient{
+		stillPresent: map[string]skypilot.ClusterStatus{"sky-cluster-1": skypilot.ClusterStatusUp},
+	}
+	cons := NewConsolidator(newFakeClient(), sky, ConsolidatorConfig{})
+	// Production-length window, so the test can only pass by honouring the context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := cons.verifyClusterReleased(ctx, "sky-cluster-1")
+	if err == nil {
+		t.Fatal("a cancelled verification must not be reported as a confirmed release")
 	}
 }

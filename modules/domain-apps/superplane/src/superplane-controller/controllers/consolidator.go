@@ -3,6 +3,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	superplanev1 "github.com/aws-innovate/AISuperPlane/src/superplane-controller/api/v1"
+	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/skypilot"
 )
 
 const (
@@ -34,11 +36,32 @@ const (
 
 	// defaultEvictionGracePeriod is the grace period for pod eviction in seconds.
 	defaultEvictionGracePeriod = 30
+
+	// releaseVerifyTimeout bounds how long we wait for the provider to converge
+	// on "cluster gone" after a teardown request.
+	//
+	// Down() is asynchronous: it returns a request ID and the provider tears the
+	// cluster down afterwards, so for a short window /status legitimately still
+	// reports the cluster as UP or INIT. A single immediate probe would therefore
+	// read a perfectly normal release as a failure. We poll until the provider
+	// converges, and only a still-present cluster at the deadline (or a query
+	// error) counts as not released.
+	releaseVerifyTimeout = 10 * time.Minute
+
+	// releaseVerifyInterval is the gap between provider re-checks while waiting
+	// for a teardown to converge.
+	releaseVerifyInterval = 10 * time.Second
 )
 
 // SkyPilotClient is the interface for the SkyPilot API operations needed by the Consolidator.
 type SkyPilotClient interface {
 	Down(ctx context.Context, clusterNames []string, purge bool) (string, error)
+
+	// Status returns the provider's view of the named clusters. A cluster that
+	// is absent from the response no longer exists at the provider. This is the
+	// provider truth used to confirm a release actually happened; an internal
+	// status column is not evidence of release.
+	Status(ctx context.Context, clusterNames ...string) ([]skypilot.ClusterInfo, error)
 }
 
 // ConsolidatorConfig holds configuration for the Consolidator.
@@ -61,6 +84,25 @@ type Consolidator struct {
 	mu        sync.Mutex
 	running   bool
 	cancelFn  context.CancelFunc
+
+	// ReleaseVerifyTimeout and ReleaseVerifyInterval bound the wait for an
+	// asynchronous teardown to be confirmed at the provider. Zero means use the
+	// package defaults; tests shorten them to keep runs fast.
+	ReleaseVerifyTimeout  time.Duration
+	ReleaseVerifyInterval time.Duration
+}
+
+// releaseVerifyTiming returns the polling window for release verification,
+// falling back to the package defaults when unset.
+func (c *Consolidator) releaseVerifyTiming() (time.Duration, time.Duration) {
+	timeout, interval := c.ReleaseVerifyTimeout, c.ReleaseVerifyInterval
+	if timeout <= 0 {
+		timeout = releaseVerifyTimeout
+	}
+	if interval <= 0 {
+		interval = releaseVerifyInterval
+	}
+	return timeout, interval
 }
 
 // NewConsolidator creates a new Consolidator.
@@ -178,17 +220,31 @@ func (c *Consolidator) Reconcile(ctx context.Context) error {
 		}
 
 		if !empty {
-			// Node has workload pods; update LastPodScheduledAt if not set.
+			// Node is carrying workload pods, so it is in use right now. Stamp
+			// status.lastPodScheduledAt with the current time: it is the "node
+			// was last busy" mark that the TTL below measures from once the node
+			// goes empty.
+			//
+			// Nothing used to write this field, which made the TTL removal branch
+			// unreachable for every node the controller provisions — idle GPUs
+			// were only ever reclaimed by SkyPilot's 120-minute autostop default.
+			if err := c.markNodeBusy(ctx, node, now); err != nil {
+				logger.Error(err, "failed to record last-busy timestamp", "node", node.Name)
+			}
 			continue
 		}
 
 		// Node is empty. Check TTL.
 		emptyTime := c.getEmptyTimestamp(node)
 		if emptyTime.IsZero() {
-			// First time we see this node empty — record it by updating LastPodScheduledAt.
-			// We use the current time as the "last time pods were scheduled".
-			// The TTL starts from LastPodScheduledAt.
+			// The node has never carried a workload pod (so no last-busy stamp
+			// exists). Start the TTL clock now by stamping it, otherwise a node
+			// that never receives work stays unstamped forever and is never
+			// reclaimed.
 			logger.V(1).Info("node is newly empty, recording timestamp", "node", node.Name)
+			if err := c.markNodeBusy(ctx, node, now); err != nil {
+				logger.Error(err, "failed to record last-busy timestamp", "node", node.Name)
+			}
 			continue
 		}
 
@@ -212,6 +268,7 @@ func (c *Consolidator) Reconcile(ctx context.Context) error {
 	// 4. Enforce disruption budget per NodePool.
 	removed := 0
 	poolRemovalCount := make(map[string]int)
+	var releaseFailures []error
 
 	for i := range candidates {
 		node := &candidates[i]
@@ -248,6 +305,11 @@ func (c *Consolidator) Reconcile(ctx context.Context) error {
 
 		// 5. Remove the node.
 		if err := c.removeNode(ctx, node); err != nil {
+			// Count the attempt against the disruption budget: the node was
+			// cordoned and possibly drained, so it is not serving normally and
+			// must not be treated as spare headroom for further removals.
+			poolRemovalCount[poolRef]++
+			releaseFailures = append(releaseFailures, fmt.Errorf("node %s: %w", node.Name, err))
 			logger.Error(err, "failed to remove node", "node", node.Name)
 			continue
 		}
@@ -257,7 +319,20 @@ func (c *Consolidator) Reconcile(ctx context.Context) error {
 		logger.Info("successfully removed idle node", "node", node.Name)
 	}
 
-	logger.Info("consolidation pass complete", "readyNodes", len(readyNodes), "removed", removed)
+	logger.Info("consolidation pass complete",
+		"readyNodes", len(readyNodes),
+		"removed", removed,
+		"releaseFailures", len(releaseFailures),
+	)
+
+	// A failed or unconfirmed teardown is reported as a failure, not swallowed.
+	// Callers (Start's loop, and tests) see a non-nil error, which is this
+	// controller's equivalent of the teardown script's non-zero exit.
+	if len(releaseFailures) > 0 {
+		return fmt.Errorf("%d node release(s) failed or unconfirmed: %w",
+			len(releaseFailures), errors.Join(releaseFailures...))
+	}
+
 	return nil
 }
 
@@ -345,6 +420,31 @@ func (c *Consolidator) getEmptyTimestamp(node *superplanev1.SuperplaneNode) meta
 	return metav1.Time{}
 }
 
+// markNodeBusy stamps status.lastPodScheduledAt with the given time, recording
+// that the node was carrying workload (or is starting its idle clock).
+//
+// This is the write that was missing from the codebase: getEmptyTimestamp reads
+// this field to decide whether an empty node has outlived its TTL, so without a
+// writer the TTL comparison was never reached.
+func (c *Consolidator) markNodeBusy(ctx context.Context, spNode *superplanev1.SuperplaneNode, now time.Time) error {
+	// Re-fetch to avoid clobbering a concurrent status update.
+	var current superplanev1.SuperplaneNode
+	key := types.NamespacedName{Name: spNode.Name, Namespace: spNode.Namespace}
+	if err := c.client.Get(ctx, key, &current); err != nil {
+		return fmt.Errorf("get node %q: %w", spNode.Name, err)
+	}
+
+	stamp := metav1.NewTime(now)
+	current.Status.LastPodScheduledAt = &stamp
+	if err := c.client.Status().Update(ctx, &current); err != nil {
+		return fmt.Errorf("update lastPodScheduledAt for %q: %w", spNode.Name, err)
+	}
+
+	// Keep the caller's copy consistent.
+	spNode.Status.LastPodScheduledAt = &stamp
+	return nil
+}
+
 // countUnavailableNodes counts nodes in Draining or Terminated phase for a given NodePool.
 func (c *Consolidator) countUnavailableNodes(ctx context.Context, nodePoolRef string) (int32, error) {
 	var nodeList superplanev1.SuperplaneNodeList
@@ -362,8 +462,16 @@ func (c *Consolidator) countUnavailableNodes(ctx context.Context, nodePoolRef st
 		if node.Spec.NodePoolRef != nodePoolRef {
 			continue
 		}
-		if node.Status.Phase == superplanev1.SuperplaneNodePhaseDraining ||
-			node.Status.Phase == superplanev1.SuperplaneNodePhaseTerminated {
+		switch node.Status.Phase {
+		case superplanev1.SuperplaneNodePhaseDraining,
+			superplanev1.SuperplaneNodePhaseTerminated,
+			// Retiring capacity is already leaving, and a ReleaseFailed node has
+			// been cordoned/drained with its release unresolved. Both are
+			// unavailable, so counting them keeps the disruption budget honest —
+			// otherwise the consolidator could drain further nodes on top of an
+			// in-progress retirement and breach maxUnavailable.
+			superplanev1.SuperplaneNodePhaseRetiring,
+			superplanev1.SuperplaneNodePhaseReleaseFailed:
 			count++
 		}
 	}
@@ -401,36 +509,145 @@ func (c *Consolidator) removeNode(ctx context.Context, spNode *superplanev1.Supe
 		logger.Info("node drained")
 	}
 
-	// Step 4: Sky down.
+	// Step 4: Sky down, then confirm the release against the provider.
 	if spNode.Status.SkypilotCluster != "" {
-		requestID, err := c.skypilot.Down(ctx, []string{spNode.Status.SkypilotCluster}, false)
+		cluster := spNode.Status.SkypilotCluster
+
+		requestID, err := c.skypilot.Down(ctx, []string{cluster}, false)
 		if err != nil {
 			// If sky down fails, try with purge.
 			logger.Error(err, "sky down failed, retrying with purge")
-			if _, err := c.skypilot.Down(ctx, []string{spNode.Status.SkypilotCluster}, true); err != nil {
-				return fmt.Errorf("sky down (purge): %w", err)
+			if _, err := c.skypilot.Down(ctx, []string{cluster}, true); err != nil {
+				return c.failRelease(ctx, spNode, cluster,
+					fmt.Errorf("sky down (purge): %w", err))
 			}
 		} else {
 			logger.Info("sky down initiated", "requestID", requestID)
 		}
+
+		// Provider truth determines cleanup, not a success status column. If the
+		// cluster is still present — or if we cannot tell — the resource may
+		// still exist and still be billing, so the release is not complete.
+		if err := c.verifyClusterReleased(ctx, cluster); err != nil {
+			return c.failRelease(ctx, spNode, cluster, err)
+		}
+		logger.Info("release confirmed against provider", "cluster", cluster)
 	}
 
 	// Step 5: Delete the K8s node object.
+	// A node object left behind is an unresolved handle, not a cosmetic problem:
+	// the scheduler may keep placing pods against it. Report it as a failure
+	// rather than marking the removal successful.
 	if spNode.Status.K8sNodeName != "" {
 		if err := c.deleteK8sNode(ctx, spNode.Status.K8sNodeName); err != nil {
-			logger.Error(err, "failed to delete K8s node, continuing anyway")
-		} else {
-			logger.Info("K8s node deleted")
+			return c.failRelease(ctx, spNode, spNode.Status.SkypilotCluster,
+				fmt.Errorf("delete K8s node %q: %w", spNode.Status.K8sNodeName, err))
 		}
+		logger.Info("K8s node deleted")
 	}
 
-	// Step 6: Update phase to Terminated.
-	if err := c.updateNodePhase(ctx, spNode, superplanev1.SuperplaneNodePhaseTerminated, "Node removed by consolidator"); err != nil {
+	// Step 6: Update phase to Terminated — only now, with release confirmed.
+	if err := c.updateNodePhase(ctx, spNode, superplanev1.SuperplaneNodePhaseTerminated, "Node removed by consolidator; release confirmed against provider"); err != nil {
 		return fmt.Errorf("update phase to Terminated: %w", err)
 	}
 	logger.Info("phase updated to Terminated")
 
 	return nil
+}
+
+// verifyClusterReleased re-checks the provider for the named cluster and returns
+// an error unless the provider confirms it is gone.
+//
+// Two distinct failures are reported, and neither counts as released:
+//   - the query itself failed, so the outcome is UNKNOWN. An unknown outcome is
+//     not a negative one: we must not conclude the resource is gone because we
+//     could not reach the provider (this is also what "cleanup is not claimed
+//     after credential loss" means in practice — a rejected call reads as an
+//     error here, never as success).
+//   - the cluster is still present, so the resource demonstrably still exists.
+//
+// A STOPPED cluster is NOT released: it retains its disks and keeps incurring
+// storage cost, so treating it as terminated would clear the accounting early.
+// Because Down() is asynchronous, the check is retried until the provider
+// converges or releaseVerifyTimeout elapses: a cluster still reported moments
+// after the teardown request is normal in-progress teardown, not a failure.
+// Only the state at the deadline is a verdict.
+func (c *Consolidator) verifyClusterReleased(ctx context.Context, cluster string) error {
+	timeout, interval := c.releaseVerifyTiming()
+	deadline := time.Now().Add(timeout)
+
+	for {
+		err := c.checkClusterReleased(ctx, cluster)
+		if err == nil {
+			return nil
+		}
+
+		// Out of time: the last observation is the verdict.
+		if !time.Now().Before(deadline) {
+			return err
+		}
+
+		// Wait before re-checking, but never outlive the caller's context.
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("verify release of cluster %q: %w (last observation: %v)",
+				cluster, ctx.Err(), err)
+		case <-time.After(interval):
+		}
+	}
+}
+
+// checkClusterReleased performs a single provider probe. A nil error means the
+// provider confirms the cluster is gone.
+func (c *Consolidator) checkClusterReleased(ctx context.Context, cluster string) error {
+	infos, err := c.skypilot.Status(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("verify release of cluster %q: provider status unknown: %w", cluster, err)
+	}
+
+	for i := range infos {
+		if infos[i].Name != cluster {
+			continue
+		}
+		return fmt.Errorf(
+			"verify release of cluster %q: provider still reports the cluster (status %q); resources may still be billing",
+			cluster, infos[i].Status)
+	}
+
+	return nil
+}
+
+// failRelease records an unconfirmed or failed teardown and returns an error so
+// the caller reports it as a failure.
+//
+// The node is moved to ReleaseFailed rather than Terminated, and
+// status.skypilotCluster is left intact: that handle is the only way a later
+// reconciliation can find and finish releasing the resource. Erasing it would
+// strand a live, billing GPU cluster with nothing pointing at it.
+func (c *Consolidator) failRelease(
+	ctx context.Context,
+	spNode *superplanev1.SuperplaneNode,
+	cluster string,
+	cause error,
+) error {
+	logger := log.FromContext(ctx).WithName("consolidator")
+
+	message := fmt.Sprintf(
+		"Release NOT confirmed: %v. Provider resources may still exist for cluster %q and are retained for reconciliation; this node is not Terminated.",
+		cause, cluster)
+
+	if err := c.updateNodePhase(ctx, spNode, superplanev1.SuperplaneNodePhaseReleaseFailed, message); err != nil {
+		// Report both problems: the release failure is the important one, but a
+		// failed status write means the operator cannot see it on the object.
+		logger.Error(err, "failed to record ReleaseFailed phase", "node", spNode.Name)
+		return fmt.Errorf("%w (and recording ReleaseFailed failed: %v)", cause, err)
+	}
+
+	logger.Error(cause, "node release failed or unconfirmed; retaining provider handle",
+		"node", spNode.Name,
+		"cluster", cluster,
+	)
+	return cause
 }
 
 // updateNodePhase updates the SuperplaneNode status phase and message.

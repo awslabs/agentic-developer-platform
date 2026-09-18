@@ -635,3 +635,102 @@ func TestMatchNodePool(t *testing.T) {
 		t.Errorf("expected 'active-pool', got %q", pool.Name)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// R15: the pod watcher must not recreate deliberately retired capacity
+//
+// The pod watcher is the second live recreation path. During a deliberate
+// release the workload's pods are evicted, go Pending and unschedulable — which
+// is exactly the pod watcher's trigger condition.
+// ---------------------------------------------------------------------------
+
+// TestReconcile_RetiredPodDemandDoesNotProvision covers the back-door path: pods
+// evicted by a deliberate release must not cause fresh capacity to be built.
+func TestReconcile_RetiredPodDemandDoesNotProvision(t *testing.T) {
+	firstSeen := time.Date(2026, 3, 28, 12, 0, 0, 0, time.UTC)
+	pod := gpuPod("gpu-pod", "default", 2, true, true)
+	pod.Annotations = map[string]string{
+		// Past the debounce window, so only the retirement check can stop this.
+		annotationFirstSeen:               firstSeen.Format(time.RFC3339),
+		superplanev1.AnnotationRetirement: "owning workload retired by operator",
+	}
+	pool := activeNodePool("gpu-pool", []string{"aws"}, []string{"H100"}, 10)
+
+	c := newPodWatcherFakeClient(pod, pool)
+	now := firstSeen.Add(30 * time.Second)
+	r := &PodWatcherReconciler{Client: c, Clock: func() time.Time { return now }}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "gpu-pod", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Errorf("expected no requeue for retired demand, got %v", result.RequeueAfter)
+	}
+
+	var nodes superplanev1.SuperplaneNodeList
+	if err := c.List(context.Background(), &nodes); err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodes.Items) != 0 {
+		t.Fatalf("retired pod demand provisioned capacity: expected 0 nodes, got %d", len(nodes.Items))
+	}
+}
+
+// TestExistingNodeCanFit_IgnoresRetiringNodes checks that retiring capacity is
+// not counted as available. If it were, this function would return true and
+// suppress provisioning, leaving a genuine GPU request pending indefinitely.
+func TestExistingNodeCanFit_IgnoresRetiringNodes(t *testing.T) {
+	retiring := readySuperplaneNode("retiring-node", "default", "gpu-pool", "H100", 4)
+	retiring.Status.Phase = superplanev1.SuperplaneNodePhaseRetiring
+
+	annotated := readySuperplaneNode("annotated-node", "default", "gpu-pool", "H100", 4)
+	annotated.Annotations = map[string]string{
+		superplanev1.AnnotationRetirement: "operator released",
+	}
+
+	c := newPodWatcherFakeClient(retiring, annotated)
+	r := &PodWatcherReconciler{Client: c}
+
+	canFit, err := r.existingNodeCanFit(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if canFit {
+		t.Error("retiring capacity was counted as available, which would mask a real shortage")
+	}
+}
+
+// TestReconcile_ProvisionsWhenOnlyCapacityIsRetiring is the end-to-end
+// consequence of the check above: a real GPU request is still served when the
+// only apparently-free node is on its way out.
+func TestReconcile_ProvisionsWhenOnlyCapacityIsRetiring(t *testing.T) {
+	firstSeen := time.Date(2026, 3, 28, 12, 0, 0, 0, time.UTC)
+	pod := gpuPod("gpu-pod", "default", 1, true, true)
+	pod.Annotations = map[string]string{annotationFirstSeen: firstSeen.Format(time.RFC3339)}
+
+	retiring := readySuperplaneNode("retiring-node", "default", "gpu-pool", "H100", 8)
+	retiring.Status.Phase = superplanev1.SuperplaneNodePhaseRetiring
+	pool := activeNodePool("gpu-pool", []string{"aws"}, []string{"H100"}, 10)
+
+	c := newPodWatcherFakeClient(pod, retiring, pool)
+	now := firstSeen.Add(30 * time.Second)
+	r := &PodWatcherReconciler{Client: c, Clock: func() time.Time { return now }}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "gpu-pod", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var nodes superplanev1.SuperplaneNodeList
+	if err := c.List(context.Background(), &nodes); err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	// The retiring node plus one newly provisioned node.
+	if len(nodes.Items) != 2 {
+		t.Fatalf("expected a new node to be provisioned despite retiring capacity, got %d nodes", len(nodes.Items))
+	}
+}

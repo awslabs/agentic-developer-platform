@@ -66,6 +66,21 @@ func (r *PodWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
+	// 3b. Skip pods whose demand was deliberately retired.
+	//
+	// A deliberate release stops the owning workload's intent before deleting its
+	// capacity, and marks the workload with the retirement annotation so its pods
+	// inherit it. Without this check the pods evicted during drain go Pending and
+	// unschedulable, and the pod watcher immediately provisions fresh GPU capacity
+	// for them — recreating by the back door exactly what was just released.
+	if reason := pod.Annotations[superplanev1.AnnotationRetirement]; reason != "" {
+		logger.V(1).Info("Pod demand deliberately retired, not provisioning capacity",
+			"pod", req.NamespacedName,
+			"retirementReason", reason,
+		)
+		return ctrl.Result{}, nil
+	}
+
 	// 4. Extract GPU request.
 	gpuQty := extractGPURequest(&pod)
 	if gpuQty.IsZero() {
@@ -205,6 +220,15 @@ func (r *PodWatcherReconciler) existingNodeCanFit(ctx context.Context, gpuCount 
 
 	for i := range nodes.Items {
 		node := &nodes.Items[i]
+
+		// Retiring capacity is on its way out and must not be counted as
+		// available. Counting it would hide a genuine shortage: this function
+		// returning true suppresses provisioning entirely, so a retiring node
+		// could leave a GPU pod pending indefinitely.
+		if node.IsDeliberatelyRetiring() {
+			continue
+		}
+
 		if node.Status.Phase == superplanev1.SuperplaneNodePhaseReady {
 			// Check if the node has enough GPUs. For simplicity, we compare
 			// against the node's total GPU count. A production implementation

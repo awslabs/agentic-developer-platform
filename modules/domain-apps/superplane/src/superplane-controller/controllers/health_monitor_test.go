@@ -617,3 +617,344 @@ func TestGetUnhealthySince(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// R15: deliberate capacity retirement is honoured
+//
+// The health monitor's auto-repair is one of the two live paths that recreate
+// capacity. When an operator deliberately releases capacity, it must not build a
+// replacement — otherwise the released GPU node simply comes back.
+// ---------------------------------------------------------------------------
+
+// TestReconcile_RetiringNodeWithPendingWorkNeverRecreates is the core R15 case:
+// capacity marked for deliberate retirement, unhealthy well past the auto-repair
+// threshold, with workload demand still pending. Nothing may be recreated.
+func TestReconcile_RetiringNodeWithPendingWorkNeverRecreates(t *testing.T) {
+	now := time.Date(2026, 3, 28, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: now}
+
+	// Unhealthy for 30 minutes — twice the auto-repair threshold. Without the
+	// retirement check this node would certainly be replaced.
+	unhealthySince := now.Add(-30 * time.Minute)
+	spNode := makeHealthMonitorNode("node-1", "default", "k8s-node-1",
+		superplanev1.SuperplaneNodePhaseRetiring, []metav1.Condition{
+			{
+				Type:               ConditionTypeHealthy,
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.NewTime(unhealthySince),
+				Reason:             "HealthCheckFailed",
+				Message:            "K8s node not ready",
+			},
+		})
+	spNode.Annotations = map[string]string{
+		superplanev1.AnnotationRetirement: "operator released over-budget capacity",
+	}
+
+	nodeGetter := &fakeNodeGetter{
+		nodes: map[string]*corev1.Node{
+			"k8s-node-1": makeNotReadyK8sNode("k8s-node-1", now),
+		},
+	}
+
+	r, fakeClient := setupReconciler(t, []client.Object{spNode}, nodeGetter, clock)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "node-1", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No replacement node may exist: the retired node must be the only one.
+	var nodeList superplanev1.SuperplaneNodeList
+	if err := fakeClient.List(context.Background(), &nodeList); err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodeList.Items) != 1 {
+		t.Fatalf("deliberate retirement recreated capacity: expected 1 node, got %d", len(nodeList.Items))
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fakeClient.Get(context.Background(),
+		types.NamespacedName{Name: "node-1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+
+	// Retirement must not be misreported as an auto-repair.
+	for _, c := range updated.Status.Conditions {
+		if c.Type == ConditionTypeAutoRepair && c.Status == metav1.ConditionTrue {
+			t.Error("auto-repair was triggered for deliberately retired capacity")
+		}
+	}
+
+	// The Retired condition is the operator's evidence that the repair was
+	// suppressed on purpose rather than having silently failed.
+	var retired *metav1.Condition
+	for i := range updated.Status.Conditions {
+		if updated.Status.Conditions[i].Type == ConditionTypeRetired {
+			retired = &updated.Status.Conditions[i]
+		}
+	}
+	if retired == nil {
+		t.Fatal("expected a Retired condition recording the suppressed auto-repair")
+	}
+	if retired.Status != metav1.ConditionTrue {
+		t.Errorf("expected Retired=True, got %s", retired.Status)
+	}
+	if !strings.Contains(retired.Message, "over-budget") {
+		t.Errorf("expected the operator's retirement reason in the condition, got %q", retired.Message)
+	}
+
+	// The release sequence owns phase progression; the health monitor must not
+	// push a retiring node back to Ready or on to Draining.
+	if updated.Status.Phase != superplanev1.SuperplaneNodePhaseRetiring {
+		t.Errorf("expected phase to stay Retiring, got %s", updated.Status.Phase)
+	}
+}
+
+// TestReconcile_RetirementAnnotationOnReadyNodeSuppressesRepair covers the stale
+// -cache case: retirement is recorded by annotation while the node is still
+// observed Ready. The annotation is what makes intent survive phase transitions.
+func TestReconcile_RetirementAnnotationOnReadyNodeSuppressesRepair(t *testing.T) {
+	now := time.Date(2026, 3, 28, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: now}
+
+	unhealthySince := now.Add(-20 * time.Minute)
+	spNode := makeHealthMonitorNode("node-1", "default", "k8s-node-1",
+		superplanev1.SuperplaneNodePhaseReady, []metav1.Condition{
+			{
+				Type:               ConditionTypeHealthy,
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.NewTime(unhealthySince),
+				Reason:             "HealthCheckFailed",
+				Message:            "K8s node not ready",
+			},
+		})
+	spNode.Annotations = map[string]string{
+		superplanev1.AnnotationRetirement: "workload finished",
+	}
+
+	nodeGetter := &fakeNodeGetter{
+		nodes: map[string]*corev1.Node{
+			"k8s-node-1": makeNotReadyK8sNode("k8s-node-1", now),
+		},
+	}
+
+	r, fakeClient := setupReconciler(t, []client.Object{spNode}, nodeGetter, clock)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "node-1", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var nodeList superplanev1.SuperplaneNodeList
+	if err := fakeClient.List(context.Background(), &nodeList); err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodeList.Items) != 1 {
+		t.Fatalf("retirement annotation did not suppress recreation: got %d nodes", len(nodeList.Items))
+	}
+}
+
+// TestReconcile_AccidentalFailureStillAutoRepairs is the counterpart: an
+// unannotated node that failed accidentally must still be repaired. Retirement
+// suppression must not become a blanket disabling of auto-repair.
+func TestReconcile_AccidentalFailureStillAutoRepairs(t *testing.T) {
+	now := time.Date(2026, 3, 28, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: now}
+
+	unhealthySince := now.Add(-16 * time.Minute)
+	spNode := makeHealthMonitorNode("node-1", "default", "k8s-node-1",
+		superplanev1.SuperplaneNodePhaseDegraded, []metav1.Condition{
+			{
+				Type:               ConditionTypeHealthy,
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.NewTime(unhealthySince),
+				Reason:             "HealthCheckFailed",
+				Message:            "K8s node not ready",
+			},
+		})
+	// Deliberately NOT annotated and not in Retiring phase: this is an accident.
+
+	nodeGetter := &fakeNodeGetter{
+		nodes: map[string]*corev1.Node{
+			"k8s-node-1": makeNotReadyK8sNode("k8s-node-1", now),
+		},
+	}
+
+	r, fakeClient := setupReconciler(t, []client.Object{spNode}, nodeGetter, clock)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "node-1", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var nodeList superplanev1.SuperplaneNodeList
+	if err := fakeClient.List(context.Background(), &nodeList); err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodeList.Items) != 2 {
+		t.Fatalf("accidental failure should still auto-repair: expected 2 nodes, got %d", len(nodeList.Items))
+	}
+}
+
+// TestIsDeliberatelyRetiring pins the shared predicate every controller uses.
+func TestIsDeliberatelyRetiring(t *testing.T) {
+	tests := []struct {
+		name       string
+		phase      superplanev1.SuperplaneNodePhase
+		annotation string
+		want       bool
+	}{
+		{"retiring phase", superplanev1.SuperplaneNodePhaseRetiring, "", true},
+		{"annotation only", superplanev1.SuperplaneNodePhaseReady, "operator released", true},
+		{"phase and annotation", superplanev1.SuperplaneNodePhaseRetiring, "operator released", true},
+		{"ready and unannotated", superplanev1.SuperplaneNodePhaseReady, "", false},
+		{"empty annotation is not retirement", superplanev1.SuperplaneNodePhaseReady, "", false},
+		// Terminated capacity has already completed its release; it is not
+		// "retiring", so it must not be reported as such.
+		{"terminated is not retiring", superplanev1.SuperplaneNodePhaseTerminated, "", false},
+		// A drain caused by accidental failure must stay repairable.
+		{"draining alone is not deliberate", superplanev1.SuperplaneNodePhaseDraining, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			node := &superplanev1.SuperplaneNode{
+				Status: superplanev1.SuperplaneNodeStatus{Phase: tt.phase},
+			}
+			if tt.annotation != "" {
+				node.Annotations = map[string]string{
+					superplanev1.AnnotationRetirement: tt.annotation,
+				}
+			}
+			if got := node.IsDeliberatelyRetiring(); got != tt.want {
+				t.Errorf("IsDeliberatelyRetiring() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// A nil node must not panic — controllers call this on fetched pointers.
+	var nilNode *superplanev1.SuperplaneNode
+	if nilNode.IsDeliberatelyRetiring() {
+		t.Error("nil node reported as retiring")
+	}
+}
+
+// TestHandleRetiring_PhaseOnlyRetirementHasReadableReason: a node put into the
+// Retiring phase without an annotation still gets a usable Retired condition. An
+// empty reason would leave an operator unable to tell why no replacement exists.
+func TestHandleRetiring_PhaseOnlyRetirementHasReadableReason(t *testing.T) {
+	spNode := makeSuperplaneNode("sp-1", "default", "pool1", "k8s-node1", "",
+		superplanev1.SuperplaneNodePhaseRetiring, nil)
+	spNode.Annotations = nil // phase is the only signal
+
+	fc := newFakeClient(spNode)
+	r := &HealthMonitorReconciler{
+		Client:     fc,
+		Clock:      &fakeClock{now: time.Now()},
+		NodeGetter: &fakeNodeGetter{},
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "sp-1", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Errorf("expected no requeue for a retiring node, got %v", result.RequeueAfter)
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(),
+		types.NamespacedName{Name: "sp-1", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+
+	var retired *metav1.Condition
+	for i := range updated.Status.Conditions {
+		if updated.Status.Conditions[i].Type == ConditionTypeRetired {
+			retired = &updated.Status.Conditions[i]
+		}
+	}
+	if retired == nil {
+		t.Fatal("expected a Retired condition")
+	}
+	if !strings.Contains(retired.Message, "Retiring") {
+		t.Errorf("expected the phase named as the fallback reason, got %q", retired.Message)
+	}
+	if !strings.Contains(retired.Message, "no replacement created") {
+		t.Errorf("expected the suppressed replacement stated, got %q", retired.Message)
+	}
+}
+
+// TestHandleRetiring_IdempotentOnRepeatReconcile: the condition is written once.
+// Re-reconciling an already-marked node must not churn status.
+func TestHandleRetiring_IdempotentOnRepeatReconcile(t *testing.T) {
+	spNode := makeSuperplaneNode("sp-1", "default", "pool1", "k8s-node1", "",
+		superplanev1.SuperplaneNodePhaseRetiring, nil)
+	spNode.Annotations = map[string]string{
+		superplanev1.AnnotationRetirement: "pool decommission",
+	}
+
+	fc := newFakeClient(spNode)
+	r := &HealthMonitorReconciler{
+		Client:     fc,
+		Clock:      &fakeClock{now: time.Now()},
+		NodeGetter: &fakeNodeGetter{},
+	}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "sp-1", Namespace: "default"}}
+	for i := 0; i < 3; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+
+	var updated superplanev1.SuperplaneNode
+	if err := fc.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+
+	count := 0
+	for _, c := range updated.Status.Conditions {
+		if c.Type == ConditionTypeRetired {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 Retired condition after repeat reconciles, got %d", count)
+	}
+	// No replacement node may appear on any pass.
+	var list superplanev1.SuperplaneNodeList
+	if err := fc.List(context.Background(), &list, client.InNamespace("default")); err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(list.Items) != 1 {
+		t.Errorf("expected no replacements, got %d nodes", len(list.Items))
+	}
+}
+
+// TestRetirementReason covers the accessor the Retired condition message is built
+// from, including the nil receiver a controller can reach on a cache miss.
+func TestRetirementReason(t *testing.T) {
+	var nilNode *superplanev1.SuperplaneNode
+	if got := nilNode.RetirementReason(); got != "" {
+		t.Errorf("nil node reason = %q, want empty (and no panic)", got)
+	}
+
+	unannotated := &superplanev1.SuperplaneNode{}
+	if got := unannotated.RetirementReason(); got != "" {
+		t.Errorf("unannotated node reason = %q, want empty", got)
+	}
+
+	annotated := &superplanev1.SuperplaneNode{}
+	annotated.Annotations = map[string]string{
+		superplanev1.AnnotationRetirement: "ticket OPS-1234",
+	}
+	if got := annotated.RetirementReason(); got != "ticket OPS-1234" {
+		t.Errorf("reason = %q, want the operator's text verbatim", got)
+	}
+}

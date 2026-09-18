@@ -32,6 +32,12 @@ const (
 
 	// ConditionTypeAutoRepair is the condition type tracking auto-repair actions.
 	ConditionTypeAutoRepair = "AutoRepair"
+
+	// ConditionTypeRetired records that capacity was deliberately retired and
+	// therefore must not be recreated. It is the audit trail for a suppressed
+	// auto-repair: without it, an operator cannot tell "no replacement was made
+	// because retirement was intended" from "auto-repair silently failed".
+	ConditionTypeRetired = "Retired"
 )
 
 // Clock abstracts time.Now for testability.
@@ -107,6 +113,17 @@ func (r *HealthMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// Deliberately retired capacity is never repaired or replaced. This check
+	// comes before the phase gate on purpose: a node annotated for retirement
+	// may still be observed in Ready or Degraded phase (the release is in
+	// progress, or this reconcile is working from a slightly stale cache), and
+	// auto-repairing it would recreate exactly the capacity an operator asked to
+	// release. Accidental failure still auto-repairs — see the "deliberate
+	// retirement versus accidental deletion" section in RETIREMENT.md.
+	if spNode.IsDeliberatelyRetiring() {
+		return r.handleRetiring(ctx, &spNode, r.Clock.Now(), logger)
+	}
+
 	// Only monitor nodes in Ready or Degraded phase.
 	// Nodes in other phases (Pending, Provisioning, Joining, Draining, Terminated, Failed)
 	// are handled by other controllers.
@@ -166,6 +183,49 @@ func (r *HealthMonitorReconciler) checkNodeHealth(ctx context.Context, nodeName 
 	}
 
 	return false, fmt.Sprintf("K8s node %q has no Ready condition", nodeName)
+}
+
+// handleRetiring records that auto-repair was deliberately suppressed for a node
+// whose capacity is being released on purpose, and creates no replacement.
+//
+// The Retired condition is the evidence an operator needs: it distinguishes a
+// suppressed repair from a repair that failed. The node's phase is left alone —
+// the release sequence in the consolidator owns phase progression, and the health
+// monitor must not push a retiring node into Ready or Degraded behind its back.
+func (r *HealthMonitorReconciler) handleRetiring(
+	ctx context.Context,
+	spNode *superplanev1.SuperplaneNode,
+	now time.Time,
+	logger interface{ Info(string, ...interface{}) },
+) (ctrl.Result, error) {
+	reason := spNode.RetirementReason()
+	if reason == "" {
+		reason = fmt.Sprintf("node is in %s phase", spNode.Status.Phase)
+	}
+
+	changed := setCondition(&spNode.Status.Conditions, metav1.Condition{
+		Type:               ConditionTypeRetired,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: spNode.Generation,
+		LastTransitionTime: metav1.NewTime(now),
+		Reason:             "DeliberateRetirement",
+		Message: fmt.Sprintf(
+			"Capacity deliberately retired (%s); auto-repair suppressed and no replacement created", reason),
+	})
+
+	if changed {
+		logger.Info("Node is deliberately retiring, suppressing auto-repair",
+			"node", spNode.Name,
+			"retirementReason", reason,
+		)
+		if err := r.Client.Status().Update(ctx, spNode); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status (retiring): %w", err)
+		}
+	}
+
+	// No requeue: there is nothing left for the health monitor to do on this
+	// node. The release sequence drives it to Terminated or ReleaseFailed.
+	return ctrl.Result{}, nil
 }
 
 // handleHealthy processes a healthy node: restores Ready phase if Degraded and clears unhealthy condition.
