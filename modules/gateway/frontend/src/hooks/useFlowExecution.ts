@@ -30,6 +30,13 @@
  *    `AbortSignal` to the request, so unmounting the page aborts the in-flight
  *    fetch instead of leaving it running against a screen nobody is looking at, and
  *    `enabled` gates the whole query on having a flow id.
+ *
+ * 3. **That memory does not leak across flows.** The merge key (`node_id::cycle`) is
+ *    unique only WITHIN a flow, so the remembered revisions are scoped to the flow
+ *    they came from and discarded when it changes. Without that, navigating between
+ *    two flows that share a node/cycle key shows one flow's progress under the
+ *    other's name — and the revision guard makes the wrong row stick until unmount
+ *    rather than self-correcting. See the `select` callback.
  */
 
 import { useRef } from 'react';
@@ -90,6 +97,21 @@ export function useFlowExecution(flowId: string | undefined) {
   // runs on cached data too, so comparing against the cache would compare a value
   // with itself and never detect a regression.
   const latest = useRef<FlowExecution | undefined>(undefined);
+  // Which flow the remembered rows belong to. The ref survives a query-key change —
+  // that is the point of a ref — so without this the memory leaks ACROSS flows.
+  //
+  // The merge key is `node_id::cycle`, and neither part is unique beyond one flow:
+  // `node_id` is per-flow and `cycle` is a small integer starting at 1, so two flows
+  // both holding `(node-X, 1)` is the common case rather than a coincidence.
+  // Navigating A -> B inside the same mounted page would therefore compare B's row
+  // against A's and keep A's when its revision was higher — showing one flow's
+  // progress under another flow's name.
+  //
+  // Worse, the revision guard makes it STICKY: the carried-over row wins every
+  // subsequent comparison because its revision stays higher, so it persists until
+  // unmount instead of being corrected by the next poll. Cleared on change so the
+  // first response for a new flow is taken as authoritative.
+  const latestFlowId = useRef<string | undefined>(undefined);
 
   return useQuery<FlowExecution>({
     queryKey: ['orchestration', 'flow-execution', flowId],
@@ -105,6 +127,16 @@ export function useFlowExecution(flowId: string | undefined) {
     refetchOnWindowFocus: 'always',
     placeholderData: keepPreviousData,
     select: (data) => {
+      // Reset before merging, so a response for a newly-selected flow is never
+      // compared against the previous flow's revisions. Keyed off the RESPONSE's own
+      // `flow_id` rather than the `flowId` argument: during a navigation the argument
+      // has already changed while an in-flight response for the old flow may still
+      // arrive, and trusting the argument would stamp the new flow's identity onto the
+      // old flow's payload.
+      if (latestFlowId.current !== data.flow_id) {
+        latest.current = undefined;
+        latestFlowId.current = data.flow_id;
+      }
       const merged = mergeByRevision(latest.current, data);
       latest.current = merged;
       return merged;

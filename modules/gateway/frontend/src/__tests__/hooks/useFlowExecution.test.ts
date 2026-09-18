@@ -13,14 +13,21 @@
  *     same reason `useFlowGraph` asserts its own settings: the failure is a leak
  *     and a refetch cadence, neither of which a render assertion can see.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { createElement, type ReactNode } from 'react';
+import { renderHook, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   mergeByRevision,
+  useFlowExecution,
   FLOW_EXECUTION_REFETCH_INTERVAL_MS,
 } from '@/hooks/useFlowExecution';
+import { getFlowExecution } from '@/services/orchestration';
 import type { ExecutionSummary, FlowExecution } from '@/types/orchestration';
+
+vi.mock('@/services/orchestration', () => ({ getFlowExecution: vi.fn() }));
 
 function summary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummary {
   return {
@@ -167,6 +174,62 @@ describe('mergeByRevision', () => {
 
     expect(mergeByRevision(view([summary({ revision: 9 })]), empty).executions).toEqual([]);
     expect(mergeByRevision(undefined, empty).legacy).toBe(true);
+  });
+});
+
+describe('the revision memory is scoped to one flow', () => {
+  /**
+   * The cross-flow carryover regression.
+   *
+   * Rendered through the real hook rather than asserted on `mergeByRevision`, because
+   * the bug is not in the merge — the merge is correct in isolation. It is in the ref
+   * that FEEDS the merge: a ref deliberately survives a query-key change, so without a
+   * reset the revisions remembered from flow A are still there when flow B's first
+   * response arrives.
+   *
+   * **Both flows reuse the same `(node_id, cycle)` key on purpose.** That is the whole
+   * test. `node_id` is a per-flow identifier and `cycle` is a small integer starting at
+   * 1, so two flows sharing `(node-shared, 1)` is the common case, not a coincidence. A
+   * version of this test using distinct keys passes against the broken hook and proves
+   * nothing.
+   *
+   * Flow A deliberately holds the HIGHER revision, because the guard keeps the higher
+   * one — so a leak does not merely flicker, it is sticky: A's row wins every later
+   * comparison and persists until unmount instead of being corrected by the next poll.
+   */
+  it('does not carry a higher-revision row from one flow into another', async () => {
+    const responses: Record<string, FlowExecution> = {
+      'flow-a': {
+        ...view([summary({ id: 'a', node_id: 'node-shared', cycle: 1, revision: 50, progress_note: 'flow-a work' })]),
+        flow_id: 'flow-a',
+      },
+      'flow-b': {
+        ...view([summary({ id: 'b', node_id: 'node-shared', cycle: 1, revision: 2, progress_note: 'flow-b work' })]),
+        flow_id: 'flow-b',
+      },
+    };
+    vi.mocked(getFlowExecution).mockImplementation(async (flowId: string) => responses[flowId]);
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children);
+
+    // Flow A first, so its revision 50 is what the ref remembers.
+    const { result, rerender } = renderHook(({ flowId }) => useFlowExecution(flowId), {
+      wrapper,
+      initialProps: { flowId: 'flow-a' },
+    });
+    await waitFor(() => expect(result.current.data?.flow_id).toBe('flow-a'));
+    expect(result.current.data?.executions[0].revision).toBe(50);
+
+    // Navigate to flow B inside the same mounted hook.
+    rerender({ flowId: 'flow-b' });
+    await waitFor(() => expect(result.current.data?.flow_id).toBe('flow-b'));
+
+    const shown = result.current.data!.executions[0];
+    expect(shown.progress_note).toBe('flow-b work');
+    expect(shown.revision).toBe(2);
+    expect(shown.progress_note).not.toBe('flow-a work');
   });
 });
 

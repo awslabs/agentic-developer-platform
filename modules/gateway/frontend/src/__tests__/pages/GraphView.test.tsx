@@ -113,6 +113,48 @@ beforeEach(() => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #5145 — a failed ledger read is stated, not hidden
+// ---------------------------------------------------------------------------
+
+describe('a failed execution read is visible and non-blocking', () => {
+  /**
+   * This suite's baseline is already a REJECTED ledger read (see `beforeEach`), so
+   * every other test here proves the graph survives one. What none of them prove is
+   * that the failure is *stated*.
+   *
+   * Discarding `isError` makes a denied read and an unbuilt feature pixel-identical:
+   * the panel simply is not there. That is the worst outcome for whoever is debugging
+   * it, because the screen actively suggests there is nothing to debug — and it hides
+   * precisely the symptom a tenant-scoping failure would produce, which is the same
+   * defect the backend's own tenant-predicate test guards from the other end.
+   */
+  it('says execution progress is unavailable rather than silently omitting it', async () => {
+    renderGraph();
+
+    const notice = await screen.findByTestId('execution-unavailable');
+    expect(notice).toHaveTextContent(/execution progress is unavailable/i);
+    // It must not overstate the damage: the plan below is intact and current.
+    expect(notice).toHaveTextContent(/delivery plan below is current/i);
+    // And it must not imply delivery stopped — the view cannot tell either way.
+    expect(notice).toHaveTextContent(/does not mean delivery has stopped/i);
+  });
+
+  it('leaves the graph fully usable when the ledger read fails', async () => {
+    // The graph is the older, load-bearing view. A ledger outage degrades one panel;
+    // it must not blank the plan, which is why the two are separate queries.
+    mockGetFlowGraph.mockResolvedValue(
+      makeGraph({ nodes: [makeNode({ node_ref: 'story-a', title: 'Story A', state: 'running' })] })
+    );
+    renderGraph();
+
+    expect(await screen.findByTestId('execution-unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Story A')).toBeInTheDocument();
+    // Not the whole-page error state: that is reserved for the graph itself failing.
+    expect(screen.queryByTestId('graph-error')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // AC-1 — the whole journey, pending included
 // ---------------------------------------------------------------------------
 
@@ -777,7 +819,14 @@ it('separates stories from controls and explains a persisted change request', as
   renderGraph();
   expect(await screen.findByText('2 stories across 2 waves')).toBeInTheDocument();
   expect(screen.getByText('1 approval gate · 1 evaluation')).toBeInTheDocument();
-  expect(screen.getByRole('alert')).toHaveTextContent('does not start an agent to revise the plan');
+  // Two alerts can coexist on this page now: the change request asserted here and
+  // the #5145 ledger-read notice, which this suite's rejected `getFlowExecution`
+  // baseline raises in every test. The query names which one it means rather than
+  // relying on there being exactly one.
+  const changeRequest = screen
+    .getAllByRole('alert')
+    .find((alert) => alert.textContent?.includes('Changes requested'));
+  expect(changeRequest).toHaveTextContent('does not start an agent to revise the plan');
   expect(screen.getByTestId('gate-feedback')).toHaveTextContent('Clarify the migration plan');
   expect(screen.getByTestId('gate-feedback')).not.toHaveTextContent('input-path');
   expect(screen.getByTestId('node-old-story')).not.toBeVisible();

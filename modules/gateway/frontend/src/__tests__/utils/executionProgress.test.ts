@@ -201,9 +201,10 @@ describe('a finished worker is not accepted delivery', () => {
     expect(view.headline).toMatch(/failed step/i);
   });
 
-  it('calls a clean concluded cycle complete', () => {
-    // The one case where "complete" is the honest word, asserted so the guards
-    // above cannot be satisfied by never saying it at all.
+  it('calls a concluded cycle complete only when the graph says the node was accepted', () => {
+    // The one case where "complete" is the honest word, asserted so the guards above
+    // cannot be satisfied by never saying it at all. Note the fourth argument: the
+    // graph's accepted state is what earns the tone, not the execution row.
     const clean = execution({
       status: 'concluded',
       phase: 'concluded',
@@ -211,7 +212,49 @@ describe('a finished worker is not accepted delivery', () => {
       actions: [action({ status: 'succeeded', resolved: true })],
     });
 
-    expect(executionPresentation(clean, SERVER_TIME).tone).toBe('complete');
+    expect(executionPresentation(clean, SERVER_TIME, 0, true).tone).toBe('complete');
+  });
+
+  it('never says complete when the worker succeeded but the graph has not accepted the work', () => {
+    // THE discriminating fixture. A succeeded worker action on a concluded execution
+    // whose graph node is still awaiting review — which is the ordinary state of a
+    // story with an open PR, not an edge case.
+    //
+    // `concluded` is a SCHEDULER statement ("no further pickup", per
+    // `execution_state.py`), not a delivery statement, and it is reached by a cycle
+    // that gave up — attempts exhausted, deadline passed, budget spent — just as
+    // readily as by one that delivered. Giving up leaves no failed action behind,
+    // because abandoning work is not a failed step, so every other guard in this
+    // describe block passes on it. Only the graph's own verdict separates the two.
+    const workerSucceeded = execution({
+      status: 'concluded',
+      phase: 'concluded',
+      next_check_at: null,
+      actions: [action({ status: 'succeeded', resolved: true })],
+    });
+
+    // `false` — the graph node is NOT passed (still awaiting review/deploy/eval).
+    const view = executionPresentation(workerSucceeded, SERVER_TIME, 0, false);
+
+    expect(view.tone).not.toBe('complete');
+    expect(view.tone).toBe('pending');
+    expect(view.headline).toMatch(/acceptance still pending/i);
+  });
+
+  it('defaults to pending, not complete, when the graph state is not supplied', () => {
+    // The back-door version of the same bug: an optional input defaulting to
+    // "accepted" would restore the false green at every call site that forgot to pass
+    // it, and the fixture above would not catch it because it passes the state
+    // explicitly. Absent authoritative state must read as pending.
+    const clean = execution({
+      status: 'concluded',
+      phase: 'concluded',
+      next_check_at: null,
+      actions: [action({ status: 'succeeded', resolved: true })],
+    });
+
+    expect(executionPresentation(clean, SERVER_TIME).tone).toBe('pending');
+    expect(executionPresentation(clean, SERVER_TIME, 0, undefined).tone).not.toBe('complete');
   });
 });
 

@@ -23,7 +23,16 @@ export function GraphView() {
   // down — never per node, which on a long flow would be one request per chip.
   // Deliberately a separate query from the graph: a ledger read failing must not
   // blank the plan, and the graph is the older, load-bearing view.
-  const { data: executionView } = useFlowExecution(flowId);
+  // `isError` is read, not discarded: a denied or failed ledger read that merely
+  // removed the panel would be pixel-identical to the feature not existing, which is
+  // the worst outcome for whoever is debugging it — the screen would actively suggest
+  // there is nothing to debug. It is surfaced as a non-blocking notice below while the
+  // graph stays fully usable.
+  const {
+    data: executionView,
+    isError: executionFailed,
+    error: executionError,
+  } = useFlowExecution(flowId);
 
   if (isPending) {
     return (
@@ -75,6 +84,12 @@ export function GraphView() {
             serverTime={executionView.server_time}
             legacy={executionView.legacy}
             earlierCycles={earlierCycles}
+            // The graph's own verdict, which is the ONLY thing that may render this
+            // panel as complete. The ledger's `concluded` means "no further pickup"
+            // and is reached by a cycle that gave up as well as one that delivered,
+            // so acceptance has to come from here — the authoritative state — rather
+            // than be inferred from the execution row.
+            nodeAccepted={node.state === 'passed'}
           />
         );
       }
@@ -121,6 +136,24 @@ export function GraphView() {
           Work behind the affected gates is paused. Requesting changes records feedback; it does not start an agent to revise the plan.
           {' '}Review the notes below, update the plan as needed, then use “Reopen review” for another approval decision.
         </Alert>
+      )}
+
+      {/* A ledger read that failed says so, rather than vanishing. `warning`, not
+          `error`: the plan below is intact and current, and only the delivery-progress
+          detail is missing — styling this as an error would overstate the damage. It is
+          purely informational; nothing here retries or mutates, and the graph,
+          the waves and every existing control continue to work. */}
+      {executionFailed && (
+        <div data-testid="execution-unavailable">
+          <Alert variant="warning" title="Execution progress is unavailable">
+            The delivery plan below is current, but the execution ledger could not be read, so
+            per-story progress, blocks and evidence are not shown. This does not mean delivery has
+            stopped — it means this view cannot currently tell you where it stands.
+            {(executionError as { message?: string } | null)?.message
+              ? ` (${(executionError as { message?: string }).message})`
+              : null}
+          </Alert>
+        </div>
       )}
 
       {activeNodes.length === 0 && (

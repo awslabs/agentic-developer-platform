@@ -13,8 +13,11 @@
  *   an error, it sends an operator hunting a crash that never happened.
  * - **A finished worker is not accepted delivery.** `concluded`/`succeeded` on the
  *   worker's own action says nothing about review, merge, deployment or evaluation.
- *   Only `phase === 'concluded'` with `status === 'concluded'` and no live block is
- *   described as complete.
+ *   The `complete` tone requires the **graph node's** accepted state to be passed in
+ *   and to say `passed`; the ledger's own `concluded` never earns it, because
+ *   `concluded` means "no further pickup" and is reached by a cycle that gave up as
+ *   well as by one that delivered. Absent that state, the answer is pending — see
+ *   `executionPresentation`.
  * - **An unobserved outcome stays unknown.** `resolved` comes from the server
  *   precisely so `unknown` cannot be upgraded here.
  * - **A green worker status cannot hide an open gate.** `attention` is driven by
@@ -202,14 +205,36 @@ export function executionForNode(
 }
 
 /**
+ * Whether the graph — not the ledger — says this node's work was accepted.
+ *
+ * `undefined` means "not supplied / not known", and it is deliberately NOT a synonym
+ * for `false` at the call sites' convenience: both render as pending, but naming the
+ * third case keeps a caller from having to pass `false` to mean "I did not look".
+ */
+export type NodeAcceptance = boolean | undefined;
+
+/**
  * Project one execution onto its presentation.
  *
  * `serverTime` must be the response's own `server_time` — see `relativeAge`.
+ *
+ * `nodeAccepted` is the **graph's** verdict on this node (`state === 'passed'`), and
+ * it is required for the `complete` tone for a reason worth stating plainly:
+ *
+ * **The execution ledger records what the engine attempted; the graph node records
+ * what was accepted.** `ExecutionStatus.CONCLUDED` is a *scheduler* statement —
+ * `execution_state.py` defines it as "Finished; no further pickup" — and a cycle
+ * reaches it by giving up (attempts exhausted, deadline passed, budget spent) just as
+ * readily as by delivering. Giving up leaves no failed action row behind, because
+ * abandoning work is not a failed step. So `concluded` + no failed action is NOT
+ * evidence of delivery, and reading it as such is how a story that quietly ran out of
+ * attempts renders green. One component must not infer the other's verdict.
  */
 export function executionPresentation(
   execution: ExecutionSummary,
   serverTime: string,
-  earlierCycles = 0
+  earlierCycles = 0,
+  nodeAccepted: NodeAcceptance = undefined
 ): ExecutionPresentation {
   const { block } = execution;
   const evidence = evidenceFor(execution.actions);
@@ -262,7 +287,25 @@ export function executionPresentation(
         tone: 'unknown',
       };
     }
-    return { ...base, headline: 'Delivery concluded', tone: 'complete' };
+    // Only the graph's own accepted state may produce the complete tone. Anything
+    // else — awaiting review, awaiting merge, failed, or the state simply not
+    // supplied — says the execution ended with acceptance still outstanding.
+    //
+    // The default is pending, not complete, and that direction is the whole fix: an
+    // optional input defaulting to "accepted" would reintroduce the false green
+    // through the back door on every call site that forgot to pass it, and the
+    // fixture would not catch it because it would be passing the state explicitly.
+    if (nodeAccepted === true) {
+      return { ...base, headline: 'Delivery concluded and accepted', tone: 'complete' };
+    }
+    // Names the phase as well as the caveat. The execution genuinely did conclude —
+    // that part is not in doubt and the phase smoke test rightly insists the headline
+    // say so; what is outstanding is acceptance of the delivery.
+    return {
+      ...base,
+      headline: 'Execution concluded — delivery acceptance still pending',
+      tone: 'pending',
+    };
   }
 
   if (execution.status === 'awaiting_external') {

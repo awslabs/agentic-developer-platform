@@ -19,6 +19,7 @@ import {
   absentExecutionNote,
   executionPresentation,
   type ExecutionTone,
+  type NodeAcceptance,
 } from '@/utils/executionProgress';
 
 const TONE_CLASSES: Record<ExecutionTone, string> = {
@@ -42,6 +43,14 @@ export interface ExecutionProgressProps {
   legacy: boolean;
   /** Earlier cycles for this node, counted so a retry is not shown as the first try. */
   earlierCycles?: number;
+  /**
+   * The **graph's** verdict on this node (`state === 'passed'`), which is the only
+   * thing that can make this panel read as complete. Omitted or `undefined` means not
+   * known, and renders as acceptance pending — never as delivered. See
+   * `executionPresentation`: the ledger records what was attempted, the graph records
+   * what was accepted.
+   */
+  nodeAccepted?: NodeAcceptance;
 }
 
 export function ExecutionProgress({
@@ -50,6 +59,7 @@ export function ExecutionProgress({
   serverTime,
   legacy,
   earlierCycles = 0,
+  nodeAccepted,
 }: ExecutionProgressProps) {
   if (!execution) {
     // Absence is stated, not omitted. Rendering nothing would let the journey's
@@ -67,7 +77,7 @@ export function ExecutionProgress({
     );
   }
 
-  const view = executionPresentation(execution, serverTime, earlierCycles);
+  const view = executionPresentation(execution, serverTime, earlierCycles, nodeAccepted);
 
   return (
     <section
