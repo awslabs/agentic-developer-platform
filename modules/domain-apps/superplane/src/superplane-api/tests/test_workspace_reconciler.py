@@ -1,7 +1,11 @@
 """Tests for WorkspaceReconciler — failed bootstrap retry + drift detection (US-H3).
 
-Uses mock session factory and patched GitHub trigger to test
-reconciliation logic without real database or cluster connections.
+Uses a mock session factory and a patched provisioning call to test reconciliation
+logic without a real database or cluster connection.
+
+Issue #5058 (U17b) changed what is patched here: the retry path opens an authorized
+operation through the provisioning facade instead of dispatching a GitHub Actions
+workflow with a foreign-repository personal access token.
 """
 
 import uuid
@@ -10,6 +14,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.provisioning import (
+    STATE_FAILED,
+    STATE_PENDING,
+    STATE_UNKNOWN,
+    OperationProgress,
+    ProvisioningUnavailable,
+)
 from app.services.workspace_reconciler import (
     DRIFT_DETECTION_KEYS,
     MAX_BACKOFF_SECONDS,
@@ -30,6 +41,34 @@ from app.models.workspace import (
 
 
 # --- Helpers ---
+
+
+def _progress(state: str = STATE_PENDING) -> OperationProgress:
+    """A facade progress report for a successfully opened operation.
+
+    A mock report: no real operation facade exists in ADP, so a green run here
+    establishes the reconciler's retry accounting, not live provisioning.
+    """
+    return OperationProgress(operation_id="op-test", state=state)
+
+
+def _update_values(session) -> dict:
+    """Column name -> bound value for the last UPDATE the reconciler issued.
+
+    The session is a mock, so the statement never reaches a database; reading the
+    bound values is how a test asserts *which* columns a branch writes. Needed to
+    show that a branch does NOT write `status`, which a call-count assertion cannot
+    distinguish from writing it.
+    """
+    for call in reversed(session.execute.await_args_list):
+        statement = call.args[0]
+        values = getattr(statement, "_values", None)
+        if values:
+            return {
+                getattr(column, "name", str(column)): getattr(bound, "value", bound)
+                for column, bound in values.items()
+            }
+    raise AssertionError("no UPDATE statement was executed")
 
 
 def _make_workspace(
@@ -306,10 +345,10 @@ class TestFailedBootstrapRetry:
             patch.object(reconciler, "_release_lock", new_callable=AsyncMock),
             patch.object(reconciler, "_emit_event", new_callable=AsyncMock),
             patch(
-                "app.services.github.trigger_bootstrap", new_callable=AsyncMock
+                "app.services.provisioning.start_provision", new_callable=AsyncMock
             ) as mock_trigger,
         ):
-            mock_trigger.return_value = True
+            mock_trigger.return_value = _progress()
 
             result = await reconciler._retry_bootstrap(session, ws)
 
@@ -357,10 +396,10 @@ class TestFailedBootstrapRetry:
             patch.object(reconciler, "_release_lock", new_callable=AsyncMock),
             patch.object(reconciler, "_emit_event", new_callable=AsyncMock),
             patch(
-                "app.services.github.trigger_bootstrap", new_callable=AsyncMock
+                "app.services.provisioning.start_provision", new_callable=AsyncMock
             ) as mock_trigger,
         ):
-            mock_trigger.return_value = True
+            mock_trigger.return_value = _progress()
 
             result = await reconciler._retry_bootstrap(session, ws)
             assert result == "retried"
@@ -397,7 +436,13 @@ class TestFailedBootstrapRetry:
 
     @pytest.mark.asyncio
     async def test_trigger_failure_records_error(self):
-        """If trigger_bootstrap returns False, error should be recorded."""
+        """If the operation cannot be opened, the error should be recorded.
+
+        Issue #5058 (U17b): the retry path opens an authorized operation instead of
+        dispatching a GitHub Actions workflow. An unavailable facade raises rather
+        than returning False, and the reconciler must record it as a consumed retry
+        with a reason rather than letting it abort the sweep.
+        """
         factory, session = _mock_session_factory()
         reconciler = WorkspaceReconciler(session_factory=factory)
 
@@ -407,15 +452,82 @@ class TestFailedBootstrapRetry:
             patch.object(reconciler, "_acquire_lock", return_value=True),
             patch.object(reconciler, "_release_lock", new_callable=AsyncMock),
             patch(
-                "app.services.github.trigger_bootstrap", new_callable=AsyncMock
+                "app.services.provisioning.start_provision", new_callable=AsyncMock
             ) as mock_trigger,
         ):
-            mock_trigger.return_value = False
+            mock_trigger.side_effect = ProvisioningUnavailable(
+                "no authorized-operation facade is configured"
+            )
 
             result = await reconciler._retry_bootstrap(session, ws)
             assert result == "skipped"
             # Session.execute should have been called to update reconcile_error
             session.execute.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_a_conclusively_failed_report_is_not_a_started_retry(self):
+        """An operation that OPENED but reports FAILED must not count as retried.
+
+        The facade's first progress report can already be terminal. Reading "the
+        call returned" as "the retry started" would move the workspace to
+        `reconciling` and clear `reconcile_error` — and since the sweep only selects
+        rows whose status is `Failed` and nothing transitions out of `reconciling`,
+        that strands the workspace: never retried again, and no recorded reason.
+        """
+        factory, session = _mock_session_factory()
+        reconciler = WorkspaceReconciler(session_factory=factory)
+
+        ws = _make_workspace(status=STATUS_FAILED, bootstrap_retry_count=1)
+
+        with (
+            patch.object(reconciler, "_acquire_lock", return_value=True),
+            patch.object(reconciler, "_release_lock", new_callable=AsyncMock),
+            patch.object(reconciler, "_emit_event", new_callable=AsyncMock) as emit,
+            patch(
+                "app.services.provisioning.start_provision", new_callable=AsyncMock
+            ) as mock_trigger,
+        ):
+            mock_trigger.return_value = _progress(STATE_FAILED)
+
+            result = await reconciler._retry_bootstrap(session, ws)
+
+            assert result == "skipped"
+            # Not announced as a retry in progress.
+            emit.assert_not_called()
+            # The reason is recorded, and the status is NOT set to reconciling.
+            values = _update_values(session)
+            assert values.get("reconcile_error")
+            assert "status" not in values
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_report_is_not_read_as_a_failed_retry(self):
+        """`unknown` is neither success nor failure, so it stays a started attempt.
+
+        Collapsing it into failure would retry a bootstrap that may have actually
+        succeeded. This is the same distinction the router draws.
+        """
+        factory, session = _mock_session_factory()
+        reconciler = WorkspaceReconciler(session_factory=factory)
+
+        ws = _make_workspace(status=STATUS_FAILED, bootstrap_retry_count=1)
+
+        with (
+            patch.object(reconciler, "_acquire_lock", return_value=True),
+            patch.object(reconciler, "_release_lock", new_callable=AsyncMock),
+            patch.object(reconciler, "_emit_event", new_callable=AsyncMock),
+            patch(
+                "app.services.provisioning.start_provision", new_callable=AsyncMock
+            ) as mock_trigger,
+        ):
+            mock_trigger.return_value = OperationProgress(
+                operation_id="op-test",
+                state=STATE_UNKNOWN,
+                detail="facade cannot determine the outcome",
+            )
+
+            result = await reconciler._retry_bootstrap(session, ws)
+
+            assert result == "retried"
 
     @pytest.mark.asyncio
     async def test_first_retry_no_last_bootstrap(self):
@@ -434,10 +546,10 @@ class TestFailedBootstrapRetry:
             patch.object(reconciler, "_release_lock", new_callable=AsyncMock),
             patch.object(reconciler, "_emit_event", new_callable=AsyncMock),
             patch(
-                "app.services.github.trigger_bootstrap", new_callable=AsyncMock
+                "app.services.provisioning.start_provision", new_callable=AsyncMock
             ) as mock_trigger,
         ):
-            mock_trigger.return_value = True
+            mock_trigger.return_value = _progress()
             result = await reconciler._retry_bootstrap(session, ws)
             assert result == "retried"
 
@@ -476,10 +588,10 @@ class TestFailedBootstrapRetry:
             patch.object(reconciler, "_release_lock", new_callable=AsyncMock),
             patch.object(reconciler, "_emit_event", new_callable=AsyncMock),
             patch(
-                "app.services.github.trigger_bootstrap", new_callable=AsyncMock
+                "app.services.provisioning.start_provision", new_callable=AsyncMock
             ) as mock_trigger,
         ):
-            mock_trigger.return_value = True
+            mock_trigger.return_value = _progress()
             result = await reconciler._retry_bootstrap(session, ws)
             assert result == "retried"
 

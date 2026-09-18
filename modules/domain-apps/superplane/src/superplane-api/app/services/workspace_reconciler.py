@@ -295,15 +295,52 @@ class WorkspaceReconciler:
             return "skipped"
 
         try:
-            # Trigger bootstrap workflow
-            from app.services.github import trigger_bootstrap
-
-            triggered = await trigger_bootstrap(
-                workspace_id=str(workspace.id),
-                workspace_name=workspace.name,
-                org_id=str(workspace.org_id),
-                isolation_mode=workspace.isolation_mode,
+            # Begin bootstrap under an authorized operation. Issue #5058 (U17b)
+            # replaced a GitHub Actions workflow_dispatch call here — this retry
+            # path kept the foreign-repo dispatch and its personal access token
+            # alive on a timer, so converting the two request-driven call sites
+            # without this one would have left the credential in the runtime path.
+            #
+            # The organization comes from the stored workspace row rather than any
+            # request, and the authoritative principal is resolved by the facade.
+            from app.services.provisioning import (
+                ProvisioningError,
+                start_provision,
+                summarize,
             )
+
+            triggered = True
+            failure_reason = ""
+            try:
+                progress = await start_provision(
+                    workspace_id=str(workspace.id),
+                    org_id=str(workspace.org_id),
+                    workspace_name=workspace.name,
+                    isolation_mode=workspace.isolation_mode,
+                )
+            except ProvisioningError as exc:
+                # Recorded as a failed attempt rather than raised: this is a
+                # background retry loop, and an unavailable facade must consume a
+                # retry slot with a recorded reason instead of aborting the sweep
+                # over the other workspaces.
+                triggered = False
+                failure_reason = str(exc)
+            else:
+                # An operation that OPENED is not an operation that SUCCEEDED. A
+                # facade may report a terminal failure in its first progress report,
+                # and treating that as a started retry would move the workspace to
+                # `reconciling` and clear `reconcile_error` — which strands it,
+                # because the retry sweep only selects rows whose status is
+                # `Failed`, and nothing transitions out of `reconciling`. So a
+                # conclusively failed report consumes a retry slot with its reason,
+                # exactly like an unavailable facade.
+                #
+                # `unknown` is deliberately NOT included: it is neither success nor
+                # failure, so it is left as a started attempt rather than being
+                # collapsed into one of the two, matching the router.
+                if progress.is_conclusive_failure:
+                    triggered = False
+                    failure_reason = summarize(progress)
 
             new_retry_count = workspace.bootstrap_retry_count + 1
 
@@ -344,7 +381,11 @@ class WorkspaceReconciler:
                 )
                 return "retried"
             else:
-                error_msg = "Failed to trigger bootstrap workflow via GitHub Actions"
+                error_msg = (
+                    f"Failed to open a bootstrap operation: {failure_reason}"
+                    if failure_reason
+                    else "Failed to open a bootstrap operation"
+                )
                 await session.execute(
                     update(Workspace)
                     .where(Workspace.id == workspace.id)

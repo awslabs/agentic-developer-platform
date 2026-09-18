@@ -20,7 +20,13 @@ from app.schemas.workspace import (
     WorkspaceListResponse,
     WorkspaceResponse,
 )
-from app.services.github import trigger_bootstrap, trigger_teardown
+from app.services.provisioning import (
+    ProvisioningError,
+    ProvisioningRefused,
+    start_provision,
+    start_teardown,
+    summarize,
+)
 from app.services.quota import enforce_workspace_creation_quota
 
 logger = logging.getLogger(__name__)
@@ -102,8 +108,14 @@ async def create_workspace(
 ) -> WorkspaceResponse:
     """Create a new workspace.
 
-    Validates quota, inserts a row with status=Provisioning, and triggers
-    the bootstrap-workspace.yml GitHub Actions workflow.
+    Validates quota, inserts a row with status=Provisioning, and begins
+    provisioning under an authorized operation (issue #5058, U17b — this used to
+    dispatch a GitHub Actions workflow in a repository this project does not own,
+    authenticated with a long-lived personal access token).
+
+    If the operation cannot be opened the workspace is recorded as Failed and this
+    returns 503. It does **not** report Provisioning for work that never started,
+    and there is no path that provisions without an authorized operation.
 
     For research workspaces:
     - An AWS account is mandatory (validated by schema)
@@ -134,19 +146,46 @@ async def create_workspace(
     await db.commit()
     await db.refresh(workspace)
 
-    # Fire-and-forget: trigger the bootstrap workflow
-    triggered = await trigger_bootstrap(
-        workspace_id=str(workspace.id),
-        workspace_name=workspace.name,
-        org_id=str(org_id),
-        isolation_mode=workspace.isolation_mode,
-        account=body.account or "",
-    )
-    if not triggered:
-        logger.warning(
-            "Bootstrap workflow not triggered for workspace %s — check GITHUB_TOKEN",
-            workspace.id,
+    # Begin provisioning under an authorized operation. The organization comes from
+    # the verified JWT (`get_current_org`), never from the request body; the
+    # authoritative principal is resolved by the facade from the operation binding.
+    try:
+        progress = await start_provision(
+            workspace_id=str(workspace.id),
+            org_id=str(org_id),
+            workspace_name=workspace.name,
+            isolation_mode=workspace.isolation_mode,
+            account=body.account or "",
         )
+    except ProvisioningRefused as exc:
+        # A refusal is the caller's fault (an identity-asserting parameter, say),
+        # so it is a 400 and the workspace row is marked Failed rather than left
+        # claiming to be provisioning.
+        workspace.status = "Failed"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except ProvisioningError as exc:
+        # The facade is unavailable or breached its contract. Recorded as Failed
+        # and surfaced as 503 — the previous code logged a warning here and still
+        # returned 201 with status=Provisioning, telling the user their workspace
+        # was being built when nothing was building it.
+        workspace.status = "Failed"
+        await db.commit()
+        logger.error("Provisioning unavailable for workspace %s: %s", workspace.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+    # Reflect the facade's report. `unknown` is deliberately NOT treated as
+    # failure: collapsing the two either leaks infrastructure the platform
+    # believes was never created, or retries a provision that actually succeeded.
+    if progress.is_conclusive_failure:
+        workspace.status = "Failed"
+        await db.commit()
+        await db.refresh(workspace)
+    logger.info("Workspace %s provisioning: %s", workspace.id, summarize(progress))
 
     return _workspace_to_response(workspace)
 
@@ -235,20 +274,39 @@ async def delete_workspace(
             detail=f"Workspace already in {workspace.status} state",
         )
 
+    # Captured before the transition so a refused or unavailable teardown can be
+    # rolled back to the status the workspace actually had.
+    previous_status = workspace.status
+
     workspace.status = "Teardown"
     await db.commit()
 
-    # Trigger teardown workflow
-    triggered = await trigger_teardown(
-        workspace_id=str(workspace.id),
-        workspace_name=workspace.name,
-        org_id=str(org_id),
-    )
-    if not triggered:
-        logger.warning(
-            "Teardown workflow not triggered for workspace %s — check GITHUB_TOKEN",
-            workspace.id,
+    # Begin teardown under an authorized operation. Teardown is the same authority
+    # question as provisioning with the opposite effect, so it goes through the
+    # same facade and the same permission rather than a weaker local check.
+    try:
+        progress = await start_teardown(
+            workspace_id=str(workspace.id),
+            org_id=str(org_id),
+            workspace_name=workspace.name,
         )
+    except ProvisioningRefused as exc:
+        # Restore the prior status: the workspace was not torn down, and leaving it
+        # in Teardown would make a refused request look like one in progress.
+        workspace.status = previous_status
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except ProvisioningError as exc:
+        workspace.status = previous_status
+        await db.commit()
+        logger.error("Teardown unavailable for workspace %s: %s", workspace.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+    logger.info("Workspace %s teardown: %s", workspace.id, summarize(progress))
 
     return WorkspaceDeleteResponse(id=workspace.id, status="Teardown")
 

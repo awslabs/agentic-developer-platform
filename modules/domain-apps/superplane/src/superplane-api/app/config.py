@@ -38,9 +38,11 @@ class Settings(BaseSettings):
     # Internal API (machine-to-machine auth for bootstrap workflows)
     internal_api_token: str = ""
 
-    # GitHub Actions (for workspace bootstrap/teardown)
-    github_token: str = ""
-    github_repo: str = "aws-innovate/AISuperPlane"
+    # Workspace provisioning runs through the authorized-operation facade
+    # (app/services/provisioning.py), not GitHub Actions. The `github_token` /
+    # `github_repo` settings were removed by issue #5058 (U17b): they held a
+    # long-lived personal access token for a repository this project does not own,
+    # and no runtime path reads them any more.
 
     # CORS
     cors_origins: list[str] = ["*"]
