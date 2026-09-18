@@ -330,27 +330,34 @@ async def _live_authority_conflict(
     identity: ExecutionIdentity,
     *,
     flow_id: str,
+    lock: bool = True,
 ) -> str | None:
-    """Verify the claim and accepted plan that are live in this transaction."""
-    flow = (
-        await session.execute(
-            select(OrchestrationFlow.id).where(OrchestrationFlow.org_id == identity.org_id, OrchestrationFlow.id == flow_id).with_for_update()
-        )
-    ).scalar_one_or_none()
+    """Verify the claim and accepted plan that are live in this transaction.
+
+    `lock=True` for a writing path: the flow, claim and accepted-plan rows are taken
+    `FOR UPDATE` so the authority cannot lapse between this check and the write it
+    guards. That is the whole point of checking inside the transaction.
+
+    `lock=False` for a plain read. The same refusals are still computed from the same
+    rows — only the locks are dropped, because a diagnostic or the read model (#5145)
+    must not block on live work, and must not make a *reader* the reason a writer
+    waits. A reader has nothing to protect between the check and a write it will
+    never make, so the lock buys it no correctness.
+    """
+    flow_stmt = select(OrchestrationFlow.id).where(OrchestrationFlow.org_id == identity.org_id, OrchestrationFlow.id == flow_id)
+    if lock:
+        flow_stmt = flow_stmt.with_for_update()
+    flow = (await session.execute(flow_stmt)).scalar_one_or_none()
     if flow is None:
         return "tenant_binding_mismatch"
 
-    claim = (
-        await session.execute(
-            select(OrchestrationWorkClaim)
-            .where(
-                OrchestrationWorkClaim.org_id == identity.org_id,
-                OrchestrationWorkClaim.id == identity.claim_id,
-            )
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one_or_none()
+    claim_stmt = select(OrchestrationWorkClaim).where(
+        OrchestrationWorkClaim.org_id == identity.org_id,
+        OrchestrationWorkClaim.id == identity.claim_id,
+    )
+    if lock:
+        claim_stmt = claim_stmt.with_for_update()
+    claim = (await session.execute(claim_stmt.execution_options(populate_existing=True))).scalar_one_or_none()
     if claim is None:
         return "claim_mismatch"
     if claim.state != ClaimState.HELD.value:
@@ -358,23 +365,18 @@ async def _live_authority_conflict(
     if claim.generation != identity.claim_generation:
         return "claim_generation_superseded" if claim.generation > identity.claim_generation else "claim_generation_mismatch"
 
-    plans = list(
-        (
-            await session.execute(
-                select(OrchestrationAcceptedPlan)
-                .where(
-                    OrchestrationAcceptedPlan.org_id == identity.org_id,
-                    OrchestrationAcceptedPlan.flow_id == flow_id,
-                    OrchestrationAcceptedPlan.superseded_at.is_(None),
-                )
-                .limit(2)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
+    plan_stmt = (
+        select(OrchestrationAcceptedPlan)
+        .where(
+            OrchestrationAcceptedPlan.org_id == identity.org_id,
+            OrchestrationAcceptedPlan.flow_id == flow_id,
+            OrchestrationAcceptedPlan.superseded_at.is_(None),
         )
-        .scalars()
-        .all()
+        .limit(2)
     )
+    if lock:
+        plan_stmt = plan_stmt.with_for_update()
+    plans = list((await session.execute(plan_stmt.execution_options(populate_existing=True))).scalars().all())
     if len(plans) > 1:
         return "accepted_plan_ambiguous"
     current_version = plans[0].version if plans else 0
@@ -388,9 +390,15 @@ def _unbound_conflict(reason: str) -> ExecutionOutcome:
     return ExecutionOutcome(kind=OutcomeKind.CONFLICT, record=None, reason=reason)
 
 
-async def _live_refusal(session: AsyncSession, identity: ExecutionIdentity, reason: str) -> ExecutionOutcome:
-    """Attach the record only when the caller already knows its stored claim."""
-    row = await _locked_execution(session, identity)
+async def _live_refusal(session: AsyncSession, identity: ExecutionIdentity, reason: str, *, lock: bool = True) -> ExecutionOutcome:
+    """Attach the record only when the caller already knows its stored claim.
+
+    `lock=False` for the plain read path, for the same reason `_live_authority_conflict`
+    takes it: a refused *reader* must not lock the row it was refused. The disclosure
+    rule is unchanged — the record travels only when the caller already named this
+    execution's stored claim.
+    """
+    row = await (_locked_execution(session, identity) if lock else _unlocked_execution(session, identity))
     if row is not None and row.org_id == identity.org_id and row.claim_id == identity.claim_id:
         return _conflict(row, reason)
     return _unbound_conflict(reason)
@@ -480,6 +488,24 @@ async def _action_for_key(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+def _execution_for_identity(identity: ExecutionIdentity):
+    """The identity predicate both the locked and plain execution reads share."""
+    return select(OrchestrationExecution).where(
+        OrchestrationExecution.org_id == identity.org_id,
+        OrchestrationExecution.node_id == identity.node_id,
+        OrchestrationExecution.cycle == identity.cycle,
+    )
+
+
+async def _unlocked_execution(session: AsyncSession, identity: ExecutionIdentity) -> OrchestrationExecution | None:
+    """Read an execution for its identity without locking it.
+
+    For diagnostics and the read model (#5145): they render live work and must never
+    make a writer wait, so they take the same row with no `FOR UPDATE`.
+    """
+    return (await session.execute(_execution_for_identity(identity))).scalar_one_or_none()
+
+
 async def _locked_execution(session: AsyncSession, identity: ExecutionIdentity) -> OrchestrationExecution | None:
     """Read an execution for its identity under a row lock.
 
@@ -490,16 +516,7 @@ async def _locked_execution(session: AsyncSession, identity: ExecutionIdentity) 
     index is the correctness backstop and why the concurrency assertions run against
     real PostgreSQL.
     """
-    stmt = (
-        select(OrchestrationExecution)
-        .where(
-            OrchestrationExecution.org_id == identity.org_id,
-            OrchestrationExecution.node_id == identity.node_id,
-            OrchestrationExecution.cycle == identity.cycle,
-        )
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
+    stmt = _execution_for_identity(identity).with_for_update().execution_options(populate_existing=True)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -638,19 +655,13 @@ async def load_execution(
     flow_id = await _resolve_flow_id(session, identity)
     if flow_id is None:
         return None
-    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id)
+    # A plain read takes no locks, here or in the authority check it delegates to:
+    # the read model renders live work and must not block on — or block — a writer.
+    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id, lock=for_update)
     if live_conflict:
-        return await _live_refusal(session, identity, live_conflict)
+        return await _live_refusal(session, identity, live_conflict, lock=for_update)
 
-    if for_update:
-        row = await _locked_execution(session, identity)
-    else:
-        stmt = select(OrchestrationExecution).where(
-            OrchestrationExecution.org_id == identity.org_id,
-            OrchestrationExecution.node_id == identity.node_id,
-            OrchestrationExecution.cycle == identity.cycle,
-        )
-        row = (await session.execute(stmt)).scalar_one_or_none()
+    row = await (_locked_execution(session, identity) if for_update else _unlocked_execution(session, identity))
 
     if row is None:
         return None

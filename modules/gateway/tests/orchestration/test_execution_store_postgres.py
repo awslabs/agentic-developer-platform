@@ -50,6 +50,7 @@ from src.orchestration.execution_state import (
     BlockCode,
     BlockRecord,
     ExecutionIdentity,
+    ExecutionOutcome,
     ExecutionPhase,
     ExecutionStatus,
     ExecutionStoreError,
@@ -61,6 +62,7 @@ from src.orchestration.execution_state import (
 from src.orchestration.execution_store import (
     advance_execution,
     create_execution,
+    load_execution,
     prepare_action,
     record_observation,
 )
@@ -947,3 +949,114 @@ class TestConcurrentObservationSettlement:
             (ActionStatus.SUCCEEDED.value, "receipt/success"),
             (ActionStatus.FAILED.value, "receipt/failure"),
         }
+
+
+class TestTheReadModelTakesNoLocks:
+    """`load_execution(for_update=False)` is documented as lock-free. Enforce it here.
+
+    The read model (#5145) and operator diagnostics render executions that are being
+    written right now. If a plain read took `FOR UPDATE` — directly or inside the
+    authority check it delegates to — then opening a dashboard would wait on whatever
+    worker happens to hold the row, and a slow reader would in turn make the next
+    writer wait. Both suites' semantic assertions pass either way, because `FOR UPDATE`
+    is a no-op on SQLite: only a real server shows the block, which is why this lives
+    here.
+    """
+
+    async def test_a_plain_read_does_not_block_on_a_live_writer(self, pg_session_factory, graph):
+        identity, record = await _seed(pg_session_factory, graph)
+
+        # A writer holding its transaction open, exactly as a worker does between
+        # recording an intent and committing it.
+        holder = pg_session_factory()
+        await holder.begin()
+        try:
+            advanced = await advance_execution(
+                holder,
+                identity=identity,
+                advance=PhaseAdvance(
+                    phase=ExecutionPhase.DELIVERING,
+                    status=ExecutionStatus.RUNNABLE,
+                    expected_revision=record.revision,
+                    next_check_at=_soon(),
+                ),
+            )
+            assert advanced.kind is OutcomeKind.APPLIED
+
+            async def read() -> ExecutionOutcome | None:
+                async with pg_session_factory() as session:
+                    return await load_execution(session, identity=identity, for_update=False)
+
+            # Fails by timing out rather than by assertion if any lock is taken.
+            outcome = await asyncio.wait_for(read(), timeout=10)
+        finally:
+            await holder.rollback()
+            await holder.close()
+
+        # It reads the last committed state, not the open writer's uncommitted phase.
+        assert outcome is not None
+        assert outcome.kind is OutcomeKind.APPLIED
+        assert outcome.record.phase is ExecutionPhase.ADMITTED
+
+    async def test_a_plain_read_does_not_block_the_next_writer(self, pg_session_factory, graph):
+        """The converse: a reader's transaction must not make a writer wait either."""
+        identity, record = await _seed(pg_session_factory, graph)
+
+        reader = pg_session_factory()
+        await reader.begin()
+        try:
+            assert await load_execution(reader, identity=identity, for_update=False) is not None
+
+            async def write() -> ExecutionOutcome:
+                async with pg_session_factory() as session:
+                    outcome = await advance_execution(
+                        session,
+                        identity=identity,
+                        advance=PhaseAdvance(
+                            phase=ExecutionPhase.DELIVERING,
+                            status=ExecutionStatus.RUNNABLE,
+                            expected_revision=record.revision,
+                            next_check_at=_soon(),
+                        ),
+                    )
+                    await session.commit()
+                    return outcome
+
+            outcome = await asyncio.wait_for(write(), timeout=10)
+        finally:
+            await reader.rollback()
+            await reader.close()
+
+        assert outcome.kind is OutcomeKind.APPLIED
+
+    async def test_a_refused_plain_read_still_takes_no_locks(self, pg_session_factory, graph):
+        """The refusal path reads the row to decide disclosure; it must not lock it."""
+        identity, record = await _seed(pg_session_factory, graph)
+        stale = _identity(graph, plan=PLAN_VERSION + 1)
+
+        holder = pg_session_factory()
+        await holder.begin()
+        try:
+            await advance_execution(
+                holder,
+                identity=identity,
+                advance=PhaseAdvance(
+                    phase=ExecutionPhase.DELIVERING,
+                    status=ExecutionStatus.RUNNABLE,
+                    expected_revision=record.revision,
+                    next_check_at=_soon(),
+                ),
+            )
+
+            async def read() -> ExecutionOutcome | None:
+                async with pg_session_factory() as session:
+                    return await load_execution(session, identity=stale, for_update=False)
+
+            refused = await asyncio.wait_for(read(), timeout=10)
+        finally:
+            await holder.rollback()
+            await holder.close()
+
+        assert refused is not None
+        assert refused.kind is OutcomeKind.CONFLICT
+        assert refused.reason == "accepted_plan_version_mismatch"
