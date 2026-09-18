@@ -630,13 +630,20 @@ async def test_no_control_or_acceptance_permission_is_introduced(app_with_router
 
 @pytest.mark.asyncio
 async def test_the_claim_binding_is_never_published(session, app_with_router):
-    """`claim_id` and `claim_generation` stay out of the payload.
+    """Neither the work claim nor the acceptance record reaches the payload.
 
-    They are the authority binding the store's fence tests, and the store withholds
-    them from a refused caller precisely so a refusal cannot disclose what would
-    satisfy it. Serving them to a browser would undo that. `accepted_plan_version`
-    IS published — it tells an operator which accepted plan authorized the delivery
-    and is not on its own a binding.
+    `claim_id`/`claim_generation` are the authority binding the store's fence tests,
+    and the store withholds them from a refused caller precisely so a refusal cannot
+    disclose what would satisfy it. Serving them to a browser would undo that.
+
+    `accepted_plan_version` is excluded for a different reason, and this assertion
+    exists because an earlier draft of this route DID serve it:
+    `test_internal_plane_guard.py` requires `PLAN_APPROVE` of any handler touching an
+    acceptance record, and "which approved plan authorized this delivery" is exactly
+    that. The two escapes were both wrong — relax the guard, or make merely viewing
+    delivery progress demand approval authority. So the field is gone, and this test
+    keeps it gone: re-adding it would reopen the escalation at a point where the
+    router guard is the only thing watching.
     """
     flow = await seed_flow(session)
     node = await seed_node(session, flow, node_ref="story-a")
@@ -648,7 +655,9 @@ async def test_the_claim_binding_is_never_published(session, app_with_router):
     assert "claim_id" not in execution
     assert "claim_generation" not in execution
     assert CLAIM_ID not in response.text
-    assert execution["accepted_plan_version"] == 4
+    # The acceptance record stays on the plans route, under the permission that
+    # governs it.
+    assert "accepted_plan_version" not in execution
 
 
 # ---------------------------------------------------------------------------

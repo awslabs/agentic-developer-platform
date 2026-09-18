@@ -26,6 +26,12 @@ vi.mock('@/services/orchestration', () => ({
   approveGate: vi.fn(),
   rejectGate: vi.fn(),
   resumeNode: vi.fn(),
+  // Issue #5145: the page now also reads the delivery ledger. Stubbed here (and
+  // left unresolved) so this suite keeps asserting the graph exactly as it does
+  // today — the ledger panel has its own suite in `GraphViewExecution.test.tsx`.
+  // Declared rather than omitted: an absent export would make the hook throw
+  // instead of simply having no data, which is a different code path.
+  getFlowExecution: vi.fn(),
 }));
 
 // Without a permission the controls render nothing, which is the correct
@@ -34,7 +40,7 @@ vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: () => ({ hasPermission: () => false }),
 }));
 
-import { getFlowGraph } from '@/services/orchestration';
+import { getFlowGraph, getFlowExecution } from '@/services/orchestration';
 
 const mockGetFlowGraph = getFlowGraph as ReturnType<typeof vi.fn>;
 
@@ -100,6 +106,10 @@ function renderGraph() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetFlowGraph.mockResolvedValue(makeGraph());
+  // A failing ledger read is the baseline for this suite, and it doubles as an
+  // assertion by construction: every test below still passes, which is what
+  // "a ledger failure must not blank the plan" means in practice.
+  (getFlowExecution as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('no ledger in this suite'));
 });
 
 // ---------------------------------------------------------------------------
@@ -634,6 +644,13 @@ describe('source-level guarantees', () => {
     'components/orchestration/RollupBar.tsx',
     'components/orchestration/NodeChip.tsx',
     'components/orchestration/CostFigureDisplay.tsx',
+    // Issue #5145 — the delivery execution panel mounts inside this same page, so
+    // it inherits every guard in this block. Listing it here is the point: a second
+    // polling query on the graph route is exactly where the shared-cadence and
+    // extra-dependency rules would otherwise be quietly re-broken.
+    'hooks/useFlowExecution.ts',
+    'utils/executionProgress.ts',
+    'components/orchestration/ExecutionProgress.tsx',
   ];
 
   it('sets refetchInterval explicitly in the hook', () => {

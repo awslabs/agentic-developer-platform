@@ -1586,12 +1586,22 @@ class ExecutionSummaryResponse(BaseModel):
     exactly one per applied write, making "is this older than what I already show?"
     a comparison rather than a guess about arrival order.
 
-    **Deliberately absent: `claim_id` and `claim_generation`.** They are the
-    authority binding the store's fence tests, and publishing them would put the
-    values that satisfy the next authority check into a browser payload.
-    `accepted_plan_version` IS present — it names which accepted plan authorized
-    this delivery, which an operator legitimately needs after a mid-flight
-    amendment, and it is not on its own a binding.
+    **Deliberately absent: the whole authority binding** — `claim_id`,
+    `claim_generation` and `accepted_plan_version`.
+
+    The first two are what the store's authority fence tests; publishing them would
+    put the values that satisfy the next authority check into a browser payload.
+
+    `accepted_plan_version` is absent for a different reason, which
+    `test_internal_plane_guard.py` caught in an earlier draft that served it: it is
+    an **acceptance record** — it names which approved plan authorized this
+    delivery. This router requires `PLAN_APPROVE` of any handler touching those
+    records, because reading "what was approved" under a spend-read permission is an
+    escalation. Both escapes were wrong: relaxing the guard, or promoting this route
+    so that viewing delivery *progress* would demand approval authority. Nothing
+    here needs the field — "why is delivery waiting and who acts next" is answered
+    by the phase, the block and the next check, and the authorizing plan is already
+    on the plans route under the permission that governs it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1602,7 +1612,6 @@ class ExecutionSummaryResponse(BaseModel):
     phase: str
     status: str
     revision: int
-    accepted_plan_version: int
     attempts: int
     next_check_at: str | None
     deadline_at: str | None
@@ -1730,7 +1739,6 @@ async def get_flow_execution(
                 phase=execution.phase.value,
                 status=execution.status.value,
                 revision=execution.revision,
-                accepted_plan_version=execution.accepted_plan_version,
                 attempts=execution.attempts,
                 next_check_at=_iso(execution.next_check_at),
                 deadline_at=_iso(execution.deadline_at),

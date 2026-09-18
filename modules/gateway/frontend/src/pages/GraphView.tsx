@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useFlowGraph } from '@/hooks/useFlowGraph';
+import { useFlowExecution } from '@/hooks/useFlowExecution';
 import { countByDisplayState } from '@/utils/nodeState';
 import { groupIntoEpics } from '@/utils/flowLayout';
 import { RollupBar } from '@/components/orchestration/RollupBar';
@@ -9,6 +10,8 @@ import { PlanSummary } from '@/components/orchestration/PlanSummary';
 import { NodeChip } from '@/components/orchestration/NodeChip';
 import { WaveCard } from '@/components/orchestration/WaveCard';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
+import { ExecutionProgress } from '@/components/orchestration/ExecutionProgress';
+import { executionForNode } from '@/utils/executionProgress';
 import { LastUpdated } from '@/components/LastUpdated';
 import { Alert, Spinner } from '@/components/ui';
 
@@ -16,6 +19,11 @@ export function GraphView() {
   const { flowId } = useParams<{ flowId: string }>();
   const [expandedWaves, setExpandedWaves] = useState<Record<string, boolean>>({});
   const { data, isPending, isError, error, dataUpdatedAt, isFetching } = useFlowGraph(flowId);
+  // The delivery ledger (issue #5145), queried once for the whole flow and handed
+  // down — never per node, which on a long flow would be one request per chip.
+  // Deliberately a separate query from the graph: a ledger read failing must not
+  // blank the plan, and the graph is the older, load-bearing view.
+  const { data: executionView } = useFlowExecution(flowId);
 
   if (isPending) {
     return (
@@ -51,6 +59,26 @@ export function GraphView() {
   const waves = epics.flatMap((epic) => epic.waves.map((wave) => ({ epicRef: epic.epicRef, wave })));
   const firstUnfinished = waves.find(({ wave }) => wave.nodes.some((node) => node.state !== 'passed'));
   const waveKey = (epicRef: string, waveRef: string) => JSON.stringify([flowId, epicRef, waveRef]);
+  // Rendered only once the ledger read has returned. Before that the journey shows
+  // exactly what it shows today: an absence panel here would claim "no execution
+  // record" — which means the flow predates the ledger — about a flow whose record
+  // simply has not arrived yet.
+  const renderExecution = executionView
+    ? (node: typeof activeNodes[number]) => {
+        if (node.kind !== 'story') return null;
+        const { execution, earlierCycles } = executionForNode(executionView, node.id);
+        return (
+          <ExecutionProgress
+            nodeRef={node.node_ref}
+            execution={execution}
+            // The response's own clock, so age is two instants from one source.
+            serverTime={executionView.server_time}
+            legacy={executionView.legacy}
+            earlierCycles={earlierCycles}
+          />
+        );
+      }
+    : undefined;
   const setAllExpanded = (expanded: boolean) => setExpandedWaves(Object.fromEntries(
     waves.map(({ epicRef, wave }) => [waveKey(epicRef, wave.waveRef), expanded])
   ));
@@ -138,6 +166,7 @@ export function GraphView() {
                 graph={data}
                 expanded={expanded}
                 onToggle={() => setExpandedWaves((current) => ({ ...current, [key]: !expanded }))}
+                renderExecution={renderExecution}
               />
             );
           })}
@@ -149,7 +178,9 @@ export function GraphView() {
             Superseded steps ({historicalNodes.length}) — history, excluded from the current plan
           </summary>
           <ul className="mt-3 space-y-2">
-            {historicalNodes.map((node) => <NodeChip key={node.id} node={node} />)}
+            {historicalNodes.map((node) => (
+              <NodeChip key={node.id} node={node} execution={renderExecution?.(node)} />
+            ))}
           </ul>
         </details>
       )}

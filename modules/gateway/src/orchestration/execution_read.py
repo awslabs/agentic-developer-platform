@@ -12,7 +12,7 @@ takes an `ExecutionIdentity` carrying the `claim_id` and `claim_generation` of t
 work claim the caller holds (#5127). A human operator holds no claim, and a read
 presenting one it does not own lands on `_binding_conflict`'s `claim_mismatch`
 arm — which deliberately **withholds the record**, because returning it would
-disclose the `claim_id`/`claim_generation`/`accepted_plan_version` binding that
+disclose the `claim_id`/`claim_generation` binding that
 satisfies the next authority check. A refusal must not hand over what would
 satisfy it.
 
@@ -268,13 +268,25 @@ class ExecutionView:
     older than what I already show?" is a comparison rather than a guess about
     arrival order.
 
-    Deliberately absent: `claim_id` and `claim_generation`. They are the authority
-    binding the store's fence tests, and an operator read has no use for them —
-    publishing them would put the values that satisfy the next authority check
-    into a browser payload. `accepted_plan_version` IS included: it names which
-    accepted plan authorized this delivery, which is a thing an operator
-    legitimately needs when a plan has been amended mid-flight, and it is not on
-    its own a binding.
+    **Deliberately absent: the whole authority binding** — `claim_id`,
+    `claim_generation` and `accepted_plan_version`.
+
+    The first two are what the store's fence tests, and publishing them would put
+    the values that satisfy the next authority check into a browser payload.
+
+    `accepted_plan_version` is excluded for a different and initially
+    counter-intuitive reason, which `test_internal_plane_guard.py` caught in an
+    earlier draft of this module that did serve it. It is an *acceptance record*: it
+    names which approved plan authorized this delivery. That router's guard requires
+    `PLAN_APPROVE` of any handler touching acceptance records, on the rule that
+    reading "what was approved" under a spend-read permission is an escalation. Both
+    ways out were wrong — relaxing the guard to admit this route, or promoting the
+    route to `PLAN_APPROVE` so that merely *viewing delivery progress* would demand
+    approval authority. So the field goes. Nothing in this feature needs it: an
+    operator asking "why is delivery waiting and who acts next" is answered by the
+    phase, the block and the next check, and the plan a delivery was authorized
+    under is already available on the plans route, under the permission that
+    governs it.
     """
 
     id: str
@@ -283,7 +295,6 @@ class ExecutionView:
     phase: ExecutionPhase
     status: ExecutionStatus
     revision: int
-    accepted_plan_version: int
     attempts: int
     next_check_at: datetime | None
     deadline_at: datetime | None
@@ -422,7 +433,6 @@ def _execution_view(row: OrchestrationExecution, actions: list[OrchestrationActi
         phase=phase,
         status=status,
         revision=row.revision,
-        accepted_plan_version=row.accepted_plan_version,
         attempts=row.attempts,
         next_check_at=_as_aware(row.next_check_at),
         deadline_at=_as_aware(row.deadline_at),
