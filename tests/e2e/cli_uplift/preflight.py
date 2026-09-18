@@ -393,10 +393,27 @@ def evaluate_fixtures(
 ):
     """Decide which fixture classes are genuinely usable for this run.
 
-    Config alone gives the candidate set; the caller passes live results for the
+    Config alone gives the candidate set; the caller passes live RESULTS for the
     classes that need proving. `None` means "not proven", which is treated as
     unavailable — an unproven fixture must block its cases, never be assumed.
+
+    Results, not probes: `live.py` hands these out as callables and `stages.py`
+    calls them, so passing the callable itself is an easy mistake — and every
+    function object is truthy, so it would mark the fixture AVAILABLE on the
+    strength of never having been run. That is the one direction this function
+    must never fail in, so it is refused outright rather than trusted.
     """
+    for label, value in (
+        ("github_available", github_available),
+        ("hosted_available", hosted_available),
+        ("deployments_available", deployments_available),
+    ):
+        if callable(value):
+            raise PreflightError(
+                f"{label} was given a probe rather than its result; call it first. "
+                "A callable is truthy, so this would have reported the fixture as "
+                "available without ever checking it"
+            )
     available = config.fixture_classes(cfg)
     if cases.GITHUB_APP in available and not github_available:
         available.discard(cases.GITHUB_APP)

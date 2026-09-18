@@ -402,6 +402,322 @@ def test_github_fixtures_present_enables_github_cases():
     assert {cases.GITHUB_APP, cases.GITHUB_REPO} <= available
 
 
+# --------------------------------------------------------------------------
+# #5413: the three-deployment fixture
+# --------------------------------------------------------------------------
+#
+# These guards all protect one property: a binding set that COULD NOT prove
+# isolation whatever it observed must be refused while the config is being
+# validated, not discovered an hour into a live run. Each rule below corresponds
+# to a way three bindings can look like three deployments and not be.
+
+
+def deployment_bindings(**overrides):
+    """Three well-formed bindings: distinct names, URLs and credential references."""
+    bindings = [
+        {
+            "name": name,
+            "gateway_url": f"https://{name}.example-adp.invalid/api",
+            "credential_secret_name": f"adp/cli-uplift-eval/{name}",
+        }
+        for name in ("development", "integration", "preprod")
+    ]
+    for index, changes in (overrides.get("entries") or {}).items():
+        bindings[index].update(changes)
+    return bindings
+
+
+def test_three_well_formed_deployment_bindings_make_the_fixture_available():
+    result = config.validate(config_fixture(deployments=deployment_bindings()))
+    assert [entry["name"] for entry in result["deployments"]] == [
+        "development",
+        "integration",
+        "preprod",
+    ]
+    assert cases.THREE_DEPLOYMENTS in config.fixture_classes(result)
+
+
+def test_two_deployments_cannot_stand_in_for_three():
+    """Two cannot separate "each reached its own" from "they alternated".
+
+    With two deployments and two sessions, a CLI that mixed them up produces the
+    same observation as one that did not on half the orderings. Three is the
+    smallest set where a crossed request has a wrong destination that is not just
+    "the other one".
+    """
+    with pytest.raises(config.ConfigError, match="at least 3"):
+        config.validate(config_fixture(deployments=deployment_bindings()[:2]))
+
+
+def test_two_names_for_one_gateway_url_are_refused_as_aliases():
+    """This is the defect this guard exists for, and it looks like a valid fixture.
+
+    `adp deployment add` treats a second name for an already-registered URL as an
+    ALIAS: one canonical URL, one stable id, one session. Three names over two
+    URLs would therefore register, list as three, and satisfy any count — while
+    two of them shared the session whose independence is the whole subject of the
+    case. Nothing observed later in the run could distinguish that from a pass.
+    """
+    shared = deployment_bindings()
+    shared[2]["gateway_url"] = shared[0]["gateway_url"]
+    with pytest.raises(config.ConfigError, match="aliases"):
+        config.validate(config_fixture(deployments=shared))
+    # A trailing slash is the same URL, so normalisation must happen before the
+    # comparison rather than letting punctuation defeat it.
+    slashed = deployment_bindings()
+    slashed[1]["gateway_url"] = slashed[0]["gateway_url"] + "/"
+    with pytest.raises(config.ConfigError, match="aliases"):
+        config.validate(config_fixture(deployments=slashed))
+
+
+def test_a_shared_credential_reference_is_refused():
+    """AC-03/AC-11 are about three INDEPENDENT logins.
+
+    One identity signed in three times could not show that logging out of one
+    deployment leaves the other two signed in — the logout would either take all
+    three or none, and either outcome would be reported as the product's
+    behaviour.
+    """
+    shared = deployment_bindings()
+    shared[1]["credential_secret_name"] = shared[0]["credential_secret_name"]
+    with pytest.raises(config.ConfigError, match="credential reference"):
+        config.validate(config_fixture(deployments=shared))
+
+
+def test_a_deployment_binding_carries_a_reference_never_a_credential():
+    """The fixture password lives in Secrets Manager; this file holds its NAME."""
+    for bad in ("arn:aws:secretsmanager:us-east-1:879318057152:secret:x", "https://x"):
+        entries = deployment_bindings()
+        entries[0]["credential_secret_name"] = bad
+        with pytest.raises(config.ConfigError, match="secret NAME"):
+            config.validate(config_fixture(deployments=entries))
+    # And a credential-shaped KEY anywhere inside a binding is refused outright,
+    # by the same structural guard that protects the rest of the tree.
+    entries = deployment_bindings()
+    entries[0]["password"] = "hunter2"
+    with pytest.raises(config.ConfigError, match="looks like a secret"):
+        config.validate(config_fixture(deployments=entries))
+
+
+@pytest.mark.parametrize("bad", ["Development", "1st", "has space", "", "a" * 33])
+def test_a_name_the_cli_would_reject_is_refused_before_the_run(bad):
+    """Refused here, not by a failing `adp deployment add` an hour in."""
+    entries = deployment_bindings()
+    entries[0]["name"] = bad
+    with pytest.raises(config.ConfigError, match="deployment name"):
+        config.validate(config_fixture(deployments=entries))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://development.example-adp.invalid/api",
+        "https://user:pw@development.example-adp.invalid/api",
+        "https://development.example-adp.invalid/api?token=x",
+    ],
+)
+def test_a_gateway_url_must_be_plain_https_with_no_credentials(url):
+    entries = deployment_bindings()
+    entries[0]["gateway_url"] = url
+    with pytest.raises(config.ConfigError):
+        config.validate(config_fixture(deployments=entries))
+
+
+def test_absent_deployment_bindings_are_absent_not_approximated():
+    """No bindings is a legitimate state: E16/E17 block and the rest runs."""
+    result = config.validate(config_fixture())
+    assert result["deployments"] == []
+    assert cases.THREE_DEPLOYMENTS not in config.fixture_classes(result)
+
+
+def test_the_deployments_overlay_is_parsed_from_its_own_variable():
+    """A JSON array needs its own variable; the scalar overlay cannot carry one.
+
+    `OVERLAY` maps one environment variable to one scalar config key, so routing
+    a JSON array through it would have written the literal string as a value and
+    failed validation with "deployments must be a list" — pointing at the config
+    rather than at the variable that was malformed.
+    """
+    resolved = config.from_environment(
+        {config.DEPLOYMENTS_VARIABLE: json.dumps(deployment_bindings())}
+    )
+    assert [entry["name"] for entry in resolved["deployments"]] == [
+        "development",
+        "integration",
+        "preprod",
+    ]
+    assert cases.THREE_DEPLOYMENTS in config.fixture_classes(resolved)
+
+
+def test_a_malformed_deployments_variable_says_so_rather_than_blaming_the_config():
+    with pytest.raises(config.ConfigError, match="not valid JSON"):
+        config.from_environment(
+            {config.DEPLOYMENTS_VARIABLE: "development,integration"}
+        )
+    with pytest.raises(config.ConfigError, match="JSON array"):
+        config.from_environment(
+            {config.DEPLOYMENTS_VARIABLE: '{"name": "development"}'}
+        )
+
+
+def test_a_credential_pasted_into_the_deployments_variable_is_refused():
+    """Guarded before the merge, so it never reaches the written run config."""
+    leaked = deployment_bindings()
+    leaked[0]["password"] = "hunter2"
+    with pytest.raises(config.ConfigError) as raised:
+        config.from_environment({config.DEPLOYMENTS_VARIABLE: json.dumps(leaked)})
+    assert "hunter2" not in str(raised.value)
+
+
+def test_an_empty_deployments_variable_leaves_the_fixture_absent():
+    resolved = config.from_environment({config.DEPLOYMENTS_VARIABLE: "   "})
+    assert resolved["deployments"] == []
+
+
+def test_the_multi_deployment_suite_refuses_rather_than_reporting_only_blocks():
+    """An operator who asked for E16/E17 by name wants to be told, not handed blocks.
+
+    The mirror of the destination-suite rule: `full` must always produce a graded
+    report, so absent deployment bindings block two cases and the rest still runs.
+    A dispatch of exactly `multi-deployment` has nothing left to grade, so the
+    useful answer is a refusal naming the binding to create.
+    """
+    cfg = config.validate(config_fixture())
+    with pytest.raises(config.ConfigError, match="deployments"):
+        config.require_bindings(cfg, ("multi-deployment",))
+    # With the fixture bound it starts, and still requires the login credential.
+    bound = config.validate(config_fixture(deployments=deployment_bindings()))
+    assert "deployments" in config.require_bindings(bound, ("multi-deployment",))
+
+
+def test_the_per_request_output_bound_cannot_be_raised_past_what_was_authorised():
+    """#5413's live run is authorised for 256 output tokens per request."""
+    assert config.validate(config_fixture())["max_output_length"] == 256
+    with pytest.raises(config.ConfigError, match="capped at 256"):
+        config.validate(config_fixture(max_output_length=4096))
+
+
+def test_an_absence_window_longer_than_the_presence_window_is_refused():
+    """An absence proven in longer than a presence takes to appear proves nothing.
+
+    The crossed-request check reads "the marker appeared at its own deployment"
+    and "it did not appear at the other two". If the second wait were the longer
+    of the two, a request that HAD crossed but was written slowly would be read as
+    a clean miss — a false green on the one property E16 exists to test.
+    """
+    with pytest.raises(config.ConfigError, match="absence_wait_seconds"):
+        config.validate(
+            config_fixture(absence_wait_seconds=300, usage_wait_seconds=180)
+        )
+
+
+def test_deployment_bindings_are_proven_reachable_before_the_fixture_counts():
+    """Configured is not reachable, and an unreachable URL must BLOCK not abort.
+
+    A URL that does not serve the CLI's own discovery document cannot be logged
+    in to, so a journey against it would fail inside `adp login` and be recorded
+    as a product defect. Checking it read-only in preflight turns that into a
+    blocked case naming the binding at fault.
+    """
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    discovery = {
+        "user_pool_id": "us-east-1_JEhv9xSGG",
+        "client_id": "c",
+        "cli_client_id": "cli",
+        "region": "us-east-1",
+    }
+    record = {}
+    assert preflight.check_deployment_bindings(cfg, record, fetch=lambda url: discovery)
+    assert len(record["deployments"]["reachable"]) == 3
+    assert not record["deployments"]["problems"]
+
+    # One unreachable deployment is enough to block, and the record says which.
+    def one_down(url):
+        if url.startswith("https://integration."):
+            raise preflight.PreflightError(f"{url} is unreachable: URLError")
+        return discovery
+
+    record = {}
+    assert not preflight.check_deployment_bindings(cfg, record, fetch=one_down)
+    assert "integration" in record["deployments"]["problems"]
+    assert [entry["name"] for entry in record["deployments"]["reachable"]] == [
+        "development",
+        "preprod",
+    ]
+
+
+def test_a_url_that_answers_but_is_not_an_adp_gateway_blocks_too():
+    """HTTP 200 from something else is the failure a bare reachability check misses."""
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    record = {}
+    assert not preflight.check_deployment_bindings(
+        cfg, record, fetch=lambda url: {"status": "healthy"}
+    )
+    assert len(record["deployments"]["problems"]) == 3
+    assert all(
+        "Cognito" in reason for reason in record["deployments"]["problems"].values()
+    )
+
+
+def test_deployments_sharing_an_identity_provider_are_still_a_valid_fixture():
+    """Three gateways MAY share a Cognito pool; what must differ is the gateway.
+
+    Requiring distinct pools would refuse the most likely real binding set — one
+    organisation's three environments — for no gain, since `validate()` has
+    already refused a reused URL and the isolation under test is the CLI's, not
+    the identity provider's.
+    """
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    record = {}
+    shared = {
+        "user_pool_id": "us-east-1_JEhv9xSGG",
+        "client_id": "c",
+        "cli_client_id": "cli",
+        "region": "us-east-1",
+    }
+    assert preflight.check_deployment_bindings(cfg, record, fetch=lambda url: shared)
+    # Recorded and reported, so a reviewer can see it, but not required to differ.
+    assert record["deployments"]["distinct_pools"] == 1
+
+
+def test_an_unproven_deployment_fixture_is_treated_as_absent():
+    """`None` means "not proven", which must never read as available."""
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    assert cases.THREE_DEPLOYMENTS not in preflight.evaluate_fixtures(cfg)
+    assert cases.THREE_DEPLOYMENTS not in preflight.evaluate_fixtures(
+        cfg, deployments_available=False
+    )
+    assert cases.THREE_DEPLOYMENTS in preflight.evaluate_fixtures(
+        cfg, deployments_available=True
+    )
+
+
+def test_a_probe_passed_where_its_result_belongs_is_refused_not_believed():
+    """The one direction this must never fail in, closed by construction.
+
+    `live.py` supplies these checks as callables and `stages.py` calls them, so
+    handing over the callable itself is a plausible slip — and it would not fail
+    loudly. Every function object is truthy, so the fixture would be marked
+    AVAILABLE on the strength of never having been checked, and E16/E17 would run
+    against bindings nobody had proven reachable. Found by writing the
+    False/True guard above with `lambda:` out of habit and watching False pass.
+    """
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    with pytest.raises(preflight.PreflightError, match="rather than its result"):
+        preflight.evaluate_fixtures(cfg, deployments_available=lambda: False)
+    with pytest.raises(preflight.PreflightError, match="github_available"):
+        preflight.evaluate_fixtures(cfg, github_available=lambda: True)
+
+
+def test_the_missing_fixture_report_says_what_to_create():
+    """ "Blocked" without "on what" makes an operator read the harness source."""
+    cfg = config.validate(config_fixture())
+    absent = preflight.missing_fixture_report(cfg, preflight.evaluate_fixtures(cfg))
+    entry = absent[cases.THREE_DEPLOYMENTS]
+    assert "deployments" in entry["needs"]
+    assert "E16" in entry["blocks"] and "E17" in entry["blocks"]
+
+
 def test_harness_pin_is_an_immutable_full_sha():
     """A branch or tag here would break the 'reviewed immutable revision' rule."""
     assert config.REVISION.match(config.HARNESS_COMMIT)
@@ -4314,6 +4630,60 @@ def test_stop_proxy_kills_a_real_listener_recorded_in_the_pidfile(tmp_path):
     try:
         (home / ".bedrock-gateway" / "proxy.pid").write_text(f"{child.pid}\n")
         assert shared.process_alive(child.pid) is True
+        assert shared.stop_proxy(home) is True
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_stop_proxy_runtime_reaches_a_named_deployments_own_runtime_directory(tmp_path):
+    """#5413: three deployments mean three proxies, none at the legacy path.
+
+    A named deployment keeps its runtime files in
+    `~/.adp/deployments/<id>/runtime`, so the HOME-based `stop_proxy` would look
+    in `~/.bedrock-gateway`, find no pidfile, and return False — reported as "the
+    proxy could not be stopped" while three real listeners stayed up holding their
+    ports against the next attempt on the same instance.
+
+    Both entry points must run the same signal-and-confirm logic, which is why
+    this is a split and not a second implementation: `stop_proxy` is now a wrapper
+    that supplies the legacy directory.
+    """
+    import subprocess
+    import sys
+
+    _script, shared = shipped_update_rollback(tmp_path)
+    runtime = tmp_path / "home" / ".adp" / "deployments" / "dep-abc123" / "runtime"
+    runtime.mkdir(parents=True)
+    # No pidfile is still "nothing was stopped", at either path.
+    assert shared.stop_proxy_runtime(runtime) is False
+
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time\nwhile True: time.sleep(1)"]
+    )
+    try:
+        (runtime / "proxy.pid").write_text(f"{child.pid}\n")
+        assert shared.process_alive(child.pid) is True
+        assert shared.stop_proxy_runtime(runtime) is True
+        assert shared.process_alive(child.pid) is False
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_stop_proxy_still_serves_the_legacy_layout_through_the_new_helper(tmp_path):
+    """E08 and E14 call `stop_proxy(home)` and must keep working unchanged."""
+    import subprocess
+    import sys
+
+    _script, shared = shipped_update_rollback(tmp_path)
+    home = tmp_path / "legacy-home"
+    (home / ".bedrock-gateway").mkdir(parents=True)
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time\nwhile True: time.sleep(1)"]
+    )
+    try:
+        (home / ".bedrock-gateway" / "proxy.pid").write_text(f"{child.pid}\n")
         assert shared.stop_proxy(home) is True
     finally:
         child.kill()
