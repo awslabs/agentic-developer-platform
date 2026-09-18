@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -312,3 +313,221 @@ class TestHelpSurface:
         result = adp(["help"], {"ADP_DEPLOYMENT": "does-not-exist"})
 
         assert result.returncode == 0, "help must work when the selection is broken"
+
+
+class TestAMisplacedSelectionFlagIsRefused:
+    """`--deployment` after the verb must fail, not silently use another target.
+
+    The flag is global and parsed before the verb, so a later one was accepted and
+    dropped: `adp token --deployment prod` printed the DEFAULT deployment's access
+    token and exited 0. Nothing in that output tells the user their credential came
+    from a deployment they did not name, which makes it the same silent
+    substitution an unknown name is already refused for.
+    """
+
+    @pytest.fixture
+    def legacy_plus_prod(self, adp, adp_home):
+        write_adp_session(adp_home, username="github_alice")
+        assert adp(["deployment", "add", "prod", "--url", PREPROD_URL]).returncode == 0
+        return adp
+
+    @pytest.mark.parametrize("verb", ["token", "status", "logout", "refresh"])
+    def test_a_post_verb_selection_fails_instead_of_using_another_deployment(self, legacy_plus_prod, verb) -> None:
+        result = legacy_plus_prod([verb, "--deployment", "prod"])
+
+        assert result.returncode != 0, f"'adp {verb} --deployment prod' must not silently use the default"
+        assert "BEFORE the verb" in result.stderr
+
+    def test_the_refusal_never_emits_a_token(self, legacy_plus_prod) -> None:
+        """The concrete harm: a credential on stdout that a script would consume."""
+        result = legacy_plus_prod(["token", "--deployment", "prod"])
+
+        assert result.stdout.strip() == "", "a refused command must print no credential"
+
+    def test_the_equals_form_is_refused_too(self, legacy_plus_prod) -> None:
+        result = legacy_plus_prod(["token", "--deployment=prod"])
+
+        assert result.returncode != 0
+        assert result.stdout.strip() == ""
+
+    def test_the_correct_pre_verb_form_still_selects_that_deployment(self, legacy_plus_prod) -> None:
+        result = legacy_plus_prod(["--deployment", "prod", "status"])
+
+        assert "prod" in result.stdout, "the documented form must keep working"
+
+    def test_a_tool_launcher_still_passes_its_flags_through(self, legacy_plus_prod) -> None:
+        """codex/claude own every token after the verb; stealing one breaks them."""
+        result = legacy_plus_prod(["claude", "--deployment", "prod"])
+
+        assert "BEFORE the verb" not in result.stderr, "passthrough args must reach the tool untouched"
+
+
+class TestABrokenRegistryIsNeverIgnored:
+    """An unreadable registry must fail, not fall back to the legacy store.
+
+    The registry is what binds every name to a URL. When it cannot be read there
+    is no evidence about where the saved default points, so continuing on the
+    legacy paths runs the command against the legacy gateway while the user
+    believes their saved default is in force.
+    """
+
+    @pytest.fixture
+    def broken_registry(self, adp, adp_home):
+        write_adp_session(adp_home, username="github_alice")
+        registry = adp_home / ".adp"
+        registry.mkdir(parents=True, exist_ok=True)
+        return adp, registry / "deployments.json"
+
+    def test_an_unreadable_registry_stops_the_command(self, broken_registry) -> None:
+        adp, path = broken_registry
+        path.write_text("{not json at all")
+
+        result = adp(["status"])
+
+        assert result.returncode != 0, "a corrupt registry must not resolve to the legacy gateway"
+
+    def test_a_newer_schema_stops_the_command_and_says_so(self, broken_registry) -> None:
+        """The documented forward-compatibility path must not silently downgrade."""
+        adp, path = broken_registry
+        path.write_text(json.dumps({"schema_version": 99, "default": "prod", "deployments": {"prod": {"id": "d1", "gateway_url": PREPROD_URL}}}))
+
+        result = adp(["status"])
+
+        assert result.returncode != 0
+        assert "adp update" in result.stderr
+
+    def test_a_machine_with_no_registry_still_uses_the_legacy_store(self, adp, adp_home) -> None:
+        """Absent is not broken: an existing single-deployment user is untouched."""
+        write_adp_session(adp_home, username="github_alice")
+
+        result = adp(["status"])
+
+        assert result.returncode == 0, result.stderr
+        assert "github_alice" in result.stdout
+
+
+class TestALoginCannotBindANameToAnotherGateway:
+    """A named deployment's registered URL is its identity, not a default.
+
+    The destination for every request is read from the REGISTRY, while the bearer
+    comes from the deployment's own store. So a sign-in that went to a different
+    gateway under this name left the store holding a token minted by gateway B
+    while all traffic went to gateway A — presenting one deployment's live
+    credential to another deployment's gateway. Both halves look internally
+    consistent, so nothing downstream can notice.
+    """
+
+    @pytest.fixture
+    def prod(self, adp):
+        assert adp(["deployment", "add", "prod", "--url", PREPROD_URL]).returncode == 0
+        return adp
+
+    def test_signing_in_to_a_different_gateway_under_a_name_is_refused(self, prod) -> None:
+        result = prod(["--deployment", "prod", "login", "--gateway-url", DEV_URL])
+
+        assert result.returncode != 0, "a login aimed at another gateway must not proceed"
+        assert "is registered for" in result.stderr
+        assert "Starting web sign-in" not in result.stderr, "it must refuse BEFORE contacting anyone"
+
+    def test_the_refusal_names_both_urls_and_how_to_proceed(self, prod) -> None:
+        """A user who genuinely re-pointed a deployment needs the way forward."""
+        result = prod(["--deployment", "prod", "login", "--gateway-url", DEV_URL])
+
+        assert PREPROD_URL + "/api" in result.stderr
+        assert DEV_URL + "/api" in result.stderr
+        assert "deployment add prod" in result.stderr
+
+    @pytest.mark.parametrize("form", [PREPROD_URL, PREPROD_URL + "/", PREPROD_URL + "/api", PREPROD_URL + "/api/"])
+    def test_every_spelling_of_the_registered_url_is_accepted(self, prod, form) -> None:
+        """Alias detection treats these as ONE gateway; so must this check.
+
+        A string comparison would reject a correct URL over a trailing slash while
+        still missing a genuinely different host.
+        """
+        result = prod(["--deployment", "prod", "login", "--gateway-url", form])
+
+        assert "is registered for" not in result.stderr, f"{form} is the registered gateway and must be accepted"
+
+    def test_a_registered_deployment_needs_no_url_on_its_first_login(self, prod) -> None:
+        """`deployment add` records the URL and makes no request, so there is no
+        config.json until the first sign-in. Demanding a hand-typed URL there is
+        what produced the mismatched logins in the first place."""
+        result = prod(["--deployment", "prod", "login"])
+
+        output = result.stdout + result.stderr
+        assert "No gateway URL known" not in output
+        assert PREPROD_URL + "/api" in output, "it must use the URL the registry has held since `add`"
+
+    def test_a_legacy_login_is_left_alone(self, adp, adp_home) -> None:
+        """The legacy store, not a registry record, is that deployment's authority."""
+        write_adp_session(adp_home, username="github_alice")
+
+        result = adp(["login", "--gateway-url", DEV_URL])
+
+        assert "is registered for" not in result.stderr, "a legacy machine has no registered binding to contradict"
+
+
+class TestTheLegacyUrlIsReadFromItsStoreNotASnapshot:
+    """Adoption records the legacy URL, but the STORE stays the authority.
+
+    The legacy deployment is adopted in place, and `adp login --gateway-url
+    <other>` rewrites that store's URL and token together without touching the
+    registry. Trusting the adoption-time snapshot made the two disagree, and since
+    the destination comes from the registry and the bearer from the store, the
+    command sent a token minted by the new gateway to the old one.
+    """
+
+    @pytest.fixture
+    def adopted(self, adp, adp_home, resolved):
+        write_adp_session(adp_home, username="github_alice")
+        # A mutating command persists the registry, snapshotting the legacy URL.
+        assert adp(["deployment", "add", "other", "--url", INT_URL]).returncode == 0
+        assert (adp_home / ".adp" / "deployments.json").exists()
+        return adp
+
+    def test_a_rebound_legacy_store_moves_the_destination_with_it(self, adopted, adp_home, resolved) -> None:
+        config = adp_home / ".bedrock-gateway" / "config.json"
+        config.write_text(json.dumps({"gateway_url": PREPROD_URL + "/api"}))
+
+        assert resolved()["gateway_url"] == PREPROD_URL + "/api", "the live store must win over the adoption-time snapshot"
+
+    def test_the_registry_file_is_not_rewritten_to_agree(self, adopted, adp_home, resolved) -> None:
+        """Refreshing is a read-time derivation; a status command must not write."""
+        config = adp_home / ".bedrock-gateway" / "config.json"
+        config.write_text(json.dumps({"gateway_url": PREPROD_URL + "/api"}))
+        before = (adp_home / ".adp" / "deployments.json").read_text()
+
+        assert resolved()["gateway_url"] == PREPROD_URL + "/api"
+        assert (adp_home / ".adp" / "deployments.json").read_text() == before
+
+    def test_an_unreadable_legacy_url_keeps_the_recorded_one(self, adopted, adp_home, resolved) -> None:
+        """A truncated config must not blank the destination mid-session."""
+        from .conftest import ADP_GATEWAY_URL
+
+        (adp_home / ".bedrock-gateway" / "config.json").write_text("{truncated")
+
+        assert resolved()["gateway_url"] == ADP_GATEWAY_URL
+
+
+class TestResolverDiagnosticsAreNotExecuted:
+    """Only the resolver's stdout may be eval'd by the front door.
+
+    stderr used to be merged into the captured exports, so one warning line from a
+    wrapped python3 on an OTHERWISE SUCCESSFUL resolve was concatenated with the
+    exports and passed to `eval` — failing with "command not found". The resolve
+    exited 0, so no status check could catch it.
+    """
+
+    def test_a_warning_on_stderr_does_not_break_the_command(self, adp, adp_home, tmp_path) -> None:
+        write_adp_session(adp_home, username="github_alice")
+        shim = tmp_path / "shim"
+        shim.mkdir()
+        real_python = shutil.which("python3")
+        assert real_python, "the shim has to delegate to a real interpreter"
+        (shim / "python3").write_text(f'#!/bin/bash\necho "WARNING: a warning" >&2\nexec {real_python} "$@"\n')
+        (shim / "python3").chmod(0o755)
+
+        result = adp(["status"], {"PATH": f"{shim}:{os.environ['PATH']}"})
+
+        assert result.returncode == 0, f"a stderr warning must not be eval'd: {result.stderr}"
+        assert "command not found" not in result.stderr

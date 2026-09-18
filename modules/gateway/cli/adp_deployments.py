@@ -402,8 +402,27 @@ def _registry_with_implicit_legacy(registry):
     `status` and `deployment list` must be able to show an unadopted legacy store
     without mutating the machine, so resolution reads through this view and only
     the first genuinely mutating command calls adopt_legacy().
+
+    The adopted record's URL is also REFRESHED from the live store here. Adoption
+    persists a snapshot of the legacy `config.json` URL, but the legacy deployment
+    is adopted IN PLACE — that store, not the registry, is the authority for where
+    it points, and `adp login --gateway-url <other>` rewrites it (URL and token
+    together) without touching the registry. Trusting the snapshot then made the
+    two disagree, and because the destination URL is read from the registry while
+    the bearer comes from the store, the command sent the newly minted token for
+    gateway B to gateway A — the cross-deployment credential leak this module
+    exists to prevent. Deriving the URL from the store keeps them in lockstep, so
+    the divergence is not merely detected but impossible.
     """
     view, _ = adopt_legacy(registry)
+    record = view["deployments"].get(LEGACY_NAME)
+    if record and record.get("legacy"):
+        live = legacy_gateway_url()
+        if live and live != record.get("gateway_url"):
+            view = {
+                **view,
+                "deployments": {**view["deployments"], LEGACY_NAME: {**record, "gateway_url": live}},
+            }
     return view
 
 
@@ -790,7 +809,13 @@ def remove(name):
         registry = {**registry, "deployments": remaining}
         save_registry(registry)
     return {
+        # `_emit_result` keys its wording off this status, and its default is
+        # "configured" — so omitting it made a successful `adp deployment remove
+        # integration` print "Deployment 'integration' is registered for ." and
+        # then invite the user to sign in to the deployment they just removed.
+        "status": "removed",
         "deployment": name,
+        "gateway_url": record.get("gateway_url") or "",
         "removed_store": not aliases_left and not record.get("legacy"),
         "aliases_remaining": aliases_left,
         "store_retained_reason": "legacy store is never deleted" if record.get("legacy") else None,
@@ -909,6 +934,13 @@ def main(argv=None):
     resolve_parser.add_argument("--format", choices=("env", "json"), default="json")
     resolve_parser.add_argument("--ensure", action="store_true", help="create the private directories")
 
+    # Exposed so the bash front door can compare two URLs the way alias detection
+    # does. `https://gw`, `https://gw/` and `https://gw/api/` are ONE gateway, so a
+    # login check written as a string comparison would reject a correct URL over a
+    # trailing slash while still missing a genuinely different host.
+    canonicalize_parser = subparsers.add_parser("canonicalize", parents=[shared], help="print a URL's canonical form (internal)")
+    canonicalize_parser.add_argument("url")
+
     args = parser.parse_args(argv)
     if not args.verb:
         parser.print_help()
@@ -926,6 +958,8 @@ def main(argv=None):
             _emit_result("deployment remove", detail, args.json)
         elif args.verb == "list":
             return _print_listing(listing(), args.json)
+        elif args.verb == "canonicalize":
+            print(canonical_url(args.url))
         elif args.verb == "resolve":
             deployment = resolve(args.deployment)
             if args.ensure:

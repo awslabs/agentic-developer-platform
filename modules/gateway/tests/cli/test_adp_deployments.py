@@ -386,6 +386,19 @@ class TestRemove:
 
         assert deployments.remove("integration")["deployment"] == "integration"
 
+    def test_removal_is_reported_as_removal_not_as_registration(self) -> None:
+        """The human line is keyed off the returned status, whose default is
+        "configured" — so omitting it made a successful removal print
+        "Deployment 'integration' is registered for ." and then invite the user to
+        sign in to the deployment they had just removed."""
+        deployments.add("dev", DEV_URL)
+        deployments.add("integration", INT_URL)
+
+        result = deployments.remove("integration")
+
+        assert result["status"] == "removed"
+        assert result["gateway_url"] == INT_URL + "/api", "the report must name what was removed"
+
     def test_removing_an_alias_keeps_the_shared_store(self) -> None:
         deployments.add("dev", DEV_URL)
         deployments.add("development", DEV_URL)

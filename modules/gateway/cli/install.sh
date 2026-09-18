@@ -44,7 +44,15 @@ CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
 CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py"
 
-CONFIG_DIR="${HOME}/.bedrock-gateway"
+# The auth store this install writes its gateway URL into.
+#
+# BG_CONFIG_DIR is honoured because `adp update` runs this script as a child and
+# exports the SELECTED deployment's pin (Issue #5413). Without that, an
+# `adp --deployment prod update` rewrote the LEGACY store's gateway_url to prod's
+# URL while leaving the legacy refresh token in place beside it — so the next
+# refresh sent one deployment's credential to another deployment's gateway. A
+# standalone `curl | sh` install has no pin and keeps the original default.
+CONFIG_DIR="${BG_CONFIG_DIR:-${HOME}/.bedrock-gateway}"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 
 # Issue #5039: the version this install is PINNED to. When set, the CLI version

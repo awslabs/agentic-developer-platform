@@ -366,6 +366,35 @@ class TestUpdateWithThreeDeployments:
             selected = next(entry for entry in payload["deployments"] if entry["name"] == name)
             assert selected["gateway_url"] == url
 
+    def test_updating_one_deployment_never_rewrites_another_deployments_store(self, installed, upstream) -> None:
+        """`adp --deployment X update` must not touch the legacy store's binding.
+
+        install.sh persists the gateway URL it installed from, and it resolved that
+        store as a hardcoded `~/.bedrock-gateway` while `adp update` ran it as a
+        child of a command pinned to a DIFFERENT deployment. The result was the
+        legacy store's `gateway_url` rewritten to the selected deployment's URL
+        with the legacy refresh token still sitting beside it — so the next refresh
+        sent one deployment's credential to another deployment's gateway.
+        """
+        bin_dir, home = installed
+        legacy_config = home / ".bedrock-gateway" / "config.json"
+        # The fixture's legacy store points at the SAME url the mock gateway
+        # serves, which would make `development` an alias of it — one id, one
+        # store — and the crossing under test could not happen. Bind legacy to its
+        # own url so the two are genuinely different deployments.
+        legacy_config.write_text(json.dumps({"gateway_url": "https://legacy.example.invalid/api", "client_id": "abc123"}))
+        self._register_three(bin_dir, home, upstream)
+        before = json.loads(legacy_config.read_text())
+
+        # `development` is the deployment that actually serves the CLI, so this is
+        # an update that genuinely succeeds while pinned away from legacy.
+        result = _run_adp(bin_dir, home, ["update"], deployment="development")
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(legacy_config.read_text())["gateway_url"] == before["gateway_url"], (
+            "an update pinned to another deployment must not rebind the legacy store"
+        )
+
     def test_rollback_restores_the_executables_and_not_the_registry(self, installed, upstream) -> None:
         """A deployment added after an update must not vanish when it is undone.
 

@@ -182,18 +182,37 @@ resolve_deployment() {
     # they need (mkdir -p before each write), and creating a deployment's
     # directories merely because someone ran `adp version` would litter a home
     # directory — and made `update` look like it had installed to a new prefix.
-    exports="$(deployments resolve ${requested:+--deployment "${requested}"} --format env 2>&1)" || status=$?
+    # stderr is NOT captured into `exports`: only stdout is eval'd. Merging the two
+    # meant any stderr line on a SUCCESSFUL resolve (a python deprecation warning,
+    # a wrapper's banner) was concatenated with the exports and fed to `eval`,
+    # which then failed with "WARNING:: command not found" — a status the check
+    # below cannot catch, because the resolve itself exited 0. Diagnostics go
+    # straight to the terminal instead.
+    local diagnostics
+    diagnostics="$(mktemp)"
+    exports="$(deployments resolve ${requested:+--deployment "${requested}"} --format env 2>"${diagnostics}")" || status=$?
 
     if [ "${status}" -ne 0 ]; then
-        # An explicit request that cannot be honoured is fatal: the user named a
-        # target and must not get a different one.
-        if [ -n "${requested}" ] || [ -n "${ADP_DEPLOYMENT:-}" ]; then
-            printf '%s\n' "${exports}" >&2
+        # A BROKEN registry is fatal whatever the selection route. The registry is
+        # what maps every name to a URL, so when it cannot be read there is no
+        # evidence about where the saved default points — and continuing on the
+        # legacy paths would run the command against the legacy gateway while the
+        # user believes their saved default is in force. That is the silent
+        # wrong-target substitution this module exists to refuse, so only a
+        # genuinely ABSENT selection is allowed to fall through.
+        printf '%s\n' "$(cat "${diagnostics}")" >&2
+        rm -f "${diagnostics}"
+        # ADP_HOME mirrors adp_deployments.adp_home(), so the two halves agree
+        # about which file they are asking about.
+        if [ -n "${requested}" ] || [ -n "${ADP_DEPLOYMENT:-}" ] \
+           || [ -f "${ADP_HOME:-${HOME}/.adp}/deployments.json" ]; then
             exit "${status}"
         fi
-        # No selection anywhere: stay on the legacy single-deployment paths.
+        # No registry and no selection anywhere: a machine that has never
+        # registered a deployment stays on the legacy single-deployment paths.
         return 0
     fi
+    rm -f "${diagnostics}"
 
     eval "${exports}"
 
@@ -401,7 +420,19 @@ proxy_identity_matches() {
     body="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/_adp/proxy" 2>/dev/null)" || return 1
     [ "$(printf '%s' "${body}" | jq -r '.proxy // empty' 2>/dev/null)" = "adp-gateway-proxy" ] || return 1
     owner="$(printf '%s' "${body}" | jq -r '.deployment_id // ""' 2>/dev/null || true)"
-    [ "${owner}" = "${ADP_DEPLOYMENT_ID:-}" ]
+    [ "${owner}" = "${ADP_DEPLOYMENT_ID:-}" ] && return 0
+
+    # An EMPTY id is a proxy started without a pin — either a pre-#5413 CLI or a
+    # plain `adp serve`/launchd agent — and the legacy deployment is exactly who
+    # it belongs to. The legacy resolver reports id `default`, so a literal
+    # comparison rejected a correct, already-running legacy proxy: `adp codex`
+    # would then refuse to reuse it, try to start a second one on the same fixed
+    # port, and fail. Accepted for the legacy deployment only; a NAMED deployment
+    # still never reuses an unidentified proxy.
+    if [ -z "${owner}" ] && { [ -z "${ADP_DEPLOYMENT_ID:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; }; then
+        return 0
+    fi
+    return 1
 }
 
 # Age in seconds of the spawn lock, or empty if absent. Portable across macOS
@@ -711,10 +742,44 @@ cmd_login() {
     if [ -z "${gateway_url}" ]; then
         gateway_url="$(stored_gateway_url)"
     fi
+    # Fall back to the URL the SELECTED deployment is registered under, exactly as
+    # `adp update` does. `adp deployment add prod --url ...` records the binding and
+    # makes no request, so a registered deployment has no config.json until its
+    # first sign-in — and without this, that very first
+    # `adp --deployment prod login` failed with "No gateway URL known" and told the
+    # user to type a URL the registry had held all along. Hand-typing it is what
+    # made the next check necessary.
+    if [ -z "${gateway_url}" ]; then
+        gateway_url="${ADP_DEPLOYMENT_URL:-}"
+    fi
     if [ -z "${gateway_url}" ]; then
         print_error "No gateway URL known. Pass --gateway-url <url>, or reinstall with:"
         print_warning "  curl -fsSL <gateway>/api/cli/install.sh | sh -s -- --gateway-url <gateway>"
         exit 1
+    fi
+
+    # A named deployment's URL is its IDENTITY, so signing in somewhere else under
+    # its name is refused rather than obeyed. The session is written to the selected
+    # deployment's store, but the destination for every later request is read from
+    # the registry — so a login against another gateway (a typo, a stale paste, a
+    # runbook line copied from a different environment) left that store holding a
+    # token minted by gateway B while all its traffic went to gateway A, presenting
+    # one deployment's live credential to another deployment's gateway. Nothing
+    # downstream can detect that, because both halves look internally consistent.
+    if [ -n "${ADP_DEPLOYMENT_URL:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
+        local requested_canonical registered_canonical
+        requested_canonical="$(deployments canonicalize "${gateway_url}" 2>/dev/null)" || {
+            print_error "'${gateway_url}' is not a usable gateway URL. Use the form https://<host>."
+            exit 1
+        }
+        registered_canonical="$(deployments canonicalize "${ADP_DEPLOYMENT_URL}" 2>/dev/null || printf '%s' "${ADP_DEPLOYMENT_URL}")"
+        if [ "${requested_canonical}" != "${registered_canonical}" ]; then
+            print_error "Deployment '${ADP_DEPLOYMENT_NAME:-}' is registered for ${registered_canonical}, not ${requested_canonical}."
+            print_warning "Signing in elsewhere under this name would store that gateway's token against this one."
+            print_warning "Sign in to the registered gateway, or point the name at the new URL with: adp deployment add ${ADP_DEPLOYMENT_NAME:-<name>} --url ${requested_canonical}"
+            exit 1
+        fi
+        gateway_url="${requested_canonical}"
     fi
 
     core login --web --gateway-url "${gateway_url}" "${args[@]}"
@@ -1302,6 +1367,29 @@ Why the two launchers differ:
 EOF
 }
 
+# Refuse `--deployment` AFTER the verb, for the verbs that own their own flags.
+#
+# The flag is global and parsed before the verb, so a later one used to be passed
+# down and ignored: `adp token --deployment prod` printed the DEFAULT deployment's
+# access token and exited 0, and `adp status --deployment prod` reported the
+# default while naming prod on the command line. A user cannot tell either from
+# success, which makes it the same silent-substitution failure an unknown name is
+# already refused for. `codex` and `claude` are exempt: every token after those
+# verbs belongs to the tool, and stealing one would break a legitimate tool flag.
+reject_post_verb_deployment() {
+    local argument
+    for argument in "$@"; do
+        case "${argument}" in
+            --deployment|--deployment=*)
+                print_error "--deployment selects the deployment for the whole command, so it goes BEFORE the verb."
+                print_warning "Use: adp --deployment <name> ${ADP_CURRENT_VERB:-<command>}"
+                exit 1
+                ;;
+            --) return 0 ;;
+        esac
+    done
+}
+
 main() {
     check_dependencies
 
@@ -1351,6 +1439,14 @@ main() {
             ;;
         help|--help|-h|version|--version|-v|"") ;;
         *) resolve_deployment "${requested_deployment}" ;;
+    esac
+
+    # Every verb below EXCEPT the two tool launchers owns its own flag surface, so
+    # a `--deployment` among its arguments is a misplaced global option rather than
+    # the tool's own flag, and is refused instead of silently ignored.
+    case "${command}" in
+        codex|claude|help|--help|-h|version|--version|-v|"") ;;
+        *) ADP_CURRENT_VERB="${command}" reject_post_verb_deployment "$@" ;;
     esac
 
     case "${command}" in
