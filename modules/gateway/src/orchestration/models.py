@@ -82,6 +82,7 @@ __all__ = [
     "OrchestrationAction",
     "OrchestrationDecision",
     "OrchestrationEdge",
+    "OrchestrationEnvironmentLease",
     "OrchestrationExecution",
     "OrchestrationFlow",
     "OrchestrationNode",
@@ -955,4 +956,167 @@ class OrchestrationAction(Base, TenantMixin):
     # an action left `unknown` — the absence of an observation time is itself the
     # record that nobody managed to look.
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
+
+
+class OrchestrationEnvironmentLease(Base):
+    """Exclusive hold on one physical deployment target (issue #5150).
+
+    ## What this row prevents
+
+    Two runs deploying incompatible releases to one cluster at the same time. The
+    subtle part is *what* is being locked. A registered environment connection is
+    an **alias**: nothing stops one real AWS account being connected twice — two
+    credential rows, two labels, possibly in two different tenants — all pointing
+    at one cluster. A lease keyed on the connection id would therefore let two
+    runs holding two different aliases each believe they held the cluster
+    exclusively, which is the exact double-deploy this table exists to stop. So the
+    identity locked here is the *physical target*.
+
+    ## Why this table is NOT tenant-scoped, unlike every sibling
+
+    Every other orchestration table uses `TenantMixin` and every query filters
+    `org_id`. This one deliberately does not inherit it, and that is the single
+    most important shape decision in the row. One physical cluster is one physical
+    cluster regardless of which tenant's alias points at it, so **uniqueness must
+    hold across tenants**. An `(org_id, canonical_key)` index — the reflexive
+    choice here — would let two tenants each hold the same cluster simultaneously
+    and would look completely correct in review.
+
+    `owner_org_id` is therefore an ordinary nullable column recording *who
+    currently holds the target*, not a partition key. Tenant isolation is preserved
+    at the answer instead: a caller that does not hold the lease learns only that
+    the target is held, never by whom — see `environment_leases.py`, which is the
+    only module that mutates this table.
+
+    ## Why one durable row per target, freed rather than deleted
+
+    A holder releasing the target empties the holder columns instead of deleting
+    the row. Two reasons, and the second is the load-bearing one:
+
+    - The unique index stays unconditional, so it behaves identically on
+      PostgreSQL and SQLite. A partial/filtered unique index ("unique among held
+      rows") is the alternative, and SQLite's support for it differs enough that
+      the correctness backstop would be dialect-dependent — unacceptable for the
+      one constraint the whole design rests on.
+    - The canonicalization evidence survives the release. "Why did the engine
+      think these two connections were the same place?" stays answerable from the
+      row after the deployment ends, rather than from logs that expire.
+
+    ## Why an expired lease does not license takeover
+
+    `lease_expires_at` records when contact was expected and did not arrive. It is
+    evidence of **lost contact, never of an exit** — the same rule
+    `OrchestrationWorkClaim` holds, for the same reason, and it is more dangerous
+    here: a deployment pipeline partitioned from us is still rolling pods. So
+    expiry alone never permits takeover. Takeover requires
+    `reconciled_terminal_evidence` to be set, which records that the previous
+    action was positively observed to have finished. A row whose lease has lapsed
+    with no reconciled evidence is *stuck on purpose*, and clearing it is an
+    authorized operator action rather than a timeout.
+
+    ## Why `revision` and `owner_generation` are separate
+
+    They fence different things. `revision` is the compare-and-set fence against a
+    **concurrent** writer: a caller presents the revision it read and loses
+    harmlessly if the row moved, which is retryable. `owner_generation` is the
+    authority fence against a **superseded** one: a stale actor whose ownership
+    generation has been overtaken must not release the lease its successor now
+    holds, and that is terminal rather than retryable. Collapsing the two is how a
+    displaced actor keeps acting.
+
+    ## What the reference columns may hold
+
+    References only — a release revision, an action id, a run id, an evidence
+    string naming a workflow conclusion. Never a credential and never a token:
+    these rows are read by operators, so a secret here would be a disclosure with
+    no revocation path.
+    """
+
+    __tablename__ = "orchestration_environment_leases"
+    __table_args__ = (
+        # THE invariant, and note what is absent: org_id. One physical target is
+        # one row, globally. Scoping this index by tenant would let two tenants'
+        # aliases for one cluster both be held at once — the precise bug this
+        # table exists to prevent, and one that reads as correct in review because
+        # every neighbouring index is tenant-scoped.
+        #
+        # A unique index rather than an application-level check because two
+        # concurrent callers can both read "this target is free" before either
+        # writes. On SQLite `SELECT ... FOR UPDATE` is a no-op, so this index is
+        # the only real backstop there.
+        Index(
+            "uq_orchestration_environment_leases_target",
+            "canonical_target_key",
+            unique=True,
+        ),
+        # Operator/read path: which targets a tenant currently holds. Not a
+        # uniqueness constraint — see the class docstring on why that matters.
+        Index("ix_orchestration_environment_leases_owner", "owner_org_id", "state"),
+        # Reconciliation's read path: held leases whose contact window has lapsed
+        # and which therefore need a terminal readback before anyone takes over.
+        Index("ix_orchestration_environment_leases_expiry", "state", "lease_expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+
+    # --- The identity being serialized on. Immutable once inserted. ---
+    # The opaque canonical key derived in deployment_manifest.canonical_target_key
+    # from provider/account/region plus the concrete resource boundary. Opaque
+    # because it is echoed in conflict responses to callers with no standing to
+    # learn another tenant's account id or cluster name.
+    canonical_target_key: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    # --- Canonicalization evidence: why we believe the key identifies this target.
+    # Stored so an operator can re-check the source later rather than trusting a
+    # derivation they cannot see. `evidence_source` names the mechanism that read
+    # the identity back from the provider; a lease can never be acquired without
+    # one, which is what stops a caller-supplied account string becoming an
+    # identity.
+    evidence_source: Mapped[str] = mapped_column(String(255), nullable=False)
+    evidence_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    evidence_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- Who holds it. All NULL when the target is free; see the class docstring
+    # on why the row persists instead of being deleted.
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    # The tenant currently holding the target. An ordinary column, NOT a partition
+    # key — uniqueness above is deliberately global.
+    owner_org_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The action holding it (an execution/action reference from the #5142 ledger).
+    owner_action_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The authority fence. A stale actor at a superseded generation cannot release
+    # the lease its successor holds. Monotonic: raised, never lowered.
+    owner_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The manifest entry this hold was authorized by, so an operator can see which
+    # reviewed approval a live deployment is running under.
+    manifest_entry_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The release/artifact revision being deployed. A reference for operators and
+    # for #5152's verification; nothing here validates it.
+    release_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # --- The compare-and-set fence against a concurrent writer. Advanced by
+    # exactly one per applied write, never reset. Distinct from owner_generation:
+    # losing this is retryable, losing that is terminal.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When contact was expected and did not arrive. Evidence of lost contact only —
+    # never of an exit, and never sufficient for takeover by itself.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- Terminal reconciliation. THE takeover gate: a lapsed lease with no
+    # reconciled evidence is stuck on purpose, because a pipeline we have lost
+    # contact with may still be deploying. Set only by a reconcile that positively
+    # observed the previous action's outcome.
+    reconciled_terminal_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Why the last release happened, kept on the row so a freed lease explains
+    # itself without joining another table.
+    release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
