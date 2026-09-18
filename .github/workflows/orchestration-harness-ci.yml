@@ -38,6 +38,47 @@ concurrency:
 jobs:
   harness-tests:
     name: Qualification harness unit tests (offline)
+    # THIS JOB MUST STAY GITHUB-HOSTED — do not sweep it onto arc-runner-org (#5362).
+    #
+    # #5362 moved the repo's other hosted jobs to the self-hosted pool because the org's
+    # Actions billing block stops GitHub allocating a hosted runner, making those checks
+    # permanently red. This job is deliberately excluded, and the exclusion is a security
+    # property rather than a preference.
+    #
+    # This lane's own suite asserts that this job has no AWS identity:
+    # tests/e2e/orchestration/test_ci_selection.py reads THIS FILE and requires that it
+    # contain no `configure-aws-credentials`, no `role-to-assume`, no `id-token`, and no
+    # `boto3` in any pip install line. The reason is the harness's purpose: it enforces
+    # spend and resource bounds on paid qualification runs, so its own tests must be
+    # runnable on every PR without spending anything or touching an account. Paid runs
+    # live in orchestration-live-tests.yml, which is workflow_dispatch-only.
+    #
+    # arc-runner-org cannot honour that claim. Runner pods carry an ambient IRSA identity —
+    # their service account is annotated eks.amazonaws.com/role-arn
+    # (modules/agent-factory/infra/modules/arc-runner/main.tf) — so the EKS pod-identity
+    # webhook injects AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE into every container
+    # and every step runs as adp-<env>-agent-runner-role whether the job asks or not.
+    #
+    # READ THIS BEFORE TESTING THE MOVE. The guard above is a STATIC check: it greps this
+    # file's text, so flipping `runs-on` alone leaves it green (verified: all 37 tests in
+    # test_ci_selection.py still pass with `runs-on: arc-runner-org`). Do not read that
+    # green as permission. It means the assertion would go VACUOUS — still passing while
+    # the property it encodes, "this job has no AWS identity", had become false. A guard
+    # that passes without enforcing anything is the failure mode this lane exists to
+    # prevent, and it is harder to notice than a red check.
+    #
+    # This differs from the #5198 finding by mechanism, not by conclusion. There the
+    # equivalent check was a RUNTIME step reading the process environment
+    # (superplane-domain-ci.yml, "Verify no AWS credentials were configured"), so the move
+    # failed loudly on every run. Here the same move fails silently. Adding shell `env -u`
+    # unsets, as the moved jobs in #5362 do, would keep the text assertion true for the
+    # test processes but still leave the identity available to the runner — trading a true
+    # statement for a green tick, which #5362 explicitly forbids.
+    #
+    # So: while the billing block stands this check stays red, and that is the correct
+    # trade — the fix is for a billing owner to clear the block (#5362 AC1-AC3), not to
+    # relocate this job. If this lane ever must leave hosted runners, the credential-absence
+    # claim has to be redesigned first — as a runtime assertion, deliberately, on the record.
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
