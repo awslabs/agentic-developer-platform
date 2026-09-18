@@ -81,6 +81,10 @@ import {
   getKnowledgeLayerMcpConfig,
 } from './knowledge-layer-config';
 
+// Mediated GitHub operations — Issue #5223: this run has no GitHub token, so the
+// agent must be told the helper that replaces `git push`/`gh pr create`.
+import { MEDIATED_GITHUB_ENABLED, MEDIATED_GITHUB_PROMPT, isMediatedRun } from './mediated-github-config';
+
 // Beads module - distributed state management for agents
 import {
   configureBeads,
@@ -413,6 +417,11 @@ async function refreshAppToken(): Promise<void> {
   const privateKey = process.env.GH_APP_PRIVATE_KEY;
 
   if (process.env.ADP_TOKEN_MODE === 'pat') return;
+  // #5223: mediated runs hold no token, so there is nothing to refresh. Returning
+  // rather than throwing keeps the auth watchdog's recovery attempt a no-op: a 401
+  // in a mediated run means a call that should have gone through the gateway, and
+  // re-minting is neither possible nor the fix.
+  if (isMediatedRun()) return;
   if (isBrokerEnabled()) {
     await getRuntimeGitHubToken();
     return;
@@ -938,7 +947,10 @@ You have access to skills in \`.claude/skills/\`. Each skill has a \`SKILL.md\` 
 ${KNOWLEDGE_LAYER_ENABLED ? `
 ---
 
-${KNOWLEDGE_LAYER_PROMPT}` : ''}
+${KNOWLEDGE_LAYER_PROMPT}` : ''}${MEDIATED_GITHUB_ENABLED ? `
+---
+
+${MEDIATED_GITHUB_PROMPT}` : ''}
 
 ---
 
@@ -1972,6 +1984,12 @@ async function main(): Promise<void> {
       if (brokerMode) throw err;
       log('WARN', `Initial token file write failed: ${(err as Error).message}`);
     }
+  } else if (isMediatedRun()) {
+    // #5223: having no token is this run's correct steady state, not a
+    // misconfiguration. Must be checked BEFORE the brokerMode throw below —
+    // mediated runs in the authority cohort have brokerMode true, so falling
+    // through would abort every mediated run at startup.
+    log('INFO', 'Mediated GitHub operations: no token to refresh; writes go through the gateway');
   } else if (process.env.ADP_TOKEN_MODE !== 'pat') {
     if (brokerMode) throw new Error('Brokered GitHub renewal configuration unavailable');
     log('WARN', 'GitHub App credentials not available — token refresh disabled. Token will expire after ~1 hour.');

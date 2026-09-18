@@ -9,6 +9,7 @@
 import { execFileSync } from 'child_process';
 import { fetchBrokeredToken, isBrokerEnabled } from './lib/githubTokenBroker';
 import { TOKEN_FILE_PATH, writeTokenFile } from './lib/tokenFile';
+import { isMediatedRun } from './mediated-github-config';
 
 // ============================================================================
 // Types
@@ -80,6 +81,16 @@ let refreshInFlight: Promise<string> | null = null;
  */
 export function canInitTokenManager(env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.ADP_TOKEN_MODE === 'pat') return false;
+  // Mediation withheld the token on purpose (#5223). Starting the manager here
+  // would undo that within seconds: `getToken()` finds no adopted bootstrap
+  // token, mints a fresh one through the broker, and `publishToken` writes it
+  // back to both the env and the file the shell helpers read — restoring exactly
+  // the merge-capable credential the run is supposed not to have. The broker
+  // predicate cannot be relied on to stop it: `ADP_AGENT_AUTHORITY_ENABLED=true`
+  // (set for the policy-bearing cohort mediation serves) makes broker mode true
+  // on its own, and `GH_APP_ID`/`GH_APP_INSTALLATION_ID`/`REPO_OWNER` all
+  // legitimately survive withholding.
+  if (isMediatedRun(env)) return false;
   const appId = env.GH_APP_ID || '';
   const owner = env.REPO_OWNER || '';
   const installationId = env.GH_APP_INSTALLATION_ID || '';
@@ -191,6 +202,13 @@ async function getInstallationId(): Promise<string> {
  * Generate a new installation access token
  */
 async function generateNewToken(): Promise<TokenInfo> {
+  // #5223: refuse before either mint path runs, so a mediated run never even pulls
+  // token material into this process. `publishToken` refuses too — that is the
+  // guard that covers callers who already hold a TokenInfo — but stopping here
+  // means there is nothing to leak into a log line or an error message on the way.
+  if (isMediatedRun()) {
+    throw new Error('Mediated run: GitHub tokens are withheld and must not be minted');
+  }
   // Issue #4272: broker mode — the gateway holds the App private key and mints
   // on our behalf, scoped to this run's org and repo. Checked FIRST so that the
   // local path below is unreachable whenever the broker is on.
@@ -297,6 +315,16 @@ export async function forceRefresh(): Promise<string> {
 }
 
 function publishToken(next: TokenInfo): void {
+  // Last line of defence for #5223, and the reason it is here rather than only at
+  // the entry points: every path that restores a credential — bootstrap adoption,
+  // proactive timer, 401 watchdog, forceRefresh, a direct initTokenManager call
+  // with explicit options — converges on this function. Guarding the doors
+  // individually leaves whichever one is added next unguarded; guarding the write
+  // means a mediated run cannot end up with a token in its env or on its disk no
+  // matter how the caller got here.
+  if (isMediatedRun()) {
+    throw new Error('Mediated run: GitHub tokens are withheld and must not be restored');
+  }
   writeTokenFile(next.token);
   currentToken = next;
   process.env.GH_TOKEN = next.token;
@@ -311,6 +339,12 @@ export async function getRuntimeGitHubToken(): Promise<string> {
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     if (!token) throw new Error('PAT credential unavailable; reconnect the GitHub credential');
     return token;
+  }
+  // #5223: refuse before any mint is attempted, with a message that names the
+  // actual path. A caller reaching here in a mediated run has code that assumes a
+  // token; that is a bug to fix, not a transient failure to retry.
+  if (isMediatedRun()) {
+    throw new Error('Mediated run: no GitHub token is available; use the gateway mediated operations');
   }
   if (!config) {
     if (!canInitTokenManager()) throw new Error('GitHub renewal configuration unavailable');

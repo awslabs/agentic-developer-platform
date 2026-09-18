@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as ts from 'typescript';
 import { loadHumanCommunication } from './human-communication';
 import { developerCheckpointGuidance } from './developer-checkpoints';
+import { MEDIATED_GITHUB_PROMPT } from './mediated-github-config';
 import { wrapUntrusted } from './utils/trust-boundary';
 
 const worker = ts.createSourceFile('agent-worker.ts',
@@ -36,7 +37,9 @@ describe('hosted operations delivery instructions', () => {
   });
   afterEach(() => fs.rmSync(cwd, { recursive: true, force: true }));
 
-  function assemble(agentType: string): string {
+  // `mediated` mirrors the run's ADP_MEDIATED_GITHUB_ENABLED: the production prompt
+  // gates the mediation section on it, so the assembly needs both states covered.
+  function assemble(agentType: string, mediated = false): string {
     const rules = evaluate(`${declaration('loadRules').getText(worker)}; return loadRules();`, {
       fs, path, CWD: cwd, AGENT_TYPE: agentType, loadHumanCommunication,
     });
@@ -47,6 +50,7 @@ describe('hosted operations delivery instructions', () => {
     return evaluate(`${promptStatement.getText(worker)}; return prompt;`, {
       AGENT_TYPE: agentType, agentDescriptions: { operations: 'Delivery coordinator' },
       rules, KNOWLEDGE_LAYER_ENABLED: false, KNOWLEDGE_LAYER_PROMPT: '',
+      MEDIATED_GITHUB_ENABLED: mediated, MEDIATED_GITHUB_PROMPT,
       issue: { number: 42, title: 'Drive a delivery wave', body: 'Review and accept both stories.' },
       ISSUE_NUMBER: '42', mainIssueInfo: '', memoryCtx: '', commentsContext: '', beadsPrimeContext: '',
       wrapUntrusted, developerCheckpointGuidance,
@@ -85,6 +89,25 @@ describe('hosted operations delivery instructions', () => {
     expect(prompt).toContain('Missing or expired shell credentials');
     expect(prompt).not.toContain('adp-cred` does NOT work');
     expect(prompt).not.toContain('export AWS_ROLE_ARN=');
+  });
+
+  // #5223: a run whose accepted policy keeps merge human-only gets no GitHub token,
+  // so the prompt must name the mediated helper that replaces `git push`/`gh pr create`
+  // — and must stay silent about it on a run that still holds a token.
+  it('teaches the mediated publication path only when the run has no token', () => {
+    const withoutMediation = assemble('developer');
+    expect(withoutMediation).not.toContain('<mediated-github>');
+    expect(withoutMediation).not.toContain('mediated_github');
+
+    const withMediation = assemble('developer', true);
+    expect(withMediation).toContain('## Publishing your work (this run has NO GitHub token)');
+    expect(withMediation).toContain('from lib import mediated_github as mg');
+    expect(withMediation).toContain('publish_commit');
+    expect(withMediation).toContain('upsert_pull_request');
+    // The refusals are load-bearing: merge stays human, and the agent must not go
+    // hunting for a credential when git push fails to authenticate.
+    expect(withMediation).toContain('**Merge is not available to you**');
+    expect(withMediation).toContain('no credential anywhere in this environment to find');
   });
 
   it('does not assign the operations lifecycle to other personas', () => {

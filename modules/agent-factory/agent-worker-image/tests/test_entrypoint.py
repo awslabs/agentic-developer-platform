@@ -4188,3 +4188,151 @@ class TestHandleGitLabMention:
         branch_payload = json_mod.loads(branch_create_req.data.decode("utf-8"))
         assert branch_payload["ref"] == "develop"
         assert branch_payload["branch"] == "agent/issue-7"
+
+
+# --- Test: Mediated idempotency guard envelope contract (Issue #5223) ---
+
+
+class TestMediatedIdempotencyGuard:
+    """Pin the mediated guard to the envelope the route actually returns.
+
+    This guard shipped unable to fire, for two independent reasons that masked
+    each other: it read `pull_request` off the top level of the route envelope
+    (where it never appears — the route nests it under `repository`), and it
+    compared GitHub's `state` against `"merged"` (a value `state` never holds;
+    mergedness is a separate boolean). Either bug alone yields a permanent
+    false negative, so the only symptom was a duplicate run on SQS redelivery.
+    These tests exist so neither half can regress silently.
+    """
+
+    @staticmethod
+    def _envelope(pull):
+        """The READ_REPOSITORY envelope, shaped as the route emits it."""
+        return {
+            "repository": {
+                "repository_id": 987654321,
+                "repository": "acme-corp/flagship-app",
+                "default_branch": "main",
+                "branch_head": "b" * 40,
+                "pull_request": pull,
+            },
+            "branch": "agent/issue-42",
+            "idempotency_key": "read_repository:acme-corp/flagship-app",
+        }
+
+    def _guard(self, monkeypatch, envelope):
+        from lib import mediated_github
+        from entrypoint import _mediated_already_completed
+
+        def _read_repository(**_kwargs):
+            return envelope
+
+        monkeypatch.setattr(mediated_github, "read_repository", _read_repository)
+        return _mediated_already_completed()
+
+    def test_merged_pull_request_nested_under_repository_is_detected(self, monkeypatch):
+        """A merged PR at the REAL nesting level makes the guard fire.
+
+        Proves the consumer reads `repository.pull_request`. Against the old
+        top-level read this returns False, so the assertion is load-bearing.
+        """
+        envelope = self._envelope(
+            {"number": 4242, "html_url": "https://github.com/acme-corp/flagship-app/pull/4242",
+             "state": "closed", "merged": True}
+        )
+        assert self._guard(monkeypatch, envelope) is True
+
+    def test_a_top_level_pull_request_is_not_consulted(self, monkeypatch):
+        """A merged PR at the OLD top level must NOT satisfy the guard.
+
+        The wrong level is not merely unhelpful — honouring it would let a shape
+        the gateway never emits decide whether real work gets skipped.
+        """
+        envelope = self._envelope(None)
+        envelope["pull_request"] = {"number": 1, "state": "closed", "merged": True}
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_an_open_pull_request_does_not_skip_the_run(self, monkeypatch):
+        """Work in progress is not completed work."""
+        envelope = self._envelope({"number": 4242, "state": "open", "merged": False})
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_a_closed_unmerged_pull_request_does_not_skip_the_run(self, monkeypatch):
+        """A closed-without-merging PR means the work was abandoned, not delivered.
+
+        Skipping here would silently drop real work — the expensive direction.
+        """
+        envelope = self._envelope({"number": 4242, "state": "closed", "merged": False})
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_state_is_never_trusted_as_a_mergedness_signal(self, monkeypatch):
+        """Even `state == "merged"` cannot skip a run when `merged` is false.
+
+        GitHub never emits that state, so if it ever appears it is a forgery or a
+        provider bug. Mergedness comes from the separate boolean, or not at all.
+        """
+        envelope = self._envelope({"number": 4242, "state": "merged", "merged": False})
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_a_truthy_non_boolean_merged_value_does_not_skip_the_run(self, monkeypatch):
+        """`merged` must be exactly True — schema validation, not truthiness.
+
+        A string like "false" is truthy in Python; accepting it would let a
+        malformed provider answer skip real work.
+        """
+        envelope = self._envelope({"number": 4242, "state": "closed", "merged": "false"})
+        assert self._guard(monkeypatch, envelope) is False
+
+    @pytest.mark.parametrize(
+        "envelope",
+        [
+            {},
+            {"repository": None},
+            {"repository": "acme-corp/flagship-app"},
+            {"repository": {}},
+            {"repository": {"pull_request": None}},
+            {"repository": {"pull_request": "merged"}},
+        ],
+        ids=["empty", "null-repo", "repo-as-string", "no-pull-key", "null-pull", "pull-as-string"],
+    )
+    def test_unusable_envelopes_fail_open(self, monkeypatch, envelope):
+        """Any shape the guard cannot read means "proceed", never "skip".
+
+        Includes `repository` as a bare string, which is what the *inner* payload
+        uses for the slug — so a caller that forgot to unwrap lands here rather
+        than crashing on `.get`.
+        """
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_a_refused_read_fails_open(self, monkeypatch):
+        """An unreachable or refusing gateway must let the run proceed.
+
+        Duplicate work is recoverable; silently dropping an assignment is not.
+        """
+        from lib import mediated_github
+        from entrypoint import _mediated_already_completed
+
+        def _read_repository(**_kwargs):
+            raise RuntimeError("the operation is not currently authorized")
+
+        monkeypatch.setattr(mediated_github, "read_repository", _read_repository)
+        assert _mediated_already_completed() is False
+
+    def test_the_dispatcher_routes_to_the_authority_the_run_holds(self, monkeypatch):
+        """`mediated=True` must not reach for `gh pr list`, which needs a token."""
+        import entrypoint
+
+        calls = {"mediated": 0, "token": 0}
+        monkeypatch.setattr(
+            entrypoint, "_mediated_already_completed", lambda: calls.__setitem__("mediated", 1) or True
+        )
+        monkeypatch.setattr(
+            entrypoint, "_is_already_completed", lambda *a: calls.__setitem__("token", 1) or False
+        )
+
+        assert entrypoint._already_completed("acme/repo", 42, "", mediated=True) is True
+        assert calls == {"mediated": 1, "token": 0}
+
+        calls.update({"mediated": 0, "token": 0})
+        assert entrypoint._already_completed("acme/repo", 42, "ghs_x", mediated=False) is False
+        assert calls == {"mediated": 0, "token": 1}

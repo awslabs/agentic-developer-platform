@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, or_, select
 
+from src.agentauth.github_operations import MEDIATED_GITHUB_OPERATION_PATH
 from src.agentauth.grants import DelegatedGrant
 from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
 from src.shared.models.base import utcnow
@@ -34,6 +35,16 @@ class WorkerCredentialDecision(Decision):
     aws_role_arns: tuple[str, ...] = ()
     policy_id: str | None = None
     plan_version: int | None = None
+    # The action this assignment was admitted for, and the immutable provider
+    # repository it was admitted against. Both are reported so the mediated
+    # operation service can build its assignment from what THIS function proved,
+    # rather than re-deriving authority from a request body.
+    action: Action | None = None
+    provider_repository_id: int | None = None
+    # The accepted policy document itself, so a consumer checks content and
+    # gates against what a human actually accepted instead of rebuilding a
+    # document from these fields and evaluating against its own reconstruction.
+    policy: ExecutionPolicy | None = None
 
 
 def policy_github_permissions(policy: ExecutionPolicy, action: Action) -> dict[str, str] | None:
@@ -211,6 +222,19 @@ async def authorize_worker_credential(
         # lifetime would exceed this grant, even when issuance itself is allowed.
         if permissions is not None and not_after > now + timedelta(hours=1, seconds=30):
             scope = CredentialScope.SCOPED
+    elif broker_path == MEDIATED_GITHUB_OPERATION_PATH and repo in policy.repository_ids and repo in grant.repo_scope:
+        # Mediation is scopable where a token is not. The gateway holds the
+        # installation credential and performs the single typed operation itself,
+        # so there is no provider lifetime to reconcile against this grant and no
+        # `contents: write` capability handed to the worker. That is why this
+        # branch does not consult `policy_github_permissions`: its None result
+        # means "no TOKEN can express this policy", which is the reason to
+        # mediate, not a reason to refuse mediation.
+        #
+        # This grants no action the assignment lacks. `authorize_action` below
+        # still gates the assignment's own action, and merge is a separate typed
+        # operation the caller must be separately authorized for.
+        scope = CredentialScope.SCOPED
     elif broker_path == "model" and repo in policy.repository_ids and repo in grant.repo_scope:
         # Model execution remains inside the policy-checking gateway boundary.
         scope = CredentialScope.SCOPED
@@ -314,4 +338,19 @@ async def authorize_worker_credential(
         )
     if decision.permitted and broker_path == "/internal/v1/github-installation-token":
         return WorkerCredentialDecision(permitted=True, detail=decision.detail, permissions=permissions, not_after=not_after)
+    if decision.permitted and broker_path == MEDIATED_GITHUB_OPERATION_PATH:
+        # `scope` is still UNSCOPABLE unless the branch above matched, so a repo
+        # outside the accepted policy or the grant is already refused by
+        # `authorize_action`. Report the proven action and immutable repository ID
+        # so the operation service never has to re-derive either one.
+        return WorkerCredentialDecision(
+            permitted=True,
+            detail=decision.detail,
+            not_after=not_after,
+            action=action,
+            provider_repository_id=int(repository_id) if repository_id.isdigit() else None,
+            policy=policy,
+            policy_id=policy.policy_id,
+            plan_version=inputs.plan_version,
+        )
     return decision

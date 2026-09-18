@@ -43,6 +43,13 @@ UNIT_MODULES = [
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
     # derives the row key from the protected execution record.
     "src.agentauth.registration_routes",
+    # #5223: mediated GitHub operations. A separate module from
+    # registration_routes even though it shares the /self prefix, because this is
+    # the only route on that prefix that reaches an external provider and holds an
+    # installation credential while doing it. Keeping it its own module means the
+    # authorization it performs is reviewed on its own terms rather than inherited
+    # from a router whose other routes only touch our own records.
+    "src.agentauth.github_operation_routes",
     # #5301: the delivering run binds its own implementation PR to its story,
     # authenticated by the run credential rather than a self-declared run header.
     "src.agentauth.pr_binding_routes",

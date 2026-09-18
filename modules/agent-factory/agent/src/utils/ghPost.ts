@@ -32,6 +32,10 @@ export async function refreshGitHubToken(): Promise<void> {
   // it. Honor that here too — mirrors TokenManager.initialize().
   if (process.env.ADP_TOKEN_MODE === 'pat') return;
 
+  // #5223: mediated runs have no token to refresh; the gateway performs writes.
+  const { isMediatedRun } = await import('../mediated-github-config');
+  if (isMediatedRun()) return;
+
   const appId = process.env.GH_APP_ID;
   const privateKey = process.env.GH_APP_PRIVATE_KEY;
 

@@ -74,6 +74,16 @@ on:
       - 'modules/agent-factory/agent/src/beads*'
       - 'modules/agent-factory/agent/src/sigv4-proxy*'
       - 'modules/agent-factory/agent/src/lib/githubTokenBroker*'
+      # The token-withholding guard and the two files that decide it (#5223).
+      # token-refresh.ts owns `canInitTokenManager`, the single predicate that
+      # keeps a mediated run from re-minting the credential it was denied, and
+      # mediated-github-config.ts owns `isMediatedRun`, which that predicate
+      # consults. Listed explicitly because a change confined to either one
+      # matches none of the paths above, so the guard would not run on exactly
+      # the PRs able to break it.
+      - 'modules/agent-factory/agent/src/token-refresh.ts'
+      - 'modules/agent-factory/agent/src/token-init-guard.test.ts'
+      - 'modules/agent-factory/agent/src/mediated-github-config.ts'
       - 'modules/agent-factory/agent-worker-image/adp_trigger/transport_identity.py'
       - 'modules/agent-factory/agent-worker-image/adp_cred/**'
       - 'modules/agent-factory/agent-worker-image/tests/test_task_credentials.py'
@@ -412,10 +422,20 @@ jobs:
         # AND the regression guard proving the legacy no-option path used by 17
         # other callers is unchanged. A control edit that broke those callers
         # would otherwise merge green from this workflow's point of view.
+        #
+        # token-init-guard.test.ts is pinned here (#5223) because it holds the
+        # evidence for a security property, not just a behaviour: that a mediated
+        # run's withheld GitHub token is never restored to the environment or to
+        # disk by any refresh path. That guarantee is what lets the platform hand
+        # an agent no write credential at all. Unpinned, the suite ran in no
+        # required workflow, so a change re-enabling the refresh path for a
+        # mediated run — handing back the exact credential mediation exists to
+        # withhold — could merge green.
         run: |
           npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
             src/sigv4-proxy.identity.test.ts src/beads-s3-config.test.ts \
             src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \
+            src/token-init-guard.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
