@@ -46,6 +46,7 @@ from src.orchestration.dispatch_pass import DispatchPassReport, publish_pending,
 from src.orchestration.engine_commands import EngineCommandReport, flush_engine_commands, run_engine_command_pass
 from src.orchestration.stall import StallConfig, StallReport, detect_stalls
 from src.orchestration.tick import TickReport, run_tick
+from src.orchestration.tracker_projection import TrackerProjectionReport, flush_tracker_projections, run_tracker_projection_pass
 from src.shared.database import get_session_factory, reset_engine
 
 logger = logging.getLogger("bedrockgateway.orchestration.tick_handler")
@@ -110,6 +111,16 @@ _DISPATCH_REPORT_ATTR = "dispatch_report"
 # first-class case.
 _ENGINE_COMMAND_REPORT_ATTR = "engine_command_report"
 
+# Attribute the tracker-projection pass's report is carried on (issue #5284).
+#
+# Same constraint once more: `_TickReportStub` in `tests/orchestration/test_tick.py`
+# stubs `_run` with a minimal object carrying only the tick's own attributes, so
+# widening `_run`'s return type would break the test that pins the `tick_report`
+# token surviving `awslambdaric`'s logging setup. "Absent" stays first-class, which
+# is also what keeps projection optional at the boundary rather than a hard
+# dependency of the tick — a display concern must never be able to fail the tick.
+_PROJECTION_REPORT_ATTR = "tracker_projection_report"
+
 
 def _attached_stall_report(report: TickReport) -> StallReport | None:
     """The detection report carried on a tick report, if one is attached."""
@@ -124,6 +135,11 @@ def _attached_dispatch_report(report: TickReport) -> DispatchPassReport | None:
 def _attached_engine_command_report(report: TickReport) -> EngineCommandReport | None:
     """The engine-command pass's report carried on a tick report, if one is attached."""
     return getattr(report, _ENGINE_COMMAND_REPORT_ATTR, None)
+
+
+def _attached_projection_report(report: TickReport) -> TrackerProjectionReport | None:
+    """The tracker-projection pass's report carried on a tick report, if one is attached."""
+    return getattr(report, _PROJECTION_REPORT_ATTR, None)
 
 
 def _emit_metrics(report: TickReport) -> None:
@@ -328,6 +344,47 @@ def _emit_metrics(report: TickReport) -> None:
                     }
                 )
 
+        # Issue #5284 — tracker-projection metrics. `ProjectionsFailed` is the one to
+        # alarm on: it means an EPIC issue is drifting away from engine state, which
+        # is invisible to everyone reading that issue precisely because the thing that
+        # would have told them is the thing that failed. `ProjectionsStale` is
+        # deliberately NOT an error metric — declining to overwrite a newer snapshot
+        # is the correct outcome of two overlapping ticks.
+        projection_report = _attached_projection_report(report)
+        if projection_report is not None:
+            metric_data.extend(
+                [
+                    {"MetricName": "ProjectionFlowsExamined", "Value": projection_report.flows_examined, "Unit": "Count"},
+                    {"MetricName": "ProjectionsWritten", "Value": projection_report.projections_written, "Unit": "Count"},
+                    {"MetricName": "ProjectionsUnchanged", "Value": projection_report.projections_unchanged, "Unit": "Count"},
+                    {"MetricName": "ProjectionsRefused", "Value": projection_report.projections_refused, "Unit": "Count"},
+                    {"MetricName": "ProjectionsStale", "Value": projection_report.projections_stale, "Unit": "Count"},
+                    {"MetricName": "ProjectionsFailed", "Value": projection_report.projections_failed, "Unit": "Count"},
+                    {"MetricName": "ProjectionErrors", "Value": projection_report.errors, "Unit": "Count"},
+                    {"MetricName": "ProjectionsCapped", "Value": 1 if projection_report.capped else 0, "Unit": "Count"},
+                ]
+            )
+
+            for org_id, counts in projection_report.per_org.items():
+                dimensions = [{"Name": "OrgId", "Value": org_id}]
+                for metric_name, key in (
+                    ("ProjectionFlowsExamined", "flows_examined"),
+                    ("ProjectionsWritten", "projections_written"),
+                    ("ProjectionsUnchanged", "projections_unchanged"),
+                    ("ProjectionsRefused", "projections_refused"),
+                    ("ProjectionsStale", "projections_stale"),
+                    ("ProjectionsFailed", "projections_failed"),
+                    ("ProjectionErrors", "errors"),
+                ):
+                    metric_data.append(
+                        {
+                            "MetricName": metric_name,
+                            "Value": counts[key],
+                            "Unit": "Count",
+                            "Dimensions": dimensions,
+                        }
+                    )
+
         # PutMetricData caps at 1000 datums per call.
         for start in range(0, len(metric_data), 1000):
             client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=metric_data[start : start + 1000])
@@ -402,6 +459,26 @@ async def _run() -> TickReport:
             # next tick without waiting for a cold start.
             stall_report = await detect_stalls(session, config=StallConfig.from_env())
             dispatch_report = await run_dispatch_pass(session)
+            # Last, so the rendered snapshot reflects every transition this
+            # invocation made — including the dispatch just above, which is the
+            # "dependent work started" event #5284 exists to surface. Reads only:
+            # it renders text and resolves each target's installation while the
+            # session is open, and returns the regions for the post-commit flush.
+            #
+            # Wrapped, unlike every pass above it, and the asymmetry is deliberate.
+            # The passes above are the engine's durable work: if one of them fails the
+            # tick must surface that. Projection is a display concern, so it does not
+            # get to cost the tick anything — an unforeseen raise here would reach the
+            # `except` below, roll back, and discard every correct transition this
+            # invocation just made. The pass already contains per-flow handling; this
+            # covers what surrounds it (the flow query, an unforeseen bug) so the
+            # engine's durability never depends on a display feature being correct.
+            try:
+                projection_report = await run_tracker_projection_pass(session)
+            except Exception:
+                logger.exception("orchestration tracker projection: pass failed; engine state and dispatch are unaffected")
+                projection_report = TrackerProjectionReport()
+                projection_report.errors += 1
         except Exception:
             await session.rollback()
             raise
@@ -425,9 +502,20 @@ async def _run() -> TickReport:
         # counted, which forces a non-success report.
         await flush_engine_commands(engine_command_report)
 
+        # Last of the post-commit steps, and deliberately after the durable work and
+        # every other flush: projecting progress onto a GitHub issue is a display
+        # concern, so it must never precede — or be able to disturb — anything the
+        # engine actually decided. Like the flushes above it mutates its report in
+        # place and never raises, so a GitHub outage cannot fail the tick, change a
+        # node's state, bypass a gate or dispatch an agent (#5284 AC3). The region is
+        # re-rendered from current state on the next tick, so a failure converges
+        # rather than being lost.
+        await flush_tracker_projections(projection_report, session_factory=factory)
+
         setattr(report, _STALL_REPORT_ATTR, stall_report)
         setattr(report, _DISPATCH_REPORT_ATTR, dispatch_report)
         setattr(report, _ENGINE_COMMAND_REPORT_ATTR, engine_command_report)
+        setattr(report, _PROJECTION_REPORT_ATTR, projection_report)
         setattr(report, "result_report", result_report)
         return report
 
@@ -451,6 +539,7 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
     stall_report = _attached_stall_report(report)
     dispatch_report = _attached_dispatch_report(report)
     engine_command_report = _attached_engine_command_report(report)
+    projection_report = _attached_projection_report(report)
 
     summary = {
         # A failed detection, dispatch or engine-command pass makes the whole
@@ -458,11 +547,18 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
         # of this Lambda's job (R-Q9d), not a footnote on an otherwise-green tick —
         # and so is a dispatch that committed `running` and never reached the queue
         # (#4313), or a command that was applied and never acknowledged (#4527).
+        #
+        # A projection that never landed counts too (#5284): the tracker silently
+        # drifting away from engine state is the defect this pass exists to end, so
+        # it has to be visible in the one line the smoke check reads. Note this is
+        # about *delivery*, not content — a refused or stale-declined projection is
+        # a correct outcome and leaves the report successful.
         "status": "ok"
         if report.success
         and (stall_report is None or stall_report.success)
         and (dispatch_report is None or dispatch_report.success)
         and (engine_command_report is None or engine_command_report.success)
+        and (projection_report is None or projection_report.success)
         else "error",
         "nodes_examined": report.nodes_examined,
         "transitions_effected": report.transitions_effected,
@@ -528,6 +624,28 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
             }
         )
 
+    # Issue #5284 — tracker-projection counters, on the same greppable `tick_report`
+    # line. `projections_written` is what an operator reads to confirm the projection
+    # is live (only this code emits it, so its presence in
+    # /aws/lambda/adp-<env>-orchestration-tick is the deploy verification AC5 asks
+    # for), and `projections_unchanged` is what distinguishes "nothing moved, so
+    # nothing to write" from "we could not write" — the two look identical in a bare
+    # zero, and conflating them is how a dead projection reads as a healthy one.
+    if projection_report is not None:
+        summary.update(
+            {
+                "projection_flows_examined": projection_report.flows_examined,
+                "projections_written": projection_report.projections_written,
+                "projections_unchanged": projection_report.projections_unchanged,
+                "projections_refused": projection_report.projections_refused,
+                "projections_stale": projection_report.projections_stale,
+                "projections_failed": projection_report.projections_failed,
+                "projection_errors": projection_report.errors,
+                "projections_capped": projection_report.capped,
+                "projections_enabled": projection_report.enabled,
+            }
+        )
+
     result_report = getattr(report, "result_report", None)
     if result_report is not None:
         summary.update(
@@ -578,6 +696,21 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
             engine_command_report.errors,
             engine_command_report.consumes_failed,
             engine_command_report.acks_failed,
+        )
+
+    if projection_report is not None and not projection_report.success:
+        # States the consequence and the recovery, because neither is obvious: no
+        # engine state is affected (the flush runs after the transition commit and
+        # its lock session touches no engine rows), and the region is re-rendered
+        # from current state next wake, so a transient outage self-heals. What a
+        # reader must know is that until then the EPIC issue understates progress —
+        # the exact condition #5284 was filed for.
+        logger.error(
+            "orchestration tracker projection completed with %d error(s) and %d undelivered update(s) — "
+            "no node state, gate or dispatch is affected; the affected EPIC tracker regions remain stale "
+            "and are re-rendered from current engine state on the next tick",
+            projection_report.errors,
+            projection_report.projections_failed,
         )
 
     return summary
