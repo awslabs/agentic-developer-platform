@@ -283,8 +283,6 @@ class TestUpdateFailure:
         assert _run_adp(bin_dir, home, ["version"]).returncode == 0, "the CLI must still run"
 
 
-
-
 class TestUpdateWithThreeDeployments:
     """AC-08 (#5413): a CLI serving three deployments must survive its own update.
 
@@ -334,14 +332,10 @@ class TestUpdateWithThreeDeployments:
         assert _run_adp(bin_dir, home, ["update"]).returncode == 0
 
         after = self._listed(bin_dir, home)
-        assert [entry["name"] for entry in after["deployments"]] == [
-            entry["name"] for entry in before["deployments"]
-        ]
+        assert [entry["name"] for entry in after["deployments"]] == [entry["name"] for entry in before["deployments"]]
         # The stable ids matter more than the names: an id change would orphan the
         # per-deployment store holding that deployment's session.
-        assert [entry["deployment_id"] for entry in after["deployments"]] == [
-            entry["deployment_id"] for entry in before["deployments"]
-        ]
+        assert [entry["deployment_id"] for entry in after["deployments"]] == [entry["deployment_id"] for entry in before["deployments"]]
         assert after["default"] == "development"
         assert "9.9.9-from-gateway" in (bin_dir / "adp").read_text()
 
@@ -448,18 +442,10 @@ class TestUpdateWithThreeDeployments:
         assert added.returncode == 0, added.stderr
         assert _run_adp(bin_dir, home, ["deployment", "use", "development"]).returncode == 0
         listed = self._listed(bin_dir, home)
-        identifier = next(
-            entry["deployment_id"]
-            for entry in listed["deployments"]
-            if entry["name"] == "development"
-        )
+        identifier = next(entry["deployment_id"] for entry in listed["deployments"] if entry["name"] == "development")
         store = home / ".adp" / "deployments" / identifier
         assert not (store / "config.json").exists(), "add must write no session"
-        assert not next(
-            entry["signed_in"]
-            for entry in listed["deployments"]
-            if entry["name"] == "development"
-        )
+        assert not next(entry["signed_in"] for entry in listed["deployments"] if entry["name"] == "development")
 
         result = _run_adp(bin_dir, home, ["update"])
 
