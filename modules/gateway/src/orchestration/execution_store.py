@@ -92,7 +92,15 @@ from .execution_state import (
     OutcomeKind,
     PhaseAdvance,
 )
-from .models import OrchestrationAction, OrchestrationExecution
+from .models import (
+    ClaimState,
+    OrchestrationAcceptedPlan,
+    OrchestrationAction,
+    OrchestrationExecution,
+    OrchestrationFlow,
+    OrchestrationNode,
+    OrchestrationWorkClaim,
+)
 
 logger = get_logger(__name__)
 
@@ -301,6 +309,93 @@ def _binding_conflict(row: OrchestrationExecution, identity: ExecutionIdentity) 
     return None
 
 
+async def _resolve_flow_id(
+    session: AsyncSession,
+    identity: ExecutionIdentity,
+    *,
+    expected_flow_id: str | None = None,
+) -> str | None:
+    """Resolve the node inside the caller's tenant and, optionally, its flow."""
+    stmt = select(OrchestrationNode.flow_id).where(
+        OrchestrationNode.org_id == identity.org_id,
+        OrchestrationNode.id == identity.node_id,
+    )
+    if expected_flow_id is not None:
+        stmt = stmt.where(OrchestrationNode.flow_id == expected_flow_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def _live_authority_conflict(
+    session: AsyncSession,
+    identity: ExecutionIdentity,
+    *,
+    flow_id: str,
+) -> str | None:
+    """Verify the claim and accepted plan that are live in this transaction."""
+    flow = (
+        await session.execute(
+            select(OrchestrationFlow.id).where(OrchestrationFlow.org_id == identity.org_id, OrchestrationFlow.id == flow_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if flow is None:
+        return "tenant_binding_mismatch"
+
+    claim = (
+        await session.execute(
+            select(OrchestrationWorkClaim)
+            .where(
+                OrchestrationWorkClaim.org_id == identity.org_id,
+                OrchestrationWorkClaim.id == identity.claim_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if claim is None:
+        return "claim_mismatch"
+    if claim.state != ClaimState.HELD.value:
+        return "claim_not_held"
+    if claim.generation != identity.claim_generation:
+        return "claim_generation_superseded" if claim.generation > identity.claim_generation else "claim_generation_mismatch"
+
+    plans = list(
+        (
+            await session.execute(
+                select(OrchestrationAcceptedPlan)
+                .where(
+                    OrchestrationAcceptedPlan.org_id == identity.org_id,
+                    OrchestrationAcceptedPlan.flow_id == flow_id,
+                    OrchestrationAcceptedPlan.superseded_at.is_(None),
+                )
+                .limit(2)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(plans) > 1:
+        return "accepted_plan_ambiguous"
+    current_version = plans[0].version if plans else 0
+    if current_version != identity.accepted_plan_version:
+        return "accepted_plan_version_mismatch"
+    return None
+
+
+def _unbound_conflict(reason: str) -> ExecutionOutcome:
+    """Return a refusal when no execution row may safely be disclosed."""
+    return ExecutionOutcome(kind=OutcomeKind.CONFLICT, record=None, reason=reason)
+
+
+async def _live_refusal(session: AsyncSession, identity: ExecutionIdentity, reason: str) -> ExecutionOutcome:
+    """Attach the record only when the caller already knows its stored claim."""
+    row = await _locked_execution(session, identity)
+    if row is not None and row.org_id == identity.org_id and row.claim_id == identity.claim_id:
+        return _conflict(row, reason)
+    return _unbound_conflict(reason)
+
+
 def _adopt_generation(row: OrchestrationExecution, identity: ExecutionIdentity) -> None:
     """Raise the row's generation to a newer writer's, so the fence actually fences.
 
@@ -436,6 +531,13 @@ async def create_execution(
     if not str(flow_id or "").strip():
         raise ExecutionStoreError("invalid_execution", "An execution must name the flow it belongs to.")
 
+    resolved_flow_id = await _resolve_flow_id(session, identity, expected_flow_id=flow_id)
+    if resolved_flow_id is None:
+        return _unbound_conflict("tenant_binding_mismatch")
+    live_conflict = await _live_authority_conflict(session, identity, flow_id=resolved_flow_id)
+    if live_conflict:
+        return await _live_refusal(session, identity, live_conflict)
+
     existing = await _locked_execution(session, identity)
     if existing is not None:
         # Re-verify authority before handing it back: adopting an execution is as
@@ -533,6 +635,13 @@ async def load_execution(
         different from refused. Otherwise `APPLIED` with the record, or `CONFLICT`
         when the stored authority disagrees with the caller's.
     """
+    flow_id = await _resolve_flow_id(session, identity)
+    if flow_id is None:
+        return None
+    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id)
+    if live_conflict:
+        return await _live_refusal(session, identity, live_conflict)
+
     if for_update:
         row = await _locked_execution(session, identity)
     else:
@@ -578,6 +687,16 @@ async def prepare_action(
         pre-existing record for a repeated key, with `reason="action_already_prepared"`),
         or `CONFLICT` when the caller's authority does not match the stored execution.
     """
+    flow_id = await _resolve_flow_id(session, identity)
+    if flow_id is None:
+        raise ExecutionStoreError(
+            "unknown_execution",
+            f"No execution exists for node {identity.node_id} cycle {identity.cycle}; create it before preparing actions.",
+        )
+    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id)
+    if live_conflict:
+        return await _live_refusal(session, identity, live_conflict)
+
     row = await _locked_execution(session, identity)
     if row is None:
         raise ExecutionStoreError(
@@ -680,6 +799,16 @@ async def record_observation(
     Returns:
         `APPLIED` with the updated action, or `CONFLICT` for an authority mismatch.
     """
+    flow_id = await _resolve_flow_id(session, identity)
+    if flow_id is None:
+        raise ExecutionStoreError(
+            "unknown_execution",
+            f"No execution exists for node {identity.node_id} cycle {identity.cycle}; nothing to observe.",
+        )
+    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id)
+    if live_conflict:
+        return await _live_refusal(session, identity, live_conflict)
+
     row = await _locked_execution(session, identity)
     if row is None:
         raise ExecutionStoreError(
@@ -704,7 +833,32 @@ async def record_observation(
             f"No action {observation.operation_key} is recorded on execution {row.id}; observations settle prepared actions only.",
         )
 
-    action.status = _OBSERVED_STATUS[observation.outcome].value
+    target_status = _OBSERVED_STATUS[observation.outcome].value
+    if action.status in (ActionStatus.SUCCEEDED.value, ActionStatus.FAILED.value):
+        stored_detail = (action.detail or {}).get("observation")
+        is_duplicate = action.status == target_status and action.receipt_ref == observation.receipt_ref and stored_detail == observation.detail
+        if is_duplicate:
+            return ExecutionOutcome(
+                kind=OutcomeKind.APPLIED,
+                record=_to_record(row),
+                action=_to_action_record(action),
+                reason="observation_already_recorded",
+            )
+        logger.warning(
+            "execution store: refusing conflicting observation for settled action %s on execution %s (stored=%s, reported=%s)",
+            observation.operation_key,
+            row.id,
+            action.status,
+            target_status,
+        )
+        return ExecutionOutcome(
+            kind=OutcomeKind.CONFLICT,
+            record=_to_record(row),
+            action=_to_action_record(action),
+            reason="action_already_settled",
+        )
+
+    action.status = target_status
     action.observed_at = _now()
     if observation.receipt_ref:
         # A reference, never a transcript. See the column docstrings in models.py.
@@ -771,6 +925,16 @@ async def advance_execution(
         write — the block is now durable); `STALE` when the revision had moved, with
         nothing written; `CONFLICT` for an authority mismatch.
     """
+    flow_id = await _resolve_flow_id(session, identity)
+    if flow_id is None:
+        raise ExecutionStoreError(
+            "unknown_execution",
+            f"No execution exists for node {identity.node_id} cycle {identity.cycle}; create it before advancing.",
+        )
+    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id)
+    if live_conflict:
+        return await _live_refusal(session, identity, live_conflict)
+
     row = await _locked_execution(session, identity)
     if row is None:
         raise ExecutionStoreError(

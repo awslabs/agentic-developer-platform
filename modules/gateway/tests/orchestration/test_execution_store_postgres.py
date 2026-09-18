@@ -41,6 +41,7 @@ import asyncio
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.orchestration.execution_state import (
@@ -64,11 +65,13 @@ from src.orchestration.execution_store import (
     record_observation,
 )
 from src.orchestration.models import (
+    ClaimState,
     OrchestrationAcceptedPlan,
     OrchestrationAction,
     OrchestrationExecution,
     OrchestrationFlow,
     OrchestrationNode,
+    OrchestrationWorkClaim,
 )
 
 # Re-exported through tests/migrations/conftest.py, but this file lives in
@@ -81,6 +84,7 @@ pytestmark = pytest.mark.integration
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
 CLAIM = "claim-5142"
+CLAIM_B = "claim-5142-b"
 PLAN_VERSION = 3
 
 
@@ -104,6 +108,7 @@ async def pg_engine(pg_url):  # noqa: F811 - pg_url is a fixture, not a shadowed
         await conn.run_sync(OrchestrationFlow.__table__.create)
         await conn.run_sync(OrchestrationAcceptedPlan.__table__.create)
         await conn.run_sync(OrchestrationNode.__table__.create)
+        await conn.run_sync(OrchestrationWorkClaim.__table__.create)
         await conn.run_sync(OrchestrationExecution.__table__.create)
         await conn.run_sync(OrchestrationAction.__table__.create)
     yield engine
@@ -125,6 +130,29 @@ async def graph(pg_session_factory):
             session.add(flow)
             await session.flush()
             made[f"flow_{key}"] = flow.id
+            session.add(
+                OrchestrationAcceptedPlan(
+                    org_id=org,
+                    flow_id=flow.id,
+                    version=PLAN_VERSION,
+                    plan_document={},
+                    plan_hash=f"plan-{key}",
+                )
+            )
+            claim_id = CLAIM if org == ORG_A else CLAIM_B
+            session.add(
+                OrchestrationWorkClaim(
+                    id=claim_id,
+                    org_id=org,
+                    provider_repository_id=5142,
+                    issue_number=5142,
+                    owner_kind="flow",
+                    owner_ref=flow.id,
+                    state=ClaimState.HELD.value,
+                    generation=1,
+                )
+            )
+            made[f"claim_{key}"] = claim_id
             node = OrchestrationNode(
                 org_id=org,
                 flow_id=flow.id,
@@ -147,7 +175,7 @@ def _identity(graph, *, node: str = "node_a", org: str = ORG_A, cycle: int = 1, 
         node_id=graph[node],
         cycle=cycle,
         accepted_plan_version=plan,
-        claim_id=CLAIM,
+        claim_id=CLAIM_B if org == ORG_B else CLAIM,
         claim_generation=generation,
     )
 
@@ -188,10 +216,21 @@ async def _prepare_attempt(session_factory, identity, intent):
             return exc
 
 
+async def _observe_attempt(session_factory, identity, observation):
+    async with session_factory() as session:
+        outcome = await record_observation(session, identity=identity, observation=observation)
+        await session.commit()
+        return outcome
+
+
 async def _seed(pg_session_factory, graph, **kwargs):
     identity = _identity(graph, **kwargs)
     flow_key = "flow_b" if identity.org_id == ORG_B else "flow_a"
     async with pg_session_factory() as session:
+        claim = await session.get(OrchestrationWorkClaim, identity.claim_id)
+        claim.generation = identity.claim_generation
+        claim.state = ClaimState.HELD.value
+        await session.flush()
         outcome = await create_execution(session, identity=identity, flow_id=graph[flow_key])
         await session.commit()
     return identity, outcome.record
@@ -729,6 +768,47 @@ class TestCrossTenantKeysCannotBind:
             count = (await session.execute(text("SELECT count(*) FROM orchestration_actions"))).scalar_one()
         assert count == 2
 
+    @pytest.mark.parametrize(
+        ("flow_key", "node_key"),
+        [("flow_b", "node_a"), ("flow_a", "node_b")],
+    )
+    async def test_composite_foreign_keys_reject_cross_tenant_graph_bindings(self, pg_session_factory, graph, flow_key, node_key):
+        """Single-column ids are valid; only the tenant-paired FK rejects this."""
+        async with pg_session_factory() as session:
+            session.add(
+                OrchestrationExecution(
+                    org_id=ORG_A,
+                    flow_id=graph[flow_key],
+                    node_id=graph[node_key],
+                    cycle=99,
+                    phase=ExecutionPhase.ADMITTED.value,
+                    status=ExecutionStatus.RUNNABLE.value,
+                    revision=1,
+                    accepted_plan_version=PLAN_VERSION,
+                    claim_id=CLAIM,
+                    claim_generation=1,
+                    attempts=0,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.flush()
+
+    async def test_composite_foreign_key_rejects_cross_tenant_action_binding(self, pg_session_factory, graph):
+        _, execution = await _seed(pg_session_factory, graph, org=ORG_A)
+        async with pg_session_factory() as session:
+            session.add(
+                OrchestrationAction(
+                    org_id=ORG_B,
+                    execution_id=execution.id,
+                    operation_key="forged",
+                    kind="open_pull_request",
+                    status=ActionStatus.PREPARED.value,
+                    attempt=0,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.flush()
+
 
 class TestConcurrentAuthorityChange:
     async def test_a_superseded_generation_cannot_write_after_a_handover(self, pg_session_factory, graph):
@@ -743,6 +823,9 @@ class TestConcurrentAuthorityChange:
         # The successor takes over and advances the execution.
         successor = _identity(graph, generation=2)
         async with pg_session_factory() as session:
+            claim = await session.get(OrchestrationWorkClaim, successor.claim_id)
+            claim.generation = successor.claim_generation
+            await session.flush()
             taken = await advance_execution(
                 session,
                 identity=successor,
@@ -796,3 +879,71 @@ class TestConcurrentAuthorityChange:
         # STALE answers: the fence can only measure a caller against the generation
         # that actually owns the work if that generation is written down.
         assert row.claim_generation == 2, "an applied advance records the generation it wrote under"
+
+    async def test_a_new_current_plan_refuses_the_old_execution_identity(self, pg_session_factory, graph):
+        identity, record = await _seed(pg_session_factory, graph)
+        async with pg_session_factory() as session:
+            current = (
+                await session.execute(
+                    select(OrchestrationAcceptedPlan).where(
+                        OrchestrationAcceptedPlan.org_id == ORG_A,
+                        OrchestrationAcceptedPlan.flow_id == graph["flow_a"],
+                        OrchestrationAcceptedPlan.superseded_at.is_(None),
+                    )
+                )
+            ).scalar_one()
+            current.superseded_at = _soon()
+            session.add(
+                OrchestrationAcceptedPlan(
+                    org_id=ORG_A,
+                    flow_id=graph["flow_a"],
+                    version=PLAN_VERSION + 1,
+                    plan_document={},
+                    plan_hash="plan-a-v4",
+                )
+            )
+            await session.commit()
+
+        async with pg_session_factory() as session:
+            refused = await advance_execution(
+                session,
+                identity=identity,
+                advance=PhaseAdvance(
+                    phase=ExecutionPhase.CONCLUDED,
+                    status=ExecutionStatus.CONCLUDED,
+                    expected_revision=record.revision,
+                ),
+            )
+        assert refused.kind is OutcomeKind.CONFLICT
+        assert refused.reason == "accepted_plan_version_mismatch"
+
+
+class TestConcurrentObservationSettlement:
+    async def test_opposite_terminal_observations_cannot_overwrite_the_winner(self, pg_session_factory, graph):
+        identity, _ = await _seed(pg_session_factory, graph)
+        async with pg_session_factory() as session:
+            await prepare_action(session, identity=identity, intent=ActionIntent(operation_key="settle", kind="k"))
+            await session.commit()
+
+        results = await asyncio.gather(
+            _observe_attempt(
+                pg_session_factory,
+                identity,
+                Observation(operation_key="settle", outcome=ObservedOutcome.SUCCEEDED, receipt_ref="receipt/success"),
+            ),
+            _observe_attempt(
+                pg_session_factory,
+                identity,
+                Observation(operation_key="settle", outcome=ObservedOutcome.FAILED, receipt_ref="receipt/failure"),
+            ),
+        )
+
+        assert {result.kind for result in results} == {OutcomeKind.APPLIED, OutcomeKind.CONFLICT}
+        conflict = next(result for result in results if result.kind is OutcomeKind.CONFLICT)
+        assert conflict.reason == "action_already_settled"
+        async with pg_session_factory() as session:
+            row = (await session.execute(select(OrchestrationAction).where(OrchestrationAction.operation_key == "settle"))).scalar_one()
+        assert (row.status, row.receipt_ref) in {
+            (ActionStatus.SUCCEEDED.value, "receipt/success"),
+            (ActionStatus.FAILED.value, "receipt/failure"),
+        }

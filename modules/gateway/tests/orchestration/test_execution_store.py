@@ -60,10 +60,13 @@ from src.orchestration.execution_store import (
     record_observation,
 )
 from src.orchestration.models import (
+    ClaimState,
+    OrchestrationAcceptedPlan,
     OrchestrationAction,
     OrchestrationExecution,
     OrchestrationFlow,
     OrchestrationNode,
+    OrchestrationWorkClaim,
 )
 from src.orchestration.state import NodeState
 from src.shared.models.base import Base
@@ -71,6 +74,7 @@ from src.shared.models.base import Base
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
 CLAIM = "claim-5142"
+CLAIM_B = "claim-5142-b"
 PLAN_VERSION = 3
 
 
@@ -131,6 +135,29 @@ async def graph(session):
         session.add(flow)
         await session.flush()
         made[f"flow_{key}"] = flow.id
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id=org,
+                flow_id=flow.id,
+                version=PLAN_VERSION,
+                plan_document={},
+                plan_hash=f"plan-{key}",
+            )
+        )
+        claim_id = CLAIM if org == ORG_A else CLAIM_B
+        session.add(
+            OrchestrationWorkClaim(
+                id=claim_id,
+                org_id=org,
+                provider_repository_id=5142,
+                issue_number=5142,
+                owner_kind="flow",
+                owner_ref=flow.id,
+                state=ClaimState.HELD.value,
+                generation=1,
+            )
+        )
+        made[f"claim_{key}"] = claim_id
         for index in (1, 2):
             node = OrchestrationNode(
                 org_id=org,
@@ -154,7 +181,7 @@ def _identity(graph, *, node: str = "node_a1", org: str = ORG_A, cycle: int = 1,
         node_id=graph[node],
         cycle=cycle,
         accepted_plan_version=plan,
-        claim_id=CLAIM,
+        claim_id=CLAIM_B if org == ORG_B else CLAIM,
         claim_generation=generation,
     )
 
@@ -162,6 +189,10 @@ def _identity(graph, *, node: str = "node_a1", org: str = ORG_A, cycle: int = 1,
 async def _seed(session, graph, **kwargs):
     """Create one execution and return `(identity, record)`."""
     identity = _identity(graph, **kwargs)
+    claim = await session.get(OrchestrationWorkClaim, identity.claim_id)
+    claim.generation = identity.claim_generation
+    claim.state = ClaimState.HELD.value
+    await session.flush()
     flow_key = "flow_b" if identity.org_id == ORG_B else "flow_a"
     outcome = await create_execution(session, identity=identity, flow_id=graph[flow_key])
     assert outcome.kind is OutcomeKind.APPLIED
@@ -170,6 +201,14 @@ async def _seed(session, graph, **kwargs):
 
 def _soon() -> datetime:
     return datetime.now(UTC) + timedelta(minutes=5)
+
+
+async def _set_live_generation(session, graph, generation: int, *, org: str = ORG_A) -> None:
+    claim_id = graph["claim_b"] if org == ORG_B else graph["claim_a"]
+    claim = await session.get(OrchestrationWorkClaim, claim_id)
+    claim.generation = generation
+    claim.state = ClaimState.HELD.value
+    await session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +390,83 @@ class TestAuthorityBinding:
         assert outcome.kind is OutcomeKind.CONFLICT
         assert outcome.reason == "claim_mismatch"
 
+    async def test_create_refuses_a_released_live_claim(self, session, graph):
+        identity = _identity(graph)
+        claim = await session.get(OrchestrationWorkClaim, identity.claim_id)
+        claim.state = ClaimState.RELEASED.value
+        await session.flush()
+
+        outcome = await create_execution(session, identity=identity, flow_id=graph["flow_a"])
+
+        assert outcome.kind is OutcomeKind.CONFLICT
+        assert outcome.reason == "claim_not_held"
+        assert (await session.execute(select(OrchestrationExecution))).scalars().all() == []
+
+    async def test_advance_checks_the_live_claim_not_only_the_ledger_snapshot(self, session, graph):
+        identity, record = await _seed(session, graph)
+        await _set_live_generation(session, graph, 2)
+
+        outcome = await advance_execution(
+            session,
+            identity=identity,
+            advance=PhaseAdvance(
+                phase=ExecutionPhase.CONCLUDED,
+                status=ExecutionStatus.CONCLUDED,
+                expected_revision=record.revision,
+            ),
+        )
+
+        assert outcome.kind is OutcomeKind.CONFLICT
+        assert outcome.reason == "claim_generation_superseded"
+        assert (await session.get(OrchestrationExecution, record.id)).revision == record.revision
+
+    async def test_advance_checks_the_current_accepted_plan(self, session, graph):
+        identity, record = await _seed(session, graph)
+        current = (
+            await session.execute(
+                select(OrchestrationAcceptedPlan).where(
+                    OrchestrationAcceptedPlan.org_id == ORG_A,
+                    OrchestrationAcceptedPlan.flow_id == graph["flow_a"],
+                    OrchestrationAcceptedPlan.superseded_at.is_(None),
+                )
+            )
+        ).scalar_one()
+        current.superseded_at = datetime.now(UTC)
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id=ORG_A,
+                flow_id=graph["flow_a"],
+                version=PLAN_VERSION + 1,
+                plan_document={},
+                plan_hash="plan-a-v4",
+            )
+        )
+        await session.flush()
+
+        outcome = await advance_execution(
+            session,
+            identity=identity,
+            advance=PhaseAdvance(
+                phase=ExecutionPhase.CONCLUDED,
+                status=ExecutionStatus.CONCLUDED,
+                expected_revision=record.revision,
+            ),
+        )
+
+        assert outcome.kind is OutcomeKind.CONFLICT
+        assert outcome.reason == "accepted_plan_version_mismatch"
+
+    async def test_create_refuses_cross_tenant_flow_and_node_bindings(self, session, graph):
+        outcome = await create_execution(
+            session,
+            identity=_identity(graph, node="node_b1", org=ORG_A),
+            flow_id=graph["flow_b"],
+        )
+
+        assert outcome.kind is OutcomeKind.CONFLICT
+        assert outcome.reason == "tenant_binding_mismatch"
+        assert (await session.execute(select(OrchestrationExecution))).scalars().all() == []
+
     async def test_a_newer_generation_may_continue_the_execution(self, session, graph):
         """A legitimate handover advances the generation; the new owner must proceed.
 
@@ -360,6 +476,7 @@ class TestAuthorityBinding:
         """
         identity, record = await _seed(session, graph, generation=1)
         successor = _identity(graph, generation=2)
+        await _set_live_generation(session, graph, 2)
 
         outcome = await advance_execution(
             session,
@@ -402,6 +519,7 @@ class TestAuthorityBinding:
         """
         displaced, record = await _seed(session, graph, generation=1)
         successor = _identity(graph, generation=2)
+        await _set_live_generation(session, graph, 2)
 
         taken = await advance_execution(
             session,
@@ -506,6 +624,7 @@ class TestAuthorityBinding:
         until some later advance happens to close it.
         """
         identity, _ = await _seed(session, graph, generation=1)
+        await _set_live_generation(session, graph, 3)
 
         prepared = await prepare_action(
             session,
@@ -531,6 +650,7 @@ class TestAuthorityBinding:
         access to the run that was handed over.
         """
         identity, _ = await _seed(session, graph, generation=1)
+        await _set_live_generation(session, graph, 4)
         await advance_execution(
             session,
             identity=_identity(graph, generation=4),
@@ -701,6 +821,41 @@ class TestRecordObservation:
             await record_observation(
                 session, identity=identity, observation=Observation(operation_key="never-prepared", outcome=ObservedOutcome.SUCCEEDED)
             )
+
+    async def test_duplicate_terminal_observation_is_idempotent(self, session, graph):
+        identity, _ = await _seed(session, graph)
+        await prepare_action(session, identity=identity, intent=ActionIntent(operation_key="op", kind="k"))
+        observation = Observation(operation_key="op", outcome=ObservedOutcome.SUCCEEDED, receipt_ref="receipt/1", detail="verified")
+        first = await record_observation(session, identity=identity, observation=observation)
+        observed_at = first.action.observed_at
+
+        duplicate = await record_observation(session, identity=identity, observation=observation)
+
+        assert duplicate.kind is OutcomeKind.APPLIED
+        assert duplicate.reason == "observation_already_recorded"
+        assert duplicate.action.observed_at == observed_at
+
+    async def test_conflicting_terminal_observation_is_refused_without_rewrite(self, session, graph, caplog):
+        identity, _ = await _seed(session, graph)
+        await prepare_action(session, identity=identity, intent=ActionIntent(operation_key="op", kind="k"))
+        first = await record_observation(
+            session,
+            identity=identity,
+            observation=Observation(operation_key="op", outcome=ObservedOutcome.SUCCEEDED, receipt_ref="receipt/success"),
+        )
+
+        conflict = await record_observation(
+            session,
+            identity=identity,
+            observation=Observation(operation_key="op", outcome=ObservedOutcome.FAILED, receipt_ref="receipt/failure"),
+        )
+
+        assert conflict.kind is OutcomeKind.CONFLICT
+        assert conflict.reason == "action_already_settled"
+        assert conflict.action.status is ActionStatus.SUCCEEDED
+        assert conflict.action.receipt_ref == "receipt/success"
+        assert conflict.action.observed_at == first.action.observed_at
+        assert "refusing conflicting observation" in caplog.text
 
 
 class TestUnknownOutcomeStaysUnknown:
@@ -1395,10 +1550,10 @@ class TestOuterStatesUnchanged:
         assert not hasattr(state_module, "ExecutionStatus")
 
     def test_the_store_touches_no_node_row(self, session, graph):
-        """Scope boundary: no phase handlers, no node transitions, in this PR."""
+        """Scope boundary: graph rows are verified but never transitioned here."""
         source = (__import__("pathlib").Path(__file__).parents[2] / "src/orchestration/execution_store.py").read_text()
-        assert "OrchestrationNode" not in source
         assert "NodeState" not in source
+        assert "node.state" not in source
 
 
 class TestNoNetworkInsideTransactions:
