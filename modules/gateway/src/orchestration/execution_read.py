@@ -62,6 +62,14 @@ out of scope for this issue. Per execution the action list is capped at
 `MAX_ACTIONS_PER_EXECUTION` most-recent rows, with `action_overflow` telling the
 truth when older ones were withheld rather than pretending the list is complete.
 
+That cap is enforced **in the database, per execution**, by a `row_number()`
+partitioned on `execution_id` — not by slicing in Python after the fact, which
+would leave the *fetch* unbounded while the *response* looked bounded, and not by
+a global `LIMIT`, which would let one busy execution starve a quiet sibling to
+zero rows while reporting `action_overflow=False` about it. See the comment at the
+query itself; both wrong shapes pass a naive single-execution regression, so the
+test for this is deliberately asymmetric.
+
 ## References only, validated on the way out
 
 `artifact_ref`/`receipt_ref` hold provider or storage identifiers. `_safe_ref`
@@ -80,6 +88,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from src.shared.logging import get_logger
 
@@ -522,18 +531,67 @@ async def load_flow_execution_view(
         # would be correct only because the ids came from an org-scoped read, and a
         # filter that depends on an earlier query for its safety is one refactor away
         # from being wrong.
-        action_rows = (
-            (
-                await session.execute(
-                    select(OrchestrationAction).where(
-                        OrchestrationAction.org_id == org_id,
-                        OrchestrationAction.execution_id.in_([row.id for row in rows]),
-                    )
+        #
+        # ## Why a window function and not a `LIMIT`
+        #
+        # The bound has to be PER EXECUTION, and a plain `LIMIT` cannot express that.
+        # `LIMIT (cap + 1) * len(ids)` looks like it implements the same cap and does
+        # something quite different: one busy execution consumes the whole budget and a
+        # quiet sibling comes back with ZERO rows. That does not degrade gracefully —
+        # an empty action list is indistinguishable from "this execution has no
+        # actions", and `action_overflow` would be False while saying it, so the view
+        # would state positively that nothing happened on an execution that has
+        # actions. Slow-but-truthful is a better failure than fast-and-wrong, so the
+        # per-partition rank is the only acceptable shape here.
+        #
+        # `row_number()` over a partition of `execution_id` ranks each execution's own
+        # actions independently, so `rn <= cap + 1` bounds every execution separately in
+        # one query — the three-query invariant holds. Available on PostgreSQL and on
+        # SQLite >= 3.25 (the test runner has far newer), so this is not a
+        # dialect-specific path.
+        #
+        # `cap + 1` rather than `cap`: the extra row is exactly the evidence that older
+        # rows exist. `_execution_view` slices back to `cap`, which makes
+        # `len(ordered) > cap` a truthful overflow signal rather than a guess.
+        ranked = (
+            select(
+                OrchestrationAction,
+                func.row_number()
+                .over(
+                    partition_by=OrchestrationAction.execution_id,
+                    # Newest first, matching `_execution_view`'s own ordering so the
+                    # rows that survive the cap are the rows the view would have kept.
+                    #
+                    # The `id` tie-breaker is load-bearing, not decoration, and its
+                    # direction matters: `created_at` defaults to `utcnow` and actions
+                    # prepared together within one execution can share a timestamp to
+                    # the microsecond. With a ties-ambiguous ordering, WHICH action
+                    # lands at rank `cap + 1` is chosen by the planner, so
+                    # `action_overflow` would flicker between runs on identical data —
+                    # a test that passes locally and fails in CI for no visible reason.
+                    # Kept DESC alongside `created_at DESC` so the rank order and the
+                    # view's sort agree rather than merely both being stable.
+                    order_by=(
+                        OrchestrationAction.created_at.desc(),
+                        OrchestrationAction.id.desc(),
+                    ),
                 )
+                .label("rn"),
             )
-            .scalars()
-            .all()
+            .where(
+                OrchestrationAction.org_id == org_id,
+                OrchestrationAction.execution_id.in_([row.id for row in rows]),
+            )
+            .subquery()
         )
+        # Note for whoever next profiles this: the ordering is deliberately NOT
+        # index-backed. `ix_orchestration_actions_execution_status` is
+        # `(org_id, execution_id, status)`, which serves the `IN` but not the
+        # `created_at` sort. At `cap + 1` rows per execution over a bounded page that
+        # is a small sort, and adding an index is a migration — a larger change than
+        # this read. Considered and declined, not overlooked.
+        action_entity = aliased(OrchestrationAction, ranked)
+        action_rows = (await session.execute(select(action_entity).where(ranked.c.rn <= MAX_ACTIONS_PER_EXECUTION + 1))).scalars().all()
         for action in action_rows:
             actions_by_execution.setdefault(action.execution_id, []).append(action)
 

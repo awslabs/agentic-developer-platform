@@ -769,6 +769,183 @@ async def test_actions_are_capped_and_the_truncation_is_reported(session, app_wi
 
 
 @pytest.mark.asyncio
+async def test_the_action_bound_is_per_execution_and_does_not_starve_a_quiet_one(session, app_with_router):
+    """A busy execution is capped without a quiet sibling losing its rows.
+
+    This is the asymmetric case, and the asymmetry is the entire point: a
+    single-execution regression passes against all three implementations of "cap the
+    actions", including the two wrong ones.
+
+    - Slicing in Python after the fetch bounds the RESPONSE while the QUERY still
+      loads every historical action for every execution on the page — the unbounded
+      read the issue forbids, wearing a bounded response as a disguise.
+    - A global `LIMIT (cap + 1) * len(ids)` bounds the fetch but lets the busy
+      execution consume the entire budget, so `quiet` returns ZERO rows. That is the
+      worse failure: an empty action list reads as "nothing happened here", and
+      `action_overflow` is False while it says so, so the view makes a positive false
+      claim rather than admitting it withheld something.
+
+    Only a per-execution bound satisfies both, which is why the assertion on `quiet`
+    matters as much as the one on `busy`.
+
+    **The seeded timestamps are what makes this discriminate, and the direction is
+    counter-intuitive.** `quiet`'s actions are deliberately OLDER than every one of
+    `busy`'s. A global limit must order newest-first to keep the cap meaningful, so it
+    reads all of `busy` before reaching `quiet` and `quiet` is what gets truncated to
+    nothing. Seeding `quiet` as newer protects it from the very bug under test: the
+    global limit reaches its rows first, returns all three, and the test passes against
+    the broken implementation. Verified by probe rather than assumed — the first
+    version of this test had the direction backwards and passed against a global
+    `LIMIT`.
+    """
+    flow = await seed_flow(session)
+    busy_node = await seed_node(session, flow, node_ref="story-busy")
+    quiet_node = await seed_node(session, flow, node_ref="story-quiet")
+    busy = await seed_execution(session, flow, busy_node)
+    quiet = await seed_execution(session, flow, quiet_node)
+
+    quiet_count = 3
+    for index in range(quiet_count):
+        await seed_action(
+            session,
+            quiet,
+            operation_key=f"quiet-{index}:story-quiet:cycle-1",
+            status=ActionStatus.SUCCEEDED,
+            # Oldest in the flow: a newest-first global limit reaches these LAST and
+            # starves them, which is exactly the failure being asserted against.
+            created_at=NOW + timedelta(seconds=index),
+        )
+    over_cap = MAX_ACTIONS_PER_EXECUTION + 30
+    for index in range(over_cap):
+        await seed_action(
+            session,
+            busy,
+            operation_key=f"busy-{index}:story-busy:cycle-1",
+            status=ActionStatus.SUCCEEDED,
+            created_at=NOW + timedelta(seconds=quiet_count + index),
+        )
+
+    body = client_for(app_with_router).get(route(flow.id)).json()
+    by_node = {execution["node_id"]: execution for execution in body["executions"]}
+
+    busy_view = by_node[busy_node.id]
+    assert len(busy_view["actions"]) == MAX_ACTIONS_PER_EXECUTION
+    assert busy_view["action_overflow"] is True
+
+    quiet_view = by_node[quiet_node.id]
+    # The assertion a global limit fails: all three rows, and honest about it.
+    assert len(quiet_view["actions"]) == quiet_count, "the quiet execution was starved of its actions"
+    assert quiet_view["action_overflow"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_action_cap_is_enforced_in_sql_not_after_the_fetch(session, app_with_router):
+    """The database returns at most `cap + 1` per execution, not the whole history.
+
+    Companion to the test above, and the one that distinguishes a bounded FETCH from a
+    bounded RESPONSE — the two are indistinguishable from the payload alone, because
+    Python slicing produces a byte-identical response while having already
+    materialised every row in the gateway.
+
+    Asserted by counting the rows the implementation's OWN action query returns, via
+    the cursor. Re-issuing an equivalent query in the test would prove only that SQL
+    can bound a fetch, not that this module's query does — the assertion has to observe
+    the real statement.
+
+    `cap + 1` is the expected ceiling rather than `cap`: the extra row is what
+    `action_overflow` is derived from, so fetching exactly `cap` would make truncation
+    undetectable.
+    """
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, node_ref="story-a")
+    execution = await seed_execution(session, flow, node)
+    seeded = MAX_ACTIONS_PER_EXECUTION + 40
+    for index in range(seeded):
+        await seed_action(
+            session,
+            execution,
+            operation_key=f"step-{index}:story-a:cycle-1",
+            status=ActionStatus.SUCCEEDED,
+            created_at=NOW + timedelta(seconds=index),
+        )
+    await session.commit()
+
+    # The action statement is captured and re-run on a SEPARATE connection to count
+    # what it returns. It is deliberately NOT counted by draining the live cursor in an
+    # `after_cursor_execute` hook: that consumes the rows the implementation is about to
+    # read, so the code under test sees an empty result and the test measures its own
+    # interference. (Observed — the first version of this test did exactly that and
+    # failed with `action_overflow is False`.)
+    captured: list[tuple[str, object]] = []
+
+    @event.listens_for(session.bind.sync_engine, "before_cursor_execute")
+    def _capture(_conn, _cursor, statement, params, _context, _executemany):
+        if "orchestration_actions" in statement.lower():
+            captured.append((statement, params))
+
+    try:
+        view = await load_flow_execution_view(session, org_id=ORG_A, flow_id=flow.id)
+    finally:
+        event.remove(session.bind.sync_engine, "before_cursor_execute", _capture)
+
+    assert len(captured) == 1, f"expected exactly one action query, saw {len(captured)}"
+    statement, params = captured[0]
+    # Re-run through the raw DBAPI: the captured statement carries the driver's own
+    # positional placeholders and parameter tuple, which `text()` would try to parse as
+    # named binds.
+    raw = await session.connection()
+    fetched = len((await raw.exec_driver_sql(statement, tuple(params))).fetchall())
+
+    # The bound is in the DATABASE: far fewer rows crossed the wire than were seeded.
+    assert fetched == MAX_ACTIONS_PER_EXECUTION + 1, f"action fetch was not bounded per execution: {fetched} rows fetched of {seeded} seeded"
+    assert view.executions[0].action_overflow is True
+
+
+@pytest.mark.asyncio
+async def test_execution_read_carries_its_own_tenant_predicate(session, app_with_router):
+    """The execution queries are org-scoped independently of the flow that resolved it.
+
+    Mirrors `test_action_read_carries_its_own_tenant_predicate` one level up. The
+    seeded row is impossible by construction — an ORG_B execution on ORG_A's flow —
+    and it has to be, because a correctly-tenanted ORG_B execution on ORG_B's own flow
+    is excluded by the `flow_id` predicate no matter what `org_id` does. Only a
+    mis-tenanted row can show that the `org_id` predicate is load-bearing rather than
+    decorative.
+
+    To be precise about scope: there is no cross-tenant read at this head. The route
+    resolves the flow under `current_user.org_id` and 404s otherwise, so these
+    predicates are genuinely redundant today. What this test protects is that they
+    still hold if that resolution is ever refactored — the same argument the
+    action-level docstring makes, applied one level up.
+
+    One test covers both statements because `total` and `executions` are computed
+    separately: the `total` assertion is the only cover for the count query. That
+    split is also a user-visible bug independent of tenancy — a predicate in one
+    statement and not the other renders a permanently wrong count beside a correct
+    list, which looks like a UI defect and gets debugged in the wrong place.
+    """
+    mine = await seed_flow(session)
+    my_node = await seed_node(session, mine, node_ref="story-mine")
+    await seed_execution(session, mine, my_node, progress_note="mine")
+
+    their_node = await seed_node(session, mine, node_ref="story-theirs", org_id=ORG_B)
+    await seed_execution(
+        session,
+        mine,
+        their_node,
+        org_id=ORG_B,
+        cycle=2,
+        progress_note="leaked-theirs",
+    )
+
+    body = client_for(app_with_router, org_id=ORG_A).get(route(mine.id)).json()
+
+    assert body["total"] == 1, f"count query leaked: total={body['total']}"
+    assert [execution["node_id"] for execution in body["executions"]] == [my_node.id]
+    assert "leaked-theirs" not in response_text(body)
+
+
+@pytest.mark.asyncio
 async def test_page_is_bounded_and_total_reports_what_is_not_shown(session, app_with_router):
     """Paging is explicit, and `total` says how much the page omits.
 
