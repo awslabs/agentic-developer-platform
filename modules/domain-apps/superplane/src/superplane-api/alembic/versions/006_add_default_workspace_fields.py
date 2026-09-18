@@ -1,7 +1,7 @@
 """Add is_default and budget_max_hourly_usd to workspaces for US-06.
 
 Revision ID: 006_add_default_workspace_fields
-Revises: 005_add_research_proposals
+Revises: 006_account_onboard_fields
 Create Date: 2026-04-09
 
 Adds:
@@ -14,7 +14,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "006_add_default_workspace_fields"
-down_revision = "005_add_research_proposals"
+down_revision = "006_account_onboard_fields"
 branch_labels = None
 depends_on = None
 

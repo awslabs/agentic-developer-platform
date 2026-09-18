@@ -255,16 +255,53 @@ class TestSchemaCompatibility:
         assert "schema" in lock, "lock records no schema compatibility"
 
     def test_schema_status_is_not_an_unverified_claim(self, lock: dict) -> None:
-        """The migration chain at the pinned revision has multiple heads (U13/#5045).
+        """`status` must stay `unverified` even though the chain is now single-headed.
 
-        Recording `status: verified` here would assert something no offline run has
-        established, so the honest value is `unverified` with the blocker named.
+        UPDATED BY U13 (#5045), which repaired the chain: `single_head` flipped to true, so
+        this test no longer asserts false for it.
+
+        The important half is unchanged, and the two must not be conflated. `single_head` is
+        a property of the FILES and is established offline — one head, one base, no
+        duplicate ids, no dangling parent, checked by
+        `src/superplane-api/tests/test_migrations.py`. `status: verified` is a property of a
+        REAL DATABASE and is not established by any of that: the CI lane is credential-free
+        with no PostgreSQL service, and the live smoke check plus R4 acceptance 3 are
+        deferred behind an unresolved account, database access and backup target.
+
+        So a single-headed chain whose status is still `unverified` is the correct recorded
+        state, and `check_migration_contract.py` still refuses on it.
         """
         schema = lock["schema"]
         assert schema["status"] == "unverified"
-        assert schema["single_head"] is False
+        assert schema["single_head"] is True
         assert schema["compatible_with"] is None
         assert schema["blocked_by"]["unit"] == "U13"
+
+    def test_the_chain_the_lock_describes_is_the_chain_on_disk(
+        self, lock: dict
+    ) -> None:
+        """The recorded head/base/file-count must be re-derivable from the tree.
+
+        Added by U13 (#5045). The lock's `observed` block is read by
+        `check_migration_contract.py` and rendered into what an operator sees, so a value
+        that drifts from the files misdirects whoever is debugging a refusal. Deriving it
+        here means the lock cannot silently fall out of step with the chain again.
+        """
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        api_root = LOCK_PATH.parents[1] / "src" / "superplane-api"
+        config = Config(str(api_root / "alembic.ini"))
+        config.set_main_option("script_location", str(api_root / "alembic"))
+        script = ScriptDirectory.from_config(config)
+
+        observed = lock["schema"]["observed"]
+        assert script.get_heads() == [observed["head"]]
+        assert script.get_bases() == [observed["base"]]
+        assert observed["version_files"] == len(
+            list((api_root / "alembic" / "versions").glob("*.py"))
+        )
+        assert observed["duplicate_revision_ids"] == {}
 
 
 class TestStorySmokeCheck:

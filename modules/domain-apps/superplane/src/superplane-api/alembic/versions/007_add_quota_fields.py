@@ -4,14 +4,15 @@ Adds max_nodes and allowed_clouds_json columns to workspaces table.
 The quotas_json column already exists on both organizations and workspaces,
 but we add explicit columns for fast indexed queries during enforcement.
 
-Revision ID: 007
+Revision ID: 007_add_quota_fields
+Revises: 006_add_cognito_sub
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "007"
-down_revision = "006_add_default_workspace_fields"
+revision = "007_add_quota_fields"
+down_revision = "006_add_cognito_sub"
 branch_labels = None
 depends_on = None
 

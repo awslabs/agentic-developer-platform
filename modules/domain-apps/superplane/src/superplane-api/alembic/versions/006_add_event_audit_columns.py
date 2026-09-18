@@ -1,7 +1,7 @@
 """Add audit columns to events table.
 
-Revision ID: 006
-Revises: 005
+Revision ID: 006_add_event_audit_columns
+Revises: 006_add_workspace_reconciler_fields
 Create Date: 2026-04-09
 
 Adds user_id, action, source_ip, request_path, http_status columns
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers
-revision = "006"
-down_revision = "005"
+revision = "006_add_event_audit_columns"
+down_revision = "006_add_workspace_reconciler_fields"
 branch_labels = None
 depends_on = None
 

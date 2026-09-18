@@ -6,8 +6,8 @@ Adds columns for failed bootstrap retry and drift detection:
 - last_drift_check_at: timestamp of last drift detection check
 - reconcile_error: last reconciliation error message
 
-Revision ID: 006
-Revises: 005
+Revision ID: 006_add_workspace_reconciler_fields
+Revises: 006_add_default_workspace_fields
 """
 
 from alembic import op
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers
-revision = "006"
-down_revision = "005"
+revision = "006_add_workspace_reconciler_fields"
+down_revision = "006_add_default_workspace_fields"
 branch_labels = None
 depends_on = None
 

@@ -157,8 +157,10 @@ class TestComputeDailyCost:
     @pytest.mark.asyncio
     async def test_terminated_node_partial_day(self):
         """A terminated node should only count hours it was running today."""
-        now = datetime.now(timezone.utc)
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Keep the complete 01:00-03:00 interval in the past regardless of
+        # what UTC hour CI happens to run this fixture.
+        day_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        now = day_start + timedelta(hours=6)
         cluster_id = uuid.uuid4()
 
         # Node ran for exactly 2 hours today
@@ -208,8 +210,10 @@ class TestComputeDailyCost:
     @pytest.mark.asyncio
     async def test_multiple_nodes_sum(self):
         """Multiple nodes' costs should sum up."""
-        now = datetime.now(timezone.utc)
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Both seeded node intervals must precede now; using wall-clock
+        # midnight made this fail daily before 02:00 UTC.
+        day_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        now = day_start + timedelta(hours=6)
         cluster_id = uuid.uuid4()
 
         node1 = _make_node(

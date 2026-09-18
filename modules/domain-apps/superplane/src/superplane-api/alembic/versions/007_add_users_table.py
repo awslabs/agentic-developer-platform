@@ -1,7 +1,7 @@
 """Add users table for RBAC user management.
 
-Revision ID: 007
-Revises: 006
+Revision ID: 007_add_users_table
+Revises: 007_add_org_settings_sso
 Create Date: 2026-04-09
 """
 
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
 # revision identifiers, used by Alembic.
-revision = "007"
-down_revision = "006"
+revision = "007_add_users_table"
+down_revision = "007_add_org_settings_sso"
 branch_labels = None
 depends_on = None
 

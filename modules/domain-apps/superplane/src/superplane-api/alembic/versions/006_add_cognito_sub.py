@@ -1,7 +1,7 @@
 """Add cognito_sub column to organizations table.
 
-Revision ID: 006
-Revises: 005
+Revision ID: 006_add_cognito_sub
+Revises: 006_add_event_audit_columns
 Create Date: 2026-04-09
 """
 
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = "006"
-down_revision = "005"
+revision = "006_add_cognito_sub"
+down_revision = "006_add_event_audit_columns"
 branch_labels = None
 depends_on = None
 

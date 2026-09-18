@@ -198,46 +198,69 @@ skypilot_config:
 
 # ── Schema compatibility ─────────────────────────────────────────────────────────────
 #
-# Recorded as OBSERVED, not asserted as a version. The migration chain does not have a
-# single head: in alembic/versions/ (13 files), revision id `006` is declared by three
-# separate files and `007` by three more, several sharing the same down_revision.
-# `alembic upgrade head` cannot resolve that.
+# Recorded as OBSERVED, not asserted as a version.
 #
-# COUNT CORRECTED BY U22 (#5326). This previously recorded `"006": 4`. Counting the
-# maintained chain — now that the files are in this repository — gives three: the four
-# `006_*.py` FILENAMES are real, but `006_account_onboard_fields.py` and
-# `006_add_default_workspace_fields.py` declare their full descriptive ids, so only
-# `006_add_cognito_sub.py`, `006_add_event_audit_columns.py` and
-# `006_add_workspace_reconciler_fields.py` collide on the bare `"006"`. The filename prefix
-# and the declared `revision =` value are different things, and only the second one collides.
-# Verified against the same reference the transfer was taken from.
+# CHAIN REPAIRED BY U13 (#5045). `single_head` is now true. What the chain looked like
+# before, kept because it is the defect this field exists to track: revision id `006` was
+# declared by three files and `007` by three more, and three files declared a parent of
+# `"005"` — an id no file declares (the real one is `005_add_research_proposals`).
 #
-# The correction matters because this number is not decoration: check_migration_contract.py
-# renders it into the refusal an operator reads to learn what U13 has to repair, so an
-# inflated count would send them looking for a fourth conflicting file that does not exist.
-# U22 is the first unit in a position to check it — before the transfer, nobody in ADP had
-# the files to count. The conclusion is unchanged: still multiple heads, still unverified.
+# The earlier note here, and the issue, both described that as "two heads with no merge".
+# It was worse. Alembic's own `ScriptDirectory` raised `KeyError: '005'` building its
+# revision map, so the chain could not be LOADED — no alembic command worked against it,
+# not `upgrade`, not `heads`, not `current`. That distinction is why the repair relinked
+# the six conflicting files onto unique ids and explicit parents instead of adding a merge
+# revision: a merge point resolves two VALID heads, and this graph failed before a merge
+# could be consulted.
 #
-# This is U13's repaired-chain work (the earliest upstream hard stop in this EPIC, per
-# acceptance-index.md U3-L2) and NOT U2's or U22's to fix — the obligation here is to record
-# the fact accurately so that no deploy reads a compatible-looking schema field that was
-# never verified.
+# Revisions 001-005 were left byte-identical. They are the only revisions that could
+# plausibly have been applied anywhere, and rewriting an applied migration invalidates a
+# deployed database's recorded history. Every id that changed belonged to a file that was
+# unreachable by construction, so no recorded history can reference it.
+#
+# Two tables the models declare (`api_keys`, `budget_alerts`) were created by no migration
+# at all; 008 and 009 add them. The chain now renders 17 CREATE TABLEs for the 17 tables
+# `Base.metadata` declares.
+#
+# WHY `status` IS STILL `unverified`, AND WHY THAT IS NOT A LEFTOVER
+#
+# `status: verified` in this file means verified AGAINST A REAL DATABASE. That has not
+# happened and cannot happen from CI: `superplane-domain-ci.yml` is a deliberately
+# credential-free offline lane with no PostgreSQL service, and the issue's own live smoke
+# check (`alembic upgrade head` against an ephemeral empty database) plus R4 acceptance 3
+# (the data-preserving upgrade) are recorded as DEFERRED behind an account, authorized
+# database access and a backup target that remain unresolved.
+#
+# What has been established offline, by `src/superplane-api/tests/test_migrations.py`:
+# exactly one head and one base, every revision on the path to head, no duplicate ids, no
+# dangling parent, model/migration table parity, 001-005 pinned by content hash, and the
+# whole chain rendering as PostgreSQL DDL through Alembic's offline (`--sql`) mode. That
+# last one COMPILES every migration for the real dialect; it never opens a connection, so
+# it does not observe anything that depends on existing rows.
+#
+# So `check_migration_contract.py` still refuses — now on the unverified status and the
+# missing runner-image digest rather than on the chain — and that is the intended state.
+# Flipping `status` here would assert exactly the claim the deferred acceptance exists to
+# gate. Whoever runs that live verification owns this field.
 schema:
   migration_tool: alembic
   config: src/superplane-api/alembic.ini
   status: unverified
-  single_head: false
+  single_head: true
   observed:
-    version_files: 13
-    duplicate_revision_ids:
-      # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
-      "006": 3
-      "007": 3
+    version_files: 15
+    # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
+    # Empty since the repair; kept as a key so the contract test that derives this from the
+    # tree keeps asserting it stays empty rather than skipping a missing field.
+    duplicate_revision_ids: {}
+    head: 009_add_budget_alerts_table
+    base: 001_initial
   compatible_with: null
   blocked_by:
     issue: 5045
     unit: U13
     why: >-
-      duplicate revision ids and multiple heads at the pinned revision; the chain must be
-      repaired before any schema compatibility claim here can be verified against a real
-      database
+      the chain is single-headed as of #5045, but no schema compatibility claim is made
+      here until `alembic upgrade head` has run against a real database — the live smoke
+      check and R4 acceptance 3 that would establish it are deferred behind an unresolved
+      account, database access and backup target
