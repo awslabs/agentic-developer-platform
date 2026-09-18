@@ -11,6 +11,7 @@ or Codex.
 | `install.sh` | Installer for `adp` — one line, run via `curl … \| sh` from your gateway |
 | `bg-cognito-auth.sh` | Cognito authentication core (login, import, refresh, token, serve). `adp` delegates every auth verb to it |
 | `bg-gateway-proxy.py` | Localhost auth proxy started by `serve` — zero-touch auth for Codex (stdlib python3, no pip installs) |
+| `adp_deployments.py` | Named deployments and the one selection rule, shared by the bash and python halves (stdlib Python 3) |
 | `adp-bedrock.py` | Bedrock account connection and routing, used by `adp admin bedrock connect` (stdlib Python 3) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
@@ -38,7 +39,7 @@ adp claude setup   # or: adp codex setup
 claude             # or: adp codex
 ```
 
-The installer puts `adp`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py`, `adp_common.py`, `adp-admin.py` and `adp-bedrock.py` side by
+The installer puts `adp`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py`, `adp_common.py`, `adp_deployments.py`, `adp-admin.py` and `adp-bedrock.py` side by
 side in `~/.adp/bin` (override with `--prefix`), adds that directory to your PATH,
 and remembers the gateway URL in `~/.bedrock-gateway/config.json` — which is why
 no later command needs a flag. `adp update` re-pulls from the same gateway;
@@ -55,6 +56,66 @@ providers survive — and re-running them changes nothing.
 
 > Prefer to read what you run? `curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh -o install.sh`,
 > read it, then `sh install.sh --gateway-url https://<CLOUDFRONT_DOMAIN>/api`.
+
+## Several deployments at once
+
+One installed CLI serves any number of ADP deployments — development,
+integration, pre-production — each with its own login, its own tool config and
+its own agent sessions. Register them once:
+
+```bash
+adp deployment add dev         --url https://<dev-host>
+adp deployment add integration --url https://<integration-host>
+adp deployment add preprod     --url https://<preprod-host>
+adp deployment list            # which are registered, and which one is selected
+```
+
+Then give each terminal its own target and sign in there:
+
+```bash
+export ADP_DEPLOYMENT=integration   # this terminal, for as long as it lives
+adp login
+adp codex                           # or: adp claude
+```
+
+Which deployment a command uses, **first match winning**:
+
+| Selection | Scope |
+|---|---|
+| `adp --deployment <name> <verb> …` | this one command (before the verb) |
+| `ADP_DEPLOYMENT=<name>` | this terminal |
+| `adp deployment use <name>` | the saved default, for new terminals |
+
+An unknown name **fails**; it is never quietly swapped for another deployment.
+`adp deployment use` changes only the saved default — terminals that named their
+own deployment are unaffected, and so is anything already running. `adp logout`
+signs out of the selected deployment only.
+
+`adp deployment add` registers locally and makes no request, so a deployment can
+be registered long before you sign in to it. `adp deployment remove` forgets one
+locally: it never touches the cloud, and it refuses to remove the saved default
+or a deployment whose proxy is still running.
+
+Each deployment keeps its session, state, logs and Codex proxy under
+`~/.adp/deployments/<id>/`, and gets its own AWS profile
+(`bedrock-gateway-<name>`) so three deployments do not overwrite each other's
+credentials. Two names for the same URL are one deployment under two labels — one
+session, not two. Do not set `ADP_PROXY_PORT` when running concurrent sessions: it
+pins a single port.
+
+If you already had a single-deployment setup, it keeps working untouched and
+appears in `adp deployment list` as `default`. Nothing is moved and you do not
+need to sign in again.
+
+> **Rolling back past this release.** `adp update --rollback` restores the
+> previous CLI executables and deliberately leaves your deployments and sessions
+> alone. An `adp` from before named-deployment support has no `deployment` verb,
+> so while rolled back it uses the original single-deployment store and ignores
+> the registry. Your deployments are not deleted — they reappear unchanged when
+> you `adp update` forward again.
+
+Design and rationale: [multiple deployments design
+note](../../../docs/design-notes/5413-cli-multiple-deployments.md).
 
 ## Connect an AWS account for Bedrock
 
