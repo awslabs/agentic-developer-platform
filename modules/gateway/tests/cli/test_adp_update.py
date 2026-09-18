@@ -141,6 +141,13 @@ def _run_adp(bin_dir: Path, home: Path, args: list[str], *, deployment: str | No
     return subprocess.run(["bash", str(bin_dir / "adp"), *args], capture_output=True, text=True, env=env, timeout=60)
 
 
+def _listed_deployments(bin_dir: Path, home: Path) -> list[dict]:
+    """The registry as the real CLI reports it, for fixture self-checks."""
+    result = _run_adp(bin_dir, home, ["deployment", "list", "--json"])
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)["deployments"]
+
+
 class TestUpdate:
     def test_pulls_the_new_cli_from_the_stored_gateway(self, installed) -> None:
         bin_dir, home = installed
@@ -308,7 +315,17 @@ class TestUpdateWithThreeDeployments:
         Registered-not-signed-in is the ordinary state, not an edge case: `adp
         deployment add` writes a record and makes no request, so the two remote
         environments have a URL and no config.json until someone logs in to them.
+
+        The legacy store is rebound to its own url first. The `installed` fixture
+        points it at the mock gateway, and a second name for an already-registered
+        url is an ALIAS — one stable id, one store, one session. Left that way,
+        `development` was simply another name for the adopted legacy record, so a
+        class named for three deployments exercised two, and any assertion that
+        `development` routes to the mock gateway was true by fixture construction
+        rather than by anything the resolver did.
         """
+        legacy_config = home / ".bedrock-gateway" / "config.json"
+        legacy_config.write_text(json.dumps({"gateway_url": "https://legacy.example.invalid/api", "client_id": "abc123"}))
         for name, url in (
             ("development", upstream.url),
             ("integration", "https://integration.example.invalid/api"),
@@ -317,6 +334,14 @@ class TestUpdateWithThreeDeployments:
             result = _run_adp(bin_dir, home, ["deployment", "add", name, "--url", url])
             assert result.returncode == 0, f"registering {name} failed: {result.stderr}"
         assert _run_adp(bin_dir, home, ["deployment", "use", "development"]).returncode == 0
+        # Four genuinely distinct deployments (the three above plus adopted legacy),
+        # so "three deployments" is a fact about the registry, not a hope.
+        identifiers = {entry["name"]: entry["deployment_id"] for entry in _listed_deployments(bin_dir, home)}
+        for name in ("development", "integration", "preprod"):
+            assert identifiers[name] != identifiers.get("default"), f"{name} must not be an alias of the legacy store"
+        assert len({identifiers[name] for name in ("development", "integration", "preprod")}) == 3, (
+            f"the three deployments share a store: {identifiers}"
+        )
 
     @staticmethod
     def _listed(bin_dir: Path, home: Path) -> dict:
@@ -378,13 +403,12 @@ class TestUpdateWithThreeDeployments:
         """
         bin_dir, home = installed
         legacy_config = home / ".bedrock-gateway" / "config.json"
-        # The fixture's legacy store points at the SAME url the mock gateway
-        # serves, which would make `development` an alias of it — one id, one
-        # store — and the crossing under test could not happen. Bind legacy to its
-        # own url so the two are genuinely different deployments.
-        legacy_config.write_text(json.dumps({"gateway_url": "https://legacy.example.invalid/api", "client_id": "abc123"}))
+        # `_register_three` binds the legacy store to its own url and asserts that
+        # none of the three is an alias of it, which is what makes the crossing
+        # under test possible at all.
         self._register_three(bin_dir, home, upstream)
         before = json.loads(legacy_config.read_text())
+        assert before["gateway_url"] == "https://legacy.example.invalid/api"
 
         # `development` is the deployment that actually serves the CLI, so this is
         # an update that genuinely succeeds while pinned away from legacy.
@@ -467,12 +491,24 @@ class TestUpdateWithThreeDeployments:
         I update from", and the registry always has one.
         """
         bin_dir, home = installed
+        # The fixture's legacy store points at the SAME url the mock gateway serves.
+        # Leaving it there made `development` an ALIAS of the adopted legacy record —
+        # one id, one store, `~/.bedrock-gateway` — which already holds a config.json
+        # from the fixture. The "never signed in to" premise was then false, and the
+        # store path asserted below (`~/.adp/deployments/default/`) was one the CLI
+        # never writes, so the assertion held under every behaviour. Bind legacy to
+        # its own url so `development` is a genuinely separate, session-less
+        # deployment and the registry fallback is actually what makes update work.
+        legacy_config = home / ".bedrock-gateway" / "config.json"
+        legacy_config.write_text(json.dumps({"gateway_url": "https://legacy.example.invalid/api", "client_id": "abc123"}))
         added = _run_adp(bin_dir, home, ["deployment", "add", "development", "--url", upstream.url])
         assert added.returncode == 0, added.stderr
         assert _run_adp(bin_dir, home, ["deployment", "use", "development"]).returncode == 0
         listed = self._listed(bin_dir, home)
         identifier = next(entry["deployment_id"] for entry in listed["deployments"] if entry["name"] == "development")
+        assert identifier != "default", "the fixture must not make 'development' an alias of the legacy store"
         store = home / ".adp" / "deployments" / identifier
+        assert store.is_dir(), "add must create the deployment's own store directory"
         assert not (store / "config.json").exists(), "add must write no session"
         assert not next(entry["signed_in"] for entry in listed["deployments"] if entry["name"] == "development")
 

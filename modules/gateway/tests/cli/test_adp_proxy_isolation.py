@@ -76,15 +76,23 @@ def _get(url: str, timeout: float = 5.0) -> tuple[int, dict]:
 class RunningProxy:
     """A real `bg-gateway-proxy.py` process, torn down on exit."""
 
-    def __init__(self, tmp_path: Path, name: str, gateway_url: str, deployment_id: str, deployment: str) -> None:
+    def __init__(self, tmp_path: Path, name: str, gateway_url: str, deployment_id: str, deployment: str, token: str | None = None) -> None:
         self.runtime = tmp_path / name
         self.runtime.mkdir(parents=True, exist_ok=True)
         self.identity_file = self.runtime / "proxy.json"
         self.pidfile = self.runtime / "proxy.pid"
-        # A helper that cannot mint a token is fine here: these tests are about
-        # discovery and identity, which happen before any token is needed.
+        # Two helper shapes, because the tests need two different things.
+        #
+        # A helper that cannot mint a token is fine for discovery and identity,
+        # which happen before any token is needed. But it is NOT fine for a test
+        # about WHICH upstream is contacted: the proxy fetches the token FIRST and
+        # returns 502 before `_open_upstream()` runs, so with a failing helper no
+        # upstream is contacted at all — and "the other gateway saw nothing" is
+        # then true however the wires are crossed. Passing `token` gives a helper
+        # that succeeds, so the request actually reaches an upstream and the test
+        # can tell the right one from the wrong one.
         helper = self.runtime / "helper.sh"
-        helper.write_text("#!/usr/bin/env bash\nexit 1\n")
+        helper.write_text("#!/usr/bin/env bash\nexit 1\n" if token is None else f"#!/usr/bin/env bash\nprintf '%s' {token!r}\n")
         helper.chmod(0o755)
         self._argv = [
             sys.executable,
@@ -136,8 +144,8 @@ class RunningProxy:
 def spawn_proxy(tmp_path: Path):
     started: list[RunningProxy] = []
 
-    def _spawn(name: str, gateway_url: str, deployment_id: str = "", deployment: str = "") -> RunningProxy:
-        instance = RunningProxy(tmp_path, name, gateway_url, deployment_id, deployment).start()
+    def _spawn(name: str, gateway_url: str, deployment_id: str = "", deployment: str = "", token: str | None = None) -> RunningProxy:
+        instance = RunningProxy(tmp_path, name, gateway_url, deployment_id, deployment, token).start()
         started.append(instance)
         return instance
 
@@ -245,7 +253,10 @@ class TestNoRequestReachesTheWrongGateway:
                 "class H(BaseHTTPRequestHandler):\n"
                 "    def log_message(self, *a): pass\n"
                 "    def do_POST(self):\n"
-                "        open(log, 'a').write(self.path + '\\n')\n"
+                # The bearer is recorded, not just the path: the failure this guards
+                # is one deployment's CREDENTIAL arriving here, so the test has to be
+                # able to name the token it saw.
+                "        open(log, 'a').write(self.path + ' ' + (self.headers.get('Authorization') or '-') + '\\n')\n"
                 "        self.send_response(200); self.send_header('Content-Length','2'); self.end_headers()\n"
                 "        self.wfile.write(b'{}')\n"
                 "    do_GET = do_POST\n"
@@ -264,21 +275,33 @@ class TestNoRequestReachesTheWrongGateway:
                     except OSError:
                         time.sleep(0.05)
 
-            dev = spawn_proxy("dev", f"http://127.0.0.1:{recorders['dev']['port']}/api", "d1111111", "dev")
-            spawn_proxy("integration", f"http://127.0.0.1:{recorders['integration']['port']}/api", "d2222222", "integration")
+            # Each proxy gets a token helper that SUCCEEDS, with a token naming its
+            # own deployment. A failing helper would make this test vacuous: the
+            # proxy fetches the token before opening any upstream, so a 502 there
+            # means no gateway is contacted and "integration saw nothing" holds even
+            # when dev's proxy is pointed straight at integration.
+            dev = spawn_proxy("dev", f"http://127.0.0.1:{recorders['dev']['port']}/api", "d1111111", "dev", token="TOKEN-MINTED-FOR-DEV")
+            spawn_proxy(
+                "integration",
+                f"http://127.0.0.1:{recorders['integration']['port']}/api",
+                "d2222222",
+                "integration",
+                token="TOKEN-MINTED-FOR-INTEGRATION",
+            )
 
-            # The token helper fails, so this is relayed no further than a 502 —
-            # which is enough: the assertion is about WHICH upstream is contacted,
-            # and a proxy that contacted the wrong one would record a hit there.
             request = urllib.request.Request(f"{dev.base}/openai/v1/responses", data=b"{}", method="POST")  # noqa: S310
-            try:
-                urllib.request.urlopen(request, timeout=10)  # noqa: S310 - loopback literal
-            except urllib.error.HTTPError:
-                pass
+            with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - loopback literal
+                assert response.status == 200
 
             time.sleep(0.5)
+            dev_hits = recorders["dev"]["log"].read_text() if recorders["dev"]["log"].exists() else ""
             integration_hits = recorders["integration"]["log"].read_text() if recorders["integration"]["log"].exists() else ""
+            # BOTH halves. Asserting only that the other gateway saw nothing would
+            # also pass if the request reached no gateway at all, which is exactly
+            # how this test used to pass with the wires crossed.
+            assert "TOKEN-MINTED-FOR-DEV" in dev_hits, f"dev's own gateway never received the request: {dev_hits!r}"
             assert integration_hits == "", f"dev's request reached integration's gateway: {integration_hits!r}"
+            assert "TOKEN-MINTED-FOR-INTEGRATION" not in dev_hits, f"another deployment's token arrived at dev: {dev_hits!r}"
         finally:
             for entry in recorders.values():
                 entry["process"].kill()
