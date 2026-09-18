@@ -61,6 +61,19 @@ from src.orchestration.provider_quotes import (
     _pricing_revision,
     refuse,
 )
+from src.orchestration.quote_capabilities import (
+    ALLOWED_AUDIO_FORMATS,
+    ALLOWED_IMAGE_DETAILS,
+    ALLOWED_MEDIA_PART_KEYS,
+    ALLOWED_NESTED_PAYLOAD_KEYS,
+    EXTERNAL_RESPONSES_FIELDS,
+    MEDIA_PART_PAYLOADS,
+    MEDIA_RESPONSES_PARTS,
+    NESTED_PAYLOAD_DATA_KEY,
+    is_inline_base64,
+    is_inline_data_uri,
+    resolve_capability,
+)
 
 #: The one route this adapter owns. Mirrors ``MANTLE_RESPONSES_PATH``; kept as a
 #: literal so importing the quote layer does not drag in the proxy service.
@@ -119,7 +132,7 @@ class OpenAIResponsesQuoteAdapter:
             # an unbounded side cannot be reserved against a fixed budget.
             raise refuse(QuoteReason.UNBOUNDED_OUTPUT, self.capability, "explicit positive max_output_tokens required")
 
-        self._reject_unbounded_features(document)
+        exercised = self._reject_unbounded_features(document)
 
         snapshot = load_snapshot()
         state = cached_rate_state()
@@ -172,7 +185,10 @@ class OpenAIResponsesQuoteAdapter:
         return ProviderQuote(
             provider=self.provider,
             endpoint=request.path,
-            capability=self.capability,
+            # Records what the request actually used, so the evidence names the
+            # weakest guarantee behind the bound rather than always saying
+            # "responses" (#5227).
+            capability=resolve_capability(self.capability, exercised),
             billing_model_id=billing_model,
             request_sha256=request.digest,
             pricing_revision=_pricing_revision(snapshot.snapshot_version, state.source, state.generation_id, state.pointer_revision),
@@ -296,8 +312,9 @@ class OpenAIResponsesQuoteAdapter:
     # -- request shape ------------------------------------------------------
 
     @classmethod
-    def _reject_unbounded_features(cls, document: dict[str, Any]) -> None:
-        """Refuse everything outside the bounded text scope, naming what is missing."""
+    def _reject_unbounded_features(cls, document: dict[str, Any]) -> set[str]:
+        """Refuse what cannot be bounded; return the extra capabilities used."""
+        exercised: set[str] = set()
         for key in _STATEFUL_FIELDS:
             if document.get(key):
                 raise refuse(QuoteReason.STATEFUL_INPUT, Capability.HISTORY, f"{key} cannot be counted locally")
@@ -326,10 +343,11 @@ class OpenAIResponsesQuoteAdapter:
 
         if "input" not in document:
             raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "explicit input required")
-        cls._input_text_only(document["input"])
+        cls._input_text_only(document["input"], exercised)
+        return exercised
 
     @classmethod
-    def _input_text_only(cls, value: Any) -> None:
+    def _input_text_only(cls, value: Any, exercised: set[str]) -> None:
         """``input`` is either a bare string or a list of typed items."""
         if isinstance(value, str):
             if not value:
@@ -351,17 +369,129 @@ class OpenAIResponsesQuoteAdapter:
             kind = item.get("type", "message")
             if kind != "message":
                 raise refuse(QuoteReason.STATEFUL_INPUT, Capability.HISTORY, f"input item type {kind!r} cannot be counted locally")
-            cls._text_only(item.get("content", ""))
+            cls._text_only(item.get("content", ""), exercised)
 
     @classmethod
-    def _text_only(cls, content: Any) -> None:
+    def _text_only(cls, content: Any, exercised: set[str] | None = None) -> None:
+        """Walk one content field, admitting text and — when ``exercised`` is
+        given — inline media.
+
+        ``exercised`` is ``None`` for ``instructions``, which is a plain text
+        field: media there is not a shape the API defines, so it stays refused
+        rather than being quietly priced.
+        """
         if isinstance(content, str):
             return
         if not isinstance(content, list):
             raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "unsupported content")
         for part in content:
-            if not isinstance(part, dict) or part.get("type") not in _TEXT_PART_TYPES:
+            if not isinstance(part, dict):
+                raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "unsupported content")
+            kind = part.get("type")
+            if isinstance(kind, list | dict | set):
+                # Unhashable: refuse as a quote refusal rather than letting the set
+                # membership tests below raise a bare TypeError out of the adapter.
+                raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "content part type is not a readable value")
+            # A reference field is refused on EVERY part, not only on the ones this
+            # adapter treats as media. The media branch below is where the payload
+            # rules live, but it is reached only for a media `type`, so a part that
+            # declares itself `input_text` and hangs a `file_id` off it was never
+            # inspected — and the body is forwarded byte-for-byte, so the provider
+            # would still dereference it under the gateway's shared principal. That
+            # is precisely what the matrix's media_by_reference row refuses, so the
+            # scan belongs before the type dispatch.
+            for field in EXTERNAL_RESPONSES_FIELDS:
+                if part.get(field):
+                    detail = f"content part {field} is not bound by the request digest"
+                    raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, detail)
+            if kind in MEDIA_RESPONSES_PARTS and exercised is not None:
+                cls._inline_media_part(part, exercised)
+                continue
+            if kind not in _TEXT_PART_TYPES:
                 raise refuse(QuoteReason.NON_TEXT_CONTENT, Capability.MEDIA, "non-text token-count capability required")
+
+    @staticmethod
+    def _inline_media_part(part: dict[str, Any], exercised: set[str]) -> None:
+        """Admit a media part only when it carries its own bytes.
+
+        Same rule as the Anthropic adapter, spelled the two ways this API spells
+        it. ``input_image``/``input_file`` carry a ``data:`` URI string; audio
+        carries a nested ``input_audio`` object holding raw base64. Either way the
+        bytes are in the body and covered by the quote's request digest, whereas a
+        ``file_id`` names provider-stored content and any other URL scheme is a
+        fetch whose size and content we cannot pin. We add no fetcher to resolve one.
+        """
+        for field in EXTERNAL_RESPONSES_FIELDS:
+            if part.get(field):
+                raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, f"media {field} is not bound by the request digest")
+        # THIS part's declared type decides which field must carry its bytes. A
+        # shared "did anything here look inline?" tally is not a proof about this
+        # part: an `input_image` reads its bytes from `image_url`, so a nested audio
+        # object beside it certifies nothing, and counting it admitted a part whose
+        # own payload was never verified.
+        payload_field, payload_kind = MEDIA_PART_PAYLOADS[part["type"]]
+        # Everything else on the part must be a key the API defines for it. An
+        # unrecognised key is either another type's payload field or a reference
+        # the provider resolves under the gateway's shared principal, and the body
+        # is forwarded byte-for-byte, so both reach the provider. An allowlist is
+        # what makes that safe: denylisting known-bad names let an undocumented
+        # `*_url`/`*_id` field ride along beside a valid inline payload.
+        unexpected = sorted(set(part) - ALLOWED_MEDIA_PART_KEYS - {payload_field})
+        if unexpected:
+            detail = f"media part carries unsupported field {unexpected[0]}"
+            raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, detail)
+        if payload_field not in part:
+            raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.MEDIA, "media part carries no inline payload")
+        value = part[payload_field]
+
+        if payload_kind == "string":
+            if not isinstance(value, str) or not value:
+                # A structured or empty payload is one this adapter cannot read,
+                # so it cannot certify the digest covers it. Skipping it would let
+                # a non-string reference through unchecked.
+                raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.MEDIA, f"media {payload_field} is not a readable inline payload")
+            # The full inline form, not just the `data:` scheme. A scheme-only test
+            # admitted `data://attacker.example/x` and `data:,https://attacker/x`,
+            # which name somewhere else while opening with the right five characters.
+            if not is_inline_data_uri(value):
+                raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, f"media {payload_field} is fetched at submission time")
+        else:
+            # `input_audio` carries {"data": "<base64>", "format": "wav"}. The API
+            # defines no `audio_url`, so scanning data-URI strings alone refused the
+            # only spec-compliant way to send audio.
+            if not isinstance(value, dict):
+                raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.MEDIA, f"media {payload_field} is not a readable inline payload")
+            nested_unexpected = sorted(set(value) - ALLOWED_NESTED_PAYLOAD_KEYS)
+            if nested_unexpected:
+                detail = f"media {payload_field} carries unsupported field {nested_unexpected[0]}"
+                raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, detail)
+            data = value.get(NESTED_PAYLOAD_DATA_KEY)
+            if not isinstance(data, str) or not data:
+                raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.MEDIA, f"media {payload_field} carries no readable inline payload")
+            # The field is documented as raw base64, so it must actually decode as
+            # base64. A character-class test was not enough: the alphabet contains
+            # `+`, `/` and `=`, so `file/VICTIM/secret==` passed it while naming
+            # content we do not hold.
+            if not is_inline_base64(data):
+                detail = f"media {payload_field} data is not an inline base64 payload"
+                raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, detail)
+            fmt = value.get("format")
+            if fmt is not None and fmt not in ALLOWED_AUDIO_FORMATS:
+                # An allowlisted KEY still needs a checked VALUE: `format` is
+                # forwarded byte-for-byte, so an unvalidated one is a
+                # caller-controlled string reaching the provider inside an
+                # admitted request. The API defines a closed set.
+                detail = f"media {payload_field} format is not a supported inline format"
+                raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, detail)
+        detail_value = part.get("detail")
+        if detail_value is not None and detail_value not in ALLOWED_IMAGE_DETAILS:
+            raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, "media detail is not a supported value")
+        filename = part.get("filename")
+        if filename is not None and (not isinstance(filename, str) or ":" in filename or "/" in filename):
+            # A filename is a name, not a location. Admitting `s3://victim/secret.pdf`
+            # here put a reference into a forwarded request under an allowlisted key.
+            raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, "media filename is not a plain file name")
+        exercised.add(Capability.MEDIA)
 
 
 def _published_context_ceiling(model_entry: dict[str, Any], rows: tuple[Any, ...]) -> int | None:

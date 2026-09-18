@@ -1,6 +1,7 @@
 """Real policy SQL, Redis Lua and both production ASGI middleware boundaries."""
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -204,7 +205,11 @@ async def test_original_wire_bytes_reach_the_upstream_unmodified(model_path, ass
 
 
 async def test_an_unquotable_request_never_reaches_the_provider(model_path, assignment):
-    """No adapter for a capability means no upstream effect and no reservation."""
+    """No adapter for a capability means no upstream effect and no reservation.
+
+    This image block carries no ``source``, so there is nothing for the quote to
+    bind. #5227 admits media that carries its own bytes, but not this.
+    """
     unbounded = b'{ "model": "anthropic.claude-sonnet-4-6", "messages": [{"role":"user","content":[{"type":"image"}]}], "max_tokens": 16 }'
     sent, _ = await invoke(model_path, assignment, body=unbounded)
     assert sent[0]["status"] == 403
@@ -212,6 +217,69 @@ async def test_an_unquotable_request_never_reaches_the_provider(model_path, assi
     # Nothing was held against the shared meter for a request that never went out.
     meter = await read_flow_meter(org_id=assignment.grant.tenant_id, flow_id=assignment.flow.id, policy=model_path.policy)
     assert meter.total_usd == 0 and not meter.has_pending
+
+
+# ---------------------------------------------------------------------------
+# Inline media on the Anthropic route through the production stack (#5227)
+# ---------------------------------------------------------------------------
+
+
+def _anthropic_media_body(source: dict, block_type: str = "image") -> bytes:
+    document = {
+        "model": "anthropic.claude-sonnet-4-6",
+        "messages": [{"role": "user", "content": [{"type": block_type, "source": source}]}],
+        "max_tokens": 16,
+    }
+    return json.dumps(document).encode()
+
+
+INLINE_B64 = {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}
+
+
+async def test_an_inline_media_request_succeeds_and_is_quoted_as_media(model_path, assignment):
+    """The capability #5227 adds, through the real middlewares on this route too."""
+    body = _anthropic_media_body(INLINE_B64)
+    sent, _ = await invoke(model_path, assignment, body=body)
+    assert sent[0]["status"] == 200
+    assert model_path.calls == 1
+    assert model_path.bodies == [body]
+    quote = model_path.quotes[0]
+    assert quote is not None and quote.capability == "media" and quote.total_usd > 0
+    assert quote.request_sha256 == request_digest(body)
+
+
+async def test_inline_media_costs_the_same_bound_as_text(model_path, assignment):
+    """Media tokens are inside the full context window already reserved whole."""
+    text = b'{"model": "anthropic.claude-sonnet-4-6", "messages": [{"role":"user","content":"hello"}], "max_tokens": 16}'
+    media = _anthropic_media_body(INLINE_B64)
+    assert flow_meter.estimate_policy_model_cost(media, "/v1/messages") == flow_meter.estimate_policy_model_cost(text, "/v1/messages")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param({"type": "url", "url": "https://example.invalid/a.png"}, id="fetched_url"),
+        pytest.param({"type": "file", "file_id": "file_1"}, id="provider_stored_file"),
+    ],
+)
+async def test_media_by_reference_never_reaches_the_provider(model_path, assignment, source):
+    """Bytes outside the request are outside the digest, so no bound can hold."""
+    sent, _ = await invoke(model_path, assignment, body=_anthropic_media_body(source))
+    assert sent[0]["status"] == 403
+    assert model_path.calls == 0
+    meter = await read_flow_meter(org_id=assignment.grant.tenant_id, flow_id=assignment.flow.id, policy=model_path.policy)
+    assert meter.total_usd == 0 and not meter.has_pending
+
+
+async def test_refusing_media_by_reference_leaves_text_and_inline_media_working(model_path, assignment):
+    """Refusing one unsupported combination must not break the supported ones."""
+    referenced = _anthropic_media_body({"type": "url", "url": "https://example.invalid/a.png"})
+    assert (await invoke(model_path, assignment, body=referenced))[0][0]["status"] == 403
+    assert model_path.calls == 0
+    assert (await invoke(model_path, assignment, request_id="text-after"))[0][0]["status"] == 200
+    inline = _anthropic_media_body(INLINE_B64)
+    assert (await invoke(model_path, assignment, request_id="media-after", body=inline))[0][0]["status"] == 200
+    assert model_path.calls == 2
 
 
 async def test_a_rate_revision_change_during_upload_requotes_instead_of_spending(model_path, assignment, monkeypatch):
