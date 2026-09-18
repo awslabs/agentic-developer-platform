@@ -20,18 +20,15 @@ name: Superplane Infra Plan
 #
 # DIFFERENCE 1 — TWO JOBS, AND ONE OF THEM HAS NO AWS IDENTITY.
 #
-# `tests` runs on ubuntu-latest with no credentials. This is not cosmetic: every one of the
-# 34 runs uses `mock_provider "aws"` plus file-level `override_data`, so the suite needs no
-# account, and I verified it — 34 passed with every AWS_* variable stripped,
+# `tests` runs without credentials. This is not cosmetic: every one of the 34 runs uses
+# `mock_provider "aws"` plus file-level `override_data`, so the suite needs no account, and
+# I verified it — 34 passed with every AWS_* variable stripped,
 # AWS_EC2_METADATA_DISABLED=true and both credential files pointed at /dev/null.
 #
-# Runner choice is what makes that property enforceable. ARC runner pods carry an ambient
-# IRSA identity: their service account is annotated `eks.amazonaws.com/role-arn`, so the
-# pod-identity webhook injects AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE into every
-# container whether the job asks for them or not. Omitting `configure-aws-credentials` on
-# `arc-runner-org` therefore does NOT produce a credential-free job — the same finding
-# `superplane-domain-ci.yml` records from its #5198 review. On a hosted runner there is no
-# ambient identity, so the guard at the end of that job can assert the absence and be right.
+# Every job in this repository uses `arc-runner-org`, whose pods normally carry an ambient
+# IRSA identity. The `tests` job explicitly overrides all injected AWS credential sources,
+# disables instance metadata, and points shared configuration files at /dev/null. The
+# guard at the end verifies that the injected variables remain empty.
 #
 # The `plan` job DOES need credentials — a plan reads the platform remote state and the real
 # provider — so it stays on `arc-runner-org`, matching cyber-infra-plan.yml.
@@ -76,9 +73,20 @@ jobs:
   # ---------------------------------------------------------------------------
   tests:
     name: Terraform tests (no AWS)
-    # GitHub-hosted, NOT arc-runner-org — see "DIFFERENCE 1" in the header. An ARC runner
-    # would inject ambient IRSA credentials and make the guard at the end unsatisfiable.
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
+    # Neutralize the ARC pod's ambient IRSA identity. Keep this list aligned with the
+    # credential guard at the end of the job.
+    env:
+      AWS_ROLE_ARN: ''
+      AWS_WEB_IDENTITY_TOKEN_FILE: ''
+      AWS_ACCESS_KEY_ID: ''
+      AWS_SECRET_ACCESS_KEY: ''
+      AWS_SESSION_TOKEN: ''
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: ''
+      AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: ''
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CONFIG_FILE: /dev/null
     # No `id-token` permission: this job must not be able to assume an AWS role.
     permissions:
       contents: read
@@ -146,12 +154,9 @@ jobs:
 
       - name: Verify no AWS credentials were configured
         # A guard on this job's premise. The whole suite is mock-driven and needs no
-        # account; on a hosted runner there is no ambient identity, so a credential here
-        # could only come from somebody adding one. If that happens, this fails and says
-        # why the job exists without one rather than quietly becoming a credentialed job.
-        #
-        # Copied deliberately from superplane-domain-ci.yml, whose #5198 review established
-        # that this assertion is only satisfiable off arc-runner-org.
+        # account. The job-level environment must override the ARC pod's ambient IRSA
+        # variables, and no step may configure replacement credentials. If either changes,
+        # fail instead of quietly credentialing the test job.
         run: |
           set -euo pipefail
           FOUND=""
@@ -174,7 +179,7 @@ jobs:
         run: |
           {
             echo "## Superplane Terraform tests"
-            echo "- **Runner**: ubuntu-latest (no AWS identity)"
+            echo "- **Runner**: arc-runner-org (ambient AWS identity stripped)"
             echo "- **Test files**: $(find ${{ env.TF_WORKING_DIR }}/tests -name '*.tftest.hcl' | wc -l | tr -d ' ')"
             echo "- **Status**: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"

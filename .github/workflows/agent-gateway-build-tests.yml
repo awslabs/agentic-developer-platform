@@ -28,7 +28,7 @@ permissions:
 jobs:
   build-context:
     name: Agent gateway build context
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

@@ -258,6 +258,32 @@ class ReleaseContracts(unittest.TestCase):
         role_index = next(i for i, step in enumerate(job['steps']) if step.get('uses', '').startswith('aws-actions/configure-aws-credentials'))
         self.assertTrue(any('--check-approver' in step.get('run', '') for step in job['steps'][:role_index]))
 
+    def test_all_github_actions_jobs_use_self_hosted_runners(self):
+        import yaml
+
+        allowed = {
+            'arc-runner-org',
+            "${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}",
+        }
+        workflow_dir = ROOT / '.github/workflows'
+        workflows = sorted([*workflow_dir.glob('*.yml'), *workflow_dir.glob('*.yaml')])
+        self.assertTrue(workflows)
+        for path in workflows:
+            document = yaml.safe_load(path.read_text()) or {}
+            for name, job in (document.get('jobs') or {}).items():
+                with self.subTest(workflow=path.name, job=name):
+                    # Reusable-workflow calls inherit the called workflow's runner and
+                    # correctly omit both `steps` and `runs-on` in the caller.
+                    if 'uses' in job:
+                        continue
+                    self.assertIn('steps', job, 'job must define steps or call a reusable workflow')
+                    self.assertIn('runs-on', job, 'executable job must select a self-hosted runner')
+                    self.assertIn(
+                        job['runs-on'],
+                        allowed,
+                        'GitHub-hosted runner labels are prohibited; use arc-runner-org',
+                    )
+
 
 if __name__ == '__main__':
     unittest.main()

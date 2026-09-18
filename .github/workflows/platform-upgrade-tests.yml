@@ -50,7 +50,7 @@ permissions:
 
 jobs:
   factory-lambda-build:
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -62,7 +62,7 @@ jobs:
       - run: bash platform/scripts/build-agent-factory-lambdas.sh
 
   upgrade-contracts:
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -74,7 +74,7 @@ jobs:
       - run: python -m pytest --confcutdir=modules/gateway/tests/pricing_policy modules/gateway/tests/pricing_policy/test_rollout.py -q
 
   factory-before-github:
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4

@@ -17,7 +17,7 @@ permissions:
 jobs:
   upgrade:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     timeout-minutes: 180
     # Account isolation. Approval is the authorized manual dispatch of
     # adp-release-promote.yml (private-repo plan lacks native reviewers).

@@ -38,7 +38,7 @@ concurrency:
 jobs:
   harness-tests:
     name: Qualification harness unit tests (offline)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     timeout-minutes: 10
 
     steps:

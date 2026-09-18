@@ -12,7 +12,7 @@ permissions:
 jobs:
   approval:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     outputs:
       release_id: ${{ steps.evidence.outputs.release_id }}
       manifest_sha256: ${{ steps.evidence.outputs.manifest_sha256 }}
