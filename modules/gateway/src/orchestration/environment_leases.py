@@ -288,16 +288,9 @@ def _as_aware(moment: datetime | None) -> datetime | None:
 
 
 def _to_view(row: OrchestrationEnvironmentLease) -> LeaseView:
-    try:
-        state = LeaseState(row.state)
-    except ValueError as exc:
-        # An unrecognised state means a newer writer stored a member this build
-        # does not know. Refused rather than defaulted: treating an unknown state
-        # as FREE would hand out a target a newer pod deliberately holds.
-        raise LeaseError(
-            "unknown_vocabulary",
-            f"Lease {row.id} holds a state this build does not recognise ({row.state}).",
-        ) from exc
+    # Re-checked here as well as in `_locked_lease` because a newly inserted row
+    # reaches this function without passing through the locked read.
+    state = _require_known_state(row)
     return LeaseView(
         id=row.id,
         canonical_target_key=row.canonical_target_key,
@@ -353,7 +346,32 @@ async def _locked_lease(session: AsyncSession, canonical_key: str) -> Orchestrat
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    return (await session.execute(stmt)).scalar_one_or_none()
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is not None:
+        # Validated on the way IN, not on the way out. Checking only when building
+        # the returned view would run the check *after* the write had already been
+        # decided, so an unrecognised state would fall through every
+        # `state == HELD` comparison and be treated as free — handing out a target
+        # a newer pod deliberately holds. That fail-open lands precisely in a
+        # rolling deploy, where two builds coexist and one knows a member the
+        # other does not.
+        _require_known_state(row)
+    return row
+
+
+def _require_known_state(row: OrchestrationEnvironmentLease) -> LeaseState:
+    """Refuse a row whose state this build does not recognise.
+
+    Fails closed: an unknown state is not "probably free". See `_locked_lease` on
+    why this must happen before any transition decision.
+    """
+    try:
+        return LeaseState(row.state)
+    except ValueError as exc:
+        raise LeaseError(
+            "unknown_vocabulary",
+            f"Lease {row.id} holds a state this build does not recognise ({row.state}).",
+        ) from exc
 
 
 def _take(
@@ -373,13 +391,23 @@ def _take(
     appears to license it. The takeover gate would then be satisfied by a reading
     of a deployment two holders ago.
     """
+    # The generation fence is **per action**, and that scoping is the whole of its
+    # correctness. Within one action it is monotonic, like the execution store's
+    # `_adopt_generation`: raised, never lowered, because lowering would hand the
+    # fence back to a superseded process of that same action.
+    #
+    # Across a *change* of action it is reset to the incoming holder's generation.
+    # Clamping it to the previous action's high-water mark instead would leave a new
+    # legitimate holder arriving at generation 1 standing behind a stranger's
+    # generation 7 — it would be refused as superseded on its own first heartbeat
+    # and could never release the lease it legitimately holds. Resetting is safe
+    # because a displaced *previous* action is refused earlier, by the
+    # held-by-somebody-else arm, and never reaches this comparison at all.
+    same_action = row.owner_org_id == holder.org_id and row.owner_action_id == holder.action_id
     row.state = LeaseState.HELD.value
     row.owner_org_id = holder.org_id
     row.owner_action_id = holder.action_id
-    # Monotonic, like the execution store's `_adopt_generation`: raised, never
-    # lowered. Lowering it would hand the authority fence back to a superseded
-    # actor, which is the whole failure mode the generation exists to close.
-    row.owner_generation = max(row.owner_generation, holder.generation)
+    row.owner_generation = max(row.owner_generation, holder.generation) if same_action else holder.generation
     row.manifest_entry_id = manifest_entry_id
     row.release_ref = release_ref
     row.revision = row.revision + 1
@@ -738,18 +766,22 @@ async def release_lease(
         return LeaseOutcome(kind=LeaseOutcomeKind.CONFLICT, lease=_to_view(row), reason="owner_generation_superseded")
 
     now = _now()
+    # `state` is the single authority on whether the target is held — every arm
+    # above and in `_acquire_existing` tests it before consulting an owner column —
+    # so the owner fields become the *last-holder* record rather than a live claim.
     row.state = LeaseState.FREE.value
-    # The holder columns are cleared so the target reads as free, but the row and
-    # its canonicalization evidence survive — see the model docstring on why.
-    row.owner_action_id = None
     row.manifest_entry_id = None
     row.release_ref = None
     row.lease_expires_at = None
     row.heartbeat_at = None
-    # `owner_org_id` and `owner_generation` are deliberately retained. The
-    # generation must never go backwards or a superseded actor could re-acquire at
-    # its old generation and look current; the org is kept as the last-holder
-    # record for operators.
+    # `owner_org_id`, `owner_action_id` and `owner_generation` are deliberately
+    # retained, and each for its own reason. The generation must never go backwards
+    # or a superseded actor could re-acquire at its old generation and look current.
+    # The org and action are what let a *retried* terminal callback be recognised as
+    # the same holder and answered idempotently: clearing them would make the second
+    # delivery of an at-least-once completion look like an unrelated actor releasing
+    # somebody else's lease, and it would receive a hard conflict for having
+    # correctly finished its job.
     row.release_reason = reason.value
     row.released_at = now
     row.reconciled_terminal_evidence = str(terminal_evidence).strip()
