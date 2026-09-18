@@ -142,7 +142,18 @@ def legacy_config_dir():
     two agree about where the legacy store is; a test harness that redirects one
     must not end up with the two halves looking at different directories.
     """
-    return Path(os.environ.get("BG_CONFIG_DIR") or (Path.home() / ".bedrock-gateway"))
+    return Path(os.environ.get("BG_CONFIG_DIR") or legacy_home_config_dir())
+
+
+def legacy_home_config_dir():
+    """Where the legacy store lives on this machine, ignoring BG_CONFIG_DIR.
+
+    legacy_config_dir() deliberately honours the inherited override so both halves
+    agree; the crossing check needs the un-overridden location, because comparing an
+    inherited path against a value derived from that same variable can only ever be
+    equal (see _reject_crossed_context).
+    """
+    return Path.home() / ".bedrock-gateway"
 
 
 def legacy_state_dir():
@@ -415,14 +426,25 @@ def _registry_with_implicit_legacy(registry):
     the divergence is not merely detected but impossible.
     """
     view, _ = adopt_legacy(registry)
-    record = view["deployments"].get(LEGACY_NAME)
-    if record and record.get("legacy"):
-        live = legacy_gateway_url()
-        if live and live != record.get("gateway_url"):
-            view = {
-                **view,
-                "deployments": {**view["deployments"], LEGACY_NAME: {**record, "gateway_url": live}},
-            }
+    live = legacy_gateway_url()
+    if not live:
+        return view
+    # EVERY record backed by the legacy store must be refreshed, not just the one
+    # named LEGACY_NAME. `deployment add aaa --url <legacy URL>` creates an ALIAS —
+    # same stable id, same store, its own registry key — and keying this refresh on
+    # the name alone left the alias holding the URL as of the moment it was added.
+    # After the legacy store was rebound (a reinstall, or `login --gateway-url
+    # <other>`, which rewrites URL and token together), the alias then addressed the
+    # OLD gateway while drawing the NEW token from the shared store: one
+    # deployment's live credential sent to another deployment's gateway, which is
+    # the leak this refresh exists to make impossible. Keyed on the `legacy` flag,
+    # so every name for that one store answers with the store's live URL.
+    refreshed = {
+        name: ({**record, "gateway_url": live} if record.get("legacy") and record.get("gateway_url") != live else record)
+        for name, record in view["deployments"].items()
+    }
+    if refreshed != view["deployments"]:
+        view = {**view, "deployments": refreshed}
     return view
 
 
@@ -594,7 +616,9 @@ def resolve(explicit=None, *, registry=None):
                 "deployment_not_found",
                 1,
             )
-        return Deployment(explicit, record, "flag")
+        resolved = Deployment(explicit, record, "flag")
+        _reject_crossed_legacy_store(registry, resolved)
+        return resolved
 
     pinned = (os.environ.get("ADP_DEPLOYMENT_ID") or "").strip()
     if pinned:
@@ -620,7 +644,9 @@ def resolve(explicit=None, *, registry=None):
                 "deployment_not_found",
                 1,
             )
-        return Deployment(selected, record, "environment")
+        resolved = Deployment(selected, record, "environment")
+        _reject_crossed_legacy_store(registry, resolved)
+        return resolved
 
     default = registry.get("default")
     if default and default in records:
@@ -655,7 +681,16 @@ def _reject_crossed_context(registry, resolved):
     if not inherited:
         return
     inherited_path = Path(inherited).absolute()
-    if inherited_path == resolved.config_dir.absolute():
+    # A LEGACY record's config_dir IS legacy_config_dir(), which itself reads
+    # BG_CONFIG_DIR — so for the legacy deployment this comparison used to be the
+    # inherited path against itself, always equal, and the guard could never fire.
+    # That made the one deployment whose store is a plain fixed path the only one
+    # with no crossing protection: with another deployment's BG_CONFIG_DIR
+    # inherited, `--deployment default` resolved to that store, handed out its
+    # token, and `logout` deleted its session. Compare against the legacy store's
+    # REAL location instead, so an inherited path pointing elsewhere is a crossing.
+    resolved_path = (legacy_home_config_dir() if resolved.legacy else resolved.config_dir).absolute()
+    if inherited_path == resolved_path:
         return
     for other_name, other_record in registry["deployments"].items():
         if other_name == resolved.name:
@@ -665,6 +700,42 @@ def _reject_crossed_context(registry, resolved):
             raise DeploymentError(
                 f"This command inherited a mixed deployment context: it is pinned to {resolved.name!r} "
                 f"but its storage path belongs to {other_name!r}. Start a fresh command rather than continuing.",
+                "deployment_mismatch",
+            )
+
+
+def _reject_crossed_legacy_store(registry, resolved):
+    """Refuse a LEGACY selection whose store is another deployment's, on any route.
+
+    _reject_crossed_context guards the inherited-pin route, where the id and the
+    path must agree. This is the narrower case that an EXPLICIT selection can still
+    reach: only the legacy deployment reads its store location from BG_CONFIG_DIR,
+    so only it can be aimed at another deployment's directory by an inherited
+    environment. A non-legacy record derives its path from its stable id and simply
+    overrides whatever it inherited, which is why selecting a named deployment from
+    inside another deployment's session stays legitimate and is NOT touched here.
+
+    Without this, `adp --deployment dev claude` (which exports dev's BG_CONFIG_DIR)
+    followed by `adp --deployment default <verb>` inside that session resolved
+    'default' onto DEV's store: it printed dev's URL, handed out dev's token, and
+    `logout` deleted dev's session while the legacy one sat untouched.
+    """
+    if not resolved.legacy:
+        return
+    inherited = (os.environ.get("BG_CONFIG_DIR") or "").strip()
+    if not inherited:
+        return
+    inherited_path = Path(inherited).absolute()
+    if inherited_path == legacy_home_config_dir().absolute():
+        return
+    for other_name, other_record in registry["deployments"].items():
+        if other_record.get("legacy"):
+            continue
+        other = Deployment(other_name, other_record, "crosscheck")
+        if other.config_dir.absolute() == inherited_path:
+            raise DeploymentError(
+                f"This command inherited a mixed deployment context: it selected {resolved.name!r} "
+                f"but the storage path it inherited belongs to {other_name!r}. Start a fresh command rather than continuing.",
                 "deployment_mismatch",
             )
 

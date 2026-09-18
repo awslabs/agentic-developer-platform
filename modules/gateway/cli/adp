@@ -758,31 +758,67 @@ cmd_login() {
         exit 1
     fi
 
-    # A named deployment's URL is its IDENTITY, so signing in somewhere else under
-    # its name is refused rather than obeyed. The session is written to the selected
-    # deployment's store, but the destination for every later request is read from
-    # the registry — so a login against another gateway (a typo, a stale paste, a
-    # runbook line copied from a different environment) left that store holding a
-    # token minted by gateway B while all its traffic went to gateway A, presenting
-    # one deployment's live credential to another deployment's gateway. Nothing
-    # downstream can detect that, because both halves look internally consistent.
-    if [ -n "${ADP_DEPLOYMENT_URL:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
-        local requested_canonical registered_canonical
-        requested_canonical="$(deployments canonicalize "${gateway_url}" 2>/dev/null)" || {
-            print_error "'${gateway_url}' is not a usable gateway URL. Use the form https://<host>."
-            exit 1
-        }
-        registered_canonical="$(deployments canonicalize "${ADP_DEPLOYMENT_URL}" 2>/dev/null || printf '%s' "${ADP_DEPLOYMENT_URL}")"
-        if [ "${requested_canonical}" != "${registered_canonical}" ]; then
-            print_error "Deployment '${ADP_DEPLOYMENT_NAME:-}' is registered for ${registered_canonical}, not ${requested_canonical}."
-            print_warning "Signing in elsewhere under this name would store that gateway's token against this one."
-            print_warning "Sign in to the registered gateway, or point the name at the new URL with: adp deployment add ${ADP_DEPLOYMENT_NAME:-<name>} --url ${requested_canonical}"
-            exit 1
-        fi
-        gateway_url="${requested_canonical}"
-    fi
+    gateway_url="$(require_url_matches_selected_deployment "${gateway_url}" "Signing in")"
 
     core login --web --gateway-url "${gateway_url}" "${args[@]}"
+}
+
+# A named deployment's URL is its IDENTITY, so establishing a session against a
+# DIFFERENT gateway under its name is refused rather than obeyed. The session is
+# written to the selected deployment's store, but the destination for every later
+# request is read from the registry — so binding a session from gateway B under a
+# name registered for gateway A (a typo, a stale paste, a runbook line copied from
+# another environment) leaves that store holding B's token while all its traffic
+# goes to A, presenting one deployment's live credential to another deployment's
+# gateway. Nothing downstream can detect that, because both halves look internally
+# consistent.
+#
+# This lives in ONE function because there is more than one way to establish a
+# session: `login` mints one interactively and `import` adopts an existing refresh
+# token headlessly. `import` originally bypassed this check entirely (it is a plain
+# pass-through to the auth helper, which honours its own --gateway-url and persists
+# it), so `adp --deployment prod import --gateway-url https://dev...` wrote dev's
+# token into prod's store and every later prod request carried it. Any future verb
+# that accepts a gateway URL must call this too.
+#
+# Echoes the canonical URL to use; exits non-zero when the URL contradicts the
+# selection. `$2` is the gerund naming the action, for the error message.
+require_url_matches_selected_deployment() {
+    local gateway_url="$1" action="$2"
+    if [ -z "${ADP_DEPLOYMENT_URL:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; then
+        printf '%s' "${gateway_url}"
+        return 0
+    fi
+    local requested_canonical registered_canonical
+    requested_canonical="$(deployments canonicalize "${gateway_url}" 2>/dev/null)" || {
+        print_error "'${gateway_url}' is not a usable gateway URL. Use the form https://<host>."
+        exit 1
+    }
+    registered_canonical="$(deployments canonicalize "${ADP_DEPLOYMENT_URL}" 2>/dev/null || printf '%s' "${ADP_DEPLOYMENT_URL}")"
+    if [ "${requested_canonical}" != "${registered_canonical}" ]; then
+        print_error "Deployment '${ADP_DEPLOYMENT_NAME:-}' is registered for ${registered_canonical}, not ${requested_canonical}."
+        print_warning "${action} elsewhere under this name would store that gateway's token against this one."
+        print_warning "Use the registered gateway, or point the name at the new URL with: adp deployment add ${ADP_DEPLOYMENT_NAME:-<name>} --url ${requested_canonical}"
+        exit 1
+    fi
+    printf '%s' "${requested_canonical}"
+}
+
+# `import` adopts an existing refresh token into the selected deployment's store.
+# The auth helper owns every other flag; we inspect ONLY --gateway-url, and only to
+# refuse a value that contradicts the selected deployment (see
+# require_url_matches_selected_deployment). Args are forwarded unchanged so the
+# helper stays the single owner of import's surface and exit codes.
+cmd_import() {
+    local arg previous=""
+    for arg in "$@"; do
+        if [ "${previous}" = "--gateway-url" ]; then
+            require_url_matches_selected_deployment "${arg}" "Importing a session from" >/dev/null
+            break
+        fi
+        previous="${arg}"
+    done
+    core import "$@"
 }
 
 # --- status -----------------------------------------------------------------
@@ -1464,8 +1500,11 @@ main() {
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.
-        logout|token|refresh|import|serve)
+        logout|token|refresh|serve)
                  core "${command}" "$@" ;;
+        # `import` establishes a session, like `login`, so it gets login's
+        # URL-vs-selection check rather than going straight through.
+        import)  cmd_import "$@" ;;
         # `setup` is our own subcommand; anything else — including nothing at all
         # — is a LAUNCH with passthrough args. Codex and Claude both have rich
         # flag surfaces we must not shadow, so the tool owns every token we do

@@ -467,6 +467,167 @@ class TestALoginCannotBindANameToAnotherGateway:
         assert "is registered for" not in result.stderr, "a legacy machine has no registered binding to contradict"
 
 
+class TestAnImportCannotBindANameToAnotherGateway:
+    """`import` establishes a session too, so it gets login's identity check.
+
+    `import` is the headless equivalent of `login`: it adopts an existing refresh
+    token and persists the gateway URL it was given. It was dispatched straight
+    through to the auth helper with no registry comparison, so
+    `adp --deployment prod import --gateway-url <dev>` wrote dev's URL and dev's
+    token into PROD's store. Every later prod command then read its destination
+    from the registry (prod) and its bearer from the store (dev) — one
+    deployment's live credential posted to another deployment's gateway, and a
+    refresh rotated dev's refresh token while addressing prod.
+
+    The guard lives in one shared function precisely so these two entry points
+    cannot drift apart again.
+    """
+
+    @pytest.fixture
+    def prod(self, adp):
+        assert adp(["deployment", "add", "prod", "--url", PREPROD_URL]).returncode == 0
+        return adp
+
+    def test_importing_a_session_from_another_gateway_is_refused(self, prod) -> None:
+        result = prod(["--deployment", "prod", "import", "--gateway-url", DEV_URL, "--refresh-token", "r", "--client-id", "c"])
+
+        assert result.returncode != 0, "an import aimed at another gateway must not proceed"
+        assert "is registered for" in result.stderr
+        assert "Validating refresh token" not in result.stderr, "it must refuse BEFORE contacting Cognito"
+
+    def test_the_refused_import_writes_nothing_to_the_store(self, prod, resolved, mock_aws_cli) -> None:
+        """The harm is the persisted crossing, so assert on the store, not the message.
+
+        Cognito is MOCKED here on purpose. Without it the import dies at
+        `initiate-auth` and the store stays clean either way — the test would pass
+        against the unfixed code and prove nothing. With a working Cognito the only
+        thing that can keep dev's token out of prod's store is the refusal.
+        """
+        result = prod(
+            ["--deployment", "prod", "import", "--gateway-url", DEV_URL, "--refresh-token", "r", "--client-id", "c"],
+            {"PATH": f"{mock_aws_cli}:{os.environ['PATH']}", "MOCK_COGNITO_RESULT": "ok"},
+        )
+
+        assert result.returncode != 0, "the import must be refused, not merely fail to persist"
+        store = Path(resolved("prod")["config_dir"])
+        assert not (store / "tokens.json").exists(), "a refused import must not leave another gateway's token here"
+        if (store / "config.json").exists():
+            assert DEV_URL not in (store / "config.json").read_text(), "prod's store must never record dev's URL"
+
+    @pytest.mark.parametrize("form", [PREPROD_URL, PREPROD_URL + "/", PREPROD_URL + "/api"])
+    def test_every_spelling_of_the_registered_url_is_accepted(self, prod, form) -> None:
+        """A trailing slash is the same gateway; only a different host is a crossing."""
+        result = prod(["--deployment", "prod", "import", "--gateway-url", form, "--refresh-token", "r", "--client-id", "c"])
+
+        assert "is registered for" not in result.stderr, f"{form} is the registered gateway and must be accepted"
+
+    def test_a_legacy_import_is_left_alone(self, adp, adp_home) -> None:
+        """The legacy store is its own authority, with no registered binding to contradict."""
+        write_adp_session(adp_home, username="github_alice")
+
+        result = adp(["import", "--gateway-url", DEV_URL, "--refresh-token", "r", "--client-id", "c"])
+
+        assert "is registered for" not in result.stderr
+
+
+class TestAnInheritedStoreCannotBeAimedAtTheLegacyName:
+    """Only the legacy deployment reads its store location from the environment.
+
+    Every named deployment derives its path from its stable id, so it simply
+    overrides whatever `BG_CONFIG_DIR` it inherited — selecting a named deployment
+    from inside another deployment's session is legitimate and must keep working.
+    The legacy record is the exception: its store IS `BG_CONFIG_DIR`. So inside
+    `adp --deployment dev claude` (which exports dev's store), a nested
+    `adp --deployment default <verb>` resolved 'default' onto DEV's directory —
+    printing dev's URL, handing out dev's token, and letting `logout` destroy dev's
+    session while the real legacy store sat untouched.
+
+    _reject_crossed_context could not catch this: a legacy record's config_dir is
+    derived FROM BG_CONFIG_DIR, so it was comparing the inherited path with itself.
+    """
+
+    @pytest.fixture
+    def legacy_and_dev(self, adp, adp_home, resolved, seed_session):
+        write_adp_session(adp_home, username="github_alice")
+        assert adp(["deployment", "add", "dev", "--url", DEV_URL]).returncode == 0
+        seed_session(Path(resolved("dev")["config_dir"]), DEV_URL)
+        return adp, Path(resolved("dev")["config_dir"])
+
+    @pytest.mark.parametrize("route", ["flag", "environment", "pin"])
+    def test_selecting_legacy_with_another_deployments_store_inherited_is_refused(self, legacy_and_dev, route) -> None:
+        """All three selection routes, because the crossing is equally harmful on each."""
+        adp, dev_store = legacy_and_dev
+        env = {"BG_CONFIG_DIR": str(dev_store)}
+        args = ["status"]
+        if route == "flag":
+            args = ["--deployment", "default", "status"]
+        elif route == "environment":
+            env["ADP_DEPLOYMENT"] = "default"
+        else:
+            env["ADP_DEPLOYMENT_ID"] = "default"
+
+        result = adp(args, env)
+
+        assert result.returncode != 0, f"a crossed context via {route} must not proceed"
+        assert "mixed deployment context" in result.stderr
+
+    def test_a_named_deployment_selected_from_another_session_still_works(self, legacy_and_dev, adp_home) -> None:
+        """The guard must not break the ordinary reason BG_CONFIG_DIR is inherited."""
+        adp, dev_store = legacy_and_dev
+        assert adp(["deployment", "add", "preprod", "--url", PREPROD_URL]).returncode == 0
+
+        result = adp(["--deployment", "preprod", "status"], {"BG_CONFIG_DIR": str(dev_store)})
+
+        assert "mixed deployment context" not in result.stderr, "switching to a named deployment is legitimate"
+
+    def test_the_legacy_store_itself_is_not_a_crossing(self, legacy_and_dev, adp_home) -> None:
+        """A user who exports BG_CONFIG_DIR for the auth helper's own sake is fine."""
+        adp, _ = legacy_and_dev
+
+        result = adp(["--deployment", "default", "status"], {"BG_CONFIG_DIR": str(adp_home / ".bedrock-gateway")})
+
+        assert "mixed deployment context" not in result.stderr
+
+
+class TestEveryNameForTheLegacyStoreTracksIt:
+    """An ALIAS of the legacy deployment shares its store, so it shares its URL.
+
+    `deployment add aaa --url <legacy URL>` records a second name for the same
+    stable id and the same store. The live-URL refresh was keyed on the record
+    NAMED `default`, so the alias kept the URL as of the moment it was added. Once
+    the legacy store was rebound — a reinstall, or `login --gateway-url <other>`,
+    which rewrites URL and token together — the alias addressed the OLD gateway
+    while drawing the NEW token from the shared store. One store cannot have two
+    destinations; that is the leak this refresh exists to make impossible.
+    """
+
+    @pytest.fixture
+    def aliased(self, adp, adp_home, resolved):
+        write_adp_session(adp_home, username="github_alice")
+        # `deployment add` MUTATES, so it adopts the legacy store, which requires a
+        # private directory. Read-only resolution tolerates 0755 (the legacy
+        # exemption); adoption does not.
+        (adp_home / ".bedrock-gateway").chmod(0o700)
+        from .conftest import ADP_GATEWAY_URL
+
+        result = adp(["deployment", "add", "aaa", "--url", ADP_GATEWAY_URL])
+        assert result.returncode == 0, result.stderr
+        assert "another name for" in result.stdout, f"the fixture must create an ALIAS, not a second deployment: {result.stdout}"
+        return adp
+
+    def test_the_alias_follows_the_store_when_it_is_rebound(self, aliased, adp_home, resolved) -> None:
+        (adp_home / ".bedrock-gateway" / "config.json").write_text(json.dumps({"gateway_url": PREPROD_URL + "/api"}))
+
+        assert resolved("aaa")["gateway_url"] == PREPROD_URL + "/api", "the alias shares the rebound store, so it must address the rebound gateway"
+
+    def test_the_alias_and_the_legacy_name_never_disagree(self, aliased, adp_home, resolved) -> None:
+        """Two names, one store, one token — therefore exactly one destination."""
+        (adp_home / ".bedrock-gateway" / "config.json").write_text(json.dumps({"gateway_url": PREPROD_URL + "/api"}))
+
+        assert resolved("aaa")["gateway_url"] == resolved("default")["gateway_url"]
+        assert resolved("aaa")["config_dir"] == resolved("default")["config_dir"], "the fixture's alias premise must hold"
+
+
 class TestTheLegacyUrlIsReadFromItsStoreNotASnapshot:
     """Adoption records the legacy URL, but the STORE stays the authority.
 
