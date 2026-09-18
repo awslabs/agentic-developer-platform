@@ -21,10 +21,16 @@ Apply these standards to any code you write or edit.
 ## Human-readable findings and handoff
 
 When a plan is required, lead with **My understanding of the task** and **How I
-plan to implement it**. Explain the requested change, expected behavior,
-logical implementation steps and verification in simple language and good detail.
-Assume the reader has not read the issue, earlier discussion or code; explain
-necessary technical terms and put supporting file paths and links afterward.
+plan to implement it**. Start with the requested behavior, then explain what
+each logical step accomplishes, why, how the steps fit and how you will check
+the result. No required "who needs this" section. Assume the reader has not
+read the issue, discussion or code. The explanation must stand alone without
+reproducing the technical design: put paths, schemas, locks, helper names and
+branch/checkpoint details afterward. Explain unavoidable terms by their purpose;
+give enough detail without repeating requirements or imposing a word limit.
+Distinguish unverified access from a missing resource. Show commands for different
+terminals in separate labelled code blocks. Before posting, check that the reader
+can explain the change, steps and verification without the engineering notes.
 
 In the outcome, lead with the user-visible result and PR state. Separate tests
 you ran from CI results and deployed checks. Name any rollout or migration

@@ -263,6 +263,7 @@ class WebhookEventLogger:
         correlation_id: str | None = None,
         parent_invocation_id: str | None = None,
         chain_depth: int | None = None,
+        credential_chain_depth: int | None = None,
         root_human_id: str | None = None,
         is_human_rooted: bool | None = None,
         authorized_user_id: str = "",
@@ -313,6 +314,10 @@ class WebhookEventLogger:
                 the Activity chain view. Computed by determine_correlation but
                 previously never persisted to the row (issue #1750).
             chain_depth: This run's depth in the chain (#1696).
+            credential_chain_depth: Conservative, monotonic depth used for the
+                credential horizon (#5365).  Persisted separately because the
+                recursion cap is per-lineage while credential inheritance must
+                never be recoverable by selecting a shallower row.
             authorized_user_id: Canonical user whose credentials this run
                 may access (#3174). Set at spawn from chain policy; empty
                 string means no vault access. Written but unread until S2.
@@ -425,6 +430,8 @@ class WebhookEventLogger:
             item["parent_invocation_id"] = parent_invocation_id
         if chain_depth is not None:
             item["chain_depth"] = chain_depth
+        if credential_chain_depth is not None:
+            item["credential_chain_depth"] = credential_chain_depth
         # Issue #2042: persist the chain's human root so the Activity layer can
         # attribute agent-spawned runs to the originating human (not the bot
         # sender) — otherwise cross-issue/agent-triggered runs never appear under

@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, _iso, _key
 from src.agentauth.grants import AgentAction, AuthorityReference, DelegatedGrant, TargetRelationship
+from src.orchestration.dispatch import GraphAttribution, graph_address
 from src.orchestration.genesis import EngineGenesis, resolve_engine_genesis
 from src.orchestration.models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from src.orchestration.run_store import EngineRunStore
@@ -143,8 +144,21 @@ def get_engine_authority_writer() -> EngineAuthorityWriter:
     )
 
 
-async def validate_engine_authority(*, session, execution: dict, grant: DelegatedGrant, store=None) -> None:
-    """Read current flow/node/approval state, rather than cached SQS claims."""
+async def validate_engine_authority(*, session, execution: dict, grant: DelegatedGrant, store=None) -> GraphAttribution | None:
+    """Read current flow/node/approval state, rather than cached SQS claims.
+
+    Returns the verified graph assignment (issue #4898) when this execution is
+    bound to one specific node, so a model call can be attributed to that node in
+    `usage_logs.graph_address` without re-deriving — or trusting — anything. The
+    flow and node rows needed to compose the address are already loaded and
+    already proven current here; before this they were simply discarded.
+
+    Returns None where there is no single owning node, and that is a real answer
+    rather than a gap: a flow-level or wave coordinator must not be charged to one
+    of its children. Every caller that only needs the authorization outcome can
+    keep ignoring the return value — a refusal is still an exception, never a
+    None.
+    """
     try:
         genesis = await resolve_engine_genesis(session, org_id=grant.tenant_id, decision_id=grant.authority.reference_id)
         approval = await session.get(OrchestrationDecision, genesis.decision_id)
@@ -223,6 +237,26 @@ async def validate_engine_authority(*, session, execution: dict, grant: Delegate
                 or metadata.get("authority_reference_id") != grant.authority.reference_id
             ):
                 raise BootstrapRefusedError("workflow dispatch is not committed")
+        # Issue #4898. Reached only after every check above passed, so the address
+        # reports a node this caller is *currently* authorized for at *this*
+        # attempt — not one it was dispatched for at some point. Composed here,
+        # inside the validated scope, from the same `graph_address` helper the
+        # dispatch write and the cost read use, so all three agree by construction.
+        return GraphAttribution(
+            org_id=grant.tenant_id,
+            flow_id=grant.flow_id,
+            node_id=node_id,
+            node_attempt=attempt,
+            address=graph_address(node, flow_slug=flow.slug),
+            # `.get` rather than `[...]`, deliberately: the outer `except
+            # Exception` below converts ANY exception into a refusal, so an
+            # unexpected shape here would turn a request this function just
+            # authorized into a 403. Attribution must never be able to deny a
+            # call. Absent resolves to "" and the middleware then declines to
+            # attach the attribution, so the effect is a NULL address — the
+            # honest degradation — instead of a denial.
+            run_id=execution.get("invocation_id", {}).get("S", ""),
+        )
     except BootstrapRefusedError:
         raise
     except Exception:

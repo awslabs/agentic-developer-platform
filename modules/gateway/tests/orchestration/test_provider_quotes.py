@@ -246,9 +246,31 @@ async def test_byte_length_cannot_change_the_bound(oracle):
         ({"previous_response_id": "resp_1"}, QuoteReason.STATEFUL_INPUT, Capability.HISTORY),
         ({"tools": [{"type": "web_search"}]}, QuoteReason.SERVER_TOOL_COST, Capability.SERVER_TOOLS),
         ({"tools": [{"type": "code_execution"}]}, QuoteReason.SERVER_TOOL_COST, Capability.SERVER_TOOLS),
-        ({"messages": [{"role": "user", "content": [{"type": "image"}]}]}, QuoteReason.NON_TEXT_CONTENT, Capability.MEDIA),
-        ({"messages": [{"role": "user", "content": [{"type": "document"}]}]}, QuoteReason.NON_TEXT_CONTENT, Capability.MEDIA),
-        ({"system": [{"type": "image"}]}, QuoteReason.NON_TEXT_CONTENT, Capability.MEDIA),
+        # A media block naming no source at all. #5227 admits media, so these are
+        # no longer "unsupported content" — they are unreadable media blocks, and
+        # still refused before any upstream call.
+        ({"messages": [{"role": "user", "content": [{"type": "image"}]}]}, QuoteReason.MALFORMED_REQUEST, Capability.MEDIA),
+        ({"messages": [{"role": "user", "content": [{"type": "document"}]}]}, QuoteReason.MALFORMED_REQUEST, Capability.MEDIA),
+        ({"system": [{"type": "image"}]}, QuoteReason.MALFORMED_REQUEST, Capability.MEDIA),
+        # Media the provider fetches or already stores: the capability exists, but
+        # these references are not covered by the quote's request digest.
+        (
+            {"messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "url", "url": "https://example.invalid/a.png"}}]}]},
+            QuoteReason.MUTABLE_MEDIA_REFERENCE,
+            Capability.MEDIA,
+        ),
+        (
+            {"messages": [{"role": "user", "content": [{"type": "document", "source": {"type": "file", "file_id": "file_1"}}]}]},
+            QuoteReason.MUTABLE_MEDIA_REFERENCE,
+            Capability.MEDIA,
+        ),
+        # A modality the deployed route does not serve at all stays unsupported
+        # rather than being priced as though it were an image.
+        (
+            {"messages": [{"role": "user", "content": [{"type": "audio", "source": {"type": "base64", "data": "AAAA"}}]}]},
+            QuoteReason.NON_TEXT_CONTENT,
+            Capability.MEDIA,
+        ),
         ({"messages": []}, QuoteReason.MALFORMED_REQUEST, Capability.TEXT),
         ({"messages": "hello"}, QuoteReason.MALFORMED_REQUEST, Capability.TEXT),
         ({"messages": [{"role": "user"}]}, QuoteReason.MALFORMED_REQUEST, Capability.TEXT),
@@ -285,6 +307,115 @@ async def test_nested_tool_result_media_is_still_refused(oracle):
     oracle()
     with pytest.raises(QuoteRefusedError) as exc:
         await quote(body(messages=[{"role": "user", "content": [{"type": "tool_result", "content": [{"type": "image"}]}]}]))
+    assert exc.value.refusal.capability == Capability.MEDIA
+
+
+# ---------------------------------------------------------------------------
+# Media: admitted when the request carries its own bytes (#5227)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "AAAA"}},
+        {"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "notes"}},
+        {"type": "document", "source": {"type": "content", "content": [{"type": "text", "text": "notes"}]}},
+    ],
+)
+async def test_inline_media_is_admitted_inside_the_full_context_bound(oracle, block):
+    """Media bytes are tokens against the window the bound already reserves whole.
+
+    So the total equals the text-only quote of the same shape: no count of the
+    media is needed, and none is trusted. The capability records MEDIA so the
+    quote states the weakest guarantee it relied on instead of claiming text.
+    """
+    oracle()
+    result = await quote(body(messages=[{"role": "user", "content": [block]}]))
+    assert result.total_usd == Decimal("0.765000")
+    assert result.max_input_tokens == CONTEXT_LIMIT
+    assert result.capability == Capability.MEDIA
+
+
+async def test_a_text_only_request_is_still_labelled_text(oracle):
+    """Admitting media must not relabel the quotes #5225 already issued."""
+    oracle()
+    assert (await quote(body())).capability == Capability.TEXT
+
+
+async def test_media_bytes_do_not_change_the_bound_but_do_change_its_identity(oracle):
+    """Two different images cost the same ceiling, yet neither quote can spend the other."""
+    oracle()
+
+    def raw(data: str) -> bytes:
+        source = {"type": "base64", "media_type": "image/png", "data": data}
+        return body(messages=[{"role": "user", "content": [{"type": "image", "source": source}]}])
+
+    first, second = await quote(raw("AAAA")), await quote(raw("BBBB"))
+    assert first.total_usd == second.total_usd
+    assert first.request_sha256 != second.request_sha256
+
+
+async def test_inline_media_nested_in_a_tool_result_is_admitted(oracle):
+    """A tool returning an image is the same admission, one level down."""
+    oracle()
+    image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+    result = await quote(body(messages=[{"role": "user", "content": [{"type": "tool_result", "content": [image]}]}]))
+    assert result.capability == Capability.MEDIA and result.total_usd == Decimal("0.765000")
+
+
+async def test_media_in_the_system_prompt_is_admitted(oracle):
+    oracle()
+    document = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "AAAA"}}
+    result = await quote(body(system=[document]))
+    assert result.capability == Capability.MEDIA and result.total_usd == Decimal("0.765000")
+
+
+@pytest.mark.parametrize(
+    "nested",
+    [
+        {"type": "image", "source": {"type": "url", "url": "https://example.invalid/a.png"}},
+        {"type": "document", "source": {"type": "file", "file_id": "file_1"}},
+    ],
+)
+async def test_a_reference_nested_in_a_content_source_is_still_refused(oracle, nested):
+    """A ``content`` source is a block list, so it can itself contain a reference.
+
+    Inspecting only the outer block admitted these: the quote came back labelled
+    MEDIA while the provider would still dereference a name under the gateway's
+    shared principal — the exact access the reference refusal exists to prevent.
+    The nested blocks must be walked by the same rule.
+    """
+    source = {"type": "content", "content": [nested]}
+    raw = body(messages=[{"role": "user", "content": [{"type": "document", "source": source}]}])
+    with pytest.raises(QuoteRefusedError) as exc:
+        await quote(raw)
+    assert exc.value.refusal.reason == QuoteReason.MUTABLE_MEDIA_REFERENCE
+    assert exc.value.refusal.capability == Capability.MEDIA
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"type": "base64", "media_type": "image/png"},
+        {"type": "base64", "media_type": "image/png", "data": ""},
+        {"type": "text", "media_type": "text/plain"},
+        {"type": "content"},
+        {"type": "content", "content": "notes"},
+    ],
+)
+async def test_a_media_source_carrying_no_readable_payload_is_refused(oracle, source):
+    """Admission requires seeing the payload, so the request digest covers it.
+
+    The Responses adapter already refused a payload-less media part; the Anthropic
+    route admitted one and labelled the quote MEDIA, which claimed digest coverage
+    over bytes that were not there.
+    """
+    raw = body(messages=[{"role": "user", "content": [{"type": "image", "source": source}]}])
+    with pytest.raises(QuoteRefusedError) as exc:
+        await quote(raw)
+    assert exc.value.refusal.reason == QuoteReason.MALFORMED_REQUEST
     assert exc.value.refusal.capability == Capability.MEDIA
 
 
@@ -637,3 +768,97 @@ async def test_ported_adapter_refuses_exactly_what_the_previous_estimator_refuse
 async def test_the_amount_only_view_still_refuses_unroutable_paths():
     with pytest.raises(ValueError):
         flow_meter.estimate_policy_model_cost(body(), "/v1/responses")
+
+
+# ---------------------------------------------------------------------------
+# The Anthropic media block and source need key allowlists too (reviewer round 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"url": "https://example.invalid/probe.png"},
+        {"file_id": "file_VICTIM_TENANT_B"},
+        # The Bedrock-native reference shape, dereferenced under exactly the shared
+        # IRSA principal the reference refusal exists to guard.
+        {"s3Location": {"uri": "s3://victim-tenant-b/board-deck.pdf", "bucketOwner": "111122223333"}},
+    ],
+)
+async def test_a_reference_beside_inline_bytes_in_the_source_is_refused(oracle, extra):
+    """Verified inline bytes do not license the rest of the object.
+
+    ``source.type`` and ``source.data`` were validated while the source's other
+    keys went unenumerated, so a reference sitting beside a good ``base64`` payload
+    was admitted and the quote came back labelled MEDIA. The body is forwarded
+    byte-for-byte, so that reference still reached the provider. The Responses
+    adapter allowlists a media part's keys for this reason; this route needs it too.
+    """
+    source = {"type": "base64", "media_type": "image/png", "data": "AAAA", **extra}
+    raw = body(messages=[{"role": "user", "content": [{"type": "image", "source": source}]}])
+    with pytest.raises(QuoteRefusedError) as exc:
+        await quote(raw)
+    assert exc.value.refusal.reason == QuoteReason.MUTABLE_MEDIA_REFERENCE
+    assert exc.value.refusal.capability == Capability.MEDIA
+
+
+@pytest.mark.parametrize("extra", [{"url": "https://example.invalid/x.png"}, {"file_id": "file_VICTIM_TENANT_B"}])
+async def test_a_reference_at_media_block_level_is_refused(oracle, extra):
+    """Same argument one level out: the block's own keys must be enumerated."""
+    source = {"type": "base64", "media_type": "image/png", "data": "AAAA"}
+    raw = body(messages=[{"role": "user", "content": [{"type": "image", "source": source, **extra}]}])
+    with pytest.raises(QuoteRefusedError) as exc:
+        await quote(raw)
+    assert exc.value.refusal.reason == QuoteReason.MUTABLE_MEDIA_REFERENCE
+    assert exc.value.refusal.capability == Capability.MEDIA
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "s3://victim-tenant-b/secret.png",
+        "https://example.invalid/secret.pdf",
+        # Path- and key-shaped names drawn entirely from the base64 alphabet, which
+        # is why a character-class test is not enough on either route.
+        "file/VICTIMTENANTB/secret==",
+    ],
+)
+async def test_a_base64_source_payload_must_actually_decode(oracle, data):
+    """``base64`` means base64.
+
+    Requiring only "a non-empty string" admitted a reference wearing the payload's
+    name, and labelled the quote MEDIA as though the bytes were under the request
+    digest. The Responses adapter already refuses this; the two routes must not
+    disagree about what counts as inline.
+    """
+    source = {"type": "base64", "media_type": "image/png", "data": data}
+    raw = body(messages=[{"role": "user", "content": [{"type": "image", "source": source}]}])
+    with pytest.raises(QuoteRefusedError) as exc:
+        await quote(raw)
+    assert exc.value.refusal.reason == QuoteReason.MUTABLE_MEDIA_REFERENCE
+    assert exc.value.refusal.capability == Capability.MEDIA
+
+
+async def test_an_unhashable_source_type_refuses_rather_than_raising(oracle):
+    """A quote refusal, not a bare ``TypeError`` escaping the adapter."""
+    raw = body(messages=[{"role": "user", "content": [{"type": "image", "source": {"type": ["base64"], "data": "AAAA"}}]}])
+    with pytest.raises(QuoteRefusedError) as exc:
+        await quote(raw)
+    assert exc.value.refusal.reason == QuoteReason.MALFORMED_REQUEST
+    assert exc.value.refusal.capability == Capability.MEDIA
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        # Every optional key the API documents must still admit, so the allowlist is
+        # a correction rather than a blunt tightening.
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA", "cache_control": {"type": "ephemeral"}}},
+        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "AAAA"}, "title": "t", "context": "c"},
+        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "AAAA"}, "citations": {"enabled": True}},
+    ],
+)
+async def test_the_documented_optional_media_keys_still_admit(oracle, block):
+    oracle()
+    result = await quote(body(messages=[{"role": "user", "content": [block]}]))
+    assert result.capability == Capability.MEDIA and result.total_usd > 0

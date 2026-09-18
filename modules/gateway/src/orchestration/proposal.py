@@ -46,6 +46,7 @@ but it does not copy them either.
 
 from dataclasses import dataclass
 from datetime import datetime
+from heapq import heapify, heappop, heappush
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -521,10 +522,10 @@ def _reaches(adjacency: dict[str, list[str]], source: str, target: str) -> bool:
     `b` just as firmly as `a -> b`, and an author who expressed the order through
     an intermediate node has still expressed it.
 
-    Iterative breadth-first with a visited set, for the same two reasons
-    `_find_cycle` is iterative: a deep author-supplied chain must not raise
-    `RecursionError`, and validation collects every violation, so this runs even
-    on a document rule 3 already flagged as cyclic and must still terminate.
+    Iterative breadth-first with a visited set so a deep author-supplied chain
+    cannot raise `RecursionError`. Rule 6 only calls this after obtaining a
+    topological order; cyclic documents are rejected by rule 3 first because
+    "before" is not well-defined until their cycle is repaired.
 
     A single search with an early exit rather than a precomputed transitive
     closure: closure over a large plan is quadratic in memory for a question
@@ -546,6 +547,29 @@ def _reaches(adjacency: dict[str, list[str]], source: str, target: str) -> bool:
                 frontier.append(successor)
 
     return False
+
+
+def _topological_ranks(adjacency: dict[str, list[str]]) -> dict[str, int] | None:
+    """Return each node's position in a topological order, or None for a cycle."""
+    indegree = dict.fromkeys(adjacency, 0)
+    for successors in adjacency.values():
+        for successor in successors:
+            indegree[successor] += 1
+
+    ready = [node for node, degree in indegree.items() if degree == 0]
+    heapify(ready)
+    order: list[str] = []
+    while ready:
+        node = heappop(ready)
+        order.append(node)
+        for successor in adjacency[node]:
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                heappush(ready, successor)
+
+    if len(order) != len(adjacency):
+        return None
+    return {node: index for index, node in enumerate(order)}
 
 
 def _find_cycle(adjacency: dict[str, list[str]]) -> list[str] | None:
@@ -687,29 +711,43 @@ def _check_same_issue_ordering(proposal: LoopProposal) -> list[Violation]:
         by_issue.setdefault(identity, []).append(node.address)
 
     adjacency = _resolvable_adjacency(proposal)
+    topological_ranks = _topological_ranks(adjacency)
 
     for identity, addresses in sorted(by_issue.items()):
         if len(addresses) < 2:
             continue
-        # Sorted and pairwise so the report is deterministic and names both ends
-        # of each unordered pair — an author fixing this needs to know which two
-        # nodes to sequence, not just that the issue is over-claimed.
+        # A cyclic document is already rejected by rule 3, and has no valid
+        # topological order against which this rule can define "before". Avoid
+        # adding expensive secondary diagnostics to a graph that must first have
+        # its cycle repaired.
+        if topological_ranks is None:
+            continue
+
+        # The heap-backed topological rank makes the witness deterministic even
+        # when several nodes are ready at once. If each consecutive same-issue
+        # pair is reachable, transitivity orders every remaining pair too. The
+        # first failed reachability check is therefore one concrete unordered
+        # pair the author can safely connect in rank order. Report only that one
+        # actionable witness per issue: enumerating every unordered pair creates
+        # quadratic output and repeats graph traversals without improving the
+        # rejection decision.
         ordered_addresses = sorted(addresses)
-        for index, first in enumerate(ordered_addresses):
-            for second in ordered_addresses[index + 1 :]:
-                if _reaches(adjacency, first, second) or _reaches(adjacency, second, first):
-                    continue
-                violations.append(
-                    Violation(
-                        rule="unordered_same_issue",
-                        message=(
-                            f"nodes {first!r} and {second!r} both deliver issue {identity!r} but neither "
-                            f"is ordered before the other; add a dependency edge between them to declare "
-                            f"the intended sequence, or point one of them at a different issue"
-                        ),
-                        where=f"{first} | {second}",
-                    )
+        chain = sorted(ordered_addresses, key=topological_ranks.__getitem__)
+        for first, second in zip(chain, chain[1:], strict=False):
+            if _reaches(adjacency, first, second):
+                continue
+            violations.append(
+                Violation(
+                    rule="unordered_same_issue",
+                    message=(
+                        f"nodes {first!r} and {second!r} both deliver issue {identity!r} but neither "
+                        f"is ordered before the other; add a dependency edge between them to declare "
+                        f"the intended sequence, or point one of them at a different issue"
+                    ),
+                    where=f"{first} | {second}",
                 )
+            )
+            break
 
     return violations
 

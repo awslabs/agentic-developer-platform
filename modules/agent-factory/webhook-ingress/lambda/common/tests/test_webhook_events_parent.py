@@ -74,6 +74,24 @@ class TestParentInvocationIdPersisted:
         item = table.put_item.call_args[1]["Item"]
         assert item["chain_depth"] == 0
 
+    def test_credential_chain_depth_is_persisted_separately(self):
+        """Issue #5365: the conservative horizon must survive each row write."""
+        logger, table = _logger_with_mock_table()
+        logger.log_event(
+            event_id="deep-child",
+            arrived_at="2026-09-18T00:00:00Z",
+            tenant_id="t",
+            channel="github",
+            event_type="agent_trigger",
+            action="trigger",
+            status="webhook_received",
+            chain_depth=1,
+            credential_chain_depth=9,
+        )
+        item = table.put_item.call_args[1]["Item"]
+        assert item["chain_depth"] == 1
+        assert item["credential_chain_depth"] == 9
+
     def test_root_human_and_is_human_rooted_persisted(self):
         """Issue #2042: root_human_id + is_human_rooted are written to the row so
         the Activity layer can attribute agent-spawned runs to the originating

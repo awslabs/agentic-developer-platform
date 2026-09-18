@@ -403,23 +403,36 @@ async def test_distinct_overlapping_requests_cannot_start_two_developers(graph_c
     assert len(messages(ctx)) == 1
 
 
-@pytest.mark.parametrize("reason", ["different_intent", "unapproved", "different_repo"])
+@pytest.mark.parametrize("reason", ["different_intent", "unapproved"])
 async def test_bootstrap_does_not_assign_unapproved_or_unrelated_flow(graph_context, reason):
     ctx = graph_context
-    if reason == "different_repo":
-        ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = "another/repo"
-    else:
-        async with ctx.session_factory() as db:
-            await db.execute(update(OrchestrationFlow).where(OrchestrationFlow.id == ctx.flow.id).values(intent_ref="999"))
-            if reason == "unapproved":
-                unapproved = await _make_flow(db, org_id="tenant", slug="unapproved")
-                unapproved.intent_ref = "42"
-            await db.commit()
+    async with ctx.session_factory() as db:
+        await db.execute(update(OrchestrationFlow).where(OrchestrationFlow.id == ctx.flow.id).values(intent_ref="999"))
+        if reason == "unapproved":
+            unapproved = await _make_flow(db, org_id="tenant", slug="unapproved")
+            unapproved.intent_ref = "42"
+        await db.commit()
     await enroll(ctx)
     grant = ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant")
     assert grant.authority.kind == "github_event"
     assert TargetRelationship.FLOW_NODE not in grant.target_relationships
     assert (await send(ctx)).status_code == 404
+
+
+async def test_flow_issue_number_in_the_configured_repository_does_not_block_another_repository(graph_context):
+    """Numeric graph references belong only to the engine's configured repo."""
+    ctx = graph_context
+    ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = "another/repo"
+    await enroll(ctx)
+    grant = ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant")
+    assert grant.authority.kind == "github_event"
+    assert TargetRelationship.FLOW_NODE not in grant.target_relationships
+
+    response = await send(ctx)
+    assert response.status_code == 202, response.text
+    envelope = json.loads(messages(ctx)[0]["Body"])
+    assert envelope["source_ref"]["repo"] == "org/repo"
+    assert "orchestration" not in envelope
 
 
 async def test_coordinator_assignment_lost_reply_recovers_committed_grant(graph_context, monkeypatch):

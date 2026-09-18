@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     # src.shared.schemas.auth.
     from src.budget.reservations import ReservationTarget
     from src.budget.run_binding import RunBinding
+    from src.orchestration.dispatch import GraphAttribution
     from src.orchestration.provider_quotes import ProviderQuote
 
 
@@ -122,6 +123,35 @@ class TokenContext(BaseModel):
     # Set only after protected credential, pod, grant and ownership verification.
     # Neither model parsing nor headers can supply a pydantic private attribute.
     _protected_run_binding: "RunBinding | None" = PrivateAttr(default=None)
+    # Issue #4898: the graph node this request's model spend is attributable to,
+    # for `usage_logs.graph_address`. Written ONLY by
+    # `AgentModelIdentityMiddleware`, from the assignment
+    # `validate_engine_authority` just proved against live SQL; read only by the
+    # shared usage writer.
+    #
+    # A PrivateAttr for the same reason as `_protected_run_binding`, and here the
+    # reason is the whole security property rather than tidiness: pydantic does
+    # not populate private attributes from constructor input, so no
+    # `TokenContext(**caller_data)` site, request header, body field or query
+    # parameter can inject one. The address is unforgeable *by construction*
+    # instead of by a validation someone must remember to write — which is what
+    # #3985 (`X-Agent-BudgetConfigId`) and `draft_binding.py`'s refusal of
+    # `attributed_org_id` both established as the rule on this path.
+    #
+    # Request-owned, and that is what makes concurrency and streaming safe: the
+    # value lives on the per-request context object rather than in a contextvar
+    # or any shared map, so two in-flight calls for different nodes have no
+    # common state to exchange, and a stream that finalizes late reads the
+    # assignment verified when it started rather than re-resolving a node that
+    # may since have completed or been reassigned. A contextvar would also need
+    # unconditional per-request reset and is lost across the threadpool boundary
+    # (#1755); this needs neither.
+    #
+    # None is the norm and is honest: human/JWT/CLI/chat traffic, a flow-level or
+    # wave coordinator that owns no single node, and any degraded lookup all
+    # leave it None, which persists as a NULL address meaning "unavailable" —
+    # never zero spend, and never a guessed node.
+    _graph_attribution: "GraphAttribution | None" = PrivateAttr(default=None)
     _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
     _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)
     _policy_request_id: str | None = PrivateAttr(default=None)

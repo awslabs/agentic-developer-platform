@@ -62,7 +62,7 @@ class AgentModelIdentityMiddleware:
                 request.headers.get(CREDENTIAL_HEADER, ""),
                 request.headers.get(WORKLOAD_HEADER, ""),
             )
-            await runtime.validate_flow(record, grant)
+            attribution = await runtime.validate_flow(record, grant)
             await worker_checkpoint(org_id=caller.tenant_id, invocation_id=caller.invocation_id, store=runtime.store)
             if request.headers.get("X-Agent-RunId", caller.invocation_id) != caller.invocation_id:
                 raise BootstrapRefusedError("model run assertion mismatch")
@@ -134,7 +134,10 @@ class AgentModelIdentityMiddleware:
                 _, caller, record, grant = await run_in_threadpool(
                     runtime.authenticate, request.headers.get(CREDENTIAL_HEADER, ""), request.headers.get(WORKLOAD_HEADER, "")
                 )
-                await runtime.validate_flow(record, grant)
+                # Reauthentication re-proves the assignment against live SQL, so
+                # this later result supersedes the pre-upload one: it is the state
+                # immediately before spending.
+                attribution = await runtime.validate_flow(record, grant)
                 async with get_session_factory()() as session:
                     decision = await authorize_worker_credential(session, execution=execution or {}, grant=grant, broker_path="model")
                     if not decision.permitted:
@@ -168,6 +171,28 @@ class AgentModelIdentityMiddleware:
                 is_human_rooted=grant.authority.kind != "service_policy",
                 flow_id=grant.flow_id if grant.authority.kind == "gate_decision" else None,
             )
+            # Issue #4898: attach the verified graph assignment so the shared
+            # usage writer can persist `usage_logs.graph_address`. Captured HERE —
+            # before the request reaches the provider — so the value metering
+            # later reads is the one that was actually proven for this call, not a
+            # re-resolution of a node that may by then have completed.
+            #
+            # The equality checks are a binding assertion, not a second
+            # authorization: `attribution` was composed inside
+            # `validate_engine_authority` from the same `grant`/`caller` that
+            # authorized this request, so agreement is expected. Requiring it
+            # anyway means any future path that could return another run's or
+            # tenant's assignment yields a NULL address instead of a
+            # cross-attributed charge. A mismatch declines attribution; it never
+            # denies the call, because attribution is reporting and must not be
+            # able to break a model request.
+            if (
+                attribution is not None
+                and attribution.org_id == caller.tenant_id
+                and attribution.run_id == caller.invocation_id
+                and attribution.address
+            ):
+                context._graph_attribution = attribution
         except ModelPolicyRefusedError as exc:
             from src.orchestration.execution_policy import DenyReason
 

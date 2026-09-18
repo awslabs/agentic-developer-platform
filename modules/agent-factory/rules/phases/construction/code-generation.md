@@ -29,16 +29,20 @@ Generate `aidlc-docs/construction/plans/{unit-name}-code-plan.md`:
 # Code Generation Plan: [Unit Name]
 
 ## My understanding of the task
-[Explain the requested change in simple language and good detail: what will be
-added or changed, the relevant current behavior, and how it should work when
-complete. Include enough context for someone who has not read the issue, design
-or earlier discussion. Identify consequential assumptions or unresolved facts.]
+[Explain the requested change in simple language and good detail: how it should
+work when complete, the relevant current behavior and what must keep working.
+Keep this understandable without reading the issue, design or code; do not open
+with file paths/mechanisms or add a required "who needs this" section. State
+consequential assumptions accurately: unverified access is not a missing resource.]
 
 ## How I plan to implement it
-[Explain the proposed approach in logical order, what each main step does and
-why, how the steps work together, and how you will verify the result. Use plain
-language and explain necessary technical terms. File lists, issue IDs and links
-below support this explanation; they do not replace it.]
+[Lead each logical step with what it accomplishes and why, explain how the steps
+fit together, then how you will check the result. Use plain language and explain
+unavoidable technical terms by their purpose. Explain each requirement once;
+do not repeat the technical design here or compress context to a word limit.
+Keep engineering details in the sections below. The reader must be able to
+explain the change, approach and verification without those details. Put commands
+for different terminals in separate labelled blocks, with prerequisites/placeholders.]
 
 ## Technology Stack
 - Language: [From architecture]

@@ -38,6 +38,16 @@ from decimal import ROUND_UP, Decimal
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import unquote
 
+from src.orchestration.quote_capabilities import (
+    ALLOWED_ANTHROPIC_MEDIA_BLOCK_KEYS,
+    ALLOWED_ANTHROPIC_SOURCE_KEYS,
+    EXTERNAL_ANTHROPIC_SOURCES,
+    INLINE_ANTHROPIC_SOURCES,
+    MEDIA_ANTHROPIC_BLOCKS,
+    is_inline_base64,
+    resolve_capability,
+)
+
 #: USD, rounded up to the ledger's micro-dollar granularity. Rounding a bound
 #: DOWN would admit a request whose true cost exceeds it, so every quantize in
 #: this module uses ROUND_UP.
@@ -92,6 +102,13 @@ class QuoteReason:
     STATEFUL_INPUT = "stateful_input"
     NON_TEXT_CONTENT = "non_text_content"
     SERVER_TOOL_COST = "server_tool_cost"
+    #: Media named by reference rather than carried in the request (#5227). Refused
+    #: because the provider dereferences the name under the gateway's single shared
+    #: principal, outside the caller's authorization boundary, and inspecting one
+    #: here would add a URL fetcher to the pricing path. Not a cost reason: the
+    #: bound reserves the whole context window and counts nothing. Distinct from
+    #: NON_TEXT_CONTENT: the capability exists, but THIS reference is inadmissible.
+    MUTABLE_MEDIA_REFERENCE = "mutable_media_reference"
     QUOTE_EXPIRED = "quote_expired"
     REQUEST_CHANGED = "request_changed"
     #: The adapter did not answer within QUOTE_CONFIRM_TIMEOUT_SECONDS. Distinct
@@ -109,6 +126,7 @@ class QuoteReason:
             STATEFUL_INPUT,
             NON_TEXT_CONTENT,
             SERVER_TOOL_COST,
+            MUTABLE_MEDIA_REFERENCE,
             QUOTE_EXPIRED,
             REQUEST_CHANGED,
             ADAPTER_TIMEOUT,
@@ -349,7 +367,7 @@ class AnthropicTextQuoteAdapter:
         if isinstance(output, bool) or not isinstance(output, int) or output <= 0:
             raise refuse(QuoteReason.UNBOUNDED_OUTPUT, detail="explicit positive max_tokens required")
 
-        self._reject_unbounded_features(document)
+        exercised = self._reject_unbounded_features(document)
 
         snapshot = load_snapshot()
         context_limit = snapshot.models.get(billing_model, {}).get("context_max_input_tokens")
@@ -395,7 +413,9 @@ class AnthropicTextQuoteAdapter:
         return ProviderQuote(
             provider=self.provider,
             endpoint=request.path,
-            capability=self.capability,
+            # Records what the request actually used, so the evidence names the
+            # weakest guarantee behind the bound rather than always saying "text".
+            capability=resolve_capability(self.capability, exercised),
             billing_model_id=billing_model,
             request_sha256=request.digest,
             pricing_revision=_pricing_revision(snapshot.snapshot_version, state.source, state.generation_id, state.pointer_revision),
@@ -504,7 +524,21 @@ class AnthropicTextQuoteAdapter:
         return model
 
     @classmethod
-    def _reject_unbounded_features(cls, document: dict[str, Any]) -> None:
+    def _reject_unbounded_features(cls, document: dict[str, Any]) -> set[str]:
+        """Refuse what cannot be bounded; return the extra capabilities used.
+
+        The return value is what the quote records as its capability (#5227). An
+        all-text request returns an empty set and is labelled exactly as before.
+        """
+        exercised: set[str] = set()
+        # Server-retained state stays refused here, exactly as it does on the
+        # Responses route (#5227 admits neither): `previous_response_id` names
+        # provider-held history that would be resolved under the gateway's single
+        # shared principal rather than the caller's authorization boundary, while
+        # `mcp_servers` and `container` authorize chargeable server-side execution
+        # our published evidence carries no per-call rate for, and
+        # `context_management` lets the provider rewrite the window itself, so the
+        # published ceiling stops being the thing that bounds the input.
         for key in ("mcp_servers", "container", "context_management", "previous_response_id"):
             if document.get(key):
                 raise refuse(QuoteReason.STATEFUL_INPUT, capability=Capability.HISTORY, detail=f"{key} cannot be bounded locally")
@@ -515,27 +549,113 @@ class AnthropicTextQuoteAdapter:
             if not isinstance(tool, dict):
                 raise refuse(QuoteReason.MALFORMED_REQUEST, detail="tool must be an object")
             if tool.get("type") not in (None, "custom"):
+                # A server-side tool bills a per-call fee our published evidence
+                # carries no rate for, and the provider may run it repeatedly.
+                # See src/orchestration/quote_capabilities.py for why this cannot
+                # be bounded rather than merely being unimplemented.
                 raise refuse(QuoteReason.SERVER_TOOL_COST, capability=Capability.SERVER_TOOLS, detail="server tool costs require a scoped quote")
-        cls._text_only(document.get("system", ""))
+        cls._bounded_content(document.get("system", ""), exercised)
         messages = document.get("messages")
         if not isinstance(messages, list) or not messages:
             raise refuse(QuoteReason.MALFORMED_REQUEST, detail="explicit input required")
         for message in messages:
             if not isinstance(message, dict) or "content" not in message:
                 raise refuse(QuoteReason.MALFORMED_REQUEST, detail="message content required")
-            cls._text_only(message["content"])
+            cls._bounded_content(message["content"], exercised)
+        return exercised
 
     @classmethod
-    def _text_only(cls, content: Any) -> None:
+    def _bounded_content(cls, content: Any, exercised: set[str]) -> None:
+        """Walk one content field, admitting text and inline media only.
+
+        Media is admitted because its tokens land in the same published context
+        window this adapter already reserves in full, priced by the same published
+        per-token rates — there is no separate per-image fee in the evidence. The
+        condition is that the bytes are IN the request, so the quote's digest
+        covers them; a reference is refused instead.
+        """
         if isinstance(content, str):
             return
         if not isinstance(content, list):
             raise refuse(QuoteReason.MALFORMED_REQUEST, detail="unsupported content")
         for block in content:
-            if not isinstance(block, dict) or block.get("type") not in {"text", "thinking", "tool_use", "tool_result"}:
+            if not isinstance(block, dict):
+                raise refuse(QuoteReason.MALFORMED_REQUEST, detail="unsupported content")
+            kind = block.get("type")
+            if kind in MEDIA_ANTHROPIC_BLOCKS:
+                cls._inline_media_source(block, exercised)
+                continue
+            if kind not in {"text", "thinking", "tool_use", "tool_result"}:
                 raise refuse(QuoteReason.NON_TEXT_CONTENT, capability=Capability.MEDIA, detail="non-text token-count capability required")
-            if block.get("type") == "tool_result":
-                cls._text_only(block.get("content", ""))
+            if kind == "tool_result":
+                cls._bounded_content(block.get("content", ""), exercised)
+
+    @classmethod
+    def _inline_media_source(cls, block: dict[str, Any], exercised: set[str]) -> None:
+        """Admit a media block only when it carries its own bytes.
+
+        A source is admissible only if this method can see the payload itself. That
+        is what makes the quote's request digest cover the media, which is the whole
+        condition for admitting it.
+        """
+        source = block.get("source")
+        if not isinstance(source, dict):
+            raise refuse(QuoteReason.MALFORMED_REQUEST, capability=Capability.MEDIA, detail="media source required")
+        source_type = source.get("type")
+        if isinstance(source_type, list | dict | set):
+            # An unhashable value must refuse as a quote refusal, not escape as a
+            # bare TypeError from the set membership test below. It happened to fail
+            # closed only because a caller catches TypeError broadly, which records
+            # no reason or capability.
+            raise refuse(QuoteReason.MALFORMED_REQUEST, capability=Capability.MEDIA, detail="media source type is not a readable value")
+        if source_type in EXTERNAL_ANTHROPIC_SOURCES:
+            # Refused on authorization grounds, not cost: the provider dereferences
+            # the name under the gateway pod's single shared IRSA principal, so one
+            # tenant could name another tenant's stored content. Inspecting a
+            # caller-controlled URL would also mean adding a URL fetcher to the
+            # pricing path. See src/orchestration/quote_capabilities.py.
+            detail = f"media source {source_type} is resolved outside the caller's authorization boundary"
+            raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, capability=Capability.MEDIA, detail=detail)
+        if source_type not in INLINE_ANTHROPIC_SOURCES:
+            raise refuse(QuoteReason.NON_TEXT_CONTENT, capability=Capability.MEDIA, detail="unsupported media source")
+        # Now enumerate the block's own keys and the source's, for the same reason the
+        # Responses adapter enumerates a media part's: the body is forwarded
+        # byte-for-byte, so a key this method does not recognise is not ignored — it
+        # reaches the provider. Validating `source.type`/`source.data` while leaving
+        # the surrounding objects unenumerated admitted a `url`/`file_id`/`s3Location`
+        # sitting beside verified inline bytes. Checked after the source-type rules
+        # above so a plain `url`/`file` source keeps its own specific refusal detail.
+        block_unexpected = sorted(set(block) - ALLOWED_ANTHROPIC_MEDIA_BLOCK_KEYS)
+        if block_unexpected:
+            detail = f"media block carries unsupported field {block_unexpected[0]}"
+            raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, capability=Capability.MEDIA, detail=detail)
+        source_unexpected = sorted(set(source) - ALLOWED_ANTHROPIC_SOURCE_KEYS)
+        if source_unexpected:
+            detail = f"media source carries unsupported field {source_unexpected[0]}"
+            raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, capability=Capability.MEDIA, detail=detail)
+        if source_type == "content":
+            # A `content` source is a nested block list, and those blocks may
+            # themselves be media naming a reference. Walking them with the same
+            # rule is what stops a `url`/`file` source from being admitted one
+            # level down; without this the outer block alone was inspected.
+            nested = source.get("content")
+            if not isinstance(nested, list):
+                raise refuse(QuoteReason.MALFORMED_REQUEST, capability=Capability.MEDIA, detail="media content source requires a block list")
+            cls._bounded_content(nested, exercised)
+        else:
+            # `base64` and `text` carry the payload in `data`. Requiring it to be
+            # present and non-empty keeps a media block we cannot actually read
+            # from being admitted as though it were free.
+            data = source.get("data")
+            if not isinstance(data, str) or not data:
+                raise refuse(QuoteReason.MALFORMED_REQUEST, capability=Capability.MEDIA, detail="media source carries no inline payload")
+            if source_type == "base64" and not is_inline_base64(data):
+                # `base64` means base64. Requiring only "a non-empty string" admitted
+                # `data: "s3://victim/secret.png"` — a reference wearing the payload's
+                # name, which the Responses adapter already refuses. Same rule here.
+                detail = "media source data is not an inline base64 payload"
+                raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, capability=Capability.MEDIA, detail=detail)
+        exercised.add(Capability.MEDIA)
 
 
 # The registry. An empty slot is a refusal, not a default — adding a provider

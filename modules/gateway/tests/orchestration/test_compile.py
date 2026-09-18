@@ -600,3 +600,199 @@ class TestPlanHash:
     def test_hash_is_a_sha256_hex_digest(self):
         digest = plan_hash(valid_proposal())
         assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+
+
+class TestFlowSlugUniqueness:
+    """Tenant-scoped `(org_id, slug)` uniqueness and the race it decides (#4898).
+
+    A flow's slug is the first segment of every node's graph address, and the cost
+    readback groups `usage_logs` by `(org_id, graph_address)`. Two same-slug flows in
+    one tenant therefore merge their model spend into one total with nothing in the
+    result revealing the merge — a wrong number that reads as authoritative, which is
+    worse than the `unknown` it replaces. Migration 053 makes that impossible; these
+    tests cover the application behaviour on top of it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_resolving_an_existing_slug_reuses_the_flow(self, session, approval):
+        """The indexed lookup replaces a full per-tenant scan and must agree with it."""
+        first = await compile_proposal(session, valid_proposal(), approval)
+        second = await compile_proposal(session, valid_proposal(title="Same slug, new title"), approval)
+
+        assert second.flow_id == first.flow_id
+        assert await count_rows(session, OrchestrationFlow) == 1
+
+    @pytest.mark.asyncio
+    async def test_resolving_does_not_mutate_the_flow_it_found(self, session, approval):
+        """Resolution is not reconciliation.
+
+        A found flow keeps its own title and intent. Overwriting them here would let
+        any later submission silently rewrite the inception record of a flow whose
+        plan a human already approved.
+        """
+        await compile_proposal(session, valid_proposal(), approval)
+        await compile_proposal(session, valid_proposal(title="Renamed by a later submission"), approval)
+
+        flow = await OrchestrationRepository(session).get_flow_by_slug(org_id=ORG_A, slug=FLOW)
+        assert flow.title == "Demo flow"
+        assert flow.intent_ref == "4120"
+
+    @pytest.mark.asyncio
+    async def test_two_tenants_keep_independent_flows_of_the_same_name(self, session, approval):
+        """Cross-tenant same-slug flows are a product requirement, not a collision.
+
+        Two customers may each run a `demo-flow`; they are different flows, get
+        different ids, and their costs must never be summed together.
+        """
+        from dataclasses import replace
+
+        first = await compile_proposal(session, valid_proposal(org_id=ORG_A), approval)
+        second = await compile_proposal(session, valid_proposal(org_id=ORG_B), replace(approval, org_id=ORG_B))
+
+        assert first.flow_id != second.flow_id
+        assert await count_rows(session, OrchestrationFlow) == 2
+
+    @pytest.mark.asyncio
+    async def test_get_flow_by_slug_is_tenant_scoped(self, session, approval):
+        """A slug identifies a flow only WITHIN a tenant.
+
+        An unscoped lookup would hand one tenant another's flow id, which is a
+        cross-tenant read — and would then attribute their spend together.
+        """
+        from dataclasses import replace
+
+        await compile_proposal(session, valid_proposal(org_id=ORG_B), replace(approval, org_id=ORG_B))
+
+        repo = OrchestrationRepository(session)
+        assert await repo.get_flow_by_slug(org_id=ORG_A, slug=FLOW) is None
+        assert (await repo.get_flow_by_slug(org_id=ORG_B, slug=FLOW)) is not None
+
+    @pytest.mark.asyncio
+    async def test_get_flow_by_slug_returns_none_for_an_unknown_slug(self, session):
+        """None, not an exception: "absent" is the expected answer on a first
+        registration, and `_resolve_flow` creates the flow from it."""
+        assert await OrchestrationRepository(session).get_flow_by_slug(org_id=ORG_A, slug="never-registered") is None
+
+    @pytest.mark.asyncio
+    async def test_a_lost_concurrent_registration_converges_on_the_winner(self, session, approval):
+        """The race the index exists to decide, and the recovery that absorbs it.
+
+        `_resolve_flow` reads "absent" then inserts, so two concurrent registrations
+        can both read absent and both insert. The database picks a winner; the loser
+        must resolve to that same flow rather than erroring, so both callers end up
+        with ONE flow identity — and therefore one graph address prefix, and one cost
+        total.
+
+        Simulated by driving `create_flow` twice, which is precisely the state the
+        loser is in: it has already decided to insert, and the row now exists.
+        """
+        repo = OrchestrationRepository(session)
+        winner = await repo.create_flow(org_id=ORG_A, slug=FLOW, title="Winner", intent_ref="4120")
+
+        loser = await repo.create_flow(org_id=ORG_A, slug=FLOW, title="Loser", intent_ref="9999")
+
+        assert loser.id == winner.id
+        assert await count_rows(session, OrchestrationFlow) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_loser_does_not_overwrite_the_winners_record(self, session):
+        """Converging must not mean adopting the loser's values.
+
+        The winner is the flow a human's approval will be recorded against; a loser
+        that rewrote its title or intent would corrupt that record.
+        """
+        repo = OrchestrationRepository(session)
+        await repo.create_flow(org_id=ORG_A, slug=FLOW, title="Winner", intent_ref="4120")
+        loser = await repo.create_flow(org_id=ORG_A, slug=FLOW, title="Loser", intent_ref="9999")
+
+        assert (loser.title, loser.intent_ref) == ("Winner", "4120")
+
+    @pytest.mark.asyncio
+    async def test_the_surrounding_transaction_survives_a_lost_race(self, session):
+        """Why the insert runs in its own SAVEPOINT.
+
+        The caller is mid-compile inside its own `begin_nested()`. Without the
+        savepoint the uniqueness violation would poison the whole transaction, and
+        the loser's ENTIRE plan submission would fail instead of converging — turning
+        a race the design expects into a user-visible error. So after recovery the
+        session must still be usable for real work.
+        """
+        repo = OrchestrationRepository(session)
+        await repo.create_flow(org_id=ORG_A, slug=FLOW, title="Winner")
+        await repo.create_flow(org_id=ORG_A, slug=FLOW, title="Loser")
+
+        other = await repo.create_flow(org_id=ORG_A, slug="a-different-flow", title="Still works")
+        assert other.id is not None
+        assert await count_rows(session, OrchestrationFlow) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_concurrent_registration_by_another_tenant_is_not_a_race(self, session):
+        """Recovery must not fire where there was no collision.
+
+        Two tenants registering the same slug at the same moment both succeed; a
+        recovery keyed on slug alone would hand the second one the first's flow.
+        """
+        repo = OrchestrationRepository(session)
+        first = await repo.create_flow(org_id=ORG_A, slug=FLOW, title="Tenant A")
+        second = await repo.create_flow(org_id=ORG_B, slug=FLOW, title="Tenant B")
+
+        assert first.id != second.id
+        assert second.title == "Tenant B"
+
+    @pytest.mark.asyncio
+    async def test_an_integrity_error_with_no_readable_winner_is_not_swallowed(self, session, monkeypatch):
+        """Recovery is deliberately narrow.
+
+        It returns an existing flow only when one is actually found. A violation with
+        no readable winner is some other integrity fault, and returning None — or a
+        silently invented flow — would hide a real schema or data problem behind this
+        story's race handling. Forcing the lookup to find nothing is the only way to
+        reach that branch, since a genuine slug race always has a winner to read.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        repo = OrchestrationRepository(session)
+        await repo.create_flow(org_id=ORG_A, slug=FLOW, title="First")
+
+        async def _finds_nothing(**_kwargs):
+            return None
+
+        monkeypatch.setattr(repo, "get_flow_by_slug", _finds_nothing)
+        with pytest.raises(IntegrityError):
+            await repo.create_flow(org_id=ORG_A, slug=FLOW, title="Second")
+
+    @pytest.mark.asyncio
+    async def test_lookup_still_resolves_on_a_database_that_predates_the_migration(self, session, approval):
+        """The un-migrated schema is a REACHABLE state, and resolution must survive it.
+
+        Two facts make this a live configuration rather than a hypothetical: migration
+        052 deliberately REFUSES to apply while duplicate `(org_id, slug)` groups
+        exist (so an operator resolves them explicitly), and `gateway-deploy.yml`
+        orders `run-migrations` AFTER `deploy-backend`. This code therefore runs
+        against a database that may still hold duplicates.
+
+        The full scan this lookup replaced tolerated that: `list_flows` orders
+        `created_at DESC` and `_resolve_flow` took the first match, so the newest
+        flow won. A lookup that instead asserted "exactly one or none" would raise
+        `MultipleResultsFound` and fail plan submission for precisely the tenants the
+        refusing migration exists to protect. Same answer as the scan, so the
+        migration stays a safety net rather than a prerequisite.
+
+        The index is dropped here because the fixture's `create_all` builds it from
+        the model; without the drop the duplicate rows could not be inserted and the
+        assertion would be vacuous.
+        """
+        await session.execute(sa.text("DROP INDEX IF EXISTS uq_orchestration_flows_org_slug"))
+        for title in ("older", "newer"):
+            session.add(OrchestrationFlow(org_id=ORG_A, slug=FLOW, title=title, intent_ref="4120"))
+            await session.flush()
+
+        resolved = await OrchestrationRepository(session).get_flow_by_slug(org_id=ORG_A, slug=FLOW)
+
+        assert resolved is not None, "a duplicated slug must still resolve, not raise"
+        assert resolved.title == "newer", "must match the newest-wins order of the scan this replaced"
+        # And the compile path that reads it converges on that same flow rather than
+        # creating a third one.
+        compiled = await compile_proposal(session, valid_proposal(), approval)
+        assert compiled.flow_id == resolved.id
+        assert await count_rows(session, OrchestrationFlow) == 2

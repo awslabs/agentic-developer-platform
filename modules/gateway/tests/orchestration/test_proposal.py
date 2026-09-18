@@ -437,9 +437,8 @@ class TestRule6SameIssueOrdering:
         ]
         assert "unordered_same_issue" in rules(validate_proposal(make_proposal(nodes=nodes, edges=[])))
 
-    def test_three_nodes_on_one_issue_report_each_unordered_pair(self):
-        """A partially ordered trio still needs the pair that is not ordered
-        named, rather than one violation for the issue as a whole."""
+    def test_three_nodes_on_one_issue_report_one_deterministic_actionable_pair(self):
+        """One rank-adjacent witness rejects the issue without quadratic output."""
         nodes = [
             ProposedNode(address=address("story-a"), kind="story", title="A", issue_ref="5127"),
             ProposedNode(address=address("story-b"), kind="story", title="B", issue_ref="5127"),
@@ -453,11 +452,7 @@ class TestRule6SameIssueOrdering:
             ProposedEdge(from_address=address("story-c"), to_address=address("eval")),
         ]
         violations = [v for v in validate_proposal(make_proposal(nodes=nodes, edges=edges)) if v.rule == "unordered_same_issue"]
-        pairs = {frozenset(v.where.split(" | ")) for v in violations}
-        assert pairs == {
-            frozenset({address("story-a"), address("story-c")}),
-            frozenset({address("story-b"), address("story-c")}),
-        }
+        assert [v.where for v in violations] == [f"{address('story-b')} | {address('story-c')}"]
 
     def test_identity_matches_the_runtime_parse_exactly(self):
         """The rule's identity key is the runtime's own parse, deliberately.
@@ -531,6 +526,96 @@ class TestRule6SameIssueOrdering:
         edges.append(ProposedEdge(from_address=address("n1999"), to_address=address("eval")))
         # The chain orders the two issue-bearing ends, so the plan is valid.
         assert "unordered_same_issue" not in rules(validate_proposal(make_proposal(nodes=nodes, edges=edges)))
+
+    def test_a_deep_same_issue_chain_uses_a_linear_number_of_searches(self, monkeypatch):
+        """A valid ordered chain must not run one graph search for every pair."""
+        from src.orchestration import proposal as proposal_module
+
+        node_count = 2000
+        nodes = [
+            ProposedNode(
+                address=address(f"n{index:04d}"),
+                kind="story",
+                title=f"N{index}",
+                issue_ref="5127",
+            )
+            for index in range(node_count)
+        ]
+        nodes.append(ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"))
+        edges = [
+            ProposedEdge(
+                from_address=address(f"n{index:04d}"),
+                to_address=address(f"n{index + 1:04d}"),
+            )
+            for index in range(node_count - 1)
+        ]
+        edges.append(ProposedEdge(from_address=address(f"n{node_count - 1:04d}"), to_address=address("eval")))
+
+        original_reaches = proposal_module._reaches
+        searches = 0
+
+        def counted_reaches(adjacency, source, target):
+            nonlocal searches
+            searches += 1
+            return original_reaches(adjacency, source, target)
+
+        monkeypatch.setattr(proposal_module, "_reaches", counted_reaches)
+
+        assert validate_proposal(make_proposal(nodes=nodes, edges=edges)) == []
+        assert searches <= node_count
+
+    def test_a_deep_near_valid_chain_bounds_invalid_diagnostics(self, monkeypatch):
+        """One unordered node must not trigger a graph search for every pair."""
+        from src.orchestration import proposal as proposal_module
+
+        chain_count = 2000
+        nodes = [
+            ProposedNode(
+                address=address(f"n{index:04d}"),
+                kind="story",
+                title=f"N{index}",
+                issue_ref="5127",
+            )
+            for index in range(chain_count)
+        ]
+        nodes.extend(
+            [
+                ProposedNode(address=address("stray"), kind="story", title="Stray", issue_ref="5127"),
+                ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"),
+            ]
+        )
+        edges = [
+            ProposedEdge(
+                from_address=address(f"n{index:04d}"),
+                to_address=address(f"n{index + 1:04d}"),
+            )
+            for index in range(chain_count - 1)
+        ]
+        edges.extend(
+            [
+                ProposedEdge(from_address=address(f"n{chain_count - 1:04d}"), to_address=address("eval")),
+                ProposedEdge(from_address=address("stray"), to_address=address("eval")),
+            ]
+        )
+
+        original_reaches = proposal_module._reaches
+        searches = 0
+
+        def counted_reaches(adjacency, source, target):
+            nonlocal searches
+            searches += 1
+            if searches > chain_count + 1:
+                pytest.fail("same-issue validation exceeded its linear search bound")
+            return original_reaches(adjacency, source, target)
+
+        monkeypatch.setattr(proposal_module, "_reaches", counted_reaches)
+
+        violations = [
+            violation for violation in validate_proposal(make_proposal(nodes=nodes, edges=edges)) if violation.rule == "unordered_same_issue"
+        ]
+        assert len(violations) == 1
+        assert address("stray") in violations[0].where
+        assert searches <= chain_count + 1
 
 
 class TestRule5Declarations:
