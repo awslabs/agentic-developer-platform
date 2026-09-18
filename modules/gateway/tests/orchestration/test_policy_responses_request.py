@@ -242,6 +242,144 @@ async def test_a_reasoning_request_is_admitted_within_its_output_cap(model_path,
 
 
 # ---------------------------------------------------------------------------
+# Inline media through the production stack (#5227)
+# ---------------------------------------------------------------------------
+
+
+def media_body(part: dict, **overrides) -> bytes:
+    document = {"model": MODEL, "input": [{"role": "user", "content": [part]}], "max_output_tokens": 16}
+    document.update(overrides)
+    return json.dumps(document).encode()
+
+
+INLINE_IMAGE = {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo="}
+INLINE_FILE = {"type": "input_file", "file_data": "data:application/pdf;base64,JVBERi0="}
+# The API carries audio bytes in a nested object, not a URL field.
+INLINE_AUDIO = {"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}}
+
+
+@pytest.mark.parametrize("part", [INLINE_IMAGE, INLINE_FILE, INLINE_AUDIO], ids=["image", "file", "audio"])
+async def test_an_inline_media_request_succeeds_and_settles(model_path, assignment, part):
+    """The capability this issue adds, exercised through the real middlewares.
+
+    Before #5227 each of these was refused 403 by the adapter's text-only guard.
+    """
+    sent, body = await invoke(model_path, assignment, body=media_body(part))
+    assert sent[0]["status"] == 200
+    assert model_path.calls == 1
+    assert model_path.bodies == [body]
+    settled = await meter(model_path, assignment)
+    assert settled.total_usd == Decimal("0.01") and not settled.has_pending
+
+
+async def test_an_inline_media_reservation_equals_the_quoted_bound(model_path, assignment):
+    """The hold is the adapter's bound, and the quote names MEDIA as its capability."""
+    sent, body = await invoke(model_path, assignment, body=media_body(INLINE_IMAGE), reconcile=False)
+    assert sent[0]["status"] == 200
+    quote = model_path.quotes[0]
+    assert quote is not None and quote.capability == "media" and quote.provider == "openai"
+    expected = await quote_request(body, RESPONSES_PATH)
+    assert quote.total_usd == expected.total_usd > 0
+    held = await meter(model_path, assignment)
+    assert held.has_pending and held.total_usd == quote.total_usd
+
+
+async def test_media_does_not_raise_the_bound_above_the_text_bound(model_path, assignment):
+    """Media tokens sit inside the full context already reserved, so cost is unchanged.
+
+    This is the whole reason the row is admittable: were the bound to depend on
+    the media's size, it would need a count we have no trustworthy source for.
+    """
+    text_bound = (await quote_request(responses_body(), RESPONSES_PATH)).total_usd
+    media_bound = (await quote_request(media_body(INLINE_IMAGE), RESPONSES_PATH)).total_usd
+    assert media_bound == text_bound
+
+
+async def test_a_large_media_payload_does_not_change_the_bound(model_path, assignment):
+    """A bigger image must not buy a bigger charge, nor a smaller one a discount."""
+    small = {"type": "input_image", "image_url": "data:image/png;base64," + "A" * 64}
+    large = {"type": "input_image", "image_url": "data:image/png;base64," + "A" * 40_000}
+    assert (await quote_request(media_body(small), RESPONSES_PATH)).total_usd == (await quote_request(media_body(large), RESPONSES_PATH)).total_usd
+
+
+async def test_the_quoted_media_bytes_are_the_bytes_that_reach_the_provider(model_path, assignment):
+    """The digest must cover the media exactly, or the bound is not bound to it."""
+    body = media_body(INLINE_IMAGE)
+    sent, _ = await invoke(model_path, assignment, body=body)
+    assert sent[0]["status"] == 200
+    assert model_path.bodies == [body]
+    assert model_path.quotes[0].request_sha256 == request_digest(body)
+
+
+async def test_swapped_media_after_the_quote_is_not_spent(model_path, assignment, monkeypatch):
+    """Different media than was quoted must not be forwarded on the old quote.
+
+    The mutable-reference refusal exists to prevent exactly this substitution; for
+    inline bytes the digest is what enforces it, so it is asserted here too.
+    """
+    from src.orchestration import responses_quotes
+
+    original = responses_quotes.OpenAIResponsesQuoteAdapter.bound
+    swapped = {"done": False}
+
+    def bound_then_change(self, request):
+        quote = original(self, request)
+        if not swapped["done"]:
+            swapped["done"] = True
+            other = {"type": "input_image", "image_url": "data:image/png;base64,OTHERIMAGE="}
+            object.__setattr__(quote, "request_sha256", request_digest(media_body(other)))
+        return quote
+
+    monkeypatch.setattr(responses_quotes.OpenAIResponsesQuoteAdapter, "bound", bound_then_change)
+    sent, _ = await invoke(model_path, assignment, body=media_body(INLINE_IMAGE))
+    assert sent[0]["status"] == 403
+    assert model_path.calls == 0
+    held = await meter(model_path, assignment)
+    assert held is None or (held.total_usd == 0 and not held.has_pending)
+
+
+async def test_an_unsettled_media_call_retains_the_hold(model_path, assignment):
+    """Unknown usage on a media call must never reconcile to zero."""
+    sent, _ = await invoke(model_path, assignment, body=media_body(INLINE_IMAGE), usage_known=False)
+    assert sent[0]["status"] == 200
+    held = await meter(model_path, assignment)
+    assert held is None or held.has_pending or held.total_usd > 0
+
+
+async def test_refusing_media_by_reference_leaves_the_supported_paths_working(model_path, assignment):
+    """#5227 requires one unsupported combination not to break what already worked."""
+    referenced = media_body({"type": "input_file", "file_id": "file-1"})
+    assert (await invoke(model_path, assignment, body=referenced))[0][0]["status"] == 403
+    assert model_path.calls == 0
+    # Plain text, then inline media: both still admitted after the refusal.
+    assert (await invoke(model_path, assignment, request_id="text-after"))[0][0]["status"] == 200
+    assert (await invoke(model_path, assignment, request_id="media-after", body=media_body(INLINE_IMAGE)))[0][0]["status"] == 200
+    assert model_path.calls == 2
+
+
+async def test_a_refused_media_reference_is_never_fetched(model_path, assignment, monkeypatch):
+    """The refusal must not be implemented by resolving the reference first.
+
+    #5227 forbids adding a general URL fetcher, so nothing in the quote path may
+    open a socket to decide whether a reference is acceptable. Any outbound
+    connection attempt fails this test loudly. ``connect`` is the chokepoint every
+    stdlib and third-party HTTP client funnels through, including
+    ``socket.create_connection``, which is what ``urllib`` and ``httpx`` use.
+    """
+    import socket
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the quote path attempted a network connection")
+
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
+    body = media_body({"type": "input_image", "image_url": "https://example.invalid/a.png"})
+    sent, _ = await invoke(model_path, assignment, body=body)
+    assert sent[0]["status"] == 403
+    assert model_path.calls == 0
+
+
+# ---------------------------------------------------------------------------
 # Every refusal lands BEFORE the provider call, holding nothing
 # ---------------------------------------------------------------------------
 
@@ -258,8 +396,22 @@ async def test_a_reasoning_request_is_admitted_within_its_output_cap(model_path,
         pytest.param({"conversation": "conv_1"}, id="server_side_conversation"),
         pytest.param({"prompt": {"id": "pmpt_1"}}, id="server_side_prompt"),
         pytest.param({"background": True}, id="background_execution"),
-        pytest.param({"input": [{"role": "user", "content": [{"type": "input_image"}]}]}, id="image_input"),
-        pytest.param({"input": [{"role": "user", "content": [{"type": "input_file"}]}]}, id="file_input"),
+        # Media parts carrying no payload at all: #5227 admits media, but there is
+        # nothing here to bind, so these stay refused before any upstream call.
+        pytest.param({"input": [{"role": "user", "content": [{"type": "input_image"}]}]}, id="image_with_no_payload"),
+        pytest.param({"input": [{"role": "user", "content": [{"type": "input_file"}]}]}, id="file_with_no_payload"),
+        # Media named by reference: the bytes are outside the request, so outside
+        # the digest that binds the quote. Refused rather than fetched.
+        pytest.param({"input": [{"role": "user", "content": [{"type": "input_file", "file_id": "file-1"}]}]}, id="provider_stored_file"),
+        pytest.param(
+            {"input": [{"role": "user", "content": [{"type": "input_file", "file_url": "https://example.invalid/a.pdf"}]}]},
+            id="fetched_file_url",
+        ),
+        pytest.param(
+            {"input": [{"role": "user", "content": [{"type": "input_image", "image_url": "https://example.invalid/a.png"}]}]},
+            id="fetched_image_url",
+        ),
+        pytest.param({"tools": [{"type": "mcp", "server_label": "s"}]}, id="hosted_mcp_server"),
         pytest.param({"tools": [{"type": "web_search"}]}, id="hosted_web_search"),
         pytest.param({"tools": [{"type": "code_interpreter"}]}, id="hosted_code_interpreter"),
         pytest.param({"usage": {"input_tokens": 1}}, id="client_supplied_usage"),

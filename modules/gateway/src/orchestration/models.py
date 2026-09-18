@@ -230,7 +230,19 @@ class OrchestrationFlow(Base, TenantMixin):
     """
 
     __tablename__ = "orchestration_flows"
-    __table_args__ = (Index("ix_orchestration_flows_org_id_created_at", "org_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_orchestration_flows_org_id_created_at", "org_id", "created_at"),
+        # Issue #4898: a flow's slug is the first segment of every node's graph
+        # address (`{slug}/{epic}/{wave}/{node}`), and the cost readback groups
+        # `usage_logs` by `(org_id, graph_address)`. Two same-slug flows in one
+        # tenant would therefore merge their model spend into a single total with
+        # nothing in the result revealing that two flows were summed. Enforced by
+        # the database because the resolve-then-create path is a read-then-write
+        # race that concurrent registrations can both pass; see
+        # `OrchestrationRepository.create_flow`. Scoped to `org_id`, so two
+        # tenants keep independent flows of the same name.
+        Index("uq_orchestration_flows_org_slug", "org_id", "slug", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     # The flow segment of the graph address (`flow/epic/wave/node`). Stable and

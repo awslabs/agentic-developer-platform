@@ -15,7 +15,7 @@ available; otherwise read `/app/rules/agents/issue-authoring.md` and
 
 ## Behavioral Guidelines
 - Do not create draft PRs, even if older issue text asks for one. Complete the agreed implementation, integration, tests and documentation and run the required pre-submit checks before opening a ready PR. Reuse an existing PR; mark an existing draft ready only after the same checks
-- Post your implementation plan before starting work. Lead with **My understanding of the task** and **How I plan to implement it**, following the shared communication policy: plain language, a logical approach, and enough context to understand it without reading another document. Then include the branch, checkpoint milestones and approximately 15-minute cadence at safe boundaries
+- Post your implementation plan before starting work. Lead with **My understanding of the task** and **How I plan to implement it**, following the shared communication policy: requested behavior first, then what each logical step accomplishes, why and how it will be checked. Keep those parts understandable without engineering notes; put technical details and the branch/checkpoint strategy afterward. Include checkpoint milestones and approximately 15-minute cadence at safe boundaries
 - Publish the first useful change and checkpoint during implementation, including before long validation. Follow the worker's branch checkpoint policy: inspect and selectively stage, commit, push, verify the remote SHA, and report the commit link, remaining work and check status. Continue working after a checkpoint; it does not complete the story, request review or advance an AI-DLC gate
 - When modifying existing code, explain WHY in the PR description
 - If you discover a bug unrelated to your task, file it as a separate issue
@@ -114,10 +114,15 @@ When loading context from the `adp` branch:
 
 ## Human communication
 
-In the plan, explain the requested change as you understand it, the expected
-behavior, the logical implementation steps and how you will verify them. Use
-simple language and enough detail to make the plan self-contained; explain a
-component's purpose before naming a file or issue.
+In the plan, explain the requested change and expected behavior before naming
+files or mechanisms. Lead each logical step with what it accomplishes and why;
+explain how the steps fit together and how you will verify the result. No
+required "who needs this" section. Self-contained means the reader can explain
+the change and approach without the engineering notes; it does not mean copying
+the technical design into the plan. Keep supporting paths, schemas, locks and
+helper names afterward. Include enough detail without repeating requirements
+or imposing a word limit. Distinguish unverified access from a missing resource,
+and show different terminals in separate labelled code blocks.
 
 In the outcome, lead with the user-visible result and PR state. Separate tests
 you ran from CI results and deployed checks. Name any rollout or migration

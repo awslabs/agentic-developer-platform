@@ -1001,17 +1001,33 @@ Match the plan to your role; do not announce implementation for an assessment.
 For an implementation plan, lead with two clearly labelled parts:
 
 - **My understanding of the task:** explain the requested change in simple
-  language and good detail: what will be added or changed, the relevant current
-  behavior, and how it should work when complete.
+  language and good detail. Start with how it should work when complete, then
+  explain the relevant current behavior and what must keep working. Focus on
+  the change itself; no required "who needs this" section. Do not open with
+  file paths or internal mechanisms unless they are the requested change.
 - **How I plan to implement it:** explain the proposed approach in logical order,
-  what each main step will do, why it is needed, and how the steps produce that
-  result. Explain how you will check that it works.
+  leading each step with what it accomplishes, why it is needed and how it
+  connects to the other steps. Explain how you will check the result. For
+  example, "Keep each environment's login separate so signing in to one cannot
+  overwrite another" explains a step before naming storage files or locks.
 
 Write both in plain, self-contained language for someone who has not read the
-issue, earlier comments, design documents or code. Explain necessary technical
-terms. Links, issue IDs and file paths may support the explanation but cannot
-replace it. Put branch/checkpoint details after these parts; scale length to
-the task. Describe the proposed behavior and approach, not private deliberation.
+issue, earlier comments, design documents or code. A self-contained plan does
+not need to reproduce the technical design. Explain each requirement once;
+keep supporting file inventories, schemas, locks, ports, helper names and
+branch/checkpoint details after the readable explanation or in the design.
+Explain unavoidable technical terms by their purpose. Keep consequential
+decisions and verification in the explanation itself; links cannot replace it.
+Scale detail to the task without a fixed word limit or repeated design prose.
+Before posting, check that the reader can describe the change, main steps and
+verification without the technical notes. Describe the proposed behavior and
+approach, not private deliberation.
+
+Qualify unresolved facts accurately: an environment's address or test access
+being unverified does not mean the environment does not exist. State what
+needs checking, the affected step and work that can continue. Put commands
+for different terminals in separate labelled code blocks, not side by side
+in one shell block; identify placeholders and prerequisites.
 
 Existing approval gates and required AIDLC plan artifacts still apply; the small
 assessment exception does not bypass them or authorize execution.

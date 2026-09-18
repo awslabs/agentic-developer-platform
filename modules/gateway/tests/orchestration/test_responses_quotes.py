@@ -279,10 +279,232 @@ async def test_background_execution_is_refused(oracle):
     assert await refusal(body(background=True)) == (QuoteReason.STATEFUL_INPUT, Capability.HISTORY)
 
 
-@pytest.mark.parametrize("part", [{"type": "input_image"}, {"type": "input_file"}, {"type": "input_audio"}, {"no_type": 1}])
-async def test_non_text_content_is_refused(oracle, part):
+@pytest.mark.parametrize("part", [{"type": "unknown_part"}, {"no_type": 1}])
+async def test_a_part_that_is_neither_text_nor_media_is_refused(oracle, part):
+    """#5227 admits media, but only the part types the route actually accepts."""
     oracle()
     raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.NON_TEXT_CONTENT, Capability.MEDIA)
+
+
+@pytest.mark.parametrize("part", [{"type": "input_image"}, {"type": "input_file"}, {"type": "input_audio"}])
+async def test_a_media_part_carrying_no_payload_is_refused(oracle, part):
+    """A media part we cannot read is unreadable, not unsupported — and still never forwarded."""
+    oracle()
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MALFORMED_REQUEST, Capability.MEDIA)
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+        {"type": "input_file", "file_data": "data:application/pdf;base64,AAAA"},
+        # The API spells audio as a nested object holding raw base64; there is no
+        # `audio_url` field, so this is the only spec-compliant inline audio shape.
+        {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+    ],
+)
+async def test_inline_media_is_admitted_inside_the_full_context_bound(oracle, part):
+    """Media bytes are tokens against the same window already reserved in full.
+
+    The total is identical to the text-only quote of the same shape: the bound
+    already reserves the entire published context, so admitting media adds no
+    cost and needs no count of the media itself. The capability records MEDIA so
+    the quote's own evidence names the weakest guarantee behind it.
+    """
+    oracle()
+    result = await quote(body(input=[{"role": "user", "content": [part]}]))
+    assert result.total_usd == Decimal("3.795000")
+    assert result.capability == Capability.MEDIA
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "input_image", "file_id": "file-1"},
+        {"type": "input_file", "file_id": "file-1"},
+        {"type": "input_file", "file_url": "https://example.invalid/a.pdf"},
+        {"type": "input_image", "image_url": "https://example.invalid/a.png"},
+        # A reference carried INSIDE the nested audio object, and beside it.
+        {"type": "input_audio", "input_audio": {"data": "AAAA", "file_id": "file-1"}},
+        {"type": "input_audio", "input_audio": {"data": "AAAA"}, "file_id": "file-1"},
+    ],
+)
+async def test_media_named_by_reference_is_refused(oracle, part):
+    """A reference is resolved outside the caller's authorization boundary.
+
+    The provider dereferences it under the gateway's single shared principal, so
+    one tenant could name another tenant's stored content. Refusing also means the
+    gateway adds no URL fetcher of its own. Not a cost reason: the bound reserves
+    the whole context window and counts nothing.
+    """
+    oracle()
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "input_audio", "input_audio": {"data": "AAAA"}, "image_url": "https://example.invalid/x.png"},
+        {"type": "input_file", "image_url": "data:image/png;base64,AAAA", "file_data": "https://example.invalid/x.pdf"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA", "file_data": "s3://bucket/x.pdf"},
+    ],
+)
+async def test_an_inline_payload_cannot_smuggle_a_reference_beside_it(oracle, part):
+    """Every payload field must be inline, not merely the first one found.
+
+    The body is forwarded byte-for-byte, so a reference in a second field still
+    reaches the provider and is dereferenced under the shared principal. Accepting
+    on the first inline hit let an inline decoy carry one past the check.
+    """
+    oracle()
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "input_image", "image_url": {"url": "https://example.invalid/secret"}},
+        {"type": "input_image", "image_url": ""},
+    ],
+)
+async def test_an_unreadable_payload_field_is_refused_not_skipped(oracle, part):
+    """A structured or empty payload cannot be certified as covered by the digest.
+
+    A dict failed the string check and was silently skipped, so the reference it
+    held was never scheme-checked.
+
+    The dict case carried a second, cross-type ``file_data`` key when written. That
+    key is now refused earlier as an unrecognised field for an ``input_image`` part
+    (``mutable_media_reference``), which masked the check this test exists to pin,
+    so it is dropped here and covered on its own by
+    ``test_no_unrecognised_field_rides_along_beside_a_valid_payload``. Both shapes
+    are still refused; only which rule fires first changed.
+    """
+    oracle()
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MALFORMED_REQUEST, Capability.MEDIA)
+
+
+async def test_audio_is_admitted_in_the_shape_the_api_actually_defines(oracle):
+    """Audio's payload is a nested object, not a URL string.
+
+    The Responses API defines ``input_audio`` as ``{"data": "<base64>", "format":
+    "wav"|"mp3"}`` and defines no ``audio_url`` field at all. Scanning only
+    data-URI *strings* refused the sole spec-compliant way to send audio while the
+    capability matrix advertised audio as admitted, so a caller following the API
+    got a 403 on a capability this issue promises. Pinned because the shape is an
+    external contract no other test in this repo exercises.
+    """
+    oracle()
+    part = {"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}}
+    result = await quote(body(input=[{"role": "user", "content": [part]}]))
+    assert result.capability == Capability.MEDIA
+    # Same bound as text: the full context window is already reserved either way.
+    assert result.total_usd == Decimal("3.795000")
+
+
+@pytest.mark.parametrize("nested", [{"format": "wav"}, {"data": ""}, {"data": 1}])
+async def test_nested_audio_without_readable_bytes_is_refused(oracle, nested):
+    """Audio this adapter cannot read is unreadable, not silently free.
+
+    Without the payload the adapter cannot certify the digest covers the media, so
+    the part must not be admitted merely for having the right ``type``.
+    """
+    oracle()
+    raw = body(input=[{"role": "user", "content": [{"type": "input_audio", "input_audio": nested}]}])
+    assert await refusal(raw) == (QuoteReason.MALFORMED_REQUEST, Capability.MEDIA)
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        # A reference as a sibling key INSIDE the nested payload object.
+        {"type": "input_audio", "input_audio": {"data": "AAAA", "url": "https://example.invalid/x"}},
+        {"type": "input_audio", "input_audio": {"data": "AAAA", "file_data": "https://example.invalid/x.pdf"}},
+        {"type": "input_audio", "input_audio": {"data": "AAAA", "file_ids": ["victim-1"]}},
+        # A nested block list one level down, the Anthropic-style nesting escape.
+        {"type": "input_audio", "input_audio": {"data": "AAAA", "content": [{"type": "input_file", "file_id": "victim"}]}},
+        # A payload field belonging to a DIFFERENT part type, beside a valid one.
+        {"type": "input_audio", "input_audio": {"data": "AAAA"}, "audio_url": "https://example.invalid/x.wav"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA", "audio_url": "https://example.invalid/x.wav"},
+    ],
+)
+async def test_no_unrecognised_field_rides_along_beside_a_valid_payload(oracle, part):
+    """A media part may carry only the keys the API defines for it.
+
+    Each shape here pairs a readable inline payload with an extra key. Because the
+    body is forwarded byte-for-byte, that key still reaches the provider, where a
+    reference is dereferenced under the gateway's single shared principal — the
+    access ``MUTABLE_MEDIA_REFERENCE`` exists to prevent. Denylisting the two known
+    reference names let every other ``*_url``/``*_id``/nested shape through, so the
+    check is an allowlist and this test pins that.
+    """
+    oracle()
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "input_image", "input_audio": {"data": "AAAA"}},
+        {"type": "input_file", "input_audio": {"data": "AAAA"}},
+    ],
+)
+async def test_one_part_type_is_not_satisfied_by_another_types_payload(oracle, part):
+    """The payload requirement is keyed to the part's declared type.
+
+    An ``input_image``'s bytes are read by the provider from ``image_url``, so a
+    nested audio object beside it certifies nothing about the image. A shared
+    "something here looked inline" tally admitted these with no verified payload of
+    their own.
+    """
+    oracle()
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+async def test_nested_audio_data_must_be_base64_not_a_url(oracle):
+    """A URL in the field documented as raw base64 is a reference, not bytes."""
+    oracle()
+    part = {"type": "input_audio", "input_audio": {"data": "s3://victim/other-tenant-secret.wav"}}
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA", "detail": "auto"},
+        {"type": "input_file", "file_data": "data:application/pdf;base64,AAAA", "filename": "a.pdf"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA", "prompt_cache_breakpoint": {"mode": "explicit"}},
+        # Wrapped base64: the newline is stripped before decoding, so a payload
+        # split across lines still admits. (Written as "UklGRgAA==\n" when this test
+        # was added, which is not valid base64 at all -- 10 characters cannot pad to
+        # a 4-boundary -- and passed only while the check was a character-class test.)
+        {"type": "input_audio", "input_audio": {"data": "UklGRgAA\nAAAA", "format": "mp3"}},
+    ],
+)
+async def test_the_optional_fields_the_api_defines_are_still_admitted(oracle, part):
+    """The allowlist must not refuse a caller following the API.
+
+    ``detail``, ``filename`` and ``prompt_cache_breakpoint`` are documented on
+    these parts, and base64 may carry padding and line breaks. Tightening the part
+    shape is only correct if legitimate requests keep working.
+    """
+    oracle()
+    result = await quote(body(input=[{"role": "user", "content": [part]}]))
+    assert result.capability == Capability.MEDIA
+
+
+async def test_media_in_instructions_is_still_refused(oracle):
+    """``instructions`` is a plain string field; a structured part there is malformed input."""
+    oracle()
+    raw = body(instructions=[{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}])
     assert await refusal(raw) == (QuoteReason.NON_TEXT_CONTENT, Capability.MEDIA)
 
 
@@ -665,3 +887,102 @@ async def test_the_adapter_reads_the_body_model_not_a_path_model(oracle):
     adapter = OpenAIResponsesQuoteAdapter()
     result = await adapter.quote(QuoteRequest(body=body(), path=RESPONSES_PATH, now=NOW))
     assert result.billing_model_id == MODEL
+
+
+# ---------------------------------------------------------------------------
+# The reference scan must not be confined to the media branch (reviewer round 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["input_text", "text", "output_text", "summary_text", "refusal"])
+@pytest.mark.parametrize("field", ["file_id", "file_url"])
+async def test_a_reference_on_a_non_media_part_is_refused(oracle, kind, field):
+    """A reference is refused on EVERY part, not only on parts treated as media.
+
+    ``_inline_media_part`` holds the payload rules, but it is reached only for a
+    media ``type``. So a part declaring itself ``input_text`` and hanging a
+    ``file_id`` off it was never inspected at all, and the body is forwarded
+    byte-for-byte — the provider would still dereference the name under the
+    gateway's single shared IRSA principal. That is exactly the shape the matrix's
+    ``media_by_reference`` row claims to refuse, so the scan has to happen before
+    the type dispatch rather than inside one branch of it.
+    """
+    oracle()
+    part = {"type": kind, "text": "describe this", field: "victim-tenant-b"}
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+async def test_a_reference_on_a_text_part_is_refused_in_instructions_too(oracle):
+    """``instructions`` walks the same parts, so it needs the same guarantee."""
+    oracle()
+    raw = body(instructions=[{"type": "input_text", "text": "hi", "file_url": "https://example.invalid/x.pdf"}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+@pytest.mark.parametrize(
+    "image_url",
+    [
+        # `startswith("data:")` is a scheme test and nothing more. Each of these
+        # opens with the right five characters while naming somewhere else.
+        "data://example.invalid/probe.png",
+        "data:,https://example.invalid/probe.png",
+        "data:text/html,<script>x</script>",
+        "data:image/png;base64,AA#https://example.invalid/x",
+    ],
+)
+async def test_a_data_uri_must_be_the_whole_inline_form_not_just_the_scheme(oracle, image_url):
+    """Admission requires ``data:<mediatype>;base64,<payload>`` that actually decodes."""
+    oracle()
+    raw = body(input=[{"role": "user", "content": [{"type": "input_image", "image_url": image_url}]}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # The base64 alphabet contains `+`, `/` and `=`, so a character-class test
+        # passes path- and key-shaped references naming content we do not hold.
+        # Only the `:` in `s3://` was ever caught by it.
+        "file/VICTIMTENANTB/secret==",
+        "arn+aws+s3+++victim/secret",
+        "AAAA\r\nhttpsXY",
+    ],
+)
+async def test_a_nested_payload_must_actually_decode_as_base64(oracle, data):
+    """Requiring the characters be *readable as* base64, not merely drawn from it."""
+    oracle()
+    part = {"type": "input_audio", "input_audio": {"data": data, "format": "wav"}}
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        # An allowlisted KEY still needs a checked VALUE: each of these is
+        # caller-controlled and forwarded byte-for-byte inside an admitted request.
+        {"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "https://example.invalid/probe.wav"}},
+        {"type": "input_file", "file_data": "data:application/pdf;base64,AAAA", "filename": "s3://victim-tenant-b/secret.pdf"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA", "detail": "https://example.invalid/x"},
+    ],
+)
+async def test_an_allowlisted_key_still_has_its_value_checked(oracle, part):
+    """Permitting a key is not permitting any value under it."""
+    oracle()
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA)
+
+
+async def test_an_unhashable_part_type_refuses_rather_than_raising(oracle):
+    """A quote refusal, not a bare ``TypeError`` escaping the adapter.
+
+    An unhashable ``type`` hit the set membership test and raised
+    ``TypeError: unhashable type: 'list'``. It failed closed only because a caller
+    catches ``TypeError`` broadly, which records no reason or capability — so the
+    refusal was invisible in the evidence the quote layer exists to produce.
+    """
+    oracle()
+    part = {"type": ["input_image"], "image_url": "https://example.invalid/x"}
+    raw = body(input=[{"role": "user", "content": [part]}])
+    assert await refusal(raw) == (QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES)

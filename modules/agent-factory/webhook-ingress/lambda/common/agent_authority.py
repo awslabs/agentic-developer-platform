@@ -23,6 +23,16 @@ class AuthorityProvisionError(Exception):
     """Dispatch cannot publish without a matching protected authority record."""
 
 
+# Issue #5365: the server-only marker that lets a human-summoned root coordinator
+# dispatch to other stories in its own repository. Named constants because the
+# gateway reader must agree with this writer exactly; two string literals that
+# agree on the day they are written are how a security check quietly stops
+# matching. The value is never read from a request, only written here.
+FAN_OUT_CAPABILITY_FIELD = "dispatch_capability"
+FAN_OUT_CAPABILITY = "root_coordinator_repository_fan_out"
+FAN_OUT_REPOSITORY_FIELD = "dispatch_repository_scope"
+
+
 @dataclass(frozen=True)
 class VerifiedHumanEvent:
     reference_id: str
@@ -223,6 +233,21 @@ def provision_human_dispatch(
         }
         if dispatch_personas:
             grant["dispatch_personas"] = {"SS": dispatch_personas}
+        if persona in {"operations", "aidlc"}:
+            # Issue #5365: a coordinator summoned by a real human on a tracking
+            # issue exists to hand work to *other* stories. Pinning it to
+            # work_item_issue refuses exactly the dispatches it was summoned to
+            # make. This capability lifts the issue pin — and only the issue pin;
+            # every budget, concurrency and depth ceiling above still applies.
+            #
+            # It is written here, and only here, because this function is
+            # reachable solely from the HMAC-verified GitHub handler after the
+            # sender resolves to a human. Agent HTTP, bot-comment and EventBridge
+            # adapters cannot reach it, so no requesting agent can assert this
+            # into existence. The repository comes from the verified event rather
+            # than the envelope, so a mismatched envelope cannot widen it.
+            grant[FAN_OUT_CAPABILITY_FIELD] = {"S": FAN_OUT_CAPABILITY}
+            grant[FAN_OUT_REPOSITORY_FIELD] = {"S": event.repo}
         lookup = {
             **_key(f"INVOCATION#{invocation}", "DISPATCH"),
             "tenant_id": {"S": event.tenant_id},

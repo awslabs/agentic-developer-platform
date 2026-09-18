@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.orchestration.dispatch import GraphAttribution
 from src.shared.interfaces.usage import IUsageService
 from src.shared.models.usage import UsageLog
 from src.shared.schemas.auth import TokenContext
@@ -103,10 +104,69 @@ class UsageService(IUsageService):
             cache_read_input_tokens=cache_read_input_tokens,
             cache_creation_input_tokens=cache_creation_input_tokens,
             client_tool=client_tool,
+            # Issue #4898: the graph node this call is attributable to. Resolved
+            # from the request's own verified context — see `_graph_address_for`.
+            graph_address=self._graph_address_for(context, agent_run_id),
         )
 
         self.db.add(log_entry)
         await self.db.commit()
+
+    @staticmethod
+    def _graph_address_for(context: TokenContext, agent_run_id: str | None) -> str | None:
+        """This request's verified graph address, or None for "unattributable".
+
+        Issue #4898. This is the write side of the orchestration cost story: every
+        reader (`orchestration/cost.py`, `deviation.py`, the policy spend
+        observations) groups `usage_logs` by `graph_address`, and with nothing
+        writing it every flow reported `unknown` / `no_usage_rows` — correct, since
+        no attribution had been measured, but not a usable cost answer.
+
+        The value comes only from `context._graph_attribution`, a pydantic private
+        attribute that `AgentModelIdentityMiddleware` sets from the assignment
+        `validate_engine_authority` proved against live SQL. Nothing caller-supplied
+        reaches this: not `X-Agent-RunId`, not `X-Agent-OrgId`, not a body field,
+        not a hypothetical `X-Graph-Address`, and not the mutable reporting row that
+        also records an address. Private attributes cannot be populated from
+        constructor input, so there is no injection path to validate away.
+
+        Two properties this function must have, both load-bearing:
+
+        1. **It cannot raise.** Both production callers wrap `log_request` in a
+           broad `except Exception` that logs a warning and moves on, so an
+           exception raised here would not surface as an error — it would silently
+           drop the entire usage row, leaving real spend unmetered with an HTTP
+           200 and no alarm. Hence `getattr` with a default, an `isinstance`
+           narrowing that is safe on every possible value, and no parsing,
+           indexing, length check or coercion of any kind. Enrichment failing must
+           degrade to a NULL address, never to a lost row. (No length check is
+           needed either: `slug` is 128 chars and the three refs 64 each, so a
+           composed address cannot exceed 323 against a 512-char column.)
+        2. **Absent means NULL, never a placeholder.** Matching `client_tool` and
+           `bedrock_account_id` on this table: NULL reads as "not attributable",
+           which is the truth for human/CLI/chat traffic, for a coordinator owning
+           no single node, and for every historical row. A fabricated or guessed
+           address would land real money in some node's total.
+
+        `agent_run_id` is cross-checked rather than trusted. When the row's run id
+        is present and disagrees with the invocation the assignment was verified
+        for, the address is withheld: storing both would persist a self-
+        contradictory row that a reader could not reconcile. An absent
+        `agent_run_id` is not a disagreement — attribution stands on the verified
+        assignment, which is the stronger evidence, not on the run id.
+        """
+        attribution = getattr(context, "_graph_attribution", None)
+        # `isinstance`, not `is not None`: it is the one check that both narrows the
+        # value to the verified type AND cannot raise on any other shape. An
+        # attribute read on an unexpected object would raise here, and — because
+        # both callers swallow — would drop the entire usage row rather than
+        # surface. Anything that is not a GraphAttribution built inside
+        # `validate_engine_authority` is simply not attribution.
+        if not isinstance(attribution, GraphAttribution):
+            return None
+        if agent_run_id and agent_run_id != attribution.run_id:
+            return None
+        return attribution.address or None
 
     async def query_logs(
         self,

@@ -185,6 +185,158 @@ def test_authorized_dispatch_queues_one_bootstrappable_child_and_recovers_retry(
     assert store.authority.active_dispatch_count(grant_id=parent.grant_id, tenant_id="tenant") == 1
 
 
+def test_authenticated_parent_depth_ignores_a_deep_sibling(store, child_dispatch):
+    """Issue #5365 CD-1: depth comes from the credential-bound caller only."""
+    store.client.update_item(
+        TableName=store.table,
+        Key={
+            "pk": {"S": "TENANT#tenant"},
+            "sk": {"S": f"EXEC#{child_dispatch.invocation}"},
+        },
+        UpdateExpression="SET chain_depth = :depth",
+        ExpressionAttributeValues={":depth": {"N": "1"}},
+    )
+    store.client.put_item(
+        TableName="events",
+        Item={
+            "event_id": {"S": "unrelated-sibling"},
+            "arrived_at": {"S": "2026-09-18T00:00:00Z"},
+            "correlation_id": {"S": event().reference_id},
+            "chain_depth": {"N": "7"},
+        },
+    )
+
+    result = send_child(child_dispatch)
+
+    child = store._read("TENANT#tenant", f"EXEC#{result['invocation_id']}")
+    assert child["chain_depth"] == {"N": "2"}
+    assert child["parent_principal"] == {"S": f"{child_dispatch.invocation}#1"}
+    event_row = store.client.query(
+        TableName="events",
+        KeyConditionExpression="event_id = :id",
+        ExpressionAttributeValues={":id": {"S": result["invocation_id"]}},
+    )["Items"][0]
+    assert event_row["chain_depth"] == {"N": "2"}
+    assert event_row["credential_chain_depth"] == {"N": "2"}
+    assert event_row["parent_invocation_id"] == {"S": child_dispatch.invocation}
+
+
+def test_two_sequential_dispatches_do_not_compound_depth(store, child_dispatch):
+    """Issue #5365 CD-2: a coordinator's authority does not decay as it fans out.
+
+    The defect charged the newest row anywhere on the shared chain, so a
+    coordinator's second dispatch inherited the depth of its own first child.
+    Both children are siblings at the caller's depth + 1, forever.
+    """
+    depths = []
+    for index in range(2):
+        result = send_child(child_dispatch, child_dispatch.body.model_copy(update={"request_id": f"story-{index}"}))
+        row = store._read("TENANT#tenant", f"EXEC#{result['invocation_id']}")
+        depths.append(row["chain_depth"]["N"])
+        assert row["parent_principal"] == {"S": f"{child_dispatch.invocation}#1"}
+        # Complete the first child before requesting the second, so this is a
+        # sequential fan-out rather than two concurrent reservations.
+        store.authority.release_dispatch(grant_id=row["parent_grant_id"]["S"], tenant_id="tenant", reservation_id=row["dispatch_reservation_id"]["S"])
+    assert depths == ["1", "1"]
+    # The caller's own depth is untouched by having dispatched.
+    assert store._read("TENANT#tenant", f"EXEC#{child_dispatch.invocation}").get("chain_depth", {"N": "0"}) == {"N": "0"}
+
+
+def test_dispatch_parent_is_not_the_newest_row_on_the_chain(store, child_dispatch):
+    """Issue #5365 CD-3: a non-head parent keeps its own depth.
+
+    The caller's record is read by primary key from its run credential, so a
+    newer unrelated row on the same correlation chain cannot become the parent.
+    """
+    store.client.update_item(
+        TableName=store.table,
+        Key={"pk": {"S": "TENANT#tenant"}, "sk": {"S": f"EXEC#{child_dispatch.invocation}"}},
+        UpdateExpression="SET chain_depth = :depth",
+        ExpressionAttributeValues={":depth": {"N": "2"}},
+    )
+    store.client.put_item(
+        TableName="events",
+        Item={
+            "event_id": {"S": "newer-unrelated-descendant"},
+            "arrived_at": {"S": "2026-12-31T23:59:59Z"},
+            "correlation_id": {"S": event().reference_id},
+            "chain_depth": {"N": "7"},
+        },
+    )
+
+    result = send_child(child_dispatch)
+
+    child = store._read("TENANT#tenant", f"EXEC#{result['invocation_id']}")
+    assert child["chain_depth"] == {"N": "3"}
+    assert child["parent_principal"] == {"S": f"{child_dispatch.invocation}#1"}
+
+
+def test_forged_or_replayed_ancestor_cannot_be_selected(store, child_dispatch, monkeypatch):
+    """Issue #5365: the protected route has no caller-selectable ancestry.
+
+    A forged parent pointer is refused by schema, and replaying a captured
+    request cannot re-parent the child onto a shallower ancestor.
+    """
+    from unittest.mock import AsyncMock
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from pydantic import ValidationError
+
+    from src.agentauth.dispatch import DispatchRequest
+    from src.agentauth.routes import AgentRuntime, get_agent_runtime, router
+
+    # There is no field to forge: the request model refuses unknown ancestry.
+    for forged in ("parent_invocation_id", "chain_depth", "parent_principal"):
+        with pytest.raises(ValidationError):
+            DispatchRequest(persona="developer", target={"repo": "org/repo", "issue": 42}, request_id="forge", **{forged: "1"})
+
+    pod = VerifiedPod("pod-a", "worker-a", "adp-agents", "agent-scaledjob-sa", "10.0.1.2")
+    runtime = AgentRuntime(
+        store=store, workloads=SimpleNamespace(verify=lambda token: pod), env=child_dispatch.service.policy._env, dispatcher=child_dispatch.service
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", AsyncMock())
+    headers = {
+        "X-Caller-Identity": "shared-worker-role",
+        "X-Adp-Workload-Token": "verified-by-tokenreview",
+        "X-Adp-Run-Credential": child_dispatch.credential,
+    }
+    client = TestClient(app)
+    body = child_dispatch.body.model_dump()
+    assert client.post("/internal/v1/agent/dispatch", json={**body, "parent_invocation_id": "shallow-root"}, headers=headers).status_code == 422
+
+    # Replaying the exact accepted request returns the same child, so a captured
+    # request cannot be reused to mint a second, differently-parented run.
+    first = client.post("/internal/v1/agent/dispatch", json=body, headers=headers)
+    assert first.status_code == 202
+    replay = client.post("/internal/v1/agent/dispatch", json=body, headers=headers)
+    assert replay.status_code == 202
+    assert replay.json() == first.json()
+    assert len(child_dispatch.sqs.receive_message(QueueUrl=child_dispatch.queue, MaxNumberOfMessages=10)["Messages"]) == 1
+
+
+def test_authenticated_ninth_generation_is_refused(store, child_dispatch):
+    """Issue #5365 CD-4: the per-run route keeps the eight-generation cap."""
+    from src.agentauth.bootstrap import BootstrapRefusedError
+
+    store.client.update_item(
+        TableName=store.table,
+        Key={
+            "pk": {"S": "TENANT#tenant"},
+            "sk": {"S": f"EXEC#{child_dispatch.invocation}"},
+        },
+        UpdateExpression="SET chain_depth = :depth",
+        ExpressionAttributeValues={":depth": {"N": "8"}},
+    )
+
+    with pytest.raises(BootstrapRefusedError, match="outside delegated work"):
+        send_child(child_dispatch)
+    assert not child_dispatch.sqs.receive_message(QueueUrl=child_dispatch.queue).get("Messages")
+
+
 def test_dispatch_exact_intent_conflict_and_scope_refused_before_queue(child_dispatch):
     from src.agentauth.bootstrap import BootstrapRefusedError
     from src.agentauth.dispatch import DispatchRequest
