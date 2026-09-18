@@ -1,4 +1,4 @@
-"""Tests for Alembic migration 053 — environment leases.
+"""Tests for Alembic migration 054 — environment leases.
 
 Issue #5150 (ENGINE-D1, parent #5131). This file is **mandatory**, and not only
 for coverage: `modules/gateway/alembic/**` is absent from `gateway-ci.yml`'s
@@ -78,7 +78,7 @@ def _load_migration(filename: str):
     return module
 
 
-MIG_053 = _load_migration("053_orchestration_environment_leases.py")
+MIG_054 = _load_migration("054_orchestration_environment_leases.py")
 
 
 def _run_migration(sync_conn, fn):
@@ -115,12 +115,12 @@ async def _bare_engine():
 
 async def _upgrade(engine):
     async with engine.begin() as conn:
-        await conn.run_sync(_run_migration, MIG_053.upgrade)
+        await conn.run_sync(_run_migration, MIG_054.upgrade)
 
 
 async def _downgrade(engine):
     async with engine.begin() as conn:
-        await conn.run_sync(_run_migration, MIG_053.downgrade)
+        await conn.run_sync(_run_migration, MIG_054.downgrade)
 
 
 def _insert_lease(
@@ -389,7 +389,7 @@ class TestNoBackfill:
         declare free a target something is actively deploying to — and it would be
         *trusted*.
         """
-        source = (MIGRATIONS_DIR / "053_orchestration_environment_leases.py").read_text()
+        source = (MIGRATIONS_DIR / "054_orchestration_environment_leases.py").read_text()
         tree = ast.parse(source)
         upgrade = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "upgrade")
         # Only `op.*` calls are schema operations. `sa.Column(...)` and friends are
@@ -407,8 +407,8 @@ class TestNoBackfill:
         assert called <= allowed, f"upgrade() must only create; it also calls {sorted(called - allowed)}"
 
     def test_migration_declares_no_dependencies(self):
-        assert MIG_053.depends_on is None
-        assert MIG_053.branch_labels is None
+        assert MIG_054.depends_on is None
+        assert MIG_054.branch_labels is None
 
 
 class TestPostgresRendering:
@@ -440,7 +440,7 @@ class TestPostgresRendering:
             opts={"as_sql": True, "output_buffer": _Buffer()},
         )
         with Operations.context(ctx):
-            MIG_053.upgrade()
+            MIG_054.upgrade()
         return "".join(chunks)
 
     def test_timestamps_are_timezone_aware_on_postgres(self):
@@ -478,13 +478,21 @@ class TestPostgresRendering:
 
 class TestRevisionChain:
     def test_revision_id_and_down_revision(self):
-        """Chains onto the head that was real when this landed."""
-        assert MIG_053.revision == "053_orch_environment_leases"
-        assert MIG_053.down_revision == "052_orchestration_executions"
+        """Chains onto the head that was real when this landed.
+
+        Authored as `053` onto `052_orchestration_executions`; renumbered to `054`
+        onto `053_flow_slug_unique` when that revision reached `main` first and took
+        the same parent. Pinning the parent here is deliberate even though
+        `test_migration_leaves_exactly_one_head` already asserts the chain is linear:
+        the head-count check passes for *any* linear arrangement, including one where
+        a later rebase silently re-points this revision at a different parent.
+        """
+        assert MIG_054.revision == "054_orch_environment_leases"
+        assert MIG_054.down_revision == "053_flow_slug_unique"
 
     def test_revision_id_fits_the_alembic_version_column(self):
         """`alembic_version.version_num` is VARCHAR(32); a longer id fails at apply."""
-        assert len(MIG_053.revision) <= 32
+        assert len(MIG_054.revision) <= 32
 
     def test_migration_leaves_exactly_one_head(self):
         """Two heads is a broken deploy, invisible until a pod runs `alembic upgrade head`.
@@ -492,7 +500,12 @@ class TestRevisionChain:
         Asserts the *count*, not the head's name: the head advances with every
         migration that lands, and a name-pinned assertion turns every future migration
         into a spurious failure here. What must never change is that there is exactly
-        one head and that 053 is still on the chain.
+        one head and that this revision is still on the chain.
+
+        This is the guard that caught the `053` collision with #5342 before merge, so
+        it is load-bearing rather than decorative: without it the branched history
+        would have surfaced as a failed `alembic upgrade head` in a deployed
+        database, taking down an unrelated story's deploy too.
         """
         revisions: dict[str, str | tuple[str, ...] | None] = {}
         for path in MIGRATIONS_DIR.glob("*.py"):
@@ -516,7 +529,7 @@ class TestRevisionChain:
         heads = sorted(rev for rev in revisions if rev not in parents)
 
         assert len(heads) == 1, f"expected exactly one head, got {heads}"
-        assert "053_orch_environment_leases" in revisions, "053 must still be on the chain"
+        assert "054_orch_environment_leases" in revisions, "this revision must still be on the chain"
 
 
 class TestModelMigrationParity:

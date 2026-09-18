@@ -14,11 +14,25 @@ deploying to. Both are worse than an empty table, because both would be *trusted
 #5151 dispatches, #5152 verifies and rolls back. A schema-only deploy therefore
 changes no runtime behavior, which is what makes it safe to land ahead of them.
 
-**Migration numbering.** Chained onto `052_orchestration_executions`, the single
-head of the live chain at authoring time. The number comes from the chain, not from
-any number in the issue text. Merges touching the chain must be serialized and the
-single-head check re-run; `tests/migrations/test_053_orchestration_environment_leases.py`
-asserts exactly one head.
+**Migration numbering.** Chained onto `053_flow_slug_unique`, the single head of the
+live chain. The number comes from the chain, not from any number in the issue text.
+
+This revision was authored as `053` against `052_orchestration_executions`, which
+was the head at the time. `053_flow_slug_unique` (#5342/#4898) landed on `main`
+first and took the same parent, leaving two children of one parent — a branched
+history, which makes `alembic upgrade head` fail outright with "Multiple head
+revisions are present". Renumbering to `054` and chaining onto that revision
+restores a single linear chain.
+
+Reordering is safe here because the two migrations are disjoint: `053` adds a
+unique index to the existing `orchestration_flows`, while this one *creates* a new
+table and touches nothing that already exists. Sequencing after `053` is therefore
+semantically identical to sequencing before it.
+
+Merges touching the chain must be serialized and the single-head check re-run;
+`tests/migrations/test_054_orchestration_environment_leases.py` asserts exactly one
+head, so the next lane to collide with this one fails in CI rather than in a
+deployed database.
 
 Must stay in agreement with `OrchestrationEnvironmentLease` in
 `src/orchestration/models.py`. Both are hand-written, so drift is the live risk and
@@ -51,8 +65,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "053_orch_environment_leases"
-down_revision = "052_orchestration_executions"
+revision = "054_orch_environment_leases"
+down_revision = "053_flow_slug_unique"
 branch_labels = None
 depends_on = None
 
