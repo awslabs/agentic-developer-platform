@@ -17,20 +17,29 @@ changes no runtime behavior, which is what makes it safe to land ahead of them.
 **Migration numbering.** Chained onto `053_flow_slug_unique`, the single head of the
 live chain. The number comes from the chain, not from any number in the issue text.
 
-This revision was authored as `053` against `052_orchestration_executions`, which
-was the head at the time. `053_flow_slug_unique` (#5342/#4898) landed on `main`
-first and took the same parent, leaving two children of one parent — a branched
-history, which makes `alembic upgrade head` fail outright with "Multiple head
-revisions are present". Renumbering to `054` and chaining onto that revision
-restores a single linear chain.
+This revision has been renumbered twice, for the same reason each time: a sibling
+lane reached `main` first and took the parent this one was authored against, leaving
+two children of one parent — a branched history, which makes `alembic upgrade head`
+fail outright with "Multiple head revisions are present".
 
-Reordering is safe here because the two migrations are disjoint: `053` adds a
-unique index to the existing `orchestration_flows`, while this one *creates* a new
-table and touches nothing that already exists. Sequencing after `053` is therefore
-semantically identical to sequencing before it.
+  * Authored as `053` against `052_orchestration_executions`; `053_flow_slug_unique`
+    (#5342/#4898) landed first, so this became `054` chained onto it.
+  * Then `054_execution_tenant_guards` (#5142) landed on `main` taking that same
+    `053_flow_slug_unique` parent, so this is now `055` chained onto `054`.
+
+Reordering is safe in both cases because the migrations are disjoint: `053` adds a
+unique index to the existing `orchestration_flows`, `054` adds tenant-identity
+indexes to existing orchestration tables and drops some foreign keys, while this one
+*creates* a new table and touches nothing that already exists. Sequencing after them
+is therefore semantically identical to sequencing before them.
+
+Note that this collision surfaced only after the branch was tested against a newer
+`main`: the branch content that failed was byte-identical to content that had passed
+an hour earlier. Re-running the single-head check after any merge into the chain is
+the check that catches it.
 
 Merges touching the chain must be serialized and the single-head check re-run;
-`tests/migrations/test_054_orchestration_environment_leases.py` asserts exactly one
+`tests/migrations/test_055_orchestration_environment_leases.py` asserts exactly one
 head, so the next lane to collide with this one fails in CI rather than in a
 deployed database.
 
@@ -65,8 +74,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "054_orch_environment_leases"
-down_revision = "053_flow_slug_unique"
+revision = "055_orch_environment_leases"
+down_revision = "054_execution_tenant_guards"
 branch_labels = None
 depends_on = None
 

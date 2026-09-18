@@ -78,7 +78,7 @@ def _load_migration(filename: str):
     return module
 
 
-MIG_054 = _load_migration("054_orchestration_environment_leases.py")
+MIG_054 = _load_migration("055_orchestration_environment_leases.py")
 
 
 def _run_migration(sync_conn, fn):
@@ -389,7 +389,7 @@ class TestNoBackfill:
         declare free a target something is actively deploying to — and it would be
         *trusted*.
         """
-        source = (MIGRATIONS_DIR / "054_orchestration_environment_leases.py").read_text()
+        source = (MIGRATIONS_DIR / "055_orchestration_environment_leases.py").read_text()
         tree = ast.parse(source)
         upgrade = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "upgrade")
         # Only `op.*` calls are schema operations. `sa.Column(...)` and friends are
@@ -482,13 +482,20 @@ class TestRevisionChain:
 
         Authored as `053` onto `052_orchestration_executions`; renumbered to `054`
         onto `053_flow_slug_unique` when that revision reached `main` first and took
-        the same parent. Pinning the parent here is deliberate even though
+        the same parent; renumbered again to `055` onto `054_execution_tenant_guards`
+        (#5142) when *that* revision reached `main` and took the same parent in turn.
+        Pinning the parent here is deliberate even though
         `test_migration_leaves_exactly_one_head` already asserts the chain is linear:
         the head-count check passes for *any* linear arrangement, including one where
         a later rebase silently re-points this revision at a different parent.
+
+        Updating this pin is therefore a reviewed act, not a formality — it is the
+        assertion that failed and made the second renumber explicit rather than
+        silent. Change it only together with `down_revision`, having confirmed the
+        new parent's migration is disjoint from this one.
         """
-        assert MIG_054.revision == "054_orch_environment_leases"
-        assert MIG_054.down_revision == "053_flow_slug_unique"
+        assert MIG_054.revision == "055_orch_environment_leases"
+        assert MIG_054.down_revision == "054_execution_tenant_guards"
 
     def test_revision_id_fits_the_alembic_version_column(self):
         """`alembic_version.version_num` is VARCHAR(32); a longer id fails at apply."""
@@ -529,7 +536,7 @@ class TestRevisionChain:
         heads = sorted(rev for rev in revisions if rev not in parents)
 
         assert len(heads) == 1, f"expected exactly one head, got {heads}"
-        assert "054_orch_environment_leases" in revisions, "this revision must still be on the chain"
+        assert "055_orch_environment_leases" in revisions, "this revision must still be on the chain"
 
 
 class TestModelMigrationParity:

@@ -109,7 +109,7 @@ async def pg_engine(pg_url):  # noqa: F811 - pg_url is a fixture, not a shadowed
     independent of unrelated migrations. The lease table has no foreign keys, so
     nothing else is needed. Migration correctness — including that the DDL matches
     this model and that the unique index is NOT tenant-scoped — is
-    `tests/migrations/test_054_orchestration_environment_leases.py` instead.
+    `tests/migrations/test_055_orchestration_environment_leases.py` instead.
     """
     engine = create_async_engine(to_async_url(pg_url), echo=False)
     async with engine.begin() as conn:
