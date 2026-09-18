@@ -850,11 +850,31 @@ def use(name):
 
 
 def _process_start(pid):
+    """This process's start time, used to make a PID-reuse collision harmless.
+
+    Two sources, because `ps` is NOT universally present: it ships in base macOS
+    but is a separate `procps` package on slim Linux images, and a lease is taken
+    by EVERY command against a named deployment. Reading /proc directly first
+    keeps those images working; `ps` remains the fallback for macOS, which has no
+    /proc. Neither available is reported by the caller, not silently ignored.
+
+    The value is only ever compared to another reading of the SAME pid on the same
+    machine, so the two formats never need to agree with each other. They are
+    tagged so a reading from one source can never accidentally compare equal to a
+    reading from the other.
+    """
     if pid <= 0:
         return None
+    # Linux: field 22 of /proc/<pid>/stat is the start time in clock ticks since
+    # boot. Parsed from the LAST ')' because a process name may contain ')'.
+    try:
+        stat_line = Path(f"/proc/{pid}/stat").read_text()
+        return "proc:" + stat_line[stat_line.rindex(")") + 2 :].split()[19]
+    except (OSError, ValueError, IndexError):
+        pass
     try:
         result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
-        return result.stdout.strip() if result.returncode == 0 else None
+        return "ps:" + result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -906,7 +926,11 @@ def lease(deployment, pid):
             raise DeploymentError("The selected deployment changed before this command started.", "deployment_mismatch")
         start = _process_start(pid)
         if not start:
-            raise DeploymentError("Could not establish the running command's identity.", "deployment_busy")
+            raise DeploymentError(
+                "Could not establish the running command's identity: neither /proc nor 'ps' is available. "
+                "Install 'ps' (the procps package) to use named deployments.",
+                "deployment_busy",
+            )
         directory = deployment.runtime_dir / "leases"
         for old in directory.glob("*.json"):
             if old.stem.isdigit() and int(old.stem) > 0:

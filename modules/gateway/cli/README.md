@@ -22,6 +22,9 @@ or Codex.
 ### Prerequisites
 
 - `curl`, `jq`
+- `ps` (the `procps` package) — only for named deployments, and only on a slim
+  Linux image that ships without it. It is already present on macOS and on any
+  normal Linux install, and `/proc` is used in preference where available.
 - A Cognito user account (ask your platform admin) — GitHub sign-in counts
 - Claude Code (`npm install -g @anthropic-ai/claude-code`) or the Codex CLI
 

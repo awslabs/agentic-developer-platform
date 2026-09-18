@@ -311,3 +311,29 @@ def test_claude_helper_quotes_install_path_with_spaces(installed):
     )
     assert token.returncode == 0, token.stderr
     assert token.stdout.strip() == "dev-token"
+
+
+def test_named_deployments_work_without_the_ps_command(installed, tmp_path):
+    """A slim image has no `ps`, and every named command takes a lease (#5413 review).
+
+    `ps` ships in base macOS but is a separate package on slim Linux images, so a
+    lease that could only read `ps` made `login`, `status`, `token` and `logout`
+    all exit 5 there — while the legacy single-deployment machine kept working.
+    """
+    run, env, _, _, _, _ = installed
+    bare = tmp_path / "nops"
+    bare.mkdir()
+    tools = (
+        "bash jq python3 date mktemp cat sed awk grep find rm mkdir chmod mv env tr "
+        "dirname basename sleep kill curl uname head tail cut sort wc id stat touch ln cp printf"
+    ).split()
+    for tool in tools:
+        located = shutil.which(tool, path=env["PATH"])
+        if located:
+            (bare / tool).symlink_to(located)
+    assert shutil.which("ps", path=str(bare)) is None
+
+    result = run("--deployment", "dev", "status", extra={"PATH": str(bare)})
+    assert result.returncode != 5, f"named deployment unusable without ps: {result.stderr}"
+    assert "dev" in result.stdout
+    assert "identity" not in result.stderr
