@@ -2,6 +2,7 @@
 """Allow narrowly defined deployment replacements; protect existing integrations."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 import sys
 
@@ -16,6 +17,27 @@ def routine(resource, module, account):
     order = change["actions"]
     address = resource["address"]
     if module in ("gateway", "gateway-alb-wire", "gateway-final"):
+        if address in ("module.lambda_authorizer[0].aws_lambda_layer_version.pyjwt",
+                       "module.budget_lambda[0].aws_lambda_layer_version.psycopg2"):
+            # A release publishes a new immutable version of the same layer.
+            # Retain release versions so recovery can reuse their packages.
+            fixed = ("layer_name", "compatible_runtimes", "compatible_architectures", "s3_bucket")
+            return (order == ["create", "delete"] and after.get("skip_destroy") is True
+                    and all(before.get(k) and before[k] == after.get(k) for k in fixed)
+                    and before.get("s3_bucket") == f"adp-terraform-state-{account}"
+                    and bool(re.fullmatch(r"adp-releases/sha256/[0-9a-f]{64}/(?:pyjwt-py313|psycopg2-py312)\.zip", after.get("s3_key", ""))))
+        if address in ("null_resource.build_pyjwt_layer[0]", "null_resource.build_psycopg2_layer[0]"):
+            # These have create-time build provisioners only; no destroy action
+            # against AWS. In release mode the helper validates staged packages.
+            old, new = before.get("triggers", {}), after.get("triggers", {})
+            # Terraform reports replacements as create/delete when the
+            # null_resource lifecycle can create the new marker first. These
+            # markers have no destroy provisioner, so either ordering is safe;
+            # the exact trigger contract below remains the security boundary.
+            return (order in (["delete", "create"], ["create", "delete"])
+                    and set(old) == set(new) == {"build_script", "layer_recipe", "state_bucket"}
+                    and old["state_bucket"] == new["state_bucket"] == f"adp-terraform-state-{account}"
+                    and all(re.fullmatch(r"[0-9a-f]{64}", new[k]) for k in ("build_script", "layer_recipe")))
         if address == "module.api_gateway[0].aws_api_gateway_deployment.main":
             return (order == ["create", "delete"] and bool(before.get("rest_api_id"))
                     and before["rest_api_id"] == after.get("rest_api_id"))

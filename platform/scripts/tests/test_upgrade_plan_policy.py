@@ -25,6 +25,37 @@ class PlanPolicyTests(unittest.TestCase):
             bad["change"].update(after={"rest_api_id": after}, actions=order)
             self.assertTrue(self.evaluate(bad)["blocked"])
 
+    def test_release_layer_version_preserves_identity_and_uses_immutable_package(self):
+        before = {"layer_name": "bedrockgw-dev-pyjwt-py313", "compatible_runtimes": ["python3.13"],
+                  "compatible_architectures": ["x86_64"], "s3_bucket": "adp-terraform-state-123456789012", "s3_key": "lambda-layers/pyjwt-py313.zip"}
+        after = dict(before, s3_key="adp-releases/sha256/" + "a" * 64 + "/pyjwt-py313.zip", skip_destroy=True)
+        resource = change("module.lambda_authorizer[0].aws_lambda_layer_version.pyjwt", "aws_lambda_layer_version", before, after, ("create", "delete"))
+        self.assertTrue(self.evaluate(resource)["routine"])
+        for key, value in [("layer_name", "different"), ("s3_bucket", "other"), ("s3_key", "mutable.zip"),
+                           ("compatible_runtimes", ["python3.12"]), ("compatible_architectures", ["arm64"]), ("skip_destroy", False)]:
+            bad = copy.deepcopy(resource)
+            bad["change"]["after"][key] = value
+            with self.subTest(key=key):
+                self.assertTrue(self.evaluate(bad)["blocked"])
+        resource["change"]["actions"] = ["delete", "create"]
+        self.assertTrue(self.evaluate(resource)["blocked"])
+
+    def test_layer_build_trigger_can_change_only_within_the_same_bucket(self):
+        triggers = {"build_script": "a" * 64, "layer_recipe": "b" * 64, "state_bucket": "adp-terraform-state-123456789012"}
+        resource = change("null_resource.build_pyjwt_layer[0]", "null_resource", {"triggers": triggers}, {"triggers": dict(triggers, build_script="c" * 64)})
+        self.assertTrue(self.evaluate(resource)["routine"])
+        resource["change"]["after"]["triggers"]["state_bucket"] = "other-account"
+        self.assertTrue(self.evaluate(resource)["blocked"])
+
+    def test_layer_build_marker_accepts_create_before_delete_plan_shape(self):
+        triggers = {"build_script": "a" * 64, "layer_recipe": "b" * 64,
+                    "state_bucket": "adp-terraform-state-123456789012"}
+        resource = change("null_resource.build_psycopg2_layer[0]", "null_resource",
+                          {"triggers": triggers},
+                          {"triggers": dict(triggers, build_script="c" * 64)},
+                          ("create", "delete"))
+        self.assertEqual(self.evaluate(resource)["routine"], [resource["address"]])
+
     def test_s3_permission_only_allows_source_account_tightening(self):
         before = {"function_name": "existing", "action": "lambda:InvokeFunction", "principal": "s3.amazonaws.com", "source_arn": "existing-bucket"}
         r = change("module.budget_lambda[0].aws_lambda_permission.usage_tracker_s3", "aws_lambda_permission", before,
@@ -34,6 +65,16 @@ class PlanPolicyTests(unittest.TestCase):
             bad = copy.deepcopy(r)
             bad["change"]["after"][key] = value
             self.assertTrue(self.evaluate(bad)["blocked"])
+
+    def test_s3_permission_with_unknown_source_account_stays_blocked(self):
+        before = {"function_name": "existing", "action": "lambda:InvokeFunction",
+                  "principal": "s3.amazonaws.com", "source_arn": "existing-bucket",
+                  "source_account": "123456789012", "statement_id": "AllowS3Invoke"}
+        resource = change("module.budget_lambda[0].aws_lambda_permission.usage_tracker_s3",
+                          "aws_lambda_permission", before,
+                          {key: value for key, value in before.items() if key != "source_account"})
+        resource["change"]["after_unknown"] = {"source_account": True}
+        self.assertEqual(self.evaluate(resource)["blocked"], [resource["address"]])
 
     def test_known_worker_manifests_can_change_in_same_cluster(self):
         old = {"namespace": "adp-agents", "cluster_name": "existing", "cluster_region": "us-east-1", "manifest_sha": "old"}

@@ -227,7 +227,7 @@ the guarantee that an empty registry cannot report PASS.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| [`orchestration-harness-ci.yml`](../../../.github/workflows/orchestration-harness-ci.yml) | `pull_request`, `push` to main | The offline tests above. No credentials, no `boto3`, never invokes the CLI. |
+| [`orchestration-harness-ci.yml`](../../../.github/workflows/orchestration-harness-ci.yml) | `pull_request`, `push` to main | The offline tests above. AWS credential discovery disabled, no `boto3`, never invokes the CLI. |
 | [`orchestration-live-tests.yml`](../../../.github/workflows/orchestration-live-tests.yml) | `workflow_dispatch` **only** | Runs a real qualification against a real environment. |
 
 **An ordinary PR never launches a paid qualification.** The live workflow has no

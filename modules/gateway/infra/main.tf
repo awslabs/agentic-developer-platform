@@ -986,6 +986,7 @@ module "budget_lambda" {
   name_prefix = local.name_prefix
   common_tags = local.common_tags
   aws_region  = var.aws_region
+  account_id  = data.aws_caller_identity.current.account_id
 
   # S3 Chat Logs Bucket
   chat_logs_bucket_name = module.s3_chat_logs[0].bucket_name

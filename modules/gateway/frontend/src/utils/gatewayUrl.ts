@@ -6,12 +6,14 @@
  * there is worse than useless: users copy it verbatim and the failure looks like
  * a platform outage.
  *
- * There is no runtime config file, no `window.__CONFIG__`, and no
- * `VITE_GATEWAY_URL` in this app, so this reuses the authoritative API-base
- * convention from `services/api.ts` (`import.meta.env.VITE_API_URL || '/api'`)
+ * Uses the deployment's runtime configuration (or local Vite settings) and
+ * reuses the authoritative API-base
+ * convention from `services/api.ts` (`deploymentSetting('VITE_API_URL') || '/api'`)
  * and absolutises it against the current origin — the same approach
  * `PostInstallPanel.tsx` uses to show a user an absolute URL.
  */
+
+import { deploymentSetting } from '@/config/runtime';
 
 /**
  * Absolute base URL of the gateway API, e.g. `https://d123.cloudfront.net/api`.
@@ -19,7 +21,7 @@
  * Takes NO `/v1` suffix — Claude Code appends the API path itself.
  */
 export function getGatewayBaseUrl(): string {
-  const configured = import.meta.env.VITE_API_URL as string | undefined;
+  const configured = deploymentSetting('VITE_API_URL') as string | undefined;
 
   // Already absolute (a cross-origin deployment): use it as-is.
   if (configured && /^https?:\/\//i.test(configured)) {

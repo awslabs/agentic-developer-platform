@@ -1,5 +1,9 @@
 # Platform Upgrades
 
+For the build-once integration-test → approved pre-production path, see
+[Release promotion](release-promotion.md).
+
+
 How to update an already-deployed ADP platform to newer code — the operator's
 guide to `--update` mode, the guarantees it makes, and what to do when
 something refuses to apply.

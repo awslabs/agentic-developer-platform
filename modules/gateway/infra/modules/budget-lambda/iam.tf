@@ -2,9 +2,8 @@
 # IAM Roles and Policies for Budget Lambda Functions (Issue #234)
 # =============================================================================
 
-# Get current AWS account ID and region
-data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
+# Get the current partition. Account and region are explicit module inputs so
+# module-level dependencies cannot defer them to apply time.
 data "aws_partition" "current" {}
 
 # =============================================================================
@@ -59,7 +58,7 @@ resource "aws_iam_role_policy" "usage_tracker" {
         Action = [
           "rds-db:connect"
         ]
-        Resource = var.rds_resource_id != "" ? "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:${var.rds_resource_id}/${var.db_username}" : "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:*/${var.db_username}"
+        Resource = var.rds_resource_id != "" ? "arn:aws:rds-db:${var.aws_region}:${var.account_id}:dbuser:${var.rds_resource_id}/${var.db_username}" : "arn:aws:rds-db:${var.aws_region}:${var.account_id}:dbuser:*/${var.db_username}"
       },
       # CloudWatch Logs
       {
@@ -70,7 +69,7 @@ resource "aws_iam_role_policy" "usage_tracker" {
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.name_prefix}-budget-usage-tracker:*"
+        Resource = "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/lambda/${var.name_prefix}-budget-usage-tracker:*"
       },
       # CloudWatch custom metrics (Issue #4592)
       #
@@ -180,7 +179,7 @@ resource "aws_iam_role_policy" "pricing_refresh" {
         Action = [
           "rds-db:connect"
         ]
-        Resource = var.rds_resource_id != "" ? "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:${var.rds_resource_id}/${var.db_username}" : "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:*/${var.db_username}"
+        Resource = var.rds_resource_id != "" ? "arn:aws:rds-db:${var.aws_region}:${var.account_id}:dbuser:${var.rds_resource_id}/${var.db_username}" : "arn:aws:rds-db:${var.aws_region}:${var.account_id}:dbuser:*/${var.db_username}"
       },
       # CloudWatch Logs
       {
@@ -191,7 +190,7 @@ resource "aws_iam_role_policy" "pricing_refresh" {
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.name_prefix}-pricing-refresh:*"
+        Resource = "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/lambda/${var.name_prefix}-pricing-refresh:*"
       },
       # VPC ENI Management
       {

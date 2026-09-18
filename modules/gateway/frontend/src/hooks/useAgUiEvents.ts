@@ -11,6 +11,8 @@
  * doesn't need to change except for the import.
  */
 
+import { deploymentSetting } from '@/config/runtime';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getIdToken, isTokenExpired, refreshToken as refreshTokenService } from '@/services/auth';
 import type {
@@ -748,7 +750,7 @@ export function useAgUiEvents({
 
     // Gateway-only deployments have no chat endpoint. Never send their login
     // token to another deployment's historical default endpoint.
-    const wsBaseUrl = import.meta.env.VITE_AGENT_WS_URL?.trim();
+    const wsBaseUrl = deploymentSetting('VITE_AGENT_WS_URL')?.trim();
     if (!wsBaseUrl) {
       setConnectionStatus('disconnected');
       updateMessages((msgs) => msgs.some((message) => message.content === CHAT_UNCONFIGURED)
