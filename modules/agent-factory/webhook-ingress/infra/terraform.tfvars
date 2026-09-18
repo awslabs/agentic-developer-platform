@@ -25,12 +25,10 @@ enable_agent_otel = true
 # (#888). Resource-level `merge(var.tags, {...})` callers still work — var.tags
 # defaults to {} in variables.tf.
 
-# Issue #3436 / GitLab Phase 0 (#3320): keep the GitLab webhook route + Lambda
-# deployed. This was enabled ad-hoc during the Phase 0 delivery loop but never
-# committed, so subsequent applies (default=false) destroyed /gitlab and its
-# Lambda — silently breaking GitLab dispatch. dev == embark1 spike environment;
-# envs without a GitLab instance override this to false in their own tfvars.
-gitlab_webhook_enabled = true
+# GitLab is not currently in use. Keep its unauthenticated API Gateway method,
+# Lambda, and token-bearing worker path absent until the integration is
+# explicitly configured and its security regression suite passes.
+gitlab_webhook_enabled = false
 
 # Issue #3488 / #3494: adversarial E2E infra gating (dual-path design).
 #

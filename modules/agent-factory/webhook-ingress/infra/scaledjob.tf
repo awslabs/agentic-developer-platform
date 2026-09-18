@@ -60,6 +60,13 @@ resource "kubernetes_service_account" "agent_scaledjob_sa" {
 # -----------------------------------------------------------------------------
 
 locals {
+  # GitLab API destination is deployment-owned. Never derive it from the
+  # webhook body or SQS envelope; those are untrusted inputs.
+  gitlab_env_block = var.gitlab_webhook_enabled ? join("\n", [
+    "                  - name: GITLAB_URL",
+    "                    value: ${data.aws_ssm_parameter.gitlab_url[0].value}",
+  ]) : ""
+
   # Knowledge Layer env vars for agent-worker container (#3286).
   # Conditionally included in the ScaledJob YAML when knowledge_layer_enabled=true.
   # Uses join() to avoid nested heredoc syntax issues in HCL ternary.
@@ -322,6 +329,7 @@ locals {
                         fieldPath: status.podIP
 ${local.agent_control_env_block}
 ${local.agent_authority_env_block}
+${local.gitlab_env_block}
 ${local.otel_env_block}
 ${local.knowledge_layer_env_block}
 ${local.agent_authority_mount_block}
