@@ -50,6 +50,11 @@ PROFILE_NAME="${BG_AWS_PROFILE:-bedrock-gateway}"
 # when no deployment is selected.
 PROXY_RUNTIME_DIR="${ADP_RUNTIME_DIR:-${CONFIG_DIR}}"
 PROXY_PID_FILE="${PROXY_RUNTIME_DIR}/proxy.pid"
+# Where the proxy publishes its bound port and which deployment it serves, after
+# binding (Issue #5413). Separate from the pidfile because it answers a different
+# question: the pidfile says "a proxy exists", this says "on this port, for this
+# deployment" — which is what a launcher must know before reusing one.
+PROXY_IDENTITY_FILE="${PROXY_RUNTIME_DIR}/proxy.json"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEFAULT_PROXY_PORT=9191
 
@@ -1239,7 +1244,15 @@ cmd_token() {
 # loop lives in bg-gateway-proxy.py. The proxy obtains tokens by calling this
 # script's `token` subcommand, so there is exactly one refresh implementation.
 cmd_serve() {
+    # A named deployment defaults to an OS-assigned port (Issue #5413): three
+    # deployments cannot all own 9191, and the caller reads the real port back
+    # from the identity file the proxy publishes after binding. A legacy
+    # single-deployment run keeps 9191, which is what every existing
+    # config.toml, doc and the /setup page already say.
     local port="${DEFAULT_PROXY_PORT}"
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
+        port=0
+    fi
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1261,8 +1274,9 @@ cmd_serve() {
         esac
     done
 
-    if ! [[ "${port}" =~ ^[0-9]+$ ]] || [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
-        print_error "Invalid --port: ${port}" >&2
+    # 0 is now legal and means "let the OS assign a free port" (Issue #5413).
+    if ! [[ "${port}" =~ ^[0-9]+$ ]] || [ "${port}" -gt 65535 ]; then
+        print_error "Invalid --port: ${port} (0 means let the OS choose)" >&2
         exit 1
     fi
 
@@ -1312,7 +1326,10 @@ cmd_serve() {
         --gateway-url "${GATEWAY_URL}" \
         --auth-helper "$(script_path)" \
         --port "${port}" \
-        --pidfile "${PROXY_PID_FILE}"
+        --pidfile "${PROXY_PID_FILE}" \
+        --identity-file "${PROXY_IDENTITY_FILE}" \
+        --deployment-id "${ADP_DEPLOYMENT_ID:-}" \
+        --deployment "${ADP_DEPLOYMENT_NAME:-}"
 }
 
 # Absolute path to this script, so `serve` can find its sibling proxy file and

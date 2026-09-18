@@ -68,6 +68,13 @@ PROXY_LOG_FILE="${ADP_LOG_DIR}/proxy.log"
 # distinct, actionable failure rather than a start timeout.
 PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
 
+# What the proxy publishes after it binds: its port and which deployment it
+# serves (Issue #5413). This is the only trustworthy answer to "is a proxy for MY
+# deployment already running, and where?" — a bare TCP probe cannot tell this
+# deployment's proxy from another's, and attaching to another's would send this
+# deployment's traffic, with this deployment's token, to the wrong gateway.
+PROXY_IDENTITY_FILE="${CONFIG_DIR}/proxy.json"
+
 # Guards the proxy spawn so two concurrent `adp codex` calls cannot both start
 # one. Deliberately NOT the core's refresh.lock: the proxy we spawn calls
 # `token`, which takes that lock, so sharing it would deadlock the readiness
@@ -196,6 +203,7 @@ resolve_deployment() {
     TOKEN_FILE="${CONFIG_DIR}/tokens.json"
     PROXY_LOG_FILE="${ADP_LOG_DIR}/proxy.log"
     PROXY_PID_FILE="${ADP_RUNTIME_DIR}/proxy.pid"
+    PROXY_IDENTITY_FILE="${ADP_RUNTIME_DIR}/proxy.json"
     PROXY_SPAWN_LOCK_DIR="${ADP_RUNTIME_DIR}/proxy-spawn.lock"
 
     # Children (the core helper, the python helpers, the proxy) inherit the pin.
@@ -332,6 +340,55 @@ proxy_listening() {
     (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
 }
 
+# The port this deployment's proxy published after binding, or empty.
+#
+# Empty covers every "no usable proxy" case uniformly — no file, a truncated
+# file, a record for another deployment, a dead pid — because they all mean the
+# same thing to the caller: start one. Liveness is established by signalling the
+# pid rather than by the file's existence, so a stale record from a killed
+# session is treated as absent instead of wedging every later launch.
+published_proxy_port() {
+    [ -f "${PROXY_IDENTITY_FILE}" ] || return 0
+
+    local port pid owner
+    port="$(jq -r '.port // empty' "${PROXY_IDENTITY_FILE}" 2>/dev/null || true)"
+    pid="$(jq -r '.pid // empty' "${PROXY_IDENTITY_FILE}" 2>/dev/null || true)"
+    owner="$(jq -r '.deployment_id // ""' "${PROXY_IDENTITY_FILE}" 2>/dev/null || true)"
+
+    [[ "${port}" =~ ^[0-9]+$ ]] || return 0
+    [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ] || return 0
+    [[ "${pid}" =~ ^[0-9]+$ ]] || return 0
+
+    # A record naming a DIFFERENT deployment is never reused, even though it sits
+    # in this deployment's runtime dir — that is the crossed-context bug itself.
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ -n "${owner}" ] && [ "${owner}" != "${ADP_DEPLOYMENT_ID}" ]; then
+        return 0
+    fi
+
+    kill -0 "${pid}" 2>/dev/null || return 0
+    printf '%s' "${port}"
+}
+
+# Confirm the thing listening on this port is THIS deployment's proxy.
+#
+# `proxy_listening` only proves that SOMETHING accepted a TCP connection. With
+# three deployments on one machine — or any unrelated local service on the port —
+# that is not enough: handing a token to whatever answered is the wrong-gateway
+# failure this change exists to prevent. So the proxy's own identity route is
+# asked, and its answer must name this deployment.
+#
+# A proxy that answers with an empty id is a legacy single-deployment proxy, and
+# is accepted only when we are legacy too. Anything that does not answer the
+# route at all is not our proxy and is not reused.
+proxy_identity_matches() {
+    local port="$1"
+    local body owner
+    body="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/_adp/proxy" 2>/dev/null)" || return 1
+    [ "$(printf '%s' "${body}" | jq -r '.proxy // empty' 2>/dev/null)" = "adp-gateway-proxy" ] || return 1
+    owner="$(printf '%s' "${body}" | jq -r '.deployment_id // ""' 2>/dev/null || true)"
+    [ "${owner}" = "${ADP_DEPLOYMENT_ID:-}" ]
+}
+
 # Age in seconds of the spawn lock, or empty if absent. Portable across macOS
 # (stat -f %m) and Linux (stat -c %Y) — mirrors _lock_age_seconds in the core.
 _spawn_lock_age_seconds() {
@@ -383,14 +440,20 @@ _acquire_proxy_spawn_lock() {
     done
 }
 
-# Block until the port accepts connections, or give up. Polls in 0.2s steps so a
-# warm start costs a fraction of a second rather than a full second.
+# Block until a proxy for this deployment is usable, echoing its port, or give up.
+# Polls in 0.2s steps so a warm start costs a fraction of a second rather than a
+# full second.
+#
+# Waits for the IDENTITY, not merely for a socket (Issue #5413): with an
+# OS-assigned port we do not know the port until the proxy publishes it, and
+# "some socket is open" was never proof that the socket was ours.
 _wait_for_proxy() {
-    local port="$1"
     local waited_tenths=0
     local limit_tenths=$((PROXY_READY_TIMEOUT_SECONDS * 10))
+    local found
     while [ "${waited_tenths}" -lt "${limit_tenths}" ]; do
-        if proxy_listening "${port}"; then
+        if found="$(_discover_proxy)" && [ -n "${found}" ]; then
+            printf '%s' "${found}"
             return 0
         fi
         sleep 0.2
@@ -399,18 +462,26 @@ _wait_for_proxy() {
     return 1
 }
 
-# Make sure a proxy is listening on CODEX_PROXY_PORT, starting one if not.
+# Make sure a proxy for THIS deployment is listening, starting one if not, and
+# leave its port in ADP_ACTIVE_PROXY_PORT for the launcher to pin the tool to.
 #
-# Idempotent by health-check-first: an already-running proxy (yours, or the
-# launchd agent from `adp daemon install`) is reused, never duplicated. The
-# re-check under the lock is what makes two concurrent `adp codex` calls start
-# exactly one proxy — the loser of the mkdir race observes the winner's proxy
-# instead of racing it to the bind.
+# Idempotent by discover-and-verify-first: an already-running proxy for this
+# deployment (yours, or the launchd agent from `adp daemon install`) is reused,
+# never duplicated. The re-check under the lock is what makes two concurrent
+# `adp codex` calls start exactly one proxy — the loser of the mkdir race
+# observes the winner's proxy instead of racing it to the bind.
+#
+# Reuse requires identity, not just a listening socket (Issue #5413). A named
+# deployment's proxy is found through the port it PUBLISHED, and confirmed to be
+# ours before any credential is sent through it.
 ensure_proxy() {
-    local port="${CODEX_PROXY_PORT}"
+    local named=""
+    [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ] && named="yes"
 
-    if proxy_listening "${port}"; then
-        print_info "Using the auth proxy already running on 127.0.0.1:${port}."
+    local found
+    if found="$(_discover_proxy)" && [ -n "${found}" ]; then
+        ADP_ACTIVE_PROXY_PORT="${found}"
+        print_info "Using the auth proxy already running on 127.0.0.1:${found}."
         return 0
     fi
 
@@ -420,22 +491,25 @@ ensure_proxy() {
         exit 1
     fi
 
-    if proxy_listening "${port}"; then
+    if found="$(_discover_proxy)" && [ -n "${found}" ]; then
         _release_proxy_spawn_lock
-        print_info "Using the auth proxy already running on 127.0.0.1:${port}."
+        ADP_ACTIVE_PROXY_PORT="${found}"
+        print_info "Using the auth proxy already running on 127.0.0.1:${found}."
         return 0
     fi
 
-    # Nothing on our port, but the core keeps ONE pidfile regardless of port and
-    # refuses to start a second proxy. Without this check that refusal surfaces
-    # as a 10s "did not come up" timeout with the real reason buried in the log —
-    # so name it now, with the fix.
-    if [ -f "${PROXY_PID_FILE}" ]; then
+    # Nothing of ours is running, but the core keeps ONE pidfile per deployment
+    # and refuses to start a second proxy. Without this check that refusal
+    # surfaces as a 10s "did not come up" timeout with the real reason buried in
+    # the log — so name it now, with the fix. Only the legacy fixed-port case can
+    # reach this: a named deployment binds a port the OS chooses, so it has no
+    # "running, but on another port" state.
+    if [ -z "${named}" ] && [ -f "${PROXY_PID_FILE}" ]; then
         local existing_pid
         existing_pid=$(cat "${PROXY_PID_FILE}" 2>/dev/null || true)
         if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
             _release_proxy_spawn_lock
-            print_error "An auth proxy is already running (pid ${existing_pid}), but not on port ${port}."
+            print_error "An auth proxy is already running (pid ${existing_pid}), but not on port ${CODEX_PROXY_PORT}."
             print_warning "Stop it with 'kill ${existing_pid}', or re-run 'adp codex setup' to use its port."
             exit 1
         fi
@@ -443,20 +517,34 @@ ensure_proxy() {
 
     mkdir -p "${ADP_LOG_DIR}" 2>/dev/null || true
 
-    print_info "Starting the auth proxy on 127.0.0.1:${port} (log: ${PROXY_LOG_FILE})..."
+    # A named deployment asks the OS for a free port (--port 0): three of them
+    # cannot share 9191. The legacy single-deployment path keeps the fixed port
+    # every existing config.toml and doc already names.
+    local requested_port="${CODEX_PROXY_PORT}"
+    local where="127.0.0.1:${CODEX_PROXY_PORT}"
+    if [ -n "${named}" ]; then
+        requested_port=0
+        where="127.0.0.1 on a free port chosen by the OS"
+    fi
+
+    # Stale identity removed BEFORE spawning, so the wait below cannot mistake a
+    # previous run's published port for this one's.
+    rm -f "${PROXY_IDENTITY_FILE}" 2>/dev/null || true
+
+    print_info "Starting the auth proxy on ${where} (log: ${PROXY_LOG_FILE})..."
     # setsid where available so the proxy survives this terminal; nohup covers
     # the rest. stdin from /dev/null and both streams appended to the log, so a
     # detached proxy can neither read from nor scribble on the user's terminal.
     if command -v setsid >/dev/null 2>&1; then
-        setsid nohup bash "$(core_script)" serve --port "${port}" \
+        setsid nohup bash "$(core_script)" serve --port "${requested_port}" \
             </dev/null >>"${PROXY_LOG_FILE}" 2>&1 &
     else
-        nohup bash "$(core_script)" serve --port "${port}" \
+        nohup bash "$(core_script)" serve --port "${requested_port}" \
             </dev/null >>"${PROXY_LOG_FILE}" 2>&1 &
     fi
     disown 2>/dev/null || true
 
-    if ! _wait_for_proxy "${port}"; then
+    if ! found="$(_wait_for_proxy)" || [ -z "${found}" ]; then
         _release_proxy_spawn_lock
         print_error "The auth proxy did not come up within ${PROXY_READY_TIMEOUT_SECONDS}s."
         print_warning "See ${PROXY_LOG_FILE}, or run 'adp serve' in the foreground to watch it start."
@@ -467,7 +555,41 @@ ensure_proxy() {
     # moment we spawned would health-check a socket that is not open yet and
     # spawn a second.
     _release_proxy_spawn_lock
-    print_success "Auth proxy ready on 127.0.0.1:${port}."
+    ADP_ACTIVE_PROXY_PORT="${found}"
+    print_success "Auth proxy ready on 127.0.0.1:${found}."
+}
+
+# Find a usable proxy for this deployment and echo its port, or echo nothing.
+#
+# Two ways in, for the two kinds of deployment:
+#   * a named deployment binds an OS-assigned port, so the only way to find it is
+#     the identity file it published after binding;
+#   * the legacy deployment has always used the fixed port, and a proxy started by
+#     an older CLI publishes no identity file at all — so the fixed port is probed
+#     too, and accepted when its identity route agrees it is legacy.
+# Either way the identity is confirmed before the port is returned.
+#
+# An EXPLICIT ADP_PROXY_PORT narrows this to that one port. A user (or the test
+# suite) who names a port has made a request, and quietly satisfying it with a
+# proxy on some other port is the same class of substitution this change refuses
+# for --deployment: it must be honoured or fail, never silently swapped.
+_discover_proxy() {
+    local port
+    port="$(published_proxy_port)"
+    if [ -n "${port}" ] && [ -n "${ADP_PROXY_PORT:-}" ] && [ "${port}" != "${ADP_PROXY_PORT}" ]; then
+        port=""
+    fi
+    if [ -n "${port}" ] && proxy_listening "${port}" && proxy_identity_matches "${port}"; then
+        printf '%s' "${port}"
+        return 0
+    fi
+    if [ -z "${ADP_DEPLOYMENT_ID:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; then
+        if proxy_listening "${CODEX_PROXY_PORT}" && proxy_identity_matches "${CODEX_PROXY_PORT}"; then
+            printf '%s' "${CODEX_PROXY_PORT}"
+            return 0
+        fi
+    fi
+    return 0
 }
 
 require_tool() {
@@ -493,9 +615,28 @@ cmd_codex_launch() {
     # and setting it here is what removes it from the user's command line.
     export ADP_GATEWAY_DUMMY="${ADP_GATEWAY_DUMMY:-unused}"
 
+    # Pin THIS launch to the proxy we just confirmed, when config.toml cannot
+    # already be right (Issue #5413). config.toml is one global file shared by all
+    # three terminals, so it cannot describe three different ports at once, and a
+    # named deployment's port is assigned by the OS and only known at runtime.
+    #
+    # `-c` rather than rewriting the user's file: a launch must not mutate global
+    # tool configuration that another terminal's running session is reading.
+    # Verified against the real Codex CLI — `-c` overrides config.toml, and a
+    # LATER `-c` overrides an earlier one, which is why ours goes before "$@" so
+    # the user's own `-c` still wins.
+    #
+    # Nothing is injected when the live port already equals the one `codex setup`
+    # wrote, which is every legacy single-deployment launch: config.toml agrees,
+    # so the flag would be noise on a command line the user reads and reports.
+    local pinned=()
+    if [ -n "${ADP_ACTIVE_PROXY_PORT:-}" ] && [ "${ADP_ACTIVE_PROXY_PORT}" != "${CODEX_PROXY_PORT}" ]; then
+        pinned=(-c "model_providers.${CODEX_PROVIDER}.base_url=\"http://127.0.0.1:${ADP_ACTIVE_PROXY_PORT}/openai/v1\"")
+    fi
+
     # exec, so Codex owns the terminal: job control, Ctrl-C and its exit status
     # all reach the user directly instead of through a bash wrapper.
-    exec codex "$@"
+    exec codex "${pinned[@]}" "$@"
 }
 
 # --- claude (launch) --------------------------------------------------------
@@ -505,6 +646,25 @@ cmd_codex_launch() {
 cmd_claude_launch() {
     require_tool claude
     require_live_session "Claude Code"
+
+    # Pin THIS launch to the selected deployment's endpoint (Issue #5413).
+    #
+    # ~/.claude/settings.json is one global file, so it cannot name three
+    # endpoints at once — and rewriting it per launch would change the endpoint
+    # under a Claude Code session already running in another terminal. The
+    # environment is the right scope: it belongs to this process only.
+    #
+    # The token follows automatically. settings.json's apiKeyHelper runs
+    # `adp token`, which Claude Code launches as a CHILD of this process, so it
+    # inherits the ADP_DEPLOYMENT_* pin exported at entry and resolves to this
+    # same deployment — endpoint and credential cannot disagree.
+    #
+    # Only set when a named deployment is selected: on a legacy machine the
+    # settings file is already correct and must stay authoritative.
+    if [ -n "${ADP_DEPLOYMENT_URL:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
+        export ANTHROPIC_BEDROCK_BASE_URL="${ADP_DEPLOYMENT_URL}"
+    fi
+
     exec claude "$@"
 }
 
