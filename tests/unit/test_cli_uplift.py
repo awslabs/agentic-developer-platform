@@ -7429,6 +7429,59 @@ def test_workflow_configures_durable_state_so_a_run_is_recoverable_by_id():
     assert "CLI_UPLIFT_EVAL_STATE_BUCKET" in printed
 
 
+def test_both_jobs_carry_the_deployment_bindings_variable():
+    """#5413. The recovery job rebuilds this run's config on its own runner.
+
+    If only `evaluate` declared it, a recovery sweep would rebuild a config with
+    no deployment bindings — validating fine, since absent is legal — and then
+    decline to clean up resources it could not see it had created. That is the R5
+    defect class the identical-env-block rule exists to prevent, so the new
+    variable has to be in both blocks or in neither.
+    """
+    document, _ = workflow()
+    for name in ("evaluate", "recover"):
+        env = json.dumps(document["jobs"][name]["env"])
+        assert "CLI_UPLIFT_EVAL_DEPLOYMENTS" in env, f"{name} cannot see the bindings"
+    # Its own variable, not a scalar overlay entry: the value is a JSON array, and
+    # the scalar path would store the literal string and fail validation pointing
+    # at the config rather than at the malformed variable.
+    assert config.DEPLOYMENTS_VARIABLE == "CLI_UPLIFT_EVAL_DEPLOYMENTS"
+    assert config.DEPLOYMENTS_VARIABLE not in config.OVERLAY
+
+
+def test_the_operator_is_told_which_deployments_will_run_not_how_many():
+    """ "3 deployments" was printable while all three named one gateway.
+
+    The names are what let an operator see at a glance that this is
+    dev/integration/preprod and not one URL under three labels — and that a run
+    about to grade E16/E17 is bound to the fixture they think it is.
+    """
+    bound = " ".join(
+        build_run_config.summary(
+            config.validate(config_fixture(deployments=deployment_bindings()))
+        )
+    )
+    assert "development" in bound and "integration" in bound and "preprod" in bound
+    # Absent says which cases that costs, so BLOCKED is never a surprise.
+    absent = " ".join(build_run_config.summary(config.validate(config_fixture())))
+    assert "E16/E17" in absent and "BLOCK" in absent
+
+
+def test_the_multi_deployment_suite_is_documented_on_the_dispatch_input():
+    """An operator choosing a suite must be told what it needs to run.
+
+    `multi-deployment` is the only suite whose fixture cannot be created from the
+    workflow — it needs three real gateways — so the input description is where
+    that has to be said, not in a file they would have to go and find.
+    """
+    _document, triggers = workflow()
+    description = triggers["workflow_dispatch"]["inputs"]["suites"]["description"]
+    assert "multi-deployment" in description
+    assert "CLI_UPLIFT_EVAL_DEPLOYMENTS" in description
+    # And it is a real suite, so choosing it is not a silent no-op.
+    assert "multi-deployment" in cases.SUITES
+
+
 def test_workflow_restores_durable_state_when_given_an_evaluation_id():
     """An ID names a run from another runner; its state dir is not here.
 
@@ -7566,10 +7619,26 @@ def runbook():
 
 
 def test_runbook_names_only_real_suites():
+    """Every suite the runbook OFFERS must exist, or an operator dispatches a typo.
+
+    Scoped to the offer itself — the `Suites:` list up to the paragraph break —
+    rather than everything between two headings. The wider span swept up any
+    backticked lower-case word in the surrounding prose, so explaining what a
+    suite needs (`blocked`, `three_deployments`, `credential_secret_name`) failed
+    a test about suite NAMES. The property worth keeping is that the list offers
+    nothing `cases.SUITES` does not have; forbidding prose around it was never
+    part of that, and would push the explanation somewhere less useful.
+    """
     doc = runbook()
-    section = doc[doc.index("Suites:") : doc.index("### Watch it")]
-    for name in set(re.findall(r"`([a-z-]+)`", section)):
+    start = doc.index("Suites:")
+    section = doc[start : doc.index("\n\n", start)]
+    offered = set(re.findall(r"`([a-z-]+)`", section))
+    for name in offered:
         assert name in cases.SUITES, f"runbook offers unknown suite {name!r}"
+    # ...and offers all of them, so a suite cannot be added without being
+    # documented. This is the half the old span could not assert, because prose
+    # names could not be told apart from offers.
+    assert offered == set(cases.SUITES)
 
 
 def test_runbook_names_only_real_faults():

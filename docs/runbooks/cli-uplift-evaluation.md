@@ -122,7 +122,34 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
 ```
 
 Suites: `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
-`github`, `parity`, `harness`, `full`.
+`github`, `parity`, `harness`, `multi-deployment`, `full`.
+
+`multi-deployment` (E16/E17, #5413) is the one suite whose fixture cannot be
+created from this workflow: it needs **three separately reachable ADP
+deployments**, each with its own sign-in fixture, supplied as a JSON array in the
+`CLI_UPLIFT_EVAL_DEPLOYMENTS` repository variable:
+
+```json
+[{"name": "development",  "gateway_url": "https://…/api", "credential_secret_name": "adp/…/dev-fixture"},
+ {"name": "integration",  "gateway_url": "https://…/api", "credential_secret_name": "adp/…/int-fixture"},
+ {"name": "preprod",      "gateway_url": "https://…/api", "credential_secret_name": "adp/…/preprod-fixture"}]
+```
+
+Each entry names a Secrets Manager secret; never a password. Two rules are
+enforced before a run starts, because breaking either produces a green result
+that proves nothing:
+
+- **Distinct gateway URLs.** `adp deployment add` treats a second name for an
+  already-registered URL as an *alias* — one canonical URL, one stable id, one
+  session — so three names over fewer URLs would satisfy a count while sharing
+  the very session whose independence is under test.
+- **A distinct `credential_secret_name` per deployment.** One identity signed in
+  three times cannot demonstrate that logging out of one deployment leaves the
+  other two signed in.
+
+With the variable unset, E16/E17 report `blocked` naming `three_deployments`, and
+`full_acceptance` stays false. That is the intended state until a coordinator
+supplies the integration and pre-production gateways.
 
 ### Watch it
 
