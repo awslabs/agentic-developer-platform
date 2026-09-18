@@ -137,6 +137,29 @@ class TestDeploymentVerb:
         assert result.returncode == 0, result.stderr
         assert "dev" in result.stdout
 
+    @pytest.mark.parametrize("args", [["deployment", "list", "--json"], ["deployment", "--json", "list"]])
+    def test_json_is_accepted_on_either_side_of_the_verb(self, three_deployments, adp, args) -> None:
+        """Every other `adp` command takes its flags after the subcommand.
+
+        Found by driving the real CLI the way the multi-deployment EC2 journey
+        does: `adp deployment list --json` — the position a user and a script both
+        reach for first — exited 2 with an argparse usage dump, because `--json`
+        was only declared before the verb. A machine-readable surface that fails
+        on the natural word order is unusable for exactly the automation it exists
+        to serve, so both positions must work and must agree.
+        """
+        result = adp(args)
+
+        assert result.returncode == 0, f"`adp {' '.join(args)}` failed: {result.stderr}"
+        payload = json.loads(result.stdout)
+        assert [entry["name"] for entry in payload["deployments"]] == ["dev", "integration", "preprod"]
+
+    def test_json_output_carries_no_prose(self, three_deployments, adp) -> None:
+        """A caller parsing this must not have to strip a human-readable banner."""
+        result = adp(["deployment", "list", "--json"])
+
+        assert result.stdout.count("\n") == 1, f"expected exactly one JSON line, got: {result.stdout!r}"
+
     def test_deployment_verb_rejects_a_selection_flag(self, adp) -> None:
         """`adp --deployment x deployment add y` is a confused instruction."""
         result = adp(["--deployment", "dev", "deployment", "list"])

@@ -880,21 +880,31 @@ def _print_listing(data, as_json):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="adp deployment", description="Register and select named ADP deployments (Issue #5413).")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
-    subparsers = parser.add_subparsers(dest="verb")
 
-    add_parser = subparsers.add_parser("add", help="register a deployment by name and URL")
+    # `--json` accepted on either side of the verb, because every other `adp`
+    # command takes its flags AFTER the subcommand and a user (or a script) has no
+    # reason to expect this one to be different. `SUPPRESS` is what makes the two
+    # positions coexist: an absent flag leaves the attribute unset here instead of
+    # writing False over a `--json` that was given before the verb, which is the
+    # argparse behaviour that would otherwise make the earlier form silently
+    # produce prose.
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="machine-readable output")
+    subparsers = parser.add_subparsers(dest="verb", parser_class=argparse.ArgumentParser)
+
+    add_parser = subparsers.add_parser("add", parents=[shared], help="register a deployment by name and URL")
     add_parser.add_argument("name")
     add_parser.add_argument("--url", required=True)
 
-    subparsers.add_parser("list", help="show registered deployments and the effective selection")
+    subparsers.add_parser("list", parents=[shared], help="show registered deployments and the effective selection")
 
-    use_parser = subparsers.add_parser("use", help="change the saved default")
+    use_parser = subparsers.add_parser("use", parents=[shared], help="change the saved default")
     use_parser.add_argument("name")
 
-    remove_parser = subparsers.add_parser("remove", help="forget a deployment locally")
+    remove_parser = subparsers.add_parser("remove", parents=[shared], help="forget a deployment locally")
     remove_parser.add_argument("name")
 
-    resolve_parser = subparsers.add_parser("resolve", help="print the effective selection (internal)")
+    resolve_parser = subparsers.add_parser("resolve", parents=[shared], help="print the effective selection (internal)")
     resolve_parser.add_argument("--deployment", default=None)
     resolve_parser.add_argument("--format", choices=("env", "json"), default="json")
     resolve_parser.add_argument("--ensure", action="store_true", help="create the private directories")

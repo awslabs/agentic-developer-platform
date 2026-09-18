@@ -225,9 +225,24 @@ selected_deployment() {
 }
 
 cmd_deployment() {
+    # `--json` before the verb is forwarded, not treated as a verb. The resolver
+    # accepts it in either position, and rejecting it here would make
+    # `adp deployment --json list` fail in the front door while the identical
+    # `adp deployment list --json` succeeded — a difference with no reason a user
+    # could infer.
+    # A plain string, not an array: under `set -u` an empty array expansion is an
+    # error on bash 3.2, which is still what macOS ships as /bin/bash. `--json`
+    # takes no value and contains no whitespace, so there is nothing for word
+    # splitting to damage here.
+    local passthrough=""
+    while [ "${1:-}" = "--json" ]; do
+        passthrough="--json"
+        shift
+    done
+
     local subcommand="${1:-}"
     case "${subcommand}" in
-        add|list|use|remove) shift; deployments "${subcommand}" "$@" ;;
+        add|list|use|remove) shift; deployments "${subcommand}" ${passthrough} "$@" ;;
         "")
             print_error "Missing subcommand: 'adp deployment add|list|use|remove'."
             exit 1
