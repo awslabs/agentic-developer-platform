@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import Select, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.base import utcnow
@@ -177,11 +178,36 @@ class OrchestrationRepository:
         description: str | None = None,
         design_history: dict | None = None,
     ) -> OrchestrationFlow:
-        """Insert a flow. `description` / `design_history` default to NULL (#4885).
+        """Insert a flow, or return the concurrent winner for the same slug.
 
-        Both default to `None` rather than to a placeholder, so a caller that does
-        not know the design story writes "we do not know" — the honest value — and
-        a hand-created flow needs no argument at all to get it right.
+        `description` / `design_history` default to NULL (#4885). Both default to
+        `None` rather than to a placeholder, so a caller that does not know the
+        design story writes "we do not know" — the honest value — and a
+        hand-created flow needs no argument at all to get it right.
+
+        **Concurrency (#4898).** `(org_id, slug)` is unique from migration 053,
+        because a flow's slug is the first segment of every node's graph address
+        and two same-slug flows in one tenant would merge their model spend into
+        one total that looks authoritative. Callers reach here after looking for
+        the slug and not finding it (`compile._resolve_flow`), which is a
+        read-then-write race: two concurrent registrations can both read "absent"
+        and both insert. The database decides that race; this method absorbs the
+        loss.
+
+        The insert therefore runs in its own SAVEPOINT. On a uniqueness violation
+        only that savepoint rolls back, leaving the caller's surrounding
+        transaction usable — which matters because the caller is mid-compile
+        inside its own `begin_nested()`, and a poisoned transaction would fail the
+        whole plan submission rather than converge. The winning row is then re-read
+        and returned, so both concurrent registrations resolve to ONE flow
+        identity and the loser proceeds normally instead of erroring.
+
+        Recovery is deliberately narrow: it returns an existing flow only when one
+        is actually found. A violation with no readable winner is re-raised rather
+        than papered over, because that shape is a real integrity fault (some other
+        constraint), not this race. Nothing here mutates the winner — an existing
+        flow keeps its own title, intent and design history, exactly as
+        `_resolve_flow` documents: this resolves a flow, it does not reconcile one.
         """
         flow = OrchestrationFlow(
             org_id=org_id,
@@ -191,9 +217,53 @@ class OrchestrationRepository:
             description=description,
             design_history=design_history,
         )
-        self._session.add(flow)
-        await self._session.flush()
+        try:
+            async with self._session.begin_nested():
+                self._session.add(flow)
+                await self._session.flush()
+        except IntegrityError:
+            existing = await self.get_flow_by_slug(org_id=org_id, slug=slug)
+            if existing is None:
+                # Not the slug race — do not swallow a different integrity fault.
+                raise
+            return existing
         return flow
+
+    async def get_flow_by_slug(self, *, org_id: str, slug: str) -> OrchestrationFlow | None:
+        """The tenant's flow with this slug, or None.
+
+        Tenant-scoped because a slug identifies a flow only WITHIN a tenant: two
+        customers may each run a `delivery-loop`, they are different flows, and
+        migration 053's unique index is `(org_id, slug)` for that reason.
+
+        **Why this tolerates duplicates instead of asserting uniqueness.** Once
+        migration 053 is applied at most one row can match, so `LIMIT 1` and a
+        "exactly one or none" assertion are equivalent — on that schema. They are
+        NOT equivalent on a database that still holds duplicate `(org_id, slug)`
+        groups, and that state is reachable *by design*: migration 053 deliberately
+        REFUSES on pre-existing duplicates so an operator resolves them
+        explicitly, while `gateway-deploy.yml` runs `run-migrations` only AFTER
+        `deploy-backend`. So this code is live against the un-migrated schema, and
+        on a tenant with duplicates a `scalar_one_or_none()` here would raise
+        `MultipleResultsFound` — turning what the previous full scan handled (it
+        took the newest match) into a failed plan submission for that tenant, and
+        failing exactly the deployments the refusing migration exists to protect.
+
+        Ordering matches the scan this replaced: `list_flows` returns
+        `created_at DESC` and `compile._resolve_flow` took its first match, so the
+        newest flow wins. Identical results once uniqueness holds, and the same
+        results as before it does.
+        """
+        stmt = (
+            select(OrchestrationFlow)
+            .where(
+                OrchestrationFlow.org_id == org_id,
+                OrchestrationFlow.slug == slug,
+            )
+            .order_by(OrchestrationFlow.created_at.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).scalars().first()
 
     async def get_flow(self, *, org_id: str, flow_id: str) -> OrchestrationFlow | None:
         stmt = select(OrchestrationFlow).where(

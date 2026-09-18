@@ -93,9 +93,17 @@ class AgentRuntime:
         grant = self.store.live_grant(invocation_id=caller.invocation_id, tenant_id=caller.tenant_id, attempt=caller.attempt, now=now)
         return pod, caller, record, grant
 
-    async def validate_flow(self, record, grant) -> None:
+    async def validate_flow(self, record, grant):
+        """Validate live engine authority, returning the verified graph assignment.
+
+        Issue #4898: returns the `GraphAttribution` for an execution bound to one
+        graph node, or None when there is no single owning node (a coordinator, or
+        a non-engine authority kind). Callers that only care whether the request
+        is authorized can keep ignoring the result — refusal is still an
+        exception.
+        """
         if grant.authority.kind in {"github_event", "service_policy"}:
-            return
+            return None
         if grant.authority.kind != "gate_decision":
             raise BootstrapRefusedError("unsupported authority source")
         from src.agentauth.engine import validate_engine_authority
@@ -104,7 +112,7 @@ class AgentRuntime:
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         try:
             async with get_session_factory()() as session:
-                await validate_engine_authority(session=session, execution=execution or {}, grant=grant, store=self.store)
+                return await validate_engine_authority(session=session, execution=execution or {}, grant=grant, store=self.store)
         except Exception:
             raise BootstrapRefusedError("engine authority unavailable") from None
 

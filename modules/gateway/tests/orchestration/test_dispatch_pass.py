@@ -1266,6 +1266,7 @@ async def test_protected_engine_publishes_committed_identity_and_live_flow(sessi
     from src.agentauth.engine import validate_engine_authority
     from src.agentauth.grants import AgentAction
     from src.agentauth.workload import VerifiedPod
+    from src.orchestration.dispatch import graph_address
     from src.orchestration.results import observe_results
     from src.orchestration.run_store import EngineRunStore
 
@@ -1300,7 +1301,18 @@ async def test_protected_engine_publishes_committed_identity_and_live_flow(sessi
     )
     grant = store.live_grant(invocation_id=record.invocation_id, tenant_id=ORG_A, attempt=1, now=datetime.now(UTC))
     execution = store._read(f"TENANT#{ORG_A}", f"EXEC#{record.invocation_id}")
-    await validate_engine_authority(session=session, execution=execution, grant=grant)
+    attribution = await validate_engine_authority(session=session, execution=execution, grant=grant)
+    # Issue #4898: the same authorization that admits the run also yields the graph
+    # address its model calls are billed to. Asserted here, on a genuinely dispatched
+    # node, because this is the only place the whole chain is real — a real dispatch
+    # pass, a real committed identity, a real bound credential and the real store
+    # record. The address must equal what the dispatch write and the cost readback
+    # compose from the same helper, so all three agree by construction.
+    assert attribution is not None
+    assert attribution.address == graph_address(node, flow_slug=flow.slug)
+    assert (attribution.org_id, attribution.flow_id) == (ORG_A, flow.id)
+    assert (attribution.node_id, attribution.node_attempt) == (node.id, node.attempts)
+    assert attribution.run_id == envelope["message_id"] == committed["run_id"]
     assert execution["orchestration_node_id"]["S"] == node.id
     assert grant.authority.human_id == APPROVER
     assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 1
@@ -1323,6 +1335,94 @@ async def test_protected_engine_publishes_committed_identity_and_live_flow(sessi
     await observe_results(session, run_store=runs, evidence=SimpleNamespace(merged_story=AsyncMock(return_value=None)))
     await session.refresh(node)
     assert node.state == (NodeState.AWAITING_GATE.value if kind == NodeKind.EVAL.value else NodeState.AWAITING_MERGE.value)
+
+
+async def _protected_execution(session, store, *, node_kwargs=None):
+    """One real dispatched, bound execution: the input `validate_engine_authority` reads.
+
+    Built through the actual dispatch pass and the actual store bind rather than a
+    hand-written dict, so the attribution assertions below run on the shape the
+    engine really writes.
+    """
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from src.agentauth.bootstrap import envelope_digest
+    from src.agentauth.workload import VerifiedPod
+
+    await _make_org(session)
+    flow = await _make_flow(session)
+    await _make_approval(session, flow)
+    node = await _make_node(session, flow, **(node_kwargs or {}))
+    report = await run_dispatch_pass(session, _config())
+    await session.commit()
+    sqs = FakeSQS()
+    publish_pending(report, _config(), client=sqs)
+    envelope = sqs.envelope()
+    record = store.bind(
+        invocation_id=envelope["message_id"],
+        digest=envelope_digest(envelope),
+        pod=VerifiedPod("engine-pod", "engine-worker", "adp-agents", "agent-scaledjob-sa", "10.0.1.2"),
+        now=datetime.now(UTC),
+    )
+    grant = store.live_grant(invocation_id=record.invocation_id, tenant_id=ORG_A, attempt=1, now=datetime.now(UTC))
+    execution = store._read(f"TENANT#{ORG_A}", f"EXEC#{record.invocation_id}")
+    return SimpleNamespace(flow=flow, node=node, execution=execution, grant=grant)
+
+
+async def test_a_coordinator_is_not_attributed_to_the_node_it_coordinates(session, protected_engine):
+    """A flow coordinator owns no single graph node, so its spend stays unattributed.
+
+    The execution here deliberately still carries `orchestration_node_id`: that is
+    the exact hazard the issue names — a coordinator must not be "arbitrarily
+    charged to one of its children" just because a child node id is reachable. The
+    coordinator branch returns before that field is ever read, and this asserts it,
+    so the coordinator's own model calls persist a NULL address rather than
+    inflating a child node's measured cost.
+    """
+    from src.agentauth.engine import validate_engine_authority
+
+    store, _ = protected_engine
+    work = await _protected_execution(session, store)
+    work.flow.intent_ref = "4191"
+    await session.commit()
+    coordinator = {
+        **work.execution,
+        "coordinator_flow_id": {"S": work.grant.flow_id},
+        "coordinator_intent_issue": {"N": "4191"},
+        "persona": {"S": "operations"},
+    }
+    coordinator.pop("parent_principal", None)
+
+    assert await validate_engine_authority(session=session, execution=coordinator, grant=work.grant) is None
+    assert coordinator["orchestration_node_id"]["S"] == work.node.id
+
+
+@pytest.mark.parametrize(
+    "mutate,expected",
+    [
+        (lambda node: setattr(node, "state", NodeState.HALTED.value), "engine node is no longer authorized"),
+        (lambda node: setattr(node, "attempts", 7), "engine node is no longer authorized"),
+    ],
+)
+async def test_no_attribution_survives_a_node_that_is_no_longer_authorized(session, protected_engine, mutate, expected):
+    """A completed, halted or reassigned node yields a refusal — never a stale address.
+
+    This is why the attribution is composed at the END of the validated scope and
+    captured before provider submission: attributing a node the caller is no longer
+    authorized for at this attempt would report someone else's spend with the
+    authority of a measurement, which is worse than reporting nothing.
+    """
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.engine import validate_engine_authority
+
+    store, _ = protected_engine
+    work = await _protected_execution(session, store)
+    mutate(work.node)
+    await session.commit()
+
+    with pytest.raises(BootstrapRefusedError, match=expected):
+        await validate_engine_authority(session=session, execution=work.execution, grant=work.grant)
 
 
 @pytest.mark.parametrize("tamper", ["run_id", "node_id", "attempt", "flow_id", "decision_id", "persona"])

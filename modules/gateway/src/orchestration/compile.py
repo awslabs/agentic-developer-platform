@@ -523,9 +523,14 @@ async def _resolve_flow(repo: OrchestrationRepository, *, proposal: LoopProposal
     gates a human already answered — and an amendment (`amend.py` reaches this
     same path) would overwrite the inception record of the plan it amends.
     """
-    for candidate in await repo.list_flows(org_id=org_id):
-        if candidate.slug == proposal.flow_slug:
-            return candidate
+    # Issue #4898: an indexed tenant-scoped lookup rather than scanning every flow
+    # in the tenant. Same result, and it cannot be defeated by flow count — the
+    # previous full scan was correct only while it stayed unbounded, which is why
+    # `list_flows` carries a warning against adding a limit. `create_flow` closes
+    # the remaining read-then-write race against the uniqueness index.
+    existing = await repo.get_flow_by_slug(org_id=org_id, slug=proposal.flow_slug)
+    if existing is not None:
+        return existing
 
     return await repo.create_flow(
         org_id=org_id,
