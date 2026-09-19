@@ -617,3 +617,23 @@ async def test_unavailable_scoped_credentials_block_without_fallback(sessions, m
     assert result.reasons == (EligibilityReason.AUTHORITY_UNAVAILABLE,)
     merge_subject.mint.assert_awaited_once()
     assert merge_subject.calls == []
+
+
+async def test_short_page_with_next_link_cannot_hide_a_later_requested_change():
+    data = provider_data()
+    first = deepcopy(data["reviews"][0])
+    second = deepcopy(first)
+    second.update(id=8, state="CHANGES_REQUESTED", submitted_at=(NOW + timedelta(minutes=1)).isoformat())
+
+    def pages(request):
+        if request.url.path.endswith("/reviews"):
+            if request.url.params["page"] == "1":
+                data["reviews"] = httpx.Response(
+                    200, json=[first], headers={"Link": '<https://api.github.com/repos/acme/app/pulls/12/reviews?page=2>; rel="next"'}
+                )
+            else:
+                data["reviews"] = [second]
+
+    observed, calls = await observe(data, pages)
+    assert sum(path.endswith("/reviews") for _, path in calls) == 2
+    assert EligibilityReason.CHANGES_REQUESTED in evaluate_observation(observed).reasons

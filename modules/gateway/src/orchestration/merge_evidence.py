@@ -554,6 +554,7 @@ class GitHubMergeObserver:
         self.headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
         self.clock = clock
         self.sources: list[SourceEvidence] = []
+        self.has_next_page = False
 
     def _decode(self, response, *, kind: str, url: str, rules=False):
         if response.status_code != 200:
@@ -570,6 +571,7 @@ class GitHubMergeObserver:
     async def get(self, path, *, kind, params=None, rules=False, absent=False):
         url = "https://api.github.com" + path
         response = await self.client.get(url, headers=self.headers, params=params, follow_redirects=False)
+        self.has_next_page = "next" in response.links
         if absent and response.status_code == 404:
             self.sources.append(SourceEvidence(kind, url, self.clock(), hashlib.sha256(response.content).hexdigest()))
             return None
@@ -590,7 +592,9 @@ class GitHubMergeObserver:
             else:
                 values = _list(body)
             items.extend(values)
-            if len(values) < 100:
+            if self.has_next_page and not values:
+                _refuse()
+            if len(values) < 100 and not self.has_next_page:
                 if expected is not None and len(items) != expected:
                     _refuse()
                 return items
