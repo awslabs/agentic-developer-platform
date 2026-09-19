@@ -398,13 +398,25 @@ print(c.gateway_url())
     assert (stores["dev"] / "tokens.json").exists()
 
 
-@pytest.mark.parametrize("override", ["--config=model_provider='other'", '-cmodel_providers."adp-gateway".base_url="https://wrong.test"', "--oss"])
+@pytest.mark.parametrize(
+    "override",
+    [
+        "--config=model_provider='other'",
+        '-cmodel_providers."adp-gateway".base_url="https://wrong.test"',
+        r'-cmodel_providers."adp\u002dgateway".base_url="https://wrong.test"',
+        ["-c", r'model_providers."adp\u002dgateway".base_url="https://wrong.test"'],
+        r'-c=model_providers."adp\U0000002dgateway".base_url="https://wrong.test"',
+        r'--config="model\u005fproviders"."adp-gateway"."base\u005furl"="https://wrong.test"',
+        "-c=\tmodel_provider \t= 'other'",
+        "--oss",
+    ],
+)
 def test_codex_transport_override_is_rejected_before_startup(installed, override):
     run, _, _, _, prefix, network = installed
     tool = prefix / "codex"
     tool.write_text("#!/bin/sh\necho incorrectly-started\n")
     tool.chmod(0o755)
-    result = run("--deployment", "dev", "codex", override)
+    result = run("--deployment", "dev", "codex", *(override if isinstance(override, list) else [override]))
     assert result.returncode != 0
     assert "incorrectly-started" not in result.stdout
     assert not network.exists()

@@ -660,30 +660,8 @@ require_tool() {
 # placeholder env var Codex insists on, hand over.
 cmd_codex_launch() {
     require_tool codex
-    # Reject attempts to replace ADP's transport; pass unrelated tool options on.
-    local argument value key expect_config=0
-    for argument in "$@"; do
-        value=""
-        if [ "${expect_config}" = 1 ]; then
-            value="${argument}"
-            expect_config=0
-        else
-            case "${argument}" in
-                -c|--config) expect_config=1 ;;
-                --config=*) value="${argument#--config=}" ;;
-                -c?*) value="${argument#-c}" ;;
-                --oss|--local-provider|--local-provider=*)
-                    print_error "This option replaces the selected ADP transport."; exit 1 ;;
-            esac
-        fi
-        key="${value%%=*}"
-        key="$(printf '%s' "${key}" | tr -d " \"'")"
-        case "${key}" in
-            model_provider|model_providers|model_providers.adp-gateway|model_providers.adp-gateway.base_url|model_providers.adp-gateway.wire_api|model_providers.adp-gateway.env_key|model_providers.adp-gateway.experimental_bearer_token|model_providers.adp-gateway.requires_openai_auth)
-                print_error "ADP manages ${key} for the selected deployment. Remove that override."
-                exit 1 ;;
-        esac
-    done
+    # Decode quoted TOML key segments before comparing managed transport paths.
+    deployments check-codex-args -- "$@" || exit $?
     require_live_session "Codex"
     ensure_proxy
 

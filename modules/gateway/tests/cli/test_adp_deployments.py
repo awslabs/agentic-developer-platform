@@ -51,6 +51,37 @@ INT_URL = "https://integration.gw.example.test"
 PREPROD_URL = "https://preprod.gw.example.test"
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["-c", "model_reasoning_effort='low'"],
+        ["exec", "--config", 'model_providers."adp-gateway".http_headers={"X-Request-ID"="fixture"}'],
+        ["-c", "'model_providers'.'other'.base_url='https://other.example.test'"],
+        ["--", "-c", "model_provider='literal prompt'"],
+    ],
+)
+def test_codex_non_transport_options_are_preserved(arguments):
+    before = list(arguments)
+    deployments.check_codex_args(arguments)
+    assert arguments == before
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["-c"],
+        ["-c", "model_provider"],
+        ["-c", r'"model\u00zz"=1'],
+        ["-c", r'"model\U00110000"=1'],
+        ["-c", r'"model\q"=1'],
+    ],
+)
+def test_codex_invalid_key_syntax_fails_closed(arguments):
+    with pytest.raises(DeploymentError) as error:
+        deployments.check_codex_args(arguments)
+    assert error.value.code == "invalid_arguments"
+
+
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
     """Redirect every path this module derives, including the legacy store."""

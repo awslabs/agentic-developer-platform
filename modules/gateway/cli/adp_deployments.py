@@ -953,6 +953,82 @@ def lease(deployment, pid):
         _write_json_private(directory / f"{pid}.json", {"pid": pid, "start": start})
 
 
+def _codex_key_parts(expression):
+    """Parse TOML dotted keys without requiring Python 3.11's tomllib.
+
+    Values are left to Codex. Quoted key escapes must be decoded before comparing
+    a path with ADP-managed fields; stripping quote characters is insufficient.
+    """
+    part = re.compile(r"""[ \t]*(?:"((?:[^"\\\r\n]|\\.)*)"|'([^'\r\n]*)'|([A-Za-z0-9_-]+))[ \t]*([.=])""")
+    position, result = 0, []
+    while True:
+        matched = part.match(expression, position)
+        if not matched:
+            raise DeploymentError("Invalid Codex config key. Use a TOML key=value override.", "invalid_arguments")
+        basic, literal, bare, separator = matched.groups()
+        value = literal if literal is not None else bare
+        if basic is not None:
+            value, index = "", 0
+            escapes = {"b": "\b", "t": "\t", "n": "\n", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
+            while index < len(basic):
+                if basic[index] != "\\":
+                    value += basic[index]
+                    index += 1
+                    continue
+                index += 1
+                escape = basic[index]
+                index += 1
+                if escape in escapes:
+                    value += escapes[escape]
+                elif escape in ("u", "U"):
+                    length = 4 if escape == "u" else 8
+                    digits = basic[index : index + length]
+                    if len(digits) != length or not re.fullmatch("[0-9a-fA-F]+", digits):
+                        raise DeploymentError("Invalid Unicode escape in Codex config key.", "invalid_arguments")
+                    codepoint = int(digits, 16)
+                    if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+                        raise DeploymentError("Invalid Unicode scalar in Codex config key.", "invalid_arguments")
+                    value += chr(codepoint)
+                    index += length
+                else:
+                    raise DeploymentError("Unsupported escape in Codex config key; use an unescaped key.", "invalid_arguments")
+        result.append(value)
+        if separator == "=":
+            return result
+        position = matched.end()
+
+
+def check_codex_args(arguments):
+    managed = {"base_url", "wire_api", "env_key", "experimental_bearer_token", "requires_openai_auth"}
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        index += 1
+        expression = None
+        if argument == "--":
+            break
+        if argument in ("--oss", "--local-provider") or argument.startswith("--local-provider="):
+            raise DeploymentError("This option replaces the selected ADP transport.", "invalid_arguments")
+        if argument in ("-c", "--config"):
+            if index >= len(arguments):
+                raise DeploymentError("Codex config override requires key=value.", "invalid_arguments")
+            expression = arguments[index]
+            index += 1
+        elif argument.startswith("--config="):
+            expression = argument[len("--config=") :]
+        elif argument.startswith("-c"):
+            expression = argument[2:]
+            if expression.startswith("="):
+                expression = expression[1:]
+        if expression is None:
+            continue
+        path = _codex_key_parts(expression)
+        if path[0] == "model_provider" or (
+            path[0] == "model_providers" and (len(path) == 1 or (path[1] == "adp-gateway" and (len(path) == 2 or path[2] in managed)))
+        ):
+            raise DeploymentError("ADP manages the selected Codex transport. Remove that config override.", "invalid_arguments")
+
+
 def proxy_owner(runtime, deployment_id, gateway_url):
     """Return a proxy record only when its process identity still matches.
 
@@ -1316,6 +1392,8 @@ def main(argv=None):
     owner_parser.add_argument("runtime")
     owner_parser.add_argument("deployment_id")
     owner_parser.add_argument("gateway_url")
+    codex_parser = subparsers.add_parser("check-codex-args", help="validate Codex transport overrides (internal)")
+    codex_parser.add_argument("arguments", nargs=argparse.REMAINDER)
 
     args = parser.parse_args(argv)
     if not args.verb:
@@ -1348,6 +1426,8 @@ def main(argv=None):
             owner = proxy_owner(args.runtime, args.deployment_id, args.gateway_url)
             if owner:
                 print(owner["pid"])
+        elif args.verb == "check-codex-args":
+            check_codex_args(args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments)
         elif args.verb == "resolve":
             deployment = resolve(args.deployment)
             if args.validate_config:
