@@ -152,6 +152,7 @@ from src.shared.models.organization import Organization
 
 from .dispatch import DispatchStatus, dispatch_node
 from .genesis import APPROVAL_DECISION_KINDS, EngineGenesis, GenesisRefusedError, resolve_engine_genesis
+from .handoff import HANDOFF_RECEIPT_CONTRACT_VERSION
 from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
 from .policy_admission import authorize_node_dispatch
 from .state import ActorKind, NodeState
@@ -463,6 +464,13 @@ class DispatchPassReport:
     # or every tick would report failure for as long as a policy legitimately
     # withheld an action.
     policy_blocked: int = 0
+    # #5144: a policy-bound story whose durable execution could not be admitted, so
+    # nothing was published and a typed block was recorded. Its own counter for the
+    # same reason `policy_blocked` is: this is a boundary working, not a malformed
+    # graph (`undispatchable`) and not a bug (`errors`). Folding it into either would
+    # hide the one number that says "policy-bound work is being refused rather than
+    # silently downgraded to no-receipt legacy".
+    admission_refused: int = 0
     errors: int = 0
     # True when the per-tick cap stopped the pass early. Work is delayed, not
     # dropped — but "we ran out of budget" must never read as "there was nothing
@@ -502,6 +510,7 @@ class DispatchPassReport:
                 "transitions_rejected": 0,
                 "lost_races": 0,
                 "policy_blocked": 0,
+                "admission_refused": 0,
                 "errors": 0,
             },
         )
@@ -884,15 +893,41 @@ async def _dispatch_one_unclaimed(
     # Policy-bound only, for the reason #5128 states once: a flow with no accepted
     # policy keeps legacy semantics exactly, so it gets no marker and reaches the
     # code it reached before.
-    receipt_required = False
+    admission = _NO_POLICY
     if binding_required and work_claim_required and claim is not None:
-        receipt_required = await _admit_execution(
+        admission = await _admit_execution(
             session,
             node=node,
             claim=claim,
         )
+    if admission.kind is AdmissionKind.REFUSED:
+        # Abandon the dispatch. Previously a refusal here fell through as "no
+        # marker", publishing a policy-bound story that could then complete with no
+        # continuation receipt — the F3 defect. Raised rather than returned so the
+        # ownership reservation and this node's `running` transition unwind with it:
+        # the node is left `ready`, nothing is published, and the caller records the
+        # typed refusal after the rollback (where it can survive).
+        raise _AdmissionRefusedError(admission)
+    receipt_required = admission.kind is AdmissionKind.ADMITTED
     if receipt_required:
         envelope["handoff_required"] = True
+        # #5144 item 1: the fences the worker must see echoed back before it may
+        # report an accepted handoff. Dispatch facts for comparison only — the
+        # gateway resolves its own authority from protected state and trusts nothing
+        # the worker returns. Without these the worker can verify the server said
+        # "yes" but not that the "yes" was about its own work.
+        identity = admission.identity
+        assert identity is not None
+        envelope["handoff_expect"] = {
+            "contract_version": HANDOFF_RECEIPT_CONTRACT_VERSION,
+            "org_id": identity.org_id,
+            "flow_id": node.flow_id,
+            "node_id": identity.node_id,
+            "cycle": identity.cycle,
+            "accepted_plan_version": identity.accepted_plan_version,
+            "claim_id": identity.claim_id,
+            "claim_generation": identity.claim_generation,
+        }
 
     session.add(
         OrchestrationDecision(
@@ -955,19 +990,23 @@ async def _dispatch_one_unclaimed(
     )
 
 
-async def _admit_execution(session: AsyncSession, *, node: OrchestrationNode, claim: dict) -> bool:
+async def _admit_execution(session: AsyncSession, *, node: OrchestrationNode, claim: dict) -> _ExecutionAdmission:
     """Create this dispatch's durable execution, so a handoff receipt has a producer (#5144).
 
-    Returns True only when an execution genuinely exists for this dispatch under the
-    claim generation it was admitted with. The caller sets `handoff_required` on
-    exactly that condition, which is what keeps the promise and the producer from
-    diverging: a marker without an execution would hold the story forever, because
-    the receipt it demands could never be issued.
+    Returns one of three distinct answers (:class:`AdmissionKind`) rather than a
+    bool. The bool was the F3 defect: it answered "no" for a flow with no policy
+    *and* for a policy-bound flow whose authority could not be verified, and the
+    caller published the second case as an unmarked dispatch — a story able to
+    complete with no receipt, which is the hole this issue exists to close. Genuine
+    absence of policy keeps legacy semantics; a refusal abandons the dispatch.
 
-    **Policy-bound only.** A flow with no accepted policy returns False and keeps
-    legacy semantics exactly (#5128 owns that rule and it is read from
-    `load_in_force_policy`, never re-decided here). So does a refusal: unverifiable
-    authority must not produce an admitted execution.
+    On admission the **identity** is returned, not discarded, because the worker must
+    be told which fences to expect. A worker handed only "you owe a receipt" can
+    check that the server said yes but not that the receipt is *for its own
+    dispatch*; the fences travel on the envelope so the readback has something to be
+    compared against. They are dispatch facts, not authority — the gateway still
+    resolves every fence it acts on from protected state, and nothing the worker
+    echoes back is ever trusted.
 
     Creates nothing else and enables nothing. The row is inert unless
     `FEATURE_ORCHESTRATION_ENGINE_ENABLED` is literally "true", because the #5143
@@ -980,15 +1019,34 @@ async def _admit_execution(session: AsyncSession, *, node: OrchestrationNode, cl
 
     claim_id, generation = claim.get("claim_id"), claim.get("generation")
     if not claim_id or not isinstance(generation, int) or generation < 1:
-        # No usable ownership fence. The receipt's whole value is that it names the
-        # generation that produced it, so an unfenced execution is not worth creating.
-        return False
+        # Unusable ownership fence. This is a refusal, not absence of policy: work
+        # ownership was required for this dispatch to get here, so unreadable claim
+        # data is a broken invariant. The receipt's whole value is that it names the
+        # generation that produced it, so publishing anyway would mean a story that
+        # cannot be fenced running with no continuation.
+        return _admission_refused(
+            "authority_unverifiable",
+            owner="platform-operator",
+            required_input="reconcile the work claim for this issue before re-dispatching",
+            detail="the admitted work claim carried no usable claim id or generation",
+        )
 
     inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
-    if inputs.policy is None or inputs.refusal is not None:
-        # Absent policy → legacy semantics, untouched. Refusal → fail closed. Both
-        # mean no marker, so `results` reaches exactly the code it reached before.
-        return False
+    if inputs.refusal is not None:
+        # A policy exists and could not be read. Distinguished from absence *because*
+        # the two were previously identical here: falling back to legacy on a refusal
+        # is how a policy-bound story was published with no receipt requirement.
+        return _admission_refused(
+            "authority_unverifiable",
+            owner="platform-operator",
+            required_input="resolve the in-force execution policy for this flow",
+            detail=f"in-force policy could not be resolved: {inputs.refusal}",
+        )
+    if inputs.policy is None:
+        # Genuine absence. Legacy semantics, untouched — the ONLY path that may
+        # publish an unmarked dispatch. #5128 owns this rule; it is read from
+        # `load_in_force_policy` and never re-decided here.
+        return _NO_POLICY
 
     try:
         identity = ExecutionIdentity(
@@ -1004,27 +1062,109 @@ async def _admit_execution(session: AsyncSession, *, node: OrchestrationNode, cl
             claim_id=str(claim_id),
             claim_generation=generation,
         )
-    except ExecutionStoreError:
-        # A malformed identity is a dispatch-side bug, not a reason to refuse the
-        # dispatch itself: the story still runs, it simply carries no marker.
-        logger.warning("orchestration dispatch: node %s could not form an execution identity for #5144", node.id)
-        return False
+    except ExecutionStoreError as exc:
+        # A malformed identity under an in-force policy is a refusal. Previously this
+        # let the story run unmarked, which meant a dispatch-side bug silently removed
+        # the receipt requirement from policy-bound work.
+        logger.warning("orchestration dispatch: node %s could not form an execution identity for #5144: %s", node.id, exc)
+        return _admission_refused(
+            "authority_unverifiable",
+            owner="platform-operator",
+            required_input="correct the execution identity for this node before re-dispatching",
+            detail=f"execution identity could not be formed: {exc}",
+        )
 
     outcome = await create_execution(session, identity=identity, flow_id=node.flow_id)
     if outcome.kind is not OutcomeKind.APPLIED or outcome.record is None:
         # CONFLICT means the stored row's authority disagrees with what this dispatch
-        # was admitted under. Refusing the marker is the fail-closed direction.
+        # was admitted under. Refusing the *dispatch* is the fail-closed direction;
+        # refusing only the marker published the story anyway.
         logger.info(
-            "orchestration dispatch: node %s has no admissible execution for #5144 (%s) — no handoff marker",
+            "orchestration dispatch: node %s has no admissible execution for #5144 (%s) — refusing dispatch",
             node.id,
             outcome.reason,
         )
-        return False
-    return True
+        return _admission_refused(
+            "authority_unverifiable",
+            owner="platform-operator",
+            required_input="reconcile this node's execution record with its current ownership generation",
+            detail=f"execution admission was not applied: {outcome.reason}",
+        )
+    return _ExecutionAdmission(kind=AdmissionKind.ADMITTED, identity=identity)
+
+
+class AdmissionKind(StrEnum):
+    """The three genuinely different answers to "does this dispatch owe a receipt?" (#5144).
+
+    A bool could not express this, and conflating two of the three is the defect
+    being closed here: a refusal that answered "no" was published as an *unmarked*
+    dispatch, so a story whose authority could not be verified went out able to
+    complete with no continuation receipt at all — the precise hole #5144 exists to
+    shut.
+
+    * ``NO_POLICY`` — the flow has no accepted policy. Legacy semantics, untouched:
+      no marker, no execution, and `results` reaches exactly the code it reached
+      before. #5128 owns this rule.
+    * ``ADMITTED`` — an execution exists under the claim generation this dispatch was
+      admitted with, so a receipt has a producer. The marker is set.
+    * ``REFUSED`` — a policy *does* apply and something could not be verified. Not a
+      quiet downgrade to legacy: the dispatch is abandoned, nothing is published, the
+      node is left `ready`, and a typed reason is recorded.
+    """
+
+    NO_POLICY = "no_policy"
+    ADMITTED = "admitted"
+    REFUSED = "refused"
+
+
+@dataclass(frozen=True)
+class _ExecutionAdmission:
+    """The outcome of admitting a dispatch's durable execution.
+
+    ``identity`` is present exactly for :attr:`AdmissionKind.ADMITTED` — it is what
+    the envelope carries so the worker can check a receipt is for *its own* dispatch.
+    ``block_code``/``required_input``/``detail`` are present exactly for
+    :attr:`AdmissionKind.REFUSED`, so the refusal is recorded as a resolvable
+    condition with an owner rather than as log prose.
+    """
+
+    kind: AdmissionKind
+    identity: Any | None = None
+    block_code: str | None = None
+    owner: str | None = None
+    required_input: str | None = None
+    detail: str | None = None
+
+
+_NO_POLICY = _ExecutionAdmission(kind=AdmissionKind.NO_POLICY)
+
+
+def _admission_refused(code: str, *, owner: str, required_input: str, detail: str) -> _ExecutionAdmission:
+    return _ExecutionAdmission(
+        kind=AdmissionKind.REFUSED,
+        block_code=code,
+        owner=owner,
+        required_input=required_input,
+        detail=detail,
+    )
 
 
 class _AdmissionUnusedError(Exception):
     """Roll back an ownership reservation when no dispatch was produced."""
+
+
+class _AdmissionRefusedError(Exception):
+    """Unwind a dispatch whose #5144 execution admission was refused.
+
+    Carries the refusal so the caller can persist a typed block *after* the
+    rollback. Recording it inside the nested transaction would roll the evidence
+    back along with the dispatch, leaving a refusal nobody can see — the failure
+    mode this whole issue is about.
+    """
+
+    def __init__(self, admission: _ExecutionAdmission) -> None:
+        super().__init__(admission.detail or admission.block_code or "execution admission refused")
+        self.admission = admission
 
 
 async def _dispatch_one(session, node, *, config, report) -> None:
@@ -1035,7 +1175,12 @@ async def _dispatch_one(session, node, *, config, report) -> None:
         await _dispatch_one_unclaimed(session, node, config=config, report=report)
         return
     before = len(report.pending)
-    node_id, org_id = node.id, node.org_id
+    # Captured BEFORE the savepoint, because a rollback expires every loaded
+    # attribute on `node` and re-reading one inside an exception handler issues a
+    # lazy SELECT on a session that is still unwinding. `flow_id` is here for the
+    # #5144 refusal path, which has to attribute its evidence to this node's flow
+    # after exactly that rollback.
+    node_id, org_id, flow_id = node.id, node.org_id, node.flow_id
     try:
         require_authority()
         installation = await resolve_installation_id(session, org_id=node.org_id)
@@ -1069,9 +1214,67 @@ async def _dispatch_one(session, node, *, config, report) -> None:
                 raise _AdmissionUnusedError()
     except _AdmissionUnusedError:
         return
+    except _AdmissionRefusedError as exc:
+        # The nested transaction has unwound: the ownership reservation is released
+        # and the node is back in `ready` with nothing published. Now — outside that
+        # savepoint, so it survives — record why, as a typed condition with an owner
+        # rather than only a log line. `run_dispatch_pass`'s own savepoint commits it.
+        await _record_admission_refusal(session, node_id=node_id, org_id=org_id, flow_id=flow_id, admission=exc.admission)
+        report.record(org_id, "admission_refused")
+        logger.warning(
+            "orchestration dispatch: node %s refused #5144 execution admission code=%s detail=%s — nothing published",
+            node_id,
+            exc.admission.block_code,
+            exc.admission.detail,
+        )
     except WorkClaimError as exc:
         report.record(org_id, "undispatchable")
         logger.warning("orchestration ownership refused node=%s reason=%s", node_id, exc.code)
+
+
+async def _record_admission_refusal(
+    session: AsyncSession,
+    *,
+    node_id: str,
+    org_id: str,
+    flow_id: str,
+    admission: _ExecutionAdmission,
+) -> None:
+    """Persist a refused execution admission as attributed, queryable evidence (#5144).
+
+    Written as `TRANSITION_REJECTED` because that is exactly what happened — an edge
+    to `running` was refused — and because RULING 5 makes those rows the primary
+    detector for work that did not go where the graph said it would. The typed block
+    code, its owner and the required input travel in the structured
+    `rejection_reason` so an operator gets a resolvable condition rather than prose,
+    and so a reader does not have to parse a message to route it.
+    """
+    session.add(
+        OrchestrationDecision(
+            org_id=org_id,
+            flow_id=flow_id,
+            node_id=node_id,
+            kind=DecisionKind.TRANSITION_REJECTED.value,
+            actor_id="system:orchestration-dispatch",
+            actor_role="engine",
+            actor_kind=ActorKind.SERVICE.value,
+            from_state=NodeState.READY.value,
+            # No `to_state`: the node went nowhere. A recorded destination here would
+            # read as a dispatch that happened and was then undone.
+            to_state=None,
+            reason="execution admission refused; no dispatch was published and the node remains ready",
+            rejection_reason=json.dumps(
+                {
+                    "issue": "5144",
+                    "block_code": admission.block_code,
+                    "owner": admission.owner,
+                    "required_input": admission.required_input,
+                    "detail": admission.detail,
+                }
+            ),
+        )
+    )
+    await session.flush()
 
 
 async def run_dispatch_pass(

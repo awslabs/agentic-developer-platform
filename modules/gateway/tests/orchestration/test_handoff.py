@@ -49,9 +49,12 @@ from src.orchestration.execution_state import (
 from src.orchestration.execution_store import advance_execution, create_execution, load_execution
 from src.orchestration.handoff import (
     ADOPTION_ENABLED_ENV,
+    HANDOFF_RECEIPT_CONTRACT_VERSION,
     HANDOFF_RECEIPT_SCHEME,
     AdoptionRefusedError,
+    HandoffAction,
     HandoffOutcome,
+    HandoffResult,
     adopt_legacy_lane,
     adoption_enabled,
     commit_handoff,
@@ -259,6 +262,67 @@ class TestContinuationIsNeverCompletion:
         assert result.outcome is HandoffOutcome.REFUSED
         assert result.reason == "execution_already_terminal"
         assert result.accepted is False
+
+
+class TestAcceptanceAndTypedReceiptAreInseparable:
+    """`accepted` is true only with a typed receipt, structurally (#5144).
+
+    The response shape a worker cannot defend itself against is a positive
+    acceptance with no identity to validate it against: it would be told "yes" and
+    have nothing to check the "yes" was about its own dispatch. That is the readback
+    defect restated at the server, so it is made unrepresentable in the result type
+    rather than guarded at the route — one invariant in one place instead of an
+    agreement every future call site has to remember.
+    """
+
+    async def test_an_acceptance_always_carries_the_full_typed_receipt(self, session, graph):
+        identity, _ = await _seed(session, graph)
+
+        result = await commit_handoff(session, identity=identity, now=_now())
+
+        assert result.accepted is True
+        assert result.receipt is not None
+        # The receipt states the fences from the committed row, not from the request.
+        assert (result.receipt.org_id, result.receipt.node_id, result.receipt.cycle) == (identity.org_id, identity.node_id, identity.cycle)
+        assert result.receipt.claim_generation == identity.claim_generation
+        assert result.receipt.accepted_plan_version == identity.accepted_plan_version
+        assert result.receipt.receipt_ref == result.receipt_ref
+        assert result.receipt.contract_version == HANDOFF_RECEIPT_CONTRACT_VERSION
+        # A continuation asserts a real future due time; that is what makes it a
+        # continuation rather than a completion.
+        assert result.receipt.next_check_at is not None
+        assert result.receipt.action is HandoffAction.AWAITING_REVIEW
+
+    @pytest.mark.parametrize("outcome", list(HandoffOutcome))
+    def test_no_outcome_can_be_accepted_without_a_receipt(self, outcome):
+        """Asserted across the WHOLE outcome vocabulary, including future members.
+
+        A new positive outcome added later cannot quietly become acceptable while
+        carrying no receipt — the parametrisation covers it the moment it is declared,
+        which a test naming today's two accepted members would not.
+        """
+        assert HandoffResult(outcome=outcome, receipt_ref="handoff:whatever").accepted is False
+
+    async def test_a_refusal_never_carries_a_receipt_to_read_fences_off(self, session, graph):
+        """The other direction: nothing to misread on a refusal.
+
+        A refusal that still carried fences would let a caller quote authority from a
+        report that was denied, which is false evidence in a different place.
+        """
+        identity, record = await _seed(session, graph)
+        await advance_execution(
+            session,
+            identity=identity,
+            advance=PhaseAdvance(
+                phase=ExecutionPhase.CONCLUDED,
+                status=ExecutionStatus.CONCLUDED,
+                expected_revision=record.revision,
+            ),
+        )
+
+        result = await commit_handoff(session, identity=identity, now=_now())
+
+        assert (result.accepted, result.receipt) == (False, None)
 
 
 class TestRepeatedReportConverges:

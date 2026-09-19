@@ -179,6 +179,64 @@ async def handoff(db_session_factory, monkeypatch):
         yield SimpleNamespace(client=client, runtime=agent_runtime, sessions=db_session_factory, node=node, run=run)
 
 
+def _dispatch_expectation(handoff, **overrides) -> dict:
+    """The fences the engine publishes on the envelope for this fixture's dispatch.
+
+    Mirrors what `dispatch_pass._admit_execution` returns for the same identity, so a
+    test that overrides one field is asking "what does the worker do when the receipt
+    is for work it was not dispatched to?" — the question the readback exists for.
+    """
+    expect = {
+        "contract_version": 1,
+        "org_id": ORG,
+        "flow_id": handoff.node.flow_id,
+        "node_id": handoff.node.id,
+        "cycle": 1,
+        "accepted_plan_version": PLAN_VERSION,
+        "claim_id": CLAIM_ID,
+        "claim_generation": 1,
+    }
+    expect.update(overrides)
+    return expect
+
+
+def _worker(monkeypatch, *, status: int, body: bytes, expect: dict | None):
+    """The real worker client, wired to answer with exactly these bytes.
+
+    Both sides real: the gateway's actual response bytes in, the worker's actual
+    validation out. A mock on either side is what lets a contract break in production
+    with both suites green, which is why every worker-facing case below goes through
+    here rather than calling the validator directly.
+    """
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "agent-factory" / "agent-worker-image"))
+    from botocore.credentials import Credentials
+    from lib import handoff_client, status_gateway_client
+
+    monkeypatch.setenv("ADP_HANDOFF_REQUIRED", "true")
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setenv("ADP_AGENT_CONTROL_ENDPOINT", "https://gateway.test/internal/v1/agent")
+    if expect is None:
+        monkeypatch.delenv(handoff_client.HANDOFF_EXPECT_ENV, raising=False)
+    else:
+        monkeypatch.setenv(handoff_client.HANDOFF_EXPECT_ENV, json.dumps(expect))
+    monkeypatch.setattr(status_gateway_client, "read_workload_token", lambda: "workload-token")
+    monkeypatch.setattr(status_gateway_client, "_read_credential", lambda: "adpr1.run.signature")
+    monkeypatch.setattr(status_gateway_client.botocore.session, "get_session", MagicMock())
+    monkeypatch.setattr(
+        "adp_trigger.transport_identity.worker_credentials",
+        lambda _: Credentials("platform-key", "secret", "token"),
+    )
+    monkeypatch.setattr("adp_trigger.transport_identity.gateway_signing_region", lambda _: "us-east-1")
+    wire = MagicMock(status_code=status)
+    wire.__enter__.return_value = wire
+    wire.raw.read.side_effect = lambda *_a, **_k: BytesIO(body).read()
+    http = MagicMock()
+    http.__enter__.return_value = http
+    http.post.return_value = wire
+    monkeypatch.setattr(status_gateway_client.requests, "Session", lambda: http)
+    return handoff_client, http
+
+
 async def _rows(handoff) -> list[OrchestrationExecution]:
     async with handoff.sessions() as session:
         return list((await session.scalars(select(OrchestrationExecution))).all())
@@ -570,7 +628,7 @@ async def test_a_receipt_is_never_minted_for_a_cycle_the_caller_was_not_dispatch
 
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body["cycle"] == 1, f"caller was dispatched to cycle 1, got {body['cycle']}"
+    assert body["receipt"]["cycle"] == 1, f"caller was dispatched to cycle 1, got {body['receipt']['cycle']}"
     assert "cycle=1" in body["receipt_ref"], body["receipt_ref"]
     async with handoff.sessions() as session:
         rows = list((await session.scalars(select(OrchestrationExecution).order_by(OrchestrationExecution.cycle))).all())
@@ -590,9 +648,9 @@ async def test_the_current_attempt_still_commits_and_the_receipt_names_its_cycle
     assert body["accepted"] is True
     # The echoed fences come from protected state, so the worker can confirm the
     # receipt covers the work it actually did.
-    assert body["node_id"] == handoff.node.id
-    assert body["cycle"] == 1
-    assert f"cycle={body['cycle']}" in body["receipt_ref"]
+    assert body["receipt"]["node_id"] == handoff.node.id
+    assert body["receipt"]["cycle"] == 1
+    assert f"cycle={body['receipt']['cycle']}" in body["receipt_ref"]
 
 
 async def test_response_is_not_cacheable(handoff):
@@ -616,28 +674,12 @@ async def test_real_worker_client_accepts_the_real_route_response(handoff, monke
     response = await handoff.client.post(URL, headers=HEADERS, json={})
     assert response.status_code == 201
 
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "agent-factory" / "agent-worker-image"))
-    from botocore.credentials import Credentials
-    from lib import handoff_client, status_gateway_client
-
-    monkeypatch.setenv("ADP_HANDOFF_REQUIRED", "true")
-    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
-    monkeypatch.setenv("ADP_AGENT_CONTROL_ENDPOINT", "https://gateway.test/internal/v1/agent")
-    monkeypatch.setattr(status_gateway_client, "read_workload_token", lambda: "workload-token")
-    monkeypatch.setattr(status_gateway_client, "_read_credential", lambda: "adpr1.run.signature")
-    monkeypatch.setattr(status_gateway_client.botocore.session, "get_session", MagicMock())
-    monkeypatch.setattr(
-        "adp_trigger.transport_identity.worker_credentials",
-        lambda _: Credentials("platform-key", "secret", "token"),
+    handoff_client, http = _worker(
+        monkeypatch,
+        status=response.status_code,
+        body=response.content,
+        expect=_dispatch_expectation(handoff),
     )
-    monkeypatch.setattr("adp_trigger.transport_identity.gateway_signing_region", lambda _: "us-east-1")
-    wire = MagicMock(status_code=response.status_code)
-    wire.__enter__.return_value = wire
-    wire.raw.read.side_effect = lambda *_a, **_k: BytesIO(response.content).read()
-    http = MagicMock()
-    http.__enter__.return_value = http
-    http.post.return_value = wire
-    monkeypatch.setattr(status_gateway_client.requests, "Session", lambda: http)
 
     note = handoff_client.handoff_note(summary="opened PR #5293")
 
@@ -664,28 +706,12 @@ async def test_real_worker_client_reports_a_route_refusal_as_not_accepted(handof
     assert response.status_code == 200
     assert response.json()["accepted"] is False
 
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "agent-factory" / "agent-worker-image"))
-    from botocore.credentials import Credentials
-    from lib import handoff_client, status_gateway_client
-
-    monkeypatch.setenv("ADP_HANDOFF_REQUIRED", "true")
-    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
-    monkeypatch.setenv("ADP_AGENT_CONTROL_ENDPOINT", "https://gateway.test/internal/v1/agent")
-    monkeypatch.setattr(status_gateway_client, "read_workload_token", lambda: "workload-token")
-    monkeypatch.setattr(status_gateway_client, "_read_credential", lambda: "adpr1.run.signature")
-    monkeypatch.setattr(status_gateway_client.botocore.session, "get_session", MagicMock())
-    monkeypatch.setattr(
-        "adp_trigger.transport_identity.worker_credentials",
-        lambda _: Credentials("platform-key", "secret", "token"),
+    handoff_client, _ = _worker(
+        monkeypatch,
+        status=response.status_code,
+        body=response.content,
+        expect=_dispatch_expectation(handoff),
     )
-    monkeypatch.setattr("adp_trigger.transport_identity.gateway_signing_region", lambda _: "us-east-1")
-    wire = MagicMock(status_code=response.status_code)
-    wire.__enter__.return_value = wire
-    wire.raw.read.side_effect = lambda *_a, **_k: BytesIO(response.content).read()
-    http = MagicMock()
-    http.__enter__.return_value = http
-    http.post.return_value = wire
-    monkeypatch.setattr(status_gateway_client.requests, "Session", lambda: http)
 
     note = handoff_client.handoff_note(summary="opened PR #5293")
 
@@ -699,30 +725,221 @@ async def test_an_older_gateway_without_this_route_is_reported_not_recorded(hand
     The worker must report the handoff as NOT recorded rather than assuming it worked —
     that is what keeps the engine holding the work instead of a 404 reading as success.
     """
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "agent-factory" / "agent-worker-image"))
-    from botocore.credentials import Credentials
-    from lib import handoff_client, status_gateway_client
-
-    monkeypatch.setenv("ADP_HANDOFF_REQUIRED", "true")
-    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
-    monkeypatch.setenv("ADP_AGENT_CONTROL_ENDPOINT", "https://gateway.test/internal/v1/agent")
-    monkeypatch.setattr(status_gateway_client, "read_workload_token", lambda: "workload-token")
-    monkeypatch.setattr(status_gateway_client, "_read_credential", lambda: "adpr1.run.signature")
-    monkeypatch.setattr(status_gateway_client.botocore.session, "get_session", MagicMock())
-    monkeypatch.setattr(
-        "adp_trigger.transport_identity.worker_credentials",
-        lambda _: Credentials("platform-key", "secret", "token"),
+    handoff_client, _ = _worker(
+        monkeypatch,
+        status=404,
+        body=b'{"detail":"not found"}',
+        expect=_dispatch_expectation(handoff),
     )
-    monkeypatch.setattr("adp_trigger.transport_identity.gateway_signing_region", lambda _: "us-east-1")
-    wire = MagicMock(status_code=404)
-    wire.__enter__.return_value = wire
-    wire.raw.read.side_effect = lambda *_a, **_k: BytesIO(b'{"detail":"not found"}').read()
-    http = MagicMock()
-    http.__enter__.return_value = http
-    http.post.return_value = wire
-    monkeypatch.setattr(status_gateway_client.requests, "Session", lambda: http)
 
     note = handoff_client.handoff_note(summary="opened PR #5293")
 
     assert "not recorded" in note
     assert "Delivery handoff recorded" not in note
+
+
+# ---------------------------------------------------------------------------
+# Strict readback: the worker refuses anything that is not a receipt for its own work
+# ---------------------------------------------------------------------------
+
+
+async def test_worker_refuses_an_accepted_looking_body_that_says_not_accepted(handoff, monkeypatch):
+    """The defect this contract closes, in its simplest form.
+
+    Reading acceptance off the outcome string is how a body carrying a recognised
+    outcome beside ``accepted: false`` was reported as a recorded handoff. The flag
+    must be positively true; nothing else licenses the claim.
+    """
+    body = json.dumps(
+        {
+            "outcome": "committed",
+            "receipt_ref": "handoff:execution=e1:cycle=1:plan=4:claim=c:generation=1",
+            "reason": None,
+            "accepted": False,
+            "receipt": None,
+        }
+    ).encode()
+    handoff_client, _ = _worker(monkeypatch, status=201, body=body, expect=_dispatch_expectation(handoff))
+
+    note = handoff_client.handoff_note()
+
+    assert "Delivery handoff recorded" not in note
+    assert "not accepted" in note
+
+
+async def test_worker_refuses_an_acceptance_carrying_no_typed_receipt(handoff, monkeypatch):
+    """`accepted: true` alone is not a readback.
+
+    Without the typed identity there is nothing to compare against the dispatch, so
+    the worker would be trusting the server's word about *which* work it committed —
+    exactly what the receipt exists to stop being necessary.
+    """
+    body = json.dumps(
+        {
+            "outcome": "committed",
+            "receipt_ref": "handoff:execution=e1:cycle=1:plan=4:claim=c:generation=1",
+            "reason": None,
+            "accepted": True,
+        }
+    ).encode()
+    handoff_client, _ = _worker(monkeypatch, status=201, body=body, expect=_dispatch_expectation(handoff))
+
+    note = handoff_client.handoff_note()
+
+    assert "Delivery handoff recorded" not in note
+    assert "no typed receipt" in note
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong"),
+    [
+        ("org_id", "another-tenant"),
+        ("flow_id", "another-flow"),
+        ("node_id", "another-node"),
+        ("cycle", 2),
+        ("accepted_plan_version", PLAN_VERSION + 1),
+        ("claim_id", "another-claim"),
+        ("claim_generation", 2),
+    ],
+)
+async def test_worker_refuses_a_receipt_for_work_it_was_not_dispatched_to(handoff, monkeypatch, field, wrong):
+    """Every fence, individually. A receipt for other work is not this run's handoff.
+
+    Parametrised one field at a time deliberately: a validator that compared the
+    fields it happened to remember would pass a whole-object test and still let the
+    forgotten field through. Each case is a real production shape — a repair cycle
+    (``cycle``), a policy amendment (``accepted_plan_version``), a handover
+    (``claim_generation``), a cross-tenant answer (``org_id``).
+    """
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+    assert response.status_code == 201
+    handoff_client, _ = _worker(
+        monkeypatch,
+        status=response.status_code,
+        body=response.content,
+        # The server's answer is genuine; the *dispatch* disagrees with it. Same
+        # comparison either way, and this direction needs no tampering with the real
+        # committed row.
+        expect=_dispatch_expectation(handoff, **{field: wrong}),
+    )
+
+    note = handoff_client.handoff_note()
+
+    assert "Delivery handoff recorded" not in note
+    assert field in note
+
+
+async def test_worker_refuses_when_it_was_given_no_dispatch_identity(handoff, monkeypatch):
+    """A required handoff with nothing to check against refuses rather than trusting.
+
+    The unsafe direction of a staged rollout: an older gateway that sets the marker
+    but publishes no fences. Absent expectation is not "skip the check" — it is "this
+    cannot be checked", and an unverifiable handoff must leave delivery unfinished.
+    """
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+    assert response.status_code == 201
+    handoff_client, _ = _worker(monkeypatch, status=response.status_code, body=response.content, expect=None)
+
+    note = handoff_client.handoff_note()
+
+    assert "Delivery handoff recorded" not in note
+    assert "no dispatch identity" in note
+
+
+async def test_worker_refuses_a_receipt_contract_version_it_cannot_field_check(handoff, monkeypatch):
+    """Version skew refuses instead of validating the subset it recognises.
+
+    A worker that knows version 1 and is answered by a version-2 server does not know
+    which fields changed meaning, so partial validation is indistinguishable from
+    none.
+    """
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+    body = response.json()
+    body["receipt"]["contract_version"] = 2
+    handoff_client, _ = _worker(monkeypatch, status=201, body=json.dumps(body).encode(), expect=_dispatch_expectation(handoff))
+
+    note = handoff_client.handoff_note()
+
+    assert "Delivery handoff recorded" not in note
+    assert "contract version" in note
+
+
+async def test_worker_refuses_a_body_that_contradicts_itself(handoff, monkeypatch):
+    """Two receipt references that disagree. Whichever is right, this is not evidence."""
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+    body = response.json()
+    body["receipt"]["receipt_ref"] = body["receipt_ref"] + ":tampered"
+    handoff_client, _ = _worker(monkeypatch, status=201, body=json.dumps(body).encode(), expect=_dispatch_expectation(handoff))
+
+    note = handoff_client.handoff_note()
+
+    assert "Delivery handoff recorded" not in note
+    assert "disagrees" in note
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_phrase"),
+    [
+        ({"next_check_at": None}, "no next-check time"),
+        ({"action": "deploying"}, "does not recognise"),
+        ({"action_id": ""}, "no continuation action"),
+        ({"receipt_ref": ""}, "no receipt reference"),
+        ({"cycle": "1"}, "cycle"),
+        ({"claim_generation": True}, "claim_generation"),
+    ],
+)
+async def test_worker_refuses_an_incomplete_or_malformed_receipt(handoff, monkeypatch, mutation, expected_phrase):
+    """Missing, wrongly-typed and unknown-vocabulary fields are all refusals.
+
+    ``cycle: "1"`` and ``claim_generation: True`` are here because Python would
+    otherwise compare them equal-ish to the real values: ``bool`` is an ``int``, and a
+    validator using loose coercion would accept a string. A fence that can be
+    satisfied by the wrong type is not a fence.
+    """
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+    body = response.json()
+    body["receipt"].update(mutation)
+    if "receipt_ref" in mutation:
+        body["receipt_ref"] = mutation["receipt_ref"]
+    handoff_client, _ = _worker(monkeypatch, status=201, body=json.dumps(body).encode(), expect=_dispatch_expectation(handoff))
+
+    note = handoff_client.handoff_note()
+
+    assert "Delivery handoff recorded" not in note
+    assert expected_phrase in note
+
+
+async def test_worker_refuses_a_response_body_that_is_not_an_object(handoff, monkeypatch):
+    """Garbage is not a handoff. Reported as not recorded, never as success."""
+    handoff_client, _ = _worker(monkeypatch, status=201, body=b"[]", expect=_dispatch_expectation(handoff))
+
+    note = handoff_client.handoff_note()
+
+    assert "Delivery handoff recorded" not in note
+    assert "not recorded" in note
+
+
+async def test_worker_accepts_the_replay_after_a_lost_response_identically(handoff, monkeypatch):
+    """A lost reply converges: the retry validates the same receipt, not a new one.
+
+    This is the case the idempotency work exists for, asserted through the worker's
+    own validator rather than only on the wire — a validator that keyed acceptance on
+    ``committed`` specifically would refuse the very retry the server designed to
+    converge.
+    """
+    first = await handoff.client.post(URL, headers=HEADERS, json={})
+    assert first.status_code == 201
+    replay = await handoff.client.post(URL, headers=HEADERS, json={})
+    assert replay.status_code == 200
+    assert replay.json()["outcome"] == "already_committed"
+
+    expect = _dispatch_expectation(handoff)
+    handoff_client, _ = _worker(monkeypatch, status=201, body=first.content, expect=expect)
+    first_note = handoff_client.handoff_note()
+    handoff_client, _ = _worker(monkeypatch, status=200, body=replay.content, expect=expect)
+    replay_note = handoff_client.handoff_note()
+
+    assert "Delivery handoff recorded" in first_note
+    assert "Delivery handoff recorded" in replay_note
+    assert first.json()["receipt"] == replay.json()["receipt"]
+    assert first.json()["receipt_ref"] in replay_note

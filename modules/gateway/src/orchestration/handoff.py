@@ -124,14 +124,18 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ADOPTION_ENABLED_ENV",
+    "HANDOFF_RECEIPT_CONTRACT_VERSION",
     "HANDOFF_RECEIPT_SCHEME",
     "AdoptionRefusedError",
+    "HandoffAction",
     "HandoffOutcome",
+    "HandoffReceipt",
     "HandoffResult",
     "adopt_legacy_lane",
     "adoption_enabled",
     "commit_handoff",
     "current_identity",
+    "handoff_action_id",
     "handoff_receipt_ref",
     "identity_for_attempt",
     "handoff_required",
@@ -144,6 +148,13 @@ __all__ = [
 # recognised as a handoff receipt without parsing it, and so a value written by
 # some other writer into the same column cannot be mistaken for one.
 HANDOFF_RECEIPT_SCHEME = "handoff"
+
+# The receipt *contract* version, distinct from `accepted_plan_version` (which is
+# the tenant's policy) and from the envelope version. It exists because the worker
+# validates field-by-field: a worker that knows version 1 and is answered by a
+# server speaking version 2 must refuse rather than silently validate a subset of
+# the fields it expected. Bumped only when the field set or its meaning changes.
+HANDOFF_RECEIPT_CONTRACT_VERSION = 1
 
 # Read per call, never at import: adoption must stay disabled until the accepting
 # server and the new worker cohort are both deployed and verified compatibly.
@@ -158,6 +169,18 @@ _CONTINUATION_SECONDS = 300
 # silently truncated would compare unequal to itself on readback, which would turn
 # every repeat into a superseded refusal.
 _MAX_RECEIPT_CHARS = 255
+
+
+class HandoffAction(StrEnum):
+    """What the committed continuation says is owed next.
+
+    Named rather than left for the worker to infer from the outcome: ``committed``
+    says a write happened, not *what is now owed*. A future action (deployment,
+    evaluation) is a new member here, and a member an older worker does not
+    recognise is a refusal on its side rather than a guess.
+    """
+
+    AWAITING_REVIEW = "awaiting_review"
 
 
 class HandoffOutcome(StrEnum):
@@ -181,6 +204,65 @@ _ACCEPTED: frozenset[HandoffOutcome] = frozenset({HandoffOutcome.COMMITTED, Hand
 
 
 @dataclass(frozen=True)
+class HandoffReceipt:
+    """The complete identity of a committed continuation (#5144).
+
+    Every field is read from protected state after the write, never from the
+    caller's request. The worker's job is to check this against the dispatch it was
+    given — which it can only do if the server states *all* of it, so the receipt
+    reference alone is deliberately not the contract.
+
+    The fields are exactly the authority fences a continuation rests on, plus what
+    is owed and when it is next due:
+
+    * ``org_id``/``node_id``/``cycle`` — which tenant's work, and which attempt.
+      A worker dispatched to cycle 3 must refuse a receipt naming cycle 4.
+    * ``flow_id`` — the lane. The worker compares it because a node id alone does
+      not prove the receipt belongs to the flow it was dispatched under.
+    * ``accepted_plan_version`` — the policy the work was admitted under.
+    * ``claim_generation`` — the ownership generation that produced the receipt. A
+      legitimate handover advances it, so a receipt at another generation is
+      another owner's.
+    * ``action`` — what is owed next, from a closed vocabulary.
+    * ``next_check_at`` — the committed due time, proving the continuation is
+      genuinely still scheduled rather than terminal.
+    * ``contract_version`` — so a worker that validates version 1 refuses a
+      version it cannot field-check instead of validating a subset.
+    """
+
+    contract_version: int
+    receipt_ref: str
+    org_id: str
+    flow_id: str
+    node_id: str
+    cycle: int
+    accepted_plan_version: int
+    claim_id: str
+    claim_generation: int
+    action: HandoffAction
+    action_id: str
+    next_check_at: datetime
+
+    def as_response(self) -> dict:
+        """The wire form. Explicit rather than ``asdict`` so adding a field to the
+        dataclass cannot silently widen the contract the worker validates."""
+        return {
+            "contract_version": self.contract_version,
+            "receipt_ref": self.receipt_ref,
+            "org_id": self.org_id,
+            "flow_id": self.flow_id,
+            "node_id": self.node_id,
+            "cycle": self.cycle,
+            "accepted_plan_version": self.accepted_plan_version,
+            "claim_id": self.claim_id,
+            "claim_generation": self.claim_generation,
+            "action": self.action.value,
+            "action_id": self.action_id,
+            "next_check_at": self.next_check_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True)
 class HandoffResult:
     """The strict result a handoff report returns.
 
@@ -194,11 +276,22 @@ class HandoffResult:
     receipt_ref: str | None = None
     record: ExecutionRecord | None = None
     reason: str | None = None
+    # The full typed identity, present exactly when `accepted` is true. Absent on
+    # every refusal, so a worker cannot read authority fences off a refused report.
+    receipt: HandoffReceipt | None = None
 
     @property
     def accepted(self) -> bool:
-        """True only when the receipt is durable and belongs to this attempt."""
-        return self.outcome in _ACCEPTED and bool(self.receipt_ref)
+        """True only when the receipt is durable, typed, and belongs to this attempt.
+
+        The typed :attr:`receipt` is part of the condition, not merely carried
+        alongside it. A positive acceptance with no receipt is the one answer the
+        worker cannot act on — it would be told "yes" with no identity to check that
+        "yes" against, which is the readback defect restated at the server. Every
+        path that cannot build one already returns a refusal, so this makes that
+        agreement structural rather than a property each call site must remember.
+        """
+        return self.outcome in _ACCEPTED and bool(self.receipt_ref) and self.receipt is not None
 
 
 class AdoptionRefusedError(RuntimeError):
@@ -234,6 +327,52 @@ def handoff_receipt_ref(identity: ExecutionIdentity, execution_id: str) -> str:
     if len(ref) > _MAX_RECEIPT_CHARS:
         raise ValueError("handoff receipt reference exceeds the 255-character ledger column limit")
     return ref
+
+
+def handoff_action_id(identity: ExecutionIdentity, execution_id: str) -> str:
+    """The stable id of the continuation this handoff records.
+
+    Derived from the same fences as the receipt reference, so a repeat converges on
+    the same action id rather than appearing to record a second continuation. Kept
+    distinct from the receipt reference because the two answer different questions:
+    the reference proves *a receipt is stored*, the action id names *which
+    continuation step* it committed, and a worker checks both.
+    """
+    return f"{HANDOFF_RECEIPT_SCHEME}-action:{execution_id}:{identity.cycle}:{identity.claim_generation}"
+
+
+def _receipt_for_record(
+    identity: ExecutionIdentity,
+    record: ExecutionRecord,
+    *,
+    receipt_ref: str,
+) -> HandoffReceipt | None:
+    """Build the typed receipt from the committed row, or ``None`` if it cannot be.
+
+    Returns ``None`` rather than a partially-populated receipt when the committed
+    row lacks a due time: a continuation with no ``next_check_at`` is not a
+    continuation, and a receipt asserting one that is not stored would be the
+    server telling the worker something its own state does not support.
+    """
+    if record.next_check_at is None:
+        logger.warning("handoff: committed execution %s has no next check; refusing to assert a continuation", record.id)
+        return None
+    return HandoffReceipt(
+        contract_version=HANDOFF_RECEIPT_CONTRACT_VERSION,
+        receipt_ref=receipt_ref,
+        # Read off the stored record, not the identity, wherever the row carries it:
+        # the point of the readback is that the worker sees what is durable.
+        org_id=record.org_id,
+        flow_id=record.flow_id,
+        node_id=record.node_id,
+        cycle=record.cycle,
+        accepted_plan_version=record.accepted_plan_version,
+        claim_id=record.claim_id,
+        claim_generation=record.claim_generation,
+        action=HandoffAction.AWAITING_REVIEW,
+        action_id=handoff_action_id(identity, record.id),
+        next_check_at=record.next_check_at,
+    )
 
 
 def outstanding_block(code: BlockCode, *, owner: str, required_input: str, detail: str | None = None) -> BlockRecord:
@@ -294,11 +433,22 @@ async def commit_handoff(
         # another attempt now, and returning it as success is precisely the
         # stale-attempt acceptance the story forbids.
         if record.handoff_receipt_ref == expected:
+            replay = _receipt_for_record(identity, record, receipt_ref=record.handoff_receipt_ref)
+            if replay is None:
+                # A stored receipt whose row no longer carries a due continuation
+                # cannot be replayed as an acceptance: the receipt's whole claim is
+                # that work is still scheduled.
+                return HandoffResult(
+                    outcome=HandoffOutcome.REFUSED,
+                    record=record,
+                    reason="handoff_continuation_not_due",
+                )
             return HandoffResult(
                 outcome=HandoffOutcome.ALREADY_COMMITTED,
                 receipt_ref=record.handoff_receipt_ref,
                 record=record,
                 reason="handoff_already_committed",
+                receipt=replay,
             )
         logger.info(
             "handoff: refusing report on execution %s — stored receipt belongs to another attempt",
@@ -352,8 +502,15 @@ async def commit_handoff(
         logger.warning("handoff: readback mismatch on execution %s", record.id)
         return HandoffResult(outcome=HandoffOutcome.REFUSED, record=committed, reason="handoff_readback_mismatch")
 
+    receipt = _receipt_for_record(identity, committed, receipt_ref=stored)
+    if receipt is None:
+        # The write landed but did not leave a due continuation. Reported as a
+        # refusal rather than a success: the caller must not treat this as a handoff,
+        # and the route's refusal path rolls the provisional write back.
+        return HandoffResult(outcome=HandoffOutcome.REFUSED, record=committed, reason="handoff_continuation_not_due")
+
     logger.info("handoff: committed receipt and due continuation for execution %s", record.id)
-    return HandoffResult(outcome=HandoffOutcome.COMMITTED, receipt_ref=stored, record=committed)
+    return HandoffResult(outcome=HandoffOutcome.COMMITTED, receipt_ref=stored, record=committed, receipt=receipt)
 
 
 def handoff_required(dispatch: dict) -> bool:

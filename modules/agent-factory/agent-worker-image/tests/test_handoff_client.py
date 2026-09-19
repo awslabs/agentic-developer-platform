@@ -31,6 +31,7 @@ of server-then-worker safe in the only direction it can be safe in.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -40,8 +41,10 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from lib.handoff_client import (  # noqa: E402
+    HANDOFF_EXPECT_ENV,
+    HANDOFF_RECEIPT_CONTRACT_VERSION,
     HANDOFF_REQUIRED_ENV,
-    HandoffReceipt,
+    expected_identity,
     handoff_note,
     handoff_required,
     report_handoff,
@@ -50,16 +53,51 @@ from lib.status_gateway_client import StatusGatewayError  # noqa: E402
 
 RECEIPT = "handoff:execution=exec-1:cycle=1:plan=3:claim=claim-1:generation=1"
 
+# The fences the engine publishes on the envelope for this run's dispatch. Every
+# accepted response below must echo exactly these; a case that changes one is asking
+# "what happens when the receipt is for other work?".
+EXPECT = {
+    "contract_version": HANDOFF_RECEIPT_CONTRACT_VERSION,
+    "org_id": "tenant-1",
+    "flow_id": "flow-1",
+    "node_id": "node-1",
+    "cycle": 1,
+    "accepted_plan_version": 3,
+    "claim_id": "claim-1",
+    "claim_generation": 1,
+}
+
 
 @pytest.fixture(autouse=True)
 def _handoff_env(monkeypatch):
     """Default every test to "the engine asked for a handoff, authority is on"."""
     monkeypatch.setenv(HANDOFF_REQUIRED_ENV, "true")
+    monkeypatch.setenv(HANDOFF_EXPECT_ENV, json.dumps(EXPECT))
     monkeypatch.setattr("lib.handoff_client.authority_enabled", lambda: True)
 
 
+def _receipt(**overrides) -> dict:
+    """A typed receipt matching this run's dispatch, as the gateway returns it."""
+    receipt = dict(EXPECT)
+    receipt.update(
+        {
+            "receipt_ref": RECEIPT,
+            "action": "awaiting_review",
+            "action_id": "handoff-action:exec-1:1:1",
+            "next_check_at": "2026-09-19T12:00:00+00:00",
+        }
+    )
+    receipt.update(overrides)
+    return receipt
+
+
 def _committed(**overrides) -> dict:
-    payload = {"outcome": "committed", "receipt_ref": RECEIPT, "accepted": True}
+    payload = {
+        "outcome": "committed",
+        "receipt_ref": RECEIPT,
+        "accepted": True,
+        "receipt": _receipt(),
+    }
     payload.update(overrides)
     return payload
 
@@ -148,37 +186,196 @@ class TestPayload:
 
 
 class TestReceiptIsStrict:
-    """`accepted` requires a committed outcome AND a returned receipt."""
+    """`accepted` requires a positive acceptance AND a receipt for *this* dispatch.
 
-    def test_committed_with_receipt_is_accepted(self):
-        assert HandoffReceipt(outcome="committed", receipt_ref=RECEIPT).accepted is True
+    Asserted through :func:`report_handoff` rather than by constructing a
+    ``HandoffReceipt``: ``accepted`` is deliberately a stored field set only after
+    validation, so a test that built the dataclass by hand could assert a value the
+    validator would never produce and pin nothing at all.
+    """
+
+    def test_committed_with_a_matching_receipt_is_accepted(self):
+        with patch("lib.handoff_client.post_self", return_value=_committed()):
+            result = report_handoff()
+        assert (result.accepted, result.receipt_ref, result.mismatch) == (True, RECEIPT, "")
 
     def test_already_committed_is_accepted(self):
         """A repeat converging on the same receipt is a success, not a failure."""
-        assert HandoffReceipt(outcome="already_committed", receipt_ref=RECEIPT).accepted is True
+        with patch(
+            "lib.handoff_client.post_self", return_value=_committed(outcome="already_committed")
+        ):
+            assert report_handoff().accepted is True
+
+    def test_a_positive_outcome_that_says_not_accepted_is_refused(self):
+        """The F-defect in one case: the flag must be read, never inferred."""
+        with patch("lib.handoff_client.post_self", return_value=_committed(accepted=False)):
+            result = report_handoff()
+        assert result.accepted is False
+        assert "did not positively accept" in result.mismatch
 
     def test_committed_without_a_receipt_is_not_accepted(self):
         """An outcome word alone is not evidence of anything durable."""
-        assert HandoffReceipt(outcome="committed", receipt_ref="").accepted is False
+        with patch("lib.handoff_client.post_self", return_value=_committed(receipt=None)):
+            assert report_handoff().accepted is False
 
     @pytest.mark.parametrize("outcome", ["superseded", "stale", "refused"])
     def test_refusals_are_not_accepted_even_with_a_receipt(self, outcome):
-        assert HandoffReceipt(outcome=outcome, receipt_ref=RECEIPT).accepted is False
+        with patch("lib.handoff_client.post_self", return_value=_committed(outcome=outcome)):
+            assert report_handoff().accepted is False
 
     def test_an_unknown_future_outcome_is_not_accepted(self):
         """Fail closed: a newer server's outcome this worker cannot interpret is not a
         handoff. An `!= "refused"` test would have admitted it."""
-        assert HandoffReceipt(outcome="partially_maybe_ok", receipt_ref=RECEIPT).accepted is False
+        with patch(
+            "lib.handoff_client.post_self", return_value=_committed(outcome="partially_maybe_ok")
+        ):
+            assert report_handoff().accepted is False
+
+    def test_a_refused_readback_does_not_carry_a_quotable_receipt(self):
+        """The reference is dropped on a failed readback.
+
+        Otherwise a caller could quote a receipt from a report that did not validate,
+        which is the same false evidence in a different place.
+        """
+        with patch(
+            "lib.handoff_client.post_self", return_value=_committed(receipt=_receipt(cycle=9))
+        ):
+            result = report_handoff()
+        assert (result.accepted, result.receipt_ref) == (False, "")
 
     def test_response_without_a_usable_outcome_raises(self):
         with patch("lib.handoff_client.post_self", return_value={"receipt_ref": RECEIPT}):
             with pytest.raises(StatusGatewayError):
                 report_handoff()
 
+    def test_a_non_object_response_raises(self):
+        with patch("lib.handoff_client.post_self", return_value=[]):
+            with pytest.raises(StatusGatewayError):
+                report_handoff()
+
     def test_non_string_receipt_is_dropped_not_coerced(self):
         """A truthy non-string would make `bool(receipt_ref)` true on garbage."""
-        with patch("lib.handoff_client.post_self", return_value={"outcome": "committed", "receipt_ref": 12345}):
+        with patch(
+            "lib.handoff_client.post_self",
+            return_value={"outcome": "committed", "receipt_ref": 12345},
+        ):
             assert report_handoff().accepted is False
+
+
+class TestReadbackIsBoundToThisDispatch:
+    """The receipt must be for the work this run was dispatched to do.
+
+    These are the cases a "recognised outcome plus non-empty string" check could not
+    see: the server genuinely committed *something*, and the question is whether it
+    committed *this run's* continuation.
+    """
+
+    @pytest.mark.parametrize(
+        ("field", "wrong"),
+        [
+            ("org_id", "other-tenant"),
+            ("flow_id", "other-flow"),
+            ("node_id", "other-node"),
+            ("cycle", 2),
+            ("accepted_plan_version", 4),
+            ("claim_id", "other-claim"),
+            ("claim_generation", 2),
+        ],
+    )
+    def test_each_fence_is_compared_individually(self, field, wrong):
+        """One field at a time: a validator that forgot one would pass a whole-object
+        test and still admit the field it forgot."""
+        with patch(
+            "lib.handoff_client.post_self",
+            return_value=_committed(receipt=_receipt(**{field: wrong})),
+        ):
+            result = report_handoff()
+        assert result.accepted is False
+        assert field in result.mismatch
+
+    def test_a_contradictory_body_is_refused(self):
+        """Two receipt references that disagree. Neither can be trusted."""
+        with patch(
+            "lib.handoff_client.post_self",
+            return_value=_committed(receipt=_receipt(receipt_ref=RECEIPT + ":x")),
+        ):
+            result = report_handoff()
+        assert result.accepted is False
+        assert "disagrees" in result.mismatch
+
+    def test_a_contract_version_this_worker_cannot_field_check_is_refused(self):
+        with patch(
+            "lib.handoff_client.post_self",
+            return_value=_committed(receipt=_receipt(contract_version=2)),
+        ):
+            result = report_handoff()
+        assert result.accepted is False
+        assert "contract version" in result.mismatch
+
+    @pytest.mark.parametrize(
+        ("mutation", "phrase"),
+        [
+            ({"next_check_at": None}, "no next-check time"),
+            ({"next_check_at": ""}, "no next-check time"),
+            ({"action": "deploying"}, "does not recognise"),
+            ({"action": None}, "does not recognise"),
+            ({"action_id": ""}, "no continuation action"),
+            ({"receipt_ref": ""}, "no receipt reference"),
+            ({"cycle": "1"}, "cycle"),
+            ({"cycle": None}, "cycle"),
+            ({"claim_generation": True}, "claim_generation"),
+            ({"org_id": ""}, "org_id"),
+        ],
+    )
+    def test_incomplete_or_malformed_fields_are_refused(self, mutation, phrase):
+        """Missing, wrongly-typed and unknown-vocabulary values all refuse.
+
+        ``cycle: "1"`` and ``claim_generation: True`` are here for Python's own
+        hazards: ``bool`` is an ``int``, and loose coercion would accept the string. A
+        fence satisfiable by the wrong type is not a fence.
+        """
+        receipt = _receipt(**mutation)
+        body = _committed(receipt=receipt)
+        if "receipt_ref" in mutation:
+            body["receipt_ref"] = mutation["receipt_ref"]
+        with patch("lib.handoff_client.post_self", return_value=body):
+            result = report_handoff()
+        assert result.accepted is False
+        assert phrase in result.mismatch
+
+    def test_a_required_handoff_with_no_published_expectation_is_refused(self, monkeypatch):
+        """Absent expectation means "cannot be checked", not "skip the check".
+
+        The unsafe rollout direction: a gateway that sets the marker but publishes no
+        fences. Trusting the server's word there is exactly what the readback exists
+        to make unnecessary.
+        """
+        monkeypatch.delenv(HANDOFF_EXPECT_ENV, raising=False)
+        with patch("lib.handoff_client.post_self", return_value=_committed()):
+            result = report_handoff()
+        assert result.accepted is False
+        assert HANDOFF_EXPECT_ENV in result.mismatch
+
+    @pytest.mark.parametrize("raw", ["not json", "[]", '"string"', "null", "7"])
+    def test_an_unusable_expectation_refuses_rather_than_raising(self, monkeypatch, raw):
+        """Parsed defensively: a malformed env var must not raise into a run that has
+        already delivered its work, and must not be read as permission either."""
+        monkeypatch.setenv(HANDOFF_EXPECT_ENV, raw)
+        assert expected_identity() == {}
+        with patch("lib.handoff_client.post_self", return_value=_committed()):
+            assert report_handoff().accepted is False
+
+    def test_an_expectation_missing_a_fence_cannot_license_an_acceptance(self, monkeypatch):
+        """A partial expectation is not a partial check — it is no check for that
+        field, so it refuses rather than comparing what happens to be present."""
+        monkeypatch.setenv(
+            HANDOFF_EXPECT_ENV,
+            json.dumps({k: v for k, v in EXPECT.items() if k != "claim_generation"}),
+        )
+        with patch("lib.handoff_client.post_self", return_value=_committed()):
+            result = report_handoff()
+        assert result.accepted is False
+        assert "claim_generation" in result.mismatch
 
 
 class TestNoteIsFailSoftButVisible:
@@ -192,7 +389,9 @@ class TestNoteIsFailSoftButVisible:
         assert "does not by itself complete" in note
 
     def test_transport_failure_returns_a_visible_note(self):
-        with patch("lib.handoff_client.post_self", side_effect=StatusGatewayError("gateway refused")):
+        with patch(
+            "lib.handoff_client.post_self", side_effect=StatusGatewayError("gateway refused")
+        ):
             note = handoff_note(summary="done")
         assert isinstance(note, str)
         assert "not recorded" in note
@@ -202,7 +401,11 @@ class TestNoteIsFailSoftButVisible:
         """A superseded outcome must never read as a handoff."""
         with patch(
             "lib.handoff_client.post_self",
-            return_value={"outcome": "superseded", "receipt_ref": None, "reason": "handoff_receipt_superseded"},
+            return_value={
+                "outcome": "superseded",
+                "receipt_ref": None,
+                "reason": "handoff_receipt_superseded",
+            },
         ):
             note = handoff_note(summary="done")
         assert "not accepted" in note
@@ -262,5 +465,11 @@ class TestTransportIsInherited:
         import lib.handoff_client as module
 
         source = inspect.getsource(module)
-        for secret in ("AWS_SECRET", "ADP_RUN_CREDENTIAL", "X-Adp-Run-Credential", "private_key", "aws_access_key"):
+        for secret in (
+            "AWS_SECRET",
+            "ADP_RUN_CREDENTIAL",
+            "X-Adp-Run-Credential",
+            "private_key",
+            "aws_access_key",
+        ):
             assert secret not in source

@@ -450,18 +450,26 @@ async def commit_handoff_route(
     except (KeyError, TypeError, ValueError):
         raise HTTPException(404, "not found") from None
 
+    # `accepted` and the typed receipt are reported together or not at all —
+    # `HandoffResult.accepted` is false unless the receipt is present, so the one
+    # response shape the worker must never see (a positive acceptance carrying no
+    # identity to validate against) is unrepresentable here rather than guarded for.
+    accepted = result.accepted
     return JSONResponse(
         {
             "outcome": result.outcome.value,
             # Present only when genuinely durable, so a worker cannot mistake a reason
             # string for a receipt.
-            "receipt_ref": result.receipt_ref if result.accepted else None,
+            "receipt_ref": result.receipt_ref if accepted else None,
             "reason": result.reason,
-            "accepted": result.accepted,
-            # The fences the receipt is bound to, echoed from protected state so the
-            # worker can verify it got a receipt for the work it actually did.
-            "node_id": identity.node_id,
-            "cycle": identity.cycle,
+            "accepted": accepted,
+            # The complete typed identity of the committed continuation, read back
+            # from protected state, present only on an acceptance. This is what lets
+            # the worker check it got a receipt for the work it was actually
+            # dispatched to do — outcome plus a reference string cannot prove that,
+            # because neither names the attempt, policy version or ownership
+            # generation the receipt was minted under.
+            "receipt": result.receipt.as_response() if accepted and result.receipt is not None else None,
         },
         status_code=201 if result.outcome is HandoffOutcome.COMMITTED else 200,
         headers={"Cache-Control": "no-store"},
