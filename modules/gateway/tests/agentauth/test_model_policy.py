@@ -19,6 +19,7 @@ from sqlalchemy.exc import OperationalError
 
 from src.admin.persona_models.catalogue import HARNESS_CONTRACT_REVISION
 from src.admin.persona_models.catalogue_service import compute_request_shape_sha256
+from src.agentauth import envelope as envelope_module
 from src.agentauth import model_policy as model_policy_module
 from src.agentauth.envelope import (
     MODEL_POLICY_AUDIENCE,
@@ -56,6 +57,20 @@ NOW = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
 OPUS = "global.anthropic.claude-opus-5"
 SONNET = "global.anthropic.claude-sonnet-4-6"
 HAIKU = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+@pytest.fixture
+def snapshot_clock(monkeypatch):
+    """Resolve and sign fixed-date snapshots against that same fixed clock."""
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(model_policy_module, "datetime", Clock)
+    monkeypatch.setattr(envelope_module, "datetime", Clock)
+    return NOW
 
 
 def active_allowlist_revision(
@@ -267,7 +282,7 @@ def _put(store, item):
 
 
 @pytest.mark.asyncio
-async def test_child_inherits_exact_parent_snapshot_without_rereading_preferences(db_session, policy_store):
+async def test_child_inherits_exact_parent_snapshot_without_rereading_preferences(db_session, policy_store, snapshot_clock):
     root = snapshot().to_dict()
     raw, digest = canonical_json(root).decode(), policy_digest(root)
     _put(
@@ -1144,7 +1159,7 @@ async def test_lkg_rejects_stale_unsigned_and_revision_mismatched_rows(
         await build_root_snapshot(**kwargs, now=NOW + timedelta(seconds=60))
 
 
-def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store):
+def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store, snapshot_clock):
     private = Ed25519PrivateKey.generate()
     pem = private.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -1190,7 +1205,7 @@ def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store)
         request_body=canonical_json(decision),
         expected_audience=MODEL_POLICY_AUDIENCE,
         expected_chain_id="chain-a",
-        now=datetime.now(UTC),
+        now=snapshot_clock,
     )
 
     assert result["posture"] == "report_only"
@@ -1202,7 +1217,7 @@ def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store)
     assert verified.chain_id == "chain-a"
 
 
-def test_bootstrap_records_invalid_direct_override_as_report_only_unavailable(policy_store):
+def test_bootstrap_records_invalid_direct_override_as_report_only_unavailable(policy_store, snapshot_clock):
     value = snapshot().to_dict()
     raw, digest = canonical_json(value).decode(), policy_digest(value)
     _put(
