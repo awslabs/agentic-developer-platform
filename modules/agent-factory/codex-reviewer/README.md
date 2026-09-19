@@ -31,6 +31,13 @@ base URL is `http://127.0.0.1:9090/openai/v1`; the proxy signs and forwards
 entrypoint rejects any `ADP_BEDROCK_VIA` value other than `gateway`, so this
 adapter has no direct-Bedrock fallback.
 
+The Kubernetes worker pod is also the execution security boundary. The adapter
+uses Codex `danger-full-access` mode because the pod intentionally does not
+grant the user-namespace capability required by Codex's nested Linux sandbox.
+This does not make the pod privileged: the filtered child environment,
+gateway-only model path, pod filesystem/network controls, and controller-side
+Git and bounded-fix checks remain in force.
+
 ## Feature controls
 
 - Pull-request events select `agent-codex-reviewer` through the existing persona

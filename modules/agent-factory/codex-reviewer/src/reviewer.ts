@@ -17,6 +17,11 @@ import {
 import { run } from "./process.js";
 
 const SDK_VERSION = "0.155.1";
+/**
+ * The shared worker pod is the execution sandbox. Codex's Linux sandbox uses
+ * bubblewrap/user namespaces, which are intentionally unavailable in that pod.
+ */
+export const WORKER_SANDBOX_MODE = "danger-full-access" as const;
 const FORBIDDEN_AUTOFIX_PATHS = [
   /^\.github\/workflows\//,
   /(^|\/)infra\//,
@@ -106,7 +111,7 @@ async function codexVerdict(
     workingDirectory: workspace,
     model: process.env.CODEX_REVIEWER_MODEL ?? "openai.gpt-5.6-sol",
     modelReasoningEffort: "high",
-    sandboxMode: "read-only",
+    sandboxMode: WORKER_SANDBOX_MODE,
     approvalPolicy: "never",
     networkAccessEnabled: false,
     webSearchMode: "disabled",
@@ -130,7 +135,7 @@ async function applyMechanicalFixes(
     workingDirectory: workspace,
     model: process.env.CODEX_REVIEWER_MODEL ?? "openai.gpt-5.6-sol",
     modelReasoningEffort: "high",
-    sandboxMode: "workspace-write",
+    sandboxMode: WORKER_SANDBOX_MODE,
     approvalPolicy: "never",
     networkAccessEnabled: false,
     webSearchMode: "disabled",

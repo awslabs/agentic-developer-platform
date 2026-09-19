@@ -11,6 +11,7 @@ import {
   mergeEnabled,
   repositoryUrl,
   validateAutofix,
+  WORKER_SANDBOX_MODE,
 } from "./reviewer.js";
 
 const exec = promisify(execFile);
@@ -35,6 +36,10 @@ test("Git transport uses askpass without placing the token in the remote URL", (
 
 test("Codex child environment preserves the gateway placeholder", () => {
   assert.ok(childEnvironment().ADP_GATEWAY_PLACEHOLDER_KEY);
+});
+
+test("Codex relies on the shared worker pod sandbox", () => {
+  assert.equal(WORKER_SANDBOX_MODE, "danger-full-access");
 });
 
 async function fixture(): Promise<{
