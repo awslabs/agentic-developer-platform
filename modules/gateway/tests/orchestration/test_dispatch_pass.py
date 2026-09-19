@@ -35,6 +35,8 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -1575,30 +1577,122 @@ async def test_missing_repository_identity_refuses_before_dispatch(session, monk
     assert node.attempts == 0
 
 
-async def test_ledger_backed_story_is_marked_as_owing_a_handoff(session, work_claims_enabled):
-    """#5144: the marker rides the envelope AND the decision.
+@pytest.fixture
+async def policy_bound_dispatch(monkeypatch):
+    """The supporting services a policy-bound dispatch needs, and nothing more.
 
-    On the envelope so the worker knows it owes a receipt; on the decision because
-    that is what `handoff.handoff_required` reads to decide whether a missing receipt
-    holds the node. Reading it from the run's own dispatch record is what makes the
-    boundary deterministic rather than a deploy-time inference.
+    A flow's spend allowance is only meaningful with a real atomic reservation
+    backend, so an absent one denies with `budget_unavailable` — correctly, and
+    unrelated to #5144. These are the same two fixtures `test_policy_admission.py`
+    uses, reused rather than re-invented so a change in how budgets initialise cannot
+    leave a stale copy here.
     """
-    await _ready_story(session)
+    import fakeredis.aioredis
+
+    from src.budget.reservations import ReservationStore
+    from src.orchestration import flow_budget
+
+    initialized: set[tuple[str, str]] = set()
+
+    async def claim(*, org_id, flow_id, allow_create):
+        key = (org_id, flow_id)
+        if key in initialized:
+            return False
+        if not allow_create:
+            raise RuntimeError("existing work requires reconciliation")
+        initialized.add(key)
+        return True
+
+    monkeypatch.setattr("src.orchestration.flow_meter._claim_initialization", claim)
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(flow_budget, "_reservations", ReservationStore(redis_url=None, ttl_seconds=120, client=client))
+    yield
+    await client.aclose()
+
+
+async def _accept_execution_policy(session: AsyncSession, flow: OrchestrationFlow, *, version: int = 1) -> None:
+    """Persist an accepted plan carrying a real stamped execution policy (#5144).
+
+    Uses the production `stamp_policy` rather than hand-writing the document, so these
+    tests cannot pin a shape acceptance would never produce. Opting in is what makes a
+    dispatch policy-bound, and only a policy-bound dispatch admits an execution — so
+    without this the handoff marker is correctly absent.
+    """
+    from src.orchestration.execution_policy import Action, ExecutionPolicy, PolicyLimits, stamp_policy
+    from src.orchestration.models import OrchestrationAcceptedPlan
+
+    policy = ExecutionPolicy(
+        org_id=flow.org_id,
+        repository_ids=[REPO],
+        allowed_actions=[Action.DEVELOP, Action.REPAIR, Action.MERGE, Action.EVALUATE],
+        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        limits=PolicyLimits(
+            max_wall_clock_seconds=86_400,
+            max_spend_usd=Decimal("100"),
+            max_attempts_per_node=10,
+            max_concurrent_actions=5,
+        ),
+    )
+    # A policy-bound dispatch checks the approver's CURRENT role, so the membership row
+    # has to exist or admission denies with `role_revoked` — correctly. `_make_approval`
+    # creates only the `users` row, which is enough for an unpolicied flow.
+    from src.shared.models.onboarding import TenantMembership
+
+    if not await session.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER)):
+        session.add(TenantMembership(user_id=APPROVER, tenant_id=flow.org_id, role="org_admin"))
+
+    stamped = stamp_policy(policy, principal_id=APPROVER, org_id=flow.org_id)
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=flow.org_id,
+            flow_id=flow.id,
+            version=version,
+            plan_document={"flow_slug": flow.slug, "execution_policy": stamped.model_dump(mode="json")},
+            plan_hash=f"hash-v{version}",
+        )
+    )
+    await session.flush()
+
+
+async def test_opted_in_story_is_marked_as_owing_a_handoff_and_has_a_real_execution(session, work_claims_enabled, policy_bound_dispatch):
+    """#5144: the marker rides the envelope AND the decision — and names a real execution.
+
+    The second half is the point. An earlier revision of this test seeded only a ready
+    story plus a work claim and asserted the marker, which passed while the receipt the
+    marker demands had no producer at all: `create_execution` had no production call
+    site, so the endpoint could never issue one and `results` would have held the story
+    forever. So this asserts the execution row exists, under the claim generation the
+    dispatch was admitted with — that is what makes the promise keepable.
+    """
+    from src.orchestration.models import OrchestrationExecution, OrchestrationWorkClaim
+
+    flow, node, _ = await _ready_story(session)
+    await _accept_execution_policy(session, flow, version=7)
+
     report = await run_dispatch_pass(session, _config())
     assert report.dispatched == 1
     assert report.pending[0].envelope["handoff_required"] is True
     dispatch = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one()
     assert json.loads(dispatch.reason)["handoff_required"] is True
 
+    # The producer the marker promises. Without this row the marker is a permanent hold.
+    execution = (await session.scalars(select(OrchestrationExecution).where(OrchestrationExecution.node_id == node.id))).one()
+    claim = (await session.scalars(select(OrchestrationWorkClaim))).one()
+    assert execution.cycle == node.attempts
+    assert execution.accepted_plan_version == 7
+    # Bound to the generation this dispatch admitted, not merely to some claim.
+    assert (execution.claim_id, execution.claim_generation) == (claim.id, claim.generation)
 
-async def test_story_without_the_execution_ledger_owes_no_handoff(session, monkeypatch):
-    """A dispatch with no claim has no execution row, so it cannot produce a receipt.
 
-    Marking it would hold it forever for evidence it has no way to commit — worse than
-    the defect being fixed. So the marker is gated on the ledger, not on node kind
-    alone, and this is the case that distinguishes the two.
+async def test_policy_absent_story_owes_no_handoff_and_admits_no_execution(session, work_claims_enabled, policy_bound_dispatch):
+    """A flow with no accepted policy keeps legacy semantics exactly (#5128).
+
+    A held work claim says who owns the issue; it does not make the flow policy-bound.
+    Marking such a dispatch would hold it forever for evidence nothing can produce, so
+    the marker must stay absent and no execution may be created.
     """
-    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "false")
+    from src.orchestration.models import OrchestrationExecution
+
     await _ready_story(session)
     report = await run_dispatch_pass(session, _config())
     assert report.dispatched == 1
@@ -1608,10 +1702,33 @@ async def test_story_without_the_execution_ledger_owes_no_handoff(session, monke
     assert "handoff_required" not in envelope
     dispatch = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one()
     assert json.loads(dispatch.reason)["handoff_required"] is False
+    assert (await session.scalars(select(OrchestrationExecution))).all() == []
+
+
+async def test_story_without_the_execution_ledger_owes_no_handoff(session, monkeypatch, policy_bound_dispatch):
+    """A dispatch with no claim has no ownership fence, so it admits no execution.
+
+    Distinct from the policy-absent case above: there the flow is unpolicied, here
+    ownership itself is disabled. Both must reach exactly the code they reached before
+    this contract existed.
+    """
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "false")
+    flow, _, _ = await _ready_story(session)
+    await _accept_execution_policy(session, flow)
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    assert "handoff_required" not in report.pending[0].envelope
+    dispatch = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one()
+    assert json.loads(dispatch.reason)["handoff_required"] is False
 
 
 async def test_non_story_nodes_owe_no_handoff(session, work_claims_enabled):
-    """An evaluation's completion boundary is the human gate, not a worker handoff."""
+    """An evaluation's completion boundary is the human gate, not a worker handoff.
+
+    Left unpolicied deliberately so this pins the node-kind rule and nothing else: an
+    accepted policy denies a machine-accepted evaluation for its own unrelated reason,
+    which would make this test pass without ever exercising the kind check.
+    """
     await _make_org(session)
     flow = await _make_flow(session)
     await _make_approval(session, flow)

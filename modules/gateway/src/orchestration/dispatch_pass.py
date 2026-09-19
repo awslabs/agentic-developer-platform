@@ -675,6 +675,7 @@ async def _dispatch_one_unclaimed(
     report: DispatchPassReport,
     repository_id: int | None = None,
     work_claim_required: bool = False,
+    claim: dict | None = None,
 ) -> None:
     """Resolve genesis, dispatch, and queue the envelope for publication.
 
@@ -874,11 +875,22 @@ async def _dispatch_one_unclaimed(
     # anything, and `handoff.handoff_required` reads this off the decision to decide
     # whether a missing receipt holds the node or is simply not applicable.
     #
-    # Gated on the execution ledger: the receipt is committed against an execution
-    # row, so a dispatch made with no engine execution behind it cannot produce one
-    # and must not be held for the lack. `work_claim_required` marks exactly the
-    # dispatches the ledger covers.
-    receipt_required = binding_required and work_claim_required
+    # The marker is only set when the receipt has a *producer*: an execution row this
+    # dispatch actually admitted. `work_claim_required` alone is not that — a held
+    # work claim says who owns the issue, not that the engine has a durable execution
+    # to commit a receipt against. Promising a receipt that nothing can issue would
+    # hold every such story forever, which is worse than the defect being closed.
+    #
+    # Policy-bound only, for the reason #5128 states once: a flow with no accepted
+    # policy keeps legacy semantics exactly, so it gets no marker and reaches the
+    # code it reached before.
+    receipt_required = False
+    if binding_required and work_claim_required and claim is not None:
+        receipt_required = await _admit_execution(
+            session,
+            node=node,
+            claim=claim,
+        )
     if receipt_required:
         envelope["handoff_required"] = True
 
@@ -943,6 +955,74 @@ async def _dispatch_one_unclaimed(
     )
 
 
+async def _admit_execution(session: AsyncSession, *, node: OrchestrationNode, claim: dict) -> bool:
+    """Create this dispatch's durable execution, so a handoff receipt has a producer (#5144).
+
+    Returns True only when an execution genuinely exists for this dispatch under the
+    claim generation it was admitted with. The caller sets `handoff_required` on
+    exactly that condition, which is what keeps the promise and the producer from
+    diverging: a marker without an execution would hold the story forever, because
+    the receipt it demands could never be issued.
+
+    **Policy-bound only.** A flow with no accepted policy returns False and keeps
+    legacy semantics exactly (#5128 owns that rule and it is read from
+    `load_in_force_policy`, never re-decided here). So does a refusal: unverifiable
+    authority must not produce an admitted execution.
+
+    Creates nothing else and enables nothing. The row is inert unless
+    `FEATURE_ORCHESTRATION_ENGINE_ENABLED` is literally "true", because the #5143
+    runner is what acts on a due execution; this only records the identity a receipt
+    can be committed against.
+    """
+    from .execution_state import ExecutionIdentity, ExecutionStoreError, OutcomeKind
+    from .execution_store import create_execution
+    from .policy_admission import load_in_force_policy
+
+    claim_id, generation = claim.get("claim_id"), claim.get("generation")
+    if not claim_id or not isinstance(generation, int) or generation < 1:
+        # No usable ownership fence. The receipt's whole value is that it names the
+        # generation that produced it, so an unfenced execution is not worth creating.
+        return False
+
+    inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
+    if inputs.policy is None or inputs.refusal is not None:
+        # Absent policy → legacy semantics, untouched. Refusal → fail closed. Both
+        # mean no marker, so `results` reaches exactly the code it reached before.
+        return False
+
+    try:
+        identity = ExecutionIdentity(
+            org_id=node.org_id,
+            node_id=node.id,
+            # One execution per delivery cycle. `attempts` has already been
+            # incremented by `dispatch_node`, so this dispatch's attempt number is the
+            # cycle: a retry of the same story is a new cycle with its own ledger and
+            # its own receipt, which is what stops a retry from inheriting the
+            # previous attempt's receipt and reading as already handed off.
+            cycle=node.attempts,
+            accepted_plan_version=inputs.plan_version,
+            claim_id=str(claim_id),
+            claim_generation=generation,
+        )
+    except ExecutionStoreError:
+        # A malformed identity is a dispatch-side bug, not a reason to refuse the
+        # dispatch itself: the story still runs, it simply carries no marker.
+        logger.warning("orchestration dispatch: node %s could not form an execution identity for #5144", node.id)
+        return False
+
+    outcome = await create_execution(session, identity=identity, flow_id=node.flow_id)
+    if outcome.kind is not OutcomeKind.APPLIED or outcome.record is None:
+        # CONFLICT means the stored row's authority disagrees with what this dispatch
+        # was admitted under. Refusing the marker is the fail-closed direction.
+        logger.info(
+            "orchestration dispatch: node %s has no admissible execution for #5144 (%s) — no handoff marker",
+            node.id,
+            outcome.reason,
+        )
+        return False
+    return True
+
+
 class _AdmissionUnusedError(Exception):
     """Roll back an ownership reservation when no dispatch was produced."""
 
@@ -964,7 +1044,7 @@ async def _dispatch_one(session, node, *, config, report) -> None:
         repository_id = await resolve_repository_id(org_id=node.org_id, installation_id=installation, repo=config.repo)
         issue = int(str(node.issue_ref).lstrip("#"))
         async with session.begin_nested():
-            await admit(
+            claim = await admit(
                 session,
                 org_id=node.org_id,
                 repository_id=repository_id,
@@ -972,7 +1052,19 @@ async def _dispatch_one(session, node, *, config, report) -> None:
                 owner=ClaimOwner(OwnerKind.ENGINE_FLOW, node.flow_id),
                 invocation_id=attempt_run_id(node.id, node.attempts + 1),
             )
-            await _dispatch_one_unclaimed(session, node, config=config, report=report, repository_id=repository_id, work_claim_required=True)
+            await _dispatch_one_unclaimed(
+                session,
+                node,
+                config=config,
+                report=report,
+                repository_id=repository_id,
+                work_claim_required=True,
+                # #5144: the claim this dispatch just admitted. Passed rather than
+                # re-read so the execution is created under the SAME generation that
+                # was admitted — a second read could observe a handover in between and
+                # bind the receipt to ownership this dispatch never held.
+                claim=claim,
+            )
             if len(report.pending) == before:
                 raise _AdmissionUnusedError()
     except _AdmissionUnusedError:
