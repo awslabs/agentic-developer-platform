@@ -1,0 +1,659 @@
+{
+  "$comment": [
+    "Golden fixture for the orchestration-review contract v1 (issue #5146).",
+    "",
+    "Executed by contracts/orchestration-review/v1/test_review_result_contract.py, which",
+    "runs in .github/workflows/orchestration-review-contract-tests.yml. This file and",
+    "models.py must agree: change one and the other must follow, or CI fails.",
+    "",
+    "Both sides of the contract read THIS file. The gateway consumer",
+    "(modules/gateway/tests/orchestration/test_review_evidence.py) validates the same",
+    "accepted documents it would receive over the wire, and the worker producer",
+    "(modules/agent-factory/agent-worker-image/tests/test_review_result_writer.py)",
+    "asserts that what the real runtime assembles validates against the same models.",
+    "That is the #4029 lesson: two suites each asserting their own assumption were both",
+    "green while the producer and consumer disagreed about two fields for months.",
+    "",
+    "The rejected_* lists below are the substance. Every one of them is a shape that was",
+    "actually observed on #5146 or a rule whose absence would let one of those shapes",
+    "through, and each must be REJECTED by the models."
+  ],
+
+  "accepted_result_approve": {
+    "$comment": [
+      "The fully-supported approval: functional stage completed, no open blocker, a",
+      "formal verdict recorded against the very commit that was reviewed, and a",
+      "reviewer run distinct from the author run. Every one of those is load-bearing —",
+      "remove any and 'approve' stops validating."
+    ],
+    "name": "orchestration-review",
+    "version": 1,
+    "owner": "orchestration/review",
+    "result_id": "review-5146-u1-0001",
+    "scope": {
+      "org_id": "org-adp-dev",
+      "flow_id": "a94cb68e-03a2-4ddd-8c48-b542d1bf05e4",
+      "node_id": "126775e3-b681-4d2a-9f04-6560c5afb7fd",
+      "cycle": 1,
+      "execution_id": "exec-126775e3-0001"
+    },
+    "authority": {
+      "accepted_plan_version": 7,
+      "claim_id": "claim-126775e3-0001",
+      "claim_generation": 3
+    },
+    "repository": {
+      "provider_repository_id": 812349901,
+      "repo": "aws-e/adp"
+    },
+    "subject": {
+      "pr_number": 5290,
+      "provider_pr_node_id": "PR_kwDOAbCdEf4AbCdE",
+      "reviewed_head_sha": "31b05e52f0005f7e7445538fe117d8fbb9fb9d53"
+    },
+    "lineage": {
+      "author_run_id": "run-author-4f21c8e0",
+      "reviewer_run_id": "0e8c6378-03f7-4c68-bb65-e6bba69f2ec8",
+      "reviewer_identity": "aws-e-adp-agent-dev[bot]"
+    },
+    "verdict": "approve",
+    "stages": [
+      {
+        "name": "functional",
+        "outcome": "completed"
+      },
+      {
+        "name": "security",
+        "outcome": "completed"
+      }
+    ],
+    "findings": [
+      {
+        "finding_id": "fixture-provenance-field-order",
+        "stage": "functional",
+        "severity": "minor",
+        "disposition": "acknowledged",
+        "summary": "Generated provenance block orders fields differently from the template; cosmetic only.",
+        "evidence_refs": []
+      }
+    ],
+    "evidence_refs": [
+      {
+        "kind": "test-run",
+        "ref": "check-run:105036077448",
+        "head_bound": true,
+        "summary": "Offline suite plus generator/field/provenance checks at the reviewed head.",
+        "stale": false
+      },
+      {
+        "kind": "artifact",
+        "ref": "contracts/provenance/v1/create-provenance-request.golden.json",
+        "head_bound": false,
+        "summary": "Contract the generated fixture was checked against; not tied to a commit.",
+        "stale": false
+      }
+    ],
+    "publication": {
+      "outcome": "published",
+      "published_head_sha": "31b05e52f0005f7e7445538fe117d8fbb9fb9d53",
+      "reference": "pullrequestreview-5229910564",
+      "detail": null
+    },
+    "observed_at": "2026-09-17T01:06:01Z"
+  },
+
+  "accepted_result_security_only_incomplete": {
+    "$comment": [
+      "The security-only run, expressed HONESTLY. This is the shape the observed runs",
+      "should have emitted instead of a clean security report: the functional stage is",
+      "present with outcome 'not-run' and a reason, the verdict is 'incomplete', and the",
+      "missing formal verdict is reported as 'not-attempted' rather than left absent.",
+      "",
+      "It validates on purpose — the contract's job is to make this state representable",
+      "and unmistakably non-approving, not to forbid it. approval_blockers() returns",
+      "three reasons for this document."
+    ],
+    "name": "orchestration-review",
+    "version": 1,
+    "owner": "orchestration/review",
+    "result_id": "review-5146-u3-0002",
+    "scope": {
+      "org_id": "org-adp-dev",
+      "flow_id": "a94cb68e-03a2-4ddd-8c48-b542d1bf05e4",
+      "node_id": "126775e3-b681-4d2a-9f04-6560c5afb7fd",
+      "cycle": 2,
+      "execution_id": null
+    },
+    "authority": {
+      "accepted_plan_version": 7,
+      "claim_id": "claim-126775e3-0002",
+      "claim_generation": 4
+    },
+    "repository": {
+      "provider_repository_id": 812349901,
+      "repo": "aws-e/adp"
+    },
+    "subject": {
+      "pr_number": 5283,
+      "provider_pr_node_id": "PR_kwDOAbCdEf4AbCdF",
+      "reviewed_head_sha": "867949bb24f756614abe15fe2bd7d4a21e0496f3"
+    },
+    "lineage": {
+      "author_run_id": "run-author-9c40ab17",
+      "reviewer_run_id": "a9462649-1472-4866-8632-2691b0ab241a",
+      "reviewer_identity": "aws-e-adp-agent-dev[bot]"
+    },
+    "verdict": "incomplete",
+    "stages": [
+      {
+        "name": "functional",
+        "outcome": "not-run",
+        "detail": "Functional review was not performed; the run produced only a security report."
+      },
+      {
+        "name": "security",
+        "outcome": "completed",
+        "detail": null
+      }
+    ],
+    "findings": [
+      {
+        "finding_id": "destructive-apply-gate-fails-open",
+        "stage": "functional",
+        "severity": "blocking",
+        "disposition": "open",
+        "summary": "The destructive-apply gate fails open; filtered below the security reporting threshold but a functional merge blocker.",
+        "evidence_refs": [
+          {
+            "kind": "check-run",
+            "ref": "check-run:105034202623",
+            "head_bound": true,
+            "summary": "Reproduction recorded during the security stage at this head.",
+            "stale": false
+          }
+        ]
+      }
+    ],
+    "evidence_refs": [],
+    "publication": {
+      "outcome": "not-attempted",
+      "published_head_sha": null,
+      "reference": null,
+      "detail": "The run ended after its security report without attempting a formal verdict."
+    },
+    "observed_at": "2026-09-17T00:33:00Z"
+  },
+
+  "accepted_result_publication_refused": {
+    "$comment": [
+      "Both stages completed, no blocking finding, and the provider REFUSED to record",
+      "the verdict because the reviewer shares the author's bot identity — the",
+      "shared-identity case tracked under #4660.",
+      "",
+      "Note the verdict is 'request-changes', not 'approve': an unpublished verdict is",
+      "an approval blocker, so 'approve' would fail validation here. That is the rule",
+      "working as intended — a refused publication cannot be smoothed into an approval.",
+      "The refusal detail is reported, which is what the observed runs never did."
+    ],
+    "name": "orchestration-review",
+    "version": 1,
+    "owner": "orchestration/review",
+    "result_id": "review-5146-u1-0003",
+    "scope": {
+      "org_id": "org-adp-dev",
+      "flow_id": "a94cb68e-03a2-4ddd-8c48-b542d1bf05e4",
+      "node_id": "7f2ab190-5c33-4a61-9d7e-1b0c5e8a4d22",
+      "cycle": 1,
+      "execution_id": "exec-7f2ab190-0001"
+    },
+    "authority": {
+      "accepted_plan_version": 0,
+      "claim_id": "claim-7f2ab190-0001",
+      "claim_generation": 1
+    },
+    "repository": {
+      "provider_repository_id": 812349901,
+      "repo": "aws-e/adp"
+    },
+    "subject": {
+      "pr_number": 5291,
+      "provider_pr_node_id": "PR_kwDOAbCdEf4AbCdG",
+      "reviewed_head_sha": "ff7d19b9e60482e4f1cd253fb05ed0dfa0959a95"
+    },
+    "lineage": {
+      "author_run_id": "run-author-1d77fe02",
+      "reviewer_run_id": "e8af16e1-6a2b-46bd-ab28-272333090d5f",
+      "reviewer_identity": "aws-e-adp-agent-dev[bot]"
+    },
+    "verdict": "request-changes",
+    "stages": [
+      {
+        "name": "functional",
+        "outcome": "completed",
+        "detail": null
+      },
+      {
+        "name": "security",
+        "outcome": "completed",
+        "detail": null
+      }
+    ],
+    "findings": [
+      {
+        "finding_id": "diagnostic-data-retained",
+        "stage": "functional",
+        "severity": "blocking",
+        "disposition": "open",
+        "summary": "Diagnostic data is retained in the emitted payload and must be removed before merge.",
+        "evidence_refs": []
+      }
+    ],
+    "evidence_refs": [
+      {
+        "kind": "test-run",
+        "ref": "check-run:105044031446",
+        "head_bound": true,
+        "summary": "Functional suite executed at the reviewed head.",
+        "stale": false
+      }
+    ],
+    "publication": {
+      "outcome": "refused",
+      "published_head_sha": null,
+      "reference": null,
+      "detail": "The provider refused the formal review: the reviewer identity matches the pull-request author identity."
+    },
+    "observed_at": "2026-09-17T02:05:48Z"
+  },
+
+  "rejected_variants": [
+    {
+      "name": "security_only_stage_list",
+      "why": "The exact observed defect: a result describing ONLY the security stage. Without the mandatory-functional-stage rule this validates and then reads as 'nothing blocking found'. A security-only run must instead report functional as 'not-run' with a reason.",
+      "patch": {
+        "stages": [
+          {
+            "name": "security",
+            "outcome": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty_stage_list",
+      "why": "A result that describes no review stage at all is not review evidence.",
+      "patch": {
+        "stages": []
+      }
+    },
+    {
+      "name": "duplicate_stage_name",
+      "why": "Two outcomes for one stage is ambiguous: a consumer cannot tell whether functional review concluded.",
+      "patch": {
+        "stages": [
+          {
+            "name": "functional",
+            "outcome": "completed"
+          },
+          {
+            "name": "functional",
+            "outcome": "not-run",
+            "detail": "contradicts the entry above"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unexplained_not_run_stage",
+      "why": "A 'not-run' stage with no reason is the silent skip this contract exists to make noisy.",
+      "patch": {
+        "verdict": "incomplete",
+        "stages": [
+          {
+            "name": "functional",
+            "outcome": "not-run"
+          }
+        ],
+        "publication": {
+          "outcome": "not-attempted",
+          "detail": "not attempted"
+        }
+      }
+    },
+    {
+      "name": "self_review",
+      "why": "The reviewer run is the author run. A run cannot review its own output.",
+      "patch": {
+        "lineage": {
+          "author_run_id": "0e8c6378-03f7-4c68-bb65-e6bba69f2ec8",
+          "reviewer_run_id": "0e8c6378-03f7-4c68-bb65-e6bba69f2ec8"
+        }
+      }
+    },
+    {
+      "name": "approve_with_open_blocking_finding",
+      "why": "An 'approve' verdict alongside an open blocking finding. This is the U19 shape: correctness blockers the security stage filtered below threshold must survive into the verdict.",
+      "patch": {
+        "findings": [
+          {
+            "finding_id": "workspace-cluster-unbound",
+            "stage": "functional",
+            "severity": "blocking",
+            "disposition": "open",
+            "summary": "workspace_cluster is unbound on the replacement path.",
+            "evidence_refs": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "approve_with_acknowledged_blocker",
+      "why": "Acknowledging a blocking finding does not clear it; only 'resolved' with evidence does. Otherwise a reviewer could approve past any blocker by noting it.",
+      "patch": {
+        "findings": [
+          {
+            "finding_id": "workspace-cluster-unbound",
+            "stage": "functional",
+            "severity": "blocking",
+            "disposition": "acknowledged",
+            "summary": "workspace_cluster is unbound on the replacement path.",
+            "evidence_refs": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "approve_with_unpublished_verdict",
+      "why": "The most-repeated observed failure: both stages complete, verdict approve, and no formal verdict recorded anywhere repository rules can read it.",
+      "patch": {
+        "publication": {
+          "outcome": "not-attempted",
+          "detail": "the run ended before publishing a formal verdict"
+        }
+      }
+    },
+    {
+      "name": "approve_with_functional_stage_not_run",
+      "why": "An 'approve' verdict while the functional stage did not run. Present-but-not-run must still block approval, not merely be recorded.",
+      "patch": {
+        "stages": [
+          {
+            "name": "functional",
+            "outcome": "not-run",
+            "detail": "skipped"
+          },
+          {
+            "name": "security",
+            "outcome": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "publication_head_differs_from_reviewed_head",
+      "why": "The wrong-revision defect: a formal verdict recorded against a commit the reviewer never inspected. Observed when a review analysed 628842d5 and the provider attached the verdict to f0d2eb96.",
+      "patch": {
+        "publication": {
+          "outcome": "published",
+          "published_head_sha": "f0d2eb968cb5f9d1322da48d92042cd7f45c166a",
+          "reference": "pullrequestreview-9999999999"
+        }
+      }
+    },
+    {
+      "name": "published_without_head_sha",
+      "why": "A 'published' publication that does not name the commit it was recorded against cannot be checked for the wrong-revision defect at all.",
+      "patch": {
+        "publication": {
+          "outcome": "published",
+          "published_head_sha": null,
+          "reference": "pullrequestreview-5229910564"
+        }
+      }
+    },
+    {
+      "name": "resolved_blocking_finding_without_evidence",
+      "why": "'Fixed, trust me'. The observed false-negative claimed all six blockers fixed having re-tested one sub-behaviour; a blocking finding declared resolved must carry the evidence that showed it.",
+      "patch": {
+        "findings": [
+          {
+            "finding_id": "approval-settings-unreachable",
+            "stage": "functional",
+            "severity": "blocking",
+            "disposition": "resolved",
+            "summary": "SETTINGS approval was unreachable for an image/network pin change.",
+            "evidence_refs": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate_finding_id",
+      "why": "A repeated finding_id makes 'is this blocker resolved?' unanswerable — one entry can say open and the other resolved.",
+      "patch": {
+        "findings": [
+          {
+            "finding_id": "same-id",
+            "stage": "functional",
+            "severity": "blocking",
+            "disposition": "open",
+            "summary": "First entry says open.",
+            "evidence_refs": []
+          },
+          {
+            "finding_id": "same-id",
+            "stage": "functional",
+            "severity": "blocking",
+            "disposition": "resolved",
+            "summary": "Second entry says resolved.",
+            "evidence_refs": [
+              {
+                "kind": "test-run",
+                "ref": "check-run:1",
+                "head_bound": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "short_reviewed_head_sha",
+      "why": "An abbreviated commit id is ambiguous and no provider issues one. Head binding is worthless if the head can be a prefix.",
+      "patch": {
+        "subject": {
+          "pr_number": 5290,
+          "provider_pr_node_id": "PR_kwDOAbCdEf4AbCdE",
+          "reviewed_head_sha": "31b05e5"
+        }
+      }
+    },
+    {
+      "name": "uppercase_reviewed_head_sha",
+      "why": "Mixed case would make two spellings of one commit compare unequal, silently producing a false stale-head refusal.",
+      "patch": {
+        "subject": {
+          "pr_number": 5290,
+          "provider_pr_node_id": "PR_kwDOAbCdEf4AbCdE",
+          "reviewed_head_sha": "31B05E52F0005F7E7445538FE117D8FBB9FB9D53"
+        }
+      }
+    },
+    {
+      "name": "missing_provider_repository_id",
+      "why": "Only the mutable display name is supplied. A rename or transfer re-points it, which is how findings land on the wrong repository.",
+      "patch": {
+        "repository": {
+          "repo": "aws-e/adp"
+        }
+      }
+    },
+    {
+      "name": "missing_provider_pr_node_id",
+      "why": "PR number alone is not immutable identity; the contract refuses to bind on it, mirroring PullRequestIdentity's INCOMPLETE_IDENTITY arm.",
+      "patch": {
+        "subject": {
+          "pr_number": 5290,
+          "reviewed_head_sha": "31b05e52f0005f7e7445538fe117d8fbb9fb9d53"
+        }
+      }
+    },
+    {
+      "name": "naive_observed_at",
+      "why": "A timestamp with no zone means 'whatever the writer's clock said', and this artifact is read by a different machine than wrote it.",
+      "patch": {
+        "observed_at": "2026-09-17T01:06:01"
+      }
+    },
+    {
+      "name": "zero_claim_generation",
+      "why": "Generations start at 1. Zero would compare as older than every real generation and could never be recognised as current.",
+      "patch": {
+        "authority": {
+          "accepted_plan_version": 7,
+          "claim_id": "claim-126775e3-0001",
+          "claim_generation": 0
+        }
+      }
+    },
+    {
+      "name": "negative_accepted_plan_version",
+      "why": "0 is legal and means 'no accepted plan' (the legacy path). Negative is not a version.",
+      "patch": {
+        "authority": {
+          "accepted_plan_version": -1,
+          "claim_id": "claim-126775e3-0001",
+          "claim_generation": 3
+        }
+      }
+    },
+    {
+      "name": "blank_org_id",
+      "why": "A blank tenant is not a tenant. Every read and write is scoped to it, so a blank one belongs to everyone and no one.",
+      "patch": {
+        "scope": {
+          "org_id": "   ",
+          "flow_id": "a94cb68e-03a2-4ddd-8c48-b542d1bf05e4",
+          "node_id": "126775e3-b681-4d2a-9f04-6560c5afb7fd",
+          "cycle": 1
+        }
+      }
+    },
+    {
+      "name": "zero_cycle",
+      "why": "Cycles start at 1; cycle 0 cannot be distinguished from 'unset'.",
+      "patch": {
+        "scope": {
+          "org_id": "org-adp-dev",
+          "flow_id": "a94cb68e-03a2-4ddd-8c48-b542d1bf05e4",
+          "node_id": "126775e3-b681-4d2a-9f04-6560c5afb7fd",
+          "cycle": 0
+        }
+      }
+    },
+    {
+      "name": "unknown_severity_value",
+      "why": "A closed vocabulary: an unrecognised severity must be a validation error, never something that falls through to 'not blocking'.",
+      "patch": {
+        "findings": [
+          {
+            "finding_id": "made-up-severity",
+            "stage": "functional",
+            "severity": "catastrophic",
+            "disposition": "open",
+            "summary": "Severity value is not in the vocabulary.",
+            "evidence_refs": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown_disposition_value",
+      "why": "Same argument for dispositions: an unknown value must not read as cleared.",
+      "patch": {
+        "findings": [
+          {
+            "finding_id": "made-up-disposition",
+            "stage": "functional",
+            "severity": "blocking",
+            "disposition": "probably-fine",
+            "summary": "Disposition value is not in the vocabulary.",
+            "evidence_refs": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown_publication_outcome",
+      "why": "An unrecognised publication outcome must not be treated as published.",
+      "patch": {
+        "publication": {
+          "outcome": "probably-published",
+          "published_head_sha": "31b05e52f0005f7e7445538fe117d8fbb9fb9d53"
+        }
+      }
+    },
+    {
+      "name": "unknown_verdict_value",
+      "why": "The verdict vocabulary is closed so a typo cannot become a permit.",
+      "patch": {
+        "verdict": "looks-good-to-me"
+      }
+    },
+    {
+      "name": "extra_top_level_field",
+      "why": "extra='forbid'. An unmodelled field is either a producer bug or a consumer that will ignore something the producer thought was load-bearing.",
+      "patch": {
+        "autonomous_approval": true
+      }
+    },
+    {
+      "name": "wrong_contract_name",
+      "why": "A document from another contract must not validate as this one.",
+      "patch": {
+        "name": "hitl-ticket"
+      }
+    },
+    {
+      "name": "wrong_contract_version",
+      "why": "A different version is a different contract file.",
+      "patch": {
+        "version": 2
+      }
+    },
+    {
+      "name": "wrong_contract_owner",
+      "why": "The owning surface is pinned so a forged envelope cannot claim this contract.",
+      "patch": {
+        "owner": "orchestration/merge"
+      }
+    },
+    {
+      "name": "blank_result_id",
+      "why": "A result with no identifier cannot be deduplicated or referenced.",
+      "patch": {
+        "result_id": "  "
+      }
+    },
+    {
+      "name": "missing_publication",
+      "why": "Publication is mandatory. Making it optional is exactly how 'the formal verdict never happened' became unrepresentable in the observed runs.",
+      "unset": ["publication"]
+    },
+    {
+      "name": "missing_lineage",
+      "why": "Without lineage there is no self-review check and no attributable reviewer.",
+      "unset": ["lineage"]
+    },
+    {
+      "name": "missing_subject",
+      "why": "Without a subject there is no reviewed commit, which is the entire point of the contract.",
+      "unset": ["subject"]
+    },
+    {
+      "name": "missing_authority",
+      "why": "Without accepted plan version and claim generation, nothing fences this result against work someone else now owns.",
+      "unset": ["authority"]
+    }
+  ]
+}
