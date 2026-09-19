@@ -1729,25 +1729,43 @@ def main() -> int:
             # honest outcome, and the status says the model policy stopped it
             # rather than blaming the agent.
             logger.error(
-                "Refusing to launch: enforcing model policy could not be satisfied (reason=%s)",
+                "Refusing to launch: model policy could not be satisfied (reason=%s, "
+                "posture_determined=%s)",
                 enforcement_failure,
+                not policy_report.verification_failed,
             )
             bootstrap_log.step_error(
                 4,
                 "set_env",
-                RuntimeError(f"enforcing model policy unsatisfied: {enforcement_failure}"),
+                RuntimeError(f"model policy unsatisfied: {enforcement_failure}"),
             )
             # The requester's message states what actually happened: the run was
             # stopped before any inference, by policy. It must not be phrased as
             # an agent failure, and a report-only run must never produce this
             # message at all, since nothing is blocked there.
-            _fail_bootstrap_status(
-                message_id,
-                arrived_at,
-                "the platform is enforcing an agent model policy and the gateway could not "
-                f"authorize a model for this run ({enforcement_failure}); the run was stopped "
-                "before the agent started and no model was invoked",
-            )
+            #
+            # Two distinct causes, told apart because they are not the same fact and
+            # a requester acts differently on each. An unverifiable response does not
+            # establish that enforcement was on -- only that the platform's answer
+            # could not be trusted to say -- so asserting "the platform is enforcing"
+            # there would be a claim the control flow does not support.
+            if policy_report.verification_failed:
+                _fail_bootstrap_status(
+                    message_id,
+                    arrived_at,
+                    "the gateway's agent model-policy response could not be verified, so the "
+                    "platform could not confirm whether a model policy is being enforced for "
+                    f"this run ({enforcement_failure}); the run was stopped before the agent "
+                    "started and no model was invoked",
+                )
+            else:
+                _fail_bootstrap_status(
+                    message_id,
+                    arrived_at,
+                    "the platform is enforcing an agent model policy and the gateway could not "
+                    f"authorize a model for this run ({enforcement_failure}); the run was "
+                    "stopped before the agent started and no model was invoked",
+                )
             bootstrap_log.close()
             return 1
         enforced_model = policy_report.effective_model(effective_model)

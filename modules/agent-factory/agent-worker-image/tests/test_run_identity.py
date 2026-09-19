@@ -710,9 +710,15 @@ def test_refresh_reports_enforcing_verification_failure_without_pinning_it(ident
 
     session.refresh()
 
-    assert session.model_policy_report.posture == "enforcing"
+    # The posture is *not* salvaged from a response whose signature failed: the
+    # outer value is unsigned, so believing it would let anyone able to alter the
+    # response also choose the posture it is judged under. It refuses on the
+    # unverifiability itself instead, which covers the enforcing case without
+    # trusting the field that claimed it.
+    assert session.model_policy_report.posture is None
     assert session.model_policy_report.posture_verified is False
-    assert session.model_policy_report.enforcement_failure == "posture_unverified"
+    assert session.model_policy_report.verification_failed is True
+    assert session.model_policy_report.enforcement_failure == "decision_altered"
     # Not pinned: a later refresh must be able to observe a rollback or recovery.
     assert session._model_policy_reported is False
 

@@ -641,3 +641,175 @@ class TestEnforcingPostureIsConsumedByTheActualEntrypoint:
 
         assert agent_env["ANTHROPIC_MODEL"] == "us.anthropic.claude-opus-4-6-v1"
         assert "ADP_MODEL_POLICY_ENFORCED" not in agent_env
+
+
+@pytest.fixture
+def gateway_session(tmp_path, monkeypatch):
+    """A real ``RunIdentitySession`` wired to the signed-reply helpers.
+
+    Reuses ``test_run_identity``'s fixture rather than re-declaring the endpoint,
+    key material and envelope here: those are the real gateway response shape, and
+    a second copy would drift from it. Named distinctly because ``identity`` is
+    already a local in this module.
+    """
+    from tests.test_run_identity import identity as _identity
+
+    yield from _identity.__wrapped__(tmp_path, monkeypatch)
+
+
+class TestUnsignedPostureCannotDowngradeASignedDecision:
+    """An unverifiable response is never permission to run the legacy model.
+
+    The gateway signs the *decision body*, which contains ``runtime_posture``. The
+    outer ``posture`` summary beside it is not covered by that signature. So a
+    response can be internally inconsistent, and the worker's own verification
+    rejects it -- but it must not then read the enforcement setting back out of the
+    response it just rejected.
+
+    The defect this pins: ``_unconsumable_report`` salvaged that unsigned outer
+    posture unconditionally. A correctly signed *enforcing* decision whose outer
+    posture said ``report_only``, ``disabled``, nothing at all, or an unrecognised
+    word produced a report with no enforcement failure, and the real entrypoint
+    exited 0 having launched the agent on its legacy model. Anyone able to alter
+    the response could therefore strip enforcement by editing one unsigned word --
+    exception handling converting an enforcing failure into legacy execution, which
+    is the exact bypass this stage exists to close.
+
+    Driven through the real ``RunIdentitySession.refresh()`` error handling and the
+    real ``entrypoint.main()``, because the property is "the run stops before
+    inference": only asserting that the agent subprocess was never invoked can tell
+    refusing apart from proceeding. Inspecting a variable cannot.
+    """
+
+    @pytest.mark.parametrize(
+        "outer_posture",
+        ["report_only", "disabled", None, "future-posture"],
+        ids=["claims-report-only", "claims-disabled", "claims-nothing", "claims-unknown"],
+    )
+    def test_tampered_outer_posture_refuses_instead_of_launching_legacy(
+        self, gateway_session, monkeypatch, tmp_path, outer_posture
+    ):
+        from lib.run_identity import RunIdentityError
+        from tests.test_run_identity import policy_reply, reply
+
+        session, _ = gateway_session
+        # The signed body is an enforcing decision for this run/tenant/chain. Only
+        # the outer metadata -- which the signature does not cover -- is changed.
+        policy = policy_reply(
+            runtime_posture="enforcing", reply_changes={"posture": outer_posture}
+        )
+        monkeypatch.setattr(session, "_request", lambda: reply(model_policy=policy))
+        try:
+            session.refresh()
+        except RunIdentityError:
+            return  # Refusing at refresh is also a valid outcome.
+
+        report = session.model_policy_report
+        assert report is not None
+        # The unsigned claim is not believed in either direction: the worker does
+        # not conclude "report_only" from it, and does not conclude "enforcing"
+        # either -- it records that the posture could not be determined.
+        assert report.verification_failed is True
+        assert report.posture is None
+        assert report.enforcement_failure is not None
+        assert report.enforced is False
+
+        monkeypatch.setattr(
+            "entrypoint._broker_installation_token",
+            lambda **_: ("test-token", "123", "2099-01-01T00:00:00Z"),
+        )
+        envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
+        envelope["message_id"] = "run-a"
+        envelope["tenant_id"] = "tenant"
+        envelope.setdefault("correlation", {})["correlation_id"] = "chain-a"
+        assert (
+            _run_worker(
+                envelope,
+                monkeypatch,
+                tmp_path,
+                policy_report=report,
+                expect_exit=1,
+            )
+            is None
+        )
+
+    def test_an_authenticated_but_unexecutable_decision_keeps_its_signed_posture(
+        self, gateway_session, monkeypatch, tmp_path
+    ):
+        """The one case where the posture *may* be believed, and must be.
+
+        A newer gateway's decision with an unsupported ``schema_version`` is
+        rejected only *after* its assertion verified, so its ``runtime_posture`` is
+        signed platform state rather than an unsigned claim. Believing it is what
+        keeps mixed-version report-only rollout behaving exactly as it does today:
+        the legacy model runs and nothing is blocked.
+
+        This is the boundary that stops the fix above from over-reaching into
+        ordinary unavailability -- without it, every skewed-but-honest gateway
+        response would stop runs while the platform was merely observing.
+        """
+        from tests.test_run_identity import policy_reply, reply
+
+        session, _ = gateway_session
+        monkeypatch.setattr(
+            session, "_request", lambda: reply(model_policy=policy_reply(schema_version=2))
+        )
+        session.refresh()
+
+        report = session.model_policy_report
+        assert report.verification_failed is False
+        assert report.posture == "report_only"
+        assert report.reason == "snapshot_unsupported_revision"
+        assert report.enforcement_failure is None
+
+        monkeypatch.setattr(
+            "entrypoint._broker_installation_token",
+            lambda **_: ("test-token", "123", "2099-01-01T00:00:00Z"),
+        )
+        envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
+        agent_env = _run_worker(envelope, monkeypatch, tmp_path, policy_report=report)
+        assert agent_env["ANTHROPIC_MODEL"] == "us.anthropic.claude-opus-4-6-v1"
+
+    def test_the_same_skew_under_a_signed_enforcing_posture_still_refuses(
+        self, gateway_session, monkeypatch, tmp_path
+    ):
+        """Authenticating the posture must not become a way to proceed.
+
+        Same authenticated-but-unexecutable response as above, except the signed
+        posture is ``enforcing``. Believing the posture is correct here too -- and
+        believing it means refusing, not admitting.
+        """
+        from tests.test_run_identity import policy_reply, reply
+
+        session, _ = gateway_session
+        monkeypatch.setattr(
+            session,
+            "_request",
+            lambda: reply(
+                model_policy=policy_reply(schema_version=2, runtime_posture="enforcing")
+            ),
+        )
+        session.refresh()
+
+        report = session.model_policy_report
+        assert report.verification_failed is False
+        assert report.posture == "enforcing"
+        # ``posture_verified`` stays False because that flag is itself unsigned --
+        # the signed body proves what the posture *was*, not that the gateway
+        # proved it against committed state. So the refusal lands on
+        # ``posture_unverified``, which is the stricter of the two available
+        # reasons and refuses for the right cause either way.
+        assert report.posture_verified is False
+        assert report.enforcement_failure == "posture_unverified"
+
+        monkeypatch.setattr(
+            "entrypoint._broker_installation_token",
+            lambda **_: ("test-token", "123", "2099-01-01T00:00:00Z"),
+        )
+        envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
+        assert (
+            _run_worker(
+                envelope, monkeypatch, tmp_path, policy_report=report, expect_exit=1
+            )
+            is None
+        )

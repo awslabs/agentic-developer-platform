@@ -99,9 +99,20 @@ class WorkOwnershipPending(RunIdentityError):
 class ModelPolicyVerificationError(ValueError):
     """A proposed gateway decision is not authentic or bound to this run."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, authenticated: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
+        #: True only when the assertion's signature and bindings all verified and
+        #: the decision was rejected for a later, non-authenticity reason — today
+        #: solely an unsupported ``schema_version``.
+        #:
+        #: It gates whether the response's posture may be believed at all.  An
+        #: authenticated decision carries its ``runtime_posture`` inside the signed
+        #: body, so salvaging it is reading verified platform state.  A decision
+        #: that failed verification carries nothing: its posture is whatever the
+        #: response happened to say, and believing the permissive half of that is
+        #: the bypass this stage exists to close.
+        self.authenticated = authenticated
 
 
 @dataclass(frozen=True)
@@ -138,6 +149,15 @@ class ModelPolicyReport:
     allowlist_policy_drift: bool | None = None
     posture_revision: int | None = None
     assertion_key_id: str | None = None
+    #: True when this report describes a response whose authenticity could not be
+    #: established, so nothing in it — including :attr:`posture` — is evidence.
+    #:
+    #: Kept separate from ``posture is None``, which also describes an older
+    #: gateway that simply sends no posture.  That case is a structurally sound
+    #: response and keeps its existing permissive treatment; this one is not, and
+    #: must refuse under :attr:`enforcement_failure` because the worker cannot rule
+    #: out that the platform was enforcing.
+    verification_failed: bool = False
 
     @property
     def enforced(self) -> bool:
@@ -174,7 +194,18 @@ class ModelPolicyReport:
         PMM-07 has to make impossible.  Under ``disabled``/``report_only`` the
         same unavailable decision is not a failure at all, because the legacy
         assignment is the correct outcome there.
+
+        A response whose authenticity failed refuses regardless of the posture it
+        appeared to carry.  The posture in such a response is not platform state —
+        it is an unsigned field in a message already established as untrustworthy,
+        and reading "report_only" out of it to keep going is indistinguishable from
+        an attacker stripping enforcement.  Since the worker cannot tell which
+        posture was actually live, it must not proceed, so this is the one place
+        unknown-under-failure differs from unknown-under-an-older-gateway: the
+        latter is a sound response from a platform with no posture to apply.
         """
+        if self.verification_failed:
+            return self.reason or "decision_unverifiable"
         if self.posture != "enforcing":
             return None
         if not self.posture_verified:
@@ -535,7 +566,12 @@ def parse_model_policy_report(
         now=now,
     )
     if decision.get("schema_version") != MODEL_POLICY_SCHEMA_VERSION:
-        raise ModelPolicyVerificationError("snapshot_unsupported_revision")
+        # Raised *after* the assertion verified, so this decision is authentic and
+        # merely too new for this worker to execute on.  Flagged as authenticated so
+        # its signed ``runtime_posture`` may be believed: the mixed-version case
+        # where a newer gateway is still report-only must keep its exact legacy
+        # behaviour rather than refuse, while the same skew under enforcing refuses.
+        raise ModelPolicyVerificationError("snapshot_unsupported_revision", authenticated=True)
     return ModelPolicyReport(
         status="proposed",
         posture=posture,
@@ -554,34 +590,49 @@ def parse_model_policy_report(
     )
 
 
-def _unconsumable_report(policy: object, *, reason: str) -> ModelPolicyReport:
-    """Build the report for a response that failed verification.
+def _unconsumable_report(
+    policy: object, *, reason: str, authenticated: bool = False
+) -> ModelPolicyReport:
+    """Build the report for a response that could not be consumed.
 
-    The posture is salvaged from the raw response even though verification
-    failed, and that asymmetry is deliberate and safe:
+    The outer ``posture`` is *not* signed.  Only the ``runtime_posture`` inside the
+    decision body is, so the outer value is evidence exactly when the assertion
+    over that body verified and the two agree.  ``authenticated`` says whether that
+    happened.
 
-    * it can only cause a **refusal**, never an execution.  ``status`` is
-      ``unavailable``, so :attr:`ModelPolicyReport.enforced` is False and no model
-      can be substituted from an unverified response;
-    * dropping it would be unsafe in the other direction.  A malformed decision
-      under a claimed ``enforcing`` posture would look like "not enforcing", and
-      the run would quietly continue on its legacy model — the precise bypass
-      this work exists to close.
+    Salvaging the posture unconditionally, as an earlier revision did, inverted the
+    guarantee.  A signed ``enforcing`` decision whose unsigned outer posture read
+    ``report_only``, ``disabled``, absent or unrecognised produced a report with no
+    enforcement failure, and the run launched on its legacy model — a verification
+    failure converted into permission by the very field the failure proved
+    untrustworthy.  Anyone able to influence the response could strip enforcement
+    by editing one unsigned word.
 
-    So an unverifiable claim of ``enforcing`` stops the run, and an unverifiable
-    claim of ``report_only`` cannot grant anything it did not already have. Any
-    unrecognised value is dropped rather than guessed at, which also lands on
-    refusal only if the gateway separately proved a posture.
+    So the posture is carried only when authenticated *and* coherent, and an
+    unauthenticated failure is marked :attr:`ModelPolicyReport.verification_failed`
+    instead, which refuses.  Refusing cannot itself be the unsafe direction: the
+    worst case is stopping a run the platform was only observing, which is visible
+    and recoverable, where the opposite is silent unenforced execution.
     """
     posture = policy.get("posture") if isinstance(policy, dict) else None
     if posture not in MODEL_POLICY_POSTURES:
         posture = None
+    if authenticated:
+        # The signed body is the authority; the unsigned outer value is believed
+        # only insofar as it matches it.  Disagreement means the response was
+        # assembled from mismatched parts, so neither half is evidence.
+        decision = policy.get("decision") if isinstance(policy, dict) else None
+        signed = decision.get("runtime_posture") if isinstance(decision, dict) else None
+        if posture is None or signed != posture:
+            authenticated = False
+            posture = None
     return ModelPolicyReport(
         status="unavailable",
-        posture=posture,
-        # Never verified here by construction: verification is what just failed.
+        posture=posture if authenticated else None,
+        # Never verified here by construction: a consumable decision is what failed.
         posture_verified=False,
         reason=reason,
+        verification_failed=not authenticated,
     )
 
 
@@ -721,7 +772,9 @@ class RunIdentitySession:
                         public_keys=load_model_policy_verification_keys(),
                     )
                 except ModelPolicyVerificationError as exc:
-                    self.model_policy_report = _unconsumable_report(policy, reason=exc.reason)
+                    self.model_policy_report = _unconsumable_report(
+                        policy, reason=exc.reason, authenticated=exc.authenticated
+                    )
                 except ValueError:
                     self.model_policy_report = _unconsumable_report(
                         policy, reason="decision_malformed"
@@ -732,7 +785,19 @@ class RunIdentitySession:
                 # would conclude the gate works when nothing was gated.
                 report = self.model_policy_report
                 failure = report.enforcement_failure
-                if failure is not None:
+                if failure is not None and report.verification_failed:
+                    # Truthful about the uncertainty: an unverifiable response does
+                    # not establish that the platform was enforcing, so claiming it
+                    # was would be as wrong as claiming it was not. What *is* known
+                    # is that the posture cannot be determined, which is why the run
+                    # stops.
+                    logger.error(
+                        "Model-policy response could not be verified, so the live posture is "
+                        "unknown and may be enforcing; run must not proceed on its legacy "
+                        "model (reason=%s)",
+                        failure,
+                    )
+                elif failure is not None:
                     logger.error(
                         "Enforcing model policy cannot be satisfied; run must not proceed "
                         "on its legacy model (reason=%s)",
