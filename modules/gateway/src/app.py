@@ -120,6 +120,13 @@ UNIT_MODULES = [
     # row, and refuses to overwrite one a platform admin authored (§1.4 "admin wins",
     # which with one row per scope can only be enforced at write time).
     "src.admin.bedrock_routing.self_routes",
+    # Issue #5419 (PMM-02): persona-model preference self-service and administration.
+    # Two separate routers for the same reason bedrock_routing splits them: the self
+    # surface takes no target parameter at any position (the authz IS the shape),
+    # while the administration surface takes a canonical service principal ID and
+    # checks ORG_UPDATE as its first statement.
+    "src.admin.persona_models.self_routes",
+    "src.admin.persona_models.routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
@@ -168,6 +175,7 @@ async def lifespan(app: FastAPI):
             import src.shared.models.bedrock_routing  # noqa: F401  # Issue #4743
             import src.shared.models.budget  # noqa: F401
             import src.shared.models.organization  # noqa: F401
+            import src.shared.models.persona_models  # noqa: F401  # Issue #5419
             import src.shared.models.usage  # noqa: F401
             import src.shared.models.vault  # noqa: F401  # Issue #135
             from src.shared.database import get_engine
